@@ -389,8 +389,7 @@ fn edge_and_delta_to_strategies(
 /// `Mouse::LeftClick`, `Mouse::Hold` and `Mouse::Release` events are all sent from those
 /// same three `Pane` calls (see `PluginPane::start_selection`), so a plugin whose drag is
 /// not tracked only ever hears the press - and a form widget that activates on release
-/// would never fire. `GlobalPanes::route_mouse_event` tracks it for plugins for exactly
-/// this reason.
+/// would never fire.
 fn drag_should_be_tracked(pane_id: PaneId, pane: &dyn Pane) -> bool {
     pane.supports_mouse_selection() || matches!(pane_id, PaneId::Plugin(_))
 }

@@ -1,9 +1,9 @@
 use super::*;
 
-/// A global pane is in no tab, so it is in its own field of the manifest. Missing
-/// it is how an agent beside a global Hocus would stay invisible.
+/// A plugin pane is not an agent, a suppressed one is not on screen, and a held
+/// one still is - the three cases the snapshot has to tell apart.
 #[test]
-fn a_snapshot_keeps_terminal_panes_of_every_scope() {
+fn a_snapshot_keeps_the_terminal_panes_that_are_agents() {
     let plugin = PaneInfo {
         is_plugin: true,
         ..pane_info(1, "hocus", None)
@@ -17,15 +17,12 @@ fn a_snapshot_keeps_terminal_panes_of_every_scope() {
         exited: true,
         ..pane_info(3, "codex", Some("codex"))
     };
-    let global = PaneManifest {
-        global_panes: vec![pane_info(5, "aider", Some("aider"))],
-        ..manifest(vec![plugin, suppressed, held])
-    };
+    let manifest = manifest(vec![plugin, suppressed, held]);
 
-    let panes = terminal_panes(&global, &[tab_info(0, 9, "work")]);
+    let panes = terminal_panes(&manifest, &[tab_info(0, 9, "work")]);
     assert_eq!(
         panes.iter().map(|pane| pane.pane_id).collect::<Vec<_>>(),
-        vec![3, 5],
+        vec![3],
     );
     assert_eq!(
         panes[0].status,
@@ -33,7 +30,6 @@ fn a_snapshot_keeps_terminal_panes_of_every_scope() {
         "held beats exited"
     );
     assert_eq!(panes[0].tab, Some((9, "work".to_owned())));
-    assert_eq!(panes[1].tab, None, "a global pane is in no tab");
 }
 
 #[test]

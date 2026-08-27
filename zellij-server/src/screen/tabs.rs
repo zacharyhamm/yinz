@@ -229,7 +229,7 @@ impl Screen {
             Some(old_active_index) => {
                 self.active_tab_ids.insert(client_id, new_tab_index);
                 if old_active_index != new_tab_index {
-                    self.repaint_after_overlay_in(old_active_index, client_id);
+                    self.repaint_after_leaving_tab(old_active_index, new_tab_index);
                 }
                 let client_tab_history = self.tab_history.entry(client_id).or_default();
                 client_tab_history.retain(|&e| e != new_tab_index);
@@ -242,27 +242,27 @@ impl Screen {
         self.clear_bell_for_focused_pane(client_id);
     }
 
-    /// Repaint the surface a client is about to stop seeing `tab_id` from, if that tab was
-    /// painting a floating pane outside its own viewport.
+    /// Repaint the tab a client is switching *to*, if the tab it is leaving was painting a
+    /// floating pane outside its own viewport.
     ///
-    /// A floating pane can be placed - or dragged - onto the global panes, outside the viewport of
-    /// every tab, its own included. The tab the client leaves stops rendering the moment its last
-    /// client is gone, which is right: the pane belongs to that tab and nobody looking elsewhere
-    /// should see it. But nothing else owns those cells either. The tab being entered repaints
-    /// only its own centre, and the global panes and the strip rows no pane owns are both diffed -
-    /// neither changed, so neither emits anything, and the pane stays on the host terminal over a
+    /// A floating pane can be placed - or dragged - onto the tab bar or the status bar, which no
+    /// pane's grid owns. The tab being left stops rendering the moment its last client is gone,
+    /// which is right: the pane belongs to that tab. But the tab being entered renders diff-based,
+    /// so if nothing in it changed it emits nothing and the pane stays on the host terminal over a
     /// tab it is not in.
-    fn repaint_after_overlay_in(&mut self, tab_id: usize, client_id: ClientId) {
+    fn repaint_after_leaving_tab(&mut self, left_tab_id: usize, entered_tab_id: usize) {
         if !self
             .tabs
-            .get(&tab_id)
+            .get(&left_tab_id)
             .map(|tab| tab.has_floating_panes_outside_viewport())
             .unwrap_or(false)
         {
             return;
         }
-        self.global_panes.set_force_render();
-        self.unowned_strip_fill.remove(&client_id);
+        if let Some(tab) = self.tabs.get_mut(&entered_tab_id) {
+            tab.set_should_clear_display_before_rendering();
+            tab.set_force_render();
+        }
     }
 
     /// A helper function to switch to a new tab at specified position.
@@ -302,8 +302,6 @@ impl Screen {
                         .iter()
                         .map(|c| (*c, self.get_active_pane_id(c)))
                         .collect();
-                    // global panes are not owned by any tab, so a client focused on one keeps
-                    // that focus across the switch
                     if self.session_is_mirrored {
                         self.move_clients_between_tabs(
                             current_tab_index,
@@ -492,7 +490,6 @@ impl Screen {
         let err_context = || format!("failed to close tab at index {tab_id:?}");
 
         let mut tab_to_close = self.tabs.remove(&tab_id).with_context(err_context)?;
-        self.last_rendered_floating_stacks.remove(&tab_id);
         let mut pane_ids = tab_to_close.get_all_pane_ids();
 
         // here we extract the suppressed panes (these are background panes that don't care which

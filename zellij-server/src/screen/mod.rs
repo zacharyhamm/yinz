@@ -68,47 +68,40 @@ use crate::route::NotificationEnd;
 
 use log::{debug, warn};
 use zellij_utils::data::{
-    Direction, EventType, FloatingPaneCoordinates, GlobalPaneEdge, HostTerminalThemeMode,
-    KeyWithModifier, LayoutInfo, LayoutWithError, NewPanePlacement, NotificationInfo, PaneInfo,
-    RemotePaneHandoff, ResizeStrategy, SessionInfo, Styling, TabInfo, WarpedPane, WarpedTab,
-    WebSharing, HOCUS_AGENT_PANE_CONTEXT,
+    Direction, EventType, FloatingPaneCoordinates, HostTerminalThemeMode, KeyWithModifier,
+    LayoutInfo, LayoutWithError, NotificationInfo, PaneInfo, RemotePaneHandoff, ResizeStrategy,
+    SessionInfo, Styling, TabInfo, WarpedPane, WarpedTab, WebSharing, HOCUS_AGENT_PANE_CONTEXT,
 };
 use zellij_utils::errors::prelude::*;
-use zellij_utils::input::command::{OpenFilePayload, RunCommand};
+use zellij_utils::input::command::RunCommand;
 use zellij_utils::input::hooks::HookPoint;
 use zellij_utils::input::keybinds::Keybinds;
+use zellij_utils::input::layout::{
+    FloatingPaneLayout, Layout, Run, RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout,
+    TiledPaneLayout,
+};
 use zellij_utils::input::options::{
     Clipboard, NestedSessionHandling, NotificationPosition, PaneFrameStyle,
 };
 use zellij_utils::ipc::MobileStatePayload;
-use zellij_utils::pane_size::{PaneGeom, Size, SizeInPixels};
+use zellij_utils::pane_size::{Size, SizeInPixels};
 use zellij_utils::shared::clean_string_from_control_and_linebreak;
-use zellij_utils::{
-    input::command::TerminalAction,
-    input::layout::{
-        FloatingPaneLayout, Layout, Run, RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout,
-        TiledPaneLayout,
-    },
-    input::parse_keys,
-};
 
 use crate::background_jobs::BackgroundJob;
 use crate::pane_groups::PaneGroups;
-use crate::panes::link_handler::LinkHandler;
 use crate::panes::terminal_pane::{BRACKETED_PASTE_BEGIN, BRACKETED_PASTE_END};
 use crate::session_layout_metadata::{PaneLayoutMetadata, SessionLayoutMetadata};
 
 use crate::{
-    global_panes::GlobalPaneManager,
     nested_guest::NestedGuestTracker,
     output::HostKittyState,
     panes::kitty_graphics::KittyImageStore,
     panes::sixel::SixelImageStore,
-    panes::{OverlayCarry, PaneFactory, PaneId},
+    panes::{OverlayCarry, PaneId},
     plugins::{PluginId, PluginInstruction, PluginRenderAsset},
-    pty::{get_default_shell, ClientTabIndexOrPaneId, GlobalPaneSpawnContext, PtyInstruction},
+    pty::{get_default_shell, ClientTabIndexOrPaneId, PtyInstruction},
     pty_writer::PtyWriteInstruction,
-    tab::{AdjustedInput, Pane, Tab},
+    tab::{Pane, Tab},
     thread_bus::Bus,
     ui::loading_indication::LoadingIndication,
     ClientId, ServerInstruction,
@@ -122,8 +115,6 @@ use crate::mobile_web::MobileWebPrefs;
 
 mod break_panes;
 mod capabilities;
-mod global_pane_focus;
-mod global_pane_layout;
 mod host_query;
 mod input_modes;
 mod instruction;
@@ -134,6 +125,7 @@ mod plugin_state;
 mod render;
 mod sizing;
 mod subscriptions;
+mod tab_layout;
 mod tabs;
 mod thread_main;
 mod warp_ops;
@@ -248,26 +240,6 @@ macro_rules! active_tab {
     };
 }
 pub(crate) use active_tab;
-
-/// The global pane edge you reach by moving in `direction`.
-fn global_pane_edge_for_direction(direction: Direction) -> GlobalPaneEdge {
-    match direction {
-        Direction::Left => GlobalPaneEdge::Left,
-        Direction::Right => GlobalPaneEdge::Right,
-        Direction::Up => GlobalPaneEdge::Top,
-        Direction::Down => GlobalPaneEdge::Bottom,
-    }
-}
-
-/// The direction that leads from a global pane on `edge` back into the tab area.
-fn direction_away_from_edge(edge: GlobalPaneEdge) -> Direction {
-    match edge {
-        GlobalPaneEdge::Left => Direction::Right,
-        GlobalPaneEdge::Right => Direction::Left,
-        GlobalPaneEdge::Top => Direction::Down,
-        GlobalPaneEdge::Bottom => Direction::Up,
-    }
-}
 
 macro_rules! active_tab_and_connected_client_id {
     ($screen:ident, $client_id:ident, $closure:expr) => {
@@ -630,7 +602,6 @@ pub(crate) struct Screen {
     /// The machine each remote pane runs on. Absent for local panes, which is
     /// nearly all of them.
     terminal_hosts: HashMap<u32, String>,
-    pub(crate) global_panes: GlobalPaneManager,
     /// The name each tab last showed a plugin, so a change to one that no other
     /// event reports — a lone pane retitling itself, a project arriving, a
     /// collision forming or clearing — still redraws the tab bar.
@@ -657,21 +628,15 @@ pub(crate) struct Screen {
     /// The indices of this [`Screen`]'s active [`Tab`]s.
     active_tab_ids: BTreeMap<ClientId, usize>,
     client_sizes: HashMap<ClientId, Size>,
-    /// The size the session was built with, and the only size there is until the first client
-    /// reports its own. Upstream's `Screen::size` was seeded here and so was always available to
-    /// lay out against; `client_sizes` starts empty, and a render tick that lands before the first
-    /// `RecomputeTabSize` would otherwise have `surface_size` fall back to a zero size - which
-    /// `allocate_global_panes` rejects, killing the screen thread on a frame nobody could see.
-    initial_size: Size,
-    /// The `unowned_strip_rows` last painted for each client. `Output` re-emits every chunk it is
-    /// given and `Output::is_dirty` counts them, so filling these unconditionally would send a frame
-    /// on every render tick (and force every watcher into a full repaint) - this is the diff.
-    unowned_strip_fill: HashMap<ClientId, Vec<(usize, usize, usize)>>,
-    /// The floating pane geometries each tab was last rendered with. The global panes paint
-    /// clipped against these, so the cells a floating pane covers are dropped from their chunks
-    /// and have no grid diff of their own - once the pane moves off them, only a full repaint
-    /// replaces the floating pane's contents with the global pane's.
-    last_rendered_floating_stacks: BTreeMap<usize, Vec<PaneGeom>>,
+    /// The surface every tab was last laid out over, for when no client contributes a size at all:
+    /// before the first client reports one, and after every client has detached - a
+    /// `zellij action new-tab` still has to build a tab somebody can see when they reattach.
+    ///
+    /// Seeded with the size the session was built with. Upstream's `Screen::size` was always
+    /// available to lay out against; `client_sizes` starts empty, and a render tick that lands
+    /// before the first `RecomputeTabSize` would otherwise have nothing to lay a tab out against.
+    last_surface_size: Size,
+    /// The last tab any client was active on, whichever client that was.
     global_last_active_tab_id: usize,
     tab_history: BTreeMap<ClientId, Vec<usize>>,
     pane_history: BTreeMap<ClientId, Vec<PaneId>>,
@@ -786,11 +751,6 @@ pub(crate) struct Screen {
     nested_session_handling: NestedSessionHandling,
     last_mobile_state_sent: HashMap<ClientId, MobileStatePayload>,
     pane_output_activity: HashMap<PaneId, Instant>,
-    layout_global_panes_started: bool,
-    suspended_global_focus: HashMap<ClientId, (usize, PaneId)>,
-    /// A layout-declared global pane with `focus=true` that spawned before any client attached -
-    /// the focus lands on the first client to arrive instead of being dropped.
-    pending_global_pane_focus: Option<PaneId>,
     mobile_web_prefs: HashMap<ClientId, MobileWebPrefs>,
 }
 
@@ -934,11 +894,6 @@ impl Screen {
         peer_sessions_cache.insert(session_name.clone(), session_info);
         let current_pane_group = PaneGroups::new(bus.senders.clone());
         let character_cell_size = Rc::new(RefCell::new(None));
-        let global_panes = GlobalPaneManager::new(
-            bus.senders.clone(),
-            character_cell_size.clone(),
-            pane_frame_style,
-        );
         Screen {
             bus,
             max_panes,
@@ -955,14 +910,11 @@ impl Screen {
             connected_clients: Rc::new(RefCell::new(HashMap::new())),
             active_tab_ids: BTreeMap::new(),
             client_sizes: HashMap::new(),
-            initial_size: client_attributes.size,
-            unowned_strip_fill: HashMap::new(),
-            last_rendered_floating_stacks: BTreeMap::new(),
+            last_surface_size: client_attributes.size,
             global_last_active_tab_id: 0,
             tabs: BTreeMap::new(),
             terminal_cwds: HashMap::new(),
             terminal_hosts: HashMap::new(),
-            global_panes,
             last_plugin_tab_names: HashMap::new(),
             tab_projects: HashMap::new(),
             terminal_emulator_colors: Rc::new(RefCell::new(Palette::default())),
@@ -1049,9 +1001,6 @@ impl Screen {
             nested_session_handling,
             last_mobile_state_sent: HashMap::new(),
             pane_output_activity: HashMap::new(),
-            layout_global_panes_started: false,
-            suspended_global_focus: HashMap::new(),
-            pending_global_pane_focus: None,
             mobile_web_prefs: HashMap::new(),
         }
     }
@@ -1073,121 +1022,17 @@ impl Screen {
         client_id: Option<ClientId>,
         completion_tx: Option<NotificationEnd>,
     ) -> Result<bool> {
-        if self.global_panes.pane(pane_id).is_none() {
-            return match self.tab_containing_pane_mut(pane_id) {
-                Some(tab) => tab.write_to_pane_id(
-                    key_with_modifier,
-                    raw_input_bytes,
-                    raw_input_bytes_are_kitty,
-                    pane_id,
-                    client_id,
-                    completion_tx,
-                ),
-                None => Err(anyhow!("failed to find pane with id {pane_id:?}")),
-            };
-        }
-
-        let adjusted_input = self.global_panes.pane_mut(pane_id).and_then(|pane| {
-            pane.adjust_input_to_terminal(
+        match self.tab_containing_pane_mut(pane_id) {
+            Some(tab) => tab.write_to_pane_id(
                 key_with_modifier,
                 raw_input_bytes,
                 raw_input_bytes_are_kitty,
+                pane_id,
                 client_id,
-            )
-        });
-        let mut should_update_ui = false;
-        match (pane_id, adjusted_input) {
-            (PaneId::Terminal(terminal_id), Some(AdjustedInput::WriteBytesToTerminal(bytes))) => {
-                self.bus
-                    .senders
-                    .send_to_pty_writer(PtyWriteInstruction::Write(
-                        bytes,
-                        terminal_id,
-                        completion_tx,
-                    ))?;
-            },
-            (
-                PaneId::Terminal(terminal_id),
-                Some(AdjustedInput::ReRunCommandInThisPane(command)),
-            ) => {
-                self.bus
-                    .senders
-                    .send_to_pty(PtyInstruction::ReRunCommandInPane(
-                        PaneId::Terminal(terminal_id),
-                        command,
-                        completion_tx,
-                    ))?;
-                should_update_ui = true;
-            },
-            (
-                PaneId::Terminal(terminal_id),
-                Some(AdjustedInput::ResumeSuspendedProcessInThisPane),
-            ) => {
-                self.bus
-                    .senders
-                    .send_to_pty(PtyInstruction::ResumeSuspendedPane(PaneId::Terminal(
-                        terminal_id,
-                    )))?;
-            },
-            (PaneId::Terminal(_), Some(AdjustedInput::CloseThisPane)) => {
-                self.close_global_pane(pane_id, completion_tx)?;
-                should_update_ui = true;
-            },
-            (
-                PaneId::Terminal(terminal_id),
-                Some(AdjustedInput::DropToShellInThisPane { working_dir }),
-            ) => {
-                self.bus
-                    .senders
-                    .send_to_pty(PtyInstruction::DropToShellInPane {
-                        pane_id: PaneId::Terminal(terminal_id),
-                        shell: Some(self.default_shell.clone()),
-                        working_dir,
-                        completion_tx,
-                    })?;
-                should_update_ui = true;
-            },
-            (PaneId::Plugin(plugin_id), Some(AdjustedInput::WriteKeyToPlugin(key))) => {
-                self.bus
-                    .senders
-                    .send_to_plugin(PluginInstruction::Update(vec![(
-                        Some(plugin_id),
-                        client_id,
-                        Event::Key(key),
-                    )]))?;
-            },
-            (PaneId::Plugin(plugin_id), Some(AdjustedInput::WriteBytesToTerminal(bytes))) => {
-                self.bus.senders.send_to_plugin(PluginInstruction::Update(
-                    parse_keys(&bytes)
-                        .into_iter()
-                        .map(|key| (Some(plugin_id), client_id, Event::Key(key)))
-                        .collect(),
-                ))?;
-            },
-            (
-                PaneId::Plugin(plugin_id),
-                Some(AdjustedInput::PermissionRequestResult(permissions, status)),
-            ) => {
-                // As Tab::handle_plugin_input does: while `requesting_permissions` is set the
-                // pane renders the prompt over the plugin's output and swallows keys, for every
-                // client rather than just the one who answered.
-                self.with_pane(PaneId::Plugin(plugin_id), |pane| {
-                    pane.request_permissions_from_user(None)
-                });
-                self.bus
-                    .senders
-                    .send_to_plugin(PluginInstruction::PermissionRequestResult(
-                        plugin_id,
-                        client_id,
-                        permissions,
-                        status,
-                        None,
-                    ))?;
-                should_update_ui = true;
-            },
-            _ => {},
+                completion_tx,
+            ),
+            None => Err(anyhow!("failed to find pane with id {pane_id:?}")),
         }
-        Ok(should_update_ui)
     }
 
     fn paste_to_pane_id(
@@ -1643,7 +1488,7 @@ impl Screen {
                     tab.add_multiple_clients(drained_clients)?;
                 }
                 // the tab keeps the size its viewers gave it here; `recompute_tab_size` below
-                // reflows it against the global pane center
+                // reflows it against the session surface
                 let tab_size = tab.size;
                 tab.resize_whole_tab(tab_size).with_context(err_context)?;
                 tab.set_force_render();
@@ -1713,8 +1558,6 @@ impl Screen {
         };
 
         self.active_tab_ids.insert(client_id, tab_index);
-        // a reattaching client id inherits a blank terminal, not the fill the last one was sent
-        self.unowned_strip_fill.remove(&client_id);
         self.client_kitty_host_state.borrow_mut().remove(&client_id);
         self.connected_clients
             .borrow_mut()
@@ -1739,16 +1582,6 @@ impl Screen {
         if attach_to_first_tab_on_tiled_surface && tab.are_floating_panes_visible() {
             tab.hide_floating_panes();
         }
-        // the tab force-renders itself for the new client (see Tab::add_client), but global panes
-        // render diff-based and would otherwise emit nothing for a client that hasn't seen them
-        self.global_panes.set_force_render();
-        // a layout global pane asked for focus before any client existed - this is that client
-        if let Some(global_pane_id) = self.pending_global_pane_focus.take() {
-            if self.global_panes.pane(global_pane_id).is_some() {
-                self.focus_global_pane(global_pane_id, client_id)
-                    .non_fatal();
-            }
-        }
         self.recompute_tab_size(tab_index)
             .with_context(|| err_context(tab_index))?;
         if !self.nested_ancestry.is_empty() || !self.host_descend_keys.is_empty() {
@@ -1762,7 +1595,6 @@ impl Screen {
 
         self.notification_mouse_captures.remove(&client_id);
         self.set_client_dimmed(client_id, false, None);
-        self.suspended_global_focus.remove(&client_id);
         let passthrough_panes: Vec<PaneId> = self
             .nested_guest_choices
             .iter()
@@ -1843,11 +1675,7 @@ impl Screen {
             self.push_sixel_host_support_to_tabs();
         }
         self.client_sizes.remove(&client_id);
-        self.unowned_strip_fill.remove(&client_id);
         self.pane_render_subscribers.remove(&client_id);
-        self.global_panes.defocus_pane(client_id);
-        self.global_panes.stop_selecting_with_mouse(client_id);
-        self.global_panes.stop_mouse_resize(client_id);
         self.revert_fit_disabled_without_reference_client()
             .with_context(err_context)?;
         if let Some(prev_tab_id) = previously_active_tab_id {
@@ -2132,19 +1960,14 @@ impl Screen {
         Ok(())
     }
 
-    /// Move the client's focus one pane in `direction`, escalating to a global pane or the host
-    /// session when the tab reports the focus stayed put. A modal holding the keyboard is checked
-    /// first: the keypress is then a no-op, never a hop to a global pane or the host.
+    /// Move the client's focus one pane in `direction`, escalating to the host session when the
+    /// tab reports the focus stayed put. A modal holding the keyboard is checked first: the
+    /// keypress is then a no-op, never a hop to the host.
     pub(crate) fn move_focus_in_direction_or_escalate(
         &mut self,
         direction: Direction,
         client_id: ClientId,
     ) -> Result<()> {
-        if self.global_pane_handles_direction(direction, client_id) {
-            self.sync_scroll_mode_on_focus(client_id)?;
-            self.render(None)?;
-            return self.log_and_report_session_state();
-        }
         if self.active_tab_modal_holds_focus(client_id) {
             return self.log_and_report_session_state();
         }
@@ -2163,9 +1986,7 @@ impl Screen {
         let new_pane_id = self.get_active_pane_id(&client_id);
         if let (Some(old), Some(new)) = (old_pane_id, new_pane_id) {
             if old == new {
-                if !self.enter_global_pane_in_direction(direction, client_id) {
-                    self.bubble_focus_to_host(client_id, direction);
-                }
+                self.bubble_focus_to_host(client_id, direction);
             } else {
                 self.report_key_passthrough_state_with_direction(
                     client_id,
@@ -2195,13 +2016,8 @@ impl Screen {
             self.get_first_client_id()
         };
         if let Some(client_id) = client_id {
-            if self.global_pane_handles_direction(Direction::Left, client_id) {
-                return self
-                    .log_and_report_session_state()
-                    .with_context(err_context);
-            }
-            // a modal owns the keyboard: the keypress is a no-op, not a hop to another tab,
-            // a global pane, or the host session
+            // a modal owns the keyboard: the keypress is a no-op, not a hop to another tab or
+            // the host session
             if self.active_tab_modal_holds_focus(client_id) {
                 return self
                     .log_and_report_session_state()
@@ -2218,10 +2034,7 @@ impl Screen {
                     None
                 },
             };
-            // a global pane is inside this session, so it takes precedence over hopping to a tab
-            if moved == Some(false)
-                && !self.enter_global_pane_in_direction(Direction::Left, client_id)
-            {
+            if moved == Some(false) {
                 if self.tabs.len() == 1 {
                     self.bubble_focus_to_host(client_id, Direction::Left);
                 } else {
@@ -2250,13 +2063,8 @@ impl Screen {
         };
 
         if let Some(client_id) = client_id {
-            if self.global_pane_handles_direction(Direction::Right, client_id) {
-                return self
-                    .log_and_report_session_state()
-                    .with_context(err_context);
-            }
-            // a modal owns the keyboard: the keypress is a no-op, not a hop to another tab,
-            // a global pane, or the host session
+            // a modal owns the keyboard: the keypress is a no-op, not a hop to another tab or
+            // the host session
             if self.active_tab_modal_holds_focus(client_id) {
                 return self
                     .log_and_report_session_state()
@@ -2273,10 +2081,7 @@ impl Screen {
                     None
                 },
             };
-            // a global pane is inside this session, so it takes precedence over hopping to a tab
-            if moved == Some(false)
-                && !self.enter_global_pane_in_direction(Direction::Right, client_id)
-            {
+            if moved == Some(false) {
                 if self.tabs.len() == 1 {
                     self.bubble_focus_to_host(client_id, Direction::Right);
                 } else {
@@ -2319,7 +2124,7 @@ impl Screen {
         let mut tab_index_and_plugin_pane_id = None;
         let mut plugin_pane_to_move_to_active_tab = None;
         // the tab a pane leaves forgets that it was an overlay - carry the placement over, or the
-        // pane lands in the new tab sized against its viewport and painted under the global panes
+        // pane lands in the new tab sized against its viewport
         let mut overlay_placement = None;
         let mut overlay_carry = OverlayCarry::default();
         let focused_tab_index = *self.active_tab_ids.get(&client_id).unwrap_or(&0);
@@ -2379,12 +2184,6 @@ impl Screen {
                     Some(client_id),
                 )?;
             }
-            // The tab now has this client on the overlay, but a client sitting on a global pane
-            // reads its focus from `Screen::active_pane_id`, which looks at the global panes
-            // first - so without this the pane comes back on screen and the keyboard does not
-            // follow it. The hide side has done the symmetric thing since overlays existed
-            // (`take_global_focus_after_overlay_close`); this is its other half.
-            self.activate_overlay(pane_id);
             // Set affected pane ID for CLI client output
             if let Some(ref mut completion) = completion_tx {
                 completion.set_affected_pane_id(pane_id);
@@ -2399,9 +2198,6 @@ impl Screen {
                     .with_context(err_context)?
                     .focus_pane_with_id(plugin_pane_id, should_float, should_be_in_place, client_id)
                     .context("failed to focus plugin pane")?;
-                // as above - and a no-op for a plugin that is not an overlay, which is what
-                // makes it safe to state once for every shape this branch focuses
-                self.activate_overlay(plugin_pane_id);
                 self.log_and_report_session_state()
                     .with_context(err_context)?;
                 // Set affected pane ID for CLI client output
@@ -2414,187 +2210,67 @@ impl Screen {
         }
     }
 
-    pub fn focus_global_plugin_pane(
-        &mut self,
-        run_plugin: &RunPluginOrAlias,
-        client_id: ClientId,
-        completion_tx: &mut Option<NotificationEnd>,
-    ) -> Result<bool> {
-        let Some(plugin_pane_id) = self.global_panes.find_plugin(run_plugin) else {
-            return Ok(false);
-        };
-        self.show_pane(plugin_pane_id)?;
-        self.focus_global_pane(plugin_pane_id, client_id)?;
-        if let Some(completion) = completion_tx.as_mut() {
-            completion.set_affected_pane_id(plugin_pane_id);
-        }
-        Ok(true)
-    }
-
-    /// Build the `Box<dyn Pane>` for a global pane.
-    fn build_global_pane_box(
+    /// Run `f` against `pane_id` wherever it lives.
+    pub(super) fn with_pane<R>(
         &mut self,
         pane_id: PaneId,
-        initial_pane_title: Option<String>,
-        invoked_with: Option<Run>,
-        blocking_notification: Option<NotificationEnd>,
-    ) -> Result<Box<dyn Pane>> {
-        Ok(match pane_id {
-            PaneId::Terminal(terminal_id) => PaneFactory::terminal(
-                terminal_id,
-                PaneGeom::default(),
-                self.style,
-                self.global_panes.terminal_pane_count() + 1,
-                initial_pane_title.clone().unwrap_or_default(),
-                Rc::new(RefCell::new(LinkHandler::new())),
-                self.character_cell_size.clone(),
-                self.sixel_image_store.clone(),
-                self.kitty_image_store.clone(),
-                self.terminal_emulator_colors.clone(),
-                self.terminal_emulator_color_codes.clone(),
-                initial_pane_title,
-                invoked_with,
-                self.debug,
-                self.arrow_fonts,
-                self.styled_underlines,
-                self.osc8_hyperlinks,
-                self.explicitly_disable_kitty_keyboard_protocol,
-                blocking_notification,
-            ),
-            PaneId::Plugin(plugin_id) => PaneFactory::plugin(
-                plugin_id,
-                PaneGeom::default(),
-                self.bus
-                    .senders
-                    .to_plugin
-                    .as_ref()
-                    .context("missing plugin sender for global pane")?
-                    .clone(),
-                initial_pane_title.clone().unwrap_or_default(),
-                String::new(),
-                self.sixel_image_store.clone(),
-                self.kitty_image_store.clone(),
-                self.terminal_emulator_colors.clone(),
-                self.terminal_emulator_color_codes.clone(),
-                Rc::new(RefCell::new(LinkHandler::new())),
-                self.character_cell_size.clone(),
-                self.connected_clients.borrow().keys().copied().collect(),
-                self.style,
-                invoked_with,
-                self.debug,
-                self.arrow_fonts,
-                self.styled_underlines,
-            ),
-        })
+        f: impl FnOnce(&mut dyn Pane) -> R,
+    ) -> Option<R> {
+        for tab in self.tabs.values_mut() {
+            if let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
+                return Some(f(pane.as_mut()));
+            }
+        }
+        None
     }
 
-    fn close_global_pane(
-        &mut self,
-        pane_id: PaneId,
-        completion_tx: Option<NotificationEnd>,
-    ) -> Result<bool> {
-        let displaced: Vec<ClientId> = self
-            .global_panes
-            .focused_clients()
-            .into_iter()
-            .filter(|client_id| self.global_panes.focused_pane_id(*client_id) == Some(pane_id))
-            .collect();
-        let Some((_removed, strip_neighbor)) = self.global_panes.remove(pane_id) else {
-            return Ok(false);
+    /// Whether a modal in the client's active tab holds the keyboard. A directional focus move
+    /// is then a no-op - never an escalation to another tab or the host session.
+    pub(super) fn active_tab_modal_holds_focus(&self, client_id: ClientId) -> bool {
+        self.get_active_tab(client_id)
+            .map(|tab| !tab.lower_layer_may_take_focus(client_id))
+            .unwrap_or(false)
+    }
+
+    pub(super) fn active_pane_id(&self, client_id: ClientId) -> Option<PaneId> {
+        self.get_active_tab(client_id)
+            .ok()
+            .and_then(|tab| tab.get_active_pane_id(client_id))
+    }
+
+    pub(super) fn cycle_focus(&mut self, client_id: ClientId, forward: bool) {
+        let client_id = if self.get_active_tab(client_id).is_ok() {
+            Some(client_id)
+        } else {
+            self.get_first_client_id()
         };
-        // clients that were on the closed pane land on its strip neighbor, the pane that
-        // inherited its cells - matching how closing a tab pane focuses an adjacent one
-        if let Some(neighbor_id) = strip_neighbor {
-            for client_id in displaced {
-                self.focus_global_pane(neighbor_id, client_id).non_fatal();
+        let Some(client_id) = client_id else {
+            log::error!("No client ids in screen found");
+            return;
+        };
+        if let Ok(tab) = self.get_active_tab_mut(client_id) {
+            if forward {
+                tab.focus_next_pane(client_id);
+            } else {
+                tab.focus_previous_pane(client_id);
             }
         }
-        let cleanup_result = self
-            .bus
-            .senders
-            .send_to_pty(PtyInstruction::ClosePane(pane_id, completion_tx));
-        let reflow_result = self.reflow_global_panes();
-        cleanup_result?;
-        reflow_result?;
-        Ok(true)
     }
 
-    fn spawn_layout_global_panes_once(
-        &mut self,
-        client_id: ClientId,
-        tab_index: usize,
-    ) -> Result<usize> {
-        if self.layout_global_panes_started {
-            return Ok(0);
+    /// Repaint the tab an overlay is closing on: an overlay is drawn over the tab's own panes, so
+    /// the cells it vacates have no other writer.
+    pub(super) fn repaint_tab_of_closing_overlay(&mut self, pane_id: PaneId) {
+        let Some(tab_id) = self
+            .tabs
+            .iter()
+            .find(|(_, tab)| tab.pane_is_overlay(pane_id))
+            .map(|(tab_id, _)| *tab_id)
+        else {
+            return;
+        };
+        if let Some(tab) = self.tabs.get_mut(&tab_id) {
+            tab.set_should_clear_display_before_rendering();
         }
-        self.layout_global_panes_started = true;
-        let global_panes = self.default_layout.global_panes.clone();
-        for (declaration_order, global_pane) in global_panes.iter().enumerate() {
-            let properties = GlobalPaneSpawnContext {
-                placement: global_pane.placement,
-                borderless: global_pane.borderless,
-                initially_hidden: global_pane.hidden,
-                should_focus: global_pane.focus,
-                declaration_order: Some(declaration_order),
-                split: None,
-            };
-            match global_pane.run.clone() {
-                Some(Run::Plugin(run_plugin)) => {
-                    self.bus.senders.send_to_plugin(PluginInstruction::Load(
-                        Some(false),
-                        false,
-                        false,
-                        None,
-                        run_plugin,
-                        Some(tab_index),
-                        None,
-                        client_id,
-                        Size::default(),
-                        None,
-                        None,
-                        false,
-                        Some(global_pane.focus),
-                        None,
-                        None,
-                        Some(properties),
-                        None,
-                    ))?;
-                },
-                run => {
-                    let terminal_action = match run {
-                        Some(Run::Command(run_command)) => {
-                            Some(TerminalAction::RunCommand(run_command))
-                        },
-                        Some(Run::EditFile(path, line_number, cwd)) => Some(
-                            TerminalAction::OpenFile(OpenFilePayload::new(path, line_number, cwd)),
-                        ),
-                        Some(Run::Cwd(cwd)) => Some(TerminalAction::RunCommand(RunCommand {
-                            command: self.default_shell.clone(),
-                            cwd: Some(cwd),
-                            ..Default::default()
-                        })),
-                        Some(Run::Plugin(_)) => unreachable!(),
-                        None => None,
-                    };
-                    let client = if global_pane.focus {
-                        ClientTabIndexOrPaneId::ClientId(client_id)
-                    } else {
-                        ClientTabIndexOrPaneId::ClientIdNoFocus(client_id)
-                    };
-                    self.bus.senders.send_to_pty(PtyInstruction::SpawnTerminal(
-                        terminal_action,
-                        None,
-                        NewPanePlacement::default(),
-                        false,
-                        client,
-                        None,
-                        false,
-                        Some(properties),
-                    ))?;
-                },
-            }
-        }
-        Ok(global_panes.len())
     }
 
     pub fn focus_pane_with_id(
@@ -2605,13 +2281,6 @@ impl Screen {
         client_id: ClientId,
     ) -> Result<()> {
         let err_context = || "failed to focus_plugin_pane".to_string();
-        if self.global_panes.pane(pane_id).is_some() {
-            self.show_pane(pane_id)?;
-            self.focus_global_pane(pane_id, client_id)?;
-            return Ok(());
-        }
-        // `go_to_tab` below only releases global focus when the tab actually changes
-        self.defocus_global_pane(client_id);
         let tab_index = self.tab_position_containing_pane(pane_id);
         match tab_index {
             Some(tab_index) => {
@@ -2647,35 +2316,15 @@ impl Screen {
     /// How much of the pane can be shown depends on where the client's focus
     /// already is, because `active_tab_ids` is at once the tab a client sees and
     /// the tab it types into: switching it moves focus, and there is no third
-    /// state. The exception is a global pane, which no tab owns - a client
-    /// focused on one keeps that focus across a tab switch (see
-    /// `switch_active_tab`), and that is the case this trades on. For every
-    /// other client the mark is applied where the pane stands and the view is
-    /// left alone, which is worth more than a reveal that costs them their
-    /// place.
+    /// state. So the mark is applied where the pane stands and the view is left
+    /// alone, which is worth more than a reveal that costs the client its place.
     pub fn reveal_pane_with_id(
         &mut self,
         pane_id: PaneId,
         label: Option<String>,
         client_id: ClientId,
     ) -> Result<()> {
-        // First, and whatever else happens below: an unreachable pane still gets
-        // marked, so the mark is waiting on it when the client does arrive.
-        if self.global_panes.pane(pane_id).is_some() {
-            self.with_pane(pane_id, |pane| {
-                pane.add_highlight_pane_frame_color_override(label.clone(), Some(client_id))
-            });
-            // A global pane is in view from every tab; there is nothing to switch to.
-            self.show_pane(pane_id)?;
-            self.render(None)?;
-            self.log_and_report_session_state()?;
-            return Ok(());
-        }
-
-        let Some((tab_id, tab_position)) = self
-            .tab_containing_pane(pane_id)
-            .map(|tab| (tab.id, tab.position))
-        else {
+        let Some(tab_id) = self.tab_containing_pane(pane_id).map(|tab| tab.id) else {
             log::error!("Could not find pane with id: {:?}", pane_id);
             return Ok(());
         };
@@ -2684,17 +2333,12 @@ impl Screen {
             tab.add_highlight_pane_frame_color_override(pane_id, label, Some(client_id));
         }
 
-        let pane_is_in_view = self.active_tab_ids.get(&client_id) == Some(&tab_id);
-        // Deliberately *not* `defocus_global_pane` first, which is the one line
-        // that makes `focus_pane_with_id` a focus operation.
-        let can_switch_tabs = self.global_panes.focused_pane_id(client_id).is_some();
-        if !pane_is_in_view {
-            if !can_switch_tabs {
-                self.render(None)?;
-                self.log_and_report_session_state()?;
-                return Ok(());
-            }
-            self.go_to_tab(tab_position + 1, client_id)?;
+        // Deliberately not a focus operation: a pane in another tab is only revealed once the
+        // client is looking at that tab, and nothing here moves the keyboard.
+        if self.active_tab_ids.get(&client_id) != Some(&tab_id) {
+            self.render(None)?;
+            self.log_and_report_session_state()?;
+            return Ok(());
         }
 
         if let Some(tab) = self.tabs.get_mut(&tab_id) {
@@ -2717,15 +2361,11 @@ impl Screen {
     /// Fired unconditionally when the pane is an agent pane - whether a hook is bound is the
     /// plugin thread's question, so that the answer lives in one place.
     ///
-    /// Global panes are skipped. `Screen::replace_pane` finds its target through
-    /// `tab_position_containing_pane`, so a pane that is not in a tab cannot be replaced; such a
-    /// pane simply holds, which is the unhooked behaviour.
     fn fire_agent_exit_hook(
         &self,
         pane_id: PaneId,
         exit_status: Option<i32>,
         run_command: &RunCommand,
-        pane_is_global: bool,
     ) {
         let Some(originating_plugin) = run_command.originating_plugin.as_ref() else {
             return;
@@ -2734,9 +2374,6 @@ impl Screen {
             .context
             .contains_key(HOCUS_AGENT_PANE_CONTEXT)
         {
-            return;
-        }
-        if pane_is_global {
             return;
         }
         let PaneId::Terminal(terminal_pane_id) = pane_id else {
@@ -2779,21 +2416,6 @@ impl Screen {
         terminal_pane_id: u32,
         completion_tx: Option<NotificationEnd>,
     ) {
-        if let Some(command_to_rerun) = self
-            .global_panes
-            .pane_mut(PaneId::Terminal(terminal_pane_id))
-            .and_then(|pane| pane.rerun())
-        {
-            self.bus
-                .senders
-                .send_to_pty(PtyInstruction::ReRunCommandInPane(
-                    PaneId::Terminal(terminal_pane_id),
-                    command_to_rerun,
-                    completion_tx,
-                ))
-                .non_fatal();
-            return;
-        }
         match self.tab_containing_pane_mut(PaneId::Terminal(terminal_pane_id)) {
             Some(tab) => tab.rerun_terminal_pane_with_id(terminal_pane_id, completion_tx),
             None => log::error!(
@@ -2803,12 +2425,6 @@ impl Screen {
         }
     }
     pub fn resize_pane_with_id(&mut self, resize: ResizeStrategy, pane_id: PaneId) -> Result<()> {
-        if self.global_panes.pane(pane_id).is_some() {
-            let surface = self.surface_size();
-            self.global_panes
-                .resize_pane(pane_id, resize, surface.into())?;
-            return self.reflow_global_panes();
-        }
         match self.tab_containing_pane_mut(pane_id) {
             Some(tab) => tab.resize_pane_with_id(resize, pane_id).non_fatal(),
             None => log::error!("Failed to find pane with id: {:?} to resize", pane_id),
@@ -2982,7 +2598,6 @@ impl Screen {
         self.copy_options.command = copy_command.clone();
         self.copy_options.copy_on_select = copy_on_select;
         self.pane_frame_style = pane_frame_style;
-        self.global_panes.set_pane_frame_style(pane_frame_style)?;
         self.advanced_mouse_actions = advanced_mouse_actions;
         self.mouse_scroll_resize = mouse_scroll_resize;
         self.mouse_hover_effects = mouse_hover_effects;
@@ -3052,7 +2667,6 @@ impl Screen {
         for tab in self.tabs.values_mut() {
             tab.update_input_modes()?;
         }
-        self.update_global_input_modes(self.active_tab_ids.keys().copied())?;
         self.broadcast_nested_shortcuts();
         Ok(())
     }
@@ -3120,7 +2734,6 @@ impl Screen {
                 for tab in self.tabs.values_mut() {
                     tab.update_input_modes().with_context(err_context)?;
                 }
-                self.update_global_input_modes(self.active_tab_ids.keys().copied())?;
             } else {
                 log::warn!(
                     "host theme auto-switch enabled but resolved styling missing for {:?}",
@@ -3266,9 +2879,6 @@ impl Screen {
         last_pane_id.copied()
     }
     /// Move or resize overlays where they already are, in the overlay collection.
-    ///
-    /// No `activate_overlay` sweep afterwards: nothing became an overlay here, so there is no
-    /// global-pane focus to suspend that was not already suspended when it was born.
     pub fn change_overlay_coordinates(
         &mut self,
         pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
@@ -3284,18 +2894,11 @@ impl Screen {
         &mut self,
         pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
     ) {
-        let pane_ids: Vec<_> = pane_ids_and_coordinates
-            .iter()
-            .map(|(pane_id, _)| *pane_id)
-            .collect();
         for (pane_id, coordinates) in pane_ids_and_coordinates {
             if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
                 tab.change_floating_pane_coordinates(&pane_id, coordinates)
                     .non_fatal();
             }
-        }
-        for pane_id in pane_ids {
-            self.activate_overlay(pane_id);
         }
     }
     pub fn toggle_pane_borderless(&mut self, pane_id: PaneId) {
@@ -3343,7 +2946,6 @@ impl Screen {
             for tab in self.tabs.values_mut() {
                 tab.update_input_modes()?;
             }
-            self.update_global_input_modes([client_id])?;
             let _ = self.log_and_report_session_state();
         }
         Ok(())
@@ -3360,35 +2962,6 @@ impl Screen {
         let first_client_id = self.get_first_client_id();
         let active_tab_index =
             first_client_id.and_then(|client_id| self.active_tab_ids.get(&client_id));
-
-        for (pane, placement, is_hidden) in self.global_panes.panes() {
-            let pane_id = pane.pid();
-            let focused_clients: Vec<ClientId> = self
-                .active_tab_ids
-                .keys()
-                .filter(|client_id| self.global_panes.focused_pane_id(**client_id) == Some(pane_id))
-                .copied()
-                .collect();
-            let (default_fg, default_bg) = pane.get_pane_default_colors();
-            session_layout_metadata.add_global_pane(PaneLayoutMetadata::new_global(
-                pane_id,
-                pane.position_and_size(),
-                pane.borderless(),
-                pane.invoked_with().clone(),
-                pane.custom_title(),
-                !focused_clients.is_empty(),
-                if self.serialize_pane_viewport {
-                    pane.serialize(self.scrollback_lines_to_serialize)
-                } else {
-                    None
-                },
-                focused_clients,
-                default_fg,
-                default_bg,
-                placement,
-                is_hidden,
-            ));
-        }
 
         // Filter tabs based on optional tab_index parameter
         let tabs_to_process: Vec<_> = self
@@ -3573,14 +3146,7 @@ impl Screen {
             let mut vte_bytes = Some(std::mem::take(&mut plugin_render_asset.bytes));
             let mut found_plugin = false;
 
-            if self.global_panes.pane(PaneId::Plugin(plugin_id)).is_some() {
-                self.global_panes.handle_plugin_bytes(
-                    plugin_id,
-                    client_id,
-                    vte_bytes.take().unwrap(),
-                );
-                found_plugin = true;
-            } else {
+            {
                 for tab in self.tabs.values_mut() {
                     if tab.has_plugin(plugin_id) {
                         tab.handle_plugin_bytes(plugin_id, client_id, vte_bytes.take().unwrap())
@@ -3619,10 +3185,6 @@ impl Screen {
         client_id: ClientId,
         cursor_position: Option<(usize, usize)>,
     ) -> bool {
-        if let Some(plugin_pane) = self.global_panes.pane_mut(PaneId::Plugin(plugin_id)) {
-            plugin_pane.show_cursor(client_id, cursor_position);
-            return true;
-        }
         for tab in self.tabs.values_mut() {
             if tab.has_plugin(plugin_id) {
                 tab.show_plugin_cursor(plugin_id, client_id, cursor_position);
@@ -3636,10 +3198,6 @@ impl Screen {
         pid: u32,
         loading_indication: LoadingIndication,
     ) -> bool {
-        if let Some(plugin_pane) = self.global_panes.pane_mut(PaneId::Plugin(pid)) {
-            plugin_pane.update_loading_indication(loading_indication);
-            return true;
-        }
         let all_tabs = self.get_tabs_mut();
         let mut found_plugin = false;
         for tab in all_tabs.values_mut() {
@@ -3656,10 +3214,6 @@ impl Screen {
         plugin_id: u32,
         loading_indication: LoadingIndication,
     ) -> bool {
-        if let Some(plugin_pane) = self.global_panes.pane_mut(PaneId::Plugin(plugin_id)) {
-            plugin_pane.start_loading_indication(loading_indication);
-            return true;
-        }
         for tab in self.tabs.values_mut() {
             if tab.has_plugin(plugin_id) {
                 tab.start_plugin_loading_indication(plugin_id, loading_indication);
@@ -3669,10 +3223,6 @@ impl Screen {
         false
     }
     fn progress_plugin_loading_offset(&mut self, plugin_id: u32) -> bool {
-        if let Some(plugin_pane) = self.global_panes.pane_mut(PaneId::Plugin(plugin_id)) {
-            plugin_pane.progress_animation_offset();
-            return true;
-        }
         for tab in self.tabs.values_mut() {
             if tab.has_plugin(plugin_id) {
                 tab.progress_plugin_loading_offset(plugin_id);
@@ -3757,9 +3307,6 @@ impl Screen {
             let (active_swap_layout_name, is_swap_layout_dirty) = tab.swap_layout_info();
             let tab_viewport = tab.get_viewport();
             let tab_display_area = tab.get_display_area();
-            let tab_session_surface = self
-                .session_surface_for_tab(tab.id)
-                .unwrap_or_else(|| tab.get_session_surface());
             let selectable_tiled_panes_count = tab.get_selectable_tiled_panes_count();
             let selectable_floating_panes_count = tab.get_selectable_floating_panes_count();
 
@@ -3785,8 +3332,6 @@ impl Screen {
                     && !self.active_tab_ids.values().any(|i| i == &tab.id),
                 is_flashing_bell: tab.tab_bell_flash
                     && !self.active_tab_ids.values().any(|i| i == &tab.id),
-                session_surface_rows: tab_session_surface.rows,
-                session_surface_columns: tab_session_surface.cols,
             }
         })
     }
@@ -3849,7 +3394,6 @@ impl Screen {
                     let _ = tab.update_input_modes();
                 }
             }
-            let _ = self.update_global_input_modes(clients_with_empty_group.iter().copied());
         }
     }
     fn update_active_pane_ids(&mut self) {
@@ -3974,54 +3518,40 @@ fn replay_pending_plugin_events(
                 screen.render(None)?;
             },
             ScreenInstruction::ClosePane(pane_id, _, _, exit_status) => {
-                let removed_global_pane = screen.close_global_pane(pane_id, None)?;
-                if removed_global_pane {
-                    screen.render(None)?;
-                } else {
-                    let mut found = false;
-                    for tab in screen.tabs.values_mut() {
-                        if tab.get_all_pane_ids().contains(&pane_id) {
-                            tab.close_pane(pane_id, false, exit_status);
-                            found = true;
-                            break;
-                        }
+                let mut found = false;
+                for tab in screen.tabs.values_mut() {
+                    if tab.get_all_pane_ids().contains(&pane_id) {
+                        tab.close_pane(pane_id, false, exit_status);
+                        found = true;
+                        break;
                     }
-                    if !found {
-                        log::error!(
-                            "Could not replay pending close for missing plugin pane {pane_id:?}"
-                        );
-                    }
+                }
+                if !found {
+                    log::error!(
+                        "Could not replay pending close for missing plugin pane {pane_id:?}"
+                    );
                 }
                 screen.clear_nested_guest(pane_id);
-                if !removed_global_pane {
-                    screen
-                        .bus
-                        .senders
-                        .send_to_pty(PtyInstruction::ClosePane(pane_id, None))
-                        .non_fatal();
-                }
+                screen
+                    .bus
+                    .senders
+                    .send_to_pty(PtyInstruction::ClosePane(pane_id, None))
+                    .non_fatal();
                 screen.log_and_report_session_state().non_fatal();
                 screen.retain_only_existing_panes_in_pane_groups();
             },
             ScreenInstruction::HoldPane(pane_id, exit_status, run_command) => {
                 let is_first_run = false;
                 let mut found = false;
-                let mut pane_is_global = false;
-                if let Some(pane) = screen.global_panes.pane_mut(pane_id) {
-                    pane.hold(exit_status, is_first_run, run_command.clone());
-                    found = true;
-                    pane_is_global = true;
-                } else {
-                    for tab in screen.tabs.values_mut() {
-                        if tab.get_all_pane_ids().contains(&pane_id) {
-                            tab.hold_pane(pane_id, exit_status, is_first_run, run_command.clone());
-                            found = true;
-                            break;
-                        }
+                for tab in screen.tabs.values_mut() {
+                    if tab.get_all_pane_ids().contains(&pane_id) {
+                        tab.hold_pane(pane_id, exit_status, is_first_run, run_command.clone());
+                        found = true;
+                        break;
                     }
                 }
                 if found {
-                    screen.fire_agent_exit_hook(pane_id, exit_status, &run_command, pane_is_global);
+                    screen.fire_agent_exit_hook(pane_id, exit_status, &run_command);
                 }
                 if !found {
                     log::error!(

@@ -1,11 +1,11 @@
 use super::*;
 
 #[test]
-fn reconfigure_sends_global_plugin_the_updated_client_mode_info_once() {
+fn reconfigure_sends_a_plugin_pane_the_updated_client_mode_info_once() {
     let (mut screen, capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 20 });
     new_tab(&mut screen, 1, 0);
     screen.mode_info.insert(1, ModeInfo::default());
-    add_hidden_global_plugin(&mut screen, 77);
+    add_pane_to_tab(&mut screen, 0, PaneId::Plugin(77), false);
     capture.drain_plugin_updates();
 
     screen
@@ -56,10 +56,10 @@ fn reconfigure_sends_global_plugin_the_updated_client_mode_info_once() {
 }
 
 #[test]
-fn group_marking_updates_global_plugin_mode_info_once() {
+fn group_marking_updates_a_plugin_pane_s_mode_info_once() {
     let (mut screen, capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 20 });
     new_tab(&mut screen, 1, 0);
-    add_hidden_global_plugin(&mut screen, 77);
+    add_pane_to_tab(&mut screen, 0, PaneId::Plugin(77), false);
     capture.drain_plugin_updates();
 
     screen.toggle_group_marking(1).unwrap();

@@ -1,5 +1,5 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/open_and_session_commands.rs
 expression: "format!(\"{:#?}\",\nnew_tab_event).replace(&format!(\"{:?}\", temp_folder.path()), \"\\\"CWD\\\"\")"
 ---
 Some(
@@ -46,6 +46,5 @@ Some(
             },
         ),
         false,
-        None,
     ),
 )

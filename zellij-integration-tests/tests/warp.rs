@@ -27,27 +27,6 @@ use zellij_utils::cli::CliAction;
 /// otherwise be spawning panes of their own while the test watches for one.
 const NO_BACKGROUND_PLUGINS: &str = "load_plugins clear-defaults=true {\n}\n";
 
-/// A left-edge global pane in front of an ordinary tab pane.
-///
-/// A global pane is docked to the session rather than held by a tab, which makes
-/// it the wrong answer to both questions a warp asks: which pane the user means
-/// by "this one", and where a pane arriving from elsewhere should land.
-const GLOBAL_AND_SHELL: &str = r#"layout {
-    global_panes {
-        pane edge="left" size="30%"
-    }
-    pane
-}
-"#;
-
-/// What the global pane writes, so it can be told apart from everything else and
-/// found on screen.
-const GLOBAL_MARKER: &str = "GLOBAL";
-
-/// How wide `GLOBAL_AND_SHELL`'s strip is, in columns. Anything at a smaller
-/// column than this is inside the global pane rather than in the tab.
-const GLOBAL_STRIP_COLS: usize = TERMINAL_SIZE.cols * 30 / 100;
-
 fn start(layout: Option<&str>) -> TestSession {
     let runner = TestRunner::new(TERMINAL_SIZE)
         .with_config(NO_BACKGROUND_PLUGINS)
@@ -70,21 +49,6 @@ fn start_with_a_shell() -> (TestSession, FakePtyHandle) {
     shell.output(PROMPT);
     zellij.wait_for_app_load();
     (zellij, shell)
-}
-
-/// A session with a left-edge global pane as well as its shell pane.
-///
-/// The global pane spawns first, so it is the first pty the session asks for.
-fn start_with_a_global_pane() -> (TestSession, FakePtyHandle, FakePtyHandle) {
-    let zellij = start(Some(GLOBAL_AND_SHELL));
-    let global = zellij.expect_pty_spawn();
-    global.output(GLOBAL_MARKER.as_bytes());
-    let shell = zellij.expect_pty_spawn();
-    shell.output(PROMPT);
-    zellij.wait_until("the global pane and the shell to load", |grid_snapshot| {
-        grid_snapshot.contains(GLOBAL_MARKER) && grid_snapshot.contains("$")
-    });
-    (zellij, global, shell)
 }
 
 /// Move the focus onto a pane and confirm it landed, by what the pane is sent.
@@ -178,19 +142,6 @@ fn warp_focused_pane_expecting_success(
 ) {
     let (exit_code, reported) = warp_focused_pane_to(sender, receiver, floating);
     assert_eq!(exit_code, 0, "the warp was refused: {reported}");
-}
-
-/// The column a piece of text is rendered at, in characters.
-fn column_of(zellij: &TestSession, needle: &str) -> usize {
-    zellij
-        .snapshot()
-        .lines()
-        .into_iter()
-        .find_map(|line| {
-            line.find(needle)
-                .map(|byte_index| line[..byte_index].chars().count())
-        })
-        .unwrap_or_else(|| panic!("{needle:?} is not on screen"))
 }
 
 /// The stacked pane list's entries, top to bottom, as they are drawn.
@@ -287,9 +238,6 @@ fn split_off_a_remote_pane(zellij: &TestSession, says: &str) -> FakePtyHandle {
         no_focus: false,
         borderless: None,
         tab_id: None,
-        edge: None,
-        global: false,
-        size: None,
     });
     let pane = zellij.expect_pty_spawn();
     pane.output(format!("{says}\r\n").as_bytes());
@@ -396,109 +344,6 @@ fn a_tab_of_local_and_remote_panes_warps_whole() {
     );
 
     drop((local, remote));
-}
-
-#[test]
-fn a_focused_global_pane_is_refused_and_nothing_moves() {
-    // The dangerous case, end to end. Asked for "the focused pane" with a global
-    // pane focused, a warp that resolved focus through the tab would answer with
-    // a pane the user is not even looking at — and hand it to another session for
-    // them. Refusing needs no supervisor handover, so this is the one test here
-    // that would pass on a backend that cannot move panes at all.
-    let (receiver, _receiver_shell) = start_with_a_shell();
-    let (sender, global, _sender_shell) = start_with_a_global_pane();
-    let tab_pane = split_off_a_pane(&sender, "not going anywhere");
-
-    focus_and_confirm(&sender, &keys::alt('h'), &global);
-
-    let (exit_code, reported) = warp_focused_pane_to(&sender, &receiver, false);
-    assert_ne!(
-        exit_code, 0,
-        "warping a global pane should have been refused"
-    );
-    assert!(
-        reported.contains("this is a global pane"),
-        "refused, but for the wrong reason: {reported}",
-    );
-    assert!(
-        !tab_pane.is_exited(),
-        "a pane the user was not even looking at was moved",
-    );
-    assert!(
-        !global.is_exited(),
-        "the global pane itself was moved out of the session",
-    );
-    sender.wait_until("the sending session to be unchanged", |grid_snapshot| {
-        grid_snapshot.contains("not going anywhere") && grid_snapshot.contains(GLOBAL_MARKER)
-    });
-    assert!(
-        !receiver.snapshot().contains("not going anywhere"),
-        "a pane was handed over by a warp that was supposed to be refused",
-    );
-}
-
-#[test]
-fn an_adopted_pane_lands_in_the_tab_not_in_the_global_strip() {
-    // `NewPane` reads "wherever the client is", and for a client focused on a
-    // global pane that means *inside* the global pane — a strip belonging to the
-    // whole session, which a pane from another session has no business joining.
-    // The unit tests assert the placement that is asked for; this asserts where
-    // the pane actually ends up.
-    let (receiver, global, receiver_shell) = start_with_a_global_pane();
-    let (sender, _sender_shell) = start_with_a_shell();
-    let _travelling = split_off_a_pane(&sender, "arriving from elsewhere");
-
-    focus_and_confirm(&receiver, &keys::alt('h'), &global);
-
-    warp_focused_pane_expecting_success(&sender, &receiver, false);
-    let _arrived = receiver.expect_adopted_pty();
-    receiver.wait_until("the warped pane to arrive", |grid_snapshot| {
-        grid_snapshot.contains("arriving from elsewhere")
-    });
-
-    let landed_at = column_of(&receiver, "arriving from elsewhere");
-    assert!(
-        landed_at >= GLOBAL_STRIP_COLS,
-        "the pane landed at column {landed_at}, inside the {GLOBAL_STRIP_COLS}-column global strip",
-    );
-    // The strip is still one pane wide rather than split in two, and the pane
-    // that was in the tab is still in the tab beside the new arrival.
-    assert_eq!(
-        column_of(&receiver, GLOBAL_MARKER),
-        0,
-        "the global pane was moved over to make room for an arriving pane",
-    );
-    assert!(!receiver_shell.is_exited());
-}
-
-#[test]
-fn an_adopted_floating_pane_lands_in_the_tab_not_in_the_global_strip() {
-    // Floating panes escape the global strip today only because
-    // `split_focused_global_pane` has no arm for them, so it is worth pinning
-    // that they stay out of it. Asked of the strip rather than of the pane's own
-    // column: a floating pane is drawn over the tab and may overlap the strip on
-    // screen, which is a different thing from *belonging* to it.
-    let (receiver, global, _receiver_shell) = start_with_a_global_pane();
-    let (sender, _sender_shell) = start_with_a_shell();
-    let _travelling = split_off_a_pane(&sender, "floating in from elsewhere");
-
-    focus_and_confirm(&receiver, &keys::alt('h'), &global);
-
-    warp_focused_pane_expecting_success(&sender, &receiver, true);
-    let _arrived = receiver.expect_adopted_pty();
-    receiver.wait_until("the warped pane to arrive", |grid_snapshot| {
-        grid_snapshot.contains("floating in from elsewhere")
-    });
-
-    assert!(
-        !global.is_exited(),
-        "the global pane was taken down by a pane arriving in the tab",
-    );
-    assert_eq!(
-        column_of(&receiver, GLOBAL_MARKER),
-        0,
-        "the global pane was split or moved to make room for an arriving pane",
-    );
 }
 
 #[test]

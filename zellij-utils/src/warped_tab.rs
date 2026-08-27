@@ -10,8 +10,8 @@
 //!
 //! Not every arrangement is a layout, though. A layout is a tree of splits and
 //! `TiledPanes` is a flat map of rectangles, so a tab can be in shapes no tree
-//! describes — a tab beside a global pane, whose ui strips are widened over it,
-//! is not even a rectangle. Those are approximated rather than refused
+//! describes — a tab whose ui strips reach past the panes between them is not
+//! even a rectangle. Those are approximated rather than refused
 //! (`tiled_layout_from_panegeoms_lossy`): every pane travels, and the
 //! arrangement is the nearest one a layout can hold. A warp moves running
 //! processes, and losing the lot of them to keep a border in place is the wrong

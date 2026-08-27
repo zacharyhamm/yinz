@@ -4,7 +4,7 @@ use super::Screen;
 use crate::background_jobs::BackgroundJob;
 use crate::panes::PaneId;
 use crate::plugins::PluginInstruction;
-use crate::tab::{pane_info_for_pane, Tab};
+use crate::tab::Tab;
 use crate::ClientId;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -35,9 +35,6 @@ impl Screen {
             let (active_swap_layout_name, is_swap_layout_dirty) = tab.swap_layout_info();
             let tab_viewport = tab.get_viewport();
             let tab_display_area = tab.get_display_area();
-            let tab_session_surface = self
-                .session_surface_for_tab(tab.id)
-                .unwrap_or_else(|| tab.get_session_surface());
             let selectable_tiled_panes_count = tab.get_selectable_tiled_panes_count();
             let selectable_floating_panes_count = tab.get_selectable_floating_panes_count();
             let tab_info_for_screen = TabInfo {
@@ -62,8 +59,6 @@ impl Screen {
                     && !self.active_tab_ids.values().any(|i| i == &tab.id),
                 is_flashing_bell: tab.tab_bell_flash
                     && !self.active_tab_ids.values().any(|i| i == &tab.id),
-                session_surface_rows: tab_session_surface.rows,
-                session_surface_columns: tab_session_surface.cols,
             };
             tab_infos_for_screen_state.insert(tab.position, tab_info_for_screen);
         }
@@ -86,9 +81,6 @@ impl Screen {
                 let (active_swap_layout_name, is_swap_layout_dirty) = tab.swap_layout_info();
                 let tab_viewport = tab.get_viewport();
                 let tab_display_area = tab.get_display_area();
-                let tab_session_surface = self
-                    .session_surface_for_tab(tab.id)
-                    .unwrap_or_else(|| tab.get_session_surface());
                 let selectable_tiled_panes_count = tab.get_selectable_tiled_panes_count();
                 let selectable_floating_panes_count = tab.get_selectable_floating_panes_count();
                 let tab_info_for_plugins = TabInfo {
@@ -114,8 +106,6 @@ impl Screen {
                     tab_id: tab.id,
                     has_bell_notification: tab.tab_has_pending_bell && *active_tab_index != tab.id,
                     is_flashing_bell: tab.tab_bell_flash && *active_tab_index != tab.id,
-                    session_surface_rows: tab_session_surface.rows,
-                    session_surface_columns: tab_session_surface.cols,
                 };
                 plugin_tab_updates.push(tab_info_for_plugins);
             }
@@ -140,28 +130,11 @@ impl Screen {
         for tab in self.tabs.values() {
             pane_manifest.panes.insert(tab.position, tab.pane_infos());
         }
-        let current_pane_group = HashMap::new();
-        pane_manifest.global_panes = self
-            .global_panes
-            .panes()
-            .map(|(pane, placement, is_hidden)| {
-                let pane_id = pane.pid();
-                let mut pane_info = pane_info_for_pane(&pane_id, pane, &current_pane_group);
-                pane_info.is_focused = self.active_tab_ids.keys().any(|client_id| {
-                    self.global_panes.focused_pane_id(*client_id) == Some(pane_id)
-                });
-                pane_info.global_placement = Some(placement);
-                pane_info.is_hidden = is_hidden;
-                pane_info
-            })
-            .collect();
-        // One place, after both halves of the manifest are built. A plugin pane
-        // is not a process in a folder, so it is left without one.
+        // A plugin pane is not a process in a folder, so it is left without one.
         for pane_info in pane_manifest
             .panes
             .values_mut()
             .flatten()
-            .chain(pane_manifest.global_panes.iter_mut())
             .filter(|pane_info| !pane_info.is_plugin)
         {
             pane_info.cwd = self
@@ -355,25 +328,6 @@ impl Screen {
                     });
                 }
             }
-        }
-        // Global terminal panes are not tied to a tab. Use a distinct
-        // `tab_position` (9999) and `tab_name` "global" so they sort after
-        // normal tabs (`ORDER BY tab_position ASC`) and do not collide with
-        // tab 0. `tab_id` stays 0 as it is not meaningful for globals.
-        // See REVIEW_CHECKLIST.md 2.12.
-        for pane in &pane_manifest.global_panes {
-            if pane.is_plugin {
-                continue;
-            }
-            result.push(PaneMetadata {
-                terminal_id: pane.id,
-                tab_id: 0,
-                tab_position: 9999,
-                tab_name: "global".to_string(),
-                title: pane.title.clone(),
-                cols: pane.pane_content_columns,
-                rows: pane.pane_content_rows,
-            });
         }
         result
     }

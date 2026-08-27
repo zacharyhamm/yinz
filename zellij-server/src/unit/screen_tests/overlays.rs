@@ -68,7 +68,6 @@ fn alt_f_opens_a_floating_pane_when_only_an_overlay_exists() {
             _,
             ClientTabIndexOrPaneId::ClientId(1),
             _,
-            _,
             _
         ))
     ));
@@ -95,146 +94,17 @@ fn alt_f_hides_regular_floating_panes_while_an_overlay_exists() {
     assert!(pty_receiver.try_recv().is_err());
 }
 
-#[test]
-fn popup_overlay_uses_the_whole_surface_and_temporarily_takes_global_focus() {
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let size = Size {
-        cols: 120,
-        rows: 20,
-    };
-    let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 40);
-    screen.render_to_clients().expect("TEST");
-    screen
-        .focus_global_pane(PaneId::Terminal(99), 1)
-        .expect("TEST");
-
-    let popup = PaneId::Terminal(2);
-    screen
-        .get_active_tab_mut(1)
-        .unwrap()
-        .new_pane(
-            popup,
-            None,
-            None,
-            false,
-            true,
-            NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(
-                FloatingPaneCoordinates {
-                    x: Some(PercentOrFixed::Percent(20)),
-                    width: Some(PercentOrFixed::Percent(60)),
-                    height: Some(PercentOrFixed::Fixed(4)),
-                    ..Default::default()
-                },
-            ))),
-            Some(1),
-            None,
-        )
-        .expect("TEST");
-    screen.activate_overlay(popup);
-
-    let geom = screen.tabs[&0]
-        .get_pane_with_id(popup)
-        .unwrap()
-        .position_and_size();
-    assert_eq!((geom.x, geom.cols.as_usize()), (24, 72));
-    assert_eq!(screen.active_pane_id(1), Some(popup));
-
-    let restore = screen.take_global_focus_after_overlay_close(popup);
-    screen
-        .tabs
-        .get_mut(&0)
-        .unwrap()
-        .close_pane(popup, false, None);
-    screen.restore_global_focus(restore);
-    assert_eq!(
-        screen.global_panes.focused_pane_id(1),
-        Some(PaneId::Terminal(99))
-    );
-}
-
-/// The hocus column is two overlays, hidden one after the other, and the first of them is not
-/// the one the client is on. Consuming every suspended-focus entry for the tab therefore threw
-/// away the entry belonging to the client sitting on the *second* overlay, and by the time that
-/// one was hidden there was nothing left to restore - the client fell back onto a tiled pane
-/// instead of the global pane the column was opened from.
-#[test]
-fn hiding_a_sibling_overlay_leaves_the_focused_overlay_s_global_focus_to_restore() {
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let size = Size {
-        cols: 120,
-        rows: 20,
-    };
-    let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 40);
-    screen.render_to_clients().expect("TEST");
-    screen
-        .focus_global_pane(PaneId::Terminal(99), 1)
-        .expect("TEST");
-
-    let overlay = |y: usize| {
-        NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(
-            FloatingPaneCoordinates {
-                x: Some(PercentOrFixed::Fixed(2)),
-                y: Some(PercentOrFixed::Fixed(y)),
-                width: Some(PercentOrFixed::Fixed(30)),
-                height: Some(PercentOrFixed::Fixed(4)),
-                ..Default::default()
-            },
-        )))
-    };
-
-    // the agent list, above the chat and never focused
-    let agents = PaneId::Terminal(3);
-    screen
-        .get_active_tab_mut(1)
-        .unwrap()
-        .new_pane(agents, None, None, false, false, overlay(4), Some(1), None)
-        .expect("TEST");
-    // the chat, which is what the client is on
-    let chat = PaneId::Terminal(2);
-    screen
-        .get_active_tab_mut(1)
-        .unwrap()
-        .new_pane(chat, None, None, false, true, overlay(9), Some(1), None)
-        .expect("TEST");
-    screen.activate_overlay(chat);
-    assert_eq!(screen.active_pane_id(1), Some(chat));
-
-    // `hide_column` hides the list first, then itself - two `SuppressPane`s, in that order
-    for pane_id in [agents, chat] {
-        let restore = screen.take_global_focus_after_overlay_close(pane_id);
-        screen.tabs.get_mut(&0).unwrap().hide_overlay_pane(pane_id);
-        screen.restore_global_focus(restore);
-    }
-
-    assert_eq!(
-        screen.global_panes.focused_pane_id(1),
-        Some(PaneId::Terminal(99)),
-        "hiding the whole column puts the client back on the global pane it came from"
-    );
-}
-
 /// A pane's z-index has to be its place in the occlusion stack, which is not the same as its place
 /// among the panes a given render pass happens to draw. Taking the index from the pass rather than
 /// from the stack clips a pane against its own geometry, dropping every one of its chunks - the
 /// popup renders as nothing at all and whatever sits behind it shows through.
 #[test]
 fn an_overlay_popup_still_renders_when_another_floating_pane_is_open() {
-    use zellij_utils::data::GlobalPaneEdge;
-
     let size = Size { cols: 80, rows: 12 };
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, 0);
-    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 20);
     let (server_sender, server_receiver) = channels::unbounded();
     screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
-    // the tabs learn where the global pane strips are when they first render, and an overlay's
-    // coordinates are resolved against a surface that includes them
     screen.render_to_clients().expect("TEST");
     while server_receiver.try_recv().is_ok() {}
 
@@ -246,46 +116,6 @@ fn an_overlay_popup_still_renders_when_another_floating_pane_is_open() {
     assert!(
         snapshot.contains("POPUP"),
         "the overlay popup must render above the other floating pane, got:\n{snapshot}"
-    );
-}
-
-/// The global panes render after every tab has had its turn, against whichever floating panes
-/// stack the last tab left on the output. With more than one tab that stack belongs to a tab
-/// nobody in this render group is looking at, so the global pane paints over the overlay in front
-/// of them - and the overlay, not being dirty, never paints itself back.
-#[test]
-fn a_global_pane_does_not_paint_over_an_overlay_in_another_client_s_tab() {
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let size = Size { cols: 80, rows: 12 };
-    let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
-    // a second client, viewing the second tab: that is what makes some other tab render last
-    screen.add_client(2, false).expect("TEST");
-    screen.switch_active_tab(1, None, true, 2).expect("TEST");
-    screen.switch_active_tab(0, None, true, 1).expect("TEST");
-    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 20);
-    let (server_sender, server_receiver) = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
-    // as above: the strips have to be in place before the overlay is positioned
-    screen.render_to_clients().expect("TEST");
-    while server_receiver.try_recv().is_ok() {}
-
-    open_floating_pane(&mut screen, 0, 3, "POPUP", true);
-
-    // the host terminal keeps what the first frame drew, so both frames go into the same grid -
-    // the popup only paints when it changes, the global pane repaints every frame
-    let mut grid = grid_for_render_snapshot(size);
-    let first = render_frame_into(&mut screen, &server_receiver, 1, &mut grid);
-    assert!(
-        first.contains("POPUP"),
-        "the overlay popup must render on the first frame, got:\n{first}"
-    );
-    let second = render_frame_into(&mut screen, &server_receiver, 1, &mut grid);
-    assert!(
-        second.contains("POPUP"),
-        "the global pane must not paint over the overlay on a later frame, got:\n{second}"
     );
 }
 
@@ -432,18 +262,15 @@ fn open_overlay_plugin(
 
 /// A popup bound with `move_to_focused_tab` follows the client from tab to tab. The tab it leaves
 /// forgets the coordinates it was placed with, so unless they travel with it the popup lands in
-/// the new tab as an ordinary floating pane - sized against the tab's viewport, and painted under
-/// the global panes rather than over them.
+/// the new tab as an ordinary floating pane, sized against the tab's viewport rather than against
+/// the session surface.
 #[test]
 fn an_overlay_popup_stays_an_overlay_when_it_follows_the_client_to_another_tab() {
-    use zellij_utils::data::GlobalPaneEdge;
-
     let size = Size { cols: 80, rows: 12 };
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, 0);
     new_tab(&mut screen, 2, 1);
     screen.switch_active_tab(0, None, true, 1).expect("TEST");
-    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 20);
     let (server_sender, server_receiver) = channels::unbounded();
     screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
     screen.render_to_clients().expect("TEST");
@@ -480,294 +307,11 @@ fn an_overlay_popup_stays_an_overlay_when_it_follows_the_client_to_another_tab()
     );
 }
 
-/// The tab is laid out over the area the global panes leave it, so its viewport starts where the
-/// global pane ends. A floating pane dragged with the mouse used to be clamped to that viewport and
-/// stopped dead at the global pane's edge, no matter how far the pointer kept going.
-#[test]
-fn a_floating_pane_can_be_dragged_over_a_global_pane() {
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let size = Size { cols: 80, rows: 12 };
-    let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 20);
-    // the tabs learn where the global pane strips are when they first render
-    screen.render_to_clients().expect("TEST");
-    open_floating_pane(&mut screen, 0, 2, "FLOATING", false);
-
-    let before = floating_geom(&screen, 2);
-    drag_floating_pane_left_over_the_global_pane(&mut screen, 2);
-
-    let after = floating_geom(&screen, 2);
-    assert_eq!(
-        after.x,
-        before.x - 25,
-        "the pane follows the pointer past the tab's edge (it started at x={}, the tab starts at \
-         x={})",
-        before.x,
-        screen.tabs[&0].get_display_area_origin().0,
-    );
-}
-
-/// A floating pane over a global pane is outside the viewport of every tab, so nothing but its own
-/// tab paints those cells - and it has to keep painting them above the global pane, which renders
-/// after every tab has had its turn.
-#[test]
-fn a_floating_pane_dragged_over_a_global_pane_renders_above_it() {
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let size = Size { cols: 80, rows: 12 };
-    let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 20);
-    let (server_sender, server_receiver) = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
-    screen.render_to_clients().expect("TEST");
-    while server_receiver.try_recv().is_ok() {}
-
-    open_floating_pane(&mut screen, 0, 2, "DRAGGED", false);
-    drag_floating_pane_left_over_the_global_pane(&mut screen, 2);
-
-    let geom = floating_geom(&screen, 2);
-    assert!(
-        geom.x < screen.tabs[&0].get_display_area_origin().0,
-        "the pane has to actually be over the global pane for this test to mean anything"
-    );
-
-    // the host terminal keeps what earlier frames drew, so they all go into the same grid - the
-    // pane only paints when it changes, the global pane repaints every frame
-    let mut grid = grid_for_render_snapshot(size);
-    let first = render_frame_into(&mut screen, &server_receiver, 1, &mut grid);
-    assert!(
-        first.contains("DRAGGED"),
-        "the dragged pane must render over the global pane, got:\n{first}"
-    );
-    // make the global pane repaint on its own, which is what would paint over the floating pane
-    screen.global_panes.set_force_render();
-    let second = render_frame_into(&mut screen, &server_receiver, 1, &mut grid);
-    assert!(
-        second.contains("DRAGGED"),
-        "a global pane repaint must not paint over the pane in front of it, got:\n{second}"
-    );
-}
-
-/// Every resize re-fits the floating panes into the tab's viewport, restoring each one to the
-/// position it wants. A pane parked over a global pane wants a position outside that viewport, and
-/// would be herded back inside on the next resize.
-#[test]
-fn a_floating_pane_dragged_over_a_global_pane_stays_there_across_a_resize() {
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let size = Size { cols: 80, rows: 12 };
-    let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 20);
-    screen.render_to_clients().expect("TEST");
-    open_floating_pane(&mut screen, 0, 2, "FLOATING", false);
-    drag_floating_pane_left_over_the_global_pane(&mut screen, 2);
-    let dragged_to = floating_geom(&screen, 2);
-
-    screen
-        .resize_to_screen(Size { cols: 90, rows: 14 })
-        .expect("TEST");
-
-    let after = floating_geom(&screen, 2);
-    assert_eq!(
-        (after.x, after.y),
-        (dragged_to.x, dragged_to.y),
-        "the pane stays where it was dragged instead of being fitted back into the tab"
-    );
-}
-
-/// The global panes get first refusal on every mouse event, by position. A floating pane drawn over
-/// one is what the user sees there, so it is what the click has to reach - otherwise the pane
-/// cannot even be focused, let alone dragged away again.
-#[test]
-fn a_click_on_a_floating_pane_over_a_global_pane_focuses_the_floating_pane() {
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let size = Size { cols: 80, rows: 12 };
-    let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 20);
-    screen.render_to_clients().expect("TEST");
-    open_floating_pane(&mut screen, 0, 2, "FLOATING", false);
-    drag_floating_pane_left_over_the_global_pane(&mut screen, 2);
-
-    screen
-        .focus_global_pane(PaneId::Terminal(99), 1)
-        .expect("TEST");
-
-    // a cell of the dragged pane that lies over the global pane
-    let geom = floating_geom(&screen, 2);
-    assert!(geom.x < screen.tabs[&0].get_display_area_origin().0);
-    screen.handle_mouse_event(
-        MouseEvent::new_left_press_event(Position::new(geom.y as i32 + 1, geom.x as u16 + 1)),
-        1,
-    );
-
-    assert_eq!(
-        screen.global_panes.focused_pane_id(1),
-        None,
-        "the click must not land on the global pane behind the floating one"
-    );
-    assert_eq!(screen.active_pane_id(1), Some(PaneId::Terminal(2)));
-}
-
-/// A global pane's border is draggable to resize it. A floating pane sitting over that border hides
-/// it, so pressing there belongs to the floating pane rather than starting a resize behind it.
-#[test]
-fn a_press_on_a_floating_pane_covering_the_global_pane_border_does_not_resize_it() {
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let size = Size { cols: 80, rows: 12 };
-    let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 20);
-    screen.render_to_clients().expect("TEST");
-    open_floating_pane(&mut screen, 0, 2, "FLOATING", false);
-    drag_floating_pane_left_over_the_global_pane(&mut screen, 2);
-
-    let global_pane_before = screen
-        .global_panes
-        .pane(PaneId::Terminal(99))
-        .expect("TEST")
-        .position_and_size();
-    let geom = floating_geom(&screen, 2);
-    let border_column = global_pane_before.x + global_pane_before.cols.as_usize();
-    assert!(
-        geom.x < border_column && geom.x + geom.cols.as_usize() > border_column,
-        "the floating pane has to cover the border for this test to mean anything"
-    );
-    screen.handle_mouse_event(
-        MouseEvent::new_left_press_event(Position::new(geom.y as i32 + 1, border_column as u16)),
-        1,
-    );
-    screen.handle_mouse_event(
-        MouseEvent::new_left_motion_event(Position::new(geom.y as i32 + 1, 40)),
-        1,
-    );
-
-    let global_pane_after = screen
-        .global_panes
-        .pane(PaneId::Terminal(99))
-        .expect("TEST")
-        .position_and_size();
-    assert_eq!(
-        global_pane_after.cols.as_usize(),
-        global_pane_before.cols.as_usize(),
-        "the global pane must not have been resized by a press on the pane in front of it"
-    );
-}
-
-/// A selection started in a global pane holds that client's mouse until it is released. A floating
-/// pane the pointer passes under on the way must not steal it mid-drag.
-#[test]
-fn a_global_pane_selection_keeps_the_mouse_when_it_wanders_under_a_floating_pane() {
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let size = Size { cols: 80, rows: 12 };
-    let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 20);
-    screen.render_to_clients().expect("TEST");
-    open_floating_pane(&mut screen, 0, 2, "FLOATING", false);
-    drag_floating_pane_left_over_the_global_pane(&mut screen, 2);
-
-    let geom = floating_geom(&screen, 2);
-    // start the selection in the global pane, well clear of the floating pane
-    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(1, 1)), 1);
-    assert!(
-        screen.global_panes.is_selecting_with_mouse(1),
-        "the press must have started a selection in the global pane"
-    );
-    screen.handle_mouse_event(
-        MouseEvent::new_left_motion_event(Position::new(geom.y as i32 + 1, geom.x as u16 + 1)),
-        1,
-    );
-    assert!(
-        screen.global_panes.is_selecting_with_mouse(1),
-        "the global pane keeps the mouse for the duration of its selection"
-    );
-    assert!(
-        !screen.tabs[&0].a_pane_is_being_moved_with_mouse(),
-        "and the floating pane must not have been picked up by it"
-    );
-}
-
-/// The keyboard move and the mouse drag have to agree on where a floating pane may go, or a pane
-/// nudged with the keyboard walks back out of the area it can be dragged into.
-#[test]
-fn a_floating_pane_can_be_moved_over_a_global_pane_with_the_keyboard() {
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let size = Size { cols: 80, rows: 12 };
-    let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 20);
-    screen.render_to_clients().expect("TEST");
-    open_floating_pane(&mut screen, 0, 2, "FLOATING", false);
-
-    let tab_starts_at = screen.tabs[&0].get_display_area_origin().0;
-    let tab = screen.tabs.get_mut(&0).expect("TEST");
-    for _ in 0..30 {
-        tab.move_active_pane_left(1);
-    }
-
-    let geom = floating_geom(&screen, 2);
-    assert!(
-        geom.x < tab_starts_at,
-        "the pane must cross the tab's edge at x={tab_starts_at}, it stopped at x={}",
-        geom.x
-    );
-}
-
-/// The bypass has to be narrow: a global pane keeps the mouse everywhere no floating pane is drawn,
-/// whether or not the tab has floating panes open somewhere else.
-#[test]
-fn a_global_pane_still_takes_the_mouse_where_no_floating_pane_covers_it() {
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let size = Size { cols: 80, rows: 12 };
-    let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 20);
-    screen.render_to_clients().expect("TEST");
-    // a floating pane, but one that stays inside its tab
-    open_floating_pane(&mut screen, 0, 2, "FLOATING", false);
-
-    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(1, 1)), 1);
-
-    assert_eq!(
-        screen.global_panes.focused_pane_id(1),
-        Some(PaneId::Terminal(99)),
-        "a press on the global pane still focuses it"
-    );
-}
-
 fn floating_geom(screen: &Screen, pane_id: u32) -> PaneGeom {
     screen.tabs[&0]
         .get_pane_with_id(PaneId::Terminal(pane_id))
         .expect("TEST")
         .position_and_size()
-}
-
-/// Press the pane's top frame and drag it 25 columns left, which takes it over the global pane on
-/// the left edge, then release.
-fn drag_floating_pane_left_over_the_global_pane(screen: &mut Screen, pane_id: u32) {
-    let geom = floating_geom(screen, pane_id);
-    let row = geom.y as i32;
-    let from = geom.x as u16 + 2;
-    let to = from - 25;
-    screen.handle_mouse_event(
-        MouseEvent::new_left_press_event(Position::new(row, from)),
-        1,
-    );
-    screen.handle_mouse_event(MouseEvent::new_left_motion_event(Position::new(row, to)), 1);
-    screen.handle_mouse_event(
-        MouseEvent::new_left_release_event(Position::new(row, to)),
-        1,
-    );
 }
 
 /// Where the overlays in these tests sit on the session surface. Just geometry: what makes a pane
@@ -1408,14 +952,12 @@ fn an_overlay_owns_the_mouse_where_it_is_painted_while_the_layer_is_hidden() {
     assert!(!tab.are_floating_panes_visible());
 
     // `overlay_coordinates()` puts the overlay at (2, 2), 60% wide and 4 rows tall
-    assert_eq!(
-        tab.visible_floating_pane_at(&Position::new(3, 4)),
-        Some(PaneId::Terminal(3)),
+    assert!(
+        tab.position_is_on_an_overlay(&Position::new(3, 4)),
         "the overlay is hit-tested inside its own geometry with the layer down"
     );
-    assert_eq!(
-        tab.visible_floating_pane_at(&Position::new(15, 70)),
-        None,
+    assert!(
+        !tab.position_is_on_an_overlay(&Position::new(15, 70)),
         "and owns nothing outside it"
     );
 
@@ -1503,33 +1045,6 @@ fn a_modal_masks_each_client_s_tiled_focus_until_it_closes() {
 // so these pin whole frames.
 // ---------------------------------------------------------------------------
 
-/// The frame that exercises the overlay coordinate space, the occlusion stack and the global-pane
-/// surface expansion at once: an overlay drawn over a *hidden* floating layer, with a global pane
-/// docked to the left. The hidden pane must not appear, the overlay must sit on the surface
-/// (crossing over the global pane rather than being bounded by the tab viewport), and the global
-/// pane must not paint over it.
-#[test]
-fn frame_of_an_overlay_over_a_hidden_layer_beside_a_global_pane() {
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let size = Size { cols: 80, rows: 12 };
-    let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 20);
-    // allocates the global pane strips onto the tab, which is what expands the overlay surface
-    screen.render_to_clients().expect("TEST");
-    open_floating_pane(&mut screen, 0, 2, "HIDDENFLOATING", false);
-    screen.get_active_tab_mut(1).unwrap().hide_floating_panes();
-    open_popup(&mut screen, 3, "OVERLAY");
-
-    let frame = rendered_frame(&mut screen, size);
-    assert!(
-        !frame.contains("HIDDENFLOATING"),
-        "the hidden floating pane must stay hidden, got:\n{frame}"
-    );
-    assert_snapshot!(frame);
-}
-
 /// Relative z-order between the three things that can be on top of the tiled panes while the
 /// floating layer is up: a plain floating pane, a pinned floating pane, and an overlay.
 ///
@@ -1573,7 +1088,7 @@ fn frame_of_an_overlay_with_a_pinned_and_a_plain_floating_pane() {
 /// invisible.
 ///
 /// It is also the sharpest test of the flat-list discipline: `Tab::occlusion_stack` and
-/// `render_floating_panes_after_global_panes` index into one list, and a fullscreen tiled pane is
+/// `render_floating_panes_and_overlays` index into one list, and a fullscreen tiled pane is
 /// the case where the floating half of that list is not drawn while the overlay half is. A pane
 /// handed an index that is not its own is clipped against its own geometry and erases itself, so
 /// an empty box here is the failure this pins.
@@ -2646,38 +2161,6 @@ fn a_resize_keystroke_on_a_modal_changes_nothing() {
     );
 }
 
-/// `active_pane_is_flush_with_edge` is the sole input to
-/// `Screen::resize_global_pane_from_adjacent_tab_pane`, and it excused only *floating* active
-/// panes. An overlay that happened to reach an edge of the surface therefore let a resize
-/// keystroke aimed at nothing in particular resize a global pane instead. Still true now that the
-/// keystroke resizes the overlay: what it must never do is escape to another layer.
-#[test]
-fn a_resize_keystroke_on_an_overlay_does_not_reach_a_global_pane() {
-    let size = Size { cols: 80, rows: 20 };
-    let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-    // an overlay pinned to the very top-left of the surface, so it is flush with two edges
-    open_overlay_with(
-        &mut screen,
-        2,
-        FloatingPaneCoordinates {
-            x: Some(PercentOrFixed::Fixed(0)),
-            y: Some(PercentOrFixed::Fixed(0)),
-            width: Some(PercentOrFixed::Percent(50)),
-            height: Some(PercentOrFixed::Percent(50)),
-            ..Default::default()
-        },
-    );
-
-    for direction in [Direction::Left, Direction::Up] {
-        assert!(
-            !screen.tabs[&0].active_pane_is_flush_with_edge(direction, 1),
-            "an overlay is never flush with anything, so nothing hands the keystroke to a \
-             global pane ({direction:?})"
-        );
-    }
-}
-
 /// With `visual_bell` off, `check_and_consume_bells_without_visual_notification` is the *only*
 /// thing that sees a bell - and its iterator chain was the visual one minus the overlay link.
 /// A BEL from a modal was therefore neither forwarded to the client nor consumed off the pane.
@@ -3257,7 +2740,7 @@ fn a_non_selectable_overlay_cannot_be_focused_again() {
 ///
 /// `set_should_clear_display_before_rendering` schedules a full `ESC[2J` that goes out during the
 /// tiled leg of `Tab::render`, but the overlays draw later, from
-/// `render_floating_panes_after_global_panes`. The setter used to force-render only the floating
+/// `render_floating_panes_and_overlays`. The setter used to force-render only the floating
 /// layer, so an overlay that was already on screen and clean contributed nothing to the frame that
 /// wiped it: opening a tiled pane behind a modal erased the modal while it still held the keyboard,
 /// which is a state the user cannot get out of.
@@ -3604,43 +3087,6 @@ fn a_focus_move_at_the_edge_under_a_modal_does_not_bubble_to_the_host() {
     );
 }
 
-/// The plain directional move takes the same rule: under a modal it neither enters a global pane
-/// sitting on that edge nor bubbles the focus out to the host session.
-#[test]
-fn a_directional_focus_move_under_a_modal_neither_enters_a_global_pane_nor_bubbles() {
-    let size = Size { cols: 80, rows: 20 };
-    let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-    insert_left_global_pane(&mut screen, 10);
-    open_overlay_of_kind(&mut screen, 2, "MODAL", OverlayKind::Modal);
-    let (server_sender, server_receiver) = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
-
-    screen
-        .move_focus_in_direction_or_escalate(Direction::Left, 1)
-        .expect("TEST");
-
-    assert_eq!(
-        screen.global_panes.focused_pane_id(1),
-        None,
-        "the global pane on the left edge was not entered"
-    );
-    while let Ok((instruction, _)) = server_receiver.try_recv() {
-        assert!(
-            !matches!(
-                instruction,
-                ServerInstruction::EmitNestedSessionFrameToClient(..)
-            ),
-            "nothing was handed to the host session"
-        );
-    }
-    assert_eq!(
-        screen.active_pane_id(1),
-        Some(PaneId::Terminal(2)),
-        "the modal still has the keyboard"
-    );
-}
-
 /// Switching panes while fullscreen is active is a focus move like any other, so a dismissible
 /// overlay above it has to let go. The fullscreen branch used to return before the release.
 #[test]
@@ -3958,115 +3404,14 @@ fn a_frame_press_that_never_moved_still_focuses_the_overlay() {
     assert_eq!((after.x, after.y), (geom.x, geom.y), "and nothing moved");
 }
 
-/// The point of the feature: a popup can be moved off whatever it is covering, including out over
-/// a global pane. `Screen::tab_wins_mouse_event` is what makes this reach past the tab's edge - the
-/// global panes get first refusal on every mouse event by position, so without it the drag ends
-/// wherever the pointer first crossed onto the global pane.
-#[test]
-fn an_overlay_can_be_dragged_over_a_global_pane() {
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let size = Size { cols: 80, rows: 12 };
-    let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 20);
-    // the tabs learn where the global pane strips are when they first render
-    screen.render_to_clients().expect("TEST");
-    open_overlay_with(
-        &mut screen,
-        2,
-        FloatingPaneCoordinates {
-            x: Some(PercentOrFixed::Fixed(30)),
-            y: Some(PercentOrFixed::Fixed(2)),
-            width: Some(PercentOrFixed::Fixed(20)),
-            height: Some(PercentOrFixed::Fixed(4)),
-            ..Default::default()
-        },
-    );
-
-    let origin = screen.tabs[&0].get_display_area_origin().0;
-    assert_eq!(floating_geom(&screen, 2).x, 30, "pre-condition");
-    drag_overlay_by(&mut screen, 2, -28, 0);
-
-    let after = floating_geom(&screen, 2);
-    assert_eq!(
-        after.x, 2,
-        "the overlay follows the pointer past the tab's edge"
-    );
-    assert!(
-        after.x < origin,
-        "which puts it over the global pane, whose columns end at x={origin}"
-    );
-}
-
-/// An overlay over a global pane is outside every tab's viewport, so nothing but its own tab paints
-/// those cells - and it has to keep painting them above the global pane, which renders after every
-/// tab has had its turn.
-#[test]
-fn an_overlay_dragged_over_a_global_pane_renders_above_it() {
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let size = Size { cols: 80, rows: 12 };
-    let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 20);
-    let (server_sender, server_receiver) = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
-    screen.render_to_clients().expect("TEST");
-    while server_receiver.try_recv().is_ok() {}
-
-    open_overlay_with(
-        &mut screen,
-        2,
-        FloatingPaneCoordinates {
-            x: Some(PercentOrFixed::Fixed(30)),
-            y: Some(PercentOrFixed::Fixed(2)),
-            width: Some(PercentOrFixed::Fixed(20)),
-            height: Some(PercentOrFixed::Fixed(4)),
-            ..Default::default()
-        },
-    );
-    screen
-        .get_active_tab_mut(1)
-        .unwrap()
-        .handle_pty_bytes(2, "DRAGGED".as_bytes().to_vec())
-        .expect("TEST");
-    drag_overlay_by(&mut screen, 2, -28, 0);
-
-    assert!(
-        floating_geom(&screen, 2).x < screen.tabs[&0].get_display_area_origin().0,
-        "the overlay has to actually be over the global pane for this test to mean anything"
-    );
-
-    // the host terminal keeps what earlier frames drew, so they all go into the same grid - the
-    // pane only paints when it changes, the global pane repaints every frame
-    let mut grid = grid_for_render_snapshot(size);
-    let first = render_frame_into(&mut screen, &server_receiver, 1, &mut grid);
-    assert!(
-        first.contains("DRAGGED"),
-        "the dragged overlay must render over the global pane, got:\n{first}"
-    );
-    // make the global pane repaint on its own, which is what would paint over the overlay
-    screen.global_panes.set_force_render();
-    let second = render_frame_into(&mut screen, &server_receiver, 1, &mut grid);
-    assert!(
-        second.contains("DRAGGED"),
-        "a global pane repaint must not paint over the overlay in front of it, got:\n{second}"
-    );
-    assert_snapshot!(second);
-}
-
 /// The drag rewrites the overlay's *coordinates*, not just its geometry, so where the user put it
 /// is re-resolved on the next surface change the same way where it was opened would have been.
 /// Without that the overlay is re-centred by the first resize and walks out from under the pointer.
 #[test]
 fn a_dragged_overlay_stays_where_it_was_dropped_across_a_resize() {
-    use zellij_utils::data::GlobalPaneEdge;
-
     let size = Size { cols: 80, rows: 12 };
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, 0);
-    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 20);
     screen.render_to_clients().expect("TEST");
     open_overlay_with(
         &mut screen,
@@ -4490,48 +3835,6 @@ fn launch_or_focus_plugin_focuses_a_hidden_overlay() {
     );
 }
 
-/// The same reveal, for a client whose focus is on a global pane. `Screen::active_pane_id` reads
-/// the global focus before it reads the tab, so focusing the overlay inside the tab is only half
-/// of the move - the other half is suspending the global focus, which is what `activate_overlay`
-/// does for every other path that puts an overlay under a client's keyboard.
-#[test]
-fn launch_or_focus_plugin_focuses_a_hidden_overlay_over_a_global_pane() {
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let size = Size {
-        cols: 120,
-        rows: 20,
-    };
-    let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 40);
-    screen.render_to_clients().expect("TEST");
-    screen
-        .focus_global_pane(PaneId::Terminal(99), 1)
-        .expect("TEST");
-    let (run_plugin, popup_id) = open_overlay_plugin(&mut screen, 2, 0, popup_coordinates());
-    screen.activate_overlay(popup_id);
-
-    let restore = screen.take_global_focus_after_overlay_close(popup_id);
-    screen.tabs.get_mut(&0).unwrap().hide_overlay_pane(popup_id);
-    screen.restore_global_focus(restore);
-    assert_eq!(
-        screen.global_panes.focused_pane_id(1),
-        Some(PaneId::Terminal(99)),
-        "hiding puts the client back on the global pane it came from"
-    );
-
-    let mut completion = None;
-    assert!(screen
-        .focus_plugin_pane(&run_plugin, true, true, false, 1, &mut completion)
-        .expect("TEST"));
-    assert_eq!(
-        screen.active_pane_id(1),
-        Some(popup_id),
-        "the revealed overlay takes the keyboard back off the global pane"
-    );
-}
-
 /// `Ctrl e c` with no hocus running. `focus_plugin_pane` finds nothing, so `LaunchOrFocusPlugin`
 /// creates the pane instead - the `AddPlugin` path, which is what this mirrors: `should_focus`
 /// defaults to true and the placement is an overlay.
@@ -4558,46 +3861,6 @@ fn a_newly_created_overlay_plugin_takes_the_keyboard() {
             None,
         )
         .expect("TEST");
-    screen.activate_overlay(popup_id);
-
-    assert_eq!(screen.active_pane_id(1), Some(popup_id));
-}
-
-/// The same creation, for a client sitting on a global pane.
-#[test]
-fn a_newly_created_overlay_plugin_takes_the_keyboard_off_a_global_pane() {
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let size = Size {
-        cols: 120,
-        rows: 20,
-    };
-    let (mut screen, _plugin_rx) = screen_with_plugin_sender(size);
-    new_tab(&mut screen, 1, 0);
-    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 40);
-    screen.render_to_clients().expect("TEST");
-    screen
-        .focus_global_pane(PaneId::Terminal(99), 1)
-        .expect("TEST");
-
-    let popup_id = PaneId::Plugin(2);
-    let run_plugin =
-        RunPluginOrAlias::from_url("file:/path/to/fake/popup", &None, None, None).unwrap();
-    screen
-        .get_active_tab_mut(1)
-        .unwrap()
-        .new_pane(
-            popup_id,
-            Some("popup".to_owned()),
-            Some(Run::Plugin(run_plugin)),
-            false,
-            true,
-            NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(popup_coordinates()))),
-            Some(1),
-            None,
-        )
-        .expect("TEST");
-    screen.activate_overlay(popup_id);
 
     assert_eq!(screen.active_pane_id(1), Some(popup_id));
 }

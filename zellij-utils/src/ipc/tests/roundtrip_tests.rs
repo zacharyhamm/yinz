@@ -1,9 +1,9 @@
 use super::test_framework::*;
 use crate::data::{
-    BareKey, CommandOrPlugin, ConnectToSession, Direction, FloatingPaneCoordinates, GlobalPaneEdge,
-    GlobalPanePlacement, HostTerminalThemeMode, InputMode, KeyModifier, KeyWithModifier,
-    LayoutInfo, LayoutMetadata, NewPanePlacement, OriginatingPlugin, PaneId, PluginTag,
-    RemotePaneHandoff, Resize, WarpPlacement, WarpedPane, WarpedTab, WebSharing,
+    BareKey, CommandOrPlugin, ConnectToSession, Direction, FloatingPaneCoordinates,
+    HostTerminalThemeMode, InputMode, KeyModifier, KeyWithModifier, LayoutInfo, LayoutMetadata,
+    NewPanePlacement, OriginatingPlugin, PaneId, PluginTag, RemotePaneHandoff, Resize,
+    WarpPlacement, WarpedPane, WarpedTab, WebSharing,
 };
 use crate::input::actions::{Action, SearchDirection, SearchOption};
 use crate::input::cli_assets::CliAssets;
@@ -83,47 +83,6 @@ fn a_relative_plugin_path_survives_the_client_server_contract() {
 }
 
 #[test]
-fn global_placement_ipc_rejects_invalid_sizes() {
-    use crate::client_server_contract::client_server_contract::{
-        global_pane_size::SizeType, GlobalPaneEdge as ProtoGlobalPaneEdge,
-        GlobalPanePlacement as ProtoGlobalPanePlacement, GlobalPaneSize as ProtoGlobalPaneSize,
-    };
-
-    for size_type in [
-        SizeType::Fixed(0),
-        SizeType::Percent(0),
-        SizeType::Percent(101),
-    ] {
-        let placement = ProtoGlobalPanePlacement {
-            edge: ProtoGlobalPaneEdge::Left as i32,
-            size: Some(ProtoGlobalPaneSize {
-                size_type: Some(size_type),
-            }),
-            length: None,
-        };
-        assert!(GlobalPanePlacement::try_from(placement).is_err());
-    }
-
-    for size in [PercentOrFixed::Fixed(0), PercentOrFixed::Percent(101)] {
-        let placement = GlobalPanePlacement {
-            edge: GlobalPaneEdge::Left,
-            size,
-            length: None,
-        };
-        assert!(ProtoGlobalPanePlacement::try_from(placement).is_err());
-    }
-
-    if let Ok(overflow) = usize::try_from(u64::from(u32::MAX) + 1) {
-        let placement = GlobalPanePlacement {
-            edge: GlobalPaneEdge::Left,
-            size: PercentOrFixed::Fixed(overflow),
-            length: None,
-        };
-        assert!(ProtoGlobalPanePlacement::try_from(placement).is_err());
-    }
-}
-
-#[test]
 fn a_remote_handoff_without_a_command_arrives_as_no_remote_pane() {
     // Fail closed. A handoff with no command is not a handoff: the adopting
     // session would hold a running process it could not name, re-run on the
@@ -181,16 +140,6 @@ fn a_remote_handoff_without_a_command_arrives_as_no_remote_pane() {
 
 fn test_client_messages() {
     let empty_context = BTreeMap::new();
-    let fixed_global_placement = Some(GlobalPanePlacement {
-        edge: GlobalPaneEdge::Right,
-        size: PercentOrFixed::Fixed(12),
-        length: None,
-    });
-    let percent_global_placement = Some(GlobalPanePlacement {
-        edge: GlobalPaneEdge::Bottom,
-        size: PercentOrFixed::Percent(30),
-        length: None,
-    });
     let mut demo_context = BTreeMap::new();
     demo_context.insert("demo_key1".to_owned(), "demo_value1".to_owned());
     demo_context.insert("demo_key2".to_owned(), "demo_value2".to_owned());
@@ -1476,7 +1425,6 @@ fn test_client_messages() {
             direction: None,
             pane_name: None,
             start_suppressed: false,
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -1487,20 +1435,6 @@ fn test_client_messages() {
             direction: Some(Direction::Right),
             pane_name: Some("pane_name".to_owned()),
             start_suppressed: true,
-            global_placement: fixed_global_placement,
-        },
-        terminal_id: Some(1),
-        client_id: Some(100),
-        is_cli_client: true,
-    });
-    test_client_roundtrip!(ClientToServerMsg::Action {
-        action: Action::SetGlobalPanePlacement {
-            pane_id: PaneId::Terminal(42),
-            placement: GlobalPanePlacement {
-                edge: GlobalPaneEdge::Bottom,
-                size: PercentOrFixed::Percent(30),
-                length: None,
-            },
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -1523,7 +1457,6 @@ fn test_client_messages() {
             near_current_pane: false,
             no_focus: false,
             tab_id: None,
-            global_placement: percent_global_placement,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -1550,7 +1483,6 @@ fn test_client_messages() {
             near_current_pane: false,
             no_focus: false,
             tab_id: None,
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -1577,7 +1509,6 @@ fn test_client_messages() {
             near_current_pane: false,
             no_focus: false,
             tab_id: None,
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -1611,7 +1542,6 @@ fn test_client_messages() {
             near_current_pane: false,
             no_focus: false,
             tab_id: None,
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -1645,7 +1575,6 @@ fn test_client_messages() {
             near_current_pane: false,
             no_focus: false,
             tab_id: None,
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -1679,7 +1608,6 @@ fn test_client_messages() {
             near_current_pane: false,
             no_focus: false,
             tab_id: None,
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -1713,7 +1641,6 @@ fn test_client_messages() {
             near_current_pane: false,
             no_focus: false,
             tab_id: None,
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -1747,7 +1674,6 @@ fn test_client_messages() {
             near_current_pane: false,
             no_focus: false,
             tab_id: None,
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -1761,7 +1687,6 @@ fn test_client_messages() {
             near_current_pane: false,
             no_focus: false,
             tab_id: None,
-            global_placement: fixed_global_placement,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -1793,7 +1718,6 @@ fn test_client_messages() {
             near_current_pane: false,
             no_focus: false,
             tab_id: None,
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -1829,7 +1753,6 @@ fn test_client_messages() {
             near_current_pane: false,
             no_focus: false,
             tab_id: None,
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -1844,7 +1767,6 @@ fn test_client_messages() {
             no_focus: false,
             borderless: None,
             tab_id: None,
-            global_placement: percent_global_placement,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -1874,7 +1796,6 @@ fn test_client_messages() {
             no_focus: false,
             borderless: Some(true),
             tab_id: None,
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -1904,7 +1825,6 @@ fn test_client_messages() {
             pane_id_to_replace: None,
             close_replaced_pane: false,
             tab_id: None,
-            global_placement: fixed_global_placement,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -1919,7 +1839,6 @@ fn test_client_messages() {
             pane_id_to_replace: None,
             close_replaced_pane: false,
             tab_id: None,
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -1947,7 +1866,6 @@ fn test_client_messages() {
             near_current_pane: false,
             no_focus: false,
             tab_id: None,
-            global_placement: percent_global_placement,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -1960,7 +1878,6 @@ fn test_client_messages() {
             near_current_pane: false,
             no_focus: false,
             tab_id: None,
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -2770,7 +2687,6 @@ fn test_client_messages() {
             },
             near_current_pane: false,
             no_focus: false,
-            global_placement: fixed_global_placement,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -2809,7 +2725,6 @@ fn test_client_messages() {
             close_replaced_pane: false,
             skip_cache: true,
             tab_id: None,
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -2824,7 +2739,6 @@ fn test_client_messages() {
             close_replaced_pane: false,
             skip_cache: false,
             tab_id: None,
-            global_placement: percent_global_placement,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -2840,7 +2754,6 @@ fn test_client_messages() {
             cwd: None,
             no_focus: true,
             tab_id: None,
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -2856,7 +2769,6 @@ fn test_client_messages() {
             cwd: Some(PathBuf::from("/path/to/cwd")),
             no_focus: false,
             tab_id: None,
-            global_placement: fixed_global_placement,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -3093,7 +3005,6 @@ fn test_client_messages() {
             no_focus: false,
             borderless: None,
             tab_id: Some(3),
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -3107,7 +3018,6 @@ fn test_client_messages() {
             near_current_pane: false,
             no_focus: false,
             tab_id: Some(5),
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -3120,7 +3030,6 @@ fn test_client_messages() {
             near_current_pane: false,
             no_focus: false,
             tab_id: Some(2),
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -3138,7 +3047,6 @@ fn test_client_messages() {
             near_current_pane: false,
             no_focus: false,
             tab_id: Some(1),
-            global_placement: percent_global_placement,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -3161,7 +3069,6 @@ fn test_client_messages() {
             near_current_pane: false,
             no_focus: false,
             tab_id: Some(4),
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -3176,7 +3083,6 @@ fn test_client_messages() {
             pane_id_to_replace: None,
             close_replaced_pane: false,
             tab_id: Some(7),
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -3191,7 +3097,6 @@ fn test_client_messages() {
             close_replaced_pane: false,
             skip_cache: false,
             tab_id: Some(2),
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -3207,7 +3112,6 @@ fn test_client_messages() {
             cwd: None,
             no_focus: false,
             tab_id: Some(6),
-            global_placement: None,
         },
         terminal_id: Some(1),
         client_id: Some(100),

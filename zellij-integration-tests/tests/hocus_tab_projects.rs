@@ -39,9 +39,11 @@ fn a_tab_is_named_after_the_project_its_agent_is_in() {
     pane size=1 borderless=true {{
         plugin location="zellij:tab-bar"
     }}
-    global_panes {{
-        pane edge="left" size="50%" focus=true {{
-            plugin location="hocus"
+    floating_panes {{
+        pane x=0 y=0 width="50%" height="100%" {{
+            plugin location="hocus" {{
+                overlay true
+            }}
         }}
     }}
     pane cwd="{}"

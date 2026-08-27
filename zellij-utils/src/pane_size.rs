@@ -273,13 +273,7 @@ impl PaneGeom {
             SplitDirection::Horizontal => self.rows.is_percent(),
         }
     }
-    /// `origin` is where the tab's display area starts on screen - non-zero when global panes are
-    /// docked to the left or top - so that coordinates are relative to the tab rather than to the
-    /// screen.
-    /// NOTE: Every floating-pane creation path (`tab/mod.rs`, `layout_applier.rs`,
-    /// `floating_panes/mod.rs`, `tiled_pane_grid.rs` and any future one) must pass
-    /// the tab's `display_area_origin` here; otherwise panes are mispositioned
-    /// when left/top global strips exist (see `pane_size` tests with non-zero origin).
+    /// Coordinates are resolved against the screen, which a tab's display area always starts at.
     #[allow(clippy::too_many_arguments)]
     pub fn apply_floating_pane_position(
         &mut self,
@@ -289,7 +283,6 @@ impl PaneGeom {
         height: Option<PercentOrFixed>,
         viewport_cols: usize,
         viewport_rows: usize,
-        origin: (usize, usize),
     ) {
         if let Some(width) = &width {
             self.cols = Dimension::fixed(width.to_fixed(viewport_cols));
@@ -300,17 +293,13 @@ impl PaneGeom {
         // saturating: `PercentOrFixed` comes from layout config, so a typo'd `Fixed` can be
         // arbitrarily large
         self.x = match &x {
-            Some(x) => origin.0.saturating_add(x.to_fixed(viewport_cols)),
-            None if width.is_some() => origin
-                .0
-                .saturating_add(viewport_cols.saturating_sub(self.cols.as_usize()) / 2),
+            Some(x) => x.to_fixed(viewport_cols),
+            None if width.is_some() => viewport_cols.saturating_sub(self.cols.as_usize()) / 2,
             None => self.x,
         };
         self.y = match &y {
-            Some(y) => origin.1.saturating_add(y.to_fixed(viewport_rows)),
-            None if height.is_some() => origin
-                .1
-                .saturating_add(viewport_rows.saturating_sub(self.rows.as_usize()) / 2),
+            Some(y) => y.to_fixed(viewport_rows),
+            None if height.is_some() => viewport_rows.saturating_sub(self.rows.as_usize()) / 2,
             None => self.y,
         };
     }
@@ -318,7 +307,6 @@ impl PaneGeom {
         &mut self,
         floating_pane_coordinates: FloatingPaneCoordinates,
         viewport: Viewport,
-        origin: (usize, usize),
     ) {
         self.apply_floating_pane_position(
             floating_pane_coordinates.x,
@@ -327,7 +315,6 @@ impl PaneGeom {
             floating_pane_coordinates.height,
             viewport.cols,
             viewport.rows,
-            origin,
         );
         // saturating throughout: the coordinates come from layout config and can be arbitrarily
         // large
@@ -565,7 +552,7 @@ mod tests {
         ))
     }
 
-    /// Screen-sized coordinates: large but small enough that `origin + value` cannot
+    /// Screen-sized coordinates: large but small enough that a sum of two cannot
     /// overflow `usize` (usize overflow is a separate concern from containment).
     #[hegel::composite]
     fn coordinates(tc: &hegel::TestCase) -> usize {
@@ -597,7 +584,6 @@ mod tests {
             rows: tc.draw(coordinates()),
             cols: tc.draw(coordinates()),
         };
-        let origin = (tc.draw(coordinates()), tc.draw(coordinates()));
         let coords = FloatingPaneCoordinates {
             x: tc.draw(generators::optional(percent_or_fixeds())),
             y: tc.draw(generators::optional(percent_or_fixeds())),
@@ -607,48 +593,42 @@ mod tests {
             borderless: None,
         };
         let mut geom = PaneGeom::default();
-        geom.adjust_coordinates(coords.clone(), viewport, origin);
+        geom.adjust_coordinates(coords.clone(), viewport);
         assert!(
             geom.x >= viewport.x,
-            "x {} left of viewport {:?} (coords {:?}, origin {:?})",
+            "x {} left of viewport {:?} (coords {:?})",
             geom.x,
             viewport,
-            coords,
-            origin
+            coords
         );
         assert!(
             geom.y >= viewport.y,
-            "y {} above viewport {:?} (coords {:?}, origin {:?})",
+            "y {} above viewport {:?} (coords {:?})",
             geom.y,
             viewport,
-            coords,
-            origin
+            coords
         );
         assert!(
             geom.x + geom.cols.as_usize() <= viewport.x + viewport.cols,
-            "x {} + cols {} past viewport {:?} (coords {:?}, origin {:?})",
+            "x {} + cols {} past viewport {:?} (coords {:?})",
             geom.x,
             geom.cols.as_usize(),
             viewport,
-            coords,
-            origin
+            coords
         );
         assert!(
             geom.y + geom.rows.as_usize() <= viewport.y + viewport.rows,
-            "y {} + rows {} past viewport {:?} (coords {:?}, origin {:?})",
+            "y {} + rows {} past viewport {:?} (coords {:?})",
             geom.y,
             geom.rows.as_usize(),
             viewport,
-            coords,
-            origin
+            coords
         );
     }
 
     #[test]
-    fn apply_floating_pane_position_with_non_zero_origin() {
+    fn apply_floating_pane_position_places_a_pane_at_the_coordinates_it_names() {
         let mut geom = PaneGeom::default();
-        // origin (10,5) simulates left/top global strips
-        let origin = (10, 5);
         geom.apply_floating_pane_position(
             Some(PercentOrFixed::Fixed(5)),
             Some(PercentOrFixed::Fixed(3)),
@@ -656,20 +636,16 @@ mod tests {
             Some(PercentOrFixed::Fixed(10)),
             80,
             24,
-            origin,
         );
-        // x = origin.x + x, y = origin.y + y
-        assert_eq!(geom.x, 15, "x should include origin.x");
-        assert_eq!(geom.y, 8, "y should include origin.y");
+        assert_eq!(geom.x, 5);
+        assert_eq!(geom.y, 3);
         assert_eq!(geom.cols.as_usize(), 20);
         assert_eq!(geom.rows.as_usize(), 10);
     }
 
     #[test]
-    fn apply_floating_pane_position_centered_with_origin() {
+    fn apply_floating_pane_position_centers_a_sized_pane_with_no_coordinates() {
         let mut geom = PaneGeom::default();
-        let origin = (10, 5);
-        // No x/y, width/height set — should center within viewport plus origin
         geom.apply_floating_pane_position(
             None,
             None,
@@ -677,17 +653,14 @@ mod tests {
             Some(PercentOrFixed::Fixed(10)),
             80,
             24,
-            origin,
         );
-        // centered: origin + (viewport - size)/2
-        assert_eq!(geom.x, 10 + (80 - 20) / 2);
-        assert_eq!(geom.y, 5 + (24 - 10) / 2);
+        assert_eq!(geom.x, (80 - 20) / 2);
+        assert_eq!(geom.y, (24 - 10) / 2);
     }
 
     #[test]
-    fn apply_floating_pane_position_percent_with_origin() {
+    fn apply_floating_pane_position_reads_a_percentage_of_the_viewport() {
         let mut geom = PaneGeom::default();
-        let origin = (10, 5);
         geom.apply_floating_pane_position(
             Some(PercentOrFixed::Percent(10)),
             Some(PercentOrFixed::Percent(20)),
@@ -695,10 +668,9 @@ mod tests {
             None,
             100,
             50,
-            origin,
         );
-        // 10% of 100 =10, 20% of 50=10
-        assert_eq!(geom.x, 10 + 10);
-        assert_eq!(geom.y, 5 + 10);
+        // 10% of 100, 20% of 50
+        assert_eq!(geom.x, 10);
+        assert_eq!(geom.y, 10);
     }
 }

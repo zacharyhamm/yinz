@@ -71,4 +71,3 @@ fn a_tool_that_already_speaks_prose_is_left_alone() {
         None
     );
 }
-

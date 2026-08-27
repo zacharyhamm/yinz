@@ -29,7 +29,7 @@ fn no_pane_id(pane_id: &PaneId) -> String {
 
 pub struct TiledPaneGrid<'a> {
     panes: Rc<RefCell<HashMap<PaneId, &'a mut Box<dyn Pane>>>>,
-    display_area: Viewport, // includes all panes (including eg. the status bar and tab bar in the default layout), its x/y is the tab origin (non-zero when global panes are docked left/top)
+    display_area: Viewport, // includes all panes (including eg. the status bar and tab bar in the default layout); a tab fills the screen, so its x/y is always (0, 0)
     viewport: Viewport,     // includes all non-UI panes
 }
 
@@ -54,13 +54,7 @@ impl<'a> TiledPaneGrid<'a> {
 
     pub fn layout(&mut self, direction: SplitDirection, space: usize) -> Result<()> {
         let mut pane_resizer = PaneResizer::new(self.panes.clone());
-        pane_resizer.layout(direction, space, self.layout_origin(direction))
-    }
-    fn layout_origin(&self, direction: SplitDirection) -> usize {
-        match direction {
-            SplitDirection::Horizontal => self.display_area.x,
-            SplitDirection::Vertical => self.display_area.y,
-        }
+        pane_resizer.layout(direction, space)
     }
     pub fn get_pane_geom(&self, pane_id: &PaneId) -> Option<PaneGeom> {
         let panes = self.panes.borrow();
@@ -395,19 +389,11 @@ impl<'a> TiledPaneGrid<'a> {
             let mut pane_resizer = PaneResizer::new(self.panes.clone());
             if direction.is_horizontal() {
                 pane_resizer
-                    .layout(
-                        SplitDirection::Horizontal,
-                        self.display_area.cols,
-                        self.display_area.x,
-                    )
+                    .layout(SplitDirection::Horizontal, self.display_area.cols)
                     .with_context(err_context)?;
             } else {
                 pane_resizer
-                    .layout(
-                        SplitDirection::Vertical,
-                        self.display_area.rows,
-                        self.display_area.y,
-                    )
+                    .layout(SplitDirection::Vertical, self.display_area.rows)
                     .with_context(err_context)?;
             }
         } else {
@@ -1362,7 +1348,7 @@ impl<'a> TiledPaneGrid<'a> {
                 };
                 self.panes.borrow_mut().remove(&id);
                 let mut pane_resizer = PaneResizer::new(self.panes.clone());
-                let _ = pane_resizer.layout(direction, side_length, self.layout_origin(direction));
+                let _ = pane_resizer.layout(direction, side_length);
                 return true;
             }
         } else {
@@ -1370,16 +1356,8 @@ impl<'a> TiledPaneGrid<'a> {
             // this might happen if we are closing a fixed pane
             self.panes.borrow_mut().remove(&id);
             let mut pane_resizer = PaneResizer::new(self.panes.clone());
-            let _ = pane_resizer.layout(
-                SplitDirection::Horizontal,
-                self.display_area.cols,
-                self.display_area.x,
-            );
-            let _ = pane_resizer.layout(
-                SplitDirection::Vertical,
-                self.display_area.rows,
-                self.display_area.y,
-            );
+            let _ = pane_resizer.layout(SplitDirection::Horizontal, self.display_area.cols);
+            let _ = pane_resizer.layout(SplitDirection::Vertical, self.display_area.rows);
             return true;
         }
         false

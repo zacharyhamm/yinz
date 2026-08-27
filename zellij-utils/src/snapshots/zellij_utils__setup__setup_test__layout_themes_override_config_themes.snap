@@ -157,7 +157,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -278,7 +277,6 @@ Config {
                     direction: None,
                     pane_name: None,
                     start_suppressed: false,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -669,7 +667,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -842,7 +839,6 @@ Config {
                     direction: None,
                     pane_name: None,
                     start_suppressed: false,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -1124,7 +1120,6 @@ Config {
                     ),
                     pane_name: None,
                     start_suppressed: false,
-                    global_placement: None,
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -1182,7 +1177,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -1364,7 +1358,6 @@ Config {
                     direction: None,
                     pane_name: None,
                     start_suppressed: false,
-                    global_placement: None,
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -1394,7 +1387,6 @@ Config {
                     direction: None,
                     pane_name: None,
                     start_suppressed: false,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -1484,7 +1476,6 @@ Config {
                     ),
                     pane_name: None,
                     start_suppressed: false,
-                    global_placement: None,
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -1502,7 +1493,6 @@ Config {
                     near_current_pane: false,
                     no_focus: false,
                     tab_id: None,
-                    global_placement: None,
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -1909,7 +1899,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -2083,7 +2072,6 @@ Config {
                     direction: None,
                     pane_name: None,
                     start_suppressed: false,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -2458,7 +2446,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -2621,7 +2608,6 @@ Config {
                     direction: None,
                     pane_name: None,
                     start_suppressed: false,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -2920,7 +2906,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -3041,7 +3026,6 @@ Config {
                     direction: None,
                     pane_name: None,
                     start_suppressed: false,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -3370,7 +3354,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -3543,7 +3526,6 @@ Config {
                     direction: None,
                     pane_name: None,
                     start_suppressed: false,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -3857,7 +3839,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -3978,7 +3959,6 @@ Config {
                     direction: None,
                     pane_name: None,
                     start_suppressed: false,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -4255,7 +4235,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -4376,7 +4355,6 @@ Config {
                     direction: None,
                     pane_name: None,
                     start_suppressed: false,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -4638,7 +4616,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -4681,7 +4658,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -4736,7 +4712,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -4860,7 +4835,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -4902,7 +4876,6 @@ Config {
                     direction: None,
                     pane_name: None,
                     start_suppressed: false,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -4954,7 +4927,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -5031,7 +5003,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -5086,7 +5057,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -5302,7 +5272,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -5481,7 +5450,6 @@ Config {
                     direction: None,
                     pane_name: None,
                     start_suppressed: false,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -5761,7 +5729,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -5882,7 +5849,6 @@ Config {
                     direction: None,
                     pane_name: None,
                     start_suppressed: false,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -6098,7 +6064,6 @@ Config {
                     ),
                     pane_name: None,
                     start_suppressed: false,
-                    global_placement: None,
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -6116,7 +6081,6 @@ Config {
                     ),
                     pane_name: None,
                     start_suppressed: false,
-                    global_placement: None,
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -6290,7 +6254,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -6474,7 +6437,6 @@ Config {
                     direction: None,
                     pane_name: None,
                     start_suppressed: false,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -6754,7 +6716,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -6800,7 +6761,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -6834,7 +6794,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -6881,7 +6840,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {
@@ -6981,7 +6939,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -7039,7 +6996,6 @@ Config {
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: None,
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -7069,7 +7025,6 @@ Config {
                     direction: None,
                     pane_name: None,
                     start_suppressed: false,
-                    global_placement: None,
                 },
             ],
             KeyWithModifier {

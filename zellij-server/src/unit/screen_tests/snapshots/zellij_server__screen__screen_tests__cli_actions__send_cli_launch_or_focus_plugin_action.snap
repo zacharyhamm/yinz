@@ -1,5 +1,5 @@
 ---
-source: zellij-server/src/./unit/screen_tests/cli_actions.rs
+source: zellij-server/src/screen/../unit/screen_tests/cli_actions.rs
 expression: "format!(\"{:#?}\", pty_fill_plugin_cwd_instruction)"
 ---
 Some(
@@ -45,7 +45,6 @@ Some(
                 stdout_message: None,
             },
         ),
-        None,
         None,
     ),
 )

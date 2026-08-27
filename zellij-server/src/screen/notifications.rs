@@ -207,8 +207,7 @@ impl Screen {
         };
 
         self.dismiss_notification(notification_id).non_fatal();
-        let pane_exists = self.global_panes.pane(pane_id).is_some()
-            || self.tab_containing_pane(pane_id).is_some();
+        let pane_exists = self.tab_containing_pane(pane_id).is_some();
         if pane_exists {
             if self.get_active_pane_id(&client_id) != Some(pane_id) {
                 self.focus_pane_with_id(pane_id, true, false, client_id)
@@ -258,7 +257,6 @@ impl Screen {
             for tab in self.tabs.values_mut() {
                 tab.set_force_render();
             }
-            self.global_panes.set_force_render();
         }
 
         if self.notification_displacement_progress < 1.0 {

@@ -1,10 +1,9 @@
 //! Where hocus draws itself: a panel in the bottom-left corner of the screen.
 //!
-//! hocus used to be a *global pane* - a strip carved off the left edge of the session surface,
-//! with every tab shrunk to fit beside it. It is now an **overlay**, drawn over the session
-//! surface rather than beside it, so a tab keeps its full width and hocus floats above whatever
-//! is underneath. `hocus-agents` is a second overlay, the same size, and the two sit **side by
-//! side**: the conversation on the left, the agent list to its right.
+//! hocus is an **overlay**: drawn over the session surface rather than inside a tab's layout, so
+//! a tab keeps its full width and hocus floats above whatever is underneath. `hocus-agents` is a
+//! second overlay, the same size, and the two sit **side by side**: the conversation on the left,
+//! the agent list to its right.
 //!
 //! **They are two panes, not one column.** Either can be open without the other, either hides
 //! on its own, and neither opens the other unbidden. The one thing that couples them is the
@@ -30,9 +29,9 @@
 //! `change_overlay_coordinates` names the pane. `apply_overlay_geometry` is that call, and
 //! `State::placed` / `State::agents_placed` are what keep making it until it lands.
 //!
-//! **The overlays live on a tab, and hocus moves them.** An overlay belongs to a `Tab`, where a
-//! global pane belonged to the session. `on_tabs` moves whichever halves are on screen to the tab
-//! that became active, which is what keeps hocus present the way the strip used to be. This is
+//! **The overlays live on a tab, and hocus moves them.** An overlay belongs to a `Tab`, so
+//! `on_tabs` moves whichever halves are on screen to the tab that became active - which is what
+//! keeps hocus present wherever the user goes. This is
 //! also why the server routes events to overlays in *every* tab and not only the active one -
 //! without that, an overlay left behind on another tab would never hear the `TabUpdate` it moves
 //! on.
@@ -40,7 +39,6 @@
 use std::collections::BTreeMap;
 
 use zellij_tile::prelude::*;
-
 
 use crate::ui;
 use crate::State;
@@ -164,23 +162,11 @@ pub(crate) fn overlay_geometry(
 
 /// The surface the panes are placed against, off the active tab's `TabInfo`.
 ///
-/// An overlay's coordinates are resolved against the *session surface* - the tab's display area
-/// grown back over the global-pane strips (`OverlayPanes::surface`) - so that is the pair the
-/// arithmetic in `overlay_geometry` has to use. `display_area_*` is the tab centre, smaller by
-/// whatever the global panes took, and placing against it makes the panes too small on both axes
-/// and floats them above the bottom edge they are anchored to by the strips' thickness.
-///
-/// Both-or-neither: a `TabInfo` from a server that predates `session_surface_*` reports zero for
-/// both, and one that somehow reported only one would otherwise mix denominators. The fallback is
-/// what the old code did - wrong by the strips, rather than a pane collapsed to nothing.
-///
-/// `compact-bar` and `multiple-select` place themselves off `display_area_*` in the same way and
-/// have the same blind spot; they are deliberately left alone here.
+/// An overlay's coordinates are resolved against the whole session surface
+/// (`OverlayPanes::surface`), which is the tab's display area - chrome included - at the screen
+/// origin. That is the pair the arithmetic in `overlay_geometry` has to use.
 pub(crate) fn surface_of(tab: &TabInfo) -> (usize, usize) {
-    match (tab.session_surface_rows, tab.session_surface_columns) {
-        (0, _) | (_, 0) => (tab.display_area_rows, tab.display_area_columns),
-        (rows, cols) => (rows, cols),
-    }
+    (tab.display_area_rows, tab.display_area_columns)
 }
 
 /// What to do about an agent list that is not on the conversation's tab.

@@ -54,7 +54,6 @@ pub fn toggle_active_tab_sync_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -127,7 +126,6 @@ pub fn close_focused_tab_plugin_command() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -208,7 +206,6 @@ pub fn undo_rename_tab_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -281,7 +278,6 @@ pub fn previous_swap_layout_plugin_command() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -362,7 +358,6 @@ pub fn next_swap_layout_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -435,7 +430,6 @@ pub fn go_to_tab_name_plugin_command() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -516,7 +510,6 @@ pub fn focus_or_create_tab_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -589,7 +582,6 @@ pub fn go_to_tab() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,

@@ -112,10 +112,7 @@ pin_context_to_instruction! {
     special: [
         "Resize",
         "PtyBytes",
-        "NewGlobalPane",
-        "LaunchOrFocusGlobalPaneSplit",
         "ClearAllPluginHighlights",
-        "SetGlobalPanePlacement",
     ];
     only_special: [
         "HandlePtyBytes",

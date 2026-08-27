@@ -1090,9 +1090,6 @@ pub fn send_cli_new_pane_action_with_default_parameters() {
         near_current_pane: false,
         no_focus: false,
         borderless: Some(false),
-        global: false,
-        edge: None,
-        size: None,
         tab_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
@@ -1129,7 +1126,6 @@ pub fn web_new_pane_in_tab_action_targets_requested_tab() {
         no_focus: false,
         borderless: None,
         tab_id: Some(0),
-        global_placement: None,
     };
     route_arbitrary_action_to_server(&session_metadata, action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1204,9 +1200,6 @@ pub fn send_cli_new_pane_action_with_split_direction() {
         near_current_pane: false,
         no_focus: false,
         borderless: Some(false),
-        global: false,
-        edge: None,
-        size: None,
         tab_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
@@ -1268,9 +1261,6 @@ pub fn send_cli_new_pane_action_with_command_and_cwd() {
         near_current_pane: false,
         no_focus: false,
         borderless: Some(false),
-        global: false,
-        edge: None,
-        size: None,
         tab_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
@@ -1339,9 +1329,6 @@ pub fn send_cli_new_pane_action_with_floating_pane_and_coordinates() {
         near_current_pane: false,
         no_focus: false,
         borderless: Some(false),
-        global: false,
-        edge: None,
-        size: None,
         tab_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
@@ -2073,9 +2060,6 @@ pub fn send_cli_launch_or_focus_plugin_action() {
         url: "file:/path/to/fake/plugin".to_owned(),
         configuration: Default::default(),
         skip_plugin_cache: false,
-        global: false,
-        edge: None,
-        size: None,
         tab_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
@@ -2135,9 +2119,6 @@ pub fn send_cli_launch_or_focus_plugin_action_when_plugin_is_already_loaded() {
         url: "file:/path/to/fake/plugin".to_owned(),
         configuration: Default::default(),
         skip_plugin_cache: false,
-        global: false,
-        edge: None,
-        size: None,
         tab_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
@@ -2219,9 +2200,6 @@ pub fn send_cli_launch_or_focus_plugin_action_when_plugin_is_already_loaded_for_
         url: "fixture_plugin_for_tests".to_owned(),
         configuration: Default::default(),
         skip_plugin_cache: false,
-        global: false,
-        edge: None,
-        size: None,
         tab_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);

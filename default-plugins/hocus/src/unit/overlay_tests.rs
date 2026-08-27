@@ -879,34 +879,25 @@ fn the_hide_lands_on_the_first_manifest_that_finds_our_pane() {
 
 // ---- which rectangle the panes are placed against ---------------------------------------------
 //
-// `TabInfo` reports two of them and they are not the same: `display_area_*` is the tab centre,
-// what is left once the global-pane strips have been carved off, and `session_surface_*` is the
-// whole surface those strips were carved out of. The server resolves an overlay's coordinates
-// against the second, so that is the one the arithmetic has to use.
+// An overlay's coordinates are resolved by the server against the whole session surface, which a
+// tab occupies in full - so `display_area_*` is the pair the arithmetic has to use.
 
-/// A tab whose centre is smaller than the surface by a strip on each axis - the shape any session
-/// with a global pane in it has.
-fn tab_with_a_strip() -> TabInfo {
+/// A tab over the whole session surface.
+fn a_tab() -> TabInfo {
     TabInfo {
         position: 0,
         tab_id: 0,
         active: true,
-        display_area_rows: 45,
-        display_area_columns: 190,
-        session_surface_rows: 50,
-        session_surface_columns: 200,
+        display_area_rows: 50,
+        display_area_columns: 200,
         ..TabInfo::default()
     }
 }
 
 #[test]
-fn the_panes_are_placed_against_the_session_surface_and_not_the_tab() {
-    let tab = tab_with_a_strip();
-    assert_eq!(
-        surface_of(&tab),
-        (50, 200),
-        "the surface, not the centre the strips left behind"
-    );
+fn the_panes_are_placed_against_the_tab_s_display_area() {
+    let tab = a_tab();
+    assert_eq!(surface_of(&tab), (50, 200));
 
     let (rows, cols) = surface_of(&tab);
     let (chat, _) = beside(&BTreeMap::new(), rows, cols);
@@ -914,46 +905,9 @@ fn the_panes_are_placed_against_the_session_surface_and_not_the_tab() {
     assert_eq!(
         chat_y + chat_h,
         50 - DEFAULT_PAD,
-        "the bottom edge is one padding up from the bottom of the *surface* - placing against the \
-         tab centre would add the strip's rows to the padding the user asked for"
+        "the bottom edge is one padding up from the bottom of the surface"
     );
-    assert_eq!(
-        chat_w, 60,
-        "and the width is 30% of the surface, not of the centre"
-    );
-}
-
-/// A `TabInfo` from a server that predates the field. Wrong by the strips, which is what the code
-/// did before - and much better than a pane collapsed to nothing.
-#[test]
-fn a_tab_info_without_a_surface_falls_back_to_the_display_area() {
-    let tab = TabInfo {
-        display_area_rows: 45,
-        display_area_columns: 190,
-        ..TabInfo::default()
-    };
-    assert_eq!(surface_of(&tab), (45, 190));
-}
-
-/// Both-or-neither: half a surface is not a surface, and mixing the two denominators is exactly
-/// the bug this pair of fields exists to close.
-#[test]
-fn a_half_populated_surface_falls_back_as_a_whole() {
-    let rows_only = TabInfo {
-        display_area_rows: 45,
-        display_area_columns: 190,
-        session_surface_rows: 50,
-        ..TabInfo::default()
-    };
-    assert_eq!(surface_of(&rows_only), (45, 190));
-
-    let cols_only = TabInfo {
-        display_area_rows: 45,
-        display_area_columns: 190,
-        session_surface_columns: 200,
-        ..TabInfo::default()
-    };
-    assert_eq!(surface_of(&cols_only), (45, 190));
+    assert_eq!(chat_w, 60, "and the width is 30% of the surface");
 }
 
 #[test]
@@ -962,7 +916,7 @@ fn the_surface_is_what_a_tab_update_caches() {
         own_plugin_id: 7,
         ..Default::default()
     };
-    state.on_tabs(vec![tab_with_a_strip()]);
+    state.on_tabs(vec![a_tab()]);
     assert_eq!((state.surface_rows, state.surface_cols), (50, 200));
 }
 

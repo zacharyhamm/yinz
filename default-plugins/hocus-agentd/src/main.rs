@@ -134,7 +134,7 @@ struct State {
     manifest: PaneManifest,
     tabs: Vec<TabInfo>,
     /// The terminal pane the user is looking at. Passed on rather than acted on:
-    /// hocus is a global pane and hears no `PaneUpdate` for itself.
+    /// hocus cannot read its own focus off a `PaneUpdate`.
     focused: Option<u32>,
     /// The plugin pane the user is looking at, passed on for the same reason and to
     /// the same reader — it is how hocus tells the agents pane above it from itself.
@@ -602,13 +602,7 @@ impl State {
             .collect();
         // From the raw manifest for the same reason the maps above are pruned
         // against it: a suppressed pane is still a pane, still on its machine.
-        for pane in self
-            .manifest
-            .panes
-            .values()
-            .flatten()
-            .chain(self.manifest.global_panes.iter())
-        {
+        for pane in self.manifest.panes.values().flatten() {
             if let Some(host) = pane.host.clone() {
                 self.hosts.insert(pane.id, host);
             }

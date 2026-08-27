@@ -84,25 +84,10 @@ impl Screen {
     ) -> Result<u32, String> {
         let pane_id = match pane_id {
             Some(pane_id) => pane_id,
-            // `active_pane_id` rather than the tab's own active pane: a client
-            // focused on a global pane is looking at something this refuses
-            // below, and asking the tab instead would answer with a pane the
-            // user is not even looking at - which the warp would then move.
             None => self
                 .active_pane_id(client_id)
                 .ok_or_else(|| "no pane is focused".to_owned())?,
         };
-        // Before the plugin check, because most global panes are plugin panes and
-        // "it has no process" would send the user looking for the wrong problem:
-        // it is not the kind of pane that is wrong, it is where it lives. This
-        // also covers a split inside a global pane, which is a global pane itself.
-        if self.global_panes.pane(pane_id).is_some() {
-            return Err(
-                "this is a global pane; it belongs to the whole session rather than to a \
-                        tab, so there is no other session to move it into"
-                    .to_owned(),
-            );
-        }
         let terminal_id = match pane_id {
             PaneId::Terminal(terminal_id) => terminal_id,
             PaneId::Plugin(_) => {
@@ -559,26 +544,6 @@ impl Screen {
         self.close_tab_by_id(tab_index).non_fatal();
     }
 
-    /// Which tab an adopted pane is asked for, for the placements that follow the
-    /// client rather than naming a tab themselves.
-    ///
-    /// `NewPane` reads `ClientTabIndexOrPaneId::ClientId` as "put this wherever
-    /// the client is", and for a client focused on a global pane that means
-    /// *inside* the global pane - a strip belonging to the whole session, which a
-    /// pane from another session has no business joining. Naming the tab is what
-    /// takes that reading away; the pane lands in the tab behind the global pane,
-    /// which is the tab the user asked to warp into.
-    fn adopted_pane_tab_target(&self, client_id: ClientId) -> ClientTabIndexOrPaneId {
-        if self.global_panes.focused_pane_id(client_id).is_none() {
-            return ClientTabIndexOrPaneId::ClientId(client_id);
-        }
-        match self.active_tab_ids.get(&client_id).copied() {
-            Some(tab_index) => ClientTabIndexOrPaneId::TabIndex(tab_index),
-            // No tab to name and no better answer than the one we had.
-            None => ClientTabIndexOrPaneId::ClientId(client_id),
-        }
-    }
-
     /// Give an adopted supervisor a pane in this session.
     ///
     /// Deliberately expressed as the ordinary pane-creation instructions rather
@@ -605,14 +570,14 @@ impl Screen {
         let (placement, tab_target) = match placement {
             WarpPlacement::Floating => (
                 NewPanePlacement::Floating(None),
-                self.adopted_pane_tab_target(client_id),
+                ClientTabIndexOrPaneId::ClientId(client_id),
             ),
             WarpPlacement::FocusedTab => (
                 NewPanePlacement::Tiled {
                     direction: None,
                     borderless: Some(payload.borderless),
                 },
-                self.adopted_pane_tab_target(client_id),
+                ClientTabIndexOrPaneId::ClientId(client_id),
             ),
             WarpPlacement::NewTab => {
                 let tab_index = self.new_tab_for_adopted_pane(invoked_with.clone(), client_id)?;
@@ -625,11 +590,6 @@ impl Screen {
                 )
             },
         };
-        // After the target is worked out, which is what reads the global focus:
-        // the pane is about to land in a tab and take the focus with it, and a
-        // client left on a global pane would be looking elsewhere when it did.
-        self.defocus_global_pane(client_id);
-
         self.bus
             .senders
             .send_to_screen(ScreenInstruction::NewPane(
@@ -738,10 +698,6 @@ impl Screen {
         client_id: ClientId,
     ) -> Result<()> {
         let err_context = || "failed to place an adopted tab".to_string();
-        // A whole tab is arriving and the client is about to be moved into it; a
-        // client left focused on a global pane would be looking elsewhere while
-        // that happened. No-op unless a global pane is focused.
-        self.defocus_global_pane(client_id);
         let tab_index = self.get_new_tab_id();
         let default_layout = self.default_layout.clone();
         let swap_layouts = (

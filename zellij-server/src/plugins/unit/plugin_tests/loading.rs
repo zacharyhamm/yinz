@@ -3,49 +3,6 @@ use zellij_test_support::Watched;
 
 #[test]
 #[serial(plugin_tests)]
-fn global_plugin_rejects_modal_configuration_from_resolved_alias() {
-    let (plugin_thread_sender, screen_receiver, teardown) = create_plugin_thread(None, None);
-    let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
-
-    plugin_thread_sender
-        .send(PluginInstruction::Load(
-            Some(false),
-            false,
-            false,
-            None,
-            RunPluginOrAlias::Alias(PluginAlias {
-                name: "modal_fixture_plugin_for_tests".to_owned(),
-                ..Default::default()
-            }),
-            Some(1),
-            None,
-            1,
-            Size { cols: 80, rows: 24 },
-            None,
-            None,
-            false,
-            None,
-            None,
-            Some(crate::route::NotificationEnd::new(completion_tx)),
-            Some(crate::pty::GlobalPaneSpawnContext::from(
-                zellij_utils::data::GlobalPanePlacement::default(),
-            )),
-            None,
-        ))
-        .unwrap();
-
-    let completion = completion_rx.blocking_recv().unwrap();
-    assert_eq!(completion.exit_status, Some(1));
-    assert_eq!(
-        completion.error_message.as_deref(),
-        Some("global plugins cannot be overlays or modal")
-    );
-    assert!(screen_receiver.try_recv().is_err());
-    teardown();
-}
-
-#[test]
-#[serial(plugin_tests)]
 pub fn load_new_plugin_from_hd() {
     // here we load our fixture plugin into the plugin thread, and then send it an update message
     // expecting tha thte plugin will log the received event and render it later after the update
@@ -96,7 +53,6 @@ pub fn load_new_plugin_from_hd() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -177,7 +133,6 @@ pub fn shared_plugin_has_one_instance_serving_all_clients() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -271,7 +226,6 @@ pub fn load_new_plugin_with_plugin_alias() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -346,7 +300,6 @@ pub fn plugin_workers() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -429,7 +382,6 @@ pub fn plugin_workers_persist_state() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -522,7 +474,6 @@ pub fn can_subscribe_to_hd_events() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,

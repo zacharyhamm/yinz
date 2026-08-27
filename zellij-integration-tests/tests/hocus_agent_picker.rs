@@ -5,7 +5,7 @@
 //!
 //! `strip_rows` and the hocus-agents selection logic are unit-tested down to
 //! the row text, but they say nothing about layout — the list is a real pane
-//! now, spawned by hocus as a split of its own global strip, and only a real
+//! now, opened by hocus as an overlay beside its own, and only a real
 //! session with a real grid to read says the split happened, the rows went to
 //! the right pane, and hiding the sidebar takes both panes with it.
 
@@ -22,9 +22,10 @@ const HOCUS_CONFIG: &str = r#"keybinds {
   normal {
     bind "Ctrl b" {
       LaunchOrFocusPlugin "hocus" {
-        global true
-        edge "left"
-        size "50%"
+        floating true
+        overlay true
+        awaits_placement true
+        move_to_focused_tab true
       }
     }
   }
@@ -49,9 +50,10 @@ const HOCUS_AGENTS_BINDING_CONFIG: &str = r#"keybinds {
   normal {
     bind "Ctrl b" {
       LaunchOrFocusPlugin "hocus-agents" {
-        global true
-        edge "left"
-        size "50%"
+        floating true
+        overlay true
+        awaits_placement true
+        move_to_focused_tab true
       }
     }
   }
@@ -97,13 +99,15 @@ load_plugins clear-defaults=true {
 }
 "#;
 
-/// hocus as the left global sidebar it really runs as, beside a pane named
+/// hocus as the left-hand overlay column it really runs as, beside a pane named
 /// after an agent — which is what detection reads when a pane's command names
 /// nothing. hocus spawns the agents pane above itself on load.
 const HOCUS_LAYOUT: &str = r#"layout {
-    global_panes {
-        pane edge="left" size="50%" focus=true {
-            plugin location="hocus"
+    floating_panes {
+        pane x=0 y=0 width="50%" height="100%" {
+            plugin location="hocus" {
+                overlay true
+            }
         }
     }
     pane name="claude"
@@ -143,9 +147,11 @@ fn an_agent_that_never_leaves_its_folder_lands_under_its_project() {
     // covered by the test below.
     let layout = format!(
         r#"layout {{
-    global_panes {{
-        pane edge="left" size="50%" focus=true {{
-            plugin location="hocus"
+    floating_panes {{
+        pane x=0 y=0 width="50%" height="100%" {{
+            plugin location="hocus" {{
+                overlay true
+            }}
         }}
     }}
     pane cwd="{}"
@@ -220,9 +226,11 @@ fn an_agent_in_a_nested_worktree_shows_its_own_branch() {
     let worktree = write_git_worktree(&repository, "topic", "topic");
     let layout = format!(
         r#"layout {{
-    global_panes {{
-        pane edge="left" size="50%" focus=true {{
-            plugin location="hocus"
+    floating_panes {{
+        pane x=0 y=0 width="50%" height="100%" {{
+            plugin location="hocus" {{
+                overlay true
+            }}
         }}
     }}
     pane cwd="{}"
@@ -316,9 +324,11 @@ fn allow(zellij: &TestSession) {
 /// A sidebar beside two unnamed panes — nothing about either says "agent" until
 /// something runs in it.
 const UNNAMED_PANES_LAYOUT: &str = r#"layout {
-    global_panes {
-        pane edge="left" size="50%" focus=true {
-            plugin location="hocus"
+    floating_panes {
+        pane x=0 y=0 width="50%" height="100%" {
+            plugin location="hocus" {
+                overlay true
+            }
         }
     }
     pane
@@ -399,9 +409,11 @@ fn an_agent_that_shells_out_stays_in_the_list_until_it_is_really_gone() {
 #[test]
 fn a_pane_launched_as_a_command_is_an_agent_without_a_title() {
     let layout = r#"layout {
-    global_panes {
-        pane edge="left" size="50%" focus=true {
-            plugin location="hocus"
+    floating_panes {
+        pane x=0 y=0 width="50%" height="100%" {
+            plugin location="hocus" {
+                overlay true
+            }
         }
     }
     pane command="claude"
