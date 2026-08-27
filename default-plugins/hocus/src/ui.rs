@@ -4,7 +4,7 @@
 //! gives plugins no scrollback of their own, so everything on screen is
 //! recomputed here from `State` each time and all scroll state is ours.
 
-use hocus_proto::text::{sanitize, wrap, wrap_hard};
+use hocus_proto::text::{sanitize, wrap, wrap_input, WrappedLine};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use zellij_tile::prelude::*;
@@ -763,12 +763,7 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
     } else if let Some(layout) = &layout {
         // Must precede any print_*: the host reads the cursor position out of
         // the render output stream in order.
-        place_cursor(
-            state,
-            cols,
-            layout.input_y(body_y),
-            layout.skipped_input_rows,
-        );
+        place_cursor(state, layout, layout.input_y(body_y));
     }
     render_title(state, cols);
 
@@ -811,10 +806,10 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
 /// How the conversation lays out in the rows below the title: the transcript on
 /// top, a blank row, and the input box at the bottom.
 struct ChatLayout {
-    /// The tail of the wrapped input, one entry per row of the box.
-    input_lines: Vec<String>,
-    /// Wrapped input rows above that tail, which the box has scrolled past.
-    skipped_input_rows: usize,
+    /// The tail of the wrapped input, one entry per row of the box. Each row
+    /// carries where it starts in the wrapped string, which is how the cursor
+    /// finds the cell it belongs in.
+    input_lines: Vec<WrappedLine>,
     transcript_rows: usize,
 }
 
@@ -827,7 +822,7 @@ impl ChatLayout {
 
 fn chat_layout(state: &State, height: usize, cols: usize) -> ChatLayout {
     let input_text = format!("{}{}", prompt(state), state.input.get_text());
-    let all_input_lines = wrap_hard(&input_text, cols);
+    let all_input_lines = wrap_input(&input_text, cols);
     // Cap against the rows actually available, not just INPUT_MAX_ROWS: in a
     // minimum-height body a tall input would otherwise be laid out past the
     // last row. The row held back is the blank one above the box.
@@ -839,7 +834,6 @@ fn chat_layout(state: &State, height: usize, cols: usize) -> ChatLayout {
         // Show the tail so the box follows the cursor on a long multi-line
         // message.
         input_lines: all_input_lines[all_input_lines.len() - input_rows..].to_vec(),
-        skipped_input_rows: all_input_lines.len() - input_rows,
         transcript_rows: height.saturating_sub(1 + input_rows),
     }
 }
@@ -856,7 +850,16 @@ fn render_chat(state: &mut State, y: usize, cols: usize, layout: &ChatLayout) {
 
     let input_y = layout.input_y(y);
     for (index, line) in layout.input_lines.iter().enumerate() {
-        print_text_with_coordinates(Text::new(line), 0, input_y + index, Some(cols), None);
+        // `opaque()` paints the theme's unselected background across the whole
+        // width the coordinates give, which is what makes the box read as a box
+        // - and it names no colour, so it follows whatever theme is configured.
+        print_text_with_coordinates(
+            Text::new(&line.text).opaque(),
+            0,
+            input_y + index,
+            Some(cols),
+            None,
+        );
     }
 }
 
@@ -1183,27 +1186,37 @@ fn help_line(state: &State) -> &'static str {
 
 /// Place the terminal cursor at the text cursor's position inside the input box.
 ///
-/// The cursor's own coordinates are derived by wrapping the text *before* it
-/// with the same function that laid out the box, so the two can't disagree.
-fn place_cursor(state: &State, cols: usize, input_y: usize, skipped_rows: usize) {
-    // get_cursor_position() is a char index, not a byte offset.
-    let typed: String = state
-        .input
-        .get_text()
-        .chars()
-        .take(state.input.get_cursor_position())
-        .collect();
-    let lines = wrap_hard(&format!("{}{typed}", prompt(state)), cols);
-    let row = lines.len().saturating_sub(1);
-    let column = lines.last().map(|line| line.width()).unwrap_or(0);
+/// The cursor is read out of the very rows the box is about to draw, so the two
+/// cannot disagree. Deriving it instead by wrapping the text *before* it would
+/// be wrong now the box wraps on words: characters typed after the cursor can
+/// push the word it sits in onto the next row.
+fn place_cursor(state: &State, layout: &ChatLayout, input_y: usize) {
+    // get_cursor_position() is a char index, not a byte offset, and the rows
+    // were wrapped from the prompt and the text together.
+    let cursor = prompt(state).chars().count() + state.input.get_cursor_position();
 
-    // The box shows only its last INPUT_MAX_ROWS lines; if the cursor scrolled
-    // off the top of that window there is nowhere on screen to put it.
-    if row < skipped_rows {
-        show_cursor(None);
-        return;
+    match cursor_cell(&layout.input_lines, cursor) {
+        Some((column, row)) => show_cursor(Some((column, input_y + row))),
+        // Scrolled off the top of the box: nowhere on screen to put it.
+        None => show_cursor(None),
     }
-    show_cursor(Some((column, input_y + row - skipped_rows)));
+}
+
+/// The (column, row) `cursor` occupies in `lines`, or `None` when it falls above
+/// them - the box shows only its last `INPUT_MAX_ROWS` rows.
+///
+/// The row is the last one starting at or before the cursor: one sitting exactly
+/// on a boundary belongs to the later row, which is where the next keystroke
+/// lands.
+fn cursor_cell(lines: &[WrappedLine], cursor: usize) -> Option<(usize, usize)> {
+    let row = lines.iter().rposition(|line| line.start <= cursor)?;
+    let column = lines[row]
+        .text
+        .chars()
+        .take(cursor - lines[row].start)
+        .map(|ch| ch.width().unwrap_or(0))
+        .sum();
+    Some((column, row))
 }
 
 // ---------------------------------------------------------------------------
@@ -1221,7 +1234,7 @@ mod tests {
 
     // -- the input box's wrapping -------------------------------------------
 
-    /// The bug `wrap_hard` replaced word wrap for: a full row put the cursor at
+    /// The bug the trailing empty row exists for: a full row put the cursor at
     /// column `cols`, one past the last column, and zellij hides a plugin cursor
     /// that sits outside the pane. The wrapper itself lives in `hocus_proto::text`
     /// now; the prompt it has to leave room for is still ours.
@@ -1229,9 +1242,48 @@ mod tests {
     fn the_cursor_stays_inside_the_pane_when_a_row_is_full() {
         let cols = 24;
         let full = format!("{PROMPT}{}", "a".repeat(cols - PROMPT.width()));
-        let lines = wrap_hard(&full, cols);
+        let lines = wrap_input(&full, cols);
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines.last().unwrap().width(), 0, "cursor lands at column 0");
+        assert_eq!(
+            cursor_cell(&lines, full.chars().count()),
+            Some((0, 1)),
+            "cursor lands at column 0 of the next row"
+        );
+    }
+
+    #[test]
+    fn the_input_box_breaks_between_words() {
+        let cols = 24;
+        let text = format!("{PROMPT}some reasonably long words here");
+        let rows: Vec<String> = wrap_input(&text, cols)
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        assert_eq!(rows, vec!["> some reasonably long ", "words here"]);
+    }
+
+    /// The cursor has to follow the word the wrap moved down, which is why it is
+    /// read out of the box's own rows rather than from a wrap of the text before
+    /// it: "words" only left the first row because of what was typed after it.
+    #[test]
+    fn the_cursor_follows_a_word_the_wrap_moved_down() {
+        let cols = 24;
+        let text = format!("{PROMPT}some reasonably long words here");
+        let lines = wrap_input(&text, cols);
+        // Char index of "words", which is where the second row begins.
+        let at_words = text[..text.find("words").expect("present")].chars().count();
+        // "words" starts the second row, so the cursor just before it is at its
+        // column 0 and the cursor after its first character is at column 1.
+        assert_eq!(cursor_cell(&lines, at_words), Some((0, 1)));
+        assert_eq!(cursor_cell(&lines, at_words + 1), Some((1, 1)));
+    }
+
+    #[test]
+    fn the_cursor_hides_when_it_scrolls_off_the_top_of_the_box() {
+        let lines = wrap_input("> aaa bbb ccc", 8);
+        // Only the tail is drawn, so a cursor in a row above it has no cell.
+        let tail = &lines[lines.len() - 1..];
+        assert_eq!(cursor_cell(tail, 0), None);
     }
 
     // -- transcript_lines ---------------------------------------------------
