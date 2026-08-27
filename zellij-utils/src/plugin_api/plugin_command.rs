@@ -6709,7 +6709,7 @@ mod tests {
     #[test]
     fn set_pane_title_prefix_protobuf_round_trip() {
         for (pane_id, prefix) in [
-            (PaneId::Terminal(7), Some("zellij/topic".to_owned())),
+            (PaneId::Terminal(7), Some("zellij:topic".to_owned())),
             (PaneId::Terminal(7), Some(String::new())),
             (PaneId::Plugin(3), None),
         ] {

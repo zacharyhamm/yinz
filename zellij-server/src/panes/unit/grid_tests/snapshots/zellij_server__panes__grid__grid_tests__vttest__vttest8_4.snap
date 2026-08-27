@@ -1,6 +1,5 @@
 ---
-source: zellij-server/src/panes/./unit/grid_tests.rs
-assertion_line: 613
+source: zellij-server/src/panes/./unit/grid_tests/vttest.rs
 expression: "format!(\"{:?}\", grid)"
 ---
 00 (C): AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA                                                          
@@ -53,5 +52,4 @@ expression: "format!(\"{:?}\", grid)"
 47 (C):                                                                                                  
 48 (C):                                                                                                  
 49 (C):                                                                                                  
-50 (C):                                                                                                  
-
+50 (C):

@@ -99,8 +99,13 @@ impl Repository {
         self.worktree_status.is_some() || self.common_dir.is_some()
     }
 
-    /// `repo/branch` — where this checkout is, in the fewest words that still
+    /// `repo:branch` — where this checkout is, in the fewest words that still
     /// tell two worktrees of one repository apart.
+    ///
+    /// A colon separates the two halves, not a slash: a slash is legal inside a
+    /// branch name, so `hocus/feature/nested` gives the reader no way to know
+    /// where the repository ends. A colon cannot appear in a ref name at all, so
+    /// `hocus:feature/nested` splits in exactly one place.
     ///
     /// `None` for a folder Git did not claim: there is nothing to say, and a
     /// bare folder name where the reader expects a checkout would read as one.
@@ -119,15 +124,15 @@ impl Repository {
         if !self.is_checkout() {
             return None;
         }
-        // A checkout at `/` names no folder, and a lone slash on a pane frame is
-        // noise rather than an address.
+        // A checkout at `/` names no folder, and a lone separator on a pane frame
+        // is noise rather than an address.
         let repository = self
             .common_dir
             .as_deref()
             .and_then(repository_name)
             .or_else(|| Some(folder_name(&self.root)).filter(|name| !name.is_empty()))?;
         match &self.branch {
-            Some(branch) => Some(format!("{repository}/{branch}")),
+            Some(branch) => Some(format!("{repository}:{branch}")),
             None => Some(repository.to_owned()),
         }
     }
@@ -692,7 +697,7 @@ mod tests {
     #[test]
     fn a_primary_checkout_is_named_by_its_own_folder_and_branch() {
         let repository = repository("/work/hocus", "/work/hocus/.git", Some("main"));
-        assert_eq!(repository.checkout_label().as_deref(), Some("hocus/main"));
+        assert_eq!(repository.checkout_label().as_deref(), Some("hocus:main"));
     }
 
     /// The case the label exists for. The worktree's own folder is `topic`, which
@@ -706,17 +711,20 @@ mod tests {
             "/work/hocus/.git",
             Some("topic"),
         );
-        assert_eq!(repository.checkout_label().as_deref(), Some("hocus/topic"));
+        assert_eq!(repository.checkout_label().as_deref(), Some("hocus:topic"));
     }
 
-    /// A slash is legal in a branch name and the label keeps it whole: `feature/x`
-    /// is one branch, not a repository called `feature`.
+    /// The case the colon separator exists for. A slash is legal in a branch name
+    /// and the label keeps it whole, so with a slash between the halves
+    /// `hocus/feature/nested` could be read three ways. A colon cannot appear in a
+    /// ref name, so it marks the one real boundary: `feature/nested` is one branch,
+    /// not a repository called `feature`.
     #[test]
     fn a_slashed_branch_survives_intact() {
         let repository = repository("/work/hocus", "/work/hocus/.git", Some("feature/nested"));
         assert_eq!(
             repository.checkout_label().as_deref(),
-            Some("hocus/feature/nested")
+            Some("hocus:feature/nested")
         );
     }
 
@@ -745,7 +753,7 @@ mod tests {
             branch: Some("topic".to_owned()),
             ..Repository::default()
         };
-        assert_eq!(repository.checkout_label().as_deref(), Some("hocus/topic"));
+        assert_eq!(repository.checkout_label().as_deref(), Some("hocus:topic"));
     }
 
     /// A `common_dir` with no name left in it after either reading. The checkout's
@@ -759,7 +767,7 @@ mod tests {
             branch: Some("topic".to_owned()),
             ..Repository::default()
         };
-        assert_eq!(repository.checkout_label().as_deref(), Some("topic/topic"));
+        assert_eq!(repository.checkout_label().as_deref(), Some("topic:topic"));
     }
 
     #[test]

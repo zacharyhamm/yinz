@@ -1,7 +1,6 @@
 ---
-source: zellij-server/src/panes/./unit/grid_tests.rs
+source: zellij-server/src/panes/./unit/grid_tests/app_replay.rs
 expression: "format!(\"{:?}\", grid)"
-
 ---
 00 (C): .rw-r--r--  3.3k aram 11 Jan 16:09  CODE_OF_CONDUCT.md
 01 (C): .rw-r--r--  3.5k aram 17 Feb 16:06  CONTRIBUTING.md
@@ -58,5 +57,4 @@ expression: "format!(\"{:?}\", grid)"
 52 (C): doughsay                krisleech               red-snapper             zephyr
 53 (C): eclm                    l                       robbyrussell            zish
 54 (C): edan                    lambda                  sashimi
-55 (C): ⋊> ~/c/zellij on main ⨯                                                                                     10:27:46                                                                                                                       
-
+55 (C): ⋊> ~/c/zellij on main ⨯                                                                                     10:27:46

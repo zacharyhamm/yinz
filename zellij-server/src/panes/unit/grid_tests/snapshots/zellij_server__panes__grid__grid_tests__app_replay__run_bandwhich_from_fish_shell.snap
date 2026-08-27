@@ -1,7 +1,6 @@
 ---
-source: zellij-server/src/panes/./unit/grid_tests.rs
+source: zellij-server/src/panes/./unit/grid_tests/app_replay.rs
 expression: "format!(\"{:?}\", grid)"
-
 ---
 00 (C):  Total Up / Down: 46Bps / 57Bps                                                                                     
 01 (C): ┌Utilization by process name───────────────────────────────────────────────────────────────────────────────────────┐
@@ -30,5 +29,4 @@ expression: "format!(\"{:?}\", grid)"
 24 (C): │                                                                                                                  │
 25 (C): │                                                                                                                  │
 26 (C): └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-27 (C):  Press <SPACE> to pause. Use <TAB> to rearrange tables. (DNS queries hidden).                                       
-
+27 (C):  Press <SPACE> to pause. Use <TAB> to rearrange tables. (DNS queries hidden).

@@ -32,4 +32,3 @@ expression: "format!(\"{:?}\", terminal_pane.grid)"
 27 (C): zellij on  mouse-support [?] is 📦 v0.14.0 via 🦀 v1.53.0-b
 28 (W): eta.3
 29 (C): ❯
-

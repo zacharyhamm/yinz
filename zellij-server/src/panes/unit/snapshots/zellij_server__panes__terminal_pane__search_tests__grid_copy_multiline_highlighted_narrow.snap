@@ -42,4 +42,3 @@ expression: "format!(\"{:?}\", terminal_pane.grid)"
 37 (W): eta.
 38 (W): 3
 39 (C): ❯
-

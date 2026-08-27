@@ -3,6 +3,6 @@ source: zellij-integration-tests/tests/panes.rs
 expression: normalized(&grid_snapshot)
 ---
  Zellij (test)  Tab #1 (FULLSCREEN)  + 
-                                                         Pane #2
+                                                       [1] Pane #2
 $ █
  Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <e> AGENT  <q> QUIT 

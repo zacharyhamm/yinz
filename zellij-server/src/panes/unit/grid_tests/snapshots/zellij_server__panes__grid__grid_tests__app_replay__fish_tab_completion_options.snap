@@ -1,6 +1,5 @@
 ---
-source: zellij-server/src/panes/./unit/grid_tests.rs
-assertion_line: 1247
+source: zellij-server/src/panes/./unit/grid_tests/app_replay.rs
 expression: "format!(\"{:?}\", grid)"
 ---
 00 (C): Welcome to fish, the friendly interactive shell                                                                     
@@ -30,5 +29,4 @@ expression: "format!(\"{:?}\", grid)"
 24 (C): 
 25 (C): 
 26 (C): 
-27 (C): 
-
+27 (C):

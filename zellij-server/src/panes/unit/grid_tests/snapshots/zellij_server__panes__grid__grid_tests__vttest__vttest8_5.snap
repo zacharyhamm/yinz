@@ -1,7 +1,6 @@
 ---
-source: zellij-server/src/panes/./unit/grid_tests.rs
+source: zellij-server/src/panes/./unit/grid_tests/vttest.rs
 expression: "format!(\"{:?}\", grid)"
-
 ---
 00 (C): If your terminal has the ANSI 'Insert Character' function                                        
 01 (C): (the VT102 does not), then you should see a line like this                                       
@@ -53,5 +52,4 @@ expression: "format!(\"{:?}\", grid)"
 47 (C):                                                                                                  
 48 (C):                                                                                                  
 49 (C):                                                                                                  
-50 (C):                                                                                                  
-
+50 (C):

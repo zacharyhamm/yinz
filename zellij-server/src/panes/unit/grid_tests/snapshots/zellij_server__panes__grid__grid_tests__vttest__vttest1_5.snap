@@ -1,7 +1,6 @@
 ---
-source: zellij-server/src/panes/./unit/grid_tests.rs
+source: zellij-server/src/panes/./unit/grid_tests/vttest.rs
 expression: "format!(\"{:?}\", grid)"
-
 ---
 00 (C): Test of leading zeros in ESC sequences.                                                                       
 01 (C): Two lines below you should see the sentence "This is a correct sentence".                                     
@@ -43,5 +42,4 @@ expression: "format!(\"{:?}\", grid)"
 37 (C):                                                                                                               
 38 (C):                                                                                                               
 39 (C):                                                                                                               
-40 (C):                                                                                                               
-
+40 (C):

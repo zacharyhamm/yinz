@@ -1792,7 +1792,7 @@ mod tests {
         let mut state = worktree_agent();
         assert_eq!(
             prefixes(&mut state),
-            vec![(7, Some("hocus/topic".to_owned()))]
+            vec![(7, Some("hocus:topic".to_owned()))]
         );
     }
 
@@ -1855,7 +1855,7 @@ mod tests {
         );
         assert_eq!(
             prefixes(&mut state),
-            vec![(7, Some("hocus/other".to_owned()))]
+            vec![(7, Some("hocus:other".to_owned()))]
         );
     }
 
@@ -1867,7 +1867,7 @@ mod tests {
         state.manual_kinds.insert(8, "claude".to_owned());
         let calls = prefixes(&mut state);
         assert!(
-            calls.contains(&(8, Some("hocus/topic".to_owned()))),
+            calls.contains(&(8, Some("hocus:topic".to_owned()))),
             "{calls:?}"
         );
     }

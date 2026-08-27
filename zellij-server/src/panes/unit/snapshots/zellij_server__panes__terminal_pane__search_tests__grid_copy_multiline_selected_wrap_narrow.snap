@@ -42,4 +42,3 @@ expression: "format!(\"{:?}\", terminal_pane.grid)"
 37 (W): rice
 38 (W): s ti
 39 (W): ncid
-
