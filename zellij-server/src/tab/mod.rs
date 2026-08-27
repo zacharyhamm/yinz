@@ -359,6 +359,7 @@ pub(crate) struct Tab {
     mouse_hover_effects: bool,
     focus_follows_mouse: bool,
     mouse_click_through: bool,
+    pub(crate) context_menu_on_right_click: bool,
     osc133_command_selection: bool,
     word_separators: String,
     currently_marking_pane_group: Rc<RefCell<HashMap<ClientId, bool>>>,
@@ -934,6 +935,22 @@ pub trait Pane {
     fn terminal_emulator_wants_mouse(&self) -> bool {
         false
     }
+    /// The word and the logical line the cursor is over, as text.
+    ///
+    /// One call rather than two because both walk the same grid rows and a context menu wants
+    /// both or neither. `None` for a pane with no character grid to ask - a plugin pane, where
+    /// "the word under the cursor" has no meaning the pane could answer for.
+    fn text_around_position(&self, _position: &Position) -> Option<TextAroundPosition> {
+        None
+    }
+}
+
+/// What a terminal pane can say about the cell under a pointer. Both fields are independently
+/// absent: a click past the end of a line has no word but still has a line.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TextAroundPosition {
+    pub word: Option<String>,
+    pub line: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1070,6 +1087,7 @@ impl Tab {
         mouse_hover_effects: bool,
         focus_follows_mouse: bool,
         mouse_click_through: bool,
+        context_menu_on_right_click: bool,
         web_server_ip: IpAddr,
         web_server_port: u16,
     ) -> Self {
@@ -1223,6 +1241,7 @@ impl Tab {
             mouse_hover_effects,
             focus_follows_mouse,
             mouse_click_through,
+            context_menu_on_right_click,
             osc133_command_selection: true,
             word_separators: DEFAULT_WORD_SEPARATORS.to_owned(),
             connected_clients_in_app,
@@ -8593,6 +8612,9 @@ impl Tab {
     }
     pub fn update_focus_follows_mouse(&mut self, focus_follows_mouse: bool) {
         self.focus_follows_mouse = focus_follows_mouse;
+    }
+    pub fn update_context_menu_on_right_click(&mut self, context_menu_on_right_click: bool) {
+        self.context_menu_on_right_click = context_menu_on_right_click;
     }
     pub fn update_mouse_click_through(&mut self, mouse_click_through: bool) {
         self.mouse_click_through = mouse_click_through;

@@ -640,6 +640,213 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
     );
 }
 
+/// The context-menu hook has no `render`, so a load-and-draw check would prove nothing about it.
+/// What it does instead is transform an event into an answer, and that is what is exercised here:
+/// a syntax error, a bad field name or a broken filter would otherwise go unnoticed until somebody
+/// right-clicked.
+#[test]
+fn the_shipped_context_menu_hook_filters_the_items_it_is_given() {
+    use crate::screen::ScreenInstruction;
+    use zellij_utils::channels::SenderWithContext;
+    use zellij_utils::data::{ContextMenuContext, ContextMenuItem, ContextMenuLink};
+    use zellij_utils::errors::ErrorContext;
+
+    let source =
+        zellij_utils::consts::builtin_lua_plugin("context-menu").expect("the hook is a builtin");
+    let configured = vec![
+        ContextMenuItem::new("Copy", vec![]).with_id(0),
+        ContextMenuItem::separator().with_id(1),
+        ContextMenuItem::new("Close pane", vec![]).with_id(2),
+    ];
+
+    // The answer goes to the screen thread, so the env gets a real channel rather than the
+    // silently-failing default every other test here uses.
+    let answer_for = |context: ContextMenuContext| -> Vec<ContextMenuItem> {
+        let (to_screen, screen_receiver) =
+            zellij_utils::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
+        let mut env = test_env();
+        env.senders.to_screen = Some(SenderWithContext::new(to_screen));
+        env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+
+        let mut plugin = load_lua_plugin(source, "context-menu.lua", env).unwrap();
+        plugin.load(&BTreeMap::new()).unwrap();
+        plugin
+            .update(&Event::ContextMenuRequested(Box::new(context)))
+            .expect("the hook should answer");
+
+        screen_receiver
+            .try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                ScreenInstruction::SetContextMenu { items, .. } => Some(items),
+                _ => None,
+            })
+            .expect("the hook answers with a menu")
+    };
+
+    // No selection: "Copy" would copy nothing, so it is not offered.
+    let without_selection = answer_for(ContextMenuContext {
+        items: configured.clone(),
+        ..Default::default()
+    });
+    assert!(
+        !without_selection.iter().any(|item| item.label == "Copy"),
+        "got: {without_selection:?}"
+    );
+    assert!(without_selection
+        .iter()
+        .any(|item| item.label == "Close pane"));
+
+    // With one, it is - and it says what it would copy.
+    let with_selection = answer_for(ContextMenuContext {
+        items: configured.clone(),
+        selected_text: Some("hello".to_owned()),
+        ..Default::default()
+    });
+    assert!(
+        with_selection
+            .iter()
+            .any(|item| item.label == r#"Copy "hello""#),
+        "got: {with_selection:?}"
+    );
+    assert!(
+        with_selection
+            .iter()
+            .find(|item| item.label.starts_with("Copy"))
+            .and_then(|item| item.id)
+            == Some(0),
+        "the id has to survive the relabelling, or the actions do not come back"
+    );
+
+    // Filtering "Copy" out would otherwise strand the rule that used to sit under it, leaving a
+    // menu whose first row is a horizontal line.
+    assert!(
+        !without_selection[0].separator,
+        "a menu must not lead with a separator: {without_selection:?}"
+    );
+    assert!(
+        !without_selection.last().unwrap().separator,
+        "nor trail with one: {without_selection:?}"
+    );
+    assert!(
+        !without_selection
+            .windows(2)
+            .any(|pair| pair[0].separator && pair[1].separator),
+        "nor have two in a row: {without_selection:?}"
+    );
+
+    // A link under the cursor leads, and is an item the plugin made up rather than a configured one.
+    let with_link = answer_for(ContextMenuContext {
+        items: configured.clone(),
+        link: Some(ContextMenuLink {
+            matched: "https://example.com".to_owned(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    assert_eq!(with_link[0].label, "Open https://example.com");
+    assert_eq!(with_link[0].id, None);
+    assert_eq!(
+        with_link[0].context.get("url").map(|s| s.as_str()),
+        Some("https://example.com")
+    );
+}
+
+/// The shipped hook opens a link with whichever of `xdg-open`/`open` the machine actually has,
+/// which it learns by probing both at load. Worth a test of its own: the probe answers
+/// asynchronously, so a selection made before it lands has to wait rather than be dropped, and
+/// nothing about either path is visible until somebody right-clicks a URL on a Mac.
+#[test]
+fn the_shipped_context_menu_hook_opens_a_link_with_the_opener_the_machine_has() {
+    use crate::background_jobs::BackgroundJob;
+    use zellij_utils::channels::SenderWithContext;
+    use zellij_utils::data::ContextMenuContext;
+    use zellij_utils::errors::ErrorContext;
+
+    let source =
+        zellij_utils::consts::builtin_lua_plugin("context-menu").expect("the hook is a builtin");
+    let (to_background_jobs, background_jobs) =
+        zellij_utils::channels::unbounded::<(BackgroundJob, ErrorContext)>();
+    let mut env = test_env();
+    env.senders.to_background_jobs = Some(SenderWithContext::new(to_background_jobs));
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+
+    let mut plugin = load_lua_plugin(source, "context-menu.lua", env).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+
+    let commands = |receiver: &zellij_utils::channels::Receiver<(BackgroundJob, ErrorContext)>| {
+        receiver
+            .try_iter()
+            .filter_map(|(job, _)| match job {
+                BackgroundJob::RunCommand(_, _, command, args, ..) => Some((command, args)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // Both candidates are probed at load, so the answer is there before the first selection.
+    let probes = commands(&background_jobs);
+    assert_eq!(
+        probes,
+        vec![
+            ("xdg-open".to_owned(), vec!["--help".to_owned()]),
+            ("open".to_owned(), vec!["--help".to_owned()]),
+        ],
+        "both openers are probed"
+    );
+
+    let select = |plugin: &mut crate::plugins::lua::LuaPlugin| {
+        plugin
+            .update(&Event::ContextMenuItemSelected {
+                label: "Open https://example.com".to_owned(),
+                item_context: [
+                    ("action".to_owned(), "open_link".to_owned()),
+                    ("url".to_owned(), "https://example.com".to_owned()),
+                ]
+                .into_iter()
+                .collect(),
+                context: Box::new(ContextMenuContext::default()),
+            })
+            .expect("the hook should take the selection");
+    };
+
+    // A selection before either probe answers is held, not dropped and not guessed at.
+    select(&mut plugin);
+    assert!(
+        commands(&background_jobs).is_empty(),
+        "nothing is run until an opener is known"
+    );
+
+    // This machine turns out to be a Mac: `xdg-open` is absent, `open` is not.
+    let probe_result = |executable: &str, exit_code: Option<i32>| {
+        Event::RunCommandResult(
+            exit_code,
+            vec![],
+            vec![],
+            [("probe".to_owned(), executable.to_owned())]
+                .into_iter()
+                .collect(),
+        )
+    };
+    plugin.update(&probe_result("xdg-open", Some(1))).unwrap();
+    assert!(
+        commands(&background_jobs).is_empty(),
+        "a probe that failed is not an opener"
+    );
+    plugin.update(&probe_result("open", Some(0))).unwrap();
+    assert_eq!(
+        commands(&background_jobs),
+        vec![("open".to_owned(), vec!["https://example.com".to_owned()])],
+        "the held url is opened as soon as an opener is known"
+    );
+
+    // ...and from here on it goes straight out.
+    select(&mut plugin);
+    assert_eq!(
+        commands(&background_jobs),
+        vec![("open".to_owned(), vec!["https://example.com".to_owned()])]
+    );
+}
+
 #[test]
 fn the_playground_plugin_loads_and_runs_every_key_it_advertises() {
     // `example-plugins/playground.lua` is the worked example for the command surface, so it is

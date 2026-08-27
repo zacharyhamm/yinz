@@ -9,6 +9,11 @@ pub use super::generated_api::api::{
         ClientInfo as ProtobufClientInfo, ClientPaneHistory as ProtobufClientPaneHistory,
         ClientTabHistory as ProtobufClientTabHistory,
         CommandChangedPayload as ProtobufCommandChangedPayload, ContextItem as ProtobufContextItem,
+        ContextMenuContext as ProtobufContextMenuContext,
+        ContextMenuItem as ProtobufContextMenuItem,
+        ContextMenuItemSelectedPayload as ProtobufContextMenuItemSelectedPayload,
+        ContextMenuLink as ProtobufContextMenuLink,
+        ContextMenuRequestedPayload as ProtobufContextMenuRequestedPayload,
         CopyDestination as ProtobufCopyDestination, CwdChangedPayload as ProtobufCwdChangedPayload,
         Event as ProtobufEvent, EventNameList as ProtobufEventNameList,
         EventType as ProtobufEventType, FileMetadata as ProtobufFileMetadata,
@@ -48,12 +53,12 @@ pub use super::generated_api::api::{
 };
 #[allow(hidden_glob_reexports)]
 use crate::data::{
-    ClientId, ClientInfo, CopyDestination, DataRows, Event, EventType, FileMetadata,
-    HostTerminalThemeMode, InputMode, KeyWithModifier, LayoutInfo, LayoutMetadata, ModeInfo, Mouse,
-    PaneContents, PaneId, PaneInfo, PaneManifest, PaneMetadata, PaneScrollbackResponse,
-    PermissionStatus, PluginCapabilities, PluginInfo, QueueJobInfo, QueueJobOutcome, QueueJobState,
-    QueueSnapshot, SelectedText, SessionInfo, Style, StyledText, TabInfo, TabMetadata,
-    WebServerStatus, WebSharing,
+    ClientId, ClientInfo, ContextMenuContext, ContextMenuItem, ContextMenuLink, CopyDestination,
+    DataRows, Event, EventType, FileMetadata, HostTerminalThemeMode, InputMode, KeyWithModifier,
+    LayoutInfo, LayoutMetadata, ModeInfo, Mouse, PaneContents, PaneId, PaneInfo, PaneManifest,
+    PaneMetadata, PaneScrollbackResponse, PermissionStatus, PluginCapabilities, PluginInfo,
+    QueueJobInfo, QueueJobOutcome, QueueJobState, QueueSnapshot, SelectedText, SessionInfo, Style,
+    StyledText, TabInfo, TabMetadata, WebServerStatus, WebSharing,
 };
 use crate::plugin_api::plugin_data::ProtobufRows as ProtobufDataRows;
 
@@ -564,6 +569,34 @@ impl TryFrom<ProtobufEvent> for Event {
                     })
                 },
                 _ => Err("Malformed payload for HighlightClicked Event"),
+            },
+            Ok(ProtobufEventType::ContextMenuRequested) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::ContextMenuRequestedPayload(p)) => {
+                    let context = p
+                        .context
+                        .ok_or("Missing context in ContextMenuRequested")?
+                        .try_into()?;
+                    Ok(Event::ContextMenuRequested(Box::new(context)))
+                },
+                _ => Err("Malformed payload for ContextMenuRequested Event"),
+            },
+            Ok(ProtobufEventType::ContextMenuItemSelected) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::ContextMenuItemSelectedPayload(p)) => {
+                    let context = p
+                        .context
+                        .ok_or("Missing context in ContextMenuItemSelected")?
+                        .try_into()?;
+                    Ok(Event::ContextMenuItemSelected {
+                        label: p.label,
+                        item_context: p
+                            .item_context
+                            .into_iter()
+                            .map(|item| (item.name, item.value))
+                            .collect(),
+                        context: Box::new(context),
+                    })
+                },
+                _ => Err("Malformed payload for ContextMenuItemSelected Event"),
             },
             Ok(ProtobufEventType::InitialKeybinds) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::InitialKeybindsPayload(p)) => {
@@ -1224,6 +1257,31 @@ impl TryFrom<Event> for ProtobufEvent {
                             .into_iter()
                             .map(|(name, value)| ProtobufContextItem { name, value })
                             .collect(),
+                    },
+                )),
+            }),
+            Event::ContextMenuRequested(context) => Ok(ProtobufEvent {
+                name: ProtobufEventType::ContextMenuRequested as i32,
+                payload: Some(event::Payload::ContextMenuRequestedPayload(
+                    ProtobufContextMenuRequestedPayload {
+                        context: Some((*context).try_into()?),
+                    },
+                )),
+            }),
+            Event::ContextMenuItemSelected {
+                label,
+                item_context,
+                context,
+            } => Ok(ProtobufEvent {
+                name: ProtobufEventType::ContextMenuItemSelected as i32,
+                payload: Some(event::Payload::ContextMenuItemSelectedPayload(
+                    ProtobufContextMenuItemSelectedPayload {
+                        label,
+                        item_context: item_context
+                            .into_iter()
+                            .map(|(name, value)| ProtobufContextItem { name, value })
+                            .collect(),
+                        context: Some((*context).try_into()?),
                     },
                 )),
             }),
@@ -2364,6 +2422,8 @@ impl TryFrom<ProtobufEventType> for EventType {
             ProtobufEventType::AvailableLayoutInfo => EventType::AvailableLayoutInfo,
             ProtobufEventType::PluginConfigurationChanged => EventType::PluginConfigurationChanged,
             ProtobufEventType::HighlightClicked => EventType::HighlightClicked,
+            ProtobufEventType::ContextMenuRequested => EventType::ContextMenuRequested,
+            ProtobufEventType::ContextMenuItemSelected => EventType::ContextMenuItemSelected,
             ProtobufEventType::InitialKeybinds => EventType::InitialKeybinds,
             ProtobufEventType::HostTerminalThemeChanged => EventType::HostTerminalThemeChanged,
             ProtobufEventType::SoftKeyboardVisibilityChanged => {
@@ -2427,6 +2487,8 @@ impl TryFrom<EventType> for ProtobufEventType {
             EventType::AvailableLayoutInfo => ProtobufEventType::AvailableLayoutInfo,
             EventType::PluginConfigurationChanged => ProtobufEventType::PluginConfigurationChanged,
             EventType::HighlightClicked => ProtobufEventType::HighlightClicked,
+            EventType::ContextMenuRequested => ProtobufEventType::ContextMenuRequested,
+            EventType::ContextMenuItemSelected => ProtobufEventType::ContextMenuItemSelected,
             EventType::InitialKeybinds => ProtobufEventType::InitialKeybinds,
             EventType::HostTerminalThemeChanged => ProtobufEventType::HostTerminalThemeChanged,
             EventType::SoftKeyboardVisibilityChanged => {
@@ -3487,6 +3549,151 @@ impl From<QueueSnapshot> for ProtobufQueueSnapshot {
     }
 }
 
+/// `ContextMenuItem` and friends cross the plugin boundary the long way round, by hand, like
+/// everything else in this file. Two shapes are worth noting:
+///
+/// - **Actions do not travel at all.** Several `Action` variants have no protobuf form, so the
+///   wire carries a configured item's `id` and the server re-attaches its actions on the way back.
+///   See `data::ContextMenuItem`.
+/// - **`click` and `click_in_pane` are pairs of `uint32`, not a `Position`.** A menu's anchor is a
+///   cell on the surface and is never negative; `Position`'s signed line would have to be validated
+///   on the way back in for no gain.
+impl From<ProtobufContextMenuItem> for ContextMenuItem {
+    fn from(item: ProtobufContextMenuItem) -> Self {
+        ContextMenuItem {
+            id: item.id,
+            label: item.label,
+            shortcut: item.shortcut,
+            // Empty by construction: the wire carries no actions, and the server re-attaches them
+            // by `id` when it takes the plugin's answer.
+            actions: vec![],
+            context: item
+                .context
+                .into_iter()
+                .map(|entry| (entry.name, entry.value))
+                .collect(),
+            disabled: item.disabled,
+            separator: item.separator,
+        }
+    }
+}
+
+impl From<ContextMenuItem> for ProtobufContextMenuItem {
+    fn from(item: ContextMenuItem) -> Self {
+        ProtobufContextMenuItem {
+            id: item.id,
+            label: item.label,
+            shortcut: item.shortcut,
+            context: item
+                .context
+                .into_iter()
+                .map(|(name, value)| ProtobufContextItem { name, value })
+                .collect(),
+            disabled: item.disabled,
+            separator: item.separator,
+        }
+    }
+}
+
+impl From<ProtobufContextMenuLink> for ContextMenuLink {
+    fn from(link: ProtobufContextMenuLink) -> Self {
+        ContextMenuLink {
+            plugin_id: link.plugin_id,
+            pattern: link.pattern,
+            matched: link.matched,
+            context: link
+                .context
+                .into_iter()
+                .map(|entry| (entry.name, entry.value))
+                .collect(),
+        }
+    }
+}
+
+impl From<ContextMenuLink> for ProtobufContextMenuLink {
+    fn from(link: ContextMenuLink) -> Self {
+        ProtobufContextMenuLink {
+            plugin_id: link.plugin_id,
+            pattern: link.pattern,
+            matched: link.matched,
+            context: link
+                .context
+                .into_iter()
+                .map(|(name, value)| ProtobufContextItem { name, value })
+                .collect(),
+        }
+    }
+}
+
+impl TryFrom<ProtobufContextMenuContext> for ContextMenuContext {
+    type Error = &'static str;
+    fn try_from(context: ProtobufContextMenuContext) -> Result<Self, &'static str> {
+        let pane_id = context
+            .pane_id
+            .ok_or("Missing pane_id in ContextMenuContext")?
+            .try_into()?;
+        let items = context.items.into_iter().map(Into::into).collect();
+        Ok(ContextMenuContext {
+            request_id: context.request_id,
+            client_id: context.client_id as ClientId,
+            pane_id,
+            tab_position: context.tab_position as usize,
+            click: (context.click_x as usize, context.click_y as usize),
+            click_in_pane: (
+                context.click_in_pane_x as usize,
+                context.click_in_pane_y as usize,
+            ),
+            on_frame: context.on_frame,
+            pane_title: context.pane_title,
+            pane_command: context.pane_command,
+            pane_exited: context.pane_exited,
+            pane_exit_status: context.pane_exit_status,
+            pane_is_held: context.pane_is_held,
+            pane_is_floating: context.pane_is_floating,
+            selected_text: context.selected_text,
+            word_under_cursor: context.word_under_cursor,
+            line_under_cursor: context.line_under_cursor,
+            link: context.link.map(Into::into),
+            items,
+        })
+    }
+}
+
+impl TryFrom<ContextMenuContext> for ProtobufContextMenuContext {
+    type Error = &'static str;
+    fn try_from(context: ContextMenuContext) -> Result<Self, &'static str> {
+        // `without_actions` rather than a plain conversion so the stripping is stated at the one
+        // place the boundary is crossed, not buried in a `From` impl.
+        let items = context
+            .items
+            .iter()
+            .map(|item| item.without_actions().into())
+            .collect();
+        Ok(ProtobufContextMenuContext {
+            request_id: context.request_id,
+            client_id: context.client_id as u32,
+            pane_id: Some(context.pane_id.try_into()?),
+            tab_position: context.tab_position as u32,
+            click_x: context.click.0 as u32,
+            click_y: context.click.1 as u32,
+            click_in_pane_x: context.click_in_pane.0 as u32,
+            click_in_pane_y: context.click_in_pane.1 as u32,
+            on_frame: context.on_frame,
+            pane_title: context.pane_title,
+            pane_command: context.pane_command,
+            pane_exited: context.pane_exited,
+            pane_exit_status: context.pane_exit_status,
+            pane_is_held: context.pane_is_held,
+            pane_is_floating: context.pane_is_floating,
+            selected_text: context.selected_text,
+            word_under_cursor: context.word_under_cursor,
+            line_under_cursor: context.line_under_cursor,
+            link: context.link.map(Into::into),
+            items,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3635,9 +3842,65 @@ mod tests {
             (0..count).map(|_| any_queue_job_info(tc)).collect()
         }
 
+        /// Never draws `actions`: they are deliberately absent from the wire, so an item with
+        /// actions could not survive a round trip and the property would be asserting the wrong
+        /// thing. What has to survive is identity - `id` - and everything the plugin draws with.
+        fn any_context_menu_item(tc: &hegel::TestCase) -> ContextMenuItem {
+            ContextMenuItem {
+                id: tc.draw(generators::optional(generators::integers::<u64>())),
+                label: strings(tc),
+                shortcut: tc.draw(generators::optional(generators::text())),
+                actions: vec![],
+                context: context(tc),
+                disabled: tc.draw(generators::booleans()),
+                separator: tc.draw(generators::booleans()),
+            }
+        }
+
+        fn any_context_menu_context(tc: &hegel::TestCase) -> ContextMenuContext {
+            let item_count = tc.draw(generators::integers::<usize>().max_value(3));
+            ContextMenuContext {
+                request_id: tc.draw(generators::integers::<u64>()),
+                client_id: tc.draw(generators::integers::<u16>()),
+                pane_id: pane_id(tc),
+                tab_position: tc.draw(generators::integers::<u16>()) as usize,
+                click: (
+                    tc.draw(generators::integers::<u16>()) as usize,
+                    tc.draw(generators::integers::<u16>()) as usize,
+                ),
+                click_in_pane: (
+                    tc.draw(generators::integers::<u16>()) as usize,
+                    tc.draw(generators::integers::<u16>()) as usize,
+                ),
+                on_frame: tc.draw(generators::booleans()),
+                pane_title: strings(tc),
+                pane_command: tc.draw(generators::optional(generators::text())),
+                pane_exited: tc.draw(generators::booleans()),
+                pane_exit_status: tc.draw(generators::optional(generators::integers::<i32>())),
+                pane_is_held: tc.draw(generators::booleans()),
+                pane_is_floating: tc.draw(generators::booleans()),
+                selected_text: tc.draw(generators::optional(generators::text())),
+                word_under_cursor: tc.draw(generators::optional(generators::text())),
+                line_under_cursor: tc.draw(generators::optional(generators::text())),
+                link: tc.draw(generators::booleans()).then(|| ContextMenuLink {
+                    plugin_id: tc.draw(generators::integers::<u32>()),
+                    pattern: strings(tc),
+                    matched: strings(tc),
+                    context: context(tc),
+                }),
+                items: (0..item_count).map(|_| any_context_menu_item(tc)).collect(),
+            }
+        }
+
         #[hegel::composite]
         fn any_event(tc: &hegel::TestCase) -> Event {
-            match tc.draw(generators::integers::<u8>().max_value(33)) {
+            match tc.draw(generators::integers::<u8>().max_value(35)) {
+                34 => Event::ContextMenuRequested(Box::new(any_context_menu_context(tc))),
+                35 => Event::ContextMenuItemSelected {
+                    label: strings(tc),
+                    item_context: context(tc),
+                    context: Box::new(any_context_menu_context(tc)),
+                },
                 30 => Event::QueueJobStarted {
                     queue: strings(tc),
                     job_id: tc.draw(generators::integers::<u64>()),

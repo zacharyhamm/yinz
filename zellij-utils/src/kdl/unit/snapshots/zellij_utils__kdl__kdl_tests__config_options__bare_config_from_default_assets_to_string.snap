@@ -356,6 +356,29 @@ load_plugins {
 }
 hooks {
     agent_exit "zellij:agent-exit"
+    context_menu "zellij:context-menu"
+}
+context_menu {
+    Copy {
+        Copy
+    }
+    separator
+    "Split right" {
+        NewPane "right"
+    }
+    "Split down" {
+        NewPane "down"
+    }
+    Fullscreen {
+        ToggleFocusFullscreen
+    }
+    separator
+    "Move to new tab" {
+        BreakPane
+    }
+    "Close pane" {
+        CloseFocus
+    }
 }
 web_client {
     font "monospace"

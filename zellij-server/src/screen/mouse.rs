@@ -48,6 +48,17 @@ impl Screen {
             .get(&client_id)
             .copied()
             .and_then(|tab_id| self.session_surface_for_tab(tab_id));
+        // An open context menu owns the mouse outright - ahead of toasts and the tab. That is
+        // what a menu is: while it is up, a click means "a row of this menu, or dismiss", and
+        // never also "focus whatever happened to be underneath". The event is consumed either
+        // way: with no surface there is nothing to hit-test against, but letting it fall through
+        // to the pane under the menu is the one thing it must not do.
+        if self.context_menu_is_open(client_id) {
+            if let Some(surface) = session_surface {
+                self.handle_context_menu_mouse_event(&event, surface, client_id);
+            }
+            return;
+        }
         // sampled here rather than taken from the last painted frame: a click should resolve
         // against where the toast is now, which is at most one frame ahead of what was drawn
         let now = Instant::now();
@@ -63,6 +74,10 @@ impl Screen {
         {
             Ok(mouse_effect) => {
                 let mut should_render = false;
+                if let Some(context) = mouse_effect.open_context_menu.clone() {
+                    self.request_context_menu(*context, client_id);
+                    should_render = true;
+                }
                 if let Some(pane_id) = mouse_effect.group_toggle {
                     if self.advanced_mouse_actions {
                         self.toggle_pane_id_in_group(pane_id, &client_id);

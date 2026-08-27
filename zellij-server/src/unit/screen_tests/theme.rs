@@ -31,6 +31,8 @@ fn reconfigure_sends_a_plugin_pane_the_updated_client_mode_info_once() {
             true,
             false,
             false,
+            false, // context_menu_on_right_click
+            ContextMenu::default(),
             true,
             DEFAULT_WORD_SEPARATORS.to_owned(),
             NestedSessionHandling::default(),

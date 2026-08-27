@@ -13,14 +13,17 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 use zellij_utils::data::{
-    CommandOrPlugin, Direction, EventType, FloatingPaneCoordinates, GetFocusedPaneInfoResponse,
-    HostTerminalThemeMode, InputMode, KeyWithModifier, LayoutInfo, LayoutWithError,
-    ListPanesResponse, ListTabsResponse, ModeInfo, NewPanePlacement, NotificationInfo,
-    OverlayPlacement, PaneInfo, PaneScrollbackResponse, PluginPermission, RegexHighlight, Resize,
-    ResizeStrategy, SessionInfo, Styling, TabInfo, WarpPlacement, WarpedPane, WarpedTab,
+    CommandOrPlugin, ContextMenuItem, Direction, EventType, FloatingPaneCoordinates,
+    GetFocusedPaneInfoResponse, HostTerminalThemeMode, InputMode, KeyWithModifier, LayoutInfo,
+    LayoutWithError, ListPanesResponse, ListTabsResponse, ModeInfo, NewPanePlacement,
+    NotificationInfo, OverlayPlacement, PaneInfo, PaneScrollbackResponse, PluginPermission,
+    RegexHighlight, Resize, ResizeStrategy, SessionInfo, Styling, TabInfo, WarpPlacement,
+    WarpedPane, WarpedTab,
 };
 use zellij_utils::errors::ScreenContext;
+use zellij_utils::input::actions::Action;
 use zellij_utils::input::command::{RunCommand, TerminalAction};
+use zellij_utils::input::context_menu::ContextMenu;
 use zellij_utils::input::keybinds::Keybinds;
 use zellij_utils::input::layout::{
     FloatingPaneLayout, Run, RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout, TabLayoutInfo,
@@ -546,6 +549,29 @@ pub enum ScreenInstruction {
     Notify(String, Option<PaneId>, Option<NotificationEnd>),  // message, click target, completion
     DismissNotification(u64),                                 // u64 -> the notification's id
     AnimationTick,
+    /// A context menu's hook plugin did not answer in time; show the configured items.
+    ContextMenuTimedOut(u64, ClientId), // u64 -> the menu's request id
+    /// The hook plugin's answer for the menu identified by the request id.
+    SetContextMenu {
+        request_id: u64,
+        items: Vec<ContextMenuItem>,
+        /// The plugin that answered, so an item's echoed context goes back to it and to nothing
+        /// else. `None` when the plugin thread answered from the configuration - no plugin was
+        /// involved, and configured items carry no context to echo.
+        plugin_id: Option<u32>,
+        client_id: ClientId,
+    },
+    /// Run a context menu item's actions against the pane its menu was opened over.
+    ///
+    /// Enqueued by `Screen::activate_context_menu_item` rather than run inline: a focus-changing
+    /// instruction already sitting in the queue behind the click that activated the item would
+    /// otherwise be processed *after* an inline focus restoration and *before* the actions - which
+    /// are dispatched from a spawned thread - putting the two on either side of it.
+    ActivateContextMenuItem {
+        pane_id: PaneId,
+        actions: Vec<Action>,
+        client_id: ClientId,
+    },
     ListClientsMetadata(Option<PathBuf>, ClientId, Option<NotificationEnd>), // Option<PathBuf> - default shell
     ListPanes {
         show_all: bool,
@@ -591,6 +617,10 @@ pub enum ScreenInstruction {
         visual_bell: bool,
         focus_follows_mouse: bool,
         mouse_click_through: bool,
+        context_menu_on_right_click: bool,
+        /// The items a right-click offers. Held by `Screen` rather than re-read per click, so a
+        /// reload has to hand the new list over or the session keeps the one it started with.
+        context_menu: ContextMenu,
         osc133_command_selection: bool,
         word_separators: String,
         nested_session_handling: NestedSessionHandling,

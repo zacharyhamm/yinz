@@ -71,12 +71,14 @@ use crate::route::NotificationEnd;
 
 use log::{debug, warn};
 use zellij_utils::data::{
-    Direction, EventType, FloatingPaneCoordinates, HostTerminalThemeMode, KeyWithModifier,
-    LayoutInfo, LayoutWithError, NotificationInfo, PaneInfo, RemotePaneHandoff, ResizeStrategy,
-    SessionInfo, Styling, TabInfo, WarpedPane, WarpedTab, WebSharing, HOCUS_AGENT_PANE_CONTEXT,
+    ContextMenuContext, ContextMenuItem, Direction, EventType, FloatingPaneCoordinates,
+    HostTerminalThemeMode, KeyWithModifier, LayoutInfo, LayoutWithError, NotificationInfo,
+    PaneInfo, RemotePaneHandoff, ResizeStrategy, SessionInfo, Styling, TabInfo, WarpedPane,
+    WarpedTab, WebSharing, HOCUS_AGENT_PANE_CONTEXT,
 };
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::command::RunCommand;
+use zellij_utils::input::context_menu::ContextMenu;
 use zellij_utils::input::hooks::HookPoint;
 use zellij_utils::input::keybinds::Keybinds;
 use zellij_utils::input::layout::{
@@ -88,6 +90,7 @@ use zellij_utils::input::options::{
 };
 use zellij_utils::ipc::MobileStatePayload;
 use zellij_utils::pane_size::{Size, SizeInPixels};
+use zellij_utils::position::Position;
 use zellij_utils::shared::clean_string_from_control_and_linebreak;
 
 use crate::background_jobs::BackgroundJob;
@@ -118,6 +121,7 @@ use crate::mobile_web::MobileWebPrefs;
 
 mod break_panes;
 mod capabilities;
+mod context_menu;
 mod host_query;
 mod input_modes;
 mod instruction;
@@ -670,6 +674,21 @@ pub(crate) struct Screen {
     /// Live toast notifications, newest first (index 0 sits in the configured corner).
     notifications: Vec<Notification>,
     notification_mouse_captures: HashSet<ClientId>,
+    /// The open right-click context menu per client, if any.
+    ///
+    /// Per client rather than per session, and on `Screen` rather than on `Tab`, for the same two
+    /// reasons the notification stack is: it is drawn after the per-tab loop in
+    /// `render_to_clients`, where tab-owned state would be invisible, and it has to be torn down
+    /// in `remove_client` alongside `notification_mouse_captures`. See `screen::context_menu`.
+    context_menus: HashMap<ClientId, ContextMenuState>,
+    /// Correlates a plugin's answer with the menu that asked for it. Monotonic per session.
+    next_context_menu_request_id: u64,
+    /// The items a right-click menu offers before its hook plugin has had its say.
+    ///
+    /// Held here, rather than only in the plugin thread, because the screen needs them for two
+    /// things the plugin is not involved in: the fallback when the hook does not answer in time,
+    /// and putting an item's actions back when it does.
+    context_menu: ContextMenu,
     /// Every toast received by this live session. Dismissal only affects `notifications` above.
     /// ponytail: intentionally unbounded because the feature promises "all" notifications;
     /// add a configurable cap only if long-lived sessions show meaningful memory pressure.
@@ -729,6 +748,7 @@ pub(crate) struct Screen {
     visual_bell: bool,
     focus_follows_mouse: bool,
     mouse_click_through: bool,
+    context_menu_on_right_click: bool,
     currently_marking_pane_group: Rc<RefCell<HashMap<ClientId, bool>>>,
     // the below are the configured values - the ones that will be set if and when the web server
     // is brought online
@@ -950,6 +970,60 @@ impl Notification {
     }
 }
 
+/// An open context menu, from the right-click that asked for it to the item that closes it.
+///
+/// The pane it was opened over keeps focus for the menu's whole life, which is the property that
+/// makes `Copy` and `CloseFocus` mean what they look like they mean - see `ui::context_menu`.
+#[derive(Debug, Clone)]
+pub(crate) struct ContextMenuState {
+    /// Matched against the `request_id` in a plugin's answer. An answer for a menu that has since
+    /// closed - or been replaced by a newer one - names a stale id and is dropped.
+    request_id: u64,
+    /// The clicked cell in surface coordinates. The menu is anchored here every frame rather than
+    /// storing a resolved box, because a client's viewport can change under an open menu.
+    anchor: Position,
+    /// The pane the click landed in. Every item's actions run against it.
+    pane_id: PaneId,
+    /// What the hook plugin was told, kept so an item's echoed context can carry it back.
+    context: ContextMenuContext,
+    /// The plugin whose answer this menu is showing, if one answered. An item's echoed context is
+    /// addressed to it alone - a menu's items are that plugin's business and nobody else's.
+    plugin_id: Option<u32>,
+    items: ContextMenuItems,
+    /// Index into `items`, once they are `Ready`. Separators and disabled rows are never here.
+    selected: Option<usize>,
+}
+
+/// Whether a menu yet knows what it says.
+#[derive(Debug, Clone)]
+pub(crate) enum ContextMenuItems {
+    /// The hook has been fired and nothing is drawn yet.
+    ///
+    /// Drawing the configured items now and replacing them a frame later would make the list
+    /// change under a pointer already on its way to a row, so a menu waits instead - bounded by
+    /// `BackgroundJob::ContextMenuTimeout`, which promotes it to `configured` if the plugin never
+    /// answers. That timer is why an unbound or wedged hook cannot make right-click do nothing.
+    AwaitingPlugin {
+        configured: Vec<ContextMenuItem>,
+    },
+    /// The fallback is visible, but the first matching plugin answer may still replace it.
+    Fallback {
+        items: Vec<ContextMenuItem>,
+        configured: Vec<ContextMenuItem>,
+    },
+    Ready(Vec<ContextMenuItem>),
+}
+
+impl ContextMenuItems {
+    /// The items to draw and hit-test: none at all while the plugin is still being waited on.
+    fn visible(&self) -> &[ContextMenuItem] {
+        match self {
+            ContextMenuItems::AwaitingPlugin { .. } => &[],
+            ContextMenuItems::Fallback { items, .. } | ContextMenuItems::Ready(items) => items,
+        }
+    }
+}
+
 struct NotificationLayout<'a> {
     notification: &'a Notification,
     lines: Vec<String>,
@@ -1045,6 +1119,8 @@ impl Screen {
         visual_bell: bool,
         focus_follows_mouse: bool,
         mouse_click_through: bool,
+        context_menu_on_right_click: bool,
+        context_menu: ContextMenu,
         web_server_ip: IpAddr,
         web_server_port: u16,
         nested_session_handling: NestedSessionHandling,
@@ -1095,6 +1171,9 @@ impl Screen {
             pane_frame_style,
             notifications: vec![],
             notification_mouse_captures: HashSet::new(),
+            context_menus: HashMap::new(),
+            next_context_menu_request_id: 0,
+            context_menu,
             notification_history: vec![],
             next_notification_id: 0,
             notification_position,
@@ -1133,6 +1212,7 @@ impl Screen {
             visual_bell,
             focus_follows_mouse,
             mouse_click_through,
+            context_menu_on_right_click,
             web_server_ip,
             web_server_port,
             render_blocker: RenderBlocker::new(100),
@@ -1509,6 +1589,7 @@ impl Screen {
             self.mouse_hover_effects,
             self.focus_follows_mouse,
             self.mouse_click_through,
+            self.context_menu_on_right_click,
             self.web_server_ip,
             self.web_server_port,
         );
@@ -1766,6 +1847,9 @@ impl Screen {
         let err_context = || format!("failed to remove client {client_id}");
 
         self.notification_mouse_captures.remove(&client_id);
+        // No force-render: the client is going, and the cells its menu occupied belong to a screen
+        // nobody is looking at any more.
+        self.context_menus.remove(&client_id);
         self.set_client_dimmed(client_id, false, None);
         let passthrough_panes: Vec<PaneId> = self
             .nested_guest_choices
@@ -2778,6 +2862,8 @@ impl Screen {
         visual_bell: bool,
         focus_follows_mouse: bool,
         mouse_click_through: bool,
+        context_menu_on_right_click: bool,
+        context_menu: ContextMenu,
         osc133_command_selection: bool,
         word_separators: String,
         nested_session_handling: NestedSessionHandling,
@@ -2808,6 +2894,10 @@ impl Screen {
         self.visual_bell = visual_bell;
         self.focus_follows_mouse = focus_follows_mouse;
         self.mouse_click_through = mouse_click_through;
+        self.context_menu_on_right_click = context_menu_on_right_click;
+        // Menus already open keep the list they opened with - `set_context_menu_items` says why -
+        // so nothing here has to repaint. The next right-click picks these up.
+        self.context_menu = context_menu;
         self.osc133_command_selection = osc133_command_selection;
         self.word_separators = word_separators;
         self.nested_session_handling = nested_session_handling;
@@ -2839,6 +2929,7 @@ impl Screen {
             tab.update_mouse_hover_effects(mouse_hover_effects);
             tab.update_focus_follows_mouse(focus_follows_mouse);
             tab.update_mouse_click_through(mouse_click_through);
+            tab.update_context_menu_on_right_click(context_menu_on_right_click);
             tab.update_selection_options(osc133_command_selection, self.word_separators.clone());
             tab.sync_stacked_pane_list_mode();
         }

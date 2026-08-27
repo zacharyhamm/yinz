@@ -1056,6 +1056,21 @@ pub enum Event {
         matched_string: String,
         context: BTreeMap<String, String>,
     },
+    /// A right-click asked for a context menu. The bound `context_menu` hook plugin answers with
+    /// `set_context_menu`; anything else that receives this should ignore it.
+    ContextMenuRequested(Box<ContextMenuContext>),
+    /// An item the plugin supplied - one carrying `context` - was chosen.
+    ///
+    /// Only items with a non-empty `context` produce this. An item that is only a list of
+    /// `Action`s is run by the server and the plugin hears nothing, the same way a keybinding's
+    /// actions are not narrated back to anyone.
+    ContextMenuItemSelected {
+        label: String,
+        /// The item's own `context`, echoed verbatim.
+        item_context: BTreeMap<String, String>,
+        /// The click the menu was opened by, so a stateless plugin still knows where it came from.
+        context: Box<ContextMenuContext>,
+    },
     /// Initial keybindings sent once on plugin load and on reconfiguration.
     /// Plugins that subscribe to this event signal they cache keybindings
     /// and can handle lightweight ModeUpdate events without keybindings.
@@ -1397,6 +1412,142 @@ pub struct RegexHighlight {
     pub italic: bool,
     pub underline: bool,
     pub tooltip_text: Option<String>, // shown at bottom of pane frame when hovering over match
+}
+
+/// One row of a right-click context menu.
+///
+/// A menu is a list of these and nothing else: the server draws them, hit-tests them, and runs
+/// `actions` against the pane the click landed in. There is no widget tree and no nesting - see
+/// `zellij-server/src/ui/context_menu.rs` for the drawing and `input::context_menu` for the
+/// configured half of where they come from.
+///
+/// **`actions` does not cross the plugin boundary, and `id` is why it does not have to.** A good
+/// many `Action` variants have no protobuf representation at all - `Action::Copy` among them - so
+/// a wire format carrying actions would drop some items' behaviour in silence. Instead the server
+/// keeps the action lists and sends the plugin an `id` per configured item; a plugin returning an
+/// item with that `id` gets the actions re-attached on arrival. An item the plugin *invented* has
+/// no `id`, no actions, and acts through its `context` instead - which reaches it as
+/// `Event::ContextMenuItemSelected`, from where `run_action` can do anything an action could.
+///
+/// `separator` is a variant spelled as a flag rather than as an enum because a separator is a row
+/// like any other everywhere it matters - layout, hit-testing, and the wire format - and an enum
+/// would put a match in each of those for one uninteresting case.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextMenuItem {
+    /// Identifies a configured item across the plugin boundary. `None` for an item a plugin made
+    /// up, and for one a plugin returned without the `id` it was given - which is how a plugin
+    /// deliberately strips a configured item's behaviour, if it ever wants to.
+    #[serde(default)]
+    pub id: Option<u64>,
+    /// Defaulted rather than required: a separator genuinely has no label, and making every
+    /// plugin write `label = ""` for one would be a papercut with nothing behind it.
+    #[serde(default)]
+    pub label: String,
+    /// Drawn right-aligned, dimmed. Purely a hint - nothing binds it.
+    #[serde(default)]
+    pub shortcut: Option<String>,
+    /// Run in order, against the pane the menu was opened over. Never sent to a plugin; see the
+    /// type's own documentation for why.
+    #[serde(default, skip_serializing)]
+    pub actions: Vec<Action>,
+    /// Opaque plugin data echoed back to the hook plugin when this item is chosen, exactly as
+    /// `RegexHighlight::context` is echoed on click. This is how a plugin-supplied item does
+    /// something no `Action` can express.
+    #[serde(default)]
+    pub context: BTreeMap<String, String>,
+    /// Drawn dimmed and not selectable.
+    #[serde(default)]
+    pub disabled: bool,
+    /// A horizontal rule. `label`, `actions` and the rest are ignored.
+    #[serde(default)]
+    pub separator: bool,
+}
+
+impl ContextMenuItem {
+    pub fn new<L: Into<String>>(label: L, actions: Vec<Action>) -> Self {
+        ContextMenuItem {
+            label: label.into(),
+            actions,
+            ..Default::default()
+        }
+    }
+    pub fn separator() -> Self {
+        ContextMenuItem {
+            separator: true,
+            ..Default::default()
+        }
+    }
+    pub fn with_shortcut<S: Into<String>>(mut self, shortcut: S) -> Self {
+        self.shortcut = Some(shortcut.into());
+        self
+    }
+    pub fn with_id(mut self, id: u64) -> Self {
+        self.id = Some(id);
+        self
+    }
+    /// Whether the keyboard and mouse may land on this row.
+    pub fn is_selectable(&self) -> bool {
+        !self.separator && !self.disabled
+    }
+    /// This item as the plugin should see it: identified, but without the behaviour the server
+    /// keeps to itself.
+    pub fn without_actions(&self) -> Self {
+        ContextMenuItem {
+            actions: vec![],
+            ..self.clone()
+        }
+    }
+}
+
+/// A `link`-plugin regex match sitting under the cursor when the menu was opened.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextMenuLink {
+    /// The plugin that registered the highlight, so an item can be aimed back at it.
+    pub plugin_id: u32,
+    pub pattern: String,
+    pub matched: String,
+    pub context: BTreeMap<String, String>,
+}
+
+/// Everything the server could cheaply learn about a right-click, handed to the hook plugin so it
+/// can decide what the menu should say.
+///
+/// "Cheaply" is the whole design rule. Two things a menu might plausibly want are absent for the
+/// same reason - getting them would mean blocking the screen thread, which every mouse *motion*
+/// also passes through:
+///
+/// - **cwd** lives in the pty thread (`PtyInstruction::GetPaneCwd`), reachable only through a
+///   blocking `recv_timeout`. A plugin asks for it itself with `get_pane_cwd`.
+/// - **scrollback** can be megabytes. `get_pane_scrollback` already exists for a plugin that
+///   wants it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextMenuContext {
+    /// Correlates the plugin's answer with the menu that asked. An answer naming a menu that has
+    /// since closed is dropped.
+    pub request_id: u64,
+    pub client_id: ClientId,
+    pub pane_id: PaneId,
+    pub tab_position: usize,
+    /// The clicked cell in surface coordinates - where the menu is anchored.
+    pub click: (usize, usize),
+    /// The same cell relative to the pane, which is what a plugin reasoning about pane content
+    /// wants. Both are carried because neither can be derived from the other here.
+    pub click_in_pane: (usize, usize),
+    /// The click landed on the pane's frame rather than its content.
+    pub on_frame: bool,
+    pub pane_title: String,
+    pub pane_command: Option<String>,
+    pub pane_exited: bool,
+    pub pane_exit_status: Option<i32>,
+    pub pane_is_held: bool,
+    pub pane_is_floating: bool,
+    pub selected_text: Option<String>,
+    pub word_under_cursor: Option<String>,
+    pub line_under_cursor: Option<String>,
+    pub link: Option<ContextMenuLink>,
+    /// The items the configuration declared, in the order it declared them. The plugin filters and
+    /// augments this rather than building a menu from nothing.
+    pub items: Vec<ContextMenuItem>,
 }
 
 // these are used for the web client
@@ -4269,6 +4420,15 @@ pub enum PluginCommand {
     },
     SetPaneColor(PaneId, Option<String>, Option<String>), // (pane_id, fg, bg)
     SetPaneRegexHighlights(PaneId, Vec<RegexHighlight>),
+    /// Answer a `Event::ContextMenuRequested`: this is what the menu should say.
+    ///
+    /// `request_id` is echoed from the request. Answering a menu that has since been dismissed or
+    /// replaced is harmless - the server drops it - so a plugin never has to track whether its
+    /// answer is still wanted.
+    SetContextMenu {
+        request_id: u64,
+        items: Vec<ContextMenuItem>,
+    },
     ClearPaneHighlights(PaneId),
     OpenPluginPaneFloating {
         plugin_url: String,

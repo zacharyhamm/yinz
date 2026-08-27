@@ -178,6 +178,8 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         layout_dir: None,
         user_plugin_dir: None,
         builtin_plugins_dir: None,
+        hooks: Default::default(),
+        context_menu: Default::default(),
         was_written_to_disk: false,
     });
     // No wait here: both plugins are loaded and the plugin thread drains its channel in order, so
@@ -352,6 +354,8 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
         layout_dir: None,
         user_plugin_dir: None,
         builtin_plugins_dir: None,
+        hooks: Default::default(),
+        context_menu: Default::default(),
         was_written_to_disk: false,
     });
     std::thread::sleep(std::time::Duration::from_millis(500));
