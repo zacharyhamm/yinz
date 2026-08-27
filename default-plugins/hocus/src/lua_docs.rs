@@ -77,7 +77,6 @@ fn heading(section: &str) -> Option<&'static str> {
         "hooks" => "Hooks",
         "files" => "Files",
         "errors" => "Errors",
-        "files" => "Files",
         "restrictions" => "What Lua plugins may not do",
         "limits" => "Current limits",
         _ => return None,

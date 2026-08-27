@@ -96,9 +96,6 @@ fn a_relatively_named_lua_plugin_is_launched_from_the_user_plugin_dir() {
         no_focus: false,
         borderless: None,
         tab_id: None,
-        global: false,
-        edge: None,
-        size: None,
     });
 
     zellij.wait_until("the plugin is found and renders", |grid_snapshot| {

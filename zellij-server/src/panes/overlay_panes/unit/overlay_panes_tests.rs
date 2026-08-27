@@ -6,10 +6,9 @@ use crate::panes::{LinkHandler, PaneId, TerminalPane};
 use crate::tab::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
 use interprocess::local_socket::Stream as LocalSocketStream;
 use std::path::PathBuf;
-use zellij_utils::data::{Direction, GlobalPaneEdge, Palette, Resize};
+use zellij_utils::data::{Direction, Palette, Resize};
 use zellij_utils::input::command::{RunCommand, TerminalAction};
 use zellij_utils::ipc::{ClientToServerMsg, IpcReceiverWithContext, ServerToClientMsg};
-use zellij_utils::pane_size::Dimension;
 
 #[derive(Clone)]
 struct FakeInputOutput {}
@@ -120,16 +119,6 @@ fn mock_pane(pane_id: PaneId) -> Box<dyn Pane> {
     ))
 }
 
-fn geom(x: usize, y: usize, cols: usize, rows: usize) -> PaneGeom {
-    PaneGeom {
-        x,
-        y,
-        cols: Dimension::fixed(cols),
-        rows: Dimension::fixed(rows),
-        ..Default::default()
-    }
-}
-
 fn coordinates(width: &str, height: &str) -> FloatingPaneCoordinates {
     FloatingPaneCoordinates::new(
         None,
@@ -156,28 +145,31 @@ fn borderless_coordinates(borderless: bool) -> FloatingPaneCoordinates {
 
 /// A collection over a `cols` x `rows` surface with no clients.
 fn overlay_panes(cols: usize, rows: usize) -> OverlayPanes {
-    overlay_panes_with(cols, rows, (0, 0), vec![]).0
+    overlay_panes_with(
+        cols,
+        rows,
+        Viewport {
+            x: 0,
+            y: 0,
+            cols,
+            rows,
+        },
+    )
+    .0
 }
 
 /// The collection plus the shared `display_area` cell, so a test can grow the surface under it.
+/// `tab_viewport` is the tab's own viewport, which an overlay is free to paint outside of.
 fn overlay_panes_with(
     cols: usize,
     rows: usize,
-    origin: (usize, usize),
-    strips: Vec<GlobalPaneStrip>,
+    tab_viewport: Viewport,
 ) -> (OverlayPanes, Rc<RefCell<Size>>) {
     let display_area = Rc::new(RefCell::new(Size { cols, rows }));
-    let viewport = Rc::new(RefCell::new(Viewport {
-        x: origin.0,
-        y: origin.1,
-        cols,
-        rows,
-    }));
+    let viewport = Rc::new(RefCell::new(tab_viewport));
     let panes = OverlayPanes::new(
         display_area.clone(),
-        Rc::new(RefCell::new(origin)),
         viewport,
-        Rc::new(RefCell::new(strips)),
         Rc::new(RefCell::new(HashSet::new())),
         Rc::new(RefCell::new(HashMap::new())),
         Rc::new(RefCell::new(HashMap::new())),
@@ -218,35 +210,17 @@ fn an_overlay_resolves_its_coordinates_against_the_session_surface() {
 }
 
 #[test]
-fn an_overlay_resolves_over_the_global_panes_rather_than_beside_them() {
-    // a 10-column left strip: the tab's own area starts at x=10, but the surface starts at 0 and
-    // an overlay placed on it may cover the strip
-    let strip = GlobalPaneStrip {
-        geom: geom(0, 0, 10, 20),
-        edge: GlobalPaneEdge::Left,
-    };
-    let (mut panes, _display_area) = overlay_panes_with(80, 20, (10, 0), vec![strip]);
-    add(
-        &mut panes,
-        1,
-        OverlayKind::Modal,
-        coordinates("100%", "100%"),
-    );
-    let pane_geom = panes.get(&PaneId::Terminal(1)).unwrap().position_and_size();
-    assert_eq!(
-        pane_geom.x, 0,
-        "the overlay starts at the surface origin, not the tab's"
-    );
-    assert_eq!(
-        pane_geom.cols.as_usize(),
-        90,
-        "the surface is the display area grown back over the strip"
-    );
-}
-
-#[test]
 fn reapplying_coordinates_re_resolves_against_the_surface_as_it_is_now() {
-    let (mut panes, display_area) = overlay_panes_with(80, 20, (0, 0), vec![]);
+    let (mut panes, display_area) = overlay_panes_with(
+        80,
+        20,
+        Viewport {
+            x: 0,
+            y: 0,
+            cols: 80,
+            rows: 20,
+        },
+    );
     add(
         &mut panes,
         1,
@@ -450,13 +424,18 @@ fn closing_the_focused_overlay_falls_through_to_the_one_below_it() {
 
 #[test]
 fn an_overlay_reports_the_cells_it_owns_outside_the_tab_s_viewport() {
-    // the tab occupies columns 10..90 of a 90-wide surface; an overlay across the whole surface
-    // therefore paints cells the tab's own viewport does not cover
-    let strip = GlobalPaneStrip {
-        geom: geom(0, 0, 10, 20),
-        edge: GlobalPaneEdge::Left,
-    };
-    let (mut panes, _display_area) = overlay_panes_with(80, 20, (10, 0), vec![strip]);
+    // the tab's viewport is inset by a row of chrome top and bottom; an overlay across the whole
+    // surface therefore paints cells the tab's own viewport does not cover
+    let (mut panes, _display_area) = overlay_panes_with(
+        80,
+        20,
+        Viewport {
+            x: 0,
+            y: 1,
+            cols: 80,
+            rows: 18,
+        },
+    );
     assert!(!panes.has_panes_outside_viewport());
 
     add(
@@ -784,43 +763,21 @@ fn a_frame_drag_clamps_an_overlay_inside_the_session_surface() {
     assert_eq!(xy(&panes, 1), (0, 0), "and no further than the origin");
 }
 
-/// The point of dragging against the session surface rather than the tab's viewport: a popup can
-/// be moved out of the way of what it is covering, including onto the cells a global pane owns.
-#[test]
-fn an_overlay_can_be_dragged_over_a_global_pane() {
-    let strip = GlobalPaneStrip {
-        geom: geom(0, 0, 10, 20),
-        edge: GlobalPaneEdge::Left,
-    };
-    let (mut panes, _display_area) = overlay_panes_with(80, 20, (10, 0), vec![strip]);
-    add(
-        &mut panes,
-        1,
-        OverlayKind::Modal,
-        placed_coordinates("30", "2", "20", "8"),
-    );
-    // x is stated relative to the surface origin, which starts at the strip
-    assert_eq!(xy(&panes, 1), (30, 2), "pre-condition");
-
-    let press = frame_corner(&panes, 1);
-    panes.move_pane_with_mouse(press);
-    let target = Position::new(press.line() as i32, press.column() as u16 - 28);
-    panes.move_pane_with_mouse(target);
-    panes.stop_moving_pane_with_mouse(target);
-
-    assert_eq!(
-        xy(&panes, 1),
-        (2, 2),
-        "the modal sits over the global pane's columns"
-    );
-}
-
 /// The write-back is what makes this work: the drag rewrites the overlay's *coordinates*, so the
 /// position it was dropped at is re-resolved on the next surface change rather than discarded.
 /// Without it the overlay re-centres the moment the terminal is resized.
 #[test]
 fn a_dragged_overlay_stays_where_it_was_dropped_when_the_surface_grows() {
-    let (mut panes, display_area) = overlay_panes_with(80, 20, (0, 0), vec![]);
+    let (mut panes, display_area) = overlay_panes_with(
+        80,
+        20,
+        Viewport {
+            x: 0,
+            y: 0,
+            cols: 80,
+            rows: 20,
+        },
+    );
     add(
         &mut panes,
         1,
@@ -1103,7 +1060,16 @@ fn size(panes: &OverlayPanes, id: u32) -> (usize, usize) {
 /// by the next `reapply_coordinates`.
 #[test]
 fn a_resize_writes_the_new_size_back_into_the_overlay_s_coordinates() {
-    let (mut panes, display_area) = overlay_panes_with(80, 20, (0, 0), vec![]);
+    let (mut panes, display_area) = overlay_panes_with(
+        80,
+        20,
+        Viewport {
+            x: 0,
+            y: 0,
+            cols: 80,
+            rows: 20,
+        },
+    );
     add(
         &mut panes,
         1,
@@ -1136,7 +1102,16 @@ fn a_resize_writes_the_new_size_back_into_the_overlay_s_coordinates() {
 /// coordinates still say it is, and the resize looks like it slid sideways.
 #[test]
 fn a_resize_from_the_upper_left_pins_the_position_as_well_as_the_size() {
-    let (mut panes, display_area) = overlay_panes_with(80, 20, (0, 0), vec![]);
+    let (mut panes, display_area) = overlay_panes_with(
+        80,
+        20,
+        Viewport {
+            x: 0,
+            y: 0,
+            cols: 80,
+            rows: 20,
+        },
+    );
     add(
         &mut panes,
         1,
@@ -1508,11 +1483,16 @@ fn hiding_an_overlay_mid_drag_releases_the_mouse() {
 
 #[test]
 fn a_hidden_overlay_does_not_take_the_mouse_or_the_cells_under_it() {
-    let strip = GlobalPaneStrip {
-        geom: geom(0, 0, 10, 20),
-        edge: GlobalPaneEdge::Left,
-    };
-    let (mut panes, _display_area) = overlay_panes_with(90, 20, (10, 0), vec![strip]);
+    let (mut panes, _display_area) = overlay_panes_with(
+        90,
+        20,
+        Viewport {
+            x: 0,
+            y: 1,
+            cols: 90,
+            rows: 18,
+        },
+    );
     add(
         &mut panes,
         1,
@@ -1532,7 +1512,7 @@ fn a_hidden_overlay_does_not_take_the_mouse_or_the_cells_under_it() {
     assert!(
         !panes.has_panes_outside_viewport(),
         "a hidden overlay owns no cells - counting one would leave the tab painting over the \
-         global panes with nothing to paint"
+         chrome with nothing to paint"
     );
 }
 
@@ -1566,7 +1546,16 @@ fn a_hidden_overlay_reports_itself_suppressed_and_unfocused() {
 
 #[test]
 fn a_hidden_overlay_is_still_re_resolved_against_a_new_surface() {
-    let (mut panes, display_area) = overlay_panes_with(80, 20, (0, 0), vec![]);
+    let (mut panes, display_area) = overlay_panes_with(
+        80,
+        20,
+        Viewport {
+            x: 0,
+            y: 0,
+            cols: 80,
+            rows: 20,
+        },
+    );
     add(
         &mut panes,
         1,
@@ -1899,7 +1888,16 @@ fn the_first_placement_is_what_draws_it() {
 /// the flag at all.
 #[test]
 fn a_resize_releases_an_overlay_nobody_ever_placed() {
-    let (mut panes, display_area) = overlay_panes_with(80, 20, (0, 0), vec![]);
+    let (mut panes, display_area) = overlay_panes_with(
+        80,
+        20,
+        Viewport {
+            x: 0,
+            y: 0,
+            cols: 80,
+            rows: 20,
+        },
+    );
     add_awaiting_placement(&mut panes, 1);
     assert!(panes.rendered_pane_ids().is_empty());
 

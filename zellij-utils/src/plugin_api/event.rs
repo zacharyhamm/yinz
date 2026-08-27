@@ -1,8 +1,5 @@
 pub use super::generated_api::api::{
-    action::{
-        Action as ProtobufAction, GlobalPanePlacement as ProtobufGlobalPanePlacement,
-        Position as ProtobufPosition,
-    },
+    action::{Action as ProtobufAction, Position as ProtobufPosition},
     event::{
         event::Payload as ProtobufEventPayload,
         layout_parsing_error::ErrorType as ProtobufLayoutParsingErrorType,
@@ -105,14 +102,8 @@ impl TryFrom<ProtobufEvent> for Event {
                         }
                         pane_manifest.insert(tab_index, panes);
                     }
-                    let global_panes = protobuf_pane_update_payload
-                        .global_panes
-                        .into_iter()
-                        .map(TryInto::try_into)
-                        .collect::<Result<Vec<_>, _>>()?;
                     Ok(Event::PaneUpdate(PaneManifest {
                         panes: pane_manifest,
-                        global_panes,
                     }))
                 },
                 _ => Err("Malformed payload for the PaneUpdate Event"),
@@ -765,16 +756,10 @@ impl TryFrom<Event> for ProtobufEvent {
                         panes: protobuf_pane_infos,
                     });
                 }
-                let global_panes = pane_manifest
-                    .global_panes
-                    .into_iter()
-                    .map(TryInto::try_into)
-                    .collect::<Result<Vec<_>, _>>()?;
                 Ok(ProtobufEvent {
                     name: ProtobufEventType::PaneUpdate as i32,
                     payload: Some(event::Payload::PaneUpdatePayload(PaneUpdatePayload {
                         pane_manifest: protobuf_pane_manifests,
-                        global_panes,
                     })),
                 })
             },
@@ -1404,12 +1389,6 @@ impl TryFrom<SessionInfo> for ProtobufSessionManifest {
                 panes: protobuf_pane_infos,
             });
         }
-        let global_panes = session_info
-            .panes
-            .global_panes
-            .into_iter()
-            .map(TryInto::try_into)
-            .collect::<Result<Vec<_>, _>>()?;
         Ok(ProtobufSessionManifest {
             name: session_info.name,
             panes: protobuf_pane_manifests,
@@ -1443,7 +1422,6 @@ impl TryFrom<SessionInfo> for ProtobufSessionManifest {
                 .map(ProtobufClientPaneHistory::from)
                 .collect(),
             creation_time: session_info.creation_time.as_secs(),
-            global_panes,
         })
     }
 }
@@ -1497,14 +1475,8 @@ impl TryFrom<ProtobufSessionManifest> for SessionInfo {
             }
             pane_manifest.insert(tab_index, panes);
         }
-        let global_panes = protobuf_session_manifest
-            .global_panes
-            .into_iter()
-            .map(TryInto::try_into)
-            .collect::<Result<Vec<_>, _>>()?;
         let panes = PaneManifest {
             panes: pane_manifest,
-            global_panes,
         };
         let mut plugins = BTreeMap::new();
         for plugin_info in protobuf_session_manifest.plugins.into_iter() {
@@ -1994,11 +1966,6 @@ impl TryFrom<ProtobufPaneInfo> for PaneInfo {
                 .collect(),
             default_fg: protobuf_pane_info.default_fg,
             default_bg: protobuf_pane_info.default_bg,
-            global_placement: protobuf_pane_info
-                .global_placement
-                .map(TryInto::try_into)
-                .transpose()?,
-            is_hidden: protobuf_pane_info.is_hidden,
             cwd: protobuf_pane_info.cwd,
             host: protobuf_pane_info.host,
         })
@@ -2046,11 +2013,6 @@ impl TryFrom<PaneInfo> for ProtobufPaneInfo {
                 .collect(),
             default_fg: pane_info.default_fg,
             default_bg: pane_info.default_bg,
-            global_placement: pane_info
-                .global_placement
-                .map(ProtobufGlobalPanePlacement::try_from)
-                .transpose()?,
-            is_hidden: pane_info.is_hidden,
             cwd: pane_info.cwd,
             host: pane_info.host,
         })
@@ -2085,8 +2047,6 @@ impl TryFrom<ProtobufTabInfo> for TabInfo {
             tab_id: protobuf_tab_info.tab_id as usize,
             has_bell_notification: protobuf_tab_info.has_bell_notification,
             is_flashing_bell: protobuf_tab_info.is_flashing_bell,
-            session_surface_rows: protobuf_tab_info.session_surface_rows as usize,
-            session_surface_columns: protobuf_tab_info.session_surface_columns as usize,
         })
     }
 }
@@ -2118,8 +2078,6 @@ impl TryFrom<TabInfo> for ProtobufTabInfo {
             tab_id: tab_info.tab_id as u32,
             has_bell_notification: tab_info.has_bell_notification,
             is_flashing_bell: tab_info.is_flashing_bell,
-            session_surface_rows: tab_info.session_surface_rows as u32,
-            session_surface_columns: tab_info.session_surface_columns as u32,
         })
     }
 }
@@ -2753,8 +2711,6 @@ fn serialize_tab_update_event_with_non_default_values() {
             // deliberately larger than the display area, and different on each axis: the two pairs
             // are separate rectangles and a round trip that swapped them would still pass if they
             // agreed
-            session_surface_rows: 12,
-            session_surface_columns: 14,
         },
         TabInfo {
             position: 1,
@@ -2776,8 +2732,6 @@ fn serialize_tab_update_event_with_non_default_values() {
             tab_id: 1,
             has_bell_notification: false,
             is_flashing_bell: false,
-            session_surface_rows: 12,
-            session_surface_columns: 14,
         },
         TabInfo::default(),
     ]);
@@ -2794,23 +2748,17 @@ fn serialize_tab_update_event_with_non_default_values() {
 
 #[test]
 fn serialize_pane_update_event() {
-    use crate::data::{GlobalPaneEdge, GlobalPanePlacement};
-    use crate::input::layout::PercentOrFixed;
     use prost::Message;
 
-    let pane_update_event = Event::PaneUpdate(PaneManifest {
-        global_panes: vec![PaneInfo {
+    let mut panes = HashMap::new();
+    panes.insert(
+        0,
+        vec![PaneInfo {
             id: 42,
-            global_placement: Some(GlobalPanePlacement {
-                edge: GlobalPaneEdge::Left,
-                size: PercentOrFixed::Percent(25),
-                length: None,
-            }),
-            is_hidden: true,
             ..Default::default()
         }],
-        ..Default::default()
-    });
+    );
+    let pane_update_event = Event::PaneUpdate(PaneManifest { panes });
     let protobuf_event: ProtobufEvent = pane_update_event.clone().try_into().unwrap();
     let serialized_protobuf_event = protobuf_event.encode_to_vec();
     let deserialized_protobuf_event: ProtobufEvent =
@@ -2820,31 +2768,6 @@ fn serialize_pane_update_event() {
         pane_update_event, deserialized_event,
         "Event properly serialized/deserialized without change"
     );
-}
-
-#[test]
-fn deserialize_pane_update_event_without_global_fields() {
-    use prost::Message;
-
-    let protobuf_event = ProtobufEvent {
-        name: ProtobufEventType::PaneUpdate as i32,
-        payload: Some(ProtobufEventPayload::PaneUpdatePayload(PaneUpdatePayload {
-            pane_manifest: vec![ProtobufPaneManifest {
-                tab_index: 0,
-                panes: vec![ProtobufPaneInfo::default()],
-            }],
-            global_panes: vec![],
-        })),
-    };
-    let serialized = protobuf_event.encode_to_vec();
-    let decoded = ProtobufEvent::decode(serialized.as_slice()).unwrap();
-    let Event::PaneUpdate(pane_manifest) = decoded.try_into().unwrap() else {
-        panic!("expected a pane update event");
-    };
-
-    assert!(pane_manifest.global_panes.is_empty());
-    assert_eq!(pane_manifest.panes[&0][0].global_placement, None);
-    assert!(!pane_manifest.panes[&0][0].is_hidden);
 }
 
 #[test]
@@ -2974,8 +2897,6 @@ fn serialize_session_update_event() {
 
 #[test]
 fn serialize_session_update_event_with_non_default_values() {
-    use crate::data::{GlobalPaneEdge, GlobalPanePlacement};
-    use crate::input::layout::PercentOrFixed;
     use prost::Message;
     let tab_infos = vec![
         TabInfo {
@@ -3001,8 +2922,6 @@ fn serialize_session_update_event_with_non_default_values() {
             // deliberately larger than the display area, and different on each axis: the two pairs
             // are separate rectangles and a round trip that swapped them would still pass if they
             // agreed
-            session_surface_rows: 12,
-            session_surface_columns: 14,
         },
         TabInfo {
             position: 1,
@@ -3024,8 +2943,6 @@ fn serialize_session_update_event_with_non_default_values() {
             tab_id: 1,
             has_bell_notification: false,
             is_flashing_bell: false,
-            session_surface_rows: 12,
-            session_surface_columns: 14,
         },
         TabInfo::default(),
     ];
@@ -3066,8 +2983,6 @@ fn serialize_session_update_event_with_non_default_values() {
             index_in_pane_group: index_in_pane_group_1,
             default_fg: None,
             default_bg: None,
-            global_placement: None,
-            is_hidden: false,
             cwd: Some("/work/hocus".to_owned()),
         },
         PaneInfo {
@@ -3097,8 +3012,6 @@ fn serialize_session_update_event_with_non_default_values() {
             index_in_pane_group: index_in_pane_group_2,
             default_fg: None,
             default_bg: None,
-            global_placement: None,
-            is_hidden: false,
             cwd: None,
         },
     ];
@@ -3119,19 +3032,7 @@ fn serialize_session_update_event_with_non_default_values() {
     let session_info_1 = SessionInfo {
         name: "session 1".to_owned(),
         tabs: tab_infos,
-        panes: PaneManifest {
-            panes,
-            global_panes: vec![PaneInfo {
-                id: 2,
-                global_placement: Some(GlobalPanePlacement {
-                    edge: GlobalPaneEdge::Bottom,
-                    size: PercentOrFixed::Fixed(4),
-                    length: None,
-                }),
-                is_hidden: true,
-                ..Default::default()
-            }],
-        },
+        panes: PaneManifest { panes },
         connected_clients: 2,
         is_current_session: true,
         available_layouts: vec![
@@ -3165,7 +3066,6 @@ fn serialize_session_update_event_with_non_default_values() {
         tabs: vec![],
         panes: PaneManifest {
             panes: HashMap::new(),
-            ..Default::default()
         },
         connected_clients: 0,
         is_current_session: false,

@@ -1,122 +1,6 @@
 use super::*;
 
 #[test]
-fn launch_plugin_global_placement_kdl_round_trip() {
-    let source = r#"
-        keybinds {
-            normal {
-                bind "Ctrl g" {
-                    LaunchOrFocusPlugin "hocus" {
-                        global true
-                        edge "left"
-                        size "25%"
-                    }
-                }
-            }
-        }
-    "#;
-    let document: KdlDocument = source.parse().unwrap();
-    let keybinds = Keybinds::from_kdl(
-        document.get("keybinds").unwrap(),
-        Default::default(),
-        &Default::default(),
-    )
-    .unwrap();
-    let key = KeyWithModifier::new(BareKey::Char('g')).with_ctrl_modifier();
-    assert!(matches!(
-        keybinds
-            .get_actions_for_key_in_mode(&InputMode::Normal, &key)
-            .and_then(|actions| actions.first()),
-        Some(Action::LaunchOrFocusPlugin {
-            global_placement: Some(GlobalPanePlacement {
-                edge: GlobalPaneEdge::Left,
-                size: PercentOrFixed::Percent(25),
-                length: None
-            }),
-            ..
-        })
-    ));
-
-    let serialized = Keybinds::to_kdl(&keybinds, true);
-    let serialized = serialized.to_string();
-    assert!(serialized.contains("global true"));
-    assert!(serialized.contains("edge \"left\""));
-    assert!(serialized.contains("size \"25%\""));
-    let reparsed = Keybinds::from_kdl(
-        serialized
-            .parse::<KdlDocument>()
-            .unwrap()
-            .get("keybinds")
-            .unwrap(),
-        Default::default(),
-        &Default::default(),
-    )
-    .unwrap();
-    assert_eq!(keybinds, reparsed);
-}
-
-#[test]
-fn global_plugin_placement_rejects_move_to_focused_tab() {
-    let source = r#"
-        keybinds {
-            normal {
-                bind "Ctrl g" {
-                    LaunchOrFocusPlugin "hocus" {
-                        global true
-                        edge "left"
-                        size "25%"
-                        move_to_focused_tab true
-                    }
-                }
-            }
-        }
-    "#;
-    let document: KdlDocument = source.parse().unwrap();
-    assert!(Keybinds::from_kdl(
-        document.get("keybinds").unwrap(),
-        Default::default(),
-        &Default::default(),
-    )
-    .is_err());
-}
-
-#[test]
-fn global_plugin_placement_rejects_overlays() {
-    for action in ["LaunchOrFocusPlugin", "LaunchPlugin"] {
-        for overlay_setting in [
-            "overlay true",
-            "overlay \"true\"",
-            "modal true",
-            "modal \"true\"",
-        ] {
-            let source = format!(
-                r#"
-                keybinds {{
-                    normal {{
-                        bind "Ctrl g" {{
-                            {action} "hocus" {{
-                                global true
-                                edge "left"
-                                size "25%"
-                                {overlay_setting}
-                            }}
-                        }}
-                    }}
-                }}
-            "#
-            );
-            let document: KdlDocument = source.parse().unwrap();
-            assert!(Keybinds::from_kdl(
-                document.get("keybinds").unwrap(),
-                Default::default(),
-                &Default::default(),
-            )
-            .is_err());
-        }
-    }
-}
-
-#[test]
 fn launch_or_focus_plugin_preserves_overlay_and_modal_configuration() {
     let source = r#"
         keybinds {
@@ -175,7 +59,7 @@ fn launch_or_focus_plugin_preserves_overlay_and_modal_configuration() {
 }
 
 #[test]
-fn non_global_plugin_placement_named_configuration_round_trips() {
+fn plugin_configuration_keys_named_global_edge_and_size_round_trip() {
     let source = r#"
         keybinds {
             normal {
@@ -201,15 +85,9 @@ fn non_global_plugin_placement_named_configuration_round_trips() {
         .get_actions_for_key_in_mode(&InputMode::Normal, &key)
         .and_then(|actions| actions.first())
         .unwrap();
-    let Action::LaunchOrFocusPlugin {
-        plugin,
-        global_placement,
-        ..
-    } = action
-    else {
+    let Action::LaunchOrFocusPlugin { plugin, .. } = action else {
         panic!("expected LaunchOrFocusPlugin");
     };
-    assert_eq!(*global_placement, None);
     let configuration = plugin.get_configuration().unwrap();
     assert_eq!(
         configuration.inner().get("global").map(String::as_str),
@@ -239,34 +117,6 @@ fn non_global_plugin_placement_named_configuration_round_trips() {
     )
     .unwrap();
     assert_eq!(keybinds, reparsed);
-}
-
-#[test]
-fn terminal_global_placement_rejects_edge_and_size_without_global_true() {
-    for action in [
-        r#"NewPane { edge "left"; size "25%"; }"#,
-        r#"Run "bash" { edge "left"; size "25%"; }"#,
-    ] {
-        let source = format!(
-            r#"
-                keybinds {{
-                    normal {{
-                        bind "Ctrl g" {{ {action}; }}
-                    }}
-                }}
-            "#
-        );
-        let document: KdlDocument = source.parse().unwrap();
-        assert!(
-            Keybinds::from_kdl(
-                document.get("keybinds").unwrap(),
-                Default::default(),
-                &Default::default(),
-            )
-            .is_err(),
-            "expected incomplete global placement to be rejected for {action}"
-        );
-    }
 }
 
 /// `awaits_placement` reaches the configuration map beside `overlay`, and nothing else does.

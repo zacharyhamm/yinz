@@ -64,7 +64,6 @@ use zellij_utils::data::{
     SaveLayoutResponse, TabMetadata, WarpPaneResponse, WarpPlacement, HOCUS_AGENT_PANE_CONTEXT,
 };
 use zellij_utils::home::{absolute_lexical, default_layout_dir, default_user_plugin_dir};
-use zellij_utils::input::layout::PercentOrFixed;
 use zellij_utils::input::permission::PermissionCache;
 use zellij_utils::ipc::{ClientToServerMsg, IpcSenderWithContext};
 use zellij_utils::plugin_data_store;
@@ -873,15 +872,6 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 set_pane_regex_highlights(env, pane_id, highlights)
             },
             PluginCommand::ClearPaneHighlights(pane_id) => clear_pane_highlights(env, pane_id),
-            PluginCommand::SetGlobalPanePlacement(pane_id, placement) => {
-                let _ = env
-                    .senders
-                    .send_to_screen(ScreenInstruction::SetGlobalPanePlacement(
-                        pane_id.into(),
-                        placement,
-                        None,
-                    ));
-            },
             PluginCommand::ChangeOverlayCoordinates(pane_ids_and_coordinates) => {
                 change_overlay_coordinates(
                     env,
@@ -891,22 +881,6 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                         .collect(),
                 )
             },
-            PluginCommand::LaunchOrFocusGlobalPaneSplit {
-                plugin_url,
-                config,
-                before,
-                length,
-                should_focus,
-                skip_cache,
-            } => launch_or_focus_global_pane_split(
-                env,
-                plugin_url,
-                config,
-                before,
-                length,
-                should_focus,
-                skip_cache,
-            ),
         },
         (PermissionStatus::Denied, permission) => {
             log::error!(
@@ -1648,7 +1622,6 @@ fn open_file(env: &mut PluginEnv, file_to_open: FileToOpen, context: BTreeMap<St
         near_current_pane: false,
         no_focus: false,
         tab_id: None,
-        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -1745,7 +1718,6 @@ fn open_file_floating(
         near_current_pane: false,
         no_focus: false,
         tab_id: None,
-        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -1788,7 +1760,6 @@ fn open_file_in_place(
         near_current_pane: false,
         no_focus: false,
         tab_id: None,
-        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -1831,7 +1802,6 @@ fn open_file_near_plugin(
         ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
-        None,
     );
     let _ = env.senders.send_to_pty(pty_instr);
 
@@ -1875,7 +1845,6 @@ fn open_file_floating_near_plugin(
         ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
-        None,
     );
     let _ = env.senders.send_to_pty(pty_instr);
 
@@ -1953,7 +1922,6 @@ fn open_terminal(env: &mut PluginEnv, cwd: PathBuf) {
         no_focus: false,
         borderless: None,
         tab_id: None,
-        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -1992,7 +1960,6 @@ fn open_terminal_near_plugin(env: &mut PluginEnv, cwd: PathBuf) {
         ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
-        None,
     ));
 
     // Wait for completion
@@ -2032,7 +1999,6 @@ fn open_terminal_floating(
         near_current_pane: false,
         no_focus: false,
         tab_id: None,
-        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -2073,7 +2039,6 @@ fn open_terminal_floating_near_plugin(
         ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
-        None,
     ));
 
     // Wait for completion
@@ -2111,7 +2076,6 @@ fn open_terminal_in_place(env: &mut PluginEnv, cwd: PathBuf) {
         pane_id_to_replace: None,
         close_replaced_pane: false,
         tab_id: None,
-        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -2416,7 +2380,6 @@ fn open_command_pane(
         no_focus: false,
         borderless: None,
         tab_id: None,
-        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -2491,7 +2454,6 @@ fn spawn_command_pane_near_plugin(
         ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
-        None,
     ));
 
     // Wait for completion
@@ -2798,7 +2760,6 @@ fn open_command_pane_floating(
         near_current_pane: false,
         no_focus: false,
         tab_id: None,
-        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -2851,7 +2812,6 @@ fn open_command_pane_overlay(
         near_current_pane: false,
         no_focus: false,
         tab_id: None,
-        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -2909,7 +2869,6 @@ fn open_command_pane_floating_near_plugin(
         ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
-        None,
     ));
 
     // Wait for completion
@@ -2972,7 +2931,6 @@ fn open_command_pane_in_place(
         pane_id_to_replace: None,
         close_replaced_pane: false,
         tab_id: None,
-        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -3034,7 +2992,6 @@ fn open_command_pane_background(
         ClientTabIndexOrPaneId::ClientId(env.client_id),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
-        None,
     ));
 
     // Wait for completion
@@ -3580,7 +3537,6 @@ fn new_tiled_pane_in_tab(env: &mut PluginEnv, tab_position: usize) {
         no_focus: false,
         borderless: None,
         tab_id: Some(tab_position),
-        global_placement: None,
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -3910,7 +3866,6 @@ fn new_pane(env: &PluginEnv) {
         direction: None,
         pane_name: None,
         start_suppressed: false,
-        global_placement: None,
     };
     apply_action!(action, error_msg, env);
 }
@@ -6158,7 +6113,6 @@ fn try_edit_layout(
         near_current_pane: true,
         no_focus: false,
         tab_id: None,
-        global_placement: None,
     };
     // Route the action - this is fallible
     route_action(
@@ -6453,45 +6407,6 @@ fn reload_plugin(env: &PluginEnv, plugin_id: u32) {
         .send_to_plugin(PluginInstruction::ReloadPluginWithId(plugin_id));
 }
 
-/// Launch `plugin_url` as a split of the calling plugin's own global pane, or reveal an existing
-/// global pane for it. The anchor is always the caller, so a plugin can only split itself - the
-/// server rejects callers that are not global panes.
-fn launch_or_focus_global_pane_split(
-    env: &PluginEnv,
-    plugin_url: String,
-    config: BTreeMap<String, String>,
-    before: bool,
-    length: Option<PercentOrFixed>,
-    should_focus: bool,
-    skip_cache: bool,
-) {
-    let url = if &plugin_url == "zellij:OWN_URL" {
-        env.plugin.location.display()
-    } else {
-        plugin_url
-    };
-    // no caller cwd: it would become part of the plugin's configuration and with it the plugin's
-    // identity, so the adopt path could never match the pane again after a session restore
-    match RunPluginOrAlias::from_url(&url, &Some(config), None, None) {
-        Ok(run_plugin_or_alias) => {
-            let _ = env
-                .senders
-                .send_to_screen(ScreenInstruction::LaunchOrFocusGlobalPaneSplit {
-                    run_plugin: run_plugin_or_alias,
-                    anchor: PaneId::Plugin(env.plugin_id),
-                    before,
-                    length,
-                    should_focus,
-                    skip_cache,
-                    client_id: env.client_id,
-                });
-        },
-        Err(e) => {
-            log::error!("Failed to launch global pane split: {:?}", e);
-        },
-    }
-}
-
 fn load_new_plugin(
     env: &PluginEnv,
     url: String,
@@ -6543,7 +6458,6 @@ fn load_new_plugin(
                     cwd,
                     None,
                     skip_cache,
-                    None,
                     None,
                     None,
                     None,
@@ -6990,7 +6904,6 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
         | PluginCommand::OpenTerminalInPlaceOfPlugin(..)
         | PluginCommand::OpenPluginPaneInNewTab { .. }
         | PluginCommand::OpenPluginPaneFloating { .. }
-        | PluginCommand::LaunchOrFocusGlobalPaneSplit { .. }
         | PluginCommand::NewTiledPaneInTab { .. }
         | PluginCommand::OpenTerminalPaneInPlaceOfPaneId(..) => {
             PermissionType::OpenTerminalsOrPlugins
@@ -7129,7 +7042,6 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
         | PluginCommand::HideFloatingPanes { .. }
         | PluginCommand::SetPaneRegexHighlights(..)
         | PluginCommand::ClearPaneHighlights(..)
-        | PluginCommand::SetGlobalPanePlacement(..)
         | PluginCommand::SetSoftKeyboard(..)
         | PluginCommand::WarpPaneToSession { .. }
         | PluginCommand::WarpPaneFromSession { .. }
@@ -7243,23 +7155,6 @@ mod permission_tests {
                 .success());
         }
         temp
-    }
-
-    #[test]
-    fn global_pane_splits_require_plugin_launch_permission() {
-        let command = PluginCommand::LaunchOrFocusGlobalPaneSplit {
-            plugin_url: "file:/tmp/plugin.wasm".to_owned(),
-            config: BTreeMap::new(),
-            before: true,
-            length: None,
-            should_focus: false,
-            skip_cache: false,
-        };
-
-        assert_eq!(
-            command_permission(&command),
-            Some(PermissionType::OpenTerminalsOrPlugins)
-        );
     }
 
     #[test]

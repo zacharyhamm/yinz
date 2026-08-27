@@ -1,9 +1,9 @@
 mod kdl_layout_parser;
 use crate::data::{
-    BareKey, Direction, FloatingPaneCoordinates, GlobalPaneEdge, GlobalPanePlacement, InputMode,
-    KeyWithModifier, LayoutInfo, LayoutMetadata, MultiplayerColors, NewPanePlacement, Palette,
-    PaletteColor, PaneId, PaneInfo, PaneManifest, PermissionType, Resize, SessionInfo,
-    StyleDeclaration, Styling, TabInfo, WebSharing, DEFAULT_STYLES,
+    BareKey, Direction, FloatingPaneCoordinates, InputMode, KeyWithModifier, LayoutInfo,
+    LayoutMetadata, MultiplayerColors, NewPanePlacement, Palette, PaletteColor, PaneId, PaneInfo,
+    PaneManifest, PermissionType, Resize, SessionInfo, StyleDeclaration, Styling, TabInfo,
+    WebSharing, DEFAULT_STYLES,
 };
 use crate::envs::EnvironmentVariables;
 use crate::home::{find_default_config_dir, get_layout_dir};
@@ -425,127 +425,6 @@ pub fn kdl_child_bool_value_for_entry<'a>(
         .and_then(|cwd_value| cwd_value.value().as_bool())
 }
 
-/// Global panes are only supported for tiled creation: `NewPane`, `NewTiledPane`, `Run` (as tiled)
-/// and plugin launches. Floating/in-place/stacked/blocking are rejected here and in
-/// `zellij-server/src/route.rs::reject_unrouted_global_pane_placement` — keep both
-/// sites uniform when adding actions.
-#[allow(clippy::result_large_err)]
-fn parse_global_pane_placement(
-    command_metadata: Option<&KdlDocument>,
-    action_node: &KdlNode,
-) -> Result<Option<GlobalPanePlacement>, ConfigError> {
-    let global =
-        command_metadata.and_then(|metadata| kdl_child_bool_value_for_entry(metadata, "global"));
-    let edge =
-        command_metadata.and_then(|metadata| kdl_child_string_value_for_entry(metadata, "edge"));
-    let size =
-        command_metadata.and_then(|metadata| kdl_child_string_value_for_entry(metadata, "size"));
-
-    match (global, edge, size) {
-        (None, None, None) => Ok(None),
-        (Some(true), Some(edge), Some(size)) => {
-            let edge = match edge {
-                "left" => GlobalPaneEdge::Left,
-                "right" => GlobalPaneEdge::Right,
-                "top" => GlobalPaneEdge::Top,
-                "bottom" => GlobalPaneEdge::Bottom,
-                _ => {
-                    return Err(global_pane_kdl_error(
-                        "Invalid global pane edge",
-                        action_node,
-                    ))
-                },
-            };
-            let size = PercentOrFixed::from_str(size)
-                .map_err(|_| global_pane_kdl_error("Invalid global pane size", action_node))?;
-            if size.is_zero() {
-                return Err(global_pane_kdl_error(
-                    "Global pane size must be greater than zero",
-                    action_node,
-                ));
-            }
-            Ok(Some(GlobalPanePlacement {
-                edge,
-                size,
-                length: None,
-            }))
-        },
-        _ => Err(global_pane_kdl_error(
-            "global, edge and size must be specified together",
-            action_node,
-        )),
-    }
-}
-
-#[allow(clippy::result_large_err)]
-fn parse_global_plugin_pane_placement(
-    command_metadata: Option<&KdlDocument>,
-    action_node: &KdlNode,
-) -> Result<Option<GlobalPanePlacement>, ConfigError> {
-    let global =
-        command_metadata.and_then(|metadata| kdl_child_bool_value_for_entry(metadata, "global"));
-    // Only error for `edge`/`size` that look like global placement when `global` is not true.
-    // Plugin user config may legitimately contain keys named `edge`/`size` with arbitrary
-    // values (e.g. `edge "soft"` `size "large"` in `non_global_plugin_placement_…` test),
-    // so we only treat valid global values as a typo that should be reported.
-    let edge = command_metadata.and_then(|m| kdl_child_string_value_for_entry(m, "edge"));
-    let is_valid_edge = matches!(
-        edge,
-        Some("left") | Some("right") | Some("top") | Some("bottom")
-    );
-    let size_str = command_metadata.and_then(|m| kdl_child_string_value_for_entry(m, "size"));
-    let is_valid_size = size_str
-        .as_ref()
-        .map(|s| crate::input::layout::PercentOrFixed::from_str(s).is_ok())
-        .unwrap_or(false);
-    if (is_valid_edge || is_valid_size) && global != Some(true) {
-        return Err(global_pane_kdl_error(
-            "edge or size without global",
-            action_node,
-        ));
-    }
-    if global == Some(true) {
-        parse_global_pane_placement(command_metadata, action_node)
-    } else {
-        Ok(None)
-    }
-}
-
-fn global_pane_kdl_error(message: &str, action_node: &KdlNode) -> ConfigError {
-    ConfigError::new_kdl_error(
-        message.to_string(),
-        action_node.span().offset(),
-        action_node.span().len(),
-    )
-}
-
-fn append_global_pane_placement(
-    children: &mut KdlDocument,
-    placement: Option<GlobalPanePlacement>,
-) {
-    if let Some(placement) = placement {
-        let mut global = KdlNode::new("global");
-        global.push(KdlValue::Bool(true));
-        children.nodes_mut().push(global);
-
-        let mut edge = KdlNode::new("edge");
-        edge.push(match placement.edge {
-            GlobalPaneEdge::Left => "left",
-            GlobalPaneEdge::Right => "right",
-            GlobalPaneEdge::Top => "top",
-            GlobalPaneEdge::Bottom => "bottom",
-        });
-        children.nodes_mut().push(edge);
-
-        let mut size = KdlNode::new("size");
-        size.push(match placement.size {
-            PercentOrFixed::Fixed(size) => size.to_string(),
-            PercentOrFixed::Percent(size) => format!("{size}%"),
-        });
-        children.nodes_mut().push(size);
-    }
-}
-
 impl Action {
     #[allow(clippy::result_large_err)]
     pub fn new_from_bytes(
@@ -697,7 +576,6 @@ impl Action {
                         direction: None,
                         pane_name: None,
                         start_suppressed: false,
-                        global_placement: None,
                     })
                 } else if string == "stacked" {
                     Ok(Action::NewStackedPane {
@@ -706,7 +584,6 @@ impl Action {
                         near_current_pane: false,
                         no_focus: false,
                         tab_id: None,
-                        global_placement: None,
                     })
                 } else {
                     let direction = Direction::from_str(string.as_str()).map_err(|_| {
@@ -720,7 +597,6 @@ impl Action {
                         direction: Some(direction),
                         pane_name: None,
                         start_suppressed: false,
-                        global_placement: None,
                     })
                 }
             },
@@ -900,7 +776,6 @@ impl Action {
                 direction,
                 pane_name: _,
                 start_suppressed: _,
-                global_placement,
             } => {
                 let mut node = KdlNode::new("NewPane");
                 if let Some(direction) = direction {
@@ -912,8 +787,7 @@ impl Action {
                     };
                     node.push(direction);
                 }
-                let mut children = KdlDocument::new();
-                append_global_pane_placement(&mut children, *global_placement);
+                let children = KdlDocument::new();
                 if !children.nodes().is_empty() {
                     node.set_children(children);
                 }
@@ -1013,8 +887,6 @@ impl Action {
                 command: run_command_action,
                 pane_name: name,
                 near_current_pane: false,
-                borderless: _,
-                global_placement,
                 ..
             } => {
                 let mut node = KdlNode::new("Run");
@@ -1056,7 +928,6 @@ impl Action {
                     direction_node.push(direction);
                     node_children.nodes_mut().push(direction_node);
                 }
-                append_global_pane_placement(&mut node_children, *global_placement);
                 if !node_children.nodes().is_empty() {
                     node.set_children(node_children);
                 }
@@ -1288,7 +1159,6 @@ impl Action {
                 should_open_in_place,
                 close_replaced_pane,
                 skip_cache: skip_plugin_cache,
-                global_placement,
                 ..
             } => {
                 let mut node = KdlNode::new("LaunchOrFocusPlugin");
@@ -1320,18 +1190,12 @@ impl Action {
                     skip_plugin_cache_node.push(KdlValue::Bool(true));
                     node_children.nodes_mut().push(skip_plugin_cache_node);
                 }
-                append_global_pane_placement(&mut node_children, *global_placement);
                 let configuration = match run_plugin_or_alias {
                     RunPluginOrAlias::RunPlugin(plugin) => Some(&plugin.configuration),
                     RunPluginOrAlias::Alias(alias) => alias.configuration.as_ref(),
                 };
                 if let Some(configuration) = configuration {
                     for (config_key, config_value) in configuration.inner().iter() {
-                        if global_placement.is_some()
-                            && matches!(config_key.as_str(), "global" | "edge" | "size")
-                        {
-                            continue;
-                        }
                         let mut node = KdlNode::new(config_key.clone());
                         if matches!(
                             config_key.as_str(),
@@ -1357,7 +1221,6 @@ impl Action {
                 close_replaced_pane,
                 skip_cache: skip_plugin_cache,
                 cwd,
-                global_placement,
                 ..
             } => {
                 let mut node = KdlNode::new("LaunchPlugin");
@@ -1393,14 +1256,8 @@ impl Action {
                     cwd_node.push(cwd.display().to_string());
                     node_children.nodes_mut().push(cwd_node);
                 }
-                append_global_pane_placement(&mut node_children, *global_placement);
                 if let Some(configuration) = run_plugin_or_alias.get_configuration() {
                     for (config_key, config_value) in configuration.inner().iter() {
-                        if global_placement.is_some()
-                            && matches!(config_key.as_str(), "global" | "edge" | "size")
-                        {
-                            continue;
-                        }
                         let mut node = KdlNode::new(config_key.clone());
                         node.push(config_value.clone());
                         node_children.nodes_mut().push(node);
@@ -1925,29 +1782,11 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 action_arguments,
                 kdl_action
             ),
-            "NewPane" => {
-                let mut action = parse_kdl_action_char_or_string_arguments!(
-                    action_name,
-                    action_arguments,
-                    kdl_action
-                )?;
-                let global_placement =
-                    parse_global_pane_placement(action_children.first().copied(), kdl_action)?;
-                match &mut action {
-                    Action::NewPane {
-                        global_placement: placement,
-                        ..
-                    } => *placement = global_placement,
-                    Action::NewStackedPane { .. } if global_placement.is_some() => {
-                        return Err(global_pane_kdl_error(
-                            "Global panes cannot be stacked",
-                            kdl_action,
-                        ));
-                    },
-                    _ => {},
-                }
-                Ok(action)
-            },
+            "NewPane" => parse_kdl_action_char_or_string_arguments!(
+                action_name,
+                action_arguments,
+                kdl_action
+            ),
             "PaneNameInput" => {
                 parse_kdl_action_u8_arguments!(action_name, action_arguments, kdl_action)
             },
@@ -2223,14 +2062,6 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 let stacked = command_metadata
                     .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "stacked"))
                     .unwrap_or(false);
-                let global_placement =
-                    parse_global_pane_placement(command_metadata.copied(), kdl_action)?;
-                if global_placement.is_some() && (floating || in_place || stacked) {
-                    return Err(global_pane_kdl_error(
-                        "Global panes cannot be floating, in-place or stacked",
-                        kdl_action,
-                    ));
-                }
                 let run_command_action = RunCommandAction {
                     command: PathBuf::from(command),
                     args,
@@ -2266,7 +2097,6 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                         near_current_pane: false,
                         no_focus: false,
                         tab_id: None,
-                        global_placement,
                     })
                 } else if in_place {
                     Ok(Action::NewInPlacePane {
@@ -2277,7 +2107,6 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                         pane_id_to_replace: None,
                         close_replaced_pane,
                         tab_id: None,
-                        global_placement,
                     })
                 } else if stacked {
                     Ok(Action::NewStackedPane {
@@ -2286,7 +2115,6 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                         near_current_pane: false,
                         no_focus: false,
                         tab_id: None,
-                        global_placement,
                     })
                 } else {
                     Ok(Action::NewTiledPane {
@@ -2297,7 +2125,6 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                         no_focus: false,
                         borderless: None,
                         tab_id: None,
-                        global_placement,
                     })
                 }
             },
@@ -2332,22 +2159,9 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 let skip_plugin_cache = command_metadata
                     .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "skip_plugin_cache"))
                     .unwrap_or(false);
-                let global_placement =
-                    parse_global_plugin_pane_placement(command_metadata.copied(), kdl_action)?;
                 let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                let configuration = KdlLayoutParser::parse_plugin_user_configuration(kdl_action)?;
-                let mut configuration = if global_placement.is_some() {
-                    PluginUserConfiguration::new(
-                        configuration
-                            .inner()
-                            .iter()
-                            .filter(|(key, _)| !matches!(key.as_str(), "global" | "edge" | "size"))
-                            .map(|(key, value)| (key.clone(), value.clone()))
-                            .collect(),
-                    )
-                } else {
-                    configuration
-                };
+                let mut configuration =
+                    KdlLayoutParser::parse_plugin_user_configuration(kdl_action)?;
                 if is_overlay {
                     configuration.insert("overlay", "true");
                 }
@@ -2367,17 +2181,6 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                     )
                 })?
                 .with_initial_cwd(initial_cwd);
-                if global_placement.is_some()
-                    && (should_float
-                        || run_plugin_or_alias.requests_overlay()
-                        || should_open_in_place
-                        || move_to_focused_tab)
-                {
-                    return Err(global_pane_kdl_error(
-                        "Global plugin panes cannot be floating, overlays, modal, in-place or moved to the focused tab",
-                        kdl_action,
-                    ));
-                }
                 Ok(Action::LaunchOrFocusPlugin {
                     plugin: run_plugin_or_alias,
                     should_float,
@@ -2386,7 +2189,6 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                     close_replaced_pane,
                     skip_cache: skip_plugin_cache,
                     tab_id: None,
-                    global_placement,
                 })
             },
             "LaunchPlugin" => {
@@ -2414,22 +2216,8 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 let skip_plugin_cache = command_metadata
                     .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "skip_plugin_cache"))
                     .unwrap_or(false);
-                let global_placement =
-                    parse_global_plugin_pane_placement(command_metadata.copied(), kdl_action)?;
                 let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                 let configuration = KdlLayoutParser::parse_plugin_user_configuration(kdl_action)?;
-                let configuration = if global_placement.is_some() {
-                    PluginUserConfiguration::new(
-                        configuration
-                            .inner()
-                            .iter()
-                            .filter(|(key, _)| !matches!(key.as_str(), "global" | "edge" | "size"))
-                            .map(|(key, value)| (key.clone(), value.clone()))
-                            .collect(),
-                    )
-                } else {
-                    configuration
-                };
                 let run_plugin_or_alias = RunPluginOrAlias::from_url(
                     &plugin_path,
                     &Some(configuration.inner().clone()),
@@ -2443,16 +2231,6 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                         kdl_action.span().len(),
                     )
                 })?;
-                if global_placement.is_some()
-                    && (should_float
-                        || run_plugin_or_alias.requests_overlay()
-                        || should_open_in_place)
-                {
-                    return Err(global_pane_kdl_error(
-                        "Global plugin panes cannot be floating, overlays, modal or in-place",
-                        kdl_action,
-                    ));
-                }
                 Ok(Action::LaunchPlugin {
                     plugin: run_plugin_or_alias,
                     should_float,
@@ -2463,7 +2241,6 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                     // filled from the active pane == better UX
                     no_focus: false,
                     tab_id: None,
-                    global_placement,
                 })
             },
             "PreviousSwapLayout" => Ok(Action::PreviousSwapLayout),
@@ -6904,9 +6681,6 @@ impl TabInfo {
         let selectable_floating_panes_count =
             optional_int_node!("selectable_floating_panes_count", usize).unwrap_or(0);
         let tab_id = optional_int_node!("tab_id", usize).unwrap_or(0);
-        let session_surface_rows = optional_int_node!("session_surface_rows", usize).unwrap_or(0);
-        let session_surface_columns =
-            optional_int_node!("session_surface_columns", usize).unwrap_or(0);
         Ok(TabInfo {
             position,
             name,
@@ -6927,8 +6701,6 @@ impl TabInfo {
             tab_id,
             has_bell_notification: false,
             is_flashing_bell: false,
-            session_surface_rows,
-            session_surface_columns,
         })
     }
     pub fn encode_to_kdl(&self) -> KdlDocument {
@@ -6992,14 +6764,6 @@ impl TabInfo {
         display_area_rows.push(self.display_area_rows as i64);
         kdl_doucment.nodes_mut().push(display_area_rows);
 
-        let mut session_surface_columns = KdlNode::new("session_surface_columns");
-        session_surface_columns.push(self.session_surface_columns as i64);
-        kdl_doucment.nodes_mut().push(session_surface_columns);
-
-        let mut session_surface_rows = KdlNode::new("session_surface_rows");
-        session_surface_rows.push(self.session_surface_rows as i64);
-        kdl_doucment.nodes_mut().push(session_surface_rows);
-
         let mut is_swap_layout_dirty = KdlNode::new("is_swap_layout_dirty");
         is_swap_layout_dirty.push(self.is_swap_layout_dirty);
         kdl_doucment.nodes_mut().push(is_swap_layout_dirty);
@@ -7025,7 +6789,6 @@ impl TabInfo {
 impl PaneManifest {
     pub fn decode_from_kdl(kdl_doucment: &KdlDocument) -> Self {
         let mut panes: HashMap<usize, Vec<PaneInfo>> = HashMap::new();
-        let mut global_panes = vec![];
         for node in kdl_doucment.nodes() {
             if node.name().to_string() == "pane" {
                 if let Some(pane_document) = node.children() {
@@ -7036,18 +6799,9 @@ impl PaneManifest {
                         panes_in_tab_position.push(pane_info);
                     }
                 }
-            } else if node.name().to_string() == "global_pane" {
-                if let Some(pane_document) = node.children() {
-                    if let Ok((_, pane_info)) = PaneInfo::decode_from_kdl(pane_document) {
-                        global_panes.push(pane_info);
-                    }
-                }
             }
         }
-        PaneManifest {
-            panes,
-            global_panes,
-        }
+        PaneManifest { panes }
     }
     pub fn encode_to_kdl(&self) -> KdlDocument {
         let mut kdl_doucment = KdlDocument::new();
@@ -7063,11 +6817,6 @@ impl PaneManifest {
                 pane_node.set_children(pane);
                 kdl_doucment.nodes_mut().push(pane_node);
             }
-        }
-        for pane in &self.global_panes {
-            let mut pane_node = KdlNode::new("global_pane");
-            pane_node.set_children(pane.encode_to_kdl());
-            kdl_doucment.nodes_mut().push(pane_node);
         }
         kdl_doucment
     }
@@ -7160,48 +6909,6 @@ impl PaneInfo {
         let cwd = optional_string_node!("cwd");
         let plugin_url = optional_string_node!("plugin_url");
         let is_selectable = bool_node!("is_selectable");
-        let global_placement = optional_string_node!("global_edge").and_then(|edge| {
-            let edge = match edge.as_str() {
-                "left" => GlobalPaneEdge::Left,
-                "right" => GlobalPaneEdge::Right,
-                "top" => GlobalPaneEdge::Top,
-                "bottom" => GlobalPaneEdge::Bottom,
-                _ => return None,
-            };
-            let size = optional_int_node!("global_size", usize)?;
-            let is_percent = kdl_document
-                .get("global_size_is_percent")
-                .and_then(|n| n.entries().first())
-                .and_then(|e| e.value().as_bool())
-                .unwrap_or(false);
-            let length = optional_int_node!("global_length", usize).map(|length| {
-                let length_is_percent = kdl_document
-                    .get("global_length_is_percent")
-                    .and_then(|n| n.entries().first())
-                    .and_then(|e| e.value().as_bool())
-                    .unwrap_or(false);
-                if length_is_percent {
-                    PercentOrFixed::Percent(length)
-                } else {
-                    PercentOrFixed::Fixed(length)
-                }
-            });
-            Some(GlobalPanePlacement {
-                edge,
-                size: if is_percent {
-                    PercentOrFixed::Percent(size)
-                } else {
-                    PercentOrFixed::Fixed(size)
-                },
-                length,
-            })
-        });
-        let is_hidden = kdl_document
-            .get("is_hidden")
-            .and_then(|n| n.entries().first())
-            .and_then(|e| e.value().as_bool())
-            .unwrap_or(false);
-
         let pane_info = PaneInfo {
             host: None,
             id,
@@ -7229,8 +6936,6 @@ impl PaneInfo {
             index_in_pane_group: Default::default(), // we don't serialize this
             default_fg: None,
             default_bg: None,
-            global_placement,
-            is_hidden,
             cwd,
         };
         Ok((tab_position, pane_info))
@@ -7295,37 +7000,6 @@ impl PaneInfo {
             string_node!("plugin_url", plugin_url.to_string());
         }
         bool_node!("is_selectable", self.is_selectable);
-        if let Some(placement) = self.global_placement {
-            let edge = match placement.edge {
-                GlobalPaneEdge::Left => "left",
-                GlobalPaneEdge::Right => "right",
-                GlobalPaneEdge::Top => "top",
-                GlobalPaneEdge::Bottom => "bottom",
-            };
-            string_node!("global_edge", edge);
-            match placement.size {
-                PercentOrFixed::Fixed(size) => {
-                    int_node!("global_size", size);
-                    bool_node!("global_size_is_percent", false);
-                },
-                PercentOrFixed::Percent(size) => {
-                    int_node!("global_size", size);
-                    bool_node!("global_size_is_percent", true);
-                },
-            }
-            match placement.length {
-                Some(PercentOrFixed::Fixed(length)) => {
-                    int_node!("global_length", length);
-                    bool_node!("global_length_is_percent", false);
-                },
-                Some(PercentOrFixed::Percent(length)) => {
-                    int_node!("global_length", length);
-                    bool_node!("global_length_is_percent", true);
-                },
-                None => {},
-            }
-            bool_node!("is_hidden", self.is_hidden);
-        }
         kdl_doucment
     }
 }

@@ -38,7 +38,7 @@ impl Fixture {
         }
     }
     fn run(&self) -> Run {
-        run_layout(&self.specs, self.direction, self.space, 0)
+        run_layout(&self.specs, self.direction, self.space)
     }
     fn has_stacked(&self) -> bool {
         self.specs.iter().any(|s| s.stacked.is_some())
@@ -909,29 +909,6 @@ fn stacked_pane_with_override() {
     println!("{} = {}", f.name, canonical(&run));
 }
 
-#[test]
-fn spans_start_at_the_given_origin() {
-    // panes laid out beside a global pane docked to the left of the screen start at its far edge
-    // rather than at column 0
-    let specs = vec![
-        spec(1, 10, 0, dim_pct(50.0, 20), dim_pct(100.0, 10)),
-        spec(2, 30, 0, dim_pct(50.0, 20), dim_pct(100.0, 10)),
-    ];
-    let run = run_layout(&specs, SplitDirection::Horizontal, 40, 10);
-    assert_eq!(run.outcome, Outcome::PaneSizeUnchanged); // sizes are already correct
-    assert_eq!(run.panes[0].geom.x, 10);
-    assert_eq!(
-        run.panes[1].geom.x,
-        10 + run.panes[0].geom.cols.as_usize(),
-        "second pane starts where the first ends"
-    );
-    assert_eq!(
-        run.panes[1].geom.x + run.panes[1].geom.cols.as_usize(),
-        50,
-        "panes span the whole display area from the origin"
-    );
-}
-
 // ---- property-based tests (hegel) ----
 
 use hegel::generators;
@@ -990,12 +967,10 @@ fn class_b_invariants_hold_for_any_layout(tc: hegel::TestCase) {
         SplitDirection::Horizontal,
         SplitDirection::Vertical,
     ]));
-    // `space` and `origin` are terminal coordinates in production: every caller reaches
-    // `PaneResizer::layout` through `TiledPaneGrid::layout_origin`, which passes
-    // `display_area.x`/`y` and `display_area.cols`/`rows`. Values beyond screen scale are not
-    // reachable, and `origin + space` near `usize::MAX` overflows `discretize_spans`.
+    // `space` is a terminal coordinate in production: every caller reaches `PaneResizer::layout`
+    // through `TiledPaneGrid`, which passes `display_area.cols`/`rows`. Values beyond screen scale
+    // are not reachable, and a `space` near `usize::MAX` overflows `discretize_spans`.
     let space = tc.draw(generators::integers::<usize>().max_value(500));
-    let origin = tc.draw(generators::integers::<usize>().max_value(500));
 
     let fixture = Fixture {
         name: "generated",
@@ -1007,14 +982,13 @@ fn class_b_invariants_hold_for_any_layout(tc: hegel::TestCase) {
         // to derive them from an arbitrary layout, so the band assertion is not exercised here
         bands: vec![],
     };
-    let run = run_layout(&specs, direction, space, origin);
+    let run = run_layout(&specs, direction, space);
     assert!(
         !run.panes.is_empty() || specs.is_empty(),
-        "layout of {:?} (direction {:?}, space {}, origin {}) lost every pane",
+        "layout of {:?} (direction {:?}, space {}) lost every pane",
         specs,
         direction,
-        space,
-        origin
+        space
     );
     // A layout that cannot fit the space it was given (say a `Fixed(1)` pane in 0 columns) is
     // legitimately unsatisfiable. `PaneResizer::layout` bails before `apply_spans`, so the

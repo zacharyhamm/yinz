@@ -1,10 +1,9 @@
 //! Where hocus draws itself: a panel in the bottom-left corner of the screen.
 //!
-//! hocus used to be a *global pane* - a strip carved off the left edge of the session surface,
-//! with every tab shrunk to fit beside it. It is now an **overlay**, drawn over the session
-//! surface rather than beside it, so a tab keeps its full width and hocus floats above whatever
-//! is underneath. `hocus-agents` is a second overlay, the same size, and the two sit **side by
-//! side**: the conversation on the left, the agent list to its right.
+//! hocus is an **overlay**: drawn over the session surface rather than inside a tab's layout, so
+//! a tab keeps its full width and hocus floats above whatever is underneath. `hocus-agents` is a
+//! second overlay, the same size, and the two sit **side by side**: the conversation on the left,
+//! the agent list to its right.
 //!
 //! **They are two panes, not one column.** Either can be open without the other, either hides
 //! on its own, and neither opens the other unbidden. The one thing that couples them is the
@@ -30,9 +29,9 @@
 //! `change_overlay_coordinates` names the pane. `apply_overlay_geometry` is that call, and
 //! `State::placed` / `State::agents_placed` are what keep making it until it lands.
 //!
-//! **The overlays live on a tab, and hocus moves them.** An overlay belongs to a `Tab`, where a
-//! global pane belonged to the session. `on_tabs` moves whichever halves are on screen to the tab
-//! that became active, which is what keeps hocus present the way the strip used to be. This is
+//! **The overlays live on a tab, and hocus moves them.** An overlay belongs to a `Tab`, so
+//! `on_tabs` moves whichever halves are on screen to the tab that became active - which is what
+//! keeps hocus present wherever the user goes. This is
 //! also why the server routes events to overlays in *every* tab and not only the active one -
 //! without that, an overlay left behind on another tab would never hear the `TabUpdate` it moves
 //! on.
@@ -40,8 +39,6 @@
 use std::collections::BTreeMap;
 
 use zellij_tile::prelude::*;
-
-use hocus_proto::launch::{overlay_configuration, HOCUS_ALIAS};
 
 use crate::ui;
 use crate::State;
@@ -165,23 +162,11 @@ pub(crate) fn overlay_geometry(
 
 /// The surface the panes are placed against, off the active tab's `TabInfo`.
 ///
-/// An overlay's coordinates are resolved against the *session surface* - the tab's display area
-/// grown back over the global-pane strips (`OverlayPanes::surface`) - so that is the pair the
-/// arithmetic in `overlay_geometry` has to use. `display_area_*` is the tab centre, smaller by
-/// whatever the global panes took, and placing against it makes the panes too small on both axes
-/// and floats them above the bottom edge they are anchored to by the strips' thickness.
-///
-/// Both-or-neither: a `TabInfo` from a server that predates `session_surface_*` reports zero for
-/// both, and one that somehow reported only one would otherwise mix denominators. The fallback is
-/// what the old code did - wrong by the strips, rather than a pane collapsed to nothing.
-///
-/// `compact-bar` and `multiple-select` place themselves off `display_area_*` in the same way and
-/// have the same blind spot; they are deliberately left alone here.
+/// An overlay's coordinates are resolved against the whole session surface
+/// (`OverlayPanes::surface`), which is the tab's display area - chrome included - at the screen
+/// origin. That is the pair the arithmetic in `overlay_geometry` has to use.
 pub(crate) fn surface_of(tab: &TabInfo) -> (usize, usize) {
-    match (tab.session_surface_rows, tab.session_surface_columns) {
-        (0, _) | (_, 0) => (tab.display_area_rows, tab.display_area_columns),
-        (rows, cols) => (rows, cols),
-    }
+    (tab.display_area_rows, tab.display_area_columns)
 }
 
 /// What to do about an agent list that is not on the conversation's tab.
@@ -373,48 +358,6 @@ impl State {
         // the destination resolves the coordinates against its own surface, but the sizes are
         // ours to restate - nothing else knows the panes' proportions
         self.apply_overlay_geometry();
-    }
-
-    /// Hand over to an overlay-configured hocus and close.
-    ///
-    /// This instance was restored from a session dump written before hocus became an overlay, so
-    /// the server is drawing it as a *global pane* - a strip carved off the session surface, with
-    /// every tab shrunk to fit beside it. Nothing else will clear it: overlays are not serialized,
-    /// so the pane the user asks for with the keybinding is a second one, opened beside a strip
-    /// that stays until it is closed by hand.
-    ///
-    /// **Only this half sends a launch.** The message names `HOCUS_ALIAS` with
-    /// `overlay_configuration()`, so the launch-or-reuse behind the url opens an overlay hocus -
-    /// and a legacy `hocus-agents` therefore has nothing to do but close itself. Two launchers
-    /// would be two chances to disagree about the configuration the lookup matches on
-    /// (`message_to_plugin` stamps a `caller_cwd` from the sending plugin, and that lookup is
-    /// exact), which is how you get two conversations instead of one.
-    ///
-    /// **No coordinates.** A global pane's cached surface is not the one the new overlay will be
-    /// placed against, so any geometry computed here would be wrong. The new hocus places itself
-    /// on its first `TabUpdate`, which is what it does when it is launched any other way.
-    ///
-    /// The handover cannot loop: this instance's identity has no `overlay` key and the one being
-    /// asked for does, so the message can never be routed back here - and what it opens is never
-    /// a suspect.
-    pub(crate) fn migrate_to_overlay(&mut self) {
-        if self.migrating {
-            return;
-        }
-        self.migrating = true;
-        pipe_message_to_plugin(
-            MessageToPlugin::new(hocus_proto::wire::HOCUS_OPEN)
-                .with_plugin_url(HOCUS_ALIAS)
-                .with_plugin_config(overlay_configuration())
-                // The overlay opened here is standing in for *this* pane, which the user summoned
-                // with a keybinding - so it has to arrive holding the keyboard, exactly as the
-                // pane it replaces would have. Left unset, the launch behind `plugin_url` decides,
-                // and it decides `false` (`should_focus.unwrap_or(false)` in `plugins::mod`): the
-                // conversation would come up on screen with the keys still going to whatever the
-                // user was in.
-                .new_plugin_instance_should_be_focused(),
-        );
-        close_self();
     }
 
     /// Ask an agent list that already exists to announce itself - and open nothing if there is

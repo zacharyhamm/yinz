@@ -135,7 +135,7 @@ enum AnsiCode {
 }
 
 message Action {
-  reserved 140;
+  reserved 140, 148;
   oneof action_type {
     QuitAction quit = 1;
     WriteAction write = 2;
@@ -285,7 +285,6 @@ message Action {
     FocusHostSessionAction focus_host_session = 145;
     ToggleHostFullscreenAction toggle_host_fullscreen = 146;
     FocusGuestSessionAction focus_guest_session = 147;
-    SetGlobalPanePlacementAction set_global_pane_placement = 148;
     NotifyAction notify = 149;
     WarpPaneAction warp_pane = 150;
     AdoptPaneAction adopt_pane = 151;
@@ -472,7 +471,7 @@ message NewPaneAction {
   optional string pane_name = 2;
   bool start_suppressed = 3;
   bool near_current_pane = 4;
-  optional GlobalPanePlacement global_placement = 5;
+  reserved 5;
 }
 
 message EditFileAction {
@@ -486,7 +485,7 @@ message EditFileAction {
   bool close_replaced_pane = 8;
   optional uint32 tab_id = 9;
   bool no_focus = 10;
-  optional GlobalPanePlacement global_placement = 11;
+  reserved 11;
 }
 
 message NewFloatingPaneAction {
@@ -496,7 +495,7 @@ message NewFloatingPaneAction {
   bool near_current_pane = 7;
   optional uint32 tab_id = 8;
   bool no_focus = 9;
-  optional GlobalPanePlacement global_placement = 10;
+  reserved 10;
 }
 
 message NewTiledPaneAction {
@@ -507,7 +506,7 @@ message NewTiledPaneAction {
   optional bool borderless = 8;
   optional uint32 tab_id = 9;
   bool no_focus = 10;
-  optional GlobalPanePlacement global_placement = 11;
+  reserved 11;
 }
 
 message NewInPlacePaneAction {
@@ -518,7 +517,7 @@ message NewInPlacePaneAction {
   bool close_replaced_pane = 5;
   optional uint32 tab_id = 6;
   bool no_focus = 7;
-  optional GlobalPanePlacement global_placement = 8;
+  reserved 8;
 }
 
 message NewStackedPaneAction {
@@ -527,7 +526,7 @@ message NewStackedPaneAction {
   bool near_current_pane = 3;
   optional uint32 tab_id = 4;
   bool no_focus = 5;
-  optional GlobalPanePlacement global_placement = 6;
+  reserved 6;
 }
 
 message NewBlockingPaneAction {
@@ -538,7 +537,7 @@ message NewBlockingPaneAction {
   bool near_current_pane = 5;
   optional uint32 tab_id = 6;
   bool no_focus = 7;
-  optional GlobalPanePlacement global_placement = 8;
+  reserved 8;
 }
 
 message PaneNameInputAction {
@@ -578,7 +577,7 @@ message RunAction {
   RunCommandAction command = 1;
   bool near_current_pane = 2;
   bool no_focus = 3;
-  optional GlobalPanePlacement global_placement = 4;
+  reserved 4;
 }
 
 message LaunchOrFocusPluginAction {
@@ -589,7 +588,7 @@ message LaunchOrFocusPluginAction {
   bool skip_cache = 5;
   bool close_replaced_pane = 6;
   optional uint32 tab_id = 7;
-  optional GlobalPanePlacement global_placement = 8;
+  reserved 8;
 }
 
 message LaunchPluginAction {
@@ -601,12 +600,7 @@ message LaunchPluginAction {
   bool close_replaced_pane = 6;
   optional uint32 tab_id = 7;
   bool no_focus = 8;
-  optional GlobalPanePlacement global_placement = 9;
-}
-
-message SetGlobalPanePlacementAction {
-  PaneId pane_id = 1;
-  GlobalPanePlacement placement = 2;
+  reserved 9;
 }
 
 message MouseEventAction {
@@ -769,27 +763,6 @@ message SetPaneColorAction {
   PaneId pane_id = 1;
   optional string fg = 2;
   optional string bg = 3;
-}
-
-enum GlobalPaneEdge {
-  GLOBAL_PANE_EDGE_UNSPECIFIED = 0;
-  GLOBAL_PANE_EDGE_LEFT = 1;
-  GLOBAL_PANE_EDGE_RIGHT = 2;
-  GLOBAL_PANE_EDGE_TOP = 3;
-  GLOBAL_PANE_EDGE_BOTTOM = 4;
-}
-
-message GlobalPaneSize {
-  oneof size_type {
-    uint32 fixed = 1;
-    uint32 percent = 2;
-  }
-}
-
-message GlobalPanePlacement {
-  GlobalPaneEdge edge = 1;
-  GlobalPaneSize size = 2;
-  optional GlobalPaneSize length = 3;
 }
 
 // Supporting enums and messages
@@ -1005,7 +978,7 @@ message NewPanePlacement {
   }
 }
 
-// Over the whole session surface, above the global panes - not on a tab's floating layer.
+// Over the whole session surface - not on a tab's floating layer.
 enum OverlayKind {
   OVERLAY_KIND_DISMISSIBLE = 0;
   OVERLAY_KIND_MODAL = 1;

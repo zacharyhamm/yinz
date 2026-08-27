@@ -124,167 +124,9 @@ fn a_pane_from_another_session_cannot_be_warped() {
     );
 }
 
-/// What a global pane is told when someone tries to move it out of the session.
-///
-/// Its own constant because four tests assert it, and the wording is the whole
-/// point: "there is no pane 99 in this session" was true of the tab lookup and
-/// useless to the person reading it.
-const GLOBAL_PANE_WARP_REFUSAL: &str = "this is a global pane; it belongs to the whole session \
-                                        rather than to a tab, so there is no other session to \
-                                        move it into";
-
-#[test]
-fn a_global_pane_cannot_be_warped() {
-    // A global pane is docked to the session, not held by a tab, so there is
-    // nothing about it that could arrive somewhere else.
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    new_tab(&mut screen, 1, 0);
-    gp_insert_global_pane(
-        &mut screen,
-        99,
-        GlobalPaneEdge::Left,
-        PercentOrFixed::Fixed(8),
-        false,
-    );
-
-    assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Terminal(99)), 1),
-        Err(GLOBAL_PANE_WARP_REFUSAL.to_owned())
-    );
-}
-
-#[test]
-fn a_split_inside_a_global_pane_cannot_be_warped() {
-    // A split of a global pane is itself a global pane, so one predicate has to
-    // cover both - which is why this asks about the split rather than the anchor.
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    new_tab(&mut screen, 1, 0);
-    gp_insert_global_pane(
-        &mut screen,
-        99,
-        GlobalPaneEdge::Left,
-        PercentOrFixed::Fixed(8),
-        false,
-    );
-    gp_insert_global_split(&mut screen, 98, PaneId::Terminal(99));
-
-    assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Terminal(98)), 1),
-        Err(GLOBAL_PANE_WARP_REFUSAL.to_owned())
-    );
-}
-
-#[test]
-fn a_client_focused_on_a_global_pane_warps_nothing_by_accident() {
-    // The dangerous one. Asked for "the focused pane" with a global pane focused,
-    // resolving focus through the tab answers with a pane the user is not even
-    // looking at - and warping it moves it to another session for them.
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
-    gp_insert_global_pane(
-        &mut screen,
-        99,
-        GlobalPaneEdge::Left,
-        PercentOrFixed::Fixed(8),
-        false,
-    );
-    screen
-        .focus_global_pane(PaneId::Terminal(99), 1)
-        .expect("TEST");
-
-    assert_eq!(
-        screen.check_pane_can_be_warped(None, 1),
-        Err(GLOBAL_PANE_WARP_REFUSAL.to_owned())
-    );
-}
-
-#[test]
-fn a_global_plugin_pane_is_refused_as_a_global_pane_not_as_a_plugin() {
-    // Most global panes are plugin panes, so the order of the two guards decides
-    // which explanation the user gets. "it has no process" is true and unhelpful:
-    // it suggests the pane is the wrong kind, when the problem is where it lives.
-    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    new_tab(&mut screen, 1, 0);
-    let run_plugin =
-        RunPluginOrAlias::from_url("file:/path/to/hocus.wasm", &None, None, None).unwrap();
-    add_matching_global_plugin(&mut screen, 77, run_plugin, false);
-
-    assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Plugin(77)), 1),
-        Err(GLOBAL_PANE_WARP_REFUSAL.to_owned())
-    );
-}
-
-#[test]
-fn an_adopted_pane_lands_in_the_tab_when_the_client_is_on_a_global_pane() {
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let client_id = 1;
-    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
-    new_tab(&mut screen, 1, 0);
-    gp_insert_global_pane(
-        &mut screen,
-        99,
-        GlobalPaneEdge::Left,
-        PercentOrFixed::Fixed(8),
-        false,
-    );
-    screen
-        .focus_global_pane(PaneId::Terminal(99), client_id)
-        .expect("TEST");
-
-    assert_eq!(
-        adopted_pane_placement_target(
-            &mut screen,
-            zellij_utils::data::WarpPlacement::FocusedTab,
-            client_id
-        ),
-        ClientTabIndexOrPaneId::TabIndex(0),
-        "an adopted pane must name the tab rather than the client, or it splits the global pane",
-    );
-}
-
-#[test]
-fn an_adopted_floating_pane_lands_in_the_tab_when_the_client_is_on_a_global_pane() {
-    // No `NewPane` reaches the global area any more, whatever its placement.
-    // Pinned here from the warp side as well, because an adopted pane picks its
-    // target before the pane-creation path ever sees it.
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let client_id = 1;
-    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
-    new_tab(&mut screen, 1, 0);
-    gp_insert_global_pane(
-        &mut screen,
-        99,
-        GlobalPaneEdge::Left,
-        PercentOrFixed::Fixed(8),
-        false,
-    );
-    screen
-        .focus_global_pane(PaneId::Terminal(99), client_id)
-        .expect("TEST");
-
-    assert_eq!(
-        adopted_pane_placement_target(
-            &mut screen,
-            zellij_utils::data::WarpPlacement::Floating,
-            client_id
-        ),
-        ClientTabIndexOrPaneId::TabIndex(0),
-    );
-}
-
 #[test]
 fn an_adopted_pane_still_follows_a_client_looking_at_a_tab() {
-    // The fallback is only for a client parked on a global pane. Everyone else
+    // Everyone else
     // keeps the placement they had, which is what makes the pane arrive in the
     // tab they are actually looking at rather than the one they started in.
     let client_id = 1;
@@ -298,77 +140,6 @@ fn an_adopted_pane_still_follows_a_client_looking_at_a_tab() {
             client_id
         ),
         ClientTabIndexOrPaneId::ClientId(client_id),
-    );
-}
-
-#[test]
-fn an_adopted_tab_takes_a_client_off_a_global_pane() {
-    // A whole tab arriving moves the client into it. The pane placements have to
-    // *name* the tab to stay out of the global strip; a tab is built by
-    // `new_tab`, which moves the client itself - so what this has to check is not
-    // where the panes go but that the client is looking at them when they arrive.
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let client_id = 1;
-    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
-    new_tab(&mut screen, 1, 0);
-    gp_insert_global_pane(
-        &mut screen,
-        99,
-        GlobalPaneEdge::Left,
-        PercentOrFixed::Fixed(8),
-        false,
-    );
-    screen
-        .focus_global_pane(PaneId::Terminal(99), client_id)
-        .expect("TEST");
-    assert_eq!(
-        screen.global_panes.focused_pane_id(client_id),
-        Some(PaneId::Terminal(99)),
-    );
-
-    // The result is not asserted: the panes are set aside on the pty thread and
-    // filled in by a later instruction, so a tab adopted against these empty
-    // channels never finishes arriving. The focus is handed over before any of
-    // that, which is the whole point of asking here.
-    let _ = screen.place_adopted_tab(
-        zellij_utils::data::WarpedTab::default(),
-        crate::pty::AdoptedTabPanes {
-            tiled: vec![],
-            floating: vec![],
-        },
-        client_id,
-    );
-
-    assert_eq!(
-        screen.global_panes.focused_pane_id(client_id),
-        None,
-        "the client would have been looking at the global pane while its new tab arrived",
-    );
-}
-
-#[test]
-fn a_session_whose_other_terminals_are_all_global_is_still_down_to_its_last_pane() {
-    // `selectable_terminal_pane_count` asks the tabs, and global panes are held
-    // by the session rather than by a tab - so a session hung with global
-    // terminals is still a session with one pane in it. Warping that pane away
-    // would leave nothing a tab could focus, which is the closing this guard
-    // exists to refuse.
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    new_tab(&mut screen, 1, 0);
-    for (id, edge) in [
-        (97, GlobalPaneEdge::Left),
-        (98, GlobalPaneEdge::Right),
-        (99, GlobalPaneEdge::Top),
-    ] {
-        gp_insert_global_pane(&mut screen, id, edge, PercentOrFixed::Fixed(8), false);
-    }
-
-    assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Terminal(1)), 1),
-        Err("this is the session's only pane; moving it would close the session".to_owned()),
     );
 }
 
@@ -929,12 +700,10 @@ fn a_tab_of_nothing_but_plugin_panes_has_nothing_to_warp() {
 
 #[test]
 fn a_tab_whose_ui_strip_reaches_past_it_can_be_warped() {
-    // The shape this was reported as: with a global pane docked to one side of
-    // the session, the tab's ui strips are widened over it while the panes
-    // between them stay inset, so the tab is not a rectangle and no split line
-    // spans it. That is not a layout, and it used to be refused - "0 of its 4
-    // panes could be placed", with every process in the tab stuck in this
-    // session over the shape of a status bar.
+    // A tab whose ui strip reaches past the panes under it is not a rectangle,
+    // so no split line spans it. That is not a layout, and it used to be refused
+    // - "0 of its 4 panes could be placed", with every process in the tab stuck
+    // in this session over the shape of a status bar.
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, 0);
     let tab = screen.tabs.get_mut(&0).expect("TEST");
@@ -988,7 +757,7 @@ fn a_tab_whose_ui_strip_reaches_past_it_can_be_warped() {
         .expect("TEST");
     assert!(
         strip.x < leftmost_pane_under_it,
-        "a ui pane beside a global pane should reach past the panes under it \
+        "a widened ui pane should reach past the panes under it \
          (strip at {}, panes at {leftmost_pane_under_it})",
         strip.x,
     );

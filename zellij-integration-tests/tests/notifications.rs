@@ -202,9 +202,6 @@ fn notification_paints_over_a_floating_pane() {
         unblock_condition: None,
         near_current_pane: false,
         borderless: None,
-        global: false,
-        edge: None,
-        size: None,
     });
     assert_eq!(exit_code, 0, "new floating pane exited cleanly");
     let floating = zellij.expect_pty_spawn();

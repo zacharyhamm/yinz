@@ -163,9 +163,6 @@ pub fn send_cli_new_pane_action_with_tab_id() {
         near_current_pane: false,
         no_focus: false,
         borderless: Some(false),
-        global: false,
-        edge: None,
-        size: None,
         tab_id: Some(0),
     };
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
@@ -234,9 +231,6 @@ pub fn send_cli_new_floating_pane_action_with_tab_id() {
         near_current_pane: false,
         no_focus: false,
         borderless: None,
-        global: false,
-        edge: None,
-        size: None,
         tab_id: Some(0),
     };
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
@@ -358,9 +352,6 @@ pub fn send_cli_new_pane_action_with_tab_id_and_direction() {
         near_current_pane: false,
         no_focus: false,
         borderless: Some(false),
-        global: false,
-        edge: None,
-        size: None,
         tab_id: Some(0),
     };
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
@@ -428,9 +419,6 @@ pub fn send_cli_new_pane_action_with_tab_id_and_stacked() {
         near_current_pane: false,
         no_focus: false,
         borderless: None,
-        global: false,
-        edge: None,
-        size: None,
         tab_id: Some(0),
     };
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);

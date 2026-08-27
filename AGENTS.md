@@ -110,13 +110,12 @@ Neither suite is reliable enough for a single red run to be evidence. Before bel
   (it waits for "Bye from Zellij!" but this fork puts a quit-confirmation modal in the way), the
   `nested_guest_modal` / `nested_hardening` / `nested_sessions` / `nested_session_handling_config`
   group, and `stacked_pane_list::a_stack_list_survives_session_resurrection`.
-- **The three known-flaky `zellij-server` lib tests are fixed** and each now passes 20/20 in a
-  loop: `screen_tests::global_panes_focus::no_new_pane_reaches_the_global_area_through_the_screen_thread`,
-  `screen_tests::cli_actions::send_cli_scroll_up_action` and
+- **The two known-flaky `zellij-server` lib tests are fixed** and each now passes 20/20 in a
+  loop: `screen_tests::cli_actions::send_cli_scroll_up_action` and
   `plugins::plugin_tests::keybinds::mode_update_payload_is_lightweight_for_opted_in_plugins`.
-  Two of the three were fixed in the test; the first needed a **production** fix, because the
-  cause was real nondeterminism — see `docs/TECH_DEBT.md`.
-- **A fourth flake, `pty_host_remote_reader_tests::a_resize_made_during_an_outage_is_sent_again_on_reconnect`,
+  Both were fixed in the test. A third, in the since-removed global panes suite, needed a
+  **production** fix for real nondeterminism — see `docs/TECH_DEBT.md`.
+- **A further flake, `pty_host_remote_reader_tests::a_resize_made_during_an_outage_is_sent_again_on_reconnect`,
   was found by the new gate** and fixed the same way. Its helper thread allowed 10s for the
   reconnect while the main flow gave up after ~5 and then read the slot, so a reconnect landing in
   between failed with "the reconnect never produced a socket". It passes alone either way — only

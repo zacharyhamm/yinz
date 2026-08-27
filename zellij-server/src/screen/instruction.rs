@@ -3,7 +3,7 @@ use zellij_utils::errors::prelude::*;
 use super::{GuestModalOutcome, HoldForCommand, InitialTitle, TabOverrideResult};
 use crate::panes::PaneId;
 use crate::plugins::{DumpSessionLayoutResponse, PluginId, PluginRenderAsset};
-use crate::pty::{AdoptedTabPanes, ClientTabIndexOrPaneId, GlobalSplitAnchor, VteBytes};
+use crate::pty::{AdoptedTabPanes, ClientTabIndexOrPaneId, VteBytes};
 use crate::pty_host::client::ReleasedPane;
 use crate::route::NotificationEnd;
 use crate::ui::loading_indication::LoadingIndication;
@@ -14,18 +14,17 @@ use std::str::FromStr;
 use std::time::Duration;
 use zellij_utils::data::{
     CommandOrPlugin, Direction, EventType, FloatingPaneCoordinates, GetFocusedPaneInfoResponse,
-    GlobalPanePlacement, HostTerminalThemeMode, InputMode, KeyWithModifier, LayoutInfo,
-    LayoutWithError, ListPanesResponse, ListTabsResponse, ModeInfo, NewPanePlacement,
-    NotificationInfo, OverlayPlacement, PaneInfo, PaneScrollbackResponse, PluginPermission,
-    RegexHighlight, Resize, ResizeStrategy, SessionInfo, Styling, TabInfo, WarpPlacement,
-    WarpedPane, WarpedTab,
+    HostTerminalThemeMode, InputMode, KeyWithModifier, LayoutInfo, LayoutWithError,
+    ListPanesResponse, ListTabsResponse, ModeInfo, NewPanePlacement, NotificationInfo,
+    OverlayPlacement, PaneInfo, PaneScrollbackResponse, PluginPermission, RegexHighlight, Resize,
+    ResizeStrategy, SessionInfo, Styling, TabInfo, WarpPlacement, WarpedPane, WarpedTab,
 };
 use zellij_utils::errors::ScreenContext;
 use zellij_utils::input::command::{RunCommand, TerminalAction};
 use zellij_utils::input::keybinds::Keybinds;
 use zellij_utils::input::layout::{
-    FloatingPaneLayout, PercentOrFixed, Run, RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout,
-    TabLayoutInfo, TiledPaneLayout,
+    FloatingPaneLayout, Run, RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout, TabLayoutInfo,
+    TiledPaneLayout,
 };
 use zellij_utils::input::mouse::MouseEvent;
 use zellij_utils::input::options::{Clipboard, NestedSessionHandling, PaneFrameStyle};
@@ -56,33 +55,6 @@ pub enum ScreenInstruction {
         Option<NotificationEnd>, // completion signal
         bool,                    // set_blocking
     ),
-    NewGlobalPane {
-        pane_id: PaneId,
-        initial_pane_title: Option<InitialTitle>,
-        hold_for_command: HoldForCommand,
-        invoked_with: Option<Run>,
-        placement: GlobalPanePlacement,
-        borderless: bool,
-        initially_hidden: bool,
-        should_focus: bool,
-        client_id: Option<ClientId>,
-        completion_tx: Option<NotificationEnd>,
-        set_blocking: bool,
-        declaration_order: Option<usize>,
-        split: Option<GlobalSplitAnchor>,
-    },
-    /// Launch a plugin as a split of `anchor`'s global pane, or reveal (and optionally focus) an
-    /// existing global pane for that plugin - the plugin-facing sibling of LaunchOrFocusPlugin's
-    /// global branch, anchored to the calling plugin's own pane.
-    LaunchOrFocusGlobalPaneSplit {
-        run_plugin: RunPluginOrAlias,
-        anchor: PaneId,
-        before: bool,
-        length: Option<PercentOrFixed>,
-        should_focus: bool,
-        skip_cache: bool,
-        client_id: ClientId,
-    },
     OpenInPlaceEditor(PaneId, ClientTabIndexOrPaneId),
     TogglePaneEmbedOrFloating(ClientId, Option<NotificationEnd>),
     ToggleFloatingPanes(ClientId, Option<TerminalAction>, Option<NotificationEnd>),
@@ -464,7 +436,6 @@ pub enum ScreenInstruction {
         ClientId,
         Option<NotificationEnd>,
         Option<usize>, // tab_id
-        Option<GlobalPanePlacement>,
     ), // bools are: should_float, move_to_focused_tab, should_open_in_place, close_replaced_pane, Option<PaneId> is the pane id to replace, bool following it is skip_cache
     LaunchPlugin(
         RunPluginOrAlias,
@@ -478,7 +449,6 @@ pub enum ScreenInstruction {
         Option<NotificationEnd>,
         Option<usize>, // tab_id
         bool,
-        Option<GlobalPanePlacement>,
         // stated by the launcher rather than derived from the plugin's own configuration
         Option<OverlayPlacement>,
     ), // bools are: should_float, should_open_in_place, close_replaced_pane, Option<PaneId> is the pane id to replace, Option<PathBuf> is an optional cwd, bool after is skip_cache
@@ -742,7 +712,6 @@ pub enum ScreenInstruction {
     HalfPageScrollUpWithPaneId(PaneId, Option<NotificationEnd>),
     HalfPageScrollDownWithPaneId(PaneId, Option<NotificationEnd>),
     ResizeWithPaneId(PaneId, ResizeStrategy, Option<NotificationEnd>),
-    SetGlobalPanePlacement(PaneId, GlobalPanePlacement, Option<NotificationEnd>),
     MovePaneWithPaneIdCli(PaneId, Option<Direction>, Option<NotificationEnd>),
     MovePaneBackwardsWithPaneId(PaneId, Option<NotificationEnd>),
     ClearScreenWithPaneId(PaneId, Option<NotificationEnd>),
@@ -805,12 +774,7 @@ impl From<&ScreenInstruction> for ScreenContext {
             },
             // Instructions whose context is named differently from the instruction itself.
             ScreenInstruction::PtyBytes(..) => ScreenContext::HandlePtyBytes,
-            ScreenInstruction::NewGlobalPane { .. } => ScreenContext::NewPane,
-            ScreenInstruction::LaunchOrFocusGlobalPaneSplit { .. } => {
-                ScreenContext::LaunchOrFocusPlugin
-            },
             ScreenInstruction::ClearAllPluginHighlights(..) => ScreenContext::ClearPluginHighlights,
-            ScreenInstruction::SetGlobalPanePlacement { .. } => ScreenContext::ResizeWithPaneId,
             other => {
                 let name: &'static str = other.into();
                 ScreenContext::from_str(name).unwrap_or_else(|_| {

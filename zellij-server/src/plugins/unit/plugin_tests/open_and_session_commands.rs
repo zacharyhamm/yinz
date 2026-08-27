@@ -54,7 +54,6 @@ pub fn start_or_reload_plugin() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -134,7 +133,6 @@ pub fn quit_zellij_plugin_command() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -222,7 +220,6 @@ pub fn detach_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -302,7 +299,6 @@ pub fn open_file_floating_plugin_command() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -390,7 +386,6 @@ pub fn open_file_plugin_command() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -483,7 +478,6 @@ pub fn open_file_with_line_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -567,7 +561,6 @@ pub fn open_file_with_line_floating_plugin_command() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -659,7 +652,6 @@ pub fn open_terminal_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -739,7 +731,6 @@ pub fn open_terminal_floating_plugin_command() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -827,7 +818,6 @@ pub fn open_command_pane_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -907,7 +897,6 @@ pub fn open_command_pane_floating_plugin_command() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,

@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-//! An overlay - a pane placed against the whole session surface, above the global panes, rather
+//! An overlay - a pane placed against the whole session surface, above a tab's own panes, rather
 //! than on a tab's floating layer - used to be reachable only by the built-in plugins that called
 //! the low-level floating-open shims directly (`hocus-ask`, `file-finder`; see
 //! `zellij-integration-tests/tests/hocus_ask.rs` and `file_finder.rs`). It is a placement on the
@@ -18,15 +18,15 @@ use zellij_utils::cli::CliAction;
 /// otherwise be spawning work of their own while the test watches for pty spawns.
 const NO_BACKGROUND_PLUGINS: &str = "load_plugins clear-defaults=true {\n}\n";
 
-const GLOBAL_AND_SHELL: &str = r#"layout {
-    global_panes {
-        pane edge="left" size="50%" focus=true
+const TWO_TILED_PANES: &str = r#"layout {
+    pane split_direction="vertical" {
+        pane focus=true
+        pane
     }
-    pane
 }
 "#;
 
-/// Open a plain command pane as an overlay, positioned over the global pane's strip.
+/// Open a plain command pane as an overlay, positioned over the tab's left-hand pane.
 fn open_overlay_pane(zellij: &TestSession) -> zellij_integration_tests::FakePtyHandle {
     zellij.run_cli_action(CliAction::NewPane {
         direction: None,
@@ -60,9 +60,6 @@ fn open_overlay_pane(zellij: &TestSession) -> zellij_integration_tests::FakePtyH
         no_focus: false,
         borderless: None,
         tab_id: None,
-        global: false,
-        edge: None,
-        size: None,
     });
     zellij.expect_pty_spawn()
 }
@@ -101,9 +98,6 @@ fn open_modal_pane(zellij: &TestSession) -> zellij_integration_tests::FakePtyHan
         no_focus: false,
         borderless: None,
         tab_id: None,
-        global: false,
-        edge: None,
-        size: None,
     });
     zellij.expect_pty_spawn()
 }
@@ -142,9 +136,6 @@ fn open_plain_floating_pane(zellij: &TestSession) -> zellij_integration_tests::F
         no_focus: false,
         borderless: None,
         tab_id: None,
-        global: false,
-        edge: None,
-        size: None,
     });
     zellij.expect_pty_spawn()
 }
@@ -175,26 +166,28 @@ fn position_of(snapshot: &zellij_integration_tests::GridSnapshot, needle: &str) 
 }
 
 /// A plain floating pane opened with `--overlay` is placed against the whole surface, so
-/// its cells land on the global pane, exactly like the finder/popup overlays. It must not
+/// its cells land on the pane beside it, exactly like the finder/popup overlays. It must not
 /// keep rendering once its tab is left, and must come back once its tab is focused again.
 #[test]
 fn an_overlay_floating_pane_is_gone_from_another_tab() {
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config(NO_BACKGROUND_PLUGINS)
-        .with_layout(LayoutInfo::Stringified(GLOBAL_AND_SHELL.to_owned()))
+        .with_layout(LayoutInfo::Stringified(TWO_TILED_PANES.to_owned()))
         .start();
-    let global = zellij.expect_pty_spawn();
-    global.output(b"GLOBAL");
+    let left = zellij.expect_pty_spawn();
+    left.output(b"LEFT-PANE");
     let shell = zellij.expect_pty_spawn();
     shell.output(b"first tab shell");
     shell.output(PROMPT);
-    zellij.wait_until("the global pane and shell load", |snapshot| {
-        snapshot.contains("GLOBAL") && snapshot.contains("first tab shell")
+    zellij.wait_until("both panes load", |snapshot| {
+        snapshot.contains("LEFT-PANE") && snapshot.contains("first tab shell")
     });
 
-    // Tab mode, then `n` for a new tab - which spawns a shell of its own.
+    // Tab mode, then `n` for a new tab - which applies the same two-pane layout.
     zellij.send_stdin(&keys::ctrl('t'));
     zellij.send_stdin(b"n");
+    let second_left = zellij.expect_pty_spawn();
+    second_left.output(b"second tab left");
     let second_shell = zellij.expect_pty_spawn();
     second_shell.output(b"second tab shell");
     second_shell.output(PROMPT);
@@ -210,7 +203,7 @@ fn an_overlay_floating_pane_is_gone_from_another_tab() {
     let overlay = open_overlay_pane(&zellij);
     overlay.output(b"OVERLAY-CONTENT");
     zellij.wait_until(
-        "the overlay pane is drawing over the global pane",
+        "the overlay pane is drawing over the pane beside it",
         |snapshot| snapshot.contains("OVERLAY-CONTENT"),
     );
 
@@ -229,145 +222,6 @@ fn an_overlay_floating_pane_is_gone_from_another_tab() {
     zellij.wait_until("the overlay pane is back with its tab", |snapshot| {
         snapshot.contains("OVERLAY-CONTENT")
     });
-
-    zellij.quit();
-}
-
-/// A tab is laid out over what the global panes leave it, so a floating pane dragged with the mouse
-/// used to be clamped to that area and stopped dead at the global pane's edge. No `--overlay` here:
-/// an ordinary floating pane floats above the global panes just as it does above the tiled ones.
-#[test]
-fn a_plain_floating_pane_can_be_dragged_over_a_global_pane_with_the_mouse() {
-    let mut zellij = TestRunner::new(TERMINAL_SIZE)
-        .with_config(&format!("{NO_BACKGROUND_PLUGINS}mouse_mode true\n"))
-        .with_layout(LayoutInfo::Stringified(GLOBAL_AND_SHELL.to_owned()))
-        .start();
-    let global = zellij.expect_pty_spawn();
-    global.output(b"GLOBAL");
-    let shell = zellij.expect_pty_spawn();
-    shell.output(b"first tab shell");
-    shell.output(PROMPT);
-    zellij.wait_until("the global pane and shell load", |snapshot| {
-        snapshot.contains("GLOBAL") && snapshot.contains("first tab shell")
-    });
-
-    let floating = open_plain_floating_pane(&zellij);
-    floating.output(b"DRAGME");
-    let snapshot = zellij.wait_until("the floating pane is up", |snapshot| {
-        snapshot.contains("DRAGME")
-    });
-
-    // the global pane takes the left half of a 120 column terminal
-    let global_pane_ends_at = TERMINAL_SIZE.cols / 2;
-    let (column, row) = position_of(&snapshot, "DRAGME");
-    assert!(
-        column >= global_pane_ends_at,
-        "the pane starts out in the tab, right of the global pane, but it is at column {column}"
-    );
-
-    // press its top frame and drag left, past the tab's edge and onto the global pane
-    let drag_to = column - 40;
-    zellij.send_stdin(&sgr_press(column + 1, row));
-    zellij.send_stdin(&sgr_left_motion(drag_to + 1, row));
-    zellij.send_stdin(&sgr_release(drag_to + 1, row));
-
-    zellij.wait_until("the pane is drawn over the global pane", |snapshot| {
-        snapshot.contains("DRAGME") && position_of(snapshot, "DRAGME").0 < global_pane_ends_at
-    });
-
-    zellij.quit();
-}
-
-/// Open a plain command pane as an overlay, well inside the tab, so a drag has somewhere to go.
-fn open_overlay_pane_in_the_tab(zellij: &TestSession) -> zellij_integration_tests::FakePtyHandle {
-    zellij.run_cli_action(CliAction::NewPane {
-        direction: None,
-        command: vec!["overlay-cmd".to_string()],
-        remote_host: None,
-        plugin: None,
-        cwd: None,
-        floating: true,
-        in_place: false,
-        close_replaced_pane: false,
-        pane_id: None,
-        name: None,
-        close_on_exit: false,
-        start_suspended: false,
-        configuration: None,
-        skip_plugin_cache: false,
-        x: Some("70%".to_string()),
-        y: Some("20%".to_string()),
-        width: Some("20%".to_string()),
-        height: Some("20%".to_string()),
-        pinned: None,
-        overlay: Some(true),
-        modal: None,
-        stacked: false,
-        blocking: false,
-        block_until_exit_success: false,
-        block_until_exit_failure: false,
-        block_until_exit: false,
-        unblock_condition: None,
-        near_current_pane: false,
-        no_focus: false,
-        borderless: None,
-        tab_id: None,
-        global: false,
-        edge: None,
-        size: None,
-    });
-    zellij.expect_pty_spawn()
-}
-
-/// An overlay is drawn over whatever it covers, so the user's only way to see what is underneath
-/// is to move it. It drags by its frame the way a floating pane does - but through its own
-/// collection: the floating path re-resolves the pointer position from scratch, and pressing an
-/// overlay's frame used to drag whatever the overlay was drawn over instead.
-///
-/// Dragged against the whole session surface, so it can be carried out over a global pane, which is
-/// where a popup that is in the way most needs to go.
-#[test]
-fn an_overlay_pane_can_be_dragged_over_a_global_pane_with_the_mouse() {
-    let mut zellij = TestRunner::new(TERMINAL_SIZE)
-        .with_config(&format!("{NO_BACKGROUND_PLUGINS}mouse_mode true\n"))
-        .with_layout(LayoutInfo::Stringified(GLOBAL_AND_SHELL.to_owned()))
-        .start();
-    let global = zellij.expect_pty_spawn();
-    global.output(b"GLOBAL");
-    let shell = zellij.expect_pty_spawn();
-    shell.output(b"first tab shell");
-    shell.output(PROMPT);
-    zellij.wait_until("the global pane and shell load", |snapshot| {
-        snapshot.contains("GLOBAL") && snapshot.contains("first tab shell")
-    });
-
-    let overlay = open_overlay_pane_in_the_tab(&zellij);
-    overlay.output(b"DRAGME");
-    let snapshot = zellij.wait_until("the overlay is up", |snapshot| snapshot.contains("DRAGME"));
-
-    // the global pane takes the left half of a 120 column terminal
-    let global_pane_ends_at = TERMINAL_SIZE.cols / 2;
-    let (column, row) = position_of(&snapshot, "DRAGME");
-    assert!(
-        column >= global_pane_ends_at,
-        "the overlay starts out in the tab, right of the global pane, but it is at column {column}"
-    );
-
-    // press its top frame and drag left, past the tab's edge and onto the global pane
-    let drag_to = column - 40;
-    zellij.send_stdin(&sgr_press(column + 1, row));
-    zellij.send_stdin(&sgr_left_motion(drag_to + 1, row));
-    zellij.send_stdin(&sgr_release(drag_to + 1, row));
-
-    zellij.wait_until("the overlay is drawn over the global pane", |snapshot| {
-        snapshot.contains("DRAGME") && position_of(snapshot, "DRAGME").0 < global_pane_ends_at
-    });
-
-    let snapshot = zellij.snapshot();
-    assert!(
-        snapshot.contains("first tab shell"),
-        "the pane the overlay was covering must still be where it was, got:\n{snapshot}"
-    );
 
     zellij.quit();
 }
@@ -407,9 +261,6 @@ fn open_popup(zellij: &TestSession) {
         no_focus: false,
         borderless: None,
         tab_id: None,
-        global: false,
-        edge: None,
-        size: None,
     });
 }
 
@@ -552,51 +403,6 @@ fn closing_a_popup_leaves_the_hidden_floating_layer_hidden() {
     zellij.quit();
 }
 
-/// An overlay covers the global panes as well as the tab, so while one is up the client's focus
-/// is taken off whichever global pane held it and parked (`Screen::activate_overlay`). Closing the
-/// overlay has to hand that focus back, or the user is left on a tab pane they never asked for.
-#[test]
-fn closing_a_popup_hands_focus_back_to_the_global_pane_that_had_it() {
-    let mut zellij = TestRunner::new(TERMINAL_SIZE)
-        .with_config(NO_BACKGROUND_PLUGINS)
-        .with_layout(LayoutInfo::Stringified(GLOBAL_AND_SHELL.to_string()))
-        .start();
-    let global = zellij.expect_pty_spawn();
-    let shell = zellij.expect_pty_spawn();
-    global.output(b"GLOBAL-PANE");
-    global.output(PROMPT);
-    shell.output(b"tiled shell");
-    shell.output(PROMPT);
-    zellij.wait_until("both panes load", |snapshot| {
-        snapshot.contains("GLOBAL-PANE") && snapshot.contains("tiled shell")
-    });
-
-    // the layout focuses the global pane; prove it owns the keyboard before the popup opens
-    global.output(b"before-popup");
-    zellij.wait_until("the global pane has focus", |snapshot| {
-        snapshot.contains("before-popup")
-    });
-
-    open_popup(&zellij);
-    zellij.wait_until("the popup is up", |snapshot| {
-        snapshot.contains("Quit Zellij?")
-    });
-
-    zellij.send_stdin(&keys::ESC);
-    zellij.wait_until("the popup is gone", |snapshot| {
-        !snapshot.contains("Quit Zellij?")
-    });
-
-    // typing now must reach the global pane again, not the tab
-    zellij.send_stdin(&keys::key('x'));
-    global.wait_for_stdin(
-        "the global pane has the keyboard back after the popup closes",
-        |bytes| bytes.contains(&b'x'),
-    );
-
-    zellij.quit();
-}
-
 /// `--modal` is `--overlay` plus "do not take focus from it". It reaches the tab as an overlay
 /// placement rather than as a coordinates flag, so it works for a plain command pane - modal-ness
 /// used to be spelled only in a plugin's own configuration, which a terminal pane does not have.
@@ -604,16 +410,16 @@ fn closing_a_popup_hands_focus_back_to_the_global_pane_that_had_it() {
 fn a_modal_command_pane_is_placed_on_the_surface_and_keeps_focus() {
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config(NO_BACKGROUND_PLUGINS)
-        .with_layout(LayoutInfo::Stringified(GLOBAL_AND_SHELL.to_string()))
+        .with_layout(LayoutInfo::Stringified(TWO_TILED_PANES.to_string()))
         .start();
-    let global = zellij.expect_pty_spawn();
+    let left = zellij.expect_pty_spawn();
     let shell = zellij.expect_pty_spawn();
-    global.output(b"GLOBAL-PANE");
-    global.output(PROMPT);
+    left.output(b"LEFT-PANE");
+    left.output(PROMPT);
     shell.output(b"tiled shell");
     shell.output(PROMPT);
     zellij.wait_until("both panes load", |snapshot| {
-        snapshot.contains("GLOBAL-PANE") && snapshot.contains("tiled shell")
+        snapshot.contains("LEFT-PANE") && snapshot.contains("tiled shell")
     });
 
     let modal = open_modal_pane(&zellij);

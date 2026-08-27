@@ -2,14 +2,13 @@
 
 pub use super::command::{OpenFilePayload, RunCommandAction};
 use super::layout::{
-    FloatingPaneLayout, Layout, PercentOrFixed, PluginAlias, RunPlugin, RunPluginLocation,
-    RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout, TabLayoutInfo, TiledPaneLayout,
+    FloatingPaneLayout, Layout, PluginAlias, RunPlugin, RunPluginLocation, RunPluginOrAlias,
+    SwapFloatingLayout, SwapTiledLayout, TabLayoutInfo, TiledPaneLayout,
 };
 use crate::cli::CliAction;
 use crate::data::{
-    CommandOrPlugin, Direction, GlobalPaneEdge, GlobalPanePlacement, KeyWithModifier, LayoutInfo,
-    NewPanePlacement, OriginatingPlugin, PaneId, Resize, UnblockCondition, WarpPlacement,
-    WarpedPane, WarpedTab,
+    CommandOrPlugin, Direction, KeyWithModifier, LayoutInfo, NewPanePlacement, OriginatingPlugin,
+    PaneId, Resize, UnblockCondition, WarpPlacement, WarpedPane, WarpedTab,
 };
 use crate::data::{FloatingPaneCoordinates, InputMode};
 use crate::home::{find_default_config_dir, get_layout_dir};
@@ -232,7 +231,6 @@ pub enum Action {
         direction: Option<Direction>,
         pane_name: Option<String>,
         start_suppressed: bool,
-        global_placement: Option<GlobalPanePlacement>,
     },
     /// Returns: Created pane ID (format: terminal_<id>)
     NewBlockingPane {
@@ -243,7 +241,6 @@ pub enum Action {
         near_current_pane: bool,
         no_focus: bool,
         tab_id: Option<usize>,
-        global_placement: Option<GlobalPanePlacement>,
     },
     /// Open the file in a new pane using the default editor
     /// Returns: Created pane ID (format: terminal_<id>)
@@ -259,7 +256,6 @@ pub enum Action {
         near_current_pane: bool,
         no_focus: bool,
         tab_id: Option<usize>,
-        global_placement: Option<GlobalPanePlacement>,
     },
     /// Open a new floating pane
     /// Returns: Created pane ID (format: terminal_<id> or plugin_<id>)
@@ -267,13 +263,12 @@ pub enum Action {
         command: Option<RunCommandAction>,
         pane_name: Option<String>,
         /// Where on the surface: `Floating` for the tab's floating layer, `Overlay` for the
-        /// session surface above the global panes. Carried whole rather than as coordinates
+        /// session surface above the tab's own panes. Carried whole rather than as coordinates
         /// with a flag on them, so a modal's *kind* survives the trip to the server.
         placement: NewPanePlacement,
         near_current_pane: bool,
         no_focus: bool,
         tab_id: Option<usize>,
-        global_placement: Option<GlobalPanePlacement>,
     },
     /// Open a new tiled (embedded, non-floating) pane
     /// Returns: Created pane ID (format: terminal_<id> or plugin_<id>)
@@ -285,7 +280,6 @@ pub enum Action {
         no_focus: bool,
         borderless: Option<bool>,
         tab_id: Option<usize>,
-        global_placement: Option<GlobalPanePlacement>,
     },
     /// Open a new pane in place of the focused one, suppressing it instead
     /// Returns: Created pane ID (format: terminal_<id> or plugin_<id>)
@@ -297,7 +291,6 @@ pub enum Action {
         pane_id_to_replace: Option<PaneId>,
         close_replaced_pane: bool,
         tab_id: Option<usize>,
-        global_placement: Option<GlobalPanePlacement>,
     },
     /// Returns: Created pane ID (format: terminal_<id> or plugin_<id>)
     NewStackedPane {
@@ -306,7 +299,6 @@ pub enum Action {
         near_current_pane: bool,
         no_focus: bool,
         tab_id: Option<usize>,
-        global_placement: Option<GlobalPanePlacement>,
     },
     /// Embed focused pane in tab if floating or float focused pane if embedded
     TogglePaneEmbedOrFloating,
@@ -371,7 +363,6 @@ pub enum Action {
         command: RunCommandAction,
         near_current_pane: bool,
         no_focus: bool,
-        global_placement: Option<GlobalPanePlacement>,
     },
     /// Set pane default foreground/background color
     SetPaneColor {
@@ -456,7 +447,6 @@ pub enum Action {
         close_replaced_pane: bool,
         skip_cache: bool,
         tab_id: Option<usize>,
-        global_placement: Option<GlobalPanePlacement>,
     },
     /// Returns: Plugin pane ID (format: plugin_<id>)
     LaunchPlugin {
@@ -468,7 +458,6 @@ pub enum Action {
         cwd: Option<PathBuf>,
         no_focus: bool,
         tab_id: Option<usize>,
-        global_placement: Option<GlobalPanePlacement>,
     },
     MouseEvent {
         event: MouseEvent,
@@ -644,10 +633,6 @@ pub enum Action {
         pane_id: PaneId,
         coordinates: FloatingPaneCoordinates,
     },
-    SetGlobalPanePlacement {
-        pane_id: PaneId,
-        placement: GlobalPanePlacement,
-    },
     TogglePaneBorderless {
         pane_id: PaneId,
     },
@@ -746,36 +731,6 @@ pub enum Action {
         id: u64,
         direction: Direction,
     },
-}
-
-fn parse_global_pane_placement(
-    global: bool,
-    edge: Option<String>,
-    size: Option<String>,
-) -> Result<Option<GlobalPanePlacement>, String> {
-    match (global, edge, size) {
-        (false, None, None) => Ok(None),
-        (true, Some(edge), Some(size)) => {
-            let edge = match edge.as_str() {
-                "left" => GlobalPaneEdge::Left,
-                "right" => GlobalPaneEdge::Right,
-                "top" => GlobalPaneEdge::Top,
-                "bottom" => GlobalPaneEdge::Bottom,
-                _ => return Err(format!("Invalid global pane edge: {edge}")),
-            };
-            let size = PercentOrFixed::from_str(&size)
-                .map_err(|error| format!("Invalid global pane size: {error}"))?;
-            if size.is_zero() {
-                return Err("Global pane size must be greater than zero".to_string());
-            }
-            Ok(Some(GlobalPanePlacement {
-                edge,
-                size,
-                length: None,
-            }))
-        },
-        _ => Err("--global, --edge and --size must be specified together".to_string()),
-    }
 }
 
 /// Both `warp-pane` and `pty-host adopt` spell placement the same way: two
@@ -1225,28 +1180,8 @@ impl Action {
                 borderless,
                 overlay,
                 modal,
-                global,
-                edge,
-                size,
                 tab_id,
             } => {
-                let global_placement = parse_global_pane_placement(global, edge, size)?;
-                if global_placement.is_some()
-                    && (floating
-                        || in_place
-                        || stacked
-                        || blocking
-                        || block_until_exit_success
-                        || block_until_exit_failure
-                        || block_until_exit
-                        || unblock_condition.is_some()
-                        || plugin.is_some())
-                {
-                    return Err(
-                        "Global panes cannot be floating, in-place, stacked, blocking or plugins"
-                            .to_string(),
-                    );
-                }
                 let pane_id_to_replace = match pane_id {
                     Some(pane_id_str) => match PaneId::from_str(&pane_id_str) {
                         Ok(parsed_pane_id) => Some(parsed_pane_id),
@@ -1361,7 +1296,6 @@ impl Action {
                         near_current_pane,
                         no_focus,
                         tab_id,
-                        global_placement,
                     }])
                 } else if let Some(plugin) = plugin {
                     let plugin = match RunPluginLocation::parse_with_relative(&plugin, cwd.clone())
@@ -1439,7 +1373,6 @@ impl Action {
                             near_current_pane,
                             no_focus,
                             tab_id,
-                            global_placement,
                         }])
                     } else if in_place {
                         Ok(vec![Action::NewInPlacePane {
@@ -1450,7 +1383,6 @@ impl Action {
                             pane_id_to_replace,
                             close_replaced_pane,
                             tab_id,
-                            global_placement,
                         }])
                     } else if stacked {
                         Ok(vec![Action::NewStackedPane {
@@ -1459,7 +1391,6 @@ impl Action {
                             near_current_pane,
                             no_focus,
                             tab_id,
-                            global_placement,
                         }])
                     } else {
                         Ok(vec![Action::NewTiledPane {
@@ -1470,7 +1401,6 @@ impl Action {
                             no_focus,
                             borderless,
                             tab_id,
-                            global_placement,
                         }])
                     }
                 } else {
@@ -1484,7 +1414,6 @@ impl Action {
                             near_current_pane,
                             no_focus,
                             tab_id,
-                            global_placement,
                         }])
                     } else if in_place {
                         Ok(vec![Action::NewInPlacePane {
@@ -1495,7 +1424,6 @@ impl Action {
                             pane_id_to_replace,
                             close_replaced_pane,
                             tab_id,
-                            global_placement,
                         }])
                     } else if stacked {
                         Ok(vec![Action::NewStackedPane {
@@ -1504,7 +1432,6 @@ impl Action {
                             near_current_pane,
                             no_focus,
                             tab_id,
-                            global_placement,
                         }])
                     } else {
                         Ok(vec![Action::NewTiledPane {
@@ -1515,7 +1442,6 @@ impl Action {
                             no_focus,
                             borderless,
                             tab_id,
-                            global_placement,
                         }])
                     }
                 }
@@ -1562,7 +1488,6 @@ impl Action {
                     near_current_pane,
                     no_focus,
                     tab_id,
-                    global_placement: None,
                 }])
             },
             CliAction::SwitchMode { input_mode } => Ok(vec![Action::SwitchToMode { input_mode }]),
@@ -2077,18 +2002,8 @@ impl Action {
                 move_to_focused_tab,
                 configuration,
                 skip_plugin_cache,
-                global,
-                edge,
-                size,
                 tab_id,
             } => {
-                let global_placement = parse_global_pane_placement(global, edge, size)?;
-                if global_placement.is_some() && (floating || in_place || move_to_focused_tab) {
-                    return Err(
-                        "Global plugin panes cannot be floating, in-place or moved to the focused tab"
-                            .to_string(),
-                    );
-                }
                 let current_dir = get_current_dir();
                 let run_plugin_or_alias = RunPluginOrAlias::from_url(
                     url.as_str(),
@@ -2104,7 +2019,6 @@ impl Action {
                     close_replaced_pane,
                     skip_cache: skip_plugin_cache,
                     tab_id,
-                    global_placement,
                 }])
             },
             CliAction::LaunchPlugin {
@@ -2115,15 +2029,8 @@ impl Action {
                 configuration,
                 skip_plugin_cache,
                 no_focus,
-                global,
-                edge,
-                size,
                 tab_id,
             } => {
-                let global_placement = parse_global_pane_placement(global, edge, size)?;
-                if global_placement.is_some() && (floating || in_place) {
-                    return Err("Global plugin panes cannot be floating or in-place".to_string());
-                }
                 let current_dir = get_current_dir();
                 let run_plugin_or_alias = RunPluginOrAlias::from_url(
                     url.as_str(),
@@ -2140,7 +2047,6 @@ impl Action {
                     cwd: Some(current_dir),
                     no_focus,
                     tab_id,
-                    global_placement,
                 }])
             },
             CliAction::RenameSession { name } => Ok(vec![Action::RenameSession { name }]),
@@ -3415,9 +3321,6 @@ mod tests {
             near_current_pane: false,
             no_focus: false,
             borderless: None,
-            global: false,
-            edge: None,
-            size: None,
             tab_id: None,
         }
     }
@@ -3525,9 +3428,6 @@ mod tests {
             near_current_pane: false,
             no_focus: false,
             borderless: None,
-            global: false,
-            edge: None,
-            size: None,
             tab_id: Some(3),
         };
         let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
@@ -3575,9 +3475,6 @@ mod tests {
             near_current_pane: false,
             no_focus: false,
             borderless: None,
-            global: false,
-            edge: None,
-            size: None,
             tab_id: None,
         };
         let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
@@ -3625,9 +3522,6 @@ mod tests {
             near_current_pane: false,
             no_focus: false,
             borderless: None,
-            global: false,
-            edge: None,
-            size: None,
             tab_id: None,
         };
         let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
@@ -3677,9 +3571,6 @@ mod tests {
             near_current_pane: false,
             no_focus: false,
             borderless: None,
-            global: false,
-            edge: None,
-            size: None,
             tab_id: None,
         };
         let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
@@ -3720,9 +3611,6 @@ mod tests {
             near_current_pane: false,
             no_focus: false,
             borderless: None,
-            global: false,
-            edge: None,
-            size: None,
             tab_id: Some(5),
         };
         let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
@@ -3770,9 +3658,6 @@ mod tests {
             near_current_pane: false,
             no_focus: false,
             borderless: None,
-            global: false,
-            edge: None,
-            size: None,
             tab_id: Some(1),
         };
         let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
@@ -3820,9 +3705,6 @@ mod tests {
             near_current_pane: false,
             no_focus: false,
             borderless: None,
-            global: false,
-            edge: None,
-            size: None,
             tab_id: Some(2),
         };
         let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
@@ -3938,9 +3820,6 @@ mod tests {
             near_current_pane: false,
             no_focus: false,
             borderless: None,
-            global: false,
-            edge: None,
-            size: None,
             tab_id: Some(2),
         };
         let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
@@ -3988,9 +3867,6 @@ mod tests {
             near_current_pane: false,
             no_focus: false,
             borderless: None,
-            global: false,
-            edge: None,
-            size: None,
             tab_id: Some(1),
         };
         let result = Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);

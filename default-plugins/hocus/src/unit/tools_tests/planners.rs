@@ -144,66 +144,6 @@ fn move_planner_requires_one_unique_neighbor_in_the_requested_direction() {
     );
 }
 
-/// A global pane is in the session and on the screen, so "not in the current session"
-/// was both wrong and unactionable. The refusal has to name the edge it is on and the
-/// tool that can actually move it.
-#[test]
-fn a_global_pane_is_refused_by_name_rather_than_reported_missing() {
-    let tiled = positioned_pane(1, 10, 0, 10, 10);
-    let global = global_pane(2, GlobalPaneEdge::Left, 0, 0, 10, 10);
-
-    let error = plan_move(
-        &[tiled.clone(), global.clone()],
-        global.id,
-        PaneDirection::Right,
-    )
-    .unwrap_err();
-    assert!(error.contains("global pane on the left edge"), "{error}");
-    assert!(error.contains("set_global_pane_placement"), "{error}");
-    assert!(error.contains("move_pane cannot act on it"), "{error}");
-    assert!(!error.contains("not in the current session"), "{error}");
-
-    // Either side of a swap, and before the "same tab" check — a global pane is in no
-    // tab, so that check would otherwise answer first and say the wrong thing.
-    for (first, second) in [(global.id, tiled.id), (tiled.id, global.id)] {
-        let error = plan_swap(&[tiled.clone(), global.clone()], first, second).unwrap_err();
-        assert!(error.contains("global pane on the left edge"), "{error}");
-        assert!(error.contains("swap_panes cannot act on it"), "{error}");
-        assert!(!error.contains("same tab"), "{error}");
-    }
-}
-
-/// The reason `can_move` excludes global panes rather than the planners filtering them
-/// out later: a left-edge global pane really does abut the leftmost tiled pane, so it
-/// would join the neighbour set and make an unambiguous move ambiguous.
-#[test]
-fn a_global_pane_is_not_a_neighbor_of_the_tiled_pane_it_abuts() {
-    let source = positioned_pane(1, 10, 0, 10, 10);
-    let global = global_pane(2, GlobalPaneEdge::Left, 0, 0, 10, 10);
-    let right = positioned_pane(3, 20, 0, 10, 10);
-
-    // The global pane is exactly to the left, and is not the answer.
-    assert_eq!(
-        plan_move(
-            &[source.clone(), global.clone(), right.clone()],
-            source.id,
-            PaneDirection::Left,
-        )
-        .unwrap_err(),
-        "there is no adjacent pane in that direction"
-    );
-    // ...and it does not make the move to the right ambiguous either.
-    assert_eq!(
-        plan_move(
-            &[source.clone(), global, right.clone()],
-            source.id,
-            PaneDirection::Right
-        )
-        .unwrap(),
-        right.id
-    );
-}
-
 #[test]
 fn pane_direction_rejects_unknown_names() {
     assert_eq!(

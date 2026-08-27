@@ -1,9 +1,6 @@
 #![allow(clippy::unnecessary_fallible_conversions)]
 pub use super::generated_api::api::{
-    action::{
-        Action as ProtobufAction, GlobalPanePlacement as ProtobufGlobalPanePlacement,
-        PaneIdAndShouldFloat, SwitchToModePayload,
-    },
+    action::{Action as ProtobufAction, PaneIdAndShouldFloat, SwitchToModePayload},
     event::{
         EventNameList as ProtobufEventNameList, Header,
         ResurrectableSession as ProtobufResurrectableSession,
@@ -91,7 +88,7 @@ pub use super::generated_api::api::{
         HighlightAndUnhighlightPanesPayload, HighlightLayer as ProtobufHighlightLayer,
         HighlightStyle as ProtobufHighlightStyle, HttpVerb as ProtobufHttpVerb, IdAndNewName,
         KeyToRebind, KeyToUnbind, KillSessionsPayload,
-        KillSessionsResponse as ProtobufKillSessionsResponse, LaunchOrFocusGlobalPaneSplitPayload,
+        KillSessionsResponse as ProtobufKillSessionsResponse,
         ListNotificationsResponse as ProtobufListNotificationsResponse,
         ListOrphanedPanesResponse as ProtobufListOrphanedPanesResponse,
         ListRecordingsResponse as ProtobufListRecordingsResponse, ListTokensResponse,
@@ -166,7 +163,7 @@ pub use super::generated_api::api::{
         SearchHit as ProtobufSearchHit, SearchRecordingsPayload as ProtobufSearchRecordingsPayload,
         SearchRecordingsResponse as ProtobufSearchRecordingsResponse,
         SessionListSnapshot as ProtobufSessionListSnapshot, SetFloatingPanePinnedPayload,
-        SetGlobalPanePlacementPayload, SetPaneBorderlessPayload, SetPaneColorPayload,
+        SetPaneBorderlessPayload, SetPaneColorPayload,
         SetPaneFrameStylePayload as ProtobufSetPaneFrameStylePayload,
         SetPaneRegexHighlightsPayload, SetPaneTitlePrefixPayload,
         SetSelfMouseSelectionSupportPayload,
@@ -2326,45 +2323,6 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     }
                 },
                 _ => Err("Mismatched payload for SetFloatingPanePinned"),
-            },
-            Some(CommandName::SetGlobalPanePlacement) => match protobuf_plugin_command.payload {
-                Some(Payload::SetGlobalPanePlacementPayload(payload)) => {
-                    Ok(PluginCommand::SetGlobalPanePlacement(
-                        payload
-                            .pane_id
-                            .ok_or("SetGlobalPanePlacement missing pane_id")?
-                            .try_into()?,
-                        payload
-                            .placement
-                            .ok_or("SetGlobalPanePlacement missing placement")?
-                            .try_into()?,
-                    ))
-                },
-                _ => Err("Mismatched payload for SetGlobalPanePlacement"),
-            },
-            Some(CommandName::LaunchOrFocusGlobalPaneSplit) => {
-                match protobuf_plugin_command.payload {
-                    Some(Payload::LaunchOrFocusGlobalPaneSplitPayload(payload)) => {
-                        let length = payload
-                            .length
-                            .and_then(|length| length.size_type)
-                            .map(crate::plugin_api::action::global_pane_size_from_protobuf)
-                            .transpose()?;
-                        Ok(PluginCommand::LaunchOrFocusGlobalPaneSplit {
-                            plugin_url: payload.plugin_url,
-                            config: payload
-                                .plugin_configuration
-                                .into_iter()
-                                .map(|item| (item.name, item.value))
-                                .collect(),
-                            before: payload.before,
-                            length,
-                            should_focus: payload.should_focus,
-                            skip_cache: payload.skip_cache,
-                        })
-                    },
-                    _ => Err("Mismatched payload for LaunchOrFocusGlobalPaneSplit"),
-                }
             },
             Some(CommandName::StackPanes) => match protobuf_plugin_command.payload {
                 Some(Payload::StackPanesPayload(stack_panes_payload)) => {
@@ -4633,53 +4591,6 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     )),
                 })
             },
-            PluginCommand::SetGlobalPanePlacement(pane_id, placement) => {
-                let placement: ProtobufGlobalPanePlacement = placement.try_into()?;
-                Ok(ProtobufPluginCommand {
-                    name: CommandName::SetGlobalPanePlacement as i32,
-                    payload: Some(Payload::SetGlobalPanePlacementPayload(
-                        SetGlobalPanePlacementPayload {
-                            pane_id: Some(pane_id.try_into()?),
-                            placement: Some(placement),
-                        },
-                    )),
-                })
-            },
-            PluginCommand::LaunchOrFocusGlobalPaneSplit {
-                plugin_url,
-                config,
-                before,
-                length,
-                should_focus,
-                skip_cache,
-            } => {
-                use super::generated_api::api::action::GlobalPaneSize as ProtobufGlobalPaneSize;
-                let length = length
-                    .map(|length| {
-                        crate::plugin_api::action::global_pane_size_to_protobuf(length).map(
-                            |size_type| ProtobufGlobalPaneSize {
-                                size_type: Some(size_type),
-                            },
-                        )
-                    })
-                    .transpose()?;
-                Ok(ProtobufPluginCommand {
-                    name: CommandName::LaunchOrFocusGlobalPaneSplit as i32,
-                    payload: Some(Payload::LaunchOrFocusGlobalPaneSplitPayload(
-                        LaunchOrFocusGlobalPaneSplitPayload {
-                            plugin_url,
-                            plugin_configuration: config
-                                .into_iter()
-                                .map(|(name, value)| ContextItem { name, value })
-                                .collect(),
-                            before,
-                            length,
-                            should_focus,
-                            skip_cache,
-                        },
-                    )),
-                })
-            },
             PluginCommand::StackPanes(pane_ids) => Ok(ProtobufPluginCommand {
                 name: CommandName::StackPanes as i32,
                 payload: Some(Payload::StackPanesPayload(StackPanesPayload {
@@ -6648,9 +6559,7 @@ impl From<SearchHit> for ProtobufSearchHit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::{
-        CommandToRun, GitCheckout, GlobalPaneEdge, GlobalPanePlacement, PluginCommand,
-    };
+    use crate::data::{CommandToRun, GitCheckout, PluginCommand};
 
     #[test]
     fn git_checkout_command_survives_the_wire() {
@@ -6771,25 +6680,6 @@ mod tests {
         match decoded {
             PluginCommand::NewPane => {},
             other => panic!("expected NewPane, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn set_global_pane_placement_protobuf_round_trip() {
-        let placement = GlobalPanePlacement {
-            edge: GlobalPaneEdge::Top,
-            size: PercentOrFixed::Percent(20),
-            length: None,
-        };
-        let original = PluginCommand::SetGlobalPanePlacement(PaneId::Terminal(9), placement);
-        let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
-        let decoded: PluginCommand = protobuf.try_into().expect("decode");
-        match decoded {
-            PluginCommand::SetGlobalPanePlacement(pane_id, decoded_placement) => {
-                assert_eq!(pane_id, PaneId::Terminal(9));
-                assert_eq!(decoded_placement, placement);
-            },
-            other => panic!("expected SetGlobalPanePlacement, got {:?}", other),
         }
     }
 

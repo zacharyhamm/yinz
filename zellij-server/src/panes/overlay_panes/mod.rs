@@ -1,4 +1,4 @@
-//! Panes drawn over the whole session surface, above the global panes.
+//! Panes drawn over the whole session surface, above a tab's own panes and chrome.
 //!
 //! An overlay is *not* on a tab's floating layer. It is a pane the session puts in front of
 //! everything - `file-finder`, `hocus-ask`, `quit-confirmation`, `hocus-new-agent`. A modal
@@ -123,7 +123,6 @@ use crate::panes::kitty_graphics::KittyHostSupport;
 use crate::resize_pty;
 use crate::tab::{pane_info_for_pane, Pane};
 use crate::{
-    global_panes::{session_surface, GlobalPaneStrip},
     os_input_output::ServerOsApi,
     output::Output,
     panes::floating_panes::floating_pane_grid::{
@@ -213,11 +212,9 @@ pub struct OverlayPanes {
     /// is in flight. Per-collection rather than per-client, as the floating layer's twin is.
     pane_being_moved_with_mouse: Option<(PaneId, Position, Position)>,
     display_area: Rc<RefCell<Size>>,
-    display_area_origin: Rc<RefCell<(usize, usize)>>,
     /// The tab's own viewport, needed only to answer whether an overlay owns cells outside it -
     /// which, drawn over the session, it almost always does.
     viewport: Rc<RefCell<Viewport>>,
-    global_pane_strips: Rc<RefCell<Vec<GlobalPaneStrip>>>,
     connected_clients: Rc<RefCell<HashSet<ClientId>>>,
     connected_clients_in_app: Rc<RefCell<HashMap<ClientId, bool>>>, // bool -> is_web_client
     mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
@@ -236,9 +233,7 @@ pub struct OverlayPanes {
 impl OverlayPanes {
     pub fn new(
         display_area: Rc<RefCell<Size>>,
-        display_area_origin: Rc<RefCell<(usize, usize)>>,
         viewport: Rc<RefCell<Viewport>>,
-        global_pane_strips: Rc<RefCell<Vec<GlobalPaneStrip>>>,
         connected_clients: Rc<RefCell<HashSet<ClientId>>>,
         connected_clients_in_app: Rc<RefCell<HashMap<ClientId, bool>>>,
         mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
@@ -255,9 +250,7 @@ impl OverlayPanes {
             z_indices: vec![],
             active_panes: ActivePanes::new(&os_input),
             display_area,
-            display_area_origin,
             viewport,
-            global_pane_strips,
             connected_clients,
             connected_clients_in_app,
             mode_info,
@@ -275,18 +268,20 @@ impl OverlayPanes {
 
     // ---- the coordinate space -------------------------------------------------------------
 
-    /// The whole session surface, and the origin coordinates resolve from.
+    /// The whole session surface an overlay's coordinates resolve against: the tab's display
+    /// area, chrome included, which a tab always occupies in full from the screen origin.
     ///
     /// Read fresh on every use rather than cached: `Tab::resize_whole_tab_locally` updates the
     /// shared `display_area` cell partway through a resize, and an overlay resolved against the
     /// value from before that would keep the old surface's dimensions.
-    fn surface(&self) -> (Viewport, (usize, usize)) {
-        let surface = session_surface(
-            *self.display_area.borrow(),
-            *self.display_area_origin.borrow(),
-            &self.global_pane_strips.borrow(),
-        );
-        (surface, (surface.x, surface.y))
+    fn surface(&self) -> Viewport {
+        let display_area = *self.display_area.borrow();
+        Viewport {
+            x: 0,
+            y: 0,
+            cols: display_area.cols,
+            rows: display_area.rows,
+        }
     }
 
     /// The geometry an overlay resolves its coordinates against, before the coordinates are
@@ -335,14 +330,14 @@ impl OverlayPanes {
         coordinates: FloatingPaneCoordinates,
         carry: OverlayCarry,
     ) {
-        let (surface, origin) = self.surface();
+        let surface = self.surface();
         // `adjust_coordinates` resolves the geometry and nothing else, so a coordinate that is
         // not geometry has to be applied by hand - as `change_pane_coordinates` does.
         if let Some(borderless) = coordinates.borderless {
             pane.set_borderless(borderless);
         }
         let mut geom = Self::base_geom(&surface, pane.position_and_size());
-        geom.adjust_coordinates(coordinates.clone(), surface, origin);
+        geom.adjust_coordinates(coordinates.clone(), surface);
         pane.set_geom(geom);
         pane.set_should_render(true);
         self.panes.insert(
@@ -360,10 +355,9 @@ impl OverlayPanes {
 
     /// Set `pane_id` aside: still here, still loaded, no longer drawn and no longer focusable.
     ///
-    /// This is per-pane suppression, the shape `GlobalPaneManager::hide_edge` and
-    /// `Tab::suppress_pane` already have, and *not* a layer toggle - see the module doc. The two
-    /// things it does beyond setting the flag are the two that keep the rest of the collection
-    /// honest, and are the same two `hide_edge` does:
+    /// This is per-pane suppression, the shape `Tab::suppress_pane` already has, and *not* a
+    /// layer toggle - see the module doc. The two things it does beyond setting the flag are the
+    /// two that keep the rest of the collection honest:
     ///
     /// - clients are moved off it, so `active_pane_id` never names a pane nobody can see. This is
     ///   what lets every focus query stay unfiltered.
@@ -970,7 +964,7 @@ impl OverlayPanes {
         new_coordinates: FloatingPaneCoordinates,
     ) -> Result<()> {
         let err_context = || format!("failed to change coordinates of overlay {pane_id:?}");
-        let (surface, origin) = self.surface();
+        let surface = self.surface();
         let overlay = self
             .panes
             .get_mut(&pane_id)
@@ -995,7 +989,7 @@ impl OverlayPanes {
             new_coordinates.height = overlay.coordinates.height;
         }
         let mut geom = Self::base_geom(&surface, overlay.pane.position_and_size());
-        geom.adjust_coordinates(new_coordinates.clone(), surface, origin);
+        geom.adjust_coordinates(new_coordinates.clone(), surface);
         overlay.pane.set_geom(geom);
         overlay.pane.set_should_render(true);
         overlay.coordinates = new_coordinates;
@@ -1038,10 +1032,10 @@ impl OverlayPanes {
         if self.panes.is_empty() {
             return;
         }
-        let (surface, origin) = self.surface();
+        let surface = self.surface();
         for overlay in self.panes.values_mut() {
             let mut geom = Self::base_geom(&surface, overlay.pane.position_and_size());
-            geom.adjust_coordinates(overlay.coordinates.clone(), surface, origin);
+            geom.adjust_coordinates(overlay.coordinates.clone(), surface);
             overlay.pane.set_geom(geom);
             // The safety valve for `awaiting_placement`: an overlay nobody ever placed would
             // otherwise be invisible for as long as it lived. A resize shows it where it was born,
@@ -1096,7 +1090,7 @@ impl OverlayPanes {
     /// **The new size is written back into the overlay's coordinates**, as `Fixed`, for the same
     /// reason `move_pane_to_position` writes the new position back: this collection keeps no
     /// geometry of record beside the panes, so a size that lived only on the geometry would be
-    /// undone by the next `reapply_coordinates` - a terminal resize, a global pane appearing, the
+    /// undone by the next `reapply_coordinates` - a terminal resize, the
     /// overlay following a client to another tab. A resize that moved the left or upper border
     /// moved `x`/`y` too, so that half is written back as well and becomes the user's.
     ///
@@ -1113,7 +1107,7 @@ impl OverlayPanes {
         if !self.is_resizable(&pane_id) {
             return Ok(false);
         }
-        let (surface, origin) = self.surface();
+        let surface = self.surface();
         let overlay = self
             .panes
             .get_mut(&pane_id)
@@ -1137,10 +1131,10 @@ impl OverlayPanes {
         overlay.coordinates.height = Some(PercentOrFixed::Fixed(geom.rows.as_usize()));
         overlay.carry.size_is_user_stated = true;
         if geom.x != before.x || geom.y != before.y {
-            // `PaneGeom::apply_floating_pane_position` reads `Fixed(n)` as `origin + n`, so the
-            // position round-trips exactly - the same arithmetic `move_pane_to_position` does
-            overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x.saturating_sub(origin.0)));
-            overlay.coordinates.y = Some(PercentOrFixed::Fixed(geom.y.saturating_sub(origin.1)));
+            // `PaneGeom::apply_floating_pane_position` reads `Fixed(n)` as a screen coordinate,
+            // so the position round-trips exactly - the same arithmetic `move_pane_to_position` does
+            overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x));
+            overlay.coordinates.y = Some(PercentOrFixed::Fixed(geom.y));
             overlay.carry.position_is_user_stated = true;
         }
 
@@ -1177,16 +1171,16 @@ impl OverlayPanes {
     ///
     /// **The move is written back into the overlay's coordinates**, not only onto its geometry.
     /// That is what makes a dragged overlay survive everything that re-resolves one - a terminal
-    /// resize, a global pane appearing, following a client to another tab - without this collection
-    /// needing a `desired_pane_positions` of its own: where the user put it is stated in the same
-    /// terms as where it was opened. `PaneGeom::apply_floating_pane_position` reads `Fixed(n)` as
-    /// `origin + n`, so the position round-trips exactly.
+    /// resize, following a client to another tab - without this collection needing a
+    /// `desired_pane_positions` of its own: where the user put it is stated in the same terms as
+    /// where it was opened. `PaneGeom::apply_floating_pane_position` reads `Fixed(n)` as a screen
+    /// coordinate, so the position round-trips exactly.
     ///
     /// `width`/`height` are deliberately left alone. Only the *position* becomes user-stated; a
     /// percentage-sized overlay still grows with the screen after being dragged.
     pub fn move_pane_to_position(&mut self, click_position: &Position) -> bool {
         // true => changed position
-        let (surface, origin) = self.surface();
+        let surface = self.surface();
         let Some((pane_id, _initial_position, previous_position)) =
             self.pane_being_moved_with_mouse
         else {
@@ -1208,8 +1202,8 @@ impl OverlayPanes {
         );
         overlay.pane.set_geom(geom);
         overlay.pane.set_should_render(true);
-        overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x.saturating_sub(origin.0)));
-        overlay.coordinates.y = Some(PercentOrFixed::Fixed(geom.y.saturating_sub(origin.1)));
+        overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x));
+        overlay.coordinates.y = Some(PercentOrFixed::Fixed(geom.y));
         overlay.carry.position_is_user_stated = true;
         self.set_pane_being_moved_with_mouse(pane_id, *click_position);
         self.set_force_render();
@@ -1388,7 +1382,6 @@ impl OverlayPanes {
         mouse_hover_pane_id: &HashMap<ClientId, PaneId>,
         current_pane_group: HashMap<ClientId, Vec<PaneId>>,
         client_id_override: Option<ClientId>,
-        inactive_clients: &HashSet<ClientId>,
         help_text_visible: &HashMap<ClientId, bool>,
         mouse_scroll_resize: bool,
         z_index_offset: usize,
@@ -1406,7 +1399,6 @@ impl OverlayPanes {
         // is the whole reason it is not a floating pane. A pane `hide_pane` set aside has already
         // had its clients moved off it, so it contributes nothing here either.
         let mut active_panes = self.active_panes.clone_active_panes();
-        active_panes.retain(|client_id, _| !inactive_clients.contains(client_id));
 
         // This loop feeds `output.add_pane_contents` and does not derive from `stack_layer_ids`,
         // so it needs the hidden filter of its own - otherwise a hidden overlay's contents reach

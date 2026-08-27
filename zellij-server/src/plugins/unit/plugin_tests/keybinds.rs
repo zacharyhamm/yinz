@@ -138,7 +138,6 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         None,
         None,
         None,
-        None,
     ));
     wait_for_plugin_to_load(&received_screen_instructions, 0);
 
@@ -156,7 +155,6 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -331,7 +329,6 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,

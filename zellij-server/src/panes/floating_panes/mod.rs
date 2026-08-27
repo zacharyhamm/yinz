@@ -12,7 +12,6 @@ use crate::tab::{pane_info_for_pane, Pane};
 use floating_pane_grid::FloatingPaneGrid;
 
 use crate::{
-    global_panes::{session_surface, GlobalPaneStrip},
     os_input_output::ServerOsApi,
     output::{FloatingPanesStack, Output},
     panes::{ActivePanes, PaneId},
@@ -39,7 +38,7 @@ const RESIZE_INCREMENT_WIDTH: usize = 5;
 const RESIZE_INCREMENT_HEIGHT: usize = 2;
 
 /// Whether any part of `geom` lies outside `viewport` - for a floating pane, whether it hangs off
-/// its tab and onto the global panes or the chrome beside them.
+/// its tab's viewport and onto the chrome above or below it.
 pub fn geom_is_outside_viewport(geom: &PaneGeom, viewport: &Viewport) -> bool {
     geom.x < viewport.x
         || geom.y < viewport.y
@@ -50,11 +49,7 @@ pub fn geom_is_outside_viewport(geom: &PaneGeom, viewport: &Viewport) -> bool {
 pub struct FloatingPanes {
     panes: BTreeMap<PaneId, Box<dyn Pane>>,
     display_area: Rc<RefCell<Size>>,
-    // where the display area starts on screen, non-zero when global panes are docked to the left or
-    // top - panes are positioned from it (see `TiledPanes::display_area_origin`)
-    display_area_origin: Rc<RefCell<(usize, usize)>>,
     viewport: Rc<RefCell<Viewport>>,
-    global_pane_strips: Rc<RefCell<Vec<GlobalPaneStrip>>>,
     connected_clients: Rc<RefCell<HashSet<ClientId>>>,
     connected_clients_in_app: Rc<RefCell<HashMap<ClientId, bool>>>, // bool -> is_web_client
     mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
@@ -83,9 +78,7 @@ pub struct FloatingPanes {
 impl FloatingPanes {
     pub fn new(
         display_area: Rc<RefCell<Size>>,
-        display_area_origin: Rc<RefCell<(usize, usize)>>,
         viewport: Rc<RefCell<Viewport>>,
-        global_pane_strips: Rc<RefCell<Vec<GlobalPaneStrip>>>,
         connected_clients: Rc<RefCell<HashSet<ClientId>>>,
         connected_clients_in_app: Rc<RefCell<HashMap<ClientId, bool>>>, // bool -> is_web_client
         mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
@@ -101,9 +94,7 @@ impl FloatingPanes {
         FloatingPanes {
             panes: BTreeMap::new(),
             display_area,
-            display_area_origin,
             viewport,
-            global_pane_strips,
             connected_clients,
             connected_clients_in_app,
             mode_info,
@@ -199,13 +190,10 @@ impl FloatingPanes {
             Some(FloatingPanesStack { layers })
         }
     }
-    /// The absolute geometries of the panes that sit outside the tab's viewport - dragged onto a
-    /// global pane, or opened over one. A resize normalizes the tab to origin 0 and translates
-    /// every pane by the old origin, which clamps at 0 and so cannot represent a pane to the left
-    /// of (or above) the tab: it would come back stuck against the tab's edge. Nothing about such a
-    /// pane depends on the tab's layout anyway, so it is taken out of the resize and put back
-    /// afterwards - see `restore_geoms_outside_viewport`.
-    ///
+    /// The absolute geometries of the panes that sit outside the tab's viewport - dragged onto the
+    /// tab bar or the status bar, or opened over one. Nothing about such a pane depends on the
+    /// tab's layout, so it is taken out of a resize and put back afterwards - see
+    /// `restore_geoms_outside_viewport`.
     pub fn geoms_outside_viewport(&self) -> HashMap<PaneId, PaneGeom> {
         let viewport = *self.viewport.borrow();
         self.panes
@@ -245,9 +233,9 @@ impl FloatingPanes {
         self.set_force_render();
     }
 
-    /// Whether any pane currently being painted owns cells outside the tab's own viewport - on a
-    /// global pane, or on the chrome beside one. Nothing but this tab paints those cells, so a
-    /// client that stops looking at this tab has to be handed a repaint of what is underneath.
+    /// Whether any pane currently being painted owns cells outside the tab's own viewport - on the
+    /// chrome above or below it. Nothing but this tab paints those cells, so a client that stops
+    /// looking at this tab has to be handed a repaint of what is underneath.
     pub fn has_panes_outside_viewport(&self) -> bool {
         let viewport = *self.viewport.borrow();
         self.stack_layer_ids().iter().any(|pane_id| {
@@ -456,7 +444,6 @@ impl FloatingPanes {
         let err_context = || "failed to find position for floating pane".to_string();
         let display_area = *self.display_area.borrow();
         let viewport = *self.viewport.borrow();
-        let (origin_x, origin_y) = *self.display_area_origin.borrow();
         let floating_pane_grid = FloatingPaneGrid::new(
             &mut self.panes,
             &mut self.desired_pane_positions,
@@ -473,7 +460,6 @@ impl FloatingPanes {
             floating_pane_layout.height,
             viewport.cols,
             viewport.rows,
-            (origin_x, origin_y),
         );
         if let Some(is_pinned) = &floating_pane_layout.pinned {
             position.is_pinned = *is_pinned;
@@ -487,8 +473,8 @@ impl FloatingPanes {
         if position.rows.as_usize() > viewport.rows {
             position.rows = Dimension::fixed(viewport.rows);
         }
-        let right_edge = origin_x + viewport.cols;
-        let bottom_edge = origin_y + viewport.rows;
+        let right_edge = viewport.cols;
+        let bottom_edge = viewport.rows;
         if position.x + position.cols.as_usize() > right_edge {
             position.x = position
                 .x
@@ -588,7 +574,6 @@ impl FloatingPanes {
         mouse_hover_pane_id: &HashMap<ClientId, PaneId>,
         current_pane_group: HashMap<ClientId, Vec<PaneId>>,
         client_id_override: Option<ClientId>,
-        inactive_clients: &HashSet<ClientId>,
         help_text_visible: &HashMap<ClientId, bool>,
         mouse_scroll_resize: bool,
     ) -> Result<()> {
@@ -603,9 +588,7 @@ impl FloatingPanes {
 
         let connected_clients: Vec<ClientId> = connected_clients.into_iter().collect();
         let active_panes = if self.all_panes_are_visible() {
-            let mut active_panes = self.active_panes.clone_active_panes();
-            active_panes.retain(|client_id, _| !inactive_clients.contains(client_id));
-            active_panes
+            self.active_panes.clone_active_panes()
         } else {
             Default::default()
         };
@@ -803,9 +786,9 @@ impl FloatingPanes {
         self.set_force_render();
     }
 
-    // desired positions live in the same coordinate space as the panes themselves, so callers
-    // that translate the panes (eg. the origin normalization in Tab::resize_whole_tab_to) must
-    // translate these too - otherwise the next resize restores them into the wrong space
+    // desired positions live in the same coordinate space as the panes themselves, so any caller
+    // that translates the panes must translate these too - otherwise the next resize restores them
+    // into the wrong space
     pub fn translate_desired_positions(&mut self, x_offset: isize, y_offset: isize) {
         fn translate_coordinate(coordinate: usize, offset: isize) -> usize {
             if offset.is_negative() {
@@ -1270,7 +1253,7 @@ impl FloatingPanes {
         let err_context = || "Failed to change_pane_coordinates".to_string();
 
         {
-            let (viewport, origin) = self.placement_space();
+            let viewport = self.placement_space();
             let pane = self.get_pane_mut(pane_id).with_context(err_context)?;
             let mut pane_geom = pane.position_and_size();
             if let Some(pinned) = new_coordinates.pinned.as_ref() {
@@ -1283,7 +1266,7 @@ impl FloatingPanes {
                     pane.set_borderless(false);
                 };
             }
-            pane_geom.adjust_coordinates(new_coordinates.clone(), viewport, origin);
+            pane_geom.adjust_coordinates(new_coordinates.clone(), viewport);
             pane.set_geom(pane_geom);
             pane.set_should_render(true);
 
@@ -1307,28 +1290,26 @@ impl FloatingPanes {
         pane_geom: &mut PaneGeom,
         coordinates: FloatingPaneCoordinates,
     ) {
-        let (viewport, origin) = self.placement_space();
-        pane_geom.adjust_coordinates(coordinates, viewport, origin);
+        pane_geom.adjust_coordinates(coordinates, self.placement_space());
     }
 
-    /// The area a floating pane may be *moved* around in: the whole session surface, global panes
+    /// The area a floating pane may be *moved* around in: the whole session surface, chrome
     /// included. Placement still resolves against the tab's own viewport - a default floating pane
-    /// should open in the middle of its tab, not draped over a sidebar - but once it exists,
-    /// dragging it is direct manipulation and the tab's edge is not a wall.
-    ///
-    /// This is the same surface an overlay is placed against, which is why `session_surface` is a
-    /// free function rather than a method on either collection.
+    /// should open between the tab bar and the status bar - but once it exists, dragging it is
+    /// direct manipulation and the viewport's edge is not a wall.
     fn move_surface(&self) -> Viewport {
-        session_surface(
-            *self.display_area.borrow(),
-            *self.display_area_origin.borrow(),
-            &self.global_pane_strips.borrow(),
-        )
+        let display_area = *self.display_area.borrow();
+        Viewport {
+            x: 0,
+            y: 0,
+            cols: display_area.cols,
+            rows: display_area.rows,
+        }
     }
 
     /// Where a floating pane's coordinates are resolved: the tab's own viewport.
-    fn placement_space(&self) -> (Viewport, (usize, usize)) {
-        (*self.viewport.borrow(), *self.display_area_origin.borrow())
+    fn placement_space(&self) -> Viewport {
+        *self.viewport.borrow()
     }
     pub fn move_clients_out_of_pane(&mut self, pane_id: PaneId) {
         let active_panes: Vec<(ClientId, PaneId)> = self
@@ -1425,14 +1406,7 @@ impl FloatingPanes {
         }
         if covers_ui {
             let display_area = { *self.display_area.borrow() };
-            let (origin_x, origin_y) = { *self.display_area_origin.borrow() };
-            self.expand_pane_over_area(
-                pane_id,
-                origin_x,
-                origin_y,
-                display_area.rows,
-                display_area.cols,
-            );
+            self.expand_pane_over_area(pane_id, 0, 0, display_area.rows, display_area.cols);
         } else {
             let viewport = { *self.viewport.borrow() };
             self.expand_pane_over_area(

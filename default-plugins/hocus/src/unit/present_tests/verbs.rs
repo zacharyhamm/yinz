@@ -71,24 +71,3 @@ fn a_tool_that_already_speaks_prose_is_left_alone() {
         None
     );
 }
-
-/// Only the one tool that can move a global pane has a verb; the refusals the others
-/// answer with are prose already and fall through to be shown as they are.
-#[test]
-fn placing_a_global_pane_reads_as_a_sentence_and_its_refusals_do_not() {
-    assert_eq!(
-        present(
-            &call("set_global_pane_placement", r#"{"pane_id":5}"#),
-            "placement set"
-        ),
-        Some("Re-placed pane 5 on the screen edge.".to_owned())
-    );
-    let refusal = "pane 5 is a global pane on the left edge: it belongs to the whole session \
-                   rather than to a tab, so move_pane cannot act on it; use \
-                   set_global_pane_placement to change its edge or size";
-    assert_eq!(
-        present(&call("move_pane", r#"{"pane_id":5}"#), refusal),
-        None,
-        "a refusal is shown as it is, never rewritten as a move that happened"
-    );
-}

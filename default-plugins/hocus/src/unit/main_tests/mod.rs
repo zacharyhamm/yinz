@@ -489,7 +489,6 @@ fn pane_info(id: u32, title: &str, command: Option<&str>) -> PaneInfo {
 fn manifest(panes: Vec<PaneInfo>) -> PaneManifest {
     PaneManifest {
         panes: std::collections::HashMap::from([(0, panes)]),
-        ..PaneManifest::default()
     }
 }
 

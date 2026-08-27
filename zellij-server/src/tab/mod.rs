@@ -59,7 +59,6 @@ use swap_layouts::SwapLayouts;
 use self::clipboard::ClipboardProvider;
 use crate::route::NotificationEnd;
 use crate::{
-    global_panes::{session_surface, GlobalPaneBorder, GlobalPaneStrip},
     os_input_output::ServerOsApi,
     output::{CharacterChunk, FloatingPanesStack, KittyImageChunk, Output, SixelImageChunk},
     panes::floating_panes::floating_pane_grid::half_size_middle_geom,
@@ -288,9 +287,9 @@ pub(crate) struct Tab {
     pub size: Size,
     tiled_panes: TiledPanes,
     floating_panes: FloatingPanes,
-    // panes drawn over the whole session surface, above the global panes - a sibling of the two
-    // above rather than a special case of the floating layer, so that "the floating layer is down"
-    // can never mean "nothing on it is focused".
+    // panes drawn over the whole session surface, above this tab's own panes and chrome - a
+    // sibling of the two above rather than a special case of the floating layer, so that "the
+    // floating layer is down" can never mean "nothing on it is focused".
     overlay_panes: OverlayPanes,
     suppressed_panes: SuppressedPanes,
     stacked_pane_list: Rc<RefCell<bool>>,
@@ -301,16 +300,7 @@ pub(crate) struct Tab {
     stack_list_session_is_mirrored: bool,
     max_panes: Option<usize>,
     viewport: Rc<RefCell<Viewport>>, // includes all non-UI panes
-    // the visible global panes surrounding this tab, shared with `tiled_panes` so it can widen its
-    // boundary viewport over them (see `expand_viewport_over_global_panes`)
-    global_pane_strips: Rc<RefCell<Vec<GlobalPaneStrip>>>,
-    // the same panes one entry each rather than one per edge, carrying the colour each client's focus
-    // gives the boundary it shares with this tab (see `Boundaries::contribute_color_to_line`)
-    global_pane_borders: Rc<RefCell<Vec<GlobalPaneBorder>>>,
     display_area: Rc<RefCell<Size>>, // includes all panes (including eg. the status bar and tab bar in the default layout)
-    // where the display area starts on screen, shared with `tiled_panes` and `floating_panes` (both
-    // position panes from it) - non-zero when global panes are docked to the left or top
-    display_area_origin: Rc<RefCell<(usize, usize)>>,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     sixel_image_store: Rc<RefCell<SixelImageStore>>,
     kitty_image_store: Rc<RefCell<KittyImageStore>>,
@@ -1086,17 +1076,9 @@ impl Tab {
             Rc::new(RefCell::new(HashMap::new()));
         let fullscreen_covers_ui = Rc::new(RefCell::new(false));
 
-        let global_pane_strips = Rc::new(RefCell::new(Vec::new()));
-        let global_pane_borders = Rc::new(RefCell::new(Vec::new()));
-        // the origin the tab's display area was placed at, non-zero when global panes are docked to
-        // the left or top of the screen
-        let display_area_origin = Rc::new(RefCell::new((0, 0)));
         let tiled_panes = TiledPanes::new(
             display_area.clone(),
-            display_area_origin.clone(),
             viewport.clone(),
-            global_pane_strips.clone(),
-            global_pane_borders.clone(),
             connected_clients.clone(),
             connected_clients_in_app.clone(),
             mode_info.clone(),
@@ -1113,9 +1095,7 @@ impl Tab {
         );
         let floating_panes = FloatingPanes::new(
             display_area.clone(),
-            display_area_origin.clone(),
             viewport.clone(),
-            global_pane_strips.clone(),
             connected_clients.clone(),
             connected_clients_in_app.clone(),
             mode_info.clone(),
@@ -1130,9 +1110,7 @@ impl Tab {
         );
         let overlay_panes = OverlayPanes::new(
             display_area.clone(),
-            display_area_origin.clone(),
             viewport.clone(),
-            global_pane_strips.clone(),
             connected_clients.clone(),
             connected_clients_in_app.clone(),
             mode_info.clone(),
@@ -1170,10 +1148,7 @@ impl Tab {
             size: initial_size,
             max_panes,
             viewport,
-            global_pane_strips,
-            global_pane_borders,
             display_area,
-            display_area_origin,
             character_cell_size,
             sixel_image_store,
             kitty_image_store,
@@ -1836,7 +1811,6 @@ impl Tab {
         &mut self,
         output: &mut Output,
         client_id_override: Option<ClientId>,
-        inactive_clients: &HashSet<ClientId>,
     ) -> Result<()> {
         if self.stack_lists.is_empty() || self.tiled_panes.fullscreen_is_active() {
             return Ok(());
@@ -1856,7 +1830,6 @@ impl Tab {
             { self.current_pane_group.borrow().clone_inner() };
         let active_panes: HashMap<ClientId, PaneId> = connected_clients
             .iter()
-            .filter(|client_id| !inactive_clients.contains(client_id))
             .filter_map(|c| self.tiled_panes.get_active_pane_id(*c).map(|p| (*c, p)))
             .collect();
         let client_modes: Vec<(ClientId, InputMode)> = {
@@ -2713,7 +2686,6 @@ impl Tab {
                         client_id_or_tab_index,
                         completion_tx,
                         false, // set_blocking
-                        None,
                     );
                     self.senders
                         .send_to_pty(instruction)
@@ -4101,43 +4073,6 @@ impl Tab {
             .map(|pane| pane.is_scrolled())
             .unwrap_or(false)
     }
-    /// Whether the client's active tiled pane sits flush against the given edge of the tab, ie.
-    /// whether the border it would resize in that direction is the one it shares with a global pane
-    /// rather than one with another tab pane. Floating panes and overlays are never flush with
-    /// anything.
-    ///
-    /// The overlay half is load-bearing rather than symmetry: this is the only input to
-    /// `Screen::resize_global_pane_from_adjacent_tab_pane`, so an overlay that happened to reach
-    /// an edge of the surface would let a resize keystroke aimed at nothing in particular resize
-    /// a *global* pane.
-    pub fn active_pane_is_flush_with_edge(
-        &self,
-        direction: Direction,
-        client_id: ClientId,
-    ) -> bool {
-        let active_pane_is_not_tiled = self.get_active_pane_id(client_id).is_some_and(|pane_id| {
-            self.floating_panes.panes_contain(&pane_id) || self.pane_is_overlay(pane_id)
-        });
-        if active_pane_is_not_tiled {
-            return false;
-        }
-        let Some(geom) = self
-            .get_active_pane(client_id)
-            .map(|pane| pane.position_and_size())
-        else {
-            return false;
-        };
-        let viewport = self.viewport.borrow();
-        match direction {
-            Direction::Left => geom.x == viewport.x,
-            Direction::Right => geom.x + geom.cols.as_usize() == viewport.x + viewport.cols,
-            Direction::Up => geom.y == viewport.y,
-            Direction::Down => geom.y + geom.rows.as_usize() == viewport.y + viewport.rows,
-        }
-    }
-    pub fn position_is_on_ui_pane(&self, position: &Position) -> bool {
-        self.tiled_panes.position_is_on_ui_pane(position)
-    }
     pub fn get_pane_with_id(&self, pane_id: PaneId) -> Option<&dyn Pane> {
         self.floating_panes
             .get_pane(pane_id)
@@ -5190,29 +5125,6 @@ impl Tab {
             }
         }
     }
-    /// Returns whether the strips changed — when they did, this tab's pane boundaries abut a
-    /// different set of global panes and its cached boundary diff is stale.
-    pub fn set_global_pane_strips(&mut self, global_pane_strips: &[GlobalPaneStrip]) -> bool {
-        let mut own_strips = self.global_pane_strips.borrow_mut();
-        if *own_strips == global_pane_strips {
-            return false;
-        }
-        *own_strips = global_pane_strips.to_vec();
-        drop(own_strips);
-        self.overlay_panes.reapply_coordinates();
-        true
-    }
-    /// The colour each global pane wants for the boundary it shares with this tab.
-    ///
-    /// Returns nothing on purpose, unlike `set_global_pane_strips`: this changes with focus and input
-    /// mode, and a "changed" answer there is what drives a whole-tab repaint and a content-offset
-    /// re-solve. The boundary diff picks the new colour up on its own.
-    pub fn set_global_pane_borders(&mut self, global_pane_borders: &[GlobalPaneBorder]) {
-        let mut own_borders = self.global_pane_borders.borrow_mut();
-        if *own_borders != global_pane_borders {
-            *own_borders = global_pane_borders.to_vec();
-        }
-    }
     pub fn pane_is_overlay(&self, pane_id: PaneId) -> bool {
         self.overlay_panes.panes_contain(&pane_id)
     }
@@ -5223,8 +5135,8 @@ impl Tab {
         if !self.overlay_panes.hide_pane(pane_id) {
             return false;
         }
-        // An overlay is drawn after the tab and after the global panes, so the cells it vacates
-        // have no other writer: without dirtying everything underneath, the overlay stays on
+        // An overlay is drawn after the tab, so the cells it vacates have no other
+        // writer: without dirtying everything underneath, the overlay stays on
         // screen as an unrepainted ghost of itself.
         self.set_should_clear_display_before_rendering();
         self.set_force_render();
@@ -5246,54 +5158,12 @@ impl Tab {
     pub fn position_is_on_an_overlay(&self, position: &Position) -> bool {
         self.overlay_panes.visible_pane_id_at(position).is_some()
     }
-    /// Whether this tab is painting a floating pane outside its own viewport - onto the global
-    /// panes or the chrome beside them. The one thing a tab draws that the tab cannot clean up
-    /// after by repainting itself.
+    /// Whether this tab is painting a floating pane outside its own viewport - onto the tab bar or
+    /// the status bar. The one thing a tab draws that the tab cannot clean up after by repainting
+    /// itself.
     pub fn has_floating_panes_outside_viewport(&self) -> bool {
         self.floating_panes.has_panes_outside_viewport()
             || (self.overlays_are_rendered() && self.overlay_panes.has_panes_outside_viewport())
-    }
-    /// Whether anything this tab draws over its tiled panes is being painted at `position` - and
-    /// so owns the mouse there, ahead of anything drawn behind it. Overlays first, because they
-    /// are painted over the floating layer.
-    pub fn visible_floating_pane_at(&self, position: &Position) -> Option<PaneId> {
-        self.overlay_panes
-            .visible_pane_id_at(position)
-            .filter(|_| self.overlays_are_rendered())
-            .or_else(|| self.floating_panes.visible_pane_id_at(position))
-    }
-    /// Whether this tab is holding a mouse drag of something it draws over its tiled panes -
-    /// a floating pane or an overlay.
-    ///
-    /// Both, because the answer's one caller (`Screen::tab_wins_mouse_event`) is what keeps a drag
-    /// alive once the pointer crosses off the tab and onto a global pane. An overlay is drawn over
-    /// the whole session surface, so that is a place it can legitimately be dragged to.
-    pub fn a_pane_is_being_moved_with_mouse(&self) -> bool {
-        self.floating_panes.pane_is_being_moved_with_mouse()
-            || self.overlay_panes.pane_is_being_moved_with_mouse()
-            || self.an_overlay_is_being_resized_with_mouse()
-    }
-    /// Whether an overlay is mid ctrl-drag resize.
-    ///
-    /// Folded into `a_pane_is_being_moved_with_mouse` for the same reason the overlay *move* is:
-    /// an overlay is drawn over the whole session surface, so growing one downwards can put the
-    /// pointer over a global pane, and the drag has to survive that. Deliberately not extended to
-    /// floating or tiled resizes - those are clamped to the tab, and changing where their drags
-    /// are routed is a separate question.
-    fn an_overlay_is_being_resized_with_mouse(&self) -> bool {
-        matches!(
-            self.pane_being_resized_with_mouse,
-            Some(PaneResizeState {
-                target: ResizeDragTarget::Overlay,
-                ..
-            })
-        )
-    }
-    /// The geometries anything drawn behind this tab's floating panes has to be clipped against -
-    /// for callers outside the tab's own render (eg. the global panes, which paint after every
-    /// tab has had its turn).
-    pub fn floating_panes_stack(&self) -> Option<FloatingPanesStack> {
-        self.occlusion_stack()
     }
     /// Everything this tab draws over its own tiled panes, bottom-most first: the floating layer,
     /// then the overlays on top of it.
@@ -5331,7 +5201,7 @@ impl Tab {
     }
     /// How this pane is placed on the surface, if it is an overlay. Moving a pane between tabs has
     /// to carry this along: the tab it leaves forgets it, and without it the pane lands in the new
-    /// tab sized against that tab's viewport and painted under the global panes.
+    /// tab sized against that tab's viewport rather than against the session surface.
     ///
     /// The whole placement rather than just the coordinates, so that a modal arrives as a modal -
     /// the kind used to be re-derived from the plugin's configuration on the far side, which is
@@ -5359,35 +5229,12 @@ impl Tab {
             ExtractedPanePlacement::Tiled
         }
     }
-    /// Recompute the tiled panes' content offsets (and the pty sizes that follow from them) against
-    /// the current boundary viewport — needed when the global pane strips change without the tab's
-    /// geometry changing.
-    pub fn reapply_tiled_pane_frames(&mut self) {
-        self.tiled_panes.reapply_pane_frames();
-    }
-    /// Re-normalize this tab's ui strips (tab bar, status bar) against the current global pane
-    /// strips, and return whether anything moved.
-    ///
-    /// Idempotent, and the render tick's last word on the chrome's width: every path that re-solves
-    /// the layout narrows the chrome back to the tab's center first, and each of them re-widens it
-    /// only conditionally, so this is what guarantees it happens at all.
-    pub fn sync_ui_panes_to_global_strips(&mut self) -> bool {
-        if !self.tiled_panes.expand_ui_panes_over_global_strips() {
-            return false;
-        }
-        // the content offsets (and pty sizes) follow from the new width
-        self.tiled_panes.reapply_pane_frames();
-        // a strip that just grew over the global pane has no grid diff for the columns it gained,
-        // so without a full repaint those cells keep the previous frame's content
-        self.set_force_render();
-        true
-    }
     pub fn set_should_clear_display_before_rendering(&mut self) {
         self.should_clear_display_before_rendering = true;
         self.floating_panes.set_force_render(); // we do this to make sure pinned panes are
                                                 // rendered even if their surface is not visible
                                                 // the overlays draw after the clear is emitted (see
-                                                // `render_floating_panes_after_global_panes`), so an overlay that is already on screen and
+                                                // `render_floating_panes_and_overlays`), so an overlay that is already on screen and
                                                 // clean would contribute nothing to the frame that wipes it - leaving a modal invisible
                                                 // while it still holds the keyboard
         self.overlay_panes.set_force_render();
@@ -5403,10 +5250,7 @@ impl Tab {
             active_pane.set_should_render(true);
         }
     }
-    fn update_active_panes_in_pty_thread(
-        &self,
-        inactive_clients: &HashSet<ClientId>,
-    ) -> Result<()> {
+    fn update_active_panes_in_pty_thread(&self) -> Result<()> {
         // this is a bit hacky and we should ideally not keep this state in two different places at
         // some point
         let connected_clients: Vec<ClientId> =
@@ -5414,11 +5258,7 @@ impl Tab {
         for client_id in connected_clients {
             self.senders
                 .send_to_pty(PtyInstruction::UpdateActivePane(
-                    if inactive_clients.contains(&client_id) {
-                        None
-                    } else {
-                        self.get_active_pane_id(client_id)
-                    },
+                    self.get_active_pane_id(client_id),
                     client_id,
                 ))
                 .with_context(|| format!("failed to update active pane for client {client_id}"))?;
@@ -5426,24 +5266,26 @@ impl Tab {
         Ok(())
     }
 
-    #[cfg(test)]
+    /// Draw this tab: its tiled panes and chrome, then the floating layer and the overlays above
+    /// it, then the cursor.
+    ///
+    /// The cursor goes last so that it is placed once every pane contributing to this tab's frame
+    /// is in the output, rather than wherever the last character chunk happened to land.
     pub fn render(
         &mut self,
         output: &mut Output,
         client_id_override: Option<ClientId>,
     ) -> Result<()> {
-        // the same order `Screen::render` uses: tab, (global panes), floating panes, cursor
-        self.render_with_inactive_clients(output, client_id_override, &HashSet::new())?;
-        self.render_floating_panes_after_global_panes(output, client_id_override, &HashSet::new())?;
-        self.render_cursor_after_global_panes(output, &HashSet::new());
+        self.render_tiled_panes_and_chrome(output, client_id_override)?;
+        self.render_floating_panes_and_overlays(output, client_id_override)?;
+        self.render_cursor_last(output);
         Ok(())
     }
 
-    pub fn render_with_inactive_clients(
+    fn render_tiled_panes_and_chrome(
         &mut self,
         output: &mut Output,
         client_id_override: Option<ClientId>,
-        inactive_clients: &HashSet<ClientId>,
     ) -> Result<()> {
         let err_context = || "failed to render tab".to_string();
 
@@ -5464,13 +5306,13 @@ impl Tab {
             self.link_handler.clone(),
             floating_panes_stack,
         );
-        // a tab with no active tiled pane can still be alive (eg. retained by a visible global
-        // pane) and hold floating panes - skip only the tiled-specific work in that case
+        // a tab with no active tiled pane can still be alive and hold floating panes - skip only
+        // the tiled-specific work in that case
         let has_active_tiled_panes = self.tiled_panes.has_active_panes();
         if has_active_tiled_panes && self.stacked_pane_list_is_active() {
             self.groupify_all();
         }
-        self.update_active_panes_in_pty_thread(inactive_clients)
+        self.update_active_panes_in_pty_thread()
             .with_context(err_context)?;
 
         let current_pane_group: HashMap<ClientId, Vec<PaneId>> =
@@ -5483,16 +5325,15 @@ impl Tab {
                     &self.mouse_hover_pane_id,
                     current_pane_group,
                     client_id_override,
-                    inactive_clients,
                     &self.mouse_help_text_visible,
                     self.mouse_scroll_resize,
                 )
                 .with_context(err_context)?;
-            self.render_stack_list_headers(output, client_id_override, inactive_clients)
+            self.render_stack_list_headers(output, client_id_override)
                 .with_context(err_context)?;
         }
-        // the floating panes are *not* rendered here - they draw after the global panes, see
-        // `render_floating_panes_after_global_panes`
+        // the floating panes are *not* rendered here - they draw over the tiled ones, see
+        // `render_floating_panes_and_overlays`
 
         if output.has_rendered_assets() {
             self.hide_cursor_and_clear_display_as_needed(output);
@@ -5505,18 +5346,15 @@ impl Tab {
         Ok(())
     }
 
-    /// Draw this tab's floating panes and then its overlays. They render here rather than inside
-    /// `render` because the global panes paint after every tab has had its turn: a floating pane
-    /// drawn with the rest of the tab would be painted over by any global pane it overlaps.
+    /// Draw this tab's floating panes and then its overlays.
     ///
     /// The overlays go last, and with a z-index offset of the floating layer count, because
     /// `occlusion_stack` concatenates the two in that order and a pane's z-index is its absolute
     /// position in that one flat list.
-    pub fn render_floating_panes_after_global_panes(
+    fn render_floating_panes_and_overlays(
         &mut self,
         output: &mut Output,
         client_id_override: Option<ClientId>,
-        inactive_clients: &HashSet<ClientId>,
     ) -> Result<()> {
         if self.has_floating_panes_to_render() {
             self.floating_panes.render(
@@ -5524,7 +5362,6 @@ impl Tab {
                 &self.mouse_hover_pane_id,
                 self.current_pane_group.borrow().clone_inner(),
                 client_id_override,
-                inactive_clients,
                 &self.mouse_help_text_visible,
                 self.mouse_scroll_resize,
             )?;
@@ -5536,7 +5373,6 @@ impl Tab {
                 &self.mouse_hover_pane_id,
                 self.current_pane_group.borrow().clone_inner(),
                 client_id_override,
-                inactive_clients,
                 &self.mouse_help_text_visible,
                 self.mouse_scroll_resize,
                 z_index_offset,
@@ -5561,21 +5397,14 @@ impl Tab {
     /// user has no way out of because the modal is the thing that has the keyboard. An overlay
     /// outranks fullscreen for the same reason it outranks a pinned pane.
     ///
-    /// `occlusion_stack` and `render_floating_panes_after_global_panes` both gate on this, and
-    /// must keep doing so together.
+    /// `occlusion_stack` and `render_floating_panes_and_overlays` both gate on this, and must keep
+    /// doing so together.
     pub fn overlays_are_rendered(&self) -> bool {
         self.overlay_panes.has_panes()
     }
 
-    /// Position this tab's cursor, once every pane that contributes to the frame (including the
-    /// global panes, which render after all the tabs) is in the output. Deciding earlier would
-    /// leave the cursor wherever the last character chunk landed on frames where only a global
-    /// pane rendered.
-    pub fn render_cursor_after_global_panes(
-        &mut self,
-        output: &mut Output,
-        inactive_clients: &HashSet<ClientId>,
-    ) {
+    /// Position this tab's cursor, once every pane that contributes to its frame is in the output.
+    fn render_cursor_last(&mut self, output: &mut Output) {
         let connected_clients: Vec<ClientId> =
             { self.connected_clients.borrow().iter().copied().collect() };
         if connected_clients.is_empty() {
@@ -5586,7 +5415,7 @@ impl Tab {
         if output.has_rendered_assets() {
             output.hide_cursor_for_clients(connected_clients.iter().copied());
         }
-        self.render_cursor(output, inactive_clients);
+        self.render_cursor(output);
     }
     fn hide_cursor_and_clear_display_as_needed(&mut self, output: &mut Output) {
         let connected_clients: Vec<ClientId> =
@@ -5602,13 +5431,10 @@ impl Tab {
             self.should_clear_display_before_rendering = false;
         }
     }
-    fn render_cursor(&mut self, output: &mut Output, inactive_clients: &HashSet<ClientId>) {
+    fn render_cursor(&mut self, output: &mut Output) {
         let connected_clients: Vec<ClientId> =
             { self.connected_clients.borrow().iter().copied().collect() };
         for client_id in connected_clients {
-            if inactive_clients.contains(&client_id) {
-                continue;
-            }
             match self.get_active_terminal_cursor_position(client_id) {
                 Some((cursor_position_x, cursor_position_y, is_cursor_visible)) => {
                     // the same flat list `occlusion_stack` builds, so an overlay's index has to
@@ -5756,68 +5582,14 @@ impl Tab {
         let selectable_tiled_panes = self.tiled_panes.get_panes().filter(|(_, p)| p.selectable());
         selectable_tiled_panes.count() > 0
     }
-    /// The heights of this tab's top and bottom ui strips (tab bar, status bar), ie. the rows
-    /// `offset_viewport` already carved out of the tab viewport. A left/right global pane leaves
-    /// these rows to the tab so its chrome can span the full screen width.
-    pub fn chrome_rows(&self) -> (usize, usize) {
-        let (_, origin_y) = *self.display_area_origin.borrow();
-        let display_area_rows = self.display_area.borrow().rows;
-        let viewport = self.viewport.borrow();
-        let top = viewport.y.saturating_sub(origin_y);
-        let bottom = (origin_y + display_area_rows).saturating_sub(viewport.y + viewport.rows);
-        (top, bottom)
-    }
     pub fn resize_whole_tab(&mut self, new_screen_size: Size) -> Result<()> {
-        self.resize_whole_tab_to(Viewport {
-            x: 0,
-            y: 0,
-            cols: new_screen_size.cols,
-            rows: new_screen_size.rows,
-        })
+        self.resize_whole_tab_to(new_screen_size)
     }
-    pub fn resize_whole_tab_to(&mut self, display_area: Viewport) -> Result<()> {
-        let old_origin = *self.display_area_origin.borrow();
-        // a floating pane outside the tab (over a global pane, say) survives none of the
-        // normalization below - it is put back at the end, once the tab is at its final origin
+    pub fn resize_whole_tab_to(&mut self, display_area: Size) -> Result<()> {
+        // a floating pane outside the tab's viewport (over the tab bar, say) is not laid out by
+        // the solver at all - it is taken out and put back once the tab has been resized
         let floating_panes_outside_viewport = self.floating_panes.geoms_outside_viewport();
-        // everything below happens at origin 0 (the panes are translated back at the end), so the
-        // layout solver must not re-apply the old origin in the meantime
-        *self.display_area_origin.borrow_mut() = (0, 0);
-        self.translate_panes(-(old_origin.0 as isize), -(old_origin.1 as isize));
-        {
-            let mut viewport = self.viewport.borrow_mut();
-            viewport.x = viewport.x.saturating_sub(old_origin.0);
-            viewport.y = viewport.y.saturating_sub(old_origin.1);
-        }
-
-        let new_screen_size = Size {
-            cols: display_area.cols,
-            rows: display_area.rows,
-        };
-        if let Err(error) = self.resize_whole_tab_locally(new_screen_size) {
-            self.translate_panes(old_origin.0 as isize, old_origin.1 as isize);
-            *self.display_area_origin.borrow_mut() = old_origin;
-            let mut viewport = self.viewport.borrow_mut();
-            viewport.x += old_origin.0;
-            viewport.y += old_origin.1;
-            return Err(error);
-        }
-
-        self.translate_panes(display_area.x as isize, display_area.y as isize);
-        {
-            let mut viewport = self.viewport.borrow_mut();
-            viewport.x += display_area.x;
-            viewport.y += display_area.y;
-        }
-        *self.display_area_origin.borrow_mut() = (display_area.x, display_area.y);
-        // resize_whole_tab_locally ran at origin 0, where the boundary viewport could not be grown
-        // over the (absolute-positioned) global pane strips, so the content offsets it computed for
-        // panes abutting global panes may be wrong. Recompute them now at the final origin. With no
-        // global strips the boundary viewport equals the tab viewport and the offset is invariant
-        // under translation, so skip the reapply (and its redundant pty resizes) in that case.
-        if !self.global_pane_strips.borrow().is_empty() {
-            self.tiled_panes.reapply_pane_frames();
-        }
+        self.resize_whole_tab_locally(display_area)?;
         self.floating_panes
             .restore_geoms_outside_viewport(floating_panes_outside_viewport);
         Ok(())
@@ -5896,45 +5668,6 @@ impl Tab {
         self.resize_all_stack_list_hidden_members();
         Ok(())
     }
-    fn translate_panes(&mut self, x_offset: isize, y_offset: isize) {
-        fn translate_pane(pane: &mut Box<dyn Pane>, x_offset: isize, y_offset: isize) {
-            fn translate_coordinate(coordinate: usize, offset: isize) -> usize {
-                if offset.is_negative() {
-                    coordinate.saturating_sub(offset.unsigned_abs())
-                } else {
-                    coordinate.saturating_add(offset as usize)
-                }
-            }
-
-            let mut geom = pane.position_and_size();
-            geom.x = translate_coordinate(geom.x, x_offset);
-            geom.y = translate_coordinate(geom.y, y_offset);
-            pane.set_geom(geom);
-            if let Some(mut geom_override) = pane.geom_override() {
-                geom_override.x = translate_coordinate(geom_override.x, x_offset);
-                geom_override.y = translate_coordinate(geom_override.y, y_offset);
-                pane.set_geom_override(geom_override);
-            }
-        }
-
-        let tiled_pane_ids: Vec<PaneId> = self.tiled_panes.pane_ids().copied().collect();
-        for pane_id in tiled_pane_ids {
-            if let Some(pane) = self.tiled_panes.get_pane_mut(pane_id) {
-                translate_pane(pane, x_offset, y_offset);
-            }
-        }
-        let floating_pane_ids: Vec<PaneId> = self.floating_panes.pane_ids().copied().collect();
-        for pane_id in floating_pane_ids {
-            if let Some(pane) = self.floating_panes.get_pane_mut(pane_id) {
-                translate_pane(pane, x_offset, y_offset);
-            }
-        }
-        self.floating_panes
-            .translate_desired_positions(x_offset, y_offset);
-        for pane in self.suppressed_panes.values_mut().map(|s| &mut s.pane) {
-            translate_pane(pane, x_offset, y_offset);
-        }
-    }
     pub fn resize(&mut self, client_id: ClientId, strategy: ResizeStrategy) -> Result<()> {
         let err_context = || "unable to resize pane".to_string();
         // The branch below is a two-way floating/tiled split, so an overlay has to be dispatched
@@ -6009,14 +5742,6 @@ impl Tab {
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.set_active_at(Instant::now());
         }
-    }
-    /// Whether the client is on the last pane of this tab's focus cycle, ie. whether the next
-    /// `focus_next_pane` would wrap around. Used to hand focus off to the session-global panes.
-    pub fn is_last_pane_in_cycle(&mut self, client_id: ClientId) -> bool {
-        self.has_selectable_panes() && self.tiled_panes.active_pane_is_last_in_cycle(client_id)
-    }
-    pub fn is_first_pane_in_cycle(&mut self, client_id: ClientId) -> bool {
-        self.has_selectable_panes() && self.tiled_panes.active_pane_is_first_in_cycle(client_id)
     }
     /// Whether a lower layer may move this client's focus at all.
     ///
@@ -8294,8 +8019,7 @@ impl Tab {
         // A pane that is an overlay by configuration is one wherever it came from, including the
         // paths that pass no coordinates at all (`focus_pane_with_id` taking a modal back out of
         // the suppressed panes) or their own (`pane_groups`). Placing it as a floating pane would
-        // size it against the tab's viewport, draw it under the global panes, and raise the
-        // floating layer under it.
+        // size it against the tab's viewport and raise the floating layer under it.
         if let Some(placement) =
             overlay_placement_for(&floating_pane_coordinates, pane.invoked_with())
         {
@@ -9088,24 +8812,6 @@ impl Tab {
     }
     pub fn get_display_area(&self) -> Size {
         *self.display_area.borrow()
-    }
-    pub fn get_display_area_origin(&self) -> (usize, usize) {
-        *self.display_area_origin.borrow()
-    }
-    /// The whole session surface: this tab's display area grown back over the global-pane strips.
-    ///
-    /// Not the same rectangle as `get_display_area`, and the difference is load-bearing rather
-    /// than cosmetic: the display area is the tab *centre*, what is left once the strips have been
-    /// carved off, while this is what an overlay's coordinates resolve against
-    /// (`OverlayPanes::surface`). A caller that computes an overlay's geometry from the display
-    /// area places it against a smaller rectangle than the server will, which reads as a pane that
-    /// is too small and floating short of the edge it was anchored to.
-    pub fn get_session_surface(&self) -> Viewport {
-        session_surface(
-            self.get_display_area(),
-            self.get_display_area_origin(),
-            &self.global_pane_strips.borrow(),
-        )
     }
     pub fn get_client_input_mode(&self, client_id: ClientId) -> Option<InputMode> {
         self.mode_info.borrow().get(&client_id).map(|m| m.mode)
