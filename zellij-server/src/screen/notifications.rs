@@ -171,6 +171,27 @@ impl Screen {
         self.retarget_notification_displacement(&before, &after, now);
     }
 
+    /// The cells the toasts paint into `viewport` at `now`.
+    ///
+    /// One mapping shared by everything that needs to know where the toasts are this frame: the
+    /// damage diff below, and the cursor occlusion in `Output`. Deriving both from here is what
+    /// stops the repaint geometry and the occlusion geometry drifting apart.
+    pub(super) fn notification_cell_rects(
+        &self,
+        viewport: Viewport,
+        now: Instant,
+    ) -> Vec<CellRect> {
+        self.notification_layout(viewport, now)
+            .iter()
+            .map(|layout| CellRect {
+                x: layout.revealed_x,
+                y: layout.y,
+                cols: layout.visible_cols,
+                rows: notification_height(layout.lines.len()),
+            })
+            .collect()
+    }
+
     /// The cells this frame's toasts will paint for each regular client, and the cells last
     /// frame's toasts painted that these do not.
     ///
@@ -224,16 +245,7 @@ impl Screen {
                 cols: tab_size.cols,
                 rows: tab_size.rows,
             };
-            let painted: Vec<CellRect> = self
-                .notification_layout(viewport, now)
-                .iter()
-                .map(|layout| CellRect {
-                    x: layout.revealed_x,
-                    y: layout.y,
-                    cols: layout.visible_cols,
-                    rows: notification_height(layout.lines.len()),
-                })
-                .collect();
+            let painted = self.notification_cell_rects(viewport, now);
 
             let mut damage: Vec<CellRect> = vec![];
             for client_id in &client_ids {

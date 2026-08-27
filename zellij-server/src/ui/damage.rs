@@ -51,6 +51,11 @@ impl CellRect {
     fn covers_row(&self, row: usize) -> bool {
         row >= self.y && row < self.bottom()
     }
+
+    /// Whether this rect paints the cell at `(x, y)`.
+    pub fn contains(&self, x: usize, y: usize) -> bool {
+        !self.is_empty() && self.covers_row(y) && x >= self.x && x < self.right()
+    }
 }
 
 /// The cells `before` painted that `after` does not.
