@@ -284,12 +284,6 @@ pub struct State {
     /// attached client, and the host sets this per event and per render pass
     /// rather than giving each client an instance of its own.
     client: ClientId,
-    /// This plugin pane's id, for `rename_plugin_pane`. Set alongside `client`
-    /// since both come from the same `get_plugin_ids()` host call.
-    plugin_id: u32,
-    /// The window title last sent to `rename_plugin_pane`, so a render that
-    /// changes nothing about the title doesn't re-issue the host call.
-    last_window_title: Option<String>,
     /// Viewport height from the last render, so paging knows its page size.
     ///
     /// One number for every client: the host renders a shared plugin at a
@@ -569,8 +563,6 @@ impl Default for State {
             // Overwritten by the host on the first event or render; nothing
             // reads it before then.
             client: 0,
-            plugin_id: 0,
-            last_window_title: None,
             transcript_rows: 0,
             transcript_cache: None,
             chat_id: None,
@@ -730,9 +722,7 @@ impl ZellijPlugin for State {
     fn update(&mut self, event: Event) -> bool {
         // The host directs each event at the client that caused it, so this is
         // who pressed the key, and who a scroll moves.
-        let ids = get_plugin_ids();
-        self.client = ids.client_id;
-        self.plugin_id = ids.plugin_id;
+        self.client = get_plugin_ids().client_id;
         let render = self.handle(event);
         // Archived here rather than from each outcome path, so a finished reply,
         // a cancel, an error and an aborted tool run are all covered without any
@@ -745,9 +735,7 @@ impl ZellijPlugin for State {
         // Called once per attached client, each pass with a different client
         // set here. Only `view` differs between them; everything else on screen
         // is the one conversation everyone shares.
-        let ids = get_plugin_ids();
-        self.client = ids.client_id;
-        self.plugin_id = ids.plugin_id;
+        self.client = get_plugin_ids().client_id;
         ui::render(self, rows, cols);
     }
 
