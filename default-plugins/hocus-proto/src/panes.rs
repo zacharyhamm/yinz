@@ -119,13 +119,12 @@ pub fn focused_plugin_pane(manifest: &PaneManifest, tabs: &[TabInfo]) -> Option<
 /// The focused pane of one kind. See `focused_pane` for what makes a candidate.
 fn focused(manifest: &PaneManifest, tabs: &[TabInfo], plugin: bool) -> Option<u32> {
     let active = tabs.iter().find(|tab| tab.active);
-    let in_tabs = manifest
+    manifest
         .panes
         .iter()
         .filter(|(position, _)| active.map(|tab| tab.position) == Some(**position))
         .flat_map(|(_, panes)| panes.iter())
-        .filter(|pane| active.map(|tab| tab.are_floating_panes_visible) == Some(pane.is_floating));
-    in_tabs
+        .filter(|pane| active.map(|tab| tab.are_floating_panes_visible) == Some(pane.is_floating))
         .find(|pane| pane.is_focused && pane.is_plugin == plugin && !pane.is_suppressed)
         .map(|pane| pane.id)
 }

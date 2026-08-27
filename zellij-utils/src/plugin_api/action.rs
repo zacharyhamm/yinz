@@ -1927,12 +1927,7 @@ impl TryFrom<Action> for ProtobufAction {
                 name: ProtobufActionName::ToggleGroupMarking as i32,
                 optional_payload: None,
             }),
-            Action::NewStackedPane {
-                command: _,
-                pane_name: _,
-                near_current_pane: _,
-                ..
-            } => Ok(ProtobufAction {
+            Action::NewStackedPane { .. } => Ok(ProtobufAction {
                 name: ProtobufActionName::NewStackedPane as i32,
                 optional_payload: None,
             }),

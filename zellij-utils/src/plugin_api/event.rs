@@ -3066,7 +3066,6 @@ fn serialize_session_update_event_with_non_default_values() {
         tabs: vec![],
         panes: PaneManifest {
             panes: HashMap::new(),
-            ..Default::default()
         },
         connected_clients: 0,
         is_current_session: false,

@@ -887,7 +887,6 @@ impl Action {
                 command: run_command_action,
                 pane_name: name,
                 near_current_pane: false,
-                borderless: _,
                 ..
             } => {
                 let mut node = KdlNode::new("Run");
