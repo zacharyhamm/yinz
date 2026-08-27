@@ -53,7 +53,7 @@ use zellij_utils::{
         command::TerminalAction,
         keybinds::Keybinds,
         layout::{FloatingPaneLayout, Layout, Run, RunPlugin, RunPluginOrAlias, TiledPaneLayout},
-        plugins::PluginAliases,
+        plugins::{PluginAliases, PluginConfig},
     },
     pane_size::Size,
     session_serialization,
@@ -1649,13 +1649,21 @@ fn request_context_menu(
         answer_with_configured_items();
         return;
     };
+    let is_shared = PluginConfig::from_run_plugin(&run_plugin)
+        .map(|plugin| plugin.is_shared())
+        .unwrap_or(false);
     let plugin_ids = wasm_bridge.all_plugin_and_client_ids_for_plugin_location(
         &run_plugin.location,
         &run_plugin.configuration,
     );
-    if plugin_ids.is_empty() {
-        // First right-click of the session: load the hook headless, then deliver this request to
-        // that new instance. The timeout still provides the configured fallback if it is slow.
+    // A non-shared hook has one instance per client, so an instance existing for some other
+    // client says nothing about this one - only an instance this client owns (or a shared
+    // instance, which every client can reach) counts.
+    let has_own_instance = is_shared || plugin_ids.iter().any(|(_, cid)| *cid == Some(client_id));
+    if !has_own_instance {
+        // First right-click of the session (or first for this client): load the hook headless,
+        // then deliver this request to that new instance. The timeout still provides the
+        // configured fallback if it is slow.
         //
         // Lazily rather than at session start, because the menu is opt-in and off by default:
         // loading a plugin into every session for a feature most of them never turn on would be a
@@ -1687,6 +1695,7 @@ fn request_context_menu(
     let mut seen_plugin_ids = HashSet::new();
     let updates: Vec<_> = plugin_ids
         .into_iter()
+        .filter(|(_, cid)| is_shared || *cid == Some(client_id))
         .filter_map(|(plugin_id, _)| {
             seen_plugin_ids.insert(plugin_id).then_some((
                 Some(plugin_id),
