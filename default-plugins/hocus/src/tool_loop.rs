@@ -184,14 +184,28 @@ impl State {
             );
             return true;
         }
-        // Above the `tools_busy` guard below: toggling changes what the *next*
-        // request advertises, so it is legal while a call is still running.
-        if line == "/plan" || line == "/plan on" || line == "/plan off" {
-            return self.toggle_plan(match line {
-                "/plan on" => Some(true),
-                "/plan off" => Some(false),
-                _ => None,
-            });
+        // Above the `tools_busy` guard below: entering the mode changes what the
+        // *next* request advertises, so it is legal while a call is still
+        // running, and the prompt itself queues like any other typed message.
+        if line == "/plan" || line.starts_with("/plan ") {
+            let prompt = line["/plan".len()..].trim();
+            // `on` and `off` were the old toggle. Left to the rule above they
+            // would be sent to the model as a one-word planning question, which
+            // is what typing them out of habit would silently do.
+            if prompt.is_empty() || prompt == "on" || prompt == "off" {
+                let error = "/plan needs a prompt — /plan <what to plan>. `/plan on` and `/plan \
+                             off` are gone: /execute carries a plan out.";
+                self.messages.push(Message::error(error));
+                self.log("error", serde_json::json!({"error": error}));
+                return true;
+            }
+            return self.start_plan(prompt);
+        }
+        // The answer to a waiting plan. Trailing text amends the approval rather
+        // than going out as a turn of its own.
+        if line == "/execute" || line.starts_with("/execute ") {
+            let note = line["/execute".len()..].trim().to_owned();
+            return self.approve_plan(&note);
         }
         // A reply arriving is no reason to wait, but another *tool* is: the
         // queue runs one call at a time, and its head owns the deferred result
@@ -1650,26 +1664,15 @@ impl State {
         }
     }
 
-    /// Turn planning mode on or off. `want` is `None` for a plain `/plan`,
-    /// which toggles.
+    /// Enter planning mode and ask `prompt` inside it, in one submit.
     ///
-    /// Leaving it from `AwaitingApproval` is the same move as leaving it from
-    /// `Planning`: the plan stays in the transcript, and the question about it
-    /// stops being asked.
-    pub(crate) fn toggle_plan(&mut self, want: Option<bool>) -> bool {
-        let on = want.unwrap_or(matches!(self.plan, Plan::Off));
+    /// Not a toggle: `/execute` is how a plan is carried out and `Ctrl-l` is how
+    /// one is abandoned, so nothing here turns the mode off. Typing `/plan`
+    /// again while already planning is simply the next planning turn, which is
+    /// what makes it usable as a prefix on a correction.
+    pub(crate) fn start_plan(&mut self, prompt: &str) -> bool {
         self.pin_to_bottom();
-        if on == !matches!(self.plan, Plan::Off) {
-            // Idempotent on purpose: `/plan off` twice is a thing people type.
-            let notice = if on {
-                "already planning"
-            } else {
-                "not planning"
-            };
-            self.messages.push(Message::notice(notice));
-            self.log("notice", serde_json::json!({"content": notice}));
-            return true;
-        }
+        let was_on = self.plan_mode_on();
 
         // The mode changes *first*, and the pending call is dealt with second.
         // `decline_tool` answers the call and pumps the queue, and an emptied
@@ -1677,48 +1680,72 @@ impl State {
         // the whole tool set if the mode were still off when it left. Setting
         // the mode first also puts the rest of the queue behind `pump_tools`'
         // own read-only gate, so a batch is refused rather than half-run.
-        self.plan = if on { Plan::Planning } else { Plan::Off };
+        self.plan = Plan::Planning;
 
-        // Turning it on while a destructive call is waiting on a y/n would leave
+        // Entering it while a destructive call is waiting on a y/n would leave
         // that call armed inside the mode that exists to disarm it. Declining is
         // the honest reading of "stop acting, start planning", and it keeps the
         // transcript valid — the model gets a result for the call it made.
-        let declined = on && self.is_confirming() && self.decline_tool();
+        let declined = !was_on && self.is_confirming() && self.decline_tool();
 
-        let notice = match (on, declined) {
-            (true, true) => {
+        // Only on the way in: an established mode does not announce itself again
+        // in front of every prompt typed inside it.
+        if !was_on {
+            let notice = if declined {
                 "planning mode on — the pending call was declined; read-only tools until you \
-                 approve a plan"
-            },
-            (true, false) => "planning mode on — read-only tools until you approve a plan",
-            (false, _) => "planning mode off",
-        };
-        self.messages.push(Message::notice(notice));
-        self.log("plan_mode", serde_json::json!({"on": on}));
-        self.log("notice", serde_json::json!({"content": notice}));
-        true
+                 /execute the plan"
+            } else {
+                "planning mode on — read-only tools until you /execute the plan"
+            };
+            self.messages.push(Message::notice(notice));
+            self.log("plan_mode", serde_json::json!({"on": true}));
+            self.log("notice", serde_json::json!({"content": notice}));
+        }
+
+        // `send_user_text` answers "was anything sent", which is false when there
+        // is no API key to send it with. Entering the mode pushed a notice even
+        // then, so the pane still has something new to draw.
+        let sent = self.send_user_text(prompt.to_owned());
+        sent || !was_on
     }
 
-    /// `y` on a plan: leave planning mode and let the model carry out what it
-    /// just wrote.
+    /// `/execute` on a plan: leave planning mode and let the model carry out what
+    /// it just wrote. `note` is the optional amendment typed after the command.
     ///
     /// The approval goes in as a `Role::User` message rather than a notice
     /// because a notice is dropped on the way out (`api::request_body_with_project`
     /// skips `Role::Notice`), so the model would be handed two assistant turns
     /// in a row and nothing that asked for the second.
-    pub(crate) fn approve_plan(&mut self) -> bool {
+    pub(crate) fn approve_plan(&mut self, note: &str) -> bool {
+        const APPROVAL: &str = "Approved. Carry out the plan you just wrote.";
+        self.pin_to_bottom();
         if !self.awaiting_plan() {
-            return false;
+            // The two states mean different things to whoever typed it: one has
+            // no plan *yet*, the other was never planning at all.
+            let error = if self.plan_mode_on() {
+                "nothing to execute yet — hocus has not written a plan"
+            } else {
+                "not planning — /plan <prompt> starts a plan"
+            };
+            self.messages.push(Message::error(error));
+            self.log("error", serde_json::json!({"error": error}));
+            return true;
         }
         self.plan = Plan::Off;
-        self.pin_to_bottom();
         self.log("plan_decision", serde_json::json!({"decision": "approve"}));
         let notice = "planning mode off — carrying out the plan";
         self.messages.push(Message::notice(notice));
         self.log("notice", serde_json::json!({"content": notice}));
-        let content = "Approved. Carry out the plan you just wrote.";
-        self.messages.push(Message::user(content));
-        self.log("user_input", serde_json::json!({"content": content}));
+        let content = if note.is_empty() {
+            APPROVAL.to_owned()
+        } else {
+            format!("{APPROVAL} {note}")
+        };
+        self.messages.push(Message::user(content.clone()));
+        self.log(
+            "user_input",
+            serde_json::json!({"content": log::truncate(&content)}),
+        );
         let Ok(cfg) = self.cfg.clone() else {
             return true;
         };
@@ -1738,7 +1765,7 @@ impl State {
         self.plan = Plan::Planning;
         self.pin_to_bottom();
         self.log("plan_decision", serde_json::json!({"decision": "decline"}));
-        let notice = "still planning — say what to change, or /plan to leave";
+        let notice = "still planning — say what to change, or /execute to carry it out";
         self.messages.push(Message::notice(notice));
         self.log("notice", serde_json::json!({"content": notice}));
         true

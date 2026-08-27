@@ -79,7 +79,7 @@ const MAX_QUEUED_ASKS: usize = 8;
 
 /// Slash commands that drive the plugin itself rather than a tool. Typed and
 /// completed like tools, but never offered to the model.
-const LOCAL_COMMANDS: [&str; 5] = ["history", "models", "stop_jobs", "keys", "plan"];
+const LOCAL_COMMANDS: [&str; 6] = ["history", "models", "stop_jobs", "keys", "plan", "execute"];
 
 /// Full keybinding reference for `/keys`. The chat view has no persistent
 /// help line, so this is the one place all of these are written down.
@@ -91,12 +91,13 @@ Tab           complete a /command or @agent
 Alt+Enter, Shift+Enter   insert a newline
 PageUp / PageDown        scroll the transcript
 Esc           hide hocus
-Ctrl+c        cancel a stream or tool, decline a plan,
-              or clear the prompt
-y / n         confirm or decline a pending tool call,
-              or carry out / keep refining a plan
-/plan         plan before acting: read-only tools until
-              you approve the plan hocus writes
+Ctrl+c        cancel a stream or tool, keep refining a
+              plan, or clear the prompt
+y / n         confirm or decline a pending tool call
+n             keep refining a plan hocus has written
+/plan <text>  plan before acting: read-only tools until
+              you /execute the plan hocus writes
+/execute      carry out that plan; trailing text amends it
 
 In history or models:
 Up / Down     choose
