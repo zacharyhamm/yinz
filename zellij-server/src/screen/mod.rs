@@ -56,6 +56,8 @@
 //! - `active_tab_ids: BTreeMap<ClientId, usize>`: Maps clients to active tab ID
 //! - `tab_history: BTreeMap<ClientId, Vec<usize>>`: History of tab IDs per client
 
+use crate::ui::loading_indication::DOT_PERIOD;
+use crate::ui::notification::{ENTER_DURATION, ENTER_EASING};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
@@ -63,6 +65,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::str;
 use std::time::{Duration, Instant};
+use zellij_utils::animation::{Tween, FRAME_PERIOD};
 
 use crate::route::NotificationEnd;
 
@@ -636,7 +639,27 @@ pub(crate) struct Screen {
     /// available to lay out against; `client_sizes` starts empty, and a render tick that lands
     /// before the first `RecomputeTabSize` would otherwise have nothing to lay a tab out against.
     last_surface_size: Size,
-    /// The last tab any client was active on, whichever client that was.
+    /// The `unowned_strip_rows` last painted for each client. `Output` re-emits every chunk it is
+    /// given and `Output::is_dirty` counts them, so filling these unconditionally would send a frame
+    /// on every render tick (and force every watcher into a full repaint) - this is the diff.
+    unowned_strip_fill: HashMap<ClientId, Vec<(usize, usize, usize)>>,
+    /// The cells each client's toasts painted last frame, so the next one can work out which of
+    /// them a moving toast stopped covering. Keyed by client rather than by render group because
+    /// a client that switches tab or resizes gets different rects, and that difference *is* the
+    /// damage. See `prepare_notification_damage`.
+    last_notification_fill: HashMap<ClientId, Vec<crate::ui::damage::CellRect>>,
+    /// Panes whose frame colour is currently easing back out of a bell flash. Kept so the frames
+    /// get repainted while the colour moves - a pane whose contents are idle has nothing else to
+    /// make it redraw - and so the animation clock knows when the last one is done.
+    fading_frame_panes: HashSet<PaneId>,
+    /// Plugins whose loading indicator is taking frames from the shared clock. The dots themselves
+    /// are derived from how long the load has been running, so this only records *which* plugins
+    /// are still loading.
+    animating_plugin_loads: HashSet<u32>,
+    /// The period last requested of the shared animation clock, `None` while it is stopped. Kept
+    /// so `sync_animation_clock` is a no-op on the overwhelming majority of ticks rather than a
+    /// message on the bus sixty times a second.
+    animation_clock: Option<Duration>,
     global_last_active_tab_id: usize,
     tab_history: BTreeMap<ClientId, Vec<usize>>,
     pane_history: BTreeMap<ClientId, Vec<PaneId>>,
@@ -654,13 +677,6 @@ pub(crate) struct Screen {
     next_notification_id: u64,
     notification_position: NotificationPosition,
     notification_timeout_secs: u64,
-    /// The notification stack as it was just before the last time it changed (a toast arrived or
-    /// one was finally removed after sliding out) - used to animate the survivors gliding from
-    /// their old stacked position to their new one. See `render_notifications`.
-    notification_stack_before_change: Vec<Notification>,
-    /// `0.0` while the stack is still at `notification_stack_before_change`'s layout, `1.0` once
-    /// it has fully settled at `notifications`' layout.
-    notification_displacement_progress: f32,
     auto_layout: bool,
     session_serialization: bool,
     serialize_pane_viewport: bool,
@@ -752,40 +768,185 @@ pub(crate) struct Screen {
     last_mobile_state_sent: HashMap<ClientId, MobileStatePayload>,
     pane_output_activity: HashMap<PaneId, Instant>,
     mobile_web_prefs: HashMap<ClientId, MobileWebPrefs>,
+    /// Pins what `frame_now` answers, so a test can step an animation frame by frame instead of
+    /// sleeping. Never set outside tests.
+    #[cfg(test)]
+    pinned_now: Option<Instant>,
 }
 
-/// Per-tick step for a toast's slide in/out, sized so the whole animation takes a handful of
-/// `NOTIFICATION_ANIMATION_TICK_MS` ticks (background_jobs.rs) - a few hundred milliseconds.
-const NOTIFICATION_HORIZONTAL_PROGRESS_STEP: f32 = 0.2;
-/// Per-tick step for the shared displacement lerp (see `render_notifications`), same rationale.
-const NOTIFICATION_DISPLACEMENT_STEP: f32 = 0.2;
-
-/// A pending forward waiting to be dispatched once the current in-flight
-/// forward's barrier reply (or timeout) arrives.
 /// A live toast notification. See [`crate::ui::notification`] for how these are drawn.
+///
+/// Both animations are wall-clock [`Tween`]s sampled once per frame by `render_to_clients`, never
+/// accumulated per tick: a late, dropped or doubled frame changes how much motion is *seen* and
+/// never where a toast is or when it finishes.
+/// The one place a frame reads the clock.
+///
+/// Split out so a test can pin it: production always answers `Instant::now()`, and a test that
+/// wants to step an animation frame by frame sets `pinned_now` instead of sleeping.
+impl Screen {
+    pub(crate) fn frame_now(&self) -> Instant {
+        #[cfg(test)]
+        if let Some(pinned) = self.pinned_now {
+            return pinned;
+        }
+        Instant::now()
+    }
+
+    /// How often the shared clock should wake at `now`, or `None` if nothing on screen wants a
+    /// frame any more.
+    ///
+    /// Derived from the animated state itself rather than from a registration list, which is what
+    /// stops the clock getting stuck on and burning wakeups over an idle session.
+    ///
+    /// Two cadences, because the surfaces genuinely differ. A toast sliding or a bell fading is
+    /// continuous motion and needs [`FRAME_PERIOD`]. The plugin loading dots are a four-character
+    /// "still working" pulse that changes once every [`DOT_PERIOD`], and holding the clock at 60fps
+    /// for them means a full `render_to_clients` - global panes, every tab's layout, every pane's
+    /// composition - sixty times a second for the entire time any plugin is loading, which on a
+    /// plugin that never finishes is forever.
+    ///
+    /// The aggregate is computed here rather than requested by each surface on purpose: a plugin
+    /// load starting while a toast is mid-slide must not be able to drop the clock to the dot
+    /// period underneath it.
+    pub(crate) fn animation_clock_period(&self, now: Instant) -> Option<Duration> {
+        if self.notifications_are_animating(now) || !self.fading_frame_panes.is_empty() {
+            Some(FRAME_PERIOD)
+        } else if !self.animating_plugin_loads.is_empty() {
+            Some(DOT_PERIOD)
+        } else {
+            None
+        }
+    }
+
+    /// Whether anything on screen still wants a frame. Production asks
+    /// [`Screen::animation_clock_period`] the sharper question - *how often* - so this is the
+    /// tests' way of asserting the clock stops.
+    #[cfg(test)]
+    pub(crate) fn animations_are_live(&self, now: Instant) -> bool {
+        self.animation_clock_period(now).is_some()
+    }
+
+    /// Tell the shared clock what it should be doing, if that has changed since we last said so.
+    ///
+    /// Called after anything that starts or ends an animation, and on every tick - so a cadence
+    /// that becomes coarser, or an animation that ends, is picked up within one period without
+    /// every surface having to know about every other one.
+    pub(crate) fn sync_animation_clock(&mut self, now: Instant) -> Result<()> {
+        let wanted = self.animation_clock_period(now);
+        if wanted == self.animation_clock {
+            return Ok(());
+        }
+        match wanted {
+            Some(period) => self
+                .bus
+                .senders
+                .send_to_background_jobs(BackgroundJob::StartAnimationClock(period))?,
+            None => self
+                .bus
+                .senders
+                .send_to_background_jobs(BackgroundJob::StopAnimationClock)?,
+        }
+        self.animation_clock = wanted;
+        Ok(())
+    }
+
+    /// One wakeup from the shared animation clock. Nothing is advanced here: every animation is
+    /// sampled inside `render_to_clients` at the instant the frame is composited, so a tick that
+    /// arrives late - or never - costs a frame and never a position.
+    ///
+    /// The frame is asked for unconditionally, including on the tick that finds everything settled.
+    /// That last one is the frame that actually *paints* the settled state: renders are debounced
+    /// by `REPAINT_DELAY_MS`, so the frame a still-animating tick asks for is composited up to that
+    /// long before the deadline it was aiming at. Without a tick past the deadline asking for one
+    /// more, a dismissing toast is left painted a sliver short of gone - and never reaped, because
+    /// `reap_settled_notifications` only runs inside a frame - until unrelated output happens to
+    /// repaint.
+    pub(crate) fn on_animation_tick(&mut self, now: Instant) -> Result<()> {
+        self.render(None)?;
+        self.sync_animation_clock(now)
+    }
+
+    /// Redraw the loading indicator of every plugin still loading. The pane itself skips the write
+    /// on the frames where the derived dot count has not changed, which is most of them.
+    pub(crate) fn advance_plugin_loading_animations(&mut self) {
+        if self.animating_plugin_loads.is_empty() {
+            return;
+        }
+        for plugin_id in self
+            .animating_plugin_loads
+            .iter()
+            .copied()
+            .collect::<Vec<_>>()
+        {
+            self.progress_plugin_loading_offset(plugin_id);
+        }
+    }
+
+    /// Keep the frames of panes with a fading bell repainting, and forget the ones that have
+    /// finished. A pane sitting idle produces no output of its own, so without this the flash
+    /// would freeze at whatever strength the last frame happened to catch it at.
+    pub(crate) fn advance_frame_color_fades(&mut self, now: Instant) {
+        if self.fading_frame_panes.is_empty() {
+            return;
+        }
+        let fading: Vec<PaneId> = self.fading_frame_panes.iter().copied().collect();
+        for pane_id in fading {
+            let Some(tab) = self.tab_containing_pane_mut(pane_id) else {
+                // the pane went away mid-flash; nothing left to fade
+                self.fading_frame_panes.remove(&pane_id);
+                continue;
+            };
+            if tab.frame_color_override_is_faded_out(pane_id, now) {
+                self.fading_frame_panes.remove(&pane_id);
+                continue;
+            }
+            tab.set_pane_frame_should_render(pane_id);
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Notification {
     id: u64,
     text: String,
     pane_id: Option<PaneId>,
-    /// `0.0` = hidden at the anchored edge (just inserted), `1.0` = fully slid into place.
-    /// Advances toward `0.0` instead once `dismissing` is set, and the notification is dropped
-    /// from the stack once it gets there. See `notification_reveal`.
-    horizontal_progress: f32,
-    /// Set once dismissal has been requested (by the timeout or otherwise); the notification stays
-    /// in the stack; sliding out, until `horizontal_progress` reaches `0.0`.
-    dismissing: bool,
+    /// `0.0` = hidden at the anchored edge, `1.0` = fully slid into place. Re-aimed at `0.0` on
+    /// dismissal, and the toast is dropped from the stack once it gets there. Drives the colour
+    /// fade as well as the column reveal, so the two cannot disagree about how far in it is.
+    reveal: Tween,
+    /// How many rows this toast is displaced from where the *current* stack says it belongs.
+    /// Always tweens to `0.0`; a stack change adds the number of rows the slot moved and re-aims
+    /// from there, so the painted row stays put while the target underneath it changes.
+    ///
+    /// A displacement rather than a position, because the settled position depends on the
+    /// viewport and clients do not share one - see `notification_layout`.
+    y_offset: Tween,
 }
 
 impl Notification {
-    fn new(id: u64, text: String, pane_id: Option<PaneId>) -> Self {
+    fn new(id: u64, text: String, pane_id: Option<PaneId>, now: Instant) -> Self {
         Notification {
             id,
             text,
             pane_id,
-            horizontal_progress: 0.0,
-            dismissing: false,
+            reveal: Tween::new(0.0, 1.0, ENTER_DURATION, ENTER_EASING, now),
+            y_offset: Tween::settled(0.0),
         }
+    }
+
+    /// Derived rather than stored: `reveal`'s target is the single source of truth for "is this on
+    /// its way out", so the two can never disagree.
+    fn is_dismissing(&self) -> bool {
+        self.reveal.target() <= 0.0
+    }
+
+    /// Finished sliding out - ready to be dropped from the stack.
+    fn is_gone(&self, now: Instant) -> bool {
+        self.is_dismissing() && self.reveal.is_settled(now)
+    }
+
+    fn is_settled(&self, now: Instant) -> bool {
+        self.reveal.is_settled(now) && self.y_offset.is_settled(now)
     }
 }
 
@@ -795,6 +956,9 @@ struct NotificationLayout<'a> {
     x: usize,
     y: usize,
     width: usize,
+    /// The toast's sampled reveal for this frame: `0.0` hidden, `1.0` fully in place. Drives both
+    /// the column clip below and the colour fade, sampled once so they cannot disagree.
+    reveal: f32,
     revealed_x: usize,
     visible_cols: usize,
 }
@@ -911,6 +1075,11 @@ impl Screen {
             active_tab_ids: BTreeMap::new(),
             client_sizes: HashMap::new(),
             last_surface_size: client_attributes.size,
+            unowned_strip_fill: HashMap::new(),
+            last_notification_fill: HashMap::new(),
+            fading_frame_panes: HashSet::new(),
+            animating_plugin_loads: HashSet::new(),
+            animation_clock: None,
             global_last_active_tab_id: 0,
             tabs: BTreeMap::new(),
             terminal_cwds: HashMap::new(),
@@ -930,8 +1099,6 @@ impl Screen {
             next_notification_id: 0,
             notification_position,
             notification_timeout_secs,
-            notification_stack_before_change: vec![],
-            notification_displacement_progress: 1.0,
             auto_layout,
             session_is_mirrored,
             copy_options,
@@ -1002,6 +1169,8 @@ impl Screen {
             last_mobile_state_sent: HashMap::new(),
             pane_output_activity: HashMap::new(),
             mobile_web_prefs: HashMap::new(),
+            #[cfg(test)]
+            pinned_now: None,
         }
     }
 
@@ -1558,6 +1727,9 @@ impl Screen {
         };
 
         self.active_tab_ids.insert(client_id, tab_index);
+        // a reattaching client id inherits a blank terminal, not the fill the last one was sent
+        self.unowned_strip_fill.remove(&client_id);
+        self.last_notification_fill.remove(&client_id);
         self.client_kitty_host_state.borrow_mut().remove(&client_id);
         self.connected_clients
             .borrow_mut()
@@ -1675,6 +1847,8 @@ impl Screen {
             self.push_sixel_host_support_to_tabs();
         }
         self.client_sizes.remove(&client_id);
+        self.unowned_strip_fill.remove(&client_id);
+        self.last_notification_fill.remove(&client_id);
         self.pane_render_subscribers.remove(&client_id);
         self.revert_fit_disabled_without_reference_client()
             .with_context(err_context)?;
@@ -3505,14 +3679,6 @@ fn replay_pending_plugin_events(
                 if !screen.start_plugin_loading_indication(plugin_id, loading_indication) {
                     log::error!(
                         "Could not replay pending loading indication for missing plugin {plugin_id}"
-                    );
-                }
-                screen.render(None)?;
-            },
-            ScreenInstruction::ProgressPluginLoadingOffset(plugin_id) => {
-                if !screen.progress_plugin_loading_offset(plugin_id) {
-                    log::error!(
-                        "Could not replay pending loading offset for missing plugin {plugin_id}"
                     );
                 }
                 screen.render(None)?;

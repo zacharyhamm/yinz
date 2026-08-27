@@ -21,20 +21,28 @@ fn toast_border_rows(zellij: &TestSession, what: &str, expected: usize) -> Vec<u
     wait_for_toasts(zellij, what, expected).0
 }
 
-/// How long the slide-in/displacement animation can take end to end - see
-/// `NOTIFICATION_ANIMATION_TICK_MS` and the progress-per-tick constants in `screen.rs`, which
-/// settle within a few hundred milliseconds. Comfortably rounded up for CI jitter.
-const NOTIFICATION_ANIMATION_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
+const TOAST_TOP_RIGHT_CORNER: &str = "\u{256e}";
+const TOAST_BOTTOM_RIGHT_CORNER: &str = "\u{256f}";
 
 /// The `(top border rows, bottom border rows)` of the toasts on screen once there are `expected` of
-/// them. Both are top-to-bottom, so a toast's own height is the difference between the two at the
-/// same index - which is only worth asking now that toasts are not all the same height.
+/// them and they have stopped moving. Both are top-to-bottom, so a toast's own height is the
+/// difference between the two at the same index - which is worth asking now that toasts are not all
+/// the same height.
 ///
-/// Toasts now slide in and displace each other rather than snapping into place, so the frame where
-/// the count first reaches `expected` can still be mid-animation. Rather than polling for the
-/// layout to stop changing - the test harness's `wait_until` can re-run its predicate against an
-/// unchanged snapshot on a spurious wake, which would read as "settled" mid-animation - this just
-/// waits out the animation's known duration before reporting a position.
+/// "Stopped moving" is asserted on the *content* rather than waited out on a timer. A mid-animation
+/// stack is observably different from a settled one in two ways, both of which fall straight out of
+/// how the animation works:
+///
+/// - **Not fully revealed.** The slide is a column clip that pins the edge nearest the anchored
+///   corner, so a partly-revealed right-anchored toast has no `\u{256d}` and a left-anchored one has
+///   no `\u{256e}`. Counting all four corners catches either anchor.
+/// - **Not contiguous.** The stack has a gap or an overlap for exactly as long as a survivor is
+///   gliding into its new slot; closing that gap *is* the animation.
+///
+/// This deliberately replaces a `sleep` tied to the animation's own constants. A stability
+/// predicate ("the layout stopped changing") would be the wrong tool - it can read as settled on a
+/// spurious wake against an unchanged snapshot - but neither of the properties above can be true
+/// mid-animation, so there is nothing to race.
 fn wait_for_toasts(zellij: &TestSession, what: &str, expected: usize) -> (Vec<usize>, Vec<usize>) {
     let rows_with =
         |grid_snapshot: &zellij_integration_tests::GridSnapshot, marker: &str| -> Vec<usize> {
@@ -46,15 +54,46 @@ fn wait_for_toasts(zellij: &TestSession, what: &str, expected: usize) -> (Vec<us
                 .map(|(row, _)| row)
                 .collect()
         };
-    zellij.wait_until(what, |grid_snapshot| {
-        rows_with(grid_snapshot, TOAST_TOP_LEFT_CORNER).len() == expected
+    let snapshot = zellij.wait_until(what, |grid_snapshot| {
+        let tops = rows_with(grid_snapshot, TOAST_TOP_LEFT_CORNER);
+        let bottoms = rows_with(grid_snapshot, TOAST_BOTTOM_LEFT_CORNER);
+        tops.len() == expected
+            && bottoms.len() == expected
+            && rows_with(grid_snapshot, TOAST_TOP_RIGHT_CORNER).len() == expected
+            && rows_with(grid_snapshot, TOAST_BOTTOM_RIGHT_CORNER).len() == expected
+            && stack_is_contiguous(&tops, &bottoms)
     });
-    std::thread::sleep(NOTIFICATION_ANIMATION_SETTLE);
-    let snapshot = zellij.snapshot();
     (
         rows_with(&snapshot, TOAST_TOP_LEFT_CORNER),
         rows_with(&snapshot, TOAST_BOTTOM_LEFT_CORNER),
     )
+}
+
+/// Whether `grid_snapshot` shows a toast that has finished sliding in.
+///
+/// The slide is a column clip that pins the edge nearest the anchored corner, so a right-anchored
+/// toast draws its text before it draws its left border. A test that waits only for the text and
+/// then looks for `\u{256d}` is racing the reveal - it has to wait for the far edge too.
+fn a_toast_is_fully_revealed(grid_snapshot: &zellij_integration_tests::GridSnapshot) -> bool {
+    [
+        TOAST_TOP_LEFT_CORNER,
+        TOAST_TOP_RIGHT_CORNER,
+        TOAST_BOTTOM_LEFT_CORNER,
+        TOAST_BOTTOM_RIGHT_CORNER,
+    ]
+    .iter()
+    .all(|corner| grid_snapshot.contains(corner))
+}
+
+/// Whether the stack has neither a gap nor an overlap: every toast's bottom border is the row
+/// immediately above the next one's top border. A stack mid-glide has one or the other.
+fn stack_is_contiguous(tops: &[usize], bottoms: &[usize]) -> bool {
+    tops.windows(2).zip(bottoms).all(|(pair, bottom)| {
+        let [_, next_top] = pair else {
+            return true;
+        };
+        *bottom + 1 == *next_top
+    })
 }
 
 #[test]
@@ -345,7 +384,7 @@ fn notification_text_past_the_row_cap_is_truncated_rather_than_overflowing() {
     notify(&zellij, &message);
 
     let snapshot = zellij.wait_until("truncated notification is drawn", |grid_snapshot| {
-        grid_snapshot.contains("…")
+        grid_snapshot.contains("…") && a_toast_is_fully_revealed(grid_snapshot)
     });
     assert!(
         !snapshot.contains("well past the last row"),
@@ -373,7 +412,9 @@ fn multi_line_notification_text_wraps_into_a_taller_box() {
     notify(&zellij, "hocus needs confirmation\n  pane_id: 3");
 
     let snapshot = zellij.wait_until("both rows of the message are drawn", |grid_snapshot| {
-        grid_snapshot.contains("hocus needs confirmation") && grid_snapshot.contains("pane_id: 3")
+        grid_snapshot.contains("hocus needs confirmation")
+            && grid_snapshot.contains("pane_id: 3")
+            && a_toast_is_fully_revealed(grid_snapshot)
     });
     let lines = snapshot.lines();
     let top = lines

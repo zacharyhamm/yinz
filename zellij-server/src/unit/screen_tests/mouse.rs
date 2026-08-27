@@ -1,7 +1,18 @@
 use super::*;
 use crate::screen::Notification;
-use crate::ui::notification::notification_width;
+use crate::ui::notification::{notification_height, notification_width};
+use std::time::Instant;
 use zellij_test_support::Watched;
+use zellij_utils::animation::Tween;
+
+/// A toast that has finished arriving and is sitting still, which is what every hit-test below
+/// wants: the animation is not under test here, the geometry is.
+fn settled_notification(id: u64, text: &str, pane_id: PaneId) -> Notification {
+    let mut notification = Notification::new(id, text.to_owned(), Some(pane_id), Instant::now());
+    notification.reveal = Tween::settled(1.0);
+    notification.y_offset = Tween::settled(0.0);
+    notification
+}
 
 #[test]
 fn clicking_a_pane_notification_focuses_its_pane_and_dismisses_it() {
@@ -22,10 +33,9 @@ fn clicking_a_pane_notification_focuses_its_pane_and_dismisses_it() {
     screen.go_to_tab(2, client_id).expect("TEST");
 
     let text = "agent idle";
-    let mut notification = Notification::new(0, text.to_owned(), Some(PaneId::Terminal(1)));
-    notification.horizontal_progress = 1.0;
-    screen.notifications.push(notification);
-    screen.notification_displacement_progress = 1.0;
+    screen
+        .notifications
+        .push(settled_notification(0, text, PaneId::Terminal(1)));
     let width = notification_width(text, size.cols).expect("notification fits");
     let x = size.cols - width - 1;
 
@@ -39,7 +49,7 @@ fn clicking_a_pane_notification_focuses_its_pane_and_dismisses_it() {
         screen.get_active_pane_id(&client_id),
         Some(PaneId::Terminal(1))
     );
-    assert!(screen.notifications[0].dismissing);
+    assert!(screen.notifications[0].is_dismissing());
     pty_writer_rx.try_iter().for_each(drop);
 
     let pane_position = Position::new(5, 5);
@@ -63,10 +73,9 @@ fn clicking_a_stale_pane_notification_dismisses_it_without_moving_focus() {
     let focused_before = screen.get_active_pane_id(&client_id);
 
     let text = "gone";
-    let mut notification = Notification::new(0, text.to_owned(), Some(PaneId::Terminal(99)));
-    notification.horizontal_progress = 1.0;
-    screen.notifications.push(notification);
-    screen.notification_displacement_progress = 1.0;
+    screen
+        .notifications
+        .push(settled_notification(0, text, PaneId::Terminal(99)));
     let width = notification_width(text, size.cols).expect("notification fits");
     let x = size.cols - width - 1;
 
@@ -76,7 +85,7 @@ fn clicking_a_stale_pane_notification_dismisses_it_without_moving_focus() {
     );
 
     assert_eq!(screen.get_active_pane_id(&client_id), focused_before);
-    assert!(screen.notifications[0].dismissing);
+    assert!(screen.notifications[0].is_dismissing());
 }
 
 #[test]
@@ -89,13 +98,19 @@ fn clicking_overlapping_pane_notifications_uses_paint_order() {
     screen.go_to_tab(2, client_id).expect("TEST");
 
     let text = "agent idle";
-    let mut older = Notification::new(0, text.to_owned(), Some(PaneId::Terminal(1)));
-    older.horizontal_progress = 1.0;
-    let mut newer = Notification::new(1, text.to_owned(), Some(PaneId::Terminal(2)));
-    newer.horizontal_progress = 1.0;
-    screen.notification_stack_before_change.push(older.clone());
+    let newer = settled_notification(1, text, PaneId::Terminal(2));
+    let mut older = settled_notification(0, text, PaneId::Terminal(1));
+    // mid-glide: the older toast has just been pushed away from the corner and has not yet
+    // travelled, so it is still sitting on top of the newer one. Whichever paints last wins the
+    // click, and the newer one paints last.
+    older.y_offset = Tween::new(
+        -(notification_height(1) as f32),
+        0.0,
+        std::time::Duration::from_millis(220),
+        zellij_utils::animation::Easing::EaseOut,
+        Instant::now(),
+    );
     screen.notifications.extend([newer, older]);
-    screen.notification_displacement_progress = 0.0;
     let width = notification_width(text, size.cols).expect("notification fits");
     let x = size.cols - width - 1;
 
@@ -108,8 +123,8 @@ fn clicking_overlapping_pane_notifications_uses_paint_order() {
         screen.get_active_pane_id(&client_id),
         Some(PaneId::Terminal(1))
     );
-    assert!(!screen.notifications[0].dismissing);
-    assert!(screen.notifications[1].dismissing);
+    assert!(!screen.notifications[0].is_dismissing());
+    assert!(screen.notifications[1].is_dismissing());
 }
 
 #[test]

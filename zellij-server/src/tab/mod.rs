@@ -20,6 +20,7 @@ mod mouse_handler;
 mod swap_layouts;
 
 use crate::plugins::PluginId;
+use crate::ui::damage::CellRect;
 use copy_command::CopyCommand;
 pub use mouse_handler::{MouseEffect, MouseHandler, PaneEdge, PaneResizeState, ResizeDragTarget};
 use std::env::temp_dir;
@@ -800,12 +801,33 @@ pub trait Pane {
         _client_id: Option<ClientId>,
     ) {
     }
+    /// Put up a bell flash: the same highlight colour, but easing back out on its own rather than
+    /// waiting to be cleared. Every client sees it, because a bell is a fact about the pane.
+    fn flash_pane_frame_color_override(&mut self, _now: Instant) {}
+    /// Whether a fading frame override has reached the end of its fade. `true` when there is
+    /// nothing fading, so a caller can stop asking for frames.
+    fn frame_color_override_strength_is_settled(&self, _now: Instant) -> bool {
+        true
+    }
     /// Take the override down. `None` clears whatever is there; a client only
     /// clears an override that was put up for that same client.
     fn clear_pane_frame_color_override(&mut self, _client_id: Option<ClientId>);
     /// The override colour as `client_id` sees it - `None` when there is no
     /// override, or when the one there is drawn for somebody else.
     fn frame_color_override(&self, _client_id: ClientId) -> Option<PaletteColor>;
+    /// How strongly `frame_color_override` applies right now: `1.0` unless it is fading out.
+    ///
+    /// Separate from the colour rather than folded into it because only the *consumer* knows what
+    /// a fading override should blend towards - see `ui::pane_contents_and_ui::frame_color`.
+    ///
+    /// This reads the clock itself rather than taking the frame's instant, which is the one place
+    /// the "sample once per frame" rule is relaxed. Threading `now` down to here would mean
+    /// changing every frame- and boundary-drawing signature in the render for a value that is a
+    /// display detail and at most a fraction of a millisecond stale. The bell fade is driven and
+    /// tested through `FrameColorOverride::strength(now)`, which does take an instant.
+    fn frame_color_override_strength(&self, _client_id: ClientId) -> f32 {
+        1.0
+    }
     fn invoked_with(&self) -> &Option<Run>;
     fn set_notification_end(&mut self, _notification_end: Option<NotificationEnd>) {}
     fn set_title(&mut self, title: String);
@@ -5125,6 +5147,20 @@ impl Tab {
             }
         }
     }
+
+    /// Repaint only the panes overlapping `damage`.
+    ///
+    /// The narrowed twin of `set_force_render` above, for the cells an overlay - a toast - stopped
+    /// covering as it moved. Suppressed stack members are deliberately left out: they are not on
+    /// screen, so nothing can have been uncovered over them.
+    pub fn force_render_panes_intersecting(&mut self, damage: &[CellRect]) {
+        if damage.is_empty() {
+            return;
+        }
+        self.tiled_panes.force_render_panes_intersecting(damage);
+        self.floating_panes.force_render_panes_intersecting(damage);
+        self.overlay_panes.force_render_panes_intersecting(damage);
+    }
     pub fn pane_is_overlay(&self, pane_id: PaneId) -> bool {
         self.overlay_panes.panes_contain(&pane_id)
     }
@@ -7519,6 +7555,55 @@ impl Tab {
             })
         {
             pane.add_highlight_pane_frame_color_override(error_text, client_id);
+        }
+    }
+
+    /// Whether `pane_id`'s frame override has finished fading, so the caller can stop asking for
+    /// frames on its behalf. A pane that is not here has nothing fading.
+    pub fn frame_color_override_is_faded_out(&self, pane_id: PaneId, now: Instant) -> bool {
+        self.tiled_panes
+            .get_pane(pane_id)
+            .or_else(|| self.floating_panes.get_pane(pane_id))
+            .or_else(|| self.overlay_panes.get_pane(pane_id))
+            .map(|pane| pane.frame_color_override_strength_is_settled(now))
+            .unwrap_or(true)
+    }
+
+    /// Mark `pane_id`'s frame and boundaries for repaint without touching its contents.
+    pub fn set_pane_frame_should_render(&mut self, pane_id: PaneId) {
+        if let Some(pane) = self
+            .tiled_panes
+            .get_pane_mut(pane_id)
+            .or_else(|| self.floating_panes.get_pane_mut(pane_id))
+            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
+        {
+            pane.set_should_render(true);
+            pane.set_should_render_boundaries(true);
+        }
+    }
+
+    /// Start a bell flash on `pane_id`. See `Pane::flash_pane_frame_color_override`.
+    ///
+    /// Returns whether the pane was found, so the caller knows whether to keep asking for frames
+    /// while the flash fades.
+    pub fn flash_pane_frame_color_override(&mut self, pane_id: PaneId, now: Instant) -> bool {
+        if let Some(pane) = self
+            .tiled_panes
+            .get_pane_mut(pane_id)
+            .or_else(|| self.floating_panes.get_pane_mut(pane_id))
+            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
+            .or_else(|| {
+                self.suppressed_panes
+                    .get_mut(&pane_id)
+                    .map(|s_p| &mut s_p.pane)
+            })
+        {
+            pane.flash_pane_frame_color_override(now);
+            pane.set_should_render(true);
+            pane.set_should_render_boundaries(true);
+            true
+        } else {
+            false
         }
     }
     pub fn clear_pane_frame_color_override(

@@ -213,7 +213,6 @@ impl Screen {
     fn move_overlay_panes_from_closed_tab(
         &mut self,
         overlay_panes: Vec<(ExtractedPanePlacement, Box<dyn Pane>)>,
-        closed_tab_id: usize,
         client: Option<ClientId>,
     ) {
         if overlay_panes.is_empty() {
@@ -256,19 +255,6 @@ impl Screen {
         }
         for pane_id in homeless {
             self.close_homeless_pane(pane_id);
-        }
-
-        // A client that was on a global pane when an overlay took the keyboard has its old focus
-        // parked in `suspended_global_focus`, keyed by *the tab the overlay is on* - which is what
-        // `take_global_focus_after_overlay_close` looks the entry up by. The overlay is on a
-        // different tab now, so without this the lookup misses and the client never gets its
-        // global pane back when hocus is finally put away.
-        if let Some(destination_tab_id) = destination_tab_id {
-            for (saved_tab, _) in self.suspended_global_focus.values_mut() {
-                if *saved_tab == closed_tab_id {
-                    *saved_tab = destination_tab_id;
-                }
-            }
         }
     }
 
@@ -648,7 +634,7 @@ impl Screen {
             // After the clients, which is what wrote `overlay_client`'s destination into
             // `active_tab_ids`, and before the resize and the state report below, so the tab they
             // land in is measured and announced with them already in it.
-            self.move_overlay_panes_from_closed_tab(overlay_panes, tab_id, overlay_client);
+            self.move_overlay_panes_from_closed_tab(overlay_panes, overlay_client);
             let visible_tab_indices: HashSet<usize> =
                 self.active_tab_ids.values().copied().collect();
             for t in self.tabs.values_mut() {

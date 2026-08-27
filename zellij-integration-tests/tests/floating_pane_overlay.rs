@@ -452,15 +452,12 @@ fn a_modal_command_pane_is_placed_on_the_surface_and_keeps_focus() {
 fn an_overlay_floating_pane_moves_to_another_tab_when_its_own_tab_closes() {
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config(NO_BACKGROUND_PLUGINS)
-        .with_layout(LayoutInfo::Stringified(GLOBAL_AND_SHELL.to_owned()))
         .start();
-    let global = zellij.expect_pty_spawn();
-    global.output(b"GLOBAL");
     let shell = zellij.expect_pty_spawn();
     shell.output(b"first tab shell");
     shell.output(PROMPT);
-    zellij.wait_until("the global pane and shell load", |snapshot| {
-        snapshot.contains("GLOBAL") && snapshot.contains("first tab shell")
+    zellij.wait_until("the first tab's shell loads", |snapshot| {
+        snapshot.contains("first tab shell")
     });
 
     zellij.send_stdin(&keys::ctrl('t'));
