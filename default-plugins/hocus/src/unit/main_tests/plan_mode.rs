@@ -8,6 +8,18 @@ fn planning_state() -> State {
     }
 }
 
+/// A settled chat with a usable config: what an idle hocus looks like to
+/// something typed into it. `ready_state` is mid-stream, so a prompt sent
+/// against it would queue rather than go out.
+fn idle_state() -> State {
+    State {
+        stream: None,
+        reply_at: None,
+        messages: Vec::new(),
+        ..ready_state()
+    }
+}
+
 /// A settled plain reply, which is what a finished plan looks like.
 fn reply_and_settle(state: &mut State, text: &str) {
     let frame = format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"{text}\"}}}}]}}\n");
@@ -15,42 +27,123 @@ fn reply_and_settle(state: &mut State, text: &str) {
     state.on_chunk("hocus-1", b"", true, None);
 }
 
-// -- the toggle ---------------------------------------------------------
+// -- entering the mode --------------------------------------------------
 
-/// `/plan` drives the plugin, not the conversation: nothing is sent, and it is
-/// not run as a tool named `plan`.
+/// `/plan` is a mode switch *and* a question in one. Without the question there
+/// is nothing to switch for, so a bare `/plan` is an error rather than a silent
+/// change to what the next message will be allowed to do.
 #[test]
-fn slash_plan_toggles_the_mode_without_sending_anything() {
-    let mut state = State::default();
+fn slash_plan_requires_a_prompt() {
+    let mut state = idle_state();
     state.input.set_text("/plan".to_owned());
     state.submit();
 
-    assert!(state.is_planning());
-    assert!(state.stream.is_none(), "nothing was sent");
+    assert!(matches!(state.plan, Plan::Off), "the mode did not change");
     assert!(
         state.messages.iter().all(|m| m.tool_calls.is_empty()),
         "no tool was run",
     );
-    assert_eq!(state.messages.last().unwrap().role, Role::Notice);
-
-    state.input.set_text("/plan".to_owned());
-    state.submit();
-    assert!(matches!(state.plan, Plan::Off), "the second one leaves");
+    assert!(
+        !state.messages.iter().any(|m| m.role == Role::User),
+        "nothing was sent",
+    );
+    assert_eq!(state.messages.last().unwrap().role, Role::Error);
 }
 
-/// `/plan off` must not fall through to `parse_command` and be answered with
-/// "no such tool: plan".
+/// The whole point of the command: one submit both enters the mode and asks the
+/// question inside it.
 #[test]
-fn the_explicit_forms_are_idempotent() {
-    let mut state = State::default();
-    for line in ["/plan on", "/plan on", "/plan off", "/plan off"] {
+fn slash_plan_enters_the_mode_and_sends_the_prompt() {
+    let mut state = idle_state();
+    state
+        .input
+        .set_text("/plan summarise the render path".to_owned());
+    state.submit();
+
+    assert!(state.is_planning());
+    assert!(
+        state.messages.iter().all(|m| m.tool_calls.is_empty()),
+        "`plan` was never taken for a tool",
+    );
+    let last_user = state
+        .messages
+        .iter()
+        .rfind(|message| message.role == Role::User)
+        .expect("the prompt went out as a user turn");
+    assert_eq!(last_user.content, "summarise the render path");
+}
+
+/// `/plan on` and `/plan off` were the old toggle. They must not fall through to
+/// `parse_command` and be answered "no such tool: plan" — and now that the rest
+/// of the line is a prompt, they must not be sent to the model as one-word
+/// planning questions either.
+#[test]
+fn on_and_off_are_errors_not_prompts() {
+    let mut state = idle_state();
+    for line in ["/plan on", "/plan off"] {
         state.input.set_text(line.to_owned());
         state.submit();
+        assert_eq!(
+            state.messages.last().unwrap().role,
+            Role::Error,
+            "{line} was refused",
+        );
     }
     assert!(matches!(state.plan, Plan::Off));
     assert!(
         state.messages.iter().all(|m| m.tool_calls.is_empty()),
         "`plan` was never taken for a tool",
+    );
+    assert!(
+        !state.messages.iter().any(|m| m.role == Role::User),
+        "neither word reached the model",
+    );
+}
+
+/// Re-entering is just the next planning turn, which is what makes `/plan` usable
+/// as a prefix on a correction. No second "planning mode on".
+#[test]
+fn slash_plan_while_planning_only_sends() {
+    let mut state = State {
+        plan: Plan::Planning,
+        ..idle_state()
+    };
+    state
+        .input
+        .set_text("/plan also check the tab bar".to_owned());
+    state.submit();
+
+    assert!(state.is_planning());
+    assert!(
+        !state
+            .messages
+            .iter()
+            .any(|m| m.content.starts_with("planning mode on")),
+        "the mode did not announce itself again",
+    );
+    let last_user = state
+        .messages
+        .iter()
+        .rfind(|message| message.role == Role::User)
+        .expect("the prompt went out");
+    assert_eq!(last_user.content, "also check the tab bar");
+}
+
+/// The prompt half of `/plan` is an ordinary message, so it waits its turn behind
+/// an arriving reply rather than opening a second stream.
+#[test]
+fn a_plan_prompt_queues_behind_an_arriving_reply() {
+    let mut state = ready_state();
+    state
+        .input
+        .set_text("/plan work out an approach".to_owned());
+    state.submit();
+
+    assert!(state.is_planning(), "the mode is on straight away");
+    assert_eq!(
+        state.asks.iter().collect::<Vec<_>>(),
+        vec!["work out an approach"],
+        "the question queued",
     );
 }
 
@@ -64,7 +157,9 @@ fn switching_to_planning_declines_a_pending_call() {
     state.on_chunk("hocus-1", b"", true, None);
     assert!(matches!(state.status, Status::ConfirmingTool));
 
-    state.input.set_text("/plan".to_owned());
+    state
+        .input
+        .set_text("/plan work out an approach".to_owned());
     state.submit();
 
     assert!(state.is_planning());
@@ -98,7 +193,9 @@ fn the_follow_up_after_that_decline_is_already_a_planning_request() {
     state.messages.push(Message::tool_calls(calls.clone()));
     state.pending.extend(calls);
 
-    state.input.set_text("/plan".to_owned());
+    state
+        .input
+        .set_text("/plan work out an approach".to_owned());
     state.submit();
 
     assert!(state.is_planning());
@@ -192,11 +289,12 @@ fn a_turn_that_ended_in_tool_calls_keeps_planning() {
 /// the way out, which would leave two assistant turns in a row and nothing
 /// asking for the second.
 #[test]
-fn y_leaves_the_mode_and_carries_the_plan_out() {
+fn execute_leaves_the_mode_and_carries_the_plan_out() {
     let mut state = planning_state();
     state.tool_rounds = 4;
     reply_and_settle(&mut state, "The plan.");
-    state.approve_plan();
+    state.input.set_text("/execute".to_owned());
+    state.submit();
 
     assert!(matches!(state.plan, Plan::Off));
     assert_eq!(state.tool_rounds, 0, "execution gets its own budget");
@@ -205,7 +303,59 @@ fn y_leaves_the_mode_and_carries_the_plan_out() {
         .iter()
         .rfind(|message| message.role == Role::User)
         .expect("the approval is a user turn");
-    assert!(last_user.content.contains("Carry out the plan"));
+    assert_eq!(
+        last_user.content,
+        "Approved. Carry out the plan you just wrote."
+    );
+}
+
+/// Trailing text is an amendment to the approval, not a turn of its own — the
+/// model must not be handed "carry it out" and "but not like that" separately.
+#[test]
+fn execute_carries_a_trailing_amendment() {
+    let mut state = planning_state();
+    reply_and_settle(&mut state, "The plan.");
+    state
+        .input
+        .set_text("/execute skip the migration step".to_owned());
+    state.submit();
+
+    assert!(matches!(state.plan, Plan::Off));
+    let users: Vec<&str> = state
+        .messages
+        .iter()
+        .filter(|message| message.role == Role::User)
+        .map(|message| message.content.as_str())
+        .collect();
+    assert_eq!(
+        users.last().copied(),
+        Some("Approved. Carry out the plan you just wrote. skip the migration step"),
+    );
+}
+
+/// Mid-research there is no plan to carry out yet, and outside the mode there was
+/// never one. Both are errors rather than a request going out on their own.
+#[test]
+fn execute_without_a_waiting_plan_is_an_error() {
+    for (plan, planning) in [(Plan::Planning, true), (Plan::Off, false)] {
+        let mut state = State {
+            plan,
+            ..idle_state()
+        };
+        state.input.set_text("/execute".to_owned());
+        state.submit();
+
+        assert_eq!(
+            state.plan_mode_on(),
+            planning,
+            "the mode was left exactly as it was",
+        );
+        assert_eq!(state.messages.last().unwrap().role, Role::Error);
+        assert!(
+            !state.messages.iter().any(|m| m.role == Role::User),
+            "nothing was sent",
+        );
+    }
 }
 
 #[test]
@@ -319,25 +469,44 @@ fn a_parked_chat_keeps_its_mode() {
     assert!(state.awaiting_plan(), "and it comes back asking");
 }
 
-/// A `y`/`n` typed as the start of a correction must reach the input box, not
-/// be read as an answer to the approval prompt.
+/// `y` no longer answers a plan — `/execute` does — so it is always typing,
+/// whether or not the box already holds a correction.
 #[test]
-fn ynot_composing_feedback_is_not_approval() {
+fn y_is_typed_rather_than_read_as_approval() {
     let mut state = planning_state();
     reply_and_settle(&mut state, "The plan.");
-    state.input.set_text("you should reconsider".to_owned());
 
     state.on_key(KeyWithModifier::new(BareKey::Char('y')));
-
     assert!(
         state.awaiting_plan(),
         "the plan is still waiting, not approved out from under the user",
     );
+    assert_eq!(state.input.get_text(), "y", "even on an empty box");
+
+    state.input.set_text("you should reconsider".to_owned());
+    state.on_key(KeyWithModifier::new(BareKey::Char('y')));
+    assert!(state.awaiting_plan());
     assert_eq!(
         state.input.get_text(),
         "you should reconsidery",
         "the keystroke reached the editor rather than being swallowed"
     );
+}
+
+/// `n` still keeps refining, and still only on an empty box: with a correction
+/// half typed it is a letter, not an answer.
+#[test]
+fn n_answers_the_plan_only_on_an_empty_box() {
+    let mut state = planning_state();
+    reply_and_settle(&mut state, "The plan.");
+    state.input.set_text("no, because".to_owned());
+    state.on_key(KeyWithModifier::new(BareKey::Char('n')));
+    assert!(state.awaiting_plan(), "the letter was typed, not an answer");
+
+    state.input.set_text(String::new());
+    state.on_key(KeyWithModifier::new(BareKey::Char('n')));
+    assert!(state.is_planning(), "back to refining");
+    assert!(!state.awaiting_plan());
 }
 
 /// Pressing Enter on an empty box while a plan awaits approval must leave the

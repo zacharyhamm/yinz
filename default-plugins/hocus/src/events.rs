@@ -351,9 +351,10 @@ impl State {
         // would otherwise be typed into the input box.
         if (self.is_confirming() || self.awaiting_plan()) && key.has_no_modifiers() {
             let confirming = self.is_confirming();
-            // The plan arms only fire on an empty box: with text already typed,
-            // y/n is the start of a correction and must reach the editor instead
-            // of being read as an answer to the approval prompt.
+            // The plan arm only fires on an empty box: with text already typed,
+            // `n` is the start of a correction and must reach the editor instead
+            // of being read as an answer to the approval prompt. `y` no longer
+            // answers a plan at all — `/execute` does — so it is always typing.
             let input_is_empty = self.input.get_text().trim().is_empty();
             match key.bare_key {
                 BareKey::Char('y') | BareKey::Char('Y') if confirming => {
@@ -361,9 +362,6 @@ impl State {
                 },
                 BareKey::Char('n') | BareKey::Char('N') if confirming => {
                     return self.decline_tool()
-                },
-                BareKey::Char('y') | BareKey::Char('Y') if input_is_empty => {
-                    return self.approve_plan()
                 },
                 BareKey::Char('n') | BareKey::Char('N') if input_is_empty => {
                     return self.decline_plan()
@@ -503,10 +501,14 @@ impl State {
         // plugin rather than the conversation, so neither an API key nor a
         // settled reply is any of its business. `run_manual` turns away the one
         // kind that does conflict — another tool already running.
+        if self.input.get_text().trim_start().starts_with('/') {
+            let line = self.drain_input();
+            return self.run_manual(&line);
+        }
         // Typing at a plan is how you correct one, so whatever comes next is the
-        // answer to the question and the question stops being asked. Ahead of
-        // the slash check too: `/plan` reads the mode, and it must not still see
-        // an approval outstanding.
+        // answer to the question and the question stops being asked. *Below* the
+        // slash check: `/execute` is the approval and has to find the plan still
+        // waiting, and `/plan` sets the mode for itself either way.
         if self.awaiting_plan() {
             // An empty Enter is not a correction — leave the prompt up rather
             // than silently dropping the approval with nothing recorded.
@@ -516,12 +518,21 @@ impl State {
             }
             self.plan = Plan::Planning;
         }
-        if self.input.get_text().trim_start().starts_with('/') {
-            let line = self.drain_input();
-            return self.run_manual(&line);
-        }
+        let text = self.drain_input();
+        self.send_user_text(text)
+    }
+
+    /// Everything `submit` does once the text is known to be a message rather
+    /// than a command: queue it behind an arriving reply, or start a request for
+    /// it. Shared with `/plan <prompt>`, which is a mode switch and a question in
+    /// one and so has to reach exactly this path.
+    ///
+    /// The text has already left the input box, so the two branches that refuse
+    /// to send it put it back rather than swallow what was typed.
+    pub(crate) fn send_user_text(&mut self, mut text: String) -> bool {
         // Cloned rather than borrowed so the transcript can be mutated below.
         let Ok(cfg) = self.cfg.clone() else {
+            self.input.set_text(text);
             return false;
         };
 
@@ -533,10 +544,10 @@ impl State {
                 let notice = "the question queue is full — the input was not sent";
                 self.messages.push(Message::notice(notice));
                 self.log("notice", serde_json::json!({"content": notice}));
+                self.input.set_text(text);
                 self.pin_to_bottom();
                 return true;
             }
-            let text = self.drain_input();
             if text.trim().is_empty() {
                 return true;
             }
@@ -552,7 +563,6 @@ impl State {
             return true;
         }
 
-        let mut text = self.drain_input();
         if text.trim().is_empty() {
             // Whitespace-only: the input was still drained, so redraw.
             return true;
@@ -909,7 +919,7 @@ impl State {
                             // The sidebar is very often not what is being looked
                             // at — the same reason `pump_tools` toasts its own
                             // y/n rather than trusting the pane to be on screen.
-                            notify("hocus has a plan — y to carry it out");
+                            notify("hocus has a plan — /execute to carry it out");
                         }
                     }
                 },
