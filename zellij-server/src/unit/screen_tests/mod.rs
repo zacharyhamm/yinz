@@ -1536,6 +1536,25 @@ fn open_floating_pane(
         .expect("TEST");
 }
 
+/// Like `render_frame_into`, but also reports where the frame left the terminal's cursor.
+///
+/// Read off the replayed grid rather than out of the render instructions, because that is the only
+/// faithful way to ask: `serialize_chunks` writes an absolute goto per character chunk, so where
+/// the cursor ends up is a property of the whole frame and not just of the post-VTE instructions
+/// `Tab::render_cursor` adds.
+fn render_frame_and_cursor_into(
+    screen: &mut Screen,
+    receiver: &channels::Receiver<(ServerInstruction, ErrorContext)>,
+    client_id: ClientId,
+    grid: &mut Grid,
+) -> (Option<(usize, usize)>, String) {
+    let snapshot = render_frame_into(screen, receiver, client_id, grid);
+    let cursor = grid
+        .cursor_coordinates()
+        .and_then(|(x, y, visible)| if visible { Some((x, y)) } else { None });
+    (cursor, snapshot)
+}
+
 fn render_frame_into(
     screen: &mut Screen,
     receiver: &channels::Receiver<(ServerInstruction, ErrorContext)>,

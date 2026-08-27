@@ -3,6 +3,7 @@
 use std::collections::VecDeque;
 
 use crate::panes::Row;
+use crate::ui::damage::CellRect;
 
 use crate::panes::Selection;
 use crate::{
@@ -657,6 +658,10 @@ pub struct Output {
     // against whichever client happened to render last
     cursor_coordinates: HashMap<ClientId, (usize, usize)>,
     clients_with_hidden_cursor: HashSet<ClientId>,
+    // what the session's toasts paint over this frame. they are not panes and so are not in
+    // `floating_panes_stack`, but they are drawn above everything and must occlude the cursor the
+    // same way a floating pane does
+    notification_rects: Vec<CellRect>,
 }
 
 impl Output {
@@ -1113,12 +1118,28 @@ impl Output {
         self.cursor_coordinates
             .insert(client_id, (cursor_x, cursor_y));
     }
+    /// Where the session's toasts paint this frame, in absolute session coordinates.
+    ///
+    /// Set once for the whole frame, before anything renders, so both the real cursor and the fake
+    /// cursors standing in for other clients are tested against the same geometry - and so a fake
+    /// cursor, which is a post-VTE instruction and would otherwise be drawn *after* the toast's
+    /// own cells, is not painted on top of the box.
+    pub fn set_notification_rects(&mut self, notification_rects: Vec<CellRect>) {
+        self.notification_rects = notification_rects;
+    }
     pub fn cursor_is_visible(
         &self,
         cursor_x: usize,
         cursor_y: usize,
         z_index: Option<usize>,
     ) -> bool {
+        if self
+            .notification_rects
+            .iter()
+            .any(|rect| rect.contains(cursor_x, cursor_y))
+        {
+            return false;
+        }
         self.floating_panes_stack
             .as_ref()
             .map(|s| s.cursor_is_visible(cursor_x, cursor_y, z_index))

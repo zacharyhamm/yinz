@@ -1,7 +1,7 @@
 #![cfg(unix)]
 
 use zellij_integration_tests::{
-    claim_first_terminal_and_wait_for_prompt, keys, start_zellij, TestRunner, TestSession,
+    claim_first_terminal_and_wait_for_prompt, col, keys, start_zellij, TestRunner, TestSession,
     TERMINAL_SIZE,
 };
 use zellij_utils::cli::CliAction;
@@ -498,6 +498,34 @@ fn a_tall_toast_at_a_bottom_corner_still_ends_on_the_last_viewport_row() {
         "and it is five rows tall, got tops {:?} bottoms {:?}",
         tops,
         bottoms
+    );
+
+    zellij.quit();
+}
+
+/// A toast repaints itself on every frame of its slide, and on those frames nothing underneath it
+/// is dirty - so the frame's only content is the toast's own chunks, each preceded by an absolute
+/// goto. The cursor used to be left at the end of the last one, blinking in the bottom-right of the
+/// box, because the frame decided it had nothing to re-place and emitted no goto at all.
+#[test]
+fn a_notification_does_not_steal_the_cursor() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config("notification_position \"top-right\"\nnotification_timeout 30")
+        .start();
+    // asserts the prompt's cursor is at col(2).row(1) to begin with
+    claim_first_terminal_and_wait_for_prompt(&zellij);
+
+    notify(&zellij, "build finished");
+
+    // the toast settles and the animation clock stops, so a frame that misplaced the cursor is
+    // the last word on where it is - nothing comes along afterwards to correct it
+    zellij.wait_until(
+        "toast is up and the cursor stayed on the prompt",
+        |snapshot| {
+            a_toast_is_fully_revealed(snapshot)
+                && snapshot.contains("build finished")
+                && snapshot.cursor_is_at(col(2).row(1))
+        },
     );
 
     zellij.quit();
