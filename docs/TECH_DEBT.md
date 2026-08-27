@@ -466,3 +466,19 @@ it measures the tests rather than a transcription of them. Prefer that shape for
   (`zellij-server/src/plugins/zellij_exports.rs`, dispatch arm ~`:227`): the Lua loader already
   compiles the chunk, so returning the compile error synchronously is a small addition, and it
   would let a `plugin_check` tool close the write → check → fix loop without a pane in it.
+
+---
+
+## Note: global panes were removed
+
+The global-pane entries above are kept as history. The feature itself — session-global docked panes,
+`zellij-server/src/global_panes.rs`, `screen/global_pane_layout.rs`, `screen/global_pane_focus.rs`,
+the `global_panes` layout block, the `--global`/`--edge`/`--size` CLI flags and the
+`SetGlobalPanePlacement` / `LaunchOrFocusGlobalPaneSplit` plugin commands — was removed in full once
+hocus and the agent picker moved to the overlay layer. `docs/GLOBAL_PANE_SIZING_DEBT.md` went with
+it; the debt it tracked no longer exists because a tab's display area is again the whole session
+surface at origin (0, 0).
+
+The multi-client "smallest client wins" sizing rule that global panes forced is *not* gone:
+`Screen::session_size` and `Screen::tab_surface_size` still enforce it, and
+`screen_tests::sizing::resize_to_clients_keeps_every_tab_within_smallest_client_bounds` guards it.
