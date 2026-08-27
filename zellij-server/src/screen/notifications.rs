@@ -1,19 +1,22 @@
+use std::collections::BTreeMap;
+use std::time::Instant;
+
 use zellij_utils::errors::prelude::*;
 
-use super::{
-    NotificationLayout, Screen, NOTIFICATION_DISPLACEMENT_STEP,
-    NOTIFICATION_HORIZONTAL_PROGRESS_STEP,
-};
+use super::{NotificationLayout, Screen};
 use crate::background_jobs::BackgroundJob;
 use crate::output::Output;
 use crate::panes::PaneId;
+use crate::ui::damage::{overlay_damage, CellRect};
 use crate::ui::notification::{
-    lerp_origin, notification_chunks, notification_height, notification_lines,
-    notification_origins, notification_reveal, notification_reveal_bounds, notification_width,
+    notification_chunks, notification_height, notification_lines, notification_origins,
+    notification_reveal, notification_reveal_bounds, notification_width, settled_row_delta,
+    DISPLACE_DURATION, DISPLACE_EASING, DISPLACE_SPAN, EXIT_DURATION, EXIT_EASING,
 };
 use crate::ClientId;
+use zellij_utils::animation::scaled_duration;
 use zellij_utils::input::mouse::{MouseEvent, MouseEventType};
-use zellij_utils::pane_size::Viewport;
+use zellij_utils::pane_size::{Size, Viewport};
 use zellij_utils::position::Position;
 
 impl Screen {
@@ -30,14 +33,16 @@ impl Screen {
     /// the result, which is what keeps that honest; the wrapping is noise beside the chunk building
     /// already happening here, so it does not want a cache that would go stale on a resize.
     ///
-    /// Entering/exiting toasts slide in from - and back out to - the anchored corner
-    /// (`notification_reveal`, driven by each toast's own `horizontal_progress`), and while
-    /// `notification_displacement_progress` is still settling, survivors are lerped from where
-    /// they sat in `notification_stack_before_change` to where they sit now. Both the "before" and
-    /// "after" stacks are laid out fresh for whichever `viewport` this call was given - this can
-    /// run once per distinct client viewport in a frame - rather than trusting a stored row number
-    /// that might belong to a different-sized viewport.
-    fn notification_layout(&self, viewport: Viewport) -> Vec<NotificationLayout<'_>> {
+    /// Both animations are sampled at the caller's `now` rather than read from an accumulator, so
+    /// every client laid out in one frame sees the same instant. The settled origins are computed
+    /// fresh for whichever `viewport` this call was given - so a toast's resting place is exactly
+    /// right in every client's view, however their viewports differ - and each toast's
+    /// `y_offset` is added on top as a transient displacement that is on its way to zero.
+    pub(super) fn notification_layout(
+        &self,
+        viewport: Viewport,
+        now: Instant,
+    ) -> Vec<NotificationLayout<'_>> {
         let Some(width) = self
             .notifications
             .iter()
@@ -56,52 +61,28 @@ impl Screen {
             .map(|lines| notification_height(lines.len()))
             .collect();
         let origins = notification_origins(viewport, self.notification_position, &heights, width);
-        let before_origins = if self.notification_displacement_progress < 1.0 {
-            let before_heights: Vec<usize> = self
-                .notification_stack_before_change
-                .iter()
-                .map(|notification| {
-                    notification_height(notification_lines(&notification.text, width).len())
-                })
-                .collect();
-            notification_origins(viewport, self.notification_position, &before_heights, width)
-        } else {
-            vec![]
-        };
 
         self.notifications
             .iter()
             .zip(wrapped)
             .zip(origins)
             .map(|((notification, lines), (x, y))| {
-                let (x, y) = if self.notification_displacement_progress < 1.0 {
-                    self.notification_stack_before_change
-                        .iter()
-                        .position(|before| before.id == notification.id)
-                        .and_then(|index| before_origins.get(index))
-                        .map(|&before_origin| {
-                            lerp_origin(
-                                before_origin,
-                                (x, y),
-                                self.notification_displacement_progress,
-                            )
-                        })
-                        .unwrap_or((x, y))
-                } else {
-                    (x, y)
-                };
-                let (revealed_x, visible_cols) = notification_reveal_bounds(
-                    x,
-                    width,
-                    self.notification_position,
-                    notification.horizontal_progress,
-                );
+                // the displacement is signed and can point off the top of the viewport for a row
+                // or two mid-glide; clamp rather than wrap, or a `usize` underflow would paint the
+                // toast at the bottom of the screen
+                let y = (y as f32 + notification.y_offset.value(now))
+                    .round()
+                    .max(0.0) as usize;
+                let reveal = notification.reveal.value(now);
+                let (revealed_x, visible_cols) =
+                    notification_reveal_bounds(x, width, self.notification_position, reveal);
                 NotificationLayout {
                     notification,
                     lines,
                     x,
                     y,
                     width,
+                    reveal,
                     revealed_x,
                     visible_cols,
                 }
@@ -109,16 +90,193 @@ impl Screen {
             .collect()
     }
 
+    /// The heights of the current stack, at the width the whole session shares.
+    ///
+    /// Used only to work out how far a stack change moved each toast (`settled_row_delta`), which
+    /// is why one canonical width is enough: the displacement it feeds is a transient, and every
+    /// client's *settled* position is computed against that client's own viewport regardless. A
+    /// client whose tab centre is narrower than the session surface can therefore be a row out
+    /// mid-glide, and is never out at rest.
+    fn canonical_stack_heights(&self) -> Vec<(u64, usize)> {
+        let cols = self.surface_size().cols;
+        let Some(width) = self
+            .notifications
+            .iter()
+            .filter_map(|notification| notification_width(&notification.text, cols))
+            .max()
+        else {
+            return vec![];
+        };
+        self.notifications
+            .iter()
+            .map(|notification| {
+                (
+                    notification.id,
+                    notification_height(notification_lines(&notification.text, width).len()),
+                )
+            })
+            .collect()
+    }
+
+    /// Re-aim every survivor's displacement so a stack change is a glide rather than a jump.
+    ///
+    /// Each toast's painted row is `settled + y_offset`. When the stack changes, `settled` moves by
+    /// `settled_row_delta`; adding that same delta to `y_offset` leaves the painted row exactly
+    /// where it was, and re-aiming at zero from there walks it to its new home. That is the whole
+    /// fix for a second toast arriving mid-glide: nothing is recomputed from a stored "before"
+    /// layout, so nothing can snap to a position it was never at.
+    fn retarget_notification_displacement(
+        &mut self,
+        before: &[(u64, usize)],
+        after: &[(u64, usize)],
+        now: Instant,
+    ) {
+        let position = self.notification_position;
+        for notification in self.notifications.iter_mut() {
+            let Some(delta) = settled_row_delta(position, before, after, notification.id) else {
+                continue;
+            };
+            if delta == 0 {
+                continue;
+            }
+            // painted row = settled row + offset. The settled row just moved by `delta`, so the
+            // offset has to move by *minus* delta for the painted row to come out unchanged - that
+            // is the whole trick, and getting the sign wrong sends the toast gliding in from the
+            // wrong side before settling in the right place.
+            let from = notification.y_offset.value(now) - delta as f32;
+            notification.y_offset.redirect(
+                now,
+                from,
+                0.0,
+                // speed, not duration: a one-row correction should not take as long as a whole
+                // toast's worth of displacement
+                scaled_duration(from, DISPLACE_SPAN, DISPLACE_DURATION),
+                DISPLACE_EASING,
+            );
+        }
+    }
+
+    /// Note that the stack is about to change, run `change`, then glide the survivors into place.
+    ///
+    /// The heights have to be measured on both sides of the change - a wide toast arriving
+    /// re-wraps every other toast and can change their heights too - so this brackets the mutation
+    /// rather than leaving each caller to remember.
+    pub(super) fn with_notification_stack_change(
+        &mut self,
+        now: Instant,
+        change: impl FnOnce(&mut Self),
+    ) {
+        let before = self.canonical_stack_heights();
+        change(self);
+        let after = self.canonical_stack_heights();
+        self.retarget_notification_displacement(&before, &after, now);
+    }
+
+    /// The cells this frame's toasts will paint for each regular client, and the cells last
+    /// frame's toasts painted that these do not.
+    ///
+    /// Run *before* any pane renders, which is the whole point: a pane only emits chunks for rows
+    /// its own grid thinks are dirty, so a toast that has moved off a cell leaves its own glyph
+    /// there until something repaints it. Repairing that a frame late would show a one-frame trail
+    /// at every step of a slide-out; repairing it here means the pane underneath is asked to
+    /// repaint in the same frame the cell is uncovered.
+    ///
+    /// The layout is recomputed by `render_notifications` further down the same frame. It is
+    /// sampled at the same `now`, so the two agree exactly - and this is no more work than the
+    /// mouse hit-test already costs.
+    pub(super) fn prepare_notification_damage(
+        &mut self,
+        now: Instant,
+        surface: Size,
+    ) -> Vec<(Option<usize>, Vec<CellRect>)> {
+        // Almost every frame in a session's life has no toast anywhere near it. Bail before
+        // touching the client list or solving any geometry, but only once the *last* frame had no
+        // toasts either - the frame after the final one still has damage to repair.
+        if self.notifications.is_empty() && self.last_notification_fill.is_empty() {
+            return vec![];
+        }
+        let regular_client_ids: Vec<ClientId> = self
+            .connected_clients
+            .borrow()
+            .keys()
+            .filter(|client_id| !self.watcher_clients.contains_key(client_id))
+            .copied()
+            .collect();
+        if regular_client_ids.is_empty() {
+            return vec![];
+        }
+
+        let mut clients_by_tab: BTreeMap<Option<usize>, Vec<ClientId>> = BTreeMap::new();
+        for client_id in regular_client_ids {
+            clients_by_tab
+                .entry(self.active_tab_ids.get(&client_id).copied())
+                .or_default()
+                .push(client_id);
+        }
+
+        let mut damage_by_tab = vec![];
+        for (tab_id, client_ids) in clients_by_tab {
+            let tab_size = tab_id
+                .and_then(|tab_id| self.tab_surface_size(tab_id))
+                .unwrap_or(surface);
+            // a group whose geometry cannot be solved is one `render_to_clients` will skip too;
+            // leaving its cache untouched means the damage is picked up whenever it recovers
+            let Ok(layout) = self.global_layout_for(tab_size) else {
+                continue;
+            };
+            let painted: Vec<CellRect> = self
+                .notification_layout(layout.center, now)
+                .iter()
+                .map(|layout| CellRect {
+                    x: layout.revealed_x,
+                    y: layout.y,
+                    cols: layout.visible_cols,
+                    rows: notification_height(layout.lines.len()),
+                })
+                .collect();
+
+            let mut damage: Vec<CellRect> = vec![];
+            for client_id in &client_ids {
+                // remove rather than insert an empty vec when nothing is painted, so the map
+                // empties out again once the last toast is gone and the early-out above can fire
+                let previous = if painted.is_empty() {
+                    self.last_notification_fill.remove(client_id)
+                } else {
+                    self.last_notification_fill
+                        .insert(*client_id, painted.clone())
+                }
+                .unwrap_or_default();
+                for rect in overlay_damage(&previous, &painted) {
+                    if !damage.contains(&rect) {
+                        damage.push(rect);
+                    }
+                }
+            }
+            if damage.is_empty() {
+                continue;
+            }
+            // the toast also covers strip rows no pane owns, and that fill is diffed against a
+            // cache of its own - drop the entry so this frame repaints it rather than deciding
+            // nothing changed
+            for client_id in &client_ids {
+                self.unowned_strip_fill.remove(client_id);
+            }
+            damage_by_tab.push((tab_id, damage));
+        }
+        damage_by_tab
+    }
+
     pub(super) fn render_notifications(
         &self,
         output: &mut Output,
         viewport: Viewport,
         client_ids: &[ClientId],
+        now: Instant,
     ) -> Result<()> {
         if self.notifications.is_empty() || client_ids.is_empty() {
             return Ok(());
         }
-        let layouts = self.notification_layout(viewport);
+        let layouts = self.notification_layout(viewport, now);
 
         let previous_stack = output.set_floating_panes_stack(None);
         let result = (|| -> Result<()> {
@@ -129,13 +287,14 @@ impl Screen {
                     layout.y,
                     layout.width,
                     &self.style,
+                    layout.reveal,
                 );
                 let (chunks, _) = notification_reveal(
                     &chunks,
                     layout.x,
                     layout.width,
                     self.notification_position,
-                    layout.notification.horizontal_progress,
+                    layout.reveal,
                 );
                 output.add_character_chunks_to_multiple_clients(
                     chunks,
@@ -153,9 +312,10 @@ impl Screen {
         &self,
         viewport: Viewport,
         position: Position,
+        now: Instant,
     ) -> Option<(u64, PaneId)> {
         let line = usize::try_from(position.line()).ok()?;
-        self.notification_layout(viewport)
+        self.notification_layout(viewport, now)
             .into_iter()
             .rev()
             .find(|layout| {
@@ -173,13 +333,26 @@ impl Screen {
             })
     }
 
-    pub(super) fn dismiss_notification(&mut self, id: u64) -> Result<()> {
+    /// Start a toast sliding back out. It stays in the stack, shrinking, until
+    /// `reap_settled_notifications` sees its reveal reach zero.
+    ///
+    /// The exit is re-aimed from wherever the toast currently is and given a duration proportional
+    /// to how much of it is showing, so one dismissed a third of the way in leaves in about a third
+    /// of the time rather than snapping to full width and sliding back out from there.
+    pub(super) fn dismiss_notification(&mut self, id: u64, now: Instant) -> Result<()> {
         if let Some(notification) = self.notifications.iter_mut().find(|n| n.id == id) {
-            if !notification.dismissing {
-                notification.dismissing = true;
+            if !notification.is_dismissing() {
+                let revealed = notification.reveal.value(now);
+                notification.reveal.redirect(
+                    now,
+                    revealed,
+                    0.0,
+                    scaled_duration(revealed, 1.0, EXIT_DURATION),
+                    EXIT_EASING,
+                );
                 self.bus
                     .senders
-                    .send_to_background_jobs(BackgroundJob::AnimateNotifications)?;
+                    .send_to_background_jobs(BackgroundJob::StartAnimationClock)?;
             }
         }
         Ok(())
@@ -190,6 +363,7 @@ impl Screen {
         event: &MouseEvent,
         viewport: Viewport,
         client_id: ClientId,
+        now: Instant,
     ) -> bool {
         if event.event_type != MouseEventType::Press
             || !event.left
@@ -201,12 +375,13 @@ impl Screen {
         {
             return false;
         }
-        let Some((notification_id, pane_id)) = self.pane_notification_at(viewport, event.position)
+        let Some((notification_id, pane_id)) =
+            self.pane_notification_at(viewport, event.position, now)
         else {
             return false;
         };
 
-        self.dismiss_notification(notification_id).non_fatal();
+        self.dismiss_notification(notification_id, now).non_fatal();
         let pane_exists = self.global_panes.pane(pane_id).is_some()
             || self.tab_containing_pane(pane_id).is_some();
         if pane_exists {
@@ -224,51 +399,25 @@ impl Screen {
         true
     }
 
-    /// One tick of the toast slide/displacement animation: advances every notification's
-    /// `horizontal_progress` and the shared `notification_displacement_progress`, finally removing
-    /// any toast that has finished sliding out. Returns whether anything is still mid-animation, so
-    /// the caller knows whether to keep the animation clock ticking.
-    pub(super) fn advance_notification_animations(&mut self) -> bool {
-        for notification in self.notifications.iter_mut() {
-            let step = if notification.dismissing {
-                -NOTIFICATION_HORIZONTAL_PROGRESS_STEP
-            } else {
-                NOTIFICATION_HORIZONTAL_PROGRESS_STEP
-            };
-            notification.horizontal_progress =
-                (notification.horizontal_progress + step).clamp(0.0, 1.0);
+    /// Drop any toast that has finished sliding out, gliding the survivors into the gap it leaves.
+    ///
+    /// Called from `render_to_clients` rather than from the animation tick, so a clock that never
+    /// fires - a stalled screen thread, a dead task - cannot strand a dismissed toast in the stack.
+    /// Whatever renders next reaps it.
+    pub(super) fn reap_settled_notifications(&mut self, now: Instant) {
+        if !self.notifications.iter().any(|n| n.is_gone(now)) {
+            return;
         }
+        self.with_notification_stack_change(now, |screen| {
+            screen.notifications.retain(|n| !n.is_gone(now));
+        });
+    }
 
-        let was_showing = self.notifications.len();
-        if self
-            .notifications
-            .iter()
-            .any(|n| n.dismissing && n.horizontal_progress <= 0.0)
-        {
-            // the stack is about to shrink - remember the fuller layout so the survivors glide to
-            // their new position instead of jumping into the gap
-            self.notification_stack_before_change = self.notifications.clone();
-            self.notification_displacement_progress = 0.0;
-            self.notifications
-                .retain(|n| !(n.dismissing && n.horizontal_progress <= 0.0));
-        }
-        if self.notifications.len() != was_showing {
-            // nothing under the toast is dirty, so without forcing a repaint its cells would keep
-            // the glyphs it just gave up
-            for tab in self.tabs.values_mut() {
-                tab.set_force_render();
-            }
-            self.global_panes.set_force_render();
-        }
-
-        if self.notification_displacement_progress < 1.0 {
-            self.notification_displacement_progress =
-                (self.notification_displacement_progress + NOTIFICATION_DISPLACEMENT_STEP).min(1.0);
-        }
-
-        self.notifications
-            .iter()
-            .any(|n| n.dismissing || n.horizontal_progress < 1.0)
-            || self.notification_displacement_progress < 1.0
+    /// Whether any toast still wants a frame.
+    ///
+    /// Derived from the toasts themselves rather than from a registration list, so it cannot get
+    /// stuck reporting `true` and leave the clock running over an idle session.
+    pub(super) fn notifications_are_animating(&self, now: Instant) -> bool {
+        self.notifications.iter().any(|n| !n.is_settled(now))
     }
 }

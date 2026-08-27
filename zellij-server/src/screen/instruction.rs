@@ -451,7 +451,11 @@ pub enum ScreenInstruction {
     ),
     UpdatePluginLoadingStage(u32, LoadingIndication), // u32 - plugin_id
     StartPluginLoadingIndication(u32, LoadingIndication), // u32 - plugin_id
-    ProgressPluginLoadingOffset(u32),                 // u32 - plugin id
+    /// Start and stop taking loading-indicator frames from the shared animation clock for this
+    /// plugin. The dots themselves are derived from elapsed time, so these only say *whether* the
+    /// plugin is still loading.
+    StartPluginLoadingAnimation(u32),
+    StopPluginLoadingAnimation(u32), // u32 - plugin id
     RequestStateUpdateForPlugins,
     LaunchOrFocusPlugin(
         RunPluginOrAlias,
@@ -571,7 +575,7 @@ pub enum ScreenInstruction {
     RenameSession(String, ClientId, Option<NotificationEnd>), // String -> new name
     Notify(String, Option<PaneId>, Option<NotificationEnd>),  // message, click target, completion
     DismissNotification(u64),                                 // u64 -> the notification's id
-    TickNotificationAnimations,
+    AnimationTick,
     ListClientsMetadata(Option<PathBuf>, ClientId, Option<NotificationEnd>), // Option<PathBuf> - default shell
     ListPanes {
         show_all: bool,
@@ -687,7 +691,11 @@ pub enum ScreenInstruction {
     ),
     TogglePaneBorderless(PaneId, Option<NotificationEnd>),
     SetPaneBorderless(PaneId, bool, Option<NotificationEnd>),
-    AddHighlightPaneFrameColorOverride(Vec<PaneId>, Option<String>), // Option<String> => optional
+    AddHighlightPaneFrameColorOverride(Vec<PaneId>, Option<String>),
+    /// A bell flash: the highlight colour, easing itself back out rather than waiting to be
+    /// cleared. Distinct from the plugin highlight above, which stays up until something takes it
+    /// down and so must not fade.
+    FlashPaneFrameColor(Vec<PaneId>), // Option<String> => optional
     // message
     GroupAndUngroupPanes(Vec<PaneId>, Vec<PaneId>, bool, ClientId), // panes_to_group, panes_to_ungroup, bool -> for all clients
     HighlightAndUnhighlightPanes(Vec<PaneId>, Vec<PaneId>, ClientId), // panes_to_highlight, panes_to_unhighlight

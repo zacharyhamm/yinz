@@ -4,6 +4,7 @@ use std::{
     rc::Rc,
 };
 
+use crate::ui::damage::CellRect;
 use crate::{
     output::Output,
     panes::PaneId,
@@ -1107,6 +1108,30 @@ impl GlobalPaneManager {
         }
         self.boundary_paint.clear();
     }
+    /// Repaint only the panes overlapping `damage` - the cells an overlay stopped covering.
+    ///
+    /// The narrowed twin of `set_force_render` above. A toast sits in a corner and overlaps a pane
+    /// or two, so repainting the whole container every frame of a slide-out - which is what the
+    /// unnarrowed version did - re-serializes grids that never had a toast anywhere near them.
+    pub fn force_render_panes_intersecting(&mut self, damage: &[CellRect]) {
+        let mut hit = false;
+        for global_pane in self
+            .panes
+            .iter_mut()
+            .filter(|global_pane| !global_pane.hidden)
+        {
+            let geom = global_pane.pane.position_and_size();
+            if !damage.iter().any(|rect| rect.intersects_geom(&geom)) {
+                continue;
+            }
+            hit = true;
+            global_pane.pane.set_should_render(true);
+            global_pane.pane.render_full_viewport();
+        }
+        if hit {
+            self.boundary_paint.clear();
+        }
+    }
 
     pub fn visible_pane_ids(&self) -> HashSet<PaneId> {
         self.panes
@@ -1315,7 +1340,13 @@ impl GlobalPaneManager {
                             FrameColorState {
                                 frame_color_override: global_pane
                                     .pane
-                                    .frame_color_override(*client_id),
+                                    .frame_color_override(*client_id)
+                                    .map(|color| {
+                                        let strength = global_pane
+                                            .pane
+                                            .frame_color_override_strength(*client_id);
+                                        (color, strength)
+                                    }),
                                 pane_is_focused: self.focused_panes.get(client_id)
                                     == Some(&pane_id),
                                 pane_is_in_group: false,

@@ -38,6 +38,14 @@ impl Screen {
         // the render method for more details)
         let err_context = "failed to render screen";
 
+        // One instant for the whole frame. Every animation is *sampled* here rather than advanced
+        // on the clock tick, so there is no skew between "advance" and "paint" and every frame -
+        // whoever scheduled it - moves the animation to where the wall clock says it should be.
+        let now = self.frame_now();
+        self.reap_settled_notifications(now);
+        self.advance_frame_color_fades(now);
+        self.advance_plugin_loading_animations();
+
         // Global panes and every tab share the same session surface. Re-derive each tab's center
         // from that surface so a render tick cannot restore stale geometry.
         let surface = self.surface_size();
@@ -139,6 +147,21 @@ impl Screen {
 
             output.collect_ansi_pane_contents =
                 self.pane_render_subscribers.values().any(|s| s.ansi);
+
+            // Before any pane renders: work out which cells this frame's toasts have stopped
+            // covering and ask the panes under them to repaint. A pane only emits chunks for rows
+            // its own grid calls dirty, so a toast that slid off a cell would otherwise leave its
+            // own border sitting there - a trail that only cleared when the toast was finally
+            // removed. Narrowed to the panes actually overlapping the damage, and empty on every
+            // frame where the toasts only grew, so an arriving toast costs nothing.
+            for (tab_id, damage) in self.prepare_notification_damage(now, surface) {
+                if let Some(tab_id) = tab_id {
+                    if let Some(tab) = self.tabs.get_mut(&tab_id) {
+                        tab.force_render_panes_intersecting(&damage);
+                    }
+                }
+                self.global_panes.force_render_panes_intersecting(&damage);
+            }
 
             // a tab that doesn't render leaves its clients unregistered on the output - see below
             let mut skipped_a_tab = self.tabs.is_empty();
@@ -267,7 +290,7 @@ impl Screen {
             }
 
             for (viewport, client_ids) in notification_targets {
-                self.render_notifications(&mut output, viewport, &client_ids)
+                self.render_notifications(&mut output, viewport, &client_ids, now)
                     .context(err_context)?;
             }
 

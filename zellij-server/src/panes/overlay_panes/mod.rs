@@ -122,6 +122,7 @@ use zellij_utils::{
 use crate::panes::kitty_graphics::KittyHostSupport;
 use crate::resize_pty;
 use crate::tab::{pane_info_for_pane, Pane};
+use crate::ui::damage::CellRect;
 use crate::{
     global_panes::{session_surface, GlobalPaneStrip},
     os_input_output::ServerOsApi,
@@ -1333,6 +1334,22 @@ impl OverlayPanes {
     }
     pub fn set_force_render(&mut self) {
         for overlay in self.panes.values_mut() {
+            overlay.pane.set_should_render(true);
+            overlay.pane.set_should_render_boundaries(true);
+            overlay.pane.render_full_viewport();
+        }
+    }
+    /// Repaint only the panes overlapping `damage` - the cells an overlay stopped covering.
+    ///
+    /// The narrowed twin of `set_force_render` above. A toast sits in a corner and overlaps a pane
+    /// or two, so repainting the whole container every frame of a slide-out - which is what the
+    /// unnarrowed version did - re-serializes grids that never had a toast anywhere near them.
+    pub fn force_render_panes_intersecting(&mut self, damage: &[CellRect]) {
+        for overlay in self.panes.values_mut() {
+            let geom = overlay.pane.position_and_size();
+            if !damage.iter().any(|rect| rect.intersects_geom(&geom)) {
+                continue;
+            }
             overlay.pane.set_should_render(true);
             overlay.pane.set_should_render_boundaries(true);
             overlay.pane.render_full_viewport();

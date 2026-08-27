@@ -733,7 +733,7 @@ fn failed_global_insertion_discards_pending_plugin_events_before_id_reuse() {
         .unwrap();
     mock_screen
         .to_screen
-        .send(ScreenInstruction::ProgressPluginLoadingOffset(88))
+        .send(ScreenInstruction::StartPluginLoadingAnimation(88))
         .unwrap();
     mock_screen
         .to_screen
@@ -935,7 +935,7 @@ fn early_global_plugin_events_are_replayed_after_insertion() {
         .unwrap();
     mock_screen
         .to_screen
-        .send(ScreenInstruction::ProgressPluginLoadingOffset(78))
+        .send(ScreenInstruction::StartPluginLoadingAnimation(78))
         .unwrap();
     mock_screen
         .to_screen

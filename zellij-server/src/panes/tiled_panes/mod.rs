@@ -9,6 +9,7 @@ mod stacked_panes;
 mod tiled_pane_grid;
 
 use crate::panes::kitty_graphics::KittyHostSupport;
+use crate::ui::damage::CellRect;
 
 #[cfg(test)]
 #[path = "./unit/mock_pane.rs"]
@@ -1255,6 +1256,28 @@ impl TiledPanes {
             pane.render_full_viewport();
         }
         self.reset_boundaries();
+    }
+    /// Repaint only the panes overlapping `damage` - the cells an overlay stopped covering.
+    ///
+    /// The narrowed twin of `set_force_render` above. A toast sits in a corner and overlaps a pane
+    /// or two, so repainting the whole container every frame of a slide-out - which is what the
+    /// unnarrowed version did - re-serializes grids that never had a toast anywhere near them.
+    pub fn force_render_panes_intersecting(&mut self, damage: &[CellRect]) {
+        let mut hit = false;
+        for pane in self.panes.values_mut() {
+            let geom = pane.position_and_size();
+            if !damage.iter().any(|rect| rect.intersects_geom(&geom)) {
+                continue;
+            }
+            hit = true;
+            pane.set_should_render(true);
+            pane.set_should_render_boundaries(true);
+            pane.render_full_viewport();
+        }
+        if hit {
+            // the boundary cache is a whole-container diff, so any repaint inside it invalidates
+            self.reset_boundaries();
+        }
     }
     pub fn has_active_panes(&self) -> bool {
         !self.active_panes.is_empty()

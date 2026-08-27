@@ -2525,6 +2525,7 @@ mod hooks;
 mod host_query;
 mod mouse;
 mod nested_sessions;
+mod notification_animation;
 mod overlays;
 mod plugin_broadcasts;
 mod reveal_pane;

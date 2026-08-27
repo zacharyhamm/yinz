@@ -1,7 +1,19 @@
 //! The one slot a pane keeps for "draw my frame differently for a while".
 
+use std::time::{Duration, Instant};
+
 use crate::ClientId;
+use zellij_utils::animation::{Easing, Tween};
 use zellij_utils::data::PaletteColor;
+
+/// How long a bell flash stays at full strength before it starts easing away.
+///
+/// A flash has to read as a *flash*: without a hold it becomes a slow throb, which is both less
+/// noticeable and more distracting. The hold plus the release below still add up to the 400ms
+/// (the Doherty threshold) the flash has always lasted, so the background job that tears it down
+/// on that schedule stays exactly as it was.
+const BELL_FLASH_HOLD: Duration = Duration::from_millis(120);
+const BELL_FLASH_RELEASE: Duration = Duration::from_millis(280);
 
 /// A pane frame drawn in a colour other than the one focus would give it, and
 /// optionally under a title other than its own.
@@ -23,6 +35,10 @@ pub struct FrameColorOverride {
     /// fact about that conversation, and putting it on another client's screen
     /// would be telling them about something they did not ask for.
     pub client_id: Option<ClientId>,
+    /// How strongly the override applies, over time. `None` for an override that does not fade -
+    /// a red exit status and a plugin's highlight both stay until something clears them, and only
+    /// a bell flash goes away on its own.
+    fade: Option<Tween>,
 }
 
 impl FrameColorOverride {
@@ -31,7 +47,40 @@ impl FrameColorOverride {
             color,
             text,
             client_id,
+            fade: None,
         }
+    }
+
+    /// A bell flash: full strength through the hold, then eased back to nothing.
+    ///
+    /// Every client sees it, because a bell is a fact about the pane rather than about one
+    /// person's conversation with it.
+    pub fn flashing(color: PaletteColor, now: Instant) -> Self {
+        FrameColorOverride {
+            color,
+            text: None,
+            client_id: None,
+            fade: Some(Tween::delayed(
+                now,
+                BELL_FLASH_HOLD,
+                1.0,
+                0.0,
+                BELL_FLASH_RELEASE,
+                // `EaseIn` - the flash should commit to leaving rather than lingering just below
+                // visible for the back half of the release
+                Easing::EaseIn,
+            )),
+        }
+    }
+
+    /// How strongly this override applies at `now`. Always `1.0` for one that does not fade.
+    pub fn strength(&self, now: Instant) -> f32 {
+        self.fade.map_or(1.0, |fade| fade.value(now))
+    }
+
+    /// Whether this override has finished fading and is contributing nothing.
+    pub fn is_faded_out(&self, now: Instant) -> bool {
+        self.fade.is_some_and(|fade| fade.is_settled(now))
     }
 
     /// Whether `client_id` is one of the clients this override is drawn for.
@@ -50,5 +99,65 @@ impl FrameColorOverride {
             Some(client_id) => self.client_id == Some(client_id),
             None => true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const COLOR: PaletteColor = PaletteColor::EightBit(4);
+
+    fn at(start: Instant, millis: u64) -> Instant {
+        start + Duration::from_millis(millis)
+    }
+
+    #[test]
+    fn an_override_that_does_not_fade_applies_at_full_strength_forever() {
+        let now = Instant::now();
+        let override_ = FrameColorOverride::new(COLOR, None, None);
+        assert_eq!(override_.strength(now), 1.0);
+        assert_eq!(override_.strength(at(now, 10_000)), 1.0);
+        assert!(
+            !override_.is_faded_out(at(now, 10_000)),
+            "a plugin highlight waits to be cleared rather than expiring"
+        );
+    }
+
+    #[test]
+    fn a_bell_flash_holds_at_full_strength_then_eases_away() {
+        let now = Instant::now();
+        let flash = FrameColorOverride::flashing(COLOR, now);
+
+        assert_eq!(flash.strength(now), 1.0);
+        assert_eq!(
+            flash.strength(at(now, 119)),
+            1.0,
+            "still holding - a flash has to read as a flash, not a throb"
+        );
+        let mid = flash.strength(at(now, 260));
+        assert!(mid > 0.0 && mid < 1.0, "easing away by now, got {mid}");
+        assert_eq!(flash.strength(at(now, 400)), 0.0);
+    }
+
+    #[test]
+    fn a_bell_flash_is_faded_out_on_the_schedule_the_teardown_still_runs_on() {
+        // the background job clears the slot at FLASH_DURATION_MS (400ms); the fade must have
+        // reached zero by then, or the clear would visibly cut a still-showing flash short
+        let now = Instant::now();
+        let flash = FrameColorOverride::flashing(COLOR, now);
+        assert!(!flash.is_faded_out(at(now, 399)));
+        assert!(flash.is_faded_out(at(now, 400)));
+    }
+
+    #[test]
+    fn a_bell_flash_is_shown_to_every_client() {
+        let flash = FrameColorOverride::flashing(COLOR, Instant::now());
+        assert!(flash.applies_to(1));
+        assert!(flash.applies_to(2));
+        assert!(
+            flash.is_cleared_by(None),
+            "the background job's unconditional clear takes it down"
+        );
     }
 }
