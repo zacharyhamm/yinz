@@ -874,10 +874,9 @@ fn render_title(state: &mut State, cols: usize) {
     } else {
         format!("hocus — {model}")
     };
-    if state.last_window_title.as_deref() != Some(title.as_str()) {
-        rename_plugin_pane(state.plugin_id, &title);
-        state.last_window_title = Some(title);
-    }
+    // Placement can rename the pane after our previous render. Reassert the
+    // title rather than caching what we asked the host to do.
+    rename_plugin_pane(state.own_plugin_id, &title);
 
     // One slot at the right edge: what is happening now beats what is pending.
     // A count rides along when other chats are working too, so a background
