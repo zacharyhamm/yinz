@@ -168,8 +168,8 @@ pub enum BackgroundJob {
     WebRequestStreamFinished(StreamKey, u64, Option<String>), // u64 - generation, Option<String> - error
     HighlightPanesWithMessage(Vec<PaneId>, String),
     DismissNotification(u64, u64), // notification id, timeout in seconds
-    AnimateNotifications,
-    StopAnimateNotifications,
+    StartAnimationClock,
+    StopAnimationClock,
     RenderToClients,
     QueryZellijWebServerStatus,
     ClearHelpText {
@@ -205,11 +205,15 @@ impl From<&BackgroundJob> for BackgroundJobContext {
 
 static LONG_FLASH_DURATION_MS: u64 = 1000;
 static FLASH_DURATION_MS: u64 = 400; // Doherty threshold
-static PLUGIN_ANIMATION_OFFSET_DURATION_MD: u64 = 500;
-/// Toast slide/displacement animation tick - much faster than the loading spinner above, which is
-/// a coarse indicator rather than motion. Still comfortably inside what `REPAINT_DELAY_MS` below
-/// coalesces, so many ticks in a row cost at most one extra repaint.
-static NOTIFICATION_ANIMATION_TICK_MS: u64 = 40;
+/// The shared animation clock's period - roughly 60fps, and the frame budget every animated
+/// surface is sampled against.
+///
+/// This only guarantees a *wakeup*. Nothing advances on a tick: `render_to_clients` samples every
+/// live animation at one `Instant` just before it composites, so a tick the screen thread was too
+/// busy to service costs a frame and never a position. That is also why this is well inside
+/// `REPAINT_DELAY_MS` below rather than a multiple of it - the debounce coalescing two ticks into
+/// one frame is a dropped frame, not a stretched animation.
+static ANIMATION_TICK_MS: u64 = 16;
 static SESSION_METADATA_WRITE_INTERVAL_MS: u64 = 1000;
 static UPDATE_AND_REPORT_CWDS_INTERVAL_MS: u64 = 1000;
 static DEFAULT_SERIALIZATION_INTERVAL: u64 = 60000;
@@ -245,8 +249,8 @@ pub(crate) fn background_jobs_main(
 ) -> Result<()> {
     let err_context = || "failed to write to pty".to_string();
     let mut running_jobs: HashMap<BackgroundJob, Instant> = HashMap::new();
-    let mut loading_plugins: HashMap<u32, Arc<AtomicBool>> = HashMap::new(); // u32 - plugin_id
-    let mut animating_notifications: Option<Arc<AtomicBool>> = None;
+    // the shared animation clock's cancel flag, `Some` while it is running.
+    let mut animation_clock: Option<Arc<AtomicBool>> = None;
     let current_session_name = Arc::new(Mutex::new(String::default()));
     let current_session_info = Arc::new(Mutex::new(SessionInfo::default()));
     let current_session_plugin_list: Arc<Mutex<BTreeMap<PluginId, RunPlugin>>> =
@@ -357,37 +361,27 @@ pub(crate) fn background_jobs_main(
                     }
                 });
             },
+            // Registration only. The dots used to have one tokio task per plugin, each with its
+            // own 500ms sleep - at session start that is a task per builtin plugin, all of them
+            // sleeping in parallel to drive four characters. They take their frames from the
+            // shared clock now, and their offset is derived from how long the load has been
+            // running rather than counted per wakeup.
             BackgroundJob::AnimatePluginLoading(pid) => {
-                let loading_plugin = Arc::new(AtomicBool::new(true));
-                if job_already_running(job, &mut running_jobs) {
-                    continue;
-                }
-                runtime.spawn({
-                    let senders = bus.senders.clone();
-                    let loading_plugin = loading_plugin.clone();
-                    async move {
-                        while loading_plugin.load(Ordering::SeqCst) {
-                            let _ = senders.send_to_screen(
-                                ScreenInstruction::ProgressPluginLoadingOffset(pid),
-                            );
-                            tokio::time::sleep(std::time::Duration::from_millis(
-                                PLUGIN_ANIMATION_OFFSET_DURATION_MD,
-                            ))
-                            .await;
-                        }
-                    }
-                });
-                loading_plugins.insert(pid, loading_plugin);
+                let _ = bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::StartPluginLoadingAnimation(pid));
             },
             BackgroundJob::StopPluginLoadingAnimation(pid) => {
-                if let Some(loading_plugin) = loading_plugins.remove(&pid) {
-                    loading_plugin.store(false, Ordering::SeqCst);
-                }
+                let _ = bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::StopPluginLoadingAnimation(pid));
             },
-            // one shared clock for the whole toast stack rather than one per notification: unlike
-            // the plugin spinner above, every live toast advances on the same tick
-            BackgroundJob::AnimateNotifications => {
-                if animating_notifications
+            // One clock for every animated surface, not one per surface: they are all sampled by
+            // the same `render_to_clients` at the same instant, so a second clock would only buy
+            // duplicate wakeups. Idempotent - any surface starting an animation sends this, and
+            // whoever gets there first owns the task.
+            BackgroundJob::StartAnimationClock => {
+                if animation_clock
                     .as_ref()
                     .is_some_and(|flag| flag.load(Ordering::SeqCst))
                 {
@@ -398,20 +392,23 @@ pub(crate) fn background_jobs_main(
                     let senders = bus.senders.clone();
                     let running = running.clone();
                     async move {
+                        let mut tick = tokio::time::interval(std::time::Duration::from_millis(
+                            ANIMATION_TICK_MS,
+                        ));
+                        // `Skip` rather than the default `Burst`: a tick the screen thread was too
+                        // busy to service must be dropped, not replayed as a backlog of wakeups
+                        // that all arrive at once and then ask for the same frame several times.
+                        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                         while running.load(Ordering::SeqCst) {
-                            let _ = senders
-                                .send_to_screen(ScreenInstruction::TickNotificationAnimations);
-                            tokio::time::sleep(std::time::Duration::from_millis(
-                                NOTIFICATION_ANIMATION_TICK_MS,
-                            ))
-                            .await;
+                            tick.tick().await;
+                            let _ = senders.send_to_screen(ScreenInstruction::AnimationTick);
                         }
                     }
                 });
-                animating_notifications = Some(running);
+                animation_clock = Some(running);
             },
-            BackgroundJob::StopAnimateNotifications => {
-                if let Some(running) = animating_notifications.take() {
+            BackgroundJob::StopAnimationClock => {
+                if let Some(running) = animation_clock.take() {
                     running.store(false, Ordering::SeqCst);
                 }
             },
@@ -770,12 +767,11 @@ pub(crate) fn background_jobs_main(
                     let pane_ids_clone = pane_ids.clone();
                     let flag = is_flashing.clone();
                     async move {
-                        let _ = senders.send_to_screen(
-                            ScreenInstruction::AddHighlightPaneFrameColorOverride(
-                                pane_ids_clone.clone(),
-                                None,
-                            ),
-                        );
+                        let _ = senders.send_to_screen(ScreenInstruction::FlashPaneFrameColor(
+                            pane_ids_clone.clone(),
+                        ));
+                        // the override eases itself out over exactly this window; the clear that
+                        // follows is what actually frees the slot, and stays on the old schedule
                         tokio::time::sleep(std::time::Duration::from_millis(FLASH_DURATION_MS))
                             .await;
                         if flag.load(Ordering::SeqCst) {
@@ -849,8 +845,8 @@ pub(crate) fn background_jobs_main(
                 }
             },
             BackgroundJob::Exit => {
-                for loading_plugin in loading_plugins.values() {
-                    loading_plugin.store(false, Ordering::SeqCst);
+                if let Some(clock) = animation_clock.take() {
+                    clock.store(false, Ordering::SeqCst);
                 }
                 for nested_guest_ping in nested_guest_pings.values() {
                     nested_guest_ping.store(false, Ordering::SeqCst);

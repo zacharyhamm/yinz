@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use zellij_utils::errors::prelude::*;
 
 use super::Screen;
@@ -145,8 +147,11 @@ impl Screen {
         // tab as often as not - everything below hit-tests and takes relative positions against
         // their geometry, so it has to be this client's view of them
         let client_layout = self.position_global_panes_for_client(client_id);
+        // sampled here rather than taken from the last painted frame: a click should resolve
+        // against where the toast is now, which is at most one frame ahead of what was drawn
+        let now = Instant::now();
         if client_layout.is_some_and(|layout| {
-            self.handle_pane_notification_click(&event, layout.center, client_id)
+            self.handle_pane_notification_click(&event, layout.center, client_id, now)
         }) {
             self.notification_mouse_captures.insert(client_id);
             return;

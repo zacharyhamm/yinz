@@ -8,6 +8,7 @@ use crate::ui::boundaries::Boundaries;
 use crate::ui::pane_boundaries_frame::{FrameParams, StackListEntry};
 use crate::ClientId;
 use std::collections::{HashMap, HashSet};
+use zellij_utils::animation::blend;
 use zellij_utils::data::{client_id_to_colors, InputMode, PaletteColor, Style};
 use zellij_utils::errors::prelude::*;
 use zellij_utils::pane_size::PaneGeom;
@@ -479,7 +480,10 @@ impl<'a> PaneContentsAndUi<'a> {
         frame_color(
             &self.style,
             FrameColorState {
-                frame_color_override: self.pane.frame_color_override(client_id),
+                frame_color_override: self
+                    .pane
+                    .frame_color_override(client_id)
+                    .map(|color| (color, self.pane.frame_color_override_strength(client_id))),
                 pane_is_focused: self.focused_clients.contains(&client_id),
                 pane_is_in_group: self
                     .current_pane_group
@@ -500,7 +504,12 @@ impl<'a> PaneContentsAndUi<'a> {
 
 /// Everything about one pane, for one client, that decides the colour of that pane's frame.
 pub struct FrameColorState {
-    pub frame_color_override: Option<PaletteColor>,
+    /// The override colour and how strongly it applies right now - `1.0` fully, less while a bell
+    /// flash is fading back out. A strength below `1.0` blends the override into the colour the
+    /// pane would otherwise have, which is why the blend happens *here*: this function is the only
+    /// place that knows what that colour is, and it differs per client with focus, group
+    /// membership and hover.
+    pub frame_color_override: Option<(PaletteColor, f32)>,
     pub pane_is_focused: bool,
     pub pane_is_in_group: bool,
     pub mouse_is_hovering_over_pane: bool,
@@ -527,8 +536,27 @@ pub fn frame_color(
         mouse_is_hovering_over_pane,
         multiple_users_exist_in_session,
     } = state;
-    if frame_color_override.is_some() && !pane_is_in_group {
-        frame_color_override.map(|override_color| (override_color, 4))
+    if let Some((override_color, strength)) = frame_color_override.filter(|_| !pane_is_in_group) {
+        // a fading override blends towards whatever this pane's frame would be without it, so a
+        // bell settles back into the normal colour instead of snapping off it
+        let settled = frame_color(
+            style,
+            FrameColorState {
+                frame_color_override: None,
+                pane_is_focused,
+                pane_is_in_group,
+                mouse_is_hovering_over_pane,
+                multiple_users_exist_in_session,
+            },
+            client_id,
+            mode,
+            session_is_mirrored,
+        );
+        let base = settled
+            .map(|(color, _)| color)
+            .or_else(|| style.colors.frame_unselected.map(|frame| frame.base))
+            .unwrap_or(style.colors.frame_selected.base);
+        Some((blend(base, override_color, strength), 4))
     } else if pane_is_in_group && !pane_is_focused {
         Some((style.colors.frame_highlight.emphasis_0, 2))
     } else if pane_is_in_group && pane_is_focused {
