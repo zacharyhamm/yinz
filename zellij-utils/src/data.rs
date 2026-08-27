@@ -4106,6 +4106,13 @@ pub enum PluginCommand {
         from: PathBuf,
         to: PathBuf,
     },
+    /// Grant `permissions` to the plugin at `plugin_url` ahead of it asking, as if the user had
+    /// answered its prompt. Builtins only: this is how a plugin that authors other plugins
+    /// carries the user's approval of the source over to the permissions that source asks for.
+    GrantPluginPermissions {
+        plugin_url: String,
+        permissions: Vec<PermissionType>,
+    },
     DumpSessionLayout {
         tab_index: Option<usize>,
     },

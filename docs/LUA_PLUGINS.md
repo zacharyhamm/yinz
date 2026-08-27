@@ -104,9 +104,25 @@ function M.update(event)
     for _, tab in ipairs(event.value) do ... end   -- a list
   elseif event.name == "timer" then
     local elapsed = event.value                    -- a number
+  elseif event.name == "run_command_result" then
+    -- positional payloads are named too, and bytes arrive as strings
+    if event.exit_code == 0 then M.output = event.stdout end
+  elseif event.name == "mouse" then
+    -- event.kind is "left_click", "scroll_up", ...; clicks have event.line/event.col
   end
 end
 ```
+
+The named fields of the positional events: `run_command_result` has `exit_code`, `stdout`,
+`stderr`, `context`; `web_request_result` has `status`, `headers`, `body`, `context`;
+`web_request_stream_chunk` has `stream_id`, `chunk`, `done`, `error`; `command_pane_exited` and
+`edit_pane_exited` have `pane_id`, `exit_code`, `context`; `command_pane_opened`,
+`edit_pane_opened` and `command_pane_re_run` have `pane_id`, `context`; `session_update` has
+`sessions`, `resurrectable_sessions`; `custom_message` has `message`, `payload`; the
+`file_system_*` events have `files`, a list of `{ path, metadata }`; and `pane_render_report`
+has `panes`, keyed `"terminal:3"` / `"plugin:3"` - `zellij.pane_key(pane_id)` spells a pane id
+that way. `zellij.bytes_to_string` is the byte conversion, for anything else that arrives as a
+list of numbers.
 
 `zellij.key_name(bare_key)` is the same conversion, if you need it elsewhere.
 
@@ -149,6 +165,9 @@ A command taking several values also accepts them by name where that reads bette
 `zellij.rename_tab { tab_index = 0, name = "logs" }`. Fields you leave out are absent, not empty:
 a command with no required arguments can be called with none.
 
+`zellij.set_timeout(seconds)` sends one `timer` event; `zellij.set_interval(seconds)` keeps
+sending them until `zellij.clear_interval()`.
+
 A few things zellij spells as Rust types have a helper, so you do not have to know that:
 
 ```lua
@@ -186,6 +205,9 @@ function M.load()
 end
 ```
 
+A plugin written through hocus is granted whatever its source asks for here when you approve
+the write - the confirmation names them - so it never prompts in its own pane.
+
 Calling one you have not been granted is an error naming the permission you need - the same rule
 wasm plugins live under, except that a wasm plugin cannot be told about it and you can:
 
@@ -206,6 +228,104 @@ came back - the one to read when you want to see the surface in use:
 ```sh
 zellij plugin --floating -- file:$PWD/example-plugins/playground.lua
 ```
+
+## Rendering
+
+`render` returns the frame as a string, and ANSI escapes work in it - but a plugin that wants to
+look like part of zellij uses the same components the builtin plugins do, drawn by zellij in the
+user's theme:
+
+```lua
+local ui = zellij.ui
+
+function M.render(rows, cols)
+  local table = ui.table { { "pane", "command" } }        -- the first row is the title row
+  for _, pane in ipairs(M.panes) do
+    table:row(pane.id, ui.text(pane.command):dim())
+  end
+  return ui.text("panes"):selected():render()
+    .. "\n" .. table:render()
+    .. "\n" .. ui.nested_list { "one", { "two", indent = 1 } }:render()
+end
+```
+
+The four components are `ui.text`, `ui.ribbon` (a tab-shaped label), `ui.table` (rows of cells,
+each a string or a text) and `ui.nested_list` (items, each optionally `{ text, indent = n }`).
+A text is styled by chaining: `:selected()`, `:opaque()`, `:disabled()`, `:emphasis(level, from,
+to)` for the theme's four emphasis colours (0-3, positions counted in characters and 0-based),
+and `:dim()`, `:unbold()`, `:error()`, `:success()`, each taking the same optional range.
+
+`render(coords)` gives the string to put in the frame. Without an argument the component is
+drawn where the cursor is, so components join with `"\n"` like any other lines; with
+`{ x = 0, y = 2, width = 40, height = 5 }` it is drawn there, and clipped to the width and
+height if they are given.
+
+Text is measured in columns, which is neither bytes nor code points: `zellij.text.width(s)` is
+the answer, and `zellij.text.pad(s, width)`, `pad_left`, `center` and `truncate(s, width,
+ellipsis)` are built on it, so a box a plugin draws itself lines up whatever is in it.
+
+## Modules
+
+A plugin can be more than one file. `require("name")` loads `name.lua` from the plugin's own
+folder, or `name/init.lua`, and `require("app.ui")` is `app/ui.lua`:
+
+```lua
+-- ~/.config/zellij/plugins/app.lua
+local ui = require("app.ui")          -- ~/.config/zellij/plugins/app/ui.lua
+```
+
+A module is loaded once and cached, as Lua's `require` does, and a module that returns nothing is
+remembered as `true`. The lookup is confined to the plugin's folder after symlinks are followed,
+so a link out of it is refused rather than followed, and a name that climbs (`..`) or starts at
+the root never reaches the disk. That is the whole of why this exists instead of `package`:
+the module system is host-mediated, so it can be confined the way `zellij.fs` is.
+
+## Data
+
+Lua state is gone on reload, and `zellij.fs` into `/cache` is a file. For anything with rows in
+it there is the plugin data store: a SQLite-backed store zellij keeps for plugins, with entities
+you declare, writes in transactions, fetches with filters and full-text search, and watches
+that send an event whenever a fetch's results change. It needs the `plugin_data` permission.
+
+```lua
+local data = zellij.data
+
+function M.load()
+  zellij.request_permission { "plugin_data" }
+  zellij.subscribe { "plugin_data_changed", "permission_request_result" }
+end
+
+zellij.on("permission_request_result", function()
+  data.define {
+    name = "note", version = 1,
+    attrs = {
+      { "title", "text", required = true },
+      { "body", "text", full_text = true },
+      { "done", "bool", indexed = true, default = false },
+    },
+  }
+  data.apply(data.put("note", { title = "first", body = "hello" }))
+  M.watch = data.watch { entity = "note", filter = data.eq("done", false), sort = { "id desc" } }
+end)
+
+zellij.on("plugin_data_changed", function(event)
+  M.notes = event.records         -- { { id = 1, uid = "...", title = "first", ... }, ... }
+  return true
+end)
+```
+
+`fetch` answers with records - one table per row, keyed by column, plain values - and, as a
+second value, the raw rows with `truncated` and `next_cursor` for paging. `count` answers a
+number. Mutations are `put(entity, values, uid)`, `update(entity, filter, values)` and
+`delete(entity, filter)`, applied one at a time or as a list in one transaction. Predicates are
+`eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `is_in`, `is_null`, `not_null`, `prefix`, `contains`, and
+`all(...)`, `any(...)`, `negate(p)`. Attribute kinds are `text`, `int`, `real`, `bool`, `blob`
+and `json`; a value written as `{ json = table }` is stored as JSON and `{ blob = "bytes" }` as
+a blob. `id`, `uid`, `created_at` and `updated_at` are on every row without being declared.
+
+Everything in a plugin's own namespace is private to it. `shared_plugin_data` and a
+`namespace` argument reach the namespaces other plugins publish, on the same terms a wasm
+plugin does.
 
 ## Work queues
 
@@ -338,7 +458,19 @@ a command, and commands go through the host).
 ## Errors
 
 Host commands raise Lua errors, and an error in an entrypoint is reported against your plugin
-rather than taken quietly. Use `pcall` if you want to handle one yourself.
+rather than taken quietly: the error text replaces the pane's contents, prefixed with the file
+and line it came from. Use `pcall` if you want to handle one yourself.
+
+To see what a plugin is doing short of an error, write to zellij's log:
+
+```lua
+zellij.log("pressed", event.key)     -- print(...) goes to the same place
+```
+
+Each line lands in `$TMPDIR/zellij-<uid>/zellij-log/zellij.log` tagged `[lua:<your file>]`, so
+`grep -F 'keys.lua]'` on it shows one plugin's lines. A plugin has no terminal of its own, which
+is why `print` is redirected there rather than left writing to the server's stdout. Both take any
+number of values and join them with tabs, as `print` does.
 
 ## Files
 
@@ -391,7 +523,8 @@ Gone, and staying gone:
 - **`io` and `package`** - never opened, which is also what keeps `package.loadlib` out of reach.
   Files go through `zellij.fs`, which is confined and permissioned; `io` would be neither.
 - **`load`, `dofile`, `loadfile`, `loadstring`** - running code from a string or a path is how
-  everything above gets reintroduced by the back door. `require` serves only `"zellij"`.
+  everything above gets reintroduced by the back door. `require` serves `"zellij"` and files in
+  the plugin's own folder (see *Modules*), and nothing else.
 - **`os.execute`, `os.exit`, `os.getenv`, `os.remove`, `os.rename`, `os.tmpname`, `os.setlocale`**
   - the process, its environment, and unconfined file access. `setlocale` is in the list because
   it is process-global: a plugin would be changing how the whole application formats numbers.
@@ -409,13 +542,18 @@ Lua cannot tell an empty array from an empty table, so `encode {}` is `[]`.
 
 Everything below is a gap in the Lua binding, not in the plugin system:
 
-- **Return values** - the commands whose purpose is to answer are decoded into Lua values, as are
-  the pane-opening ones. A reply this does not yet know how to read comes back as the raw
-  protobuf bytes it arrived as, in a string.
-- **Workers** - wasm plugins can spawn background workers; Lua plugins cannot.
+- **Return values** - every command that answers is decoded into a Lua value, and a test fails
+  when a new one is not. Should one slip through, the reply comes back as the raw protobuf
+  bytes it arrived as, in a string.
+- **Workers** - wasm plugins can spawn background workers; Lua plugins cannot. A work queue
+  (above) is the Lua answer to the same need, and `zellij.post_message_to` - which addresses a
+  worker - does nothing from Lua. `zellij.post_message_to_plugin` reaches yourself as a
+  `custom_message` event and works.
 - **Reload on change** - editing a plugin needs an explicit reload:
   `zellij action start-or-reload-plugin file:keys.lua`, the plugin manager's reload key, or
-  `plugin_reload` if you are asking hocus. Nothing watches the folder.
+  `plugin_reload` if you are asking hocus, which also reads the pane back and reports whether
+  the plugin loaded. Nothing watches the folder. A reload starts the plugin over: its Lua state
+  is gone, and `load` runs again.
 - **Typos are caught when called, not when written** - `zellij.<anything>` is a function, because
   that is what makes every command reachable without a wrapper each. A name zellij does not know
   raises "unknown zellij command" at the call, naming what you wrote.

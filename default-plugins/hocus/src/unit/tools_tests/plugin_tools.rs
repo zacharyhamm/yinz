@@ -54,12 +54,40 @@ fn a_resolved_plugin_path_is_always_absolute() {
 
 #[test]
 fn a_name_that_is_a_path_is_refused() {
-    for named in ["../keys", "a/b", "/etc/passwd", "..", ".", "sub/../keys"] {
+    for named in [
+        "../keys",
+        "a/b/c",
+        "/etc/passwd",
+        "..",
+        ".",
+        "sub/../keys",
+        "a/",
+        "/a",
+        "a//b",
+    ] {
         assert!(
             resolve_plugin_file(DIR, Some(named)).is_err(),
             "{named:?} should not be accepted as a plugin name"
         );
     }
+}
+
+/// One folder is allowed, for the modules a plugin `require`s: `app/ui` is
+/// `<dir>/app/ui.lua`, which `require("app.ui")` finds beside `app.lua`.
+#[test]
+fn a_module_name_resolves_one_folder_down() {
+    assert_eq!(
+        resolve_plugin_file(DIR, Some("app/ui")).unwrap(),
+        format!("{DIR}/app/ui.lua")
+    );
+    assert_eq!(
+        resolve_plugin_file(DIR, Some("app/init.lua")).unwrap(),
+        format!("{DIR}/app/init.lua")
+    );
+    // The write makes the subfolder, not the plugin folder, so a module lands where it is named.
+    let (argv, _) = plugin_argv_for("plugin_write", r#"{"name":"app/ui","source":"x"}"#).unwrap();
+    assert_eq!(argv[4], format!("{DIR}/app/ui.lua"));
+    assert_eq!(argv[5], format!("{DIR}/app"));
 }
 
 /// Never option-shaped, even though every path either follows a `--` or sits in a quoted shell
@@ -108,7 +136,7 @@ fn listing_asks_find_for_the_lua_files_one_level_down() {
             "find",
             DIR,
             "-maxdepth",
-            "1",
+            "2",
             "-type",
             "f",
             "-name",
@@ -116,6 +144,63 @@ fn listing_asks_find_for_the_lua_files_one_level_down() {
         ]
     );
     assert!(env.is_empty());
+}
+
+/// The log tool greps zellij's own log for the plugin's tag. The file is the one the server
+/// writes to (`ZELLIJ_TMP_LOG_FILE`), the match is the bare file name so a plugin loaded by
+/// name and one loaded by absolute path are both found, and the count is the last argument.
+#[test]
+fn the_log_tool_greps_zellijs_log_for_the_plugins_tag() {
+    let (argv, env) = plugin_argv_for("plugin_log", r#"{"name":"keys"}"#).unwrap();
+    assert_eq!(argv[0], "sh");
+    assert_eq!(argv[1], "-c");
+    assert!(argv[2].contains("zellij-log/zellij.log"), "{}", argv[2]);
+    assert!(argv[2].contains("grep -F -- \"$1\""), "{}", argv[2]);
+    assert!(argv[2].contains("tail -n \"$2\""), "{}", argv[2]);
+    assert_eq!(argv[4], "keys.lua");
+    assert_eq!(argv[5], PLUGIN_LOG_LINES.to_string());
+    assert!(env.is_empty());
+
+    let (argv, _) = plugin_argv_for("plugin_log", r#"{"name":"keys","line_count":5}"#).unwrap();
+    assert_eq!(argv[5], "5");
+}
+
+/// What the model reads after a reload. A pane that is not there is not a success; a pane
+/// showing the loader's error text is named as a failure up front.
+#[test]
+fn a_load_report_names_the_outcome_before_the_pane_text() {
+    let path = format!("{DIR}/keys.lua");
+    let missing = plugin_load_report(&path, None);
+    assert!(missing.contains("no pane is running it yet"), "{missing}");
+    assert!(!missing.contains("loaded in"), "{missing}");
+
+    let fine = plugin_load_report(
+        &path,
+        Some(PluginObservation {
+            pane_id: 7,
+            contents: "hello - 0 keys\n\n".to_owned(),
+        }),
+    );
+    assert!(
+        fine.starts_with(&format!("{path} loaded in plugin pane 7")),
+        "{fine}"
+    );
+    assert!(fine.ends_with("hello - 0 keys"), "{fine}");
+
+    for error in [
+        "failed to load the Lua plugin at '/x/keys.lua'. A plugin must return a table",
+        "Panic!\nfailed to run the plugin's `update`: keys.lua:12: attempt to index nil",
+    ] {
+        let failed = plugin_load_report(
+            &path,
+            Some(PluginObservation {
+                pane_id: 7,
+                contents: error.to_owned(),
+            }),
+        );
+        assert!(failed.contains("FAILED to load"), "{failed}");
+        assert!(failed.contains(error.lines().last().unwrap()), "{failed}");
+    }
 }
 
 #[test]
@@ -326,6 +411,54 @@ fn a_long_source_is_cut_short_in_the_confirmation() {
     assert!(detail.contains("-- line 0"), "{detail}");
     assert!(detail.contains("30 more lines"), "{detail}");
     assert!(!detail.contains("-- line 49"), "{detail}");
+}
+
+#[test]
+fn the_permissions_a_source_asks_for_are_read_off_it() {
+    let source = r#"
+        local zellij = require("zellij")
+        function M.load()
+          zellij.subscribe { "key" }
+          zellij.request_permission {
+            "read_files", "WriteFiles",
+            'run_commands',   -- single quotes too
+            "not_a_permission",
+          }
+          zellij.request_permission({ "read_files" })   -- a repeat, and the other call shape
+        end
+    "#;
+    assert_eq!(
+        requested_permissions(source),
+        vec![
+            PermissionType::ReadFiles,
+            PermissionType::WriteFiles,
+            PermissionType::RunCommands,
+        ]
+    );
+    assert!(requested_permissions("local M = {}\nreturn M").is_empty());
+    // A list built at runtime is not read: the plugin gets its prompt.
+    assert!(requested_permissions("zellij.request_permission(perms)").is_empty());
+    assert_eq!(
+        permission_names(&[PermissionType::ReadFiles, PermissionType::FullHdAccess]),
+        vec!["read_files", "full_hd_access"]
+    );
+}
+
+/// The approval of a write is the approval of its permissions, so the sentence being agreed
+/// to has to say what they are.
+#[test]
+fn a_write_confirmation_names_the_permissions_it_grants() {
+    let with = consequence(&call(
+        "plugin_write",
+        r#"{"name":"keys","source":"zellij.request_permission { \"read_files\", \"run_commands\" }"}"#,
+    ))
+    .unwrap();
+    assert!(
+        with.ends_with("and grants it: read_files, run_commands"),
+        "{with}"
+    );
+    let without = consequence(&call("plugin_write", r#"{"name":"keys","source":"x"}"#)).unwrap();
+    assert!(!without.contains("grants"), "{without}");
 }
 
 #[test]

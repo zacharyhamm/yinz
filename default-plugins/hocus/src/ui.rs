@@ -1456,6 +1456,7 @@ fn help_line(state: &State) -> &'static str {
         Status::AwaitingCommand => "running…  <Esc> abort  <↑↓> scroll",
         Status::AwaitingSearch => "searching…  <Esc> abort  <↑↓> scroll",
         Status::AwaitingLinear => "reading linear…  <Esc> abort  <↑↓> scroll",
+        Status::AwaitingPluginLoad => "loading plugin…  <Esc> abort  <↑↓> scroll",
         Status::Idle if state.is_streaming() => "streaming…  <Esc> cancel  <↑↓> scroll",
         Status::Idle if state.is_planning() => "planning  type /plan to leave  <Esc> hide",
         Status::Idle if !state.jobs.is_empty() => "<Ctrl l> new chat  <Esc> hide",
