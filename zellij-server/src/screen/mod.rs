@@ -2295,18 +2295,32 @@ impl Screen {
     ) -> Result<bool> {
         // true => found and focused, false => not
         let err_context = || "failed to focus_plugin_pane".to_string();
-        let mut tab_index_and_plugin_pane_id = None;
+        let mut tab_id_and_plugin_pane_id = None;
         let mut plugin_pane_to_move_to_active_tab = None;
         // the tab a pane leaves forgets that it was an overlay - carry the placement over, or the
         // pane lands in the new tab sized against its viewport
         let mut overlay_placement = None;
         let mut overlay_carry = OverlayCarry::default();
-        let focused_tab_index = *self.active_tab_ids.get(&client_id).unwrap_or(&0);
+        // A tab *id*, as `self.tabs` and `active_tab_ids` are both keyed - never a position. The
+        // two part company as soon as a tab is closed or moved, and reading one as the other is
+        // what used to walk the client off its own tab on the way to a reveal.
+        //
+        // Resolved, and checked against `self.tabs`, *before* anything is extracted: a pane taken
+        // out of its tab with nowhere to put it is dropped on the `?` below, and a dropped plugin
+        // pane never reaches `PluginInstruction::Unload` - the instance outlives the pane with
+        // nothing left holding it. Production cannot get here without an active tab
+        // (`resolve_tab_and_client` only hands over a client that has one), but that invariant is
+        // worth keeping next to the extraction rather than one call frame away.
+        let focused_tab_id = self
+            .active_tab_ids
+            .get(&client_id)
+            .copied()
+            .filter(|tab_id| self.tabs.contains_key(tab_id));
         let all_tabs = self.get_tabs_mut();
-        for (tab_index, tab) in all_tabs.iter_mut() {
+        for (tab_id, tab) in all_tabs.iter_mut() {
             if let Some(plugin_pane_id) = tab.find_plugin(&run_plugin) {
-                tab_index_and_plugin_pane_id = Some((*tab_index, plugin_pane_id));
-                if move_to_focused_tab && focused_tab_index != *tab_index {
+                tab_id_and_plugin_pane_id = Some((*tab_id, plugin_pane_id));
+                if move_to_focused_tab && focused_tab_id.is_some_and(|focused| focused != *tab_id) {
                     overlay_placement = tab.overlay_placement_for(plugin_pane_id);
                     overlay_carry = tab.overlay_carry_for(plugin_pane_id);
                     plugin_pane_to_move_to_active_tab = tab.extract_pane(plugin_pane_id, true);
@@ -2364,11 +2378,27 @@ impl Screen {
             }
             return Ok(true);
         }
-        match tab_index_and_plugin_pane_id {
-            Some((tab_index, plugin_pane_id)) => {
-                self.go_to_tab(tab_index + 1, client_id)?;
+        match tab_id_and_plugin_pane_id {
+            Some((tab_id, plugin_pane_id)) => {
+                // `tab_id` is a `self.tabs` key - a stable id - and `go_to_tab` takes a 1-based
+                // display *position*. The two agree only until the first tab is closed or moved:
+                // `close_tab_by_id` renumbers positions and leaves ids alone. Handing the id over
+                // as a position took the client to whichever tab happened to sit at that number
+                // and then revealed the plugin on the tab it had just left - "revealing hocus
+                // just switches tabs" - and did nothing at all when the id ran past the end of
+                // the tab bar, which is why it only misbehaved sometimes.
+                //
+                // Converting is also what makes the already-focused case free, and it is the
+                // common one: every `LaunchOrFocusPlugin { move_to_focused_tab }` that found its
+                // pane in the client's own tab arrives here. `switch_active_tab` returns early
+                // when handed the position the client is already on, so a reveal in place needs
+                // no branch of its own - and cannot grow one that drifts from this.
+                let tab_position = self
+                    .get_tab_position_by_id(tab_id)
+                    .with_context(err_context)?;
+                self.go_to_tab(tab_position + 1, client_id)?;
                 self.tabs
-                    .get_mut(&tab_index)
+                    .get_mut(&tab_id)
                     .with_context(err_context)?
                     .focus_pane_with_id(plugin_pane_id, should_float, should_be_in_place, client_id)
                     .context("failed to focus plugin pane")?;
