@@ -234,7 +234,10 @@ impl State {
     /// predicate the whole waiting indicator keys off.
     pub(crate) fn is_loading(&self) -> bool {
         match self.status {
-            Status::AwaitingCommand | Status::AwaitingSearch | Status::AwaitingLinear => true,
+            Status::AwaitingCommand
+            | Status::AwaitingSearch
+            | Status::AwaitingLinear
+            | Status::AwaitingPluginLoad => true,
             // A confirmation prompt is waiting on the user rather than on us,
             // so the only thing left to be waiting on is the reply. Once its
             // first token lands the arriving text is its own proof of life; a
@@ -278,6 +281,8 @@ impl State {
             if let Some(call) = head {
                 return Some(format!("{spinner} linear: {}", call.name));
             }
+        } else if matches!(self.status, Status::AwaitingPluginLoad) {
+            return Some(format!("{spinner} loading plugin"));
         }
 
         Some(format!(
@@ -441,6 +446,7 @@ impl State {
         // job back anyway — `tick_jobs` still runs, for its countdown.
         let asked = self.drain_asks();
         let fired = self.tick_jobs(elapsed);
+        let fired = self.poll_plugin_load() || fired;
         let frames = self.wants_frames();
         if frames {
             self.tick += 1;
@@ -452,6 +458,37 @@ impl State {
         // A quiet tick changed nothing on screen; asking for a render would
         // recomposite the whole session for nothing.
         frames || fired
+    }
+
+    /// Look at the pane a `plugin_reload` opened, once it has had time to load. Returns whether
+    /// the head was answered.
+    ///
+    /// Runs off the frame timer rather than a timer of its own: `wants_frames` is true while a
+    /// plugin load is awaited, so the chain is already running at `FRAME_SECONDS`, and a second
+    /// chain is exactly what `timer_armed` exists to prevent.
+    ///
+    /// Off wasm there is no host to ask, so the look itself lives in `tools::host` and this is
+    /// only the clock around it.
+    fn poll_plugin_load(&mut self) -> bool {
+        if !matches!(self.status, Status::AwaitingPluginLoad) {
+            return false;
+        }
+        let Some(watch) = self.plugin_load.clone() else {
+            // Nothing to watch: answer rather than spin forever.
+            self.status = Status::Idle;
+            self.finish_head("the reload was requested, but nothing was recorded to watch");
+            self.pump_tools();
+            return true;
+        };
+        if self.mono_ms.saturating_sub(watch.started_ms) < PLUGIN_LOAD_MS {
+            return false;
+        }
+        let report = tools::plugin_load_report(&watch.target, tools::observe_plugin(&watch.target));
+        self.plugin_load = None;
+        self.status = Status::Idle;
+        self.finish_head(report);
+        self.pump_tools();
+        true
     }
 
     /// Count the jobs down and start at most one due run. Returns whether the

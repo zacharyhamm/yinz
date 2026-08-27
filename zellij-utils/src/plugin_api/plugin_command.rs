@@ -85,7 +85,8 @@ pub use super::generated_api::api::{
         GetSessionListResponse as ProtobufGetSessionListResponse, GetTabInfoPayload,
         GetTabInfoResponse as ProtobufGetTabInfoResponse, GetUserPluginDirPayload,
         GetUserPluginDirResponse as ProtobufGetUserPluginDirResponse, GoToTabWithIdPayload,
-        GroupAndUngroupPanesPayload, HideFloatingPanesPayload as ProtobufHideFloatingPanesPayload,
+        GrantPluginPermissionsPayload, GroupAndUngroupPanesPayload,
+        HideFloatingPanesPayload as ProtobufHideFloatingPanesPayload,
         HideFloatingPanesResponse as ProtobufHideFloatingPanesResponse, HidePaneWithIdPayload,
         HighlightAndUnhighlightPanesPayload, HighlightLayer as ProtobufHighlightLayer,
         HighlightStyle as ProtobufHighlightStyle, HttpVerb as ProtobufHttpVerb, IdAndNewName,
@@ -1742,6 +1743,20 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     all: payload.all,
                 }),
                 _ => Err("Mismatched payload for FsCreateDir"),
+            },
+            Some(CommandName::GrantPluginPermissions) => match protobuf_plugin_command.payload {
+                Some(Payload::GrantPluginPermissionsPayload(payload)) => {
+                    Ok(PluginCommand::GrantPluginPermissions {
+                        plugin_url: payload.plugin_url,
+                        permissions: payload
+                            .permissions
+                            .iter()
+                            .filter_map(|p| ProtobufPermissionType::try_from(*p).ok())
+                            .filter_map(|p| PermissionType::try_from(p).ok())
+                            .collect(),
+                    })
+                },
+                _ => Err("Mismatched payload for GrantPluginPermissions"),
             },
             Some(CommandName::FsRename) => match protobuf_plugin_command.payload {
                 Some(Payload::FsRenamePayload(payload)) => Ok(PluginCommand::FsRename {
@@ -4105,6 +4120,22 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     path: path.display().to_string(),
                     all,
                 })),
+            }),
+            PluginCommand::GrantPluginPermissions {
+                plugin_url,
+                permissions,
+            } => Ok(ProtobufPluginCommand {
+                name: CommandName::GrantPluginPermissions as i32,
+                payload: Some(Payload::GrantPluginPermissionsPayload(
+                    GrantPluginPermissionsPayload {
+                        plugin_url,
+                        permissions: permissions
+                            .iter()
+                            .filter_map(|p| ProtobufPermissionType::try_from(*p).ok())
+                            .map(|p| p as i32)
+                            .collect(),
+                    },
+                )),
             }),
             PluginCommand::FsRename { from, to } => Ok(ProtobufPluginCommand {
                 name: CommandName::FsRename as i32,

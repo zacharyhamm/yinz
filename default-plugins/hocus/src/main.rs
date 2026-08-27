@@ -53,6 +53,20 @@ const FRAME_SECONDS: f64 = 0.1;
 /// least, so a second of granularity is free and 10 Hz forever would not be.
 const JOB_SECONDS: f64 = 1.0;
 
+/// How long a `plugin_reload` waits before reading the plugin's pane. A Lua plugin loads in
+/// well under this; what the wait covers is the screen thread opening the pane and the first
+/// render landing in it, so that what is read back is the plugin and not the loading screen.
+const PLUGIN_LOAD_MS: u64 = 750;
+
+/// A `plugin_reload` between asking the host to load the plugin and looking at the result.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginLoadWatch {
+    /// The absolute path that was reloaded, which is what the pane's `plugin_url` ends in.
+    pub target: String,
+    /// `mono_ms` when the reload was requested.
+    pub started_ms: u64,
+}
+
 /// The shortest interval `schedule` will accept. A model that asks for one
 /// second bills the user sixty times a minute for a pane that hasn't changed.
 const MIN_JOB_SECONDS: f64 = 5.0;
@@ -201,6 +215,9 @@ pub struct State {
     /// readable. Empty means the host could not resolve one, in which case there is nowhere to
     /// write a plugin and the plugin tools say so rather than guessing at a path.
     pub user_plugin_dir: String,
+    /// The `plugin_reload` being watched, while `status` is `AwaitingPluginLoad`: the absolute
+    /// path that was asked to load, and the tick it was asked on.
+    pub plugin_load: Option<PluginLoadWatch>,
     pub messages: Vec<Message>,
     pub input: TextInput,
     pub status: Status,
@@ -436,6 +453,7 @@ impl Default for State {
             kdl: BTreeMap::new(),
             env: BTreeMap::new(),
             user_plugin_dir: String::new(),
+            plugin_load: None,
             messages: Vec::new(),
             input: TextInput::empty(),
             status: Status::Idle,

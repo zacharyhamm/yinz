@@ -1612,6 +1612,19 @@ pub fn go_to_tab(tab_index: u32) {
     unsafe { host_run_plugin_command() };
 }
 
+/// Grant `permissions` to the plugin at `plugin_url` before it asks, as if the user had answered
+/// its prompt. Only a builtin plugin may call this; for anything else the host refuses and logs.
+/// The grant is remembered in the permissions cache and applied to any running instance.
+pub fn grant_plugin_permissions(plugin_url: &str, permissions: &[PermissionType]) {
+    let plugin_command = PluginCommand::GrantPluginPermissions {
+        plugin_url: plugin_url.to_owned(),
+        permissions: permissions.to_vec(),
+    };
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
 pub fn start_or_reload_plugin(url: &str) {
     let plugin_command = PluginCommand::StartOrReloadPlugin(url.to_owned());
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
