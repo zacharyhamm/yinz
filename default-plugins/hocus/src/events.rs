@@ -1017,6 +1017,38 @@ impl State {
     /// The listing is cut to the call's line cap before `MAX_TOOL_OUTPUT` gets
     /// near it, so a search of a large repository comes back as a usable head of
     /// the matches with a count, rather than 40 000 bytes ending mid-line.
+    /// The reload proper, once the host has said the file may be loaded - it is not a link out
+    /// of the folder, and it is there.
+    ///
+    /// `start_or_reload_plugin` returns nothing, so this cannot answer yet: it asks, records
+    /// what it asked for, and leaves the head pending for `poll_plugin_load` to answer once the
+    /// pane has had time to show what happened. The path is re-resolved rather than carried:
+    /// `resolve_plugin_file` is pure and was already given the same folder and name, so it
+    /// cannot answer differently here, and a reload must be built from an absolute path -
+    /// `RunPluginLocation::parse` joins a relative `file:` path onto the cwd, which
+    /// `start_or_reload_plugin` always supplies.
+    fn start_plugin_load(&mut self) -> bool {
+        let Some(head) = self.pending.front() else {
+            return false;
+        };
+        let target = tools::Args::parse(&head.arguments).ok().and_then(|args| {
+            tools::resolve_plugin_file(&self.user_plugin_dir, args.name.as_deref()).ok()
+        });
+        let Some(target) = target else {
+            self.finish_head("the plugin could not be resolved to a file");
+            self.pump_tools();
+            return true;
+        };
+        tools::reload_plugin(&target);
+        self.plugin_load = Some(PluginLoadWatch {
+            target,
+            started_ms: self.mono_ms,
+        });
+        self.status = Status::AwaitingPluginLoad;
+        self.arm_timer(FRAME_SECONDS);
+        true
+    }
+
     /// The deferred half of the plugin-authoring tools.
     ///
     /// The shapes that need saying in the model's terms rather than the shell's: a write that
@@ -1041,6 +1073,19 @@ impl State {
 
         if head.name == "plugin_write" {
             if exit_code == Some(0) {
+                // The user approved this source, and with it the permissions it asks for -
+                // the confirmation said so. Granting them now is what keeps the plugin from
+                // prompting in a pane nobody in this loop is looking at.
+                let args = tools::Args::parse(&head.arguments).unwrap_or_default();
+                let granted = tools::requested_permissions(args.source.as_deref().unwrap_or(""));
+                let target = tools::resolve_plugin_file(dir, args.name.as_deref()).ok();
+                if let (Some(target), false) = (&target, granted.is_empty()) {
+                    tools::grant_permissions(target, &granted);
+                    return format!(
+                        "wrote {name}.lua and granted it {}; call plugin_reload to load it",
+                        tools::permission_names(&granted).join(", ")
+                    );
+                }
                 return format!("wrote {name}.lua; call plugin_reload to load it");
             }
             // What the shell says when `set -C` refuses to truncate. Checked by text because it
@@ -1065,14 +1110,14 @@ impl State {
         // already given the same folder and name, so it cannot answer differently here, and a
         // reload must be built from an absolute path - `RunPluginLocation::parse` joins a
         // relative `file:` path onto the cwd, which `start_or_reload_plugin` always supplies.
-        if head.name == "plugin_reload" && exit_code == Some(0) {
-            let target = tools::Args::parse(&head.arguments)
-                .ok()
-                .and_then(|args| tools::resolve_plugin_file(dir, args.name.as_deref()).ok());
-            return match target {
-                Some(target) => tools::reload_plugin(&target),
-                None => format!("{name} could not be resolved to a plugin file"),
-            };
+        // (A cleared reload is handled by the caller, which has to change state rather than
+        // answer: see `start_plugin_load`.)
+
+        if head.name == "plugin_log" && exit_code == Some(0) && stdout.trim().is_empty() {
+            return format!(
+                "no log lines from {name}.lua yet. A plugin writes one with zellij.log(...) or \
+                 print(...); a load or runtime error is shown in its pane, not here."
+            );
         }
 
         // The folder is made by the first write, so until then it is legitimately absent -
@@ -1224,6 +1269,9 @@ impl State {
             Some(hint) => hint,
             None if tools::PROJECT_READ_TOOLS.contains(&head.name.as_str()) => {
                 Self::project_tool_result(head, exit_code, stdout, stderr)
+            },
+            None if head.name == "plugin_reload" && exit_code == Some(0) => {
+                return self.start_plugin_load();
             },
             None if tools::PLUGIN_FILE_TOOLS.contains(&head.name.as_str()) => {
                 Self::plugin_tool_result(head, &self.user_plugin_dir, exit_code, stdout, stderr)

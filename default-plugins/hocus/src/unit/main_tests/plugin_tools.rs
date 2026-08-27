@@ -18,6 +18,7 @@ fn a_plugin_tool_without_a_folder_refuses_instead_of_running_anything() {
         "plugin_read",
         "plugin_write",
         "plugin_reload",
+        "plugin_log",
     ] {
         let mut state = ready_state();
         assert!(
@@ -90,14 +91,14 @@ fn an_unknown_docs_section_lists_the_real_ones_rather_than_failing() {
 fn a_plugin_tool_refuses_a_name_that_is_a_path() {
     for arguments in [
         r#"{"name":"../../../etc/passwd","source":"x"}"#,
-        r#"{"name":"sub/keys","source":"x"}"#,
+        r#"{"name":"deep/sub/keys","source":"x"}"#,
     ] {
         let mut state = plugin_state();
         assert!(run_file_tool(&mut state, "plugin_write", arguments));
         let results = tool_results(&state);
         assert!(
             results[0].content.contains("not a plugin name")
-                || results[0].content.contains("single file name"),
+                || results[0].content.contains("file name"),
             "got {:?}",
             results[0].content
         );
@@ -115,6 +116,7 @@ fn the_filesystem_tools_defer_on_the_host() {
         ("plugin_read", r#"{"name":"keys"}"#),
         ("plugin_write", r#"{"name":"keys","source":"local M = {}"}"#),
         ("plugin_reload", r#"{"name":"keys"}"#),
+        ("plugin_log", r#"{"name":"keys"}"#),
     ] {
         let mut state = plugin_state();
         assert!(
@@ -126,11 +128,10 @@ fn the_filesystem_tools_defer_on_the_host() {
     }
 }
 
-/// The plugin is started once the host says the path may be loaded, and not before. The reload
-/// itself is fire-and-forget - `start_or_reload_plugin` has no reply - so the result says what
-/// was asked for rather than claiming the plugin loaded.
+/// The plugin is started once the host says the path may be loaded, and not before. A reload is fire-and-forget on the host, so a clean exit from the guard is where the
+/// plugin is *asked* to load - not where the tool answers. The answer waits for the pane.
 #[test]
-fn a_cleared_reload_starts_the_plugin_without_claiming_success() {
+fn a_cleared_reload_waits_to_look_at_the_pane_before_answering() {
     let mut state = plugin_state();
     command_result(
         &mut state,
@@ -140,11 +141,135 @@ fn a_cleared_reload_starts_the_plugin_without_claiming_success() {
         b"",
         b"",
     );
+    assert!(tool_results(&state).is_empty(), "answered before looking");
+    assert!(matches!(state.status, Status::AwaitingPluginLoad));
+    assert_eq!(state.pending.len(), 1, "the head must stay pending");
+    assert_eq!(
+        state
+            .plugin_load
+            .as_ref()
+            .map(|watch| watch.target.as_str()),
+        Some("/home/someone/.config/zellij/plugins/keys.lua")
+    );
+    assert!(state.timer_armed, "nothing would ever go and look");
+
+    // Too soon: the pane has not had time to show anything.
+    state.timer_armed = false;
+    state.on_timer(0.1);
+    assert!(tool_results(&state).is_empty());
+    assert!(matches!(state.status, Status::AwaitingPluginLoad));
+
+    // Once the wait is up the look happens. Off wasm there is no host to ask, so what is found
+    // is "no pane" - and that is reported as such rather than as success.
+    state.timer_armed = false;
+    state.on_timer((PLUGIN_LOAD_MS as f64) / 1000.0);
     let results = tool_results(&state);
     assert_eq!(results.len(), 1);
-    // Off wasm there is no host to call, so the stub answers - what matters here is that the
-    // clean exit is what turned into a reload.
-    assert!(!results[0].content.is_empty());
+    assert!(
+        results[0].content.contains("no pane is running it yet"),
+        "{:?}",
+        results[0].content
+    );
+    assert!(matches!(state.status, Status::Idle));
+    assert!(state.plugin_load.is_none());
+}
+
+/// The watch belongs to the chat that asked for the reload, not to whatever is on screen:
+/// `/history` mid-wait must not strand the reload, and a second chat's reload must not take the
+/// first one's watch away.
+#[test]
+fn a_reload_awaited_by_a_parked_chat_is_still_answered() {
+    let mut state = plugin_state();
+    command_result(
+        &mut state,
+        "plugin_reload",
+        r#"{"name":"keys"}"#,
+        0,
+        b"",
+        b"",
+    );
+    assert!(matches!(state.status, Status::AwaitingPluginLoad));
+
+    // `/history` moving to another conversation, which leaves an idle chat in front.
+    let waiting = state.take_chat();
+    state.parked.push(waiting);
+    assert!(matches!(state.status, Status::Idle));
+    assert!(
+        state.plugin_load.is_none(),
+        "the watch went with the chat that asked"
+    );
+
+    state.timer_armed = false;
+    state.on_timer((PLUGIN_LOAD_MS as f64) / 1000.0);
+
+    assert!(tool_results(&state).is_empty(), "not this chat's reload");
+    let parked = state.parked.first().expect("still owed a reply");
+    let results: Vec<&Message> = parked
+        .messages
+        .iter()
+        .filter(|message| message.role == Role::Tool)
+        .collect();
+    assert_eq!(results.len(), 1);
+    assert!(
+        results[0].content.contains("no pane is running it yet"),
+        "{:?}",
+        results[0].content
+    );
+    assert!(parked.plugin_load.is_none());
+    assert!(!matches!(parked.status, Status::AwaitingPluginLoad));
+}
+
+/// Esc while the pane is being waited on answers the head like any other abort, so the model
+/// is not left with a call it never heard back from.
+#[test]
+fn an_awaited_plugin_load_can_be_aborted() {
+    let mut state = plugin_state();
+    command_result(
+        &mut state,
+        "plugin_reload",
+        r#"{"name":"keys"}"#,
+        0,
+        b"",
+        b"",
+    );
+    assert!(matches!(state.status, Status::AwaitingPluginLoad));
+    state.abort_tools();
+    assert!(matches!(state.status, Status::Idle));
+    assert!(state.pending.is_empty());
+    // A later tick must not answer a head that is no longer there.
+    state.plugin_load = None;
+    state.timer_armed = false;
+    state.on_timer(1.0);
+    assert_eq!(tool_results(&state).len(), 1);
+}
+
+/// An empty grep is the ordinary first answer for a plugin that has not logged yet, and the
+/// model should be told how to make it say something rather than shown nothing.
+#[test]
+fn an_empty_log_says_how_a_plugin_writes_to_it() {
+    let mut state = plugin_state();
+    command_result(&mut state, "plugin_log", r#"{"name":"keys"}"#, 0, b"", b"");
+    let results = tool_results(&state);
+    assert!(
+        results[0].content.contains("zellij.log"),
+        "{:?}",
+        results[0].content
+    );
+}
+
+#[test]
+fn log_lines_come_back_as_they_are() {
+    let mut state = plugin_state();
+    command_result(
+        &mut state,
+        "plugin_log",
+        r#"{"name":"keys"}"#,
+        0,
+        b"INFO [lua:keys.lua] pressed t\n",
+        b"",
+    );
+    let results = tool_results(&state);
+    assert_eq!(results[0].content, "INFO [lua:keys.lua] pressed t");
 }
 
 /// The point of making a reload wait for the host: a symlink in the plugin folder would
@@ -270,6 +395,32 @@ fn a_successful_write_points_at_the_next_step() {
     let results = tool_results(&state);
     assert!(
         results[0].content.contains("plugin_reload"),
+        "got {:?}",
+        results[0].content
+    );
+    assert!(
+        !results[0].content.contains("granted"),
+        "{:?}",
+        results[0].content
+    );
+}
+
+/// A write whose source asks for permissions says they were granted, so the model does not
+/// go looking for a prompt that will never come.
+#[test]
+fn a_successful_write_says_what_it_granted() {
+    let mut state = plugin_state();
+    command_result(
+        &mut state,
+        "plugin_write",
+        r#"{"name":"probe","source":"zellij.request_permission { \"read_files\" }"}"#,
+        0,
+        b"",
+        b"",
+    );
+    let results = tool_results(&state);
+    assert!(
+        results[0].content.contains("granted it read_files"),
         "got {:?}",
         results[0].content
     );

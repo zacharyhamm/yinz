@@ -176,6 +176,25 @@ fn a_plugin_with_no_render_renders_nothing() {
     assert_eq!(plugin.render(1, 1).unwrap(), Vec::<u8>::new());
 }
 
+/// `print` has no terminal to reach from inside a plugin, so it is the same function as
+/// `zellij.log`, and both take anything `tostring` does without raising.
+#[test]
+fn print_is_zellij_log_and_neither_minds_what_it_is_given() {
+    let mut plugin = load(
+        r#"
+        local M = {}
+        function M.render()
+          print("a", 1, true, nil, {})
+          zellij.log("b", 2.5)
+          return tostring(print == zellij.log)
+        end
+        return M
+        "#,
+    )
+    .unwrap();
+    assert_eq!(plugin.render(1, 10).unwrap(), b"true");
+}
+
 #[test]
 fn update_receives_a_normalized_event_and_reports_whether_to_render() {
     let mut plugin = load(
@@ -208,6 +227,56 @@ fn update_receives_a_normalized_event_and_reports_whether_to_render() {
     assert_eq!(
         String::from_utf8(plugin.render(1, 10).unwrap()).unwrap(),
         "timer"
+    );
+}
+
+/// The host spawns a timer per `set_timeout` and cannot cancel one, so the interval re-arms
+/// itself from the `timer` event. Re-arming on *every* timer forked the chain: a second
+/// `set_interval`, or a `set_timeout` alongside one, left two permanent clocks calling the
+/// plugin back twice as often as it asked.
+#[test]
+fn overlapping_timers_collapse_back_to_one_interval() {
+    let mut plugin = load(
+        r#"
+        local zellij = require("zellij")
+        local M = {}
+        M.ticks = 0
+        function M.load()
+          zellij.set_interval(1)
+          zellij.set_interval(1)
+          zellij.set_timeout(1)
+        end
+        function M.update(event)
+          if event.name == "timer" then M.ticks = M.ticks + 1 end
+          return false
+        end
+        function M.render() return M.ticks .. "/" .. zellij.__timers end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    assert_eq!(
+        String::from_utf8(plugin.render(1, 10).unwrap()).unwrap(),
+        "0/3",
+        "three timers were asked for"
+    );
+
+    // The first two drain the ones already in the air rather than adding to them.
+    plugin.update(&Event::Timer(1.0)).unwrap();
+    plugin.update(&Event::Timer(1.0)).unwrap();
+    assert_eq!(
+        String::from_utf8(plugin.render(1, 10).unwrap()).unwrap(),
+        "2/1"
+    );
+
+    // The last one re-arms, and from here it is one clock however long it runs.
+    plugin.update(&Event::Timer(1.0)).unwrap();
+    plugin.update(&Event::Timer(1.0)).unwrap();
+    assert_eq!(
+        String::from_utf8(plugin.render(1, 10).unwrap()).unwrap(),
+        "4/1",
+        "one chain, not one per set_timeout"
     );
 }
 
@@ -1384,4 +1453,1001 @@ fn the_tmp_root_is_zellijs_own_temp_folder() {
     assert_eq!(std::fs::read_to_string(&written).unwrap(), "shared");
     // and not in /host, which is where a relative path would have gone
     assert!(!dirs.host.path().join("lua-sandbox-test.txt").exists());
+}
+
+// -- Event ergonomics -------------------------------------------------------------------------
+
+/// Run `body` as an `update` handler for `event` and hand back what it returned, as a string.
+fn describe_event(event: Event, body: &str) -> String {
+    let source = format!(
+        "local M = {{}}\nM.out = ''\nfunction M.update(event)\n  M.out = (function()\n{}\n  end)()\n  return true\nend\nfunction M.render() return M.out end\nreturn M",
+        body
+    );
+    let mut plugin = load(&source).unwrap();
+    plugin.update(&event).unwrap();
+    String::from_utf8(plugin.render(1, 200).unwrap()).unwrap()
+}
+
+/// A tuple variant arrives as a bare list, and `RunCommandResult`'s output as byte numbers.
+/// Both are named and decoded, and `value` still holds the list for anyone reading it.
+#[test]
+fn a_command_result_has_named_fields_and_string_output() {
+    let event = Event::RunCommandResult(
+        Some(3),
+        b"out\n".to_vec(),
+        "é".as_bytes().to_vec(),
+        BTreeMap::from([("k".to_owned(), "v".to_owned())]),
+    );
+    let out = describe_event(
+        event,
+        r#"return event.exit_code .. "|" .. event.stdout .. "|" .. event.stderr .. "|" .. event.context.k .. "|" .. #event.value"#,
+    );
+    // `render` translates the newline for the terminal, as it does for any output.
+    assert_eq!(out, "3|out\n\r|é|v|4");
+}
+
+/// An absent exit code is `nil` in the middle of the list. Lua's `#` stops there, so the
+/// fields are walked by position rather than read off the list's length.
+#[test]
+fn an_absent_exit_code_does_not_shift_the_fields_after_it() {
+    let event =
+        Event::CommandPaneExited(7, None, BTreeMap::from([("a".to_owned(), "b".to_owned())]));
+    let out = describe_event(
+        event,
+        r#"return tostring(event.pane_id) .. "|" .. tostring(event.exit_code) .. "|" .. event.context.a"#,
+    );
+    assert_eq!(out, "7|nil|b");
+}
+
+#[test]
+fn a_web_result_body_is_a_string_and_a_stream_chunk_too() {
+    let event = Event::WebRequestResult(
+        200,
+        BTreeMap::from([("content-type".to_owned(), "text/plain".to_owned())]),
+        b"body".to_vec(),
+        BTreeMap::new(),
+    );
+    let out = describe_event(
+        event,
+        r#"return event.status .. "|" .. event.headers["content-type"] .. "|" .. event.body"#,
+    );
+    assert_eq!(out, "200|text/plain|body");
+
+    let event = Event::WebRequestStreamChunk {
+        stream_id: "s".to_owned(),
+        chunk: b"chunk".to_vec(),
+        done: true,
+        error: None,
+    };
+    let out = describe_event(
+        event,
+        r#"return event.stream_id .. "|" .. event.chunk .. "|" .. tostring(event.done)"#,
+    );
+    assert_eq!(out, "s|chunk|true");
+}
+
+#[test]
+fn a_mouse_event_says_what_kind_and_where() {
+    let out = describe_event(
+        Event::Mouse(zellij_utils::data::Mouse::LeftClick(3, 4)),
+        r#"return event.kind .. "@" .. event.line .. "," .. event.col"#,
+    );
+    assert_eq!(out, "left_click@3,4");
+    let out = describe_event(
+        Event::Mouse(zellij_utils::data::Mouse::ScrollUp(2)),
+        r#"return event.kind .. "x" .. event.lines"#,
+    );
+    assert_eq!(out, "scroll_upx2");
+}
+
+#[test]
+fn file_system_events_carry_named_pairs() {
+    let event = Event::FileSystemUpdate(vec![(PathBuf::from("/a/b.txt"), None)]);
+    let out = describe_event(
+        event,
+        r#"return event.files[1].path .. "|" .. tostring(event.files[1].metadata) .. "|" .. event.value[1][1]"#,
+    );
+    assert_eq!(out, "/a/b.txt|nil|/a/b.txt");
+}
+
+/// A map keyed by pane id arrives keyed by *tables*, which nothing can look up. It is re-keyed
+/// by the `terminal:3` spelling `zellij.pane_key` produces, so a plugin can.
+#[test]
+fn a_render_report_can_be_looked_up_by_pane() {
+    use zellij_utils::data::{PaneContents, PaneId};
+    let mut report = std::collections::HashMap::new();
+    report.insert(
+        PaneId::Terminal(3),
+        PaneContents {
+            viewport: vec!["hello".to_owned()],
+            ..Default::default()
+        },
+    );
+    let out = describe_event(
+        Event::PaneRenderReport(report),
+        r#"return event.panes[zellij.pane_key(zellij.terminal_pane(3))].viewport[1] .. "|" .. event.panes["terminal:3"].viewport[1]"#,
+    );
+    assert_eq!(out, "hello|hello");
+}
+
+#[test]
+fn bytes_to_string_copes_with_more_than_a_stack_of_bytes() {
+    let source = r#"
+        local M = {}
+        function M.render()
+          local bytes = {}
+          for i = 1, 10000 do bytes[i] = 65 end
+          local s = zellij.bytes_to_string(bytes)
+          return #s .. s:sub(1, 3)
+        end
+        return M
+    "#;
+    let mut plugin = load(source).unwrap();
+    assert_eq!(plugin.render(1, 1).unwrap(), b"10000AAA");
+}
+
+// -- Text and UI components -------------------------------------------------------------------
+
+/// Run `body` as `render` and hand back the string; for the pure helpers.
+fn eval(body: &str) -> String {
+    let source = format!(
+        "local M = {{}}\nfunction M.render()\n{}\nend\nreturn M",
+        body
+    );
+    let mut plugin = load(&source).unwrap();
+    String::from_utf8(plugin.render(1, 200).unwrap()).unwrap()
+}
+
+/// Width is columns, which is neither bytes nor code points: an accent takes none of its own
+/// and a CJK character takes two.
+#[test]
+fn text_width_measures_columns() {
+    assert_eq!(
+        eval(
+            r#"return zellij.text.width("héllo") .. "," .. zellij.text.width("日本") .. "," .. #"héllo""#
+        ),
+        "5,4,6"
+    );
+}
+
+#[test]
+fn text_helpers_pad_and_cut_by_columns() {
+    assert_eq!(
+        eval(r#"return "[" .. zellij.text.pad("日本", 5) .. "]""#),
+        "[日本 ]"
+    );
+    assert_eq!(
+        eval(r#"return "[" .. zellij.text.pad_left("ab", 4) .. "]""#),
+        "[  ab]"
+    );
+    assert_eq!(
+        eval(r#"return "[" .. zellij.text.center("ab", 5) .. "]""#),
+        "[ ab  ]"
+    );
+    assert_eq!(
+        eval(r#"return zellij.text.truncate("hello world", 6)"#),
+        "hello…"
+    );
+    assert_eq!(eval(r#"return zellij.text.truncate("hello", 6)"#), "hello");
+    // A wide character that does not fit is left out rather than half-drawn.
+    assert_eq!(
+        eval(r#"return zellij.text.truncate("日本語", 4, "")"#),
+        "日本"
+    );
+}
+
+/// The ellipsis is a character too. Cutting it with `sub` handed the terminal the first *byte*
+/// of "…", which is not a character at all.
+#[test]
+fn truncating_into_less_room_than_the_ellipsis_still_returns_characters() {
+    // One column leaves room for the ellipsis and nothing else.
+    assert_eq!(eval(r#"return zellij.text.truncate("hello", 1)"#), "…");
+    // No room at all, and a custom ellipsis wider than what is left.
+    assert_eq!(eval(r#"return zellij.text.truncate("hello", 0)"#), "");
+    assert_eq!(eval(r#"return zellij.text.truncate("hello", -1)"#), "");
+    assert_eq!(eval(r#"return zellij.text.truncate("hello", 1, "日")"#), "");
+    assert_eq!(
+        eval(r#"return zellij.text.truncate("hello", 2, "日")"#),
+        "日"
+    );
+    assert_eq!(
+        eval(r#"return zellij.text.truncate("hello", 1, "ab")"#),
+        "a"
+    );
+    // Whatever comes back is well-formed and fits, which is the whole contract.
+    for (source, width) in [
+        (r#"zellij.text.truncate("héllo wörld", 1)"#, 1),
+        (r#"zellij.text.truncate("日本語です", 3)"#, 3),
+        (r#"zellij.text.truncate("hello", 2, "……")"#, 2),
+    ] {
+        let out = eval(&format!("return {source}"));
+        assert!(
+            std::str::from_utf8(out.as_bytes()).is_ok(),
+            "{source} produced invalid UTF-8"
+        );
+        assert!(
+            unicode_width::UnicodeWidthStr::width(out.as_str()) <= width,
+            "{source} produced {out:?}, wider than {width}"
+        );
+    }
+}
+
+/// The wire form `zellij-tile`'s `Text::serialize` produces: flags, one `$`-terminated index
+/// group per colour level, then the UTF-8 bytes in decimal.
+#[test]
+fn a_text_component_serializes_the_way_zellij_tile_does() {
+    assert_eq!(
+        eval(r#"return zellij.ui.text("hi"):selected():emphasis(0, 0, 1):render()"#),
+        "\u{1b}Pztext;x0$104,105\u{1b}\\"
+    );
+    // Levels are positional: error is level 6, so six empty groups come first.
+    assert_eq!(
+        eval(r#"return zellij.ui.text("hi"):error(1, 2):render { x = 3, y = 1, width = 10 }"#),
+        "\u{1b}Pztext;3/1/10/;$$$$$$1$104,105\u{1b}\\"
+    );
+    assert_eq!(
+        eval(r#"return zellij.ui.text("é"):opaque():disabled():render()"#),
+        "\u{1b}Pztext;zd195,169\u{1b}\\"
+    );
+    // Positions count characters, not bytes.
+    assert_eq!(
+        eval(r#"return zellij.ui.text("éa"):dim():render()"#),
+        "\u{1b}Pztext;$$$$0,1$195,169,97\u{1b}\\"
+    );
+    assert_eq!(
+        eval(r#"return zellij.ui.ribbon("tab"):selected():render()"#),
+        "\u{1b}Pzribbon;x116,97,98\u{1b}\\"
+    );
+    assert_eq!(
+        eval(r#"return tostring(zellij.ui.text("a"))"#),
+        "\u{1b}Pztext;97\u{1b}\\"
+    );
+}
+
+#[test]
+fn table_and_list_components_serialize_the_way_zellij_tile_does() {
+    assert_eq!(
+        eval(
+            r#"return zellij.ui.table { { "A", "B" }, { "C", zellij.ui.text("D"):selected() } }:render()"#
+        ),
+        "\u{1b}Pztable;2;2;65;66;67;x68\u{1b}\\"
+    );
+    assert_eq!(
+        eval(r#"return zellij.ui.table():row("A"):row("B"):render { x = 0, y = 0 }"#),
+        "\u{1b}Pztable;0/0//;1;2;65;66\u{1b}\\"
+    );
+    assert_eq!(
+        eval(
+            r#"return zellij.ui.nested_list { "hi", { "go", indent = 1 }, zellij.ui.text("x"):opaque():disabled() }:render()"#
+        ),
+        // Disabled is dropped on a list item: the host does not read it there.
+        "\u{1b}Pznested_list;104,105;|103,111;z120\u{1b}\\"
+    );
+    assert_eq!(
+        eval(r#"return zellij.ui.nested_list():item("a"):item("b", 2):render()"#),
+        "\u{1b}Pznested_list;97;||98\u{1b}\\"
+    );
+}
+
+// -- require ------------------------------------------------------------------------------------
+
+/// A plugin split across files, loaded the way the real loader loads it: with the path it was
+/// read from recorded, which is what `require` resolves against.
+fn load_from_dir(dir: &std::path::Path, main: &str) -> Result<super::LuaPlugin> {
+    let main_path = dir.join("main.lua");
+    std::fs::write(&main_path, main).unwrap();
+    let mut env = test_env();
+    env.resolved_source_path = Some(main_path.clone());
+    load_lua_plugin(main, &main_path.display().to_string(), env)
+}
+
+#[test]
+fn a_plugin_can_require_a_file_beside_it_once() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("lib.lua"),
+        "local lib = {}\nlib.loads = (lib.loads or 0) + 1\nfunction lib.greet(n) return 'hi ' .. n end\nreturn lib",
+    )
+    .unwrap();
+    std::fs::create_dir(dir.path().join("pkg")).unwrap();
+    std::fs::write(dir.path().join("pkg/init.lua"), "return { name = 'pkg' }").unwrap();
+    std::fs::write(dir.path().join("pkg/sub.lua"), "return { name = 'sub' }").unwrap();
+    let mut plugin = load_from_dir(
+        dir.path(),
+        r#"
+        local zellij = require("zellij")
+        local lib = require("lib")
+        local again = require("lib")
+        local pkg = require("pkg")
+        local sub = require("pkg.sub")
+        local M = {}
+        function M.render()
+          return lib.greet("x") .. "|" .. tostring(lib == again) .. "|" .. pkg.name .. "|" .. sub.name
+        end
+        return M
+        "#,
+    )
+    .unwrap();
+    assert_eq!(plugin.render(1, 100).unwrap(), b"hi x|true|pkg|sub");
+}
+
+#[test]
+fn require_is_confined_to_the_plugins_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.lua"), "return 'leaked'").unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("secret.lua"),
+        dir.path().join("link.lua"),
+    )
+    .unwrap();
+    for (module, expected) in [
+        ("../secret", "not a path"),
+        ("/etc/passwd", "not a path"),
+        ("link", "outside the plugin's folder"),
+        ("missing", "no module found"),
+    ] {
+        let error = load_from_dir(dir.path(), &format!("require({:?})\nreturn {{}}", module))
+            .err()
+            .map(|e| format!("{:#}", e))
+            .unwrap_or_else(|| panic!("require({module:?}) should have been refused"));
+        assert!(error.contains(expected), "require({module:?}): {error}");
+    }
+}
+
+#[test]
+fn a_circular_require_is_an_error_rather_than_a_stack_overflow() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.lua"), "require('b')\nreturn {}").unwrap();
+    std::fs::write(dir.path().join("b.lua"), "require('a')\nreturn {}").unwrap();
+    let error = load_from_dir(dir.path(), "require('a')\nreturn {}")
+        .err()
+        .map(|e| format!("{:#}", e))
+        .unwrap();
+    assert!(error.contains("circular"), "{error}");
+}
+
+/// The in-flight mark must be something a module cannot return: marking with the string
+/// "loading" made a module that legitimately returns it look circular forever after.
+#[test]
+fn a_module_may_return_the_value_the_cycle_check_marks_with() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("lib.lua"), "return 'loading'").unwrap();
+    let mut plugin = load_from_dir(
+        dir.path(),
+        r#"
+        local first = require("lib")
+        local again = require("lib")
+        local M = {}
+        function M.render() return first .. "|" .. again end
+        return M
+        "#,
+    )
+    .unwrap();
+    assert_eq!(plugin.render(1, 100).unwrap(), b"loading|loading");
+}
+
+/// A plugin that was not loaded from a file - a builtin, or a test - has no folder, and says
+/// so rather than reading relative to the server's cwd.
+#[test]
+fn require_without_a_folder_serves_only_zellij() {
+    let error = load("require('lib')\nreturn {}")
+        .err()
+        .map(|e| format!("{:#}", e))
+        .unwrap();
+    assert!(error.contains("no folder"), "{error}");
+    assert!(load("local z = require('zellij')\nreturn {}").is_ok());
+}
+
+// ------------------------------------------------------------------ decoded replies
+
+/// Every command whose reply `zellij-tile/src/shim.rs` reads off its stdin pipe. A Lua plugin
+/// has no shim, so each of these needs an arm in `response.rs`; one that falls through to the
+/// raw bytes is a regression, and one decoded here but absent from this list is a drift in the
+/// other direction. Add to this list when the shim gains a reply, and to `response.rs` with it.
+const REPLYING_COMMANDS: &[CommandType] = &[
+    CommandType::GetPluginIds,
+    CommandType::GetZellijVersion,
+    CommandType::GenerateRandomName,
+    CommandType::GetUserPluginDir,
+    CommandType::GetLayoutDir,
+    CommandType::GetSessionEnvironmentVariables,
+    CommandType::GetPluginAliasConfiguration,
+    CommandType::GetFocusedPaneInfo,
+    CommandType::GetPaneInfo,
+    CommandType::GetTabInfo,
+    CommandType::GetPaneCwd,
+    CommandType::GetPanePid,
+    CommandType::GetPaneRunningCommand,
+    CommandType::GetPaneGitProbe,
+    CommandType::GetPaneScrollback,
+    CommandType::GetSessionList,
+    CommandType::CurrentSessionLastSavedTime,
+    CommandType::SaveSession,
+    CommandType::DumpLayout,
+    CommandType::DumpSessionLayout,
+    CommandType::ParseLayout,
+    CommandType::SaveLayout,
+    CommandType::DeleteLayout,
+    CommandType::RenameLayout,
+    CommandType::EditLayout,
+    CommandType::ShowFloatingPanes,
+    CommandType::HideFloatingPanes,
+    CommandType::DeleteDeadSessionAndReply,
+    CommandType::DeleteAllDeadSessionsAndReply,
+    CommandType::KillSessionsAndReply,
+    CommandType::WarpPaneToSession,
+    CommandType::WarpPaneFromSession,
+    CommandType::WarpTabToSession,
+    CommandType::WarpTabFromSession,
+    CommandType::AdoptOrphanedPane,
+    CommandType::ListOrphanedPanes,
+    CommandType::DataDefineEntity,
+    CommandType::DataApply,
+    CommandType::DataFetch,
+    CommandType::DataCount,
+    CommandType::DataWatch,
+    CommandType::DataUnwatch,
+    CommandType::EnqueueQueueJob,
+    CommandType::QueueStatus,
+    CommandType::ListRecordings,
+    CommandType::SearchRecordings,
+    CommandType::ListNotifications,
+    CommandType::NewTab,
+    CommandType::NewTabUnfocused,
+    CommandType::NewTabsWithLayout,
+    CommandType::NewTabsWithLayoutInfo,
+    CommandType::FocusOrCreateTab,
+    CommandType::BreakPanesToNewTab,
+    CommandType::BreakPanesToTabWithIndex,
+    CommandType::BreakPanesToTabWithId,
+    CommandType::NewTiledPaneInTab,
+    CommandType::OpenFile,
+    CommandType::OpenFileFloating,
+    CommandType::OpenFileInPlace,
+    CommandType::OpenFileNearPlugin,
+    CommandType::OpenFileFloatingNearPlugin,
+    CommandType::OpenFileInPlaceOfPlugin,
+    CommandType::OpenTerminal,
+    CommandType::OpenTerminalFloating,
+    CommandType::OpenTerminalInPlace,
+    CommandType::OpenTerminalNearPlugin,
+    CommandType::OpenTerminalFloatingNearPlugin,
+    CommandType::OpenTerminalInPlaceOfPlugin,
+    CommandType::OpenTerminalPaneInPlaceOfPaneId,
+    CommandType::OpenEditPaneInPlaceOfPaneId,
+    CommandType::OpenCommandPane,
+    CommandType::OpenCommandPaneFloating,
+    CommandType::OpenCommandPaneInPlace,
+    CommandType::OpenCommandPaneBackground,
+    CommandType::OpenCommandPaneNearPlugin,
+    CommandType::OpenCommandPaneOverlay,
+    CommandType::OpenCommandPaneFloatingNearPlugin,
+    CommandType::OpenCommandPaneInPlaceOfPlugin,
+    CommandType::OpenCommandPaneInPlaceOfPaneId,
+    CommandType::OpenPluginPaneFloating,
+    CommandType::OpenCommandPaneInGitCheckoutNearPlugin,
+    CommandType::OpenCommandPaneInNewTab,
+    CommandType::OpenPluginPaneInNewTab,
+    CommandType::OpenEditorPaneInNewTab,
+    CommandType::GenerateWebLoginToken,
+    CommandType::RevokeWebLoginToken,
+    CommandType::RevokeAllWebLoginTokens,
+    CommandType::RenameWebLoginToken,
+    CommandType::ListWebLoginTokens,
+    CommandType::FsRead,
+    CommandType::FsList,
+    CommandType::FsMetadata,
+    CommandType::FsWrite,
+    CommandType::FsRemove,
+    CommandType::FsCreateDir,
+    CommandType::FsRename,
+];
+
+#[test]
+fn every_reply_the_shim_reads_is_decoded() {
+    // An empty byte slice decodes to prost's default message, so `Some` versus `None` is the
+    // whole question here: whether the command has an arm at all. An `Err` inside the `Some`
+    // (a default `oneof` is "answered with nothing") is a decoded reply, not a missing one.
+    let lua = mlua::Lua::new();
+    let listed: HashSet<CommandType> = REPLYING_COMMANDS.iter().copied().collect();
+    assert_eq!(
+        listed.len(),
+        REPLYING_COMMANDS.len(),
+        "a command is listed twice"
+    );
+    for command in CommandType::iter() {
+        let decoded = super::response::response_to_lua(&lua, command, &[]).is_some();
+        if listed.contains(&command) {
+            assert!(
+                decoded,
+                "{command} answers, but its reply falls through to raw bytes"
+            );
+        } else {
+            assert!(
+                !decoded,
+                "{command} is decoded but not listed in REPLYING_COMMANDS - add it"
+            );
+        }
+    }
+}
+
+/// Decode `bytes` as `command`'s reply and describe the result with a Lua expression over `v`.
+fn decoded(command: CommandType, bytes: &[u8], describe: &str) -> String {
+    let lua = mlua::Lua::new();
+    let value = super::response::response_to_lua(&lua, command, bytes)
+        .unwrap_or_else(|| panic!("{command} has no decoder"))
+        .unwrap_or_else(|e| panic!("{command}: {e:#}"));
+    lua.globals().set("v", value).unwrap();
+    lua.load(describe).eval::<String>().unwrap()
+}
+
+/// Decode `bytes` as `command`'s reply and hand back the error it raised.
+fn decode_error(command: CommandType, bytes: &[u8]) -> String {
+    let lua = mlua::Lua::new();
+    let error = super::response::response_to_lua(&lua, command, bytes)
+        .unwrap_or_else(|| panic!("{command} has no decoder"))
+        .err()
+        .unwrap_or_else(|| panic!("{command} should have raised"));
+    format!("{error:#}")
+}
+
+#[test]
+fn a_pane_id_reply_is_the_same_table_the_prelude_builds() {
+    use prost::Message;
+    use zellij_utils::plugin_api::plugin_command::{
+        ProtobufOpenCommandPaneNearPluginResponse, ProtobufPaneId,
+    };
+    let reply = ProtobufOpenCommandPaneNearPluginResponse {
+        pane_id: Some(ProtobufPaneId {
+            pane_type: 0, // terminal
+            id: 7,
+        }),
+    }
+    .encode_to_vec();
+    assert_eq!(
+        decoded(
+            CommandType::OpenCommandPaneNearPlugin,
+            &reply,
+            "return type(v) .. ' ' .. tostring(v.Terminal) .. ' ' .. tostring(v.Plugin)"
+        ),
+        "table 7 nil"
+    );
+    // No pane id means the pane was not opened, and that is `nil`, not an error: the shim
+    // returns `Option<PaneId>` for this family.
+    let empty = ProtobufOpenCommandPaneNearPluginResponse { pane_id: None }.encode_to_vec();
+    assert_eq!(
+        decoded(
+            CommandType::OpenCommandPaneNearPlugin,
+            &empty,
+            "return type(v)"
+        ),
+        "nil"
+    );
+}
+
+#[test]
+fn a_success_or_error_reply_is_true_or_raises() {
+    use prost::Message;
+    use zellij_utils::plugin_api::plugin_command::{
+        save_layout_response, ProtobufSaveLayoutResponse,
+    };
+    let ok = ProtobufSaveLayoutResponse {
+        result: Some(save_layout_response::Result::Success(true)),
+    }
+    .encode_to_vec();
+    assert_eq!(
+        decoded(CommandType::SaveLayout, &ok, "return tostring(v)"),
+        "true"
+    );
+    let failed = ProtobufSaveLayoutResponse {
+        result: Some(save_layout_response::Result::Error(
+            "a layout by that name exists".to_owned(),
+        )),
+    }
+    .encode_to_vec();
+    assert_eq!(
+        decode_error(CommandType::SaveLayout, &failed),
+        "a layout by that name exists"
+    );
+}
+
+#[test]
+fn a_pane_in_a_new_tab_arrives_as_named_fields() {
+    use prost::Message;
+    use zellij_utils::plugin_api::plugin_command::{
+        ProtobufOpenPaneInNewTabResponse, ProtobufPaneId,
+    };
+    let reply = ProtobufOpenPaneInNewTabResponse {
+        tab_id: Some(2),
+        pane_id: Some(ProtobufPaneId {
+            pane_type: 1, // plugin
+            id: 9,
+        }),
+    }
+    .encode_to_vec();
+    assert_eq!(
+        decoded(
+            CommandType::OpenCommandPaneInNewTab,
+            &reply,
+            "return v.tab_id .. ' ' .. v.pane_id.Plugin"
+        ),
+        "2 9"
+    );
+}
+
+#[test]
+fn the_session_list_arrives_as_the_snapshot_the_shim_builds() {
+    use prost::Message;
+    use zellij_utils::data::{GetSessionListResponse, SessionInfo, SessionListSnapshot};
+    use zellij_utils::plugin_api::plugin_command::ProtobufGetSessionListResponse;
+    let snapshot = SessionListSnapshot {
+        live_sessions: vec![SessionInfo {
+            name: "work".to_owned(),
+            connected_clients: 2,
+            is_current_session: true,
+            ..Default::default()
+        }],
+        resurrectable_sessions: vec![("yesterday".to_owned(), std::time::Duration::from_secs(90))],
+    };
+    let reply =
+        ProtobufGetSessionListResponse::from(GetSessionListResponse::Ok(snapshot)).encode_to_vec();
+    assert_eq!(
+        decoded(
+            CommandType::GetSessionList,
+            &reply,
+            r#"local live = v.live_sessions[1]
+               local dead = v.resurrectable_sessions[1]
+               return live.name .. ' ' .. live.connected_clients .. ' ' .. tostring(live.is_current_session)
+                 .. ' | ' .. dead[1] .. ' ' .. dead[2].secs"#
+        ),
+        "work 2 true | yesterday 90"
+    );
+    let reply = ProtobufGetSessionListResponse::from(GetSessionListResponse::Err(
+        "not scanning".to_owned(),
+    ))
+    .encode_to_vec();
+    assert_eq!(
+        decode_error(CommandType::GetSessionList, &reply),
+        "not scanning"
+    );
+}
+
+#[test]
+fn a_pane_scrollback_reply_is_the_pane_contents() {
+    use prost::Message;
+    use zellij_utils::data::{PaneContents, PaneScrollbackResponse};
+    use zellij_utils::plugin_api::event::ProtobufPaneScrollbackResponse;
+    let contents = PaneContents {
+        viewport: vec!["$ ls".to_owned(), "notes.txt".to_owned()],
+        ..Default::default()
+    };
+    let reply = ProtobufPaneScrollbackResponse::try_from(PaneScrollbackResponse::Ok(contents))
+        .unwrap()
+        .encode_to_vec();
+    assert_eq!(
+        decoded(
+            CommandType::GetPaneScrollback,
+            &reply,
+            "return #v.viewport .. ' ' .. v.viewport[2]"
+        ),
+        "2 notes.txt"
+    );
+    let reply = ProtobufPaneScrollbackResponse::try_from(PaneScrollbackResponse::Err(
+        "no such pane".to_owned(),
+    ))
+    .unwrap()
+    .encode_to_vec();
+    assert_eq!(
+        decode_error(CommandType::GetPaneScrollback, &reply),
+        "no such pane"
+    );
+}
+
+#[test]
+fn web_login_tokens_arrive_as_one_row_per_token() {
+    use prost::Message;
+    use zellij_utils::plugin_api::plugin_command::ListTokensResponse;
+    let reply = ListTokensResponse {
+        tokens: vec!["laptop".to_owned(), "phone".to_owned()],
+        creation_times: vec!["2026-01-01".to_owned(), "2026-02-02".to_owned()],
+        read_only_flags: vec![false, true],
+        error: None,
+    }
+    .encode_to_vec();
+    assert_eq!(
+        decoded(
+            CommandType::ListWebLoginTokens,
+            &reply,
+            "return #v .. ' ' .. v[2].token .. ' ' .. v[2].creation_time .. ' ' .. tostring(v[2].read_only)"
+        ),
+        "2 phone 2026-02-02 true"
+    );
+}
+
+/// `parse_layout` is answered by the host itself, so it is the one `oneof { ok | error }` reply
+/// a plugin with no channels behind it can exercise end to end - the prelude's call, the
+/// dispatcher, the handler writing its reply, and `response.rs` reading it back.
+#[test]
+fn a_parsed_layout_reaches_lua_as_metadata_and_a_bad_one_raises() {
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = {}
+        function M.load()
+          local metadata = zellij.parse_layout([[
+            layout {
+              tab name="editor" {
+                pane
+              }
+            }
+          ]])
+          M.tabs = #metadata.tabs
+          M.name = metadata.tabs[1].name
+          local ok, err = pcall(zellij.parse_layout, "layout { this is not kdl")
+          M.ok = tostring(ok)
+          M.err = tostring(err)
+        end
+        function M.render()
+          return M.tabs .. " " .. M.name .. " " .. M.ok .. " " .. M.err
+        end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    let rendered = String::from_utf8(plugin.render(1, 400).unwrap()).unwrap();
+    assert!(
+        rendered.starts_with("1 editor false "),
+        "the good layout should decode and the bad one raise, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("parse_layout_api"),
+        "the raised error should name where the parser was looking, got: {rendered}"
+    );
+}
+
+/// With no session scan running the host answers `GetSessionList` with its error arm, which
+/// is the real dispatch path for a data-typed `oneof` reply raising into Lua.
+#[test]
+fn an_unavailable_session_list_raises_the_hosts_reason() {
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = {}
+        function M.load()
+          local ok, err = pcall(zellij.get_session_list)
+          M.result = tostring(ok) .. " " .. tostring(err)
+        end
+        function M.render() return M.result end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    let rendered = String::from_utf8(plugin.render(1, 200).unwrap()).unwrap();
+    assert!(
+        rendered.starts_with("false ") && rendered.contains("Session-scan state"),
+        "got: {rendered}"
+    );
+}
+
+/// A pane-opening command whose pty thread is not there to answer comes back with no pane id,
+/// which reaches Lua as `nil` rather than as protobuf bytes.
+#[test]
+fn a_pane_that_could_not_be_opened_is_nil() {
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = {}
+        function M.load()
+          M.result = type(zellij.open_terminal_near_plugin { path = "/host" })
+        end
+        function M.render() return M.result end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    assert_eq!(plugin.render(1, 40).unwrap(), b"nil");
+}
+
+// -- The dashboard example, the data sugar, and intervals -----------------------------------------
+
+/// `example-plugins/dashboard.lua` is the worked example for rendering, so it is loaded, fed the
+/// events it subscribes to, and pressed, the way the playground is.
+#[test]
+fn the_dashboard_example_loads_renders_components_and_takes_input() {
+    use zellij_utils::data::{PaneInfo, PaneManifest, TabInfo};
+    let source = example_plugin("dashboard.lua");
+    let mut plugin = load_permitted(&source).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+
+    let tab = TabInfo {
+        position: 0,
+        name: "main".to_owned(),
+        active: true,
+        ..Default::default()
+    };
+    plugin.update(&Event::TabUpdate(vec![tab])).unwrap();
+    let mut manifest = PaneManifest::default();
+    manifest.panes.insert(
+        0,
+        vec![PaneInfo {
+            id: 3,
+            title: "日本 shell".to_owned(),
+            ..Default::default()
+        }],
+    );
+    plugin.update(&Event::PaneUpdate(manifest)).unwrap();
+    plugin
+        .update(&Event::RunCommandResult(
+            Some(0),
+            b"up 3 days\n".to_vec(),
+            vec![],
+            BTreeMap::new(),
+        ))
+        .unwrap();
+    plugin.update(&Event::Timer(0.0)).unwrap();
+    for key in ["j", "k", "x"] {
+        plugin
+            .update(&Event::Key(KeyWithModifier::new(BareKey::Char(
+                key.chars().next().unwrap(),
+            ))))
+            .unwrap();
+    }
+    plugin
+        .update(&Event::Mouse(zellij_utils::data::Mouse::LeftClick(3, 1)))
+        .unwrap();
+
+    let rendered = String::from_utf8(plugin.render(20, 60).unwrap()).unwrap();
+    assert!(
+        rendered.contains("\u{1b}Pzribbon;x"),
+        "no selected ribbon: {rendered}"
+    );
+    assert!(
+        rendered.contains("\u{1b}Pztable;3;2;"),
+        "no table: {rendered}"
+    );
+    assert!(
+        rendered.contains("\u{1b}Pznested_list;"),
+        "no list: {rendered}"
+    );
+    assert!(
+        rendered.contains("up 3 days"),
+        "no command output: {rendered}"
+    );
+    // List items travel as their bytes in decimal, so the text is matched in that form.
+    let encoded = |s: &str| {
+        s.bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    assert!(
+        rendered.contains(&encoded("clicked row 1")),
+        "the click did not land: {rendered}"
+    );
+}
+
+/// The data helpers produce exactly the Rust shapes the `data_*` commands deserialize:
+/// externally tagged values and predicates, pairs for mutations, positional sort directions.
+#[test]
+fn the_data_helpers_spell_the_stores_shapes() {
+    let json = |body: &str| eval(&format!("return zellij.json.encode({body})"));
+    assert_eq!(json(r#"zellij.data.value(1)"#), r#"{"Int":1}"#);
+    assert_eq!(json(r#"zellij.data.value(1.5)"#), r#"{"Real":1.5}"#);
+    assert_eq!(json(r#"zellij.data.value("a")"#), r#"{"Text":"a"}"#);
+    assert_eq!(json(r#"zellij.data.value(true)"#), r#"{"Bool":true}"#);
+    assert_eq!(json(r#"zellij.data.value(nil)"#), r#""Null""#);
+    assert_eq!(
+        json(r#"zellij.data.value({ blob = "ab" })"#),
+        r#"{"Blob":[97,98]}"#
+    );
+    assert_eq!(
+        json(r#"zellij.data.value({ json = { a = 1 } })"#),
+        r#"{"Text":"{\"a\":1}"}"#
+    );
+    assert_eq!(
+        json(r#"zellij.data.eq("done", false)"#),
+        r#"{"Eq":["done",{"Bool":false}]}"#
+    );
+    assert_eq!(
+        json(
+            r#"zellij.data.all(zellij.data.is_null("a"), zellij.data.negate(zellij.data.is_in("b", { 1, 2 })))"#
+        ),
+        r#"{"And":[{"IsNull":"a"},{"Not":{"In":["b",[{"Int":1},{"Int":2}]]}}]}"#
+    );
+    assert_eq!(
+        json(r#"zellij.data.put("note", { title = "t", done = false }, "u1")"#),
+        r#"{"Put":{"entity":"note","uid":"u1","values":[["done",{"Bool":false}],["title",{"Text":"t"}]]}}"#
+    );
+    // `nil` cannot survive `pairs`, so a mutation that clears an attribute needs the sentinel -
+    // and the string the store spells `Null` with is still an ordinary `Text` a plugin may write.
+    assert_eq!(json(r#"zellij.data.value(zellij.data.null)"#), r#""Null""#);
+    assert_eq!(
+        json(r#"zellij.data.update("note", nil, { done = zellij.data.null, title = "Null" })"#),
+        r#"{"Update":{"entity":"note","values":[["done","Null"],["title",{"Text":"Null"}]]}}"#
+    );
+    assert_eq!(
+        json(r#"zellij.data.delete("note", zellij.data.prefix("title", "x"))"#),
+        r#"{"Delete":{"entity":"note","filter":{"Prefix":["title","x"]}}}"#
+    );
+    // Records: columns zipped with rows, values made plain, a blob a string, Null nil.
+    assert_eq!(
+        eval(
+            r#"
+            local records = zellij.data.records {
+              columns = { "id", "title", "raw", "gone" },
+              rows = { { { Int = 1 }, { Text = "a" }, { Blob = { 104, 105 } }, "Null" } },
+            }
+            return records[1].id .. records[1].title .. records[1].raw .. tostring(records[1].gone)
+            "#
+        ),
+        "1ahinil"
+    );
+}
+
+/// The `data_*` commands are reachable through the sugar with the shapes serde expects: a
+/// request that gets as far as the host is one that deserialized, and the host's own refusal
+/// (no store behind the test env) is what comes back - not a marshalling error.
+#[test]
+fn the_data_sugar_builds_requests_the_host_accepts() {
+    let source = r#"
+        local M = {}
+        function M.render()
+          local errors = {}
+          for _, call in ipairs {
+            function() zellij.data.define { name = "n", attrs = { { "t", "text", required = true, default = "" } } } end,
+            function() zellij.data.apply(zellij.data.put("n", { t = "x" })) end,
+            function() zellij.data.fetch { entity = "n", sort = { "id desc", { "t", "asc" } }, filter = zellij.data.eq("t", "x"), limit = 5 } end,
+            function() zellij.data.count("n") end,
+            function() zellij.data.watch("n", "ids") end,
+            function() zellij.data.unwatch(3) end,
+          } do
+            local ok, err = pcall(call)
+            errors[#errors + 1] = ok and "ok" or tostring(err)
+          end
+          return table.concat(errors, "|")
+        end
+        return M
+    "#;
+    // A store of its own: `test_env` points the store at `.`, which would leave a database
+    // file in the crate folder.
+    let store = tempfile::tempdir().unwrap();
+    let mut env = test_env();
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+    env.plugin_data_store = Arc::new(PluginDataStore::new(store.path()));
+    let mut plugin = load_lua_plugin(source, "test.lua", env).unwrap();
+    let out = String::from_utf8(plugin.render(1, 500).unwrap()).unwrap();
+    for (i, part) in out.split('|').enumerate() {
+        assert!(
+            !part.contains("could not be built") && !part.contains("missing field"),
+            "call {i} did not marshal: {part}"
+        );
+    }
+}
+
+#[test]
+fn an_interval_re_arms_the_timer_from_the_timer_event() {
+    let mut plugin = load_permitted(
+        r#"
+        local M = {}
+        M.ticks = 0
+        function M.load() zellij.set_interval(0.5) end
+        zellij.on("timer", function() M.ticks = M.ticks + 1 end)
+        function M.render() return tostring(M.ticks) .. "/" .. tostring(zellij.__interval) end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    plugin.update(&Event::Timer(0.5)).unwrap();
+    plugin.update(&Event::Timer(0.5)).unwrap();
+    assert_eq!(plugin.render(1, 20).unwrap(), b"2/0.5");
+    let mut plugin = load(
+        "local M = {}\nfunction M.render() zellij.clear_interval() return tostring(zellij.__interval) end\nreturn M",
+    )
+    .unwrap();
+    assert_eq!(plugin.render(1, 20).unwrap(), b"nil");
 }

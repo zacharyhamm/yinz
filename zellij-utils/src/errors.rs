@@ -598,6 +598,7 @@ pub enum PluginContext {
     QueueConfigure,
     QueueCancelJob,
     QueueFinishJob,
+    GrantPermissionsToLocation,
     PluginFailed,
 }
 
