@@ -24,12 +24,14 @@
 //! where you were".
 //!
 //! **The two panes are separate, with one exception.** Esc here hides this pane
-//! and nothing else, and hocus's Esc hides hocus. Neither opens the other for the
-//! user. The exception is `say_hello_to_hocus`, which does carry hocus's url:
-//! this pane is a view over rows only hocus can compute, so a list with no hocus
-//! to ask has nothing to draw. The hocus that greeting launches starts **hidden**
-//! — `wire::OPENED_BY` is what tells it so — because the user asked for a list,
-//! not for a conversation.
+//! and nothing else, and hocus's Esc hides hocus. Enter keeps that same line:
+//! having sent you to an agent, the list puts itself away and leaves an open
+//! conversation open. Neither opens the other for the user. The exception is
+//! `say_hello_to_hocus`, which does carry hocus's url: this pane is a view over
+//! rows only hocus can compute, so a list with no hocus to ask has nothing to
+//! draw. The hocus that greeting launches starts **hidden** — `wire::OPENED_BY`
+//! is what tells it so — because the user asked for a list, not for a
+//! conversation.
 
 use std::collections::BTreeMap;
 
@@ -289,6 +291,11 @@ impl State {
             },
             BareKey::Enter => {
                 self.activate();
+                // Walking to an agent is the end of what this list is for, so
+                // put it away - the same gesture as Esc, and this pane only: a
+                // conversation open beside it stays open. Focus first, then
+                // hide, so the focus call lands while this pane is still up.
+                hide_self();
                 false
             },
             _ => false,
@@ -303,9 +310,9 @@ impl State {
     }
 
     /// A click on screen line `line`: select the row it lands on, if any, and
-    /// activate it exactly as `Enter` would - clicking an agent row is meant to
-    /// feel like navigating to it and pressing Enter, whether or not it was
-    /// already selected.
+    /// focus it the way `Enter` does - clicking an agent row is meant to feel
+    /// like navigating to it and pressing Enter, whether or not it was already
+    /// selected. Short of the dismissal: see `activate`.
     fn on_click(&mut self, line: usize) -> bool {
         let Some(index) = click_target(
             &self.rows,
@@ -321,8 +328,10 @@ impl State {
         moved
     }
 
-    /// What `Enter` does, and now what a click on the selected row does too:
-    /// focus the selected agent's pane, if there is one.
+    /// The half of `Enter` a click on the selected row shares: focus the
+    /// selected agent's pane, if there is one. The dismissal that follows a
+    /// keypress is not part of it - a click leaves the list up, because the
+    /// pointer is already where the next click would go.
     fn activate(&self) {
         if let Some(StripRow::Agent { pane_id, .. }) = self.rows.get(self.selected) {
             // the host resolves which tab holds the pane, so this works across
