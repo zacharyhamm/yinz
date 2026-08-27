@@ -55,30 +55,138 @@ pub fn sanitize(text: &str) -> String {
     sanitized
 }
 
-/// Wrap `text` to `width` columns for the input box: break mid-word, exactly at
-/// the edge, the way a terminal input does.
+/// One row of the input box, and where in the source string it starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrappedLine {
+    pub text: String,
+    /// Char index (not byte offset) of this row's first character in the string
+    /// that was wrapped. The cursor is located by comparing against this.
+    pub start: usize,
+}
+
+/// Wrap `text` to `width` columns for the input box: break between words, but
+/// without losing a single character.
 ///
-/// Word wrap is wrong here. It holds the word being typed whole, so the break
-/// lands nowhere near the keystroke that caused it, and it discards the spaces
-/// that caused a break, so trailing spaces are invisible and the cursor stalls
-/// on them.
+/// The input box cannot use [`wrap`]. That one discards the spaces that caused a
+/// break, so trailing spaces would be invisible and the cursor would stall on
+/// them, and it gives the caller no way back from a char index to a cell - which
+/// the cursor needs, because word wrap is not prefix-stable: a word under the
+/// cursor can be pushed onto the next row by characters typed *after* it, so the
+/// cursor's row cannot be derived by wrapping the text before it in isolation.
+///
+/// So this wrapper is lossless: every character belongs to exactly one row (bar
+/// the newlines, which separate rows), rows are contiguous in char order, and
+/// each row records where it starts. A run of spaces stays on the row it was
+/// typed on and fills to the edge, splitting only where it overflows.
 ///
 /// A line that is exactly full is followed by an empty one so the cursor has a
-/// row to land on: that empty line is what makes the break happen *at* the edge
-/// rather than one keystroke later.
-pub fn wrap_hard(text: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return text.split('\n').map(|_| String::new()).collect();
-    }
-
+/// row to land on: without it the cursor would sit at column `width`, one past
+/// the last column, which zellij hides.
+pub fn wrap_input(text: &str, width: usize) -> Vec<WrappedLine> {
     let mut lines = Vec::new();
+    // Char index of the current source line, walked forward by its length plus
+    // the newline that ended it.
+    let mut line_start = 0;
     for source_line in text.split('\n') {
-        lines.extend(hard_split(source_line, width));
+        if width == 0 {
+            // Nothing can fit; still honour the "one visual line per source
+            // line" contract so callers can't divide by zero or loop forever.
+            lines.push(WrappedLine {
+                text: String::new(),
+                start: line_start,
+            });
+        } else {
+            wrap_input_line(source_line, width, line_start, &mut lines);
+        }
+        line_start += source_line.chars().count() + 1;
     }
-    if lines.last().is_some_and(|line| line.width() == width) {
-        lines.push(String::new());
+    if width > 0 && lines.last().is_some_and(|line| line.text.width() == width) {
+        lines.push(WrappedLine {
+            text: String::new(),
+            start: text.chars().count(),
+        });
     }
     lines
+}
+
+fn wrap_input_line(line: &str, width: usize, base: usize, out: &mut Vec<WrappedLine>) {
+    // `current` always holds exactly the characters `start..at` of the source,
+    // which is what makes the recorded starts line up with the text.
+    let mut current = String::new();
+    let mut current_width = 0usize;
+    let mut start = base;
+    let mut at = base;
+
+    for token in tokenize(line) {
+        match token {
+            // Spaces stay on the row that was being typed when they arrived:
+            // in an input the cursor has to move as they are typed, so they
+            // can't be held back the way `wrap` holds and drops them. Only the
+            // ones that overflow the row break, and they break at the edge.
+            Token::Spaces(spaces) => {
+                for ch in spaces.chars() {
+                    let ch_width = ch.width().unwrap_or(0);
+                    if current_width + ch_width > width {
+                        out.push(WrappedLine {
+                            text: std::mem::take(&mut current),
+                            start,
+                        });
+                        start = at;
+                        current_width = 0;
+                    }
+                    current.push(ch);
+                    current_width += ch_width;
+                    at += 1;
+                }
+            },
+            Token::Word(word) => {
+                let word_width = word.width();
+                if current_width + word_width <= width {
+                    current.push_str(word);
+                    current_width += word_width;
+                    at += word.chars().count();
+                } else if word_width <= width {
+                    // The word wrap: the whole word moves down together.
+                    out.push(WrappedLine {
+                        text: std::mem::take(&mut current),
+                        start,
+                    });
+                    start = at;
+                    current.push_str(word);
+                    current_width = word_width;
+                    at += word.chars().count();
+                } else {
+                    // Wider than a whole row however we break it: flush, then
+                    // split at column boundaries. No hyphenation - this is a
+                    // terminal.
+                    if !current.is_empty() {
+                        out.push(WrappedLine {
+                            text: std::mem::take(&mut current),
+                            start,
+                        });
+                        start = at;
+                    }
+                    let mut pieces = hard_split(word, width);
+                    let last = pieces.pop().unwrap_or_default();
+                    for piece in pieces {
+                        let chars = piece.chars().count();
+                        out.push(WrappedLine { text: piece, start });
+                        start += chars;
+                        at += chars;
+                    }
+                    at += last.chars().count();
+                    current_width = last.width();
+                    current = last;
+                }
+            },
+        }
+    }
+
+    // Always push, even when empty: a blank source line is a blank visual line.
+    out.push(WrappedLine {
+        text: current,
+        start,
+    });
 }
 
 fn wrap_line(line: &str, width: usize, out: &mut Vec<String>) {
@@ -247,41 +355,122 @@ mod tests {
         assert_eq!(wrap("safe\u{1b}[31mtext", 40), vec!["safe[31mtext"]);
     }
 
-    // -- wrap_hard (the input box) ------------------------------------------
+    // -- wrap_input (the input box) -----------------------------------------
+
+    /// Rows as text, for the cases that don't care where each one starts.
+    fn rows(text: &str, width: usize) -> Vec<String> {
+        wrap_input(text, width)
+            .into_iter()
+            .map(|line| line.text)
+            .collect()
+    }
 
     #[test]
-    fn input_wrap_breaks_exactly_at_the_edge() {
-        assert_eq!(wrap_hard("abcdef", 4), vec!["abcd", "ef"]);
+    fn input_wrap_breaks_between_words() {
+        assert_eq!(rows("aaa bbb ccc", 8), vec!["aaa bbb ", "ccc"]);
+    }
+
+    #[test]
+    fn input_wrap_moves_a_whole_word_down_rather_than_splitting_it() {
+        assert_eq!(rows("ab cdef", 5), vec!["ab ", "cdef"]);
+    }
+
+    /// A space typed against a full row has nowhere to go but the next one: it
+    /// keeps its cell there rather than vanishing, so the cursor still moves.
+    #[test]
+    fn input_wrap_carries_an_overflowing_space_onto_the_next_row() {
+        assert_eq!(rows("aaa bbb ccc", 7), vec!["aaa bbb", " ccc"]);
+    }
+
+    #[test]
+    fn input_wrap_hard_splits_a_word_longer_than_the_line() {
+        // No break can make it fit, so it breaks at the column boundary.
+        assert_eq!(rows("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
     }
 
     /// The cursor needs a row to sit on once a row is full, and that empty row
     /// is what makes the break land on the keystroke that filled the line.
     #[test]
     fn input_wrap_adds_a_row_when_the_last_row_is_full() {
-        assert_eq!(wrap_hard("abcd", 4), vec!["abcd", ""]);
+        assert_eq!(rows("abcd", 4), vec!["abcd", ""]);
+        assert_eq!(wrap_input("abcd", 4).last().unwrap().start, 4);
     }
 
     #[test]
     fn input_wrap_keeps_trailing_spaces() {
         // wrap() drops these; in an input the cursor has to move as you type them.
-        assert_eq!(wrap_hard("ab ", 4), vec!["ab "]);
+        assert_eq!(rows("ab ", 4), vec!["ab "]);
+    }
+
+    #[test]
+    fn input_wrap_splits_spaces_that_overflow_the_row() {
+        // The spaces can't move down whole - the cursor is sitting in them.
+        assert_eq!(rows("ab    c", 4), vec!["ab  ", "  c"]);
     }
 
     #[test]
     fn input_wrap_preserves_newlines_and_blank_lines() {
         assert_eq!(
-            wrap_hard("one\n\ntwo", 20),
+            rows("one\n\ntwo", 20),
             vec!["one".to_string(), String::new(), "two".to_string()]
         );
     }
 
     #[test]
     fn input_wrap_measures_in_display_columns_not_bytes() {
-        assert_eq!(wrap_hard("日本語", 4), vec!["日本", "語"]);
+        assert_eq!(rows("日本語", 4), vec!["日本", "語"]);
     }
 
     #[test]
     fn input_wrap_terminates_on_zero_width() {
-        assert_eq!(wrap_hard("two\nlines", 0), vec!["", ""]);
+        assert_eq!(rows("two\nlines", 0), vec!["", ""]);
+    }
+
+    /// What the cursor mapping stands on: no character is dropped, and every
+    /// row's `start` is exactly where its text sits in the input.
+    #[test]
+    fn input_wrap_covers_every_character() {
+        let samples = [
+            "",
+            " ",
+            "hello world",
+            "aaa bbb ccc",
+            "ab    c",
+            "abcdefghij klm",
+            "one\n\ntwo three four",
+            "trailing   ",
+            "日本語 のテキスト",
+        ];
+        for sample in samples {
+            for width in 1..=8 {
+                let lines = wrap_input(sample, width);
+                let chars: Vec<char> = sample.chars().collect();
+                for line in &lines {
+                    let end = line.start + line.text.chars().count();
+                    assert!(end <= chars.len(), "{sample:?}/{width}: row past the end");
+                    assert_eq!(
+                        line.text,
+                        chars[line.start..end].iter().collect::<String>(),
+                        "{sample:?}/{width}: row text disagrees with its start"
+                    );
+                }
+                // Rows are contiguous: each starts where the previous ended, or
+                // one further on when a newline was consumed between them.
+                for pair in lines.windows(2) {
+                    let end = pair[0].start + pair[0].text.chars().count();
+                    let gap = pair[1].start - end;
+                    assert!(
+                        gap <= 1 && (gap == 0 || chars[end] == '\n'),
+                        "{sample:?}/{width}: characters lost between rows"
+                    );
+                }
+                let last = lines.last().expect("never empty");
+                assert_eq!(
+                    last.start + last.text.chars().count(),
+                    chars.len(),
+                    "{sample:?}/{width}: characters lost off the end"
+                );
+            }
+        }
     }
 }
