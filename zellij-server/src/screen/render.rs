@@ -38,6 +38,14 @@ impl Screen {
         // the render method for more details)
         let err_context = "failed to render screen";
 
+        // One instant for the whole frame. Every animation is *sampled* here rather than advanced
+        // on the clock tick, so there is no skew between "advance" and "paint" and every frame -
+        // whoever scheduled it - moves the animation to where the wall clock says it should be.
+        let now = self.frame_now();
+        self.reap_settled_notifications(now);
+        self.advance_frame_color_fades(now);
+        self.advance_plugin_loading_animations();
+
         // Every tab is laid out over the same session surface. Re-derive it here so a render tick
         // cannot restore stale geometry.
         self.remember_surface_size();
@@ -85,6 +93,20 @@ impl Screen {
             output.collect_ansi_pane_contents =
                 self.pane_render_subscribers.values().any(|s| s.ansi);
 
+            // Before any pane renders: work out which cells this frame's toasts have stopped
+            // covering and ask the panes under them to repaint. A pane only emits chunks for rows
+            // its own grid calls dirty, so a toast that slid off a cell would otherwise leave its
+            // own border sitting there - a trail that only cleared when the toast was finally
+            // removed. Narrowed to the panes actually overlapping the damage, and empty on every
+            // frame where the toasts only grew, so an arriving toast costs nothing.
+            for (tab_id, damage) in self.prepare_notification_damage(now, surface) {
+                if let Some(tab_id) = tab_id {
+                    if let Some(tab) = self.tabs.get_mut(&tab_id) {
+                        tab.force_render_panes_intersecting(&damage);
+                    }
+                }
+            }
+
             for (tab_index, tab) in &mut self.tabs {
                 if tab.has_selectable_tiled_panes() {
                     // Pass None for normal client rendering
@@ -109,7 +131,7 @@ impl Screen {
                     cols: surface.cols,
                     rows: surface.rows,
                 };
-                self.render_notifications(&mut output, session_surface, &regular_client_ids)
+                self.render_notifications(&mut output, session_surface, &regular_client_ids, now)
                     .context(err_context)?;
             }
 

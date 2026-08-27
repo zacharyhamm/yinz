@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use zellij_utils::errors::prelude::*;
 
 use super::Screen;
@@ -46,9 +48,12 @@ impl Screen {
             .get(&client_id)
             .copied()
             .and_then(|tab_id| self.session_surface_for_tab(tab_id));
-        if session_surface
-            .is_some_and(|surface| self.handle_pane_notification_click(&event, surface, client_id))
-        {
+        // sampled here rather than taken from the last painted frame: a click should resolve
+        // against where the toast is now, which is at most one frame ahead of what was drawn
+        let now = Instant::now();
+        if session_surface.is_some_and(|surface| {
+            self.handle_pane_notification_click(&event, surface, client_id, now)
+        }) {
             self.notification_mouse_captures.insert(client_id);
             return;
         }

@@ -1184,6 +1184,17 @@ impl Pane for TerminalPane {
             client_id,
         ));
     }
+    fn frame_color_override_strength_is_settled(&self, now: Instant) -> bool {
+        self.pane_frame_color_override
+            .as_ref()
+            .is_none_or(|override_| override_.is_faded_out(now))
+    }
+    fn flash_pane_frame_color_override(&mut self, now: Instant) {
+        self.pane_frame_color_override = Some(FrameColorOverride::flashing(
+            self.style.colors.frame_highlight.emphasis_0,
+            now,
+        ));
+    }
     fn clear_pane_frame_color_override(&mut self, client_id: Option<ClientId>) {
         if self
             .pane_frame_color_override
@@ -1198,6 +1209,12 @@ impl Pane for TerminalPane {
             .as_ref()
             .filter(|override_| override_.applies_to(client_id))
             .map(|override_| override_.color)
+    }
+    fn frame_color_override_strength(&self, client_id: ClientId) -> f32 {
+        self.pane_frame_color_override
+            .as_ref()
+            .filter(|override_| override_.applies_to(client_id))
+            .map_or(1.0, |override_| override_.strength(Instant::now()))
     }
     fn invoked_with(&self) -> &Option<Run> {
         &self.invoked_with

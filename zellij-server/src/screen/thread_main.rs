@@ -2189,6 +2189,18 @@ pub(crate) fn screen_thread_main(
                 }
                 screen.render(None)?;
             },
+            ScreenInstruction::FlashPaneFrameColor(pane_ids) => {
+                let now = Instant::now();
+                for pane_id in pane_ids {
+                    if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                        if tab.flash_pane_frame_color_override(pane_id, now) {
+                            screen.fading_frame_panes.insert(pane_id);
+                        }
+                    }
+                }
+                screen.sync_animation_clock(now)?;
+                screen.render(None)?;
+            },
             ScreenInstruction::ClearPaneFrameColorOverride(pane_ids) => {
                 for pane_id in pane_ids {
                     if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
@@ -2788,13 +2800,20 @@ pub(crate) fn screen_thread_main(
                 }
                 screen.render(None)?;
             },
-            ScreenInstruction::ProgressPluginLoadingOffset(pid) => {
-                if !screen.progress_plugin_loading_offset(pid) {
-                    pending_events_waiting_for_pane
-                        .entry(PaneId::Plugin(pid))
-                        .or_default()
-                        .push(ScreenInstruction::ProgressPluginLoadingOffset(pid));
-                }
+            // No replay queue for a plugin whose pane does not exist yet, unlike the loading
+            // *indication* above: with the offset derived from elapsed time there is nothing to
+            // replay. The plugin stays registered and the next frame after its pane appears simply
+            // draws the right number of dots.
+            ScreenInstruction::StartPluginLoadingAnimation(pid) => {
+                screen.animating_plugin_loads.insert(pid);
+                screen.sync_animation_clock(Instant::now())?;
+                screen.render(None)?;
+            },
+            ScreenInstruction::StopPluginLoadingAnimation(pid) => {
+                screen.animating_plugin_loads.remove(&pid);
+                // so the clock stops on the spot when this was the last load, rather than at the
+                // next tick a dot period later
+                screen.sync_animation_clock(Instant::now())?;
                 screen.render(None)?;
             },
             ScreenInstruction::RequestStateUpdateForPlugins => {
@@ -3501,10 +3520,7 @@ pub(crate) fn screen_thread_main(
                 _completion_tx, // the action ends here, dropping this will release anything
                                 // waiting for it
             ) => {
-                // the survivors are about to be pushed away from the corner - remember where they
-                // were so `render_notifications` can glide them to their new spot
-                screen.notification_stack_before_change = screen.notifications.clone();
-                screen.notification_displacement_progress = 0.0;
+                let now = Instant::now();
                 let id = screen.next_notification_id;
                 screen.next_notification_id += 1;
                 let received_at_unix_ms = std::time::SystemTime::now()
@@ -3516,9 +3532,13 @@ pub(crate) fn screen_thread_main(
                     message: text.clone(),
                     received_at_unix_ms,
                 });
-                screen
-                    .notifications
-                    .insert(0, Notification::new(id, text, pane_id));
+                // the survivors are about to be pushed away from the corner - bracketing the
+                // insert is what glides them there instead of letting them jump
+                screen.with_notification_stack_change(now, |screen| {
+                    screen
+                        .notifications
+                        .insert(0, Notification::new(id, text, pane_id, now));
+                });
                 screen
                     .bus
                     .senders
@@ -3526,27 +3546,16 @@ pub(crate) fn screen_thread_main(
                         id,
                         screen.notification_timeout_secs,
                     ))?;
-                screen
-                    .bus
-                    .senders
-                    .send_to_background_jobs(BackgroundJob::AnimateNotifications)?;
+                screen.sync_animation_clock(now)?;
                 screen.render(None)?;
             },
             ScreenInstruction::DismissNotification(id) => {
                 // the toast stays in the stack, sliding back out, until
-                // `TickNotificationAnimations` sees its `horizontal_progress` reach zero and
-                // actually removes it - see `advance_notification_animations`
-                screen.dismiss_notification(id)?;
+                // `reap_settled_notifications` sees its reveal reach zero and actually removes it
+                screen.dismiss_notification(id, Instant::now())?;
             },
-            ScreenInstruction::TickNotificationAnimations => {
-                let still_animating = screen.advance_notification_animations();
-                if !still_animating {
-                    screen
-                        .bus
-                        .senders
-                        .send_to_background_jobs(BackgroundJob::StopAnimateNotifications)?;
-                }
-                screen.render(None)?;
+            ScreenInstruction::AnimationTick => {
+                screen.on_animation_tick(Instant::now())?;
             },
             ScreenInstruction::RenameSession(
                 name,

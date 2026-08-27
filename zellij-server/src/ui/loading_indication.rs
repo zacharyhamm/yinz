@@ -1,16 +1,25 @@
 use std::fmt::{Display, Error, Formatter};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use zellij_utils::{
     data::{PaletteColor, Styling},
     errors::prelude::*,
 };
 
+/// How long each of the loading indicator's dots stays up.
+///
+/// The dots are a coarse "still working" signal rather than motion, so they run far slower than
+/// anything driven by a tween - they just take their frames from the same clock, which slows down
+/// to this period when they are the only thing left animating. See
+/// `Screen::animation_clock_period`.
+pub const DOT_PERIOD: Duration = Duration::from_millis(500);
+/// One more than the most dots shown, so the count cycles `0, 1, 2, 3`.
+const DOT_STATES: u128 = 4;
+
 #[derive(Debug, Clone, Default)]
 pub struct LoadingIndication {
     pub ended: bool,
     error: Option<String>,
-    animation_offset: usize,
     plugin_name: String,
     terminal_emulator_colors: Option<Styling>,
     override_previous_error: bool,
@@ -22,7 +31,6 @@ impl LoadingIndication {
         let started_at = Some(Instant::now());
         LoadingIndication {
             plugin_name,
-            animation_offset: 0,
             started_at,
             ..Default::default()
         }
@@ -35,12 +43,24 @@ impl LoadingIndication {
         self
     }
     pub fn merge(&mut self, other: LoadingIndication) {
-        let current_animation_offset = self.animation_offset;
+        // `started_at` is what the dots are derived from, so carrying it across is what stops them
+        // restarting on every merge - exactly the job the preserved `animation_offset` used to do
+        // back when the offset was counted rather than derived.
+        //
+        // The *earlier* of the two, not simply the one already here: a load began when the first
+        // thing to say so said it, and an indication raised before the pane existed carries an
+        // earlier stamp than the pane's own. Taking the later one would restart the dots and, more
+        // visibly, restart the 400ms grace below - so an indication that had already earned its
+        // way onto the screen would blink back off.
+        let current_started_at = self.started_at;
         let current_terminal_emulator_colors = self.terminal_emulator_colors.take();
         let mut current_error = self.error.take();
         let override_previous_error = other.override_previous_error;
         drop(std::mem::replace(self, other));
-        self.animation_offset = current_animation_offset;
+        self.started_at = match (current_started_at, self.started_at) {
+            (Some(current), Some(incoming)) => Some(current.min(incoming)),
+            (current, incoming) => current.or(incoming),
+        };
         self.terminal_emulator_colors = current_terminal_emulator_colors;
         if let Some(current_error) = current_error.take() {
             // we do this so that only the first error (usually the root cause) will be shown
@@ -50,12 +70,16 @@ impl LoadingIndication {
             }
         }
     }
-    pub fn progress_animation_offset(&mut self) {
-        if self.animation_offset == 3 {
-            self.animation_offset = 0;
-        } else {
-            self.animation_offset += 1;
-        }
+    /// How many dots to draw at `now`.
+    ///
+    /// Derived from `started_at` rather than counted per tick, so a dropped, late or doubled
+    /// wakeup changes nothing about what is drawn - the same property that makes the toast
+    /// animations frame-rate independent, for the same reason.
+    pub fn animation_offset(&self, now: Instant) -> usize {
+        self.started_at.map_or(0, |started_at| {
+            (now.saturating_duration_since(started_at).as_millis() / DOT_PERIOD.as_millis()
+                % DOT_STATES) as usize
+        })
     }
     pub fn indicate_loading_error(&mut self, error_text: String) {
         self.error = Some(error_text);
@@ -93,7 +117,7 @@ impl Display for LoadingIndication {
         };
         let plugin_name = &self.plugin_name;
         let add_dots = |stringified: &mut String| {
-            for _ in 0..self.animation_offset {
+            for _ in 0..self.animation_offset(Instant::now()) {
                 stringified.push('.');
             }
             stringified.push(' ');
@@ -128,5 +152,83 @@ impl Display for LoadingIndication {
         } else {
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(start: Instant, millis: u64) -> Instant {
+        start + Duration::from_millis(millis)
+    }
+
+    #[test]
+    fn the_dot_count_cycles_with_elapsed_time() {
+        let indication = LoadingIndication::new("plugin".to_owned());
+        let started_at = indication.started_at.expect("new() stamps a start time");
+        assert_eq!(indication.animation_offset(started_at), 0);
+        assert_eq!(indication.animation_offset(at(started_at, 499)), 0);
+        assert_eq!(indication.animation_offset(at(started_at, 500)), 1);
+        assert_eq!(indication.animation_offset(at(started_at, 1500)), 3);
+        assert_eq!(
+            indication.animation_offset(at(started_at, 2000)),
+            0,
+            "and back round"
+        );
+    }
+
+    #[test]
+    fn a_dropped_wakeup_changes_nothing_about_the_dot_count() {
+        // the whole reason the offset is derived rather than counted: sampling at every 16ms tick
+        // and sampling at only some of them must give the same answer at the same instant
+        let indication = LoadingIndication::new("plugin".to_owned());
+        let started_at = indication.started_at.expect("new() stamps a start time");
+        let every_tick: Vec<usize> = (0..120)
+            .map(|tick| indication.animation_offset(at(started_at, tick * 16)))
+            .collect();
+        for (tick, offset) in every_tick.iter().enumerate() {
+            assert_eq!(
+                indication.animation_offset(at(started_at, tick as u64 * 16)),
+                *offset
+            );
+        }
+        assert!(
+            every_tick.contains(&0) && every_tick.contains(&3),
+            "it did cycle"
+        );
+    }
+
+    #[test]
+    fn merging_keeps_the_earlier_start_so_the_dots_do_not_restart() {
+        let mut indication = LoadingIndication::new("plugin".to_owned());
+        let original = indication.started_at.expect("a start time");
+
+        // a later stage arriving must not reset the clock, or the dots restart and - worse - the
+        // 400ms grace restarts with them and the indicator blinks back off
+        let mut later = LoadingIndication::new("plugin".to_owned());
+        later.started_at = Some(at(original, 700));
+        indication.merge(later);
+        assert_eq!(indication.started_at, Some(original));
+
+        // ...and an *earlier* one wins, because that is when the load really began: an indication
+        // raised before the pane existed is stamped before the pane's own
+        let mut earlier = LoadingIndication::new("plugin".to_owned());
+        earlier.started_at = Some(original - Duration::from_millis(300));
+        indication.merge(earlier);
+        assert_eq!(
+            indication.started_at,
+            Some(original - Duration::from_millis(300))
+        );
+    }
+
+    #[test]
+    fn merging_onto_an_indication_with_no_start_takes_the_incoming_one() {
+        let mut indication = LoadingIndication::default();
+        assert_eq!(indication.started_at, None);
+        let incoming = LoadingIndication::new("plugin".to_owned());
+        let incoming_start = incoming.started_at;
+        indication.merge(incoming);
+        assert_eq!(indication.started_at, incoming_start);
     }
 }

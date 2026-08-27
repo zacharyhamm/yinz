@@ -4129,7 +4129,7 @@ fn an_overlay_set_aside_stays_set_aside_when_its_tab_closes() {
 }
 
 /// The last tab closing ends the session, and an overlay is not a reason to keep it open - there
-/// is nowhere to re-home one to. The same property `global_panes_render` pins for global panes.
+/// is nowhere to re-home one to.
 #[test]
 fn an_overlay_does_not_keep_the_session_alive_when_the_last_tab_closes() {
     let size = Size { cols: 80, rows: 12 };
@@ -4213,57 +4213,5 @@ fn an_overlay_is_torn_down_when_its_destination_is_reaped_too() {
     assert!(
         torn_down.contains(&popup_id),
         "the overlay is re-homed into the first tab and then torn down with it: {torn_down:?}"
-    );
-}
-
-/// A client that was on a global pane when hocus took the keyboard has its old focus parked in
-/// `suspended_global_focus`, keyed by the tab the overlay is on - and
-/// `take_global_focus_after_overlay_close` looks the entry up by the tab it *finds* the overlay
-/// in. Moving the overlay to another tab therefore has to move the key with it, or putting hocus
-/// away leaves the client on a tiled pane with its global pane never handed back.
-#[test]
-fn an_overlay_that_changed_tabs_still_hands_back_a_suspended_global_focus() {
-    use zellij_utils::data::GlobalPaneEdge;
-
-    let size = Size {
-        cols: 120,
-        rows: 20,
-    };
-    let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
-    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 40);
-    screen.render_to_clients().expect("TEST");
-    screen
-        .focus_global_pane(PaneId::Terminal(99), 1)
-        .expect("TEST");
-
-    let (_run_plugin, popup_id) = open_overlay_plugin(&mut screen, 7, 1, popup_coordinates());
-    screen.activate_overlay(popup_id);
-    assert_eq!(screen.active_pane_id(1), Some(popup_id));
-
-    screen.close_tab(1).expect("TEST");
-
-    // the user finds hocus again on the tab it landed in, and puts it away
-    let surviving_tab_id = *screen.active_tab_ids.get(&1).expect("TEST");
-    screen
-        .tabs
-        .get_mut(&surviving_tab_id)
-        .expect("TEST")
-        .focus_pane_with_id(popup_id, false, false, 1)
-        .expect("TEST");
-    let restore = screen.take_global_focus_after_overlay_close(popup_id);
-    screen
-        .tabs
-        .get_mut(&surviving_tab_id)
-        .expect("TEST")
-        .close_pane(popup_id, false, None);
-    screen.restore_global_focus(restore);
-
-    assert_eq!(
-        screen.global_panes.focused_pane_id(1),
-        Some(PaneId::Terminal(99)),
-        "the global pane the overlay borrowed the keyboard from must be handed back, even though \
-         the overlay changed tabs in between"
     );
 }

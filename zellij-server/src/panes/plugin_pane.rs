@@ -101,6 +101,9 @@ pub(crate) struct PluginPane {
     borderless: bool,
     exclude_from_sync: bool,
     pane_frame_color_override: Option<FrameColorOverride>,
+    /// The loading indicator as last written into the pane, so a clock tick that would draw the
+    /// same thing writes nothing. See `progress_animation_offset`.
+    last_loading_indication: Option<String>,
     invoked_with: Option<Run>,
     loading_indication: LoadingIndication,
     requesting_permissions: Option<PluginPermission>,
@@ -161,6 +164,7 @@ impl PluginPane {
             cursor_visibility: HashMap::new(),
             style,
             pane_frame_color_override: None,
+            last_loading_indication: None,
             invoked_with,
             loading_indication,
             requesting_permissions: None,
@@ -779,6 +783,17 @@ impl Pane for PluginPane {
             client_id,
         ));
     }
+    fn frame_color_override_strength_is_settled(&self, now: Instant) -> bool {
+        self.pane_frame_color_override
+            .as_ref()
+            .is_none_or(|override_| override_.is_faded_out(now))
+    }
+    fn flash_pane_frame_color_override(&mut self, now: Instant) {
+        self.pane_frame_color_override = Some(FrameColorOverride::flashing(
+            self.style.colors.frame_highlight.emphasis_0,
+            now,
+        ));
+    }
     fn clear_pane_frame_color_override(&mut self, client_id: Option<ClientId>) {
         if self
             .pane_frame_color_override
@@ -793,6 +808,12 @@ impl Pane for PluginPane {
             .as_ref()
             .filter(|override_| override_.applies_to(client_id))
             .map(|override_| override_.color)
+    }
+    fn frame_color_override_strength(&self, client_id: ClientId) -> f32 {
+        self.pane_frame_color_override
+            .as_ref()
+            .filter(|override_| override_.applies_to(client_id))
+            .map_or(1.0, |override_| override_.strength(Instant::now()))
     }
     fn invoked_with(&self) -> &Option<Run> {
         &self.invoked_with
@@ -819,10 +840,21 @@ impl Pane for PluginPane {
         if self.loading_indication.ended {
             return;
         }
-        self.loading_indication.progress_animation_offset();
-        self.handle_plugin_bytes_for_all_clients(
-            self.loading_indication.to_string().as_bytes().to_vec(),
-        );
+        // The shared clock ticks far faster than the indicator changes, so this is a no-op on most
+        // frames - without the comparison a 16ms clock would repaint the whole plugin grid sixty
+        // times a second to draw the same four characters.
+        //
+        // Compared on the rendered string rather than on the dot count, because the dot count is
+        // not the only thing that moves: the indicator draws nothing at all for its first 400ms
+        // (see `LoadingIndication::fmt`), and gating on the count alone would skip the frame where
+        // it first becomes visible and then sit on that decision until the next dot.
+        let rendered = self.loading_indication.to_string();
+        if self.last_loading_indication.as_deref() == Some(rendered.as_str()) {
+            return;
+        }
+        let bytes = rendered.as_bytes().to_vec();
+        self.last_loading_indication = Some(rendered);
+        self.handle_plugin_bytes_for_all_clients(bytes);
     }
     fn current_title(&self) -> String {
         if self.pane_name.is_empty() {

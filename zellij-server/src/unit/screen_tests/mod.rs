@@ -1394,6 +1394,21 @@ fn new_terminal_pane_for_pause_test(pid: u32) -> TerminalPane {
     )
 }
 
+/// A screen whose background-job sends can be read back, for the tests that care about what was
+/// asked of the shared animation clock rather than about what was painted.
+fn screen_with_background_jobs(size: Size) -> (Screen, Receiver<(BackgroundJob, ErrorContext)>) {
+    let mut screen = create_non_mirrored_screen(size);
+    let (to_background_jobs, background_jobs_receiver): ChannelWithContext<BackgroundJob> =
+        channels::unbounded();
+    screen.bus.senders.to_background_jobs = Some(SenderWithContext::new(to_background_jobs));
+    (screen, background_jobs_receiver)
+}
+
+/// Every background job sent so far, draining the channel.
+fn drain_background_jobs(receiver: &Receiver<(BackgroundJob, ErrorContext)>) -> Vec<BackgroundJob> {
+    receiver.try_iter().map(|(job, _)| job).collect()
+}
+
 fn create_non_mirrored_screen(size: Size) -> Screen {
     let mut bus: Bus<ScreenInstruction> = Bus::empty();
     let fake_os_input = FakeInputOutput::default();
@@ -2008,6 +2023,7 @@ fn notification_history_keeps_dismissed_toasts() {
     mock_screen.teardown(vec![screen_thread]);
 }
 
+mod animation_clock;
 mod break_and_move_panes;
 mod break_panes_to_tab;
 mod capabilities;
@@ -2020,6 +2036,7 @@ mod hooks;
 mod host_query;
 mod mouse;
 mod nested_sessions;
+mod notification_animation;
 mod overlays;
 mod pane_state;
 mod plugin_broadcasts;

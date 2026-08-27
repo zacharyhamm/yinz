@@ -5,8 +5,11 @@
 //! (tiled, floating and global) has rendered, so they always paint on top - see
 //! `render_notifications` there.
 
+use std::time::Duration;
+
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
+use zellij_utils::animation::{blend, Easing};
 use zellij_utils::data::Style;
 use zellij_utils::input::options::NotificationPosition;
 use zellij_utils::pane_size::Viewport;
@@ -267,6 +270,54 @@ pub fn notification_origins(
     origins
 }
 
+/// How far toast `id`'s settled row moved when the stack went from `before` to `after`, in rows.
+///
+/// Positive means it moved *down* the screen. Returns `None` for a toast that is not in both
+/// stacks - a new arrival has nowhere to have moved from.
+///
+/// Both stacks are `(id, height)` in stacking order, nearest the anchored corner first, each
+/// measured at *its own* shared width: a wide toast arriving re-wraps every other toast and can
+/// change their heights, and that is precisely the case this exists to handle.
+///
+/// The viewport cancels out, which is the point. Comparing [`notification_origins`] outputs
+/// directly would tie the answer to one client's viewport, but every viewport-dependent term -
+/// `viewport.y`, `viewport.rows` - is identical on both sides of the subtraction, so only the
+/// cumulative heights survive. That is what lets one displacement be shared by clients whose
+/// viewports differ. The two anchors measure from opposite edges, so they subtract differently:
+/// a top-anchored toast is placed by its top edge and a bottom-anchored one by its bottom.
+pub fn settled_row_delta(
+    position: NotificationPosition,
+    before: &[(u64, usize)],
+    after: &[(u64, usize)],
+    id: u64,
+) -> Option<isize> {
+    // distance from the anchored edge to this toast's own anchored edge
+    let distance = |stack: &[(u64, usize)]| -> Option<isize> {
+        let mut used = 0usize;
+        for (candidate, height) in stack {
+            if *candidate == id {
+                let edge = if position.is_top() {
+                    used
+                } else {
+                    used + height
+                };
+                return isize::try_from(edge).ok();
+            }
+            used += height;
+        }
+        None
+    };
+    let before = distance(before)?;
+    let after = distance(after)?;
+    // a top-anchored stack grows downwards, so a larger distance is a larger row; a bottom-anchored
+    // one grows upwards, so a larger distance is a smaller row
+    Some(if position.is_top() {
+        after - before
+    } else {
+        before - after
+    })
+}
+
 /// The chunks for one toast, its top-left corner at (`x`, `y`) and `width` columns wide.
 ///
 /// `lines` comes from [`notification_lines`] called with the same `width`.
@@ -276,14 +327,29 @@ pub fn notification_chunks(
     y: usize,
     width: usize,
     style: &Style,
+    fade: f32,
 ) -> Vec<CharacterChunk> {
     let declaration = style.colors.text_unselected;
+    // The box paints as a solid slab of its own background from its very first frame, and its
+    // border and text resolve out of that background as `fade` climbs - so a toast materialises
+    // rather than snapping into existence, and dissolves rather than blinking out.
+    //
+    // Fading towards the box's own background rather than towards what is behind it is not a
+    // shortcut, it is the only thing expressible: the server keeps no framebuffer of the panes a
+    // toast covers, and there is no session background colour distinct from this one. What this
+    // does *not* do is smooth the vertical glide, whose cells sit over content nothing here knows.
+    //
+    // At `fade == 1.0` `blend` hands back the original `PaletteColor` untouched, so a settled
+    // toast is byte-identical to an unanimated one and a customised terminal palette is only ever
+    // approximated during the handful of frames something is actually moving.
+    let text_color = blend(declaration.background, declaration.base, fade);
+    let border_color = blend(declaration.background, declaration.emphasis_0, fade);
     let fill: RcCharacterStyles = RESET_STYLES
-        .foreground(Some(AnsiCode::from(declaration.base)))
+        .foreground(Some(AnsiCode::from(text_color)))
         .background(Some(AnsiCode::from(declaration.background)))
         .into();
     let border: RcCharacterStyles = RESET_STYLES
-        .foreground(Some(AnsiCode::from(declaration.emphasis_0)))
+        .foreground(Some(AnsiCode::from(border_color)))
         .background(Some(AnsiCode::from(declaration.background)))
         .into();
 
@@ -336,15 +402,27 @@ pub fn notification_chunks(
     chunks
 }
 
-/// A smoothstep curve: eases in and out rather than moving at a constant rate. Used for both the
-/// slide reveal and the displacement lerp so neither one looks mechanical.
+/// How long a toast takes to slide in, and the curve it does it on.
 ///
-/// `progress` is clamped to `[0.0, 1.0]` first, so a caller that overshoots (the last tick of an
-/// animation commonly does) gets a safe `0.0`/`1.0` rather than a curve value outside that range.
-pub fn ease(progress: f32) -> f32 {
-    let t = progress.clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
+/// `EaseOut` because it is arriving: on screen quickly, then settling without a bump. The easing
+/// lives in the [`Tween`](zellij_utils::animation::Tween) that drives `progress`, so nothing in
+/// this module eases again - the reveal below is a straight multiply.
+pub const ENTER_DURATION: Duration = Duration::from_millis(200);
+pub const ENTER_EASING: Easing = Easing::EaseOut;
+/// How long a toast takes to slide back out. Shorter than the entrance and `EaseIn`, because a
+/// thing that is leaving should commit to going rather than linger.
+pub const EXIT_DURATION: Duration = Duration::from_millis(160);
+pub const EXIT_EASING: Easing = Easing::EaseIn;
+/// How long a survivor takes to glide to its new place in the stack. `EaseInOut`: it is moving
+/// from one resting place to another, so it should leave and arrive gently at both ends.
+pub const DISPLACE_DURATION: Duration = Duration::from_millis(220);
+/// `EaseOut` rather than `EaseInOut`: a displacement is almost always a *re-aim* of a tween that
+/// is already moving, and easing back in from a non-zero velocity reads as a stall.
+pub const DISPLACE_EASING: Easing = Easing::EaseOut;
+/// The distance `DISPLACE_DURATION` is quoted for - about one short toast's height. Displacements
+/// are scaled against it so speed, rather than duration, is what stays constant: see
+/// [`zellij_utils::animation::scaled_duration`].
+pub const DISPLACE_SPAN: f32 = 4.0;
 
 /// `chunks` (as produced by [`notification_chunks`] for a box `width` columns wide with its
 /// top-left corner at `x`) trimmed to the columns visible at slide `progress` - `0.0` is fully
@@ -389,7 +467,7 @@ pub fn notification_reveal_bounds(
     position: NotificationPosition,
     progress: f32,
 ) -> (usize, usize) {
-    let visible_cols = (((width as f32) * ease(progress)).round() as usize).min(width);
+    let visible_cols = (((width as f32) * progress.clamp(0.0, 1.0)).round() as usize).min(width);
     let revealed_x = if position.is_left() {
         x
     } else {
@@ -428,18 +506,6 @@ fn drop_columns(characters: &[TerminalCharacter], drop_cols: usize) -> Vec<Termi
         start = index + 1;
     }
     characters[start..].to_vec()
-}
-
-/// `before` lerped towards `after` by `progress` (`0.0` stays at `before`, `1.0` reaches `after`),
-/// eased and rounded to the nearest cell.
-pub fn lerp_origin(before: (usize, usize), after: (usize, usize), progress: f32) -> (usize, usize) {
-    let t = ease(progress);
-    let lerp = |from: usize, to: usize| -> usize {
-        let from = from as f32;
-        let to = to as f32;
-        (from + (to - from) * t).round() as usize
-    };
-    (lerp(before.0, after.0), lerp(before.1, after.1))
 }
 
 #[cfg(test)]
@@ -701,7 +767,7 @@ mod tests {
     #[test]
     fn a_single_line_toast_is_still_three_rows_of_exactly_the_requested_width() {
         let style = Style::default();
-        let chunks = notification_chunks(&["hello".to_owned()], 4, 9, 20, &style);
+        let chunks = notification_chunks(&["hello".to_owned()], 4, 9, 20, &style, 1.0);
         assert_eq!(chunks.len(), notification_height(1));
         for (offset, chunk) in chunks.iter().enumerate() {
             assert_eq!(chunk.x, 4);
@@ -723,7 +789,7 @@ mod tests {
     fn every_row_of_a_multi_line_toast_spans_the_full_width() {
         let style = Style::default();
         let lines = notification_lines("one\ntwo three\n  four", 20);
-        let chunks = notification_chunks(&lines, 0, 0, 20, &style);
+        let chunks = notification_chunks(&lines, 0, 0, 20, &style, 1.0);
 
         assert_eq!(chunks.len(), notification_height(lines.len()));
         for (offset, chunk) in chunks.iter().enumerate() {
@@ -758,7 +824,7 @@ mod tests {
             ]
         );
 
-        let painted = rows(&notification_chunks(&lines, 0, 0, width, &style));
+        let painted = rows(&notification_chunks(&lines, 0, 0, width, &style, 1.0));
         assert_eq!(painted.len(), notification_height(4));
         assert!(painted[0].starts_with('╭'), "got {:?}", painted[0]);
         assert_eq!(painted[1], "│ hocus needs confirmation │");
@@ -767,20 +833,9 @@ mod tests {
     }
 
     #[test]
-    fn ease_is_identity_at_the_endpoints_and_clamps_outside_them() {
-        assert_eq!(ease(0.0), 0.0);
-        assert_eq!(ease(1.0), 1.0);
-        assert_eq!(ease(-0.5), 0.0);
-        assert_eq!(ease(1.5), 1.0);
-        // eased motion is slower than linear near the endpoints
-        assert!(ease(0.1) < 0.1);
-        assert!(ease(0.9) > 0.9);
-    }
-
-    #[test]
     fn a_fully_hidden_reveal_paints_nothing() {
         let style = Style::default();
-        let chunks = notification_chunks(&["hello".to_owned()], 4, 9, 20, &style);
+        let chunks = notification_chunks(&["hello".to_owned()], 4, 9, 20, &style, 1.0);
         for position in [
             NotificationPosition::TopLeft,
             NotificationPosition::TopRight,
@@ -800,7 +855,7 @@ mod tests {
     fn a_fully_shown_reveal_is_identical_to_the_unanimated_chunks() {
         let style = Style::default();
         let lines = notification_lines("one\ntwo three\n  four", 20);
-        let chunks = notification_chunks(&lines, 4, 9, 20, &style);
+        let chunks = notification_chunks(&lines, 4, 9, 20, &style, 1.0);
         for position in [
             NotificationPosition::TopLeft,
             NotificationPosition::TopRight,
@@ -824,7 +879,7 @@ mod tests {
     #[test]
     fn a_left_anchored_reveal_keeps_x_fixed_and_grows_rightward() {
         let style = Style::default();
-        let chunks = notification_chunks(&["hello".to_owned()], 4, 9, 20, &style);
+        let chunks = notification_chunks(&["hello".to_owned()], 4, 9, 20, &style, 1.0);
         for progress in [0.0, 0.25, 0.5, 0.75, 1.0] {
             let (revealed, x) =
                 notification_reveal(&chunks, 4, 20, NotificationPosition::TopLeft, progress);
@@ -843,7 +898,7 @@ mod tests {
     #[test]
     fn a_right_anchored_reveal_keeps_the_right_edge_fixed_and_grows_leftward() {
         let style = Style::default();
-        let chunks = notification_chunks(&["hello".to_owned()], 4, 9, 20, &style);
+        let chunks = notification_chunks(&["hello".to_owned()], 4, 9, 20, &style, 1.0);
         let mut previous_x = None;
         for progress in [0.0, 0.25, 0.5, 0.75, 1.0] {
             let (revealed, x) =
@@ -874,7 +929,7 @@ mod tests {
         let style = Style::default();
         // 4 double-width glyphs, 8 columns of text, box is CHROME_COLS(4) + 8 = 12 wide
         let lines = notification_lines(&"日".repeat(4), 12);
-        let chunks = notification_chunks(&lines, 0, 0, 12, &style);
+        let chunks = notification_chunks(&lines, 0, 0, 12, &style, 1.0);
         for progress in 0..=12 {
             let progress = progress as f32 / 12.0;
             let (revealed, _) =
@@ -894,32 +949,207 @@ mod tests {
         }
     }
 
+    /// The property the whole no-jump design rests on: for every survivor of a stack change, the
+    /// row it was settled at equals the row it is settled at now, plus the delta. If that holds,
+    /// adding the delta to the toast's displacement leaves the painted row exactly where it was.
     #[test]
-    fn lerp_origin_reaches_before_and_after_at_the_endpoints() {
-        let before = (2, 3);
-        let after = (10, 1);
-        assert_eq!(lerp_origin(before, after, 0.0), before);
-        assert_eq!(lerp_origin(before, after, 1.0), after);
+    fn a_settled_row_delta_accounts_for_exactly_where_a_toast_moved_to() {
+        let viewport = viewport();
+        let width = 20;
+        // ids 1..=3 at differing heights, then the newest (id 4) arrives at the corner and id 2 is
+        // dismissed - so the survivors are re-ordered *and* pushed by a toast of a different size
+        let before: Vec<(u64, usize)> = vec![(3, 3), (2, 5), (1, 4)];
+        let after: Vec<(u64, usize)> = vec![(4, 6), (3, 3), (1, 4)];
+
+        for position in [
+            NotificationPosition::TopLeft,
+            NotificationPosition::TopRight,
+            NotificationPosition::BottomLeft,
+            NotificationPosition::BottomRight,
+        ] {
+            let heights = |stack: &[(u64, usize)]| -> Vec<usize> {
+                stack.iter().map(|(_, height)| *height).collect()
+            };
+            let origins_before = notification_origins(viewport, position, &heights(&before), width);
+            let origins_after = notification_origins(viewport, position, &heights(&after), width);
+
+            for (index, (id, _)) in after.iter().enumerate() {
+                let Some(before_index) = before.iter().position(|(candidate, _)| candidate == id)
+                else {
+                    // a new arrival has nowhere to have moved from
+                    assert_eq!(settled_row_delta(position, &before, &after, *id), None);
+                    continue;
+                };
+                let delta = settled_row_delta(position, &before, &after, *id)
+                    .expect("a survivor has a delta");
+                assert_eq!(
+                    origins_before[before_index].1 as isize + delta,
+                    origins_after[index].1 as isize,
+                    "{position:?}: toast {id} should land exactly on its new row"
+                );
+            }
+        }
     }
 
     #[test]
-    fn lerp_origin_moves_monotonically_between_endpoints() {
-        let before = (2, 20);
-        let after = (10, 4);
-        let mut previous = before;
-        for progress in 1..=10 {
-            let progress = progress as f32 / 10.0;
-            let current = lerp_origin(before, after, progress);
-            assert!(
-                current.0 >= previous.0,
-                "x should move monotonically towards `after`"
-            );
-            assert!(
-                current.1 <= previous.1,
-                "y should move monotonically towards `after`"
-            );
-            previous = current;
+    fn a_settled_row_delta_is_zero_when_nothing_moved() {
+        let stack: Vec<(u64, usize)> = vec![(1, 3), (2, 4)];
+        for position in [
+            NotificationPosition::TopLeft,
+            NotificationPosition::BottomRight,
+        ] {
+            assert_eq!(settled_row_delta(position, &stack, &stack, 1), Some(0));
+            assert_eq!(settled_row_delta(position, &stack, &stack, 2), Some(0));
         }
-        assert_eq!(previous, after);
+    }
+
+    #[test]
+    fn a_settled_row_delta_has_no_answer_for_a_toast_outside_either_stack() {
+        let before: Vec<(u64, usize)> = vec![(1, 3)];
+        let after: Vec<(u64, usize)> = vec![(2, 3)];
+        let position = NotificationPosition::TopRight;
+        assert_eq!(settled_row_delta(position, &before, &after, 1), None);
+        assert_eq!(settled_row_delta(position, &before, &after, 2), None);
+        assert_eq!(settled_row_delta(position, &before, &after, 9), None);
+    }
+
+    /// A toast growing taller pushes what is behind it away from the corner, in whichever
+    /// direction that corner implies. This is the case a wide arrival creates: the shared width
+    /// grows, everything re-wraps, and heights change under toasts that did not themselves move
+    /// in the stack.
+    #[test]
+    fn a_height_change_displaces_what_is_stacked_behind_it() {
+        let before: Vec<(u64, usize)> = vec![(1, 3), (2, 4)];
+        let after: Vec<(u64, usize)> = vec![(1, 5), (2, 4)];
+        assert_eq!(
+            settled_row_delta(NotificationPosition::TopLeft, &before, &after, 2),
+            Some(2),
+            "a top-anchored stack grows downwards, so the one behind moves down"
+        );
+        assert_eq!(
+            settled_row_delta(NotificationPosition::BottomLeft, &before, &after, 2),
+            Some(-2),
+            "a bottom-anchored stack grows upwards, so the one behind moves up"
+        );
+        assert_eq!(
+            settled_row_delta(NotificationPosition::TopLeft, &before, &after, 1),
+            Some(0),
+            "the toast in the corner does not move, however tall it gets"
+        );
+    }
+
+    /// The colours a chunk's characters actually carry, as `(foreground, background)` pairs.
+    fn colors(chunk: &CharacterChunk) -> Vec<(Option<AnsiCode>, Option<AnsiCode>)> {
+        chunk
+            .terminal_characters
+            .iter()
+            .map(|character| (character.styles.foreground, character.styles.background))
+            .collect()
+    }
+
+    /// The guarantee that makes the fade invisible at rest: a fully-arrived toast carries the
+    /// exact colours the theme declared, `PaletteColor` variant included, rather than an RGB
+    /// resolution of them. A terminal with a customised 16-colour palette therefore only ever sees
+    /// an approximation during the frames a toast is actually moving.
+    #[test]
+    fn a_fully_faded_in_toast_carries_the_declared_colours_exactly() {
+        let style = Style::default();
+        let declaration = style.colors.text_unselected;
+        let background = Some(AnsiCode::from(declaration.background));
+        let border = Some(AnsiCode::from(declaration.emphasis_0));
+        let text = Some(AnsiCode::from(declaration.base));
+
+        let lines = notification_lines("one\ntwo three", 20);
+        let chunks = notification_chunks(&lines, 4, 9, 20, &style, 1.0);
+        let (border_rows, text_rows) = chunks.split_at(1);
+
+        for (foreground, chunk_background) in colors(&border_rows[0]) {
+            assert_eq!(foreground, border, "the top border is the declared colour");
+            assert_eq!(chunk_background, background);
+        }
+        // the last chunk is the bottom border; everything between is text framed by border pipes
+        let (text_rows, bottom) = text_rows.split_at(text_rows.len() - 1);
+        for (foreground, _) in colors(&bottom[0]) {
+            assert_eq!(foreground, border);
+        }
+        for chunk in text_rows {
+            let row = colors(chunk);
+            assert_eq!(row.first().map(|(fg, _)| *fg), Some(border), "left pipe");
+            assert_eq!(row.last().map(|(fg, _)| *fg), Some(border), "right pipe");
+            for (foreground, chunk_background) in &row[1..row.len() - 1] {
+                assert_eq!(*foreground, text, "the text is the declared colour");
+                assert_eq!(*chunk_background, background);
+            }
+        }
+    }
+
+    #[test]
+    fn a_toast_at_zero_fade_is_a_solid_slab_of_its_own_background() {
+        let style = Style::default();
+        let declaration = style.colors.text_unselected;
+        let background = Some(AnsiCode::from(declaration.background));
+        let lines = notification_lines("hidden", 20);
+        for chunk in notification_chunks(&lines, 4, 9, 20, &style, 0.0) {
+            for (foreground, chunk_background) in colors(&chunk) {
+                assert_eq!(
+                    foreground, background,
+                    "the border and text have not resolved out of the slab yet"
+                );
+                assert_eq!(chunk_background, background);
+            }
+        }
+    }
+
+    #[test]
+    fn a_partly_faded_toast_never_leaves_the_segment_between_its_endpoints() {
+        let style = Style::default();
+        let declaration = style.colors.text_unselected;
+        let (from_r, from_g, from_b) = rgb_of(declaration.background);
+        let lines = notification_lines("resolving", 20);
+        for step in 1..10 {
+            let fade = step as f32 / 10.0;
+            for chunk in notification_chunks(&lines, 4, 9, 20, &style, fade) {
+                for (foreground, _) in colors(&chunk) {
+                    let Some(AnsiCode::RgbCode((r, g, b))) = foreground else {
+                        panic!("a mid-fade colour is resolved rgb, got {foreground:?}");
+                    };
+                    // every channel is between the background it started at and one of the two
+                    // endpoints it can be heading for
+                    for (channel, start, ends) in [
+                        (
+                            r,
+                            from_r,
+                            [rgb_of(declaration.base).0, rgb_of(declaration.emphasis_0).0],
+                        ),
+                        (
+                            g,
+                            from_g,
+                            [rgb_of(declaration.base).1, rgb_of(declaration.emphasis_0).1],
+                        ),
+                        (
+                            b,
+                            from_b,
+                            [rgb_of(declaration.base).2, rgb_of(declaration.emphasis_0).2],
+                        ),
+                    ] {
+                        assert!(
+                            ends.iter().any(|end| {
+                                channel >= start.min(*end) && channel <= start.max(*end)
+                            }),
+                            "channel {channel} outside [{start}, {ends:?}] at fade {fade}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn rgb_of(color: zellij_utils::data::PaletteColor) -> (u8, u8, u8) {
+        match color {
+            zellij_utils::data::PaletteColor::Rgb(rgb) => rgb,
+            zellij_utils::data::PaletteColor::EightBit(index) => {
+                zellij_utils::shared::eightbit_to_rgb(index)
+            },
+        }
     }
 }
