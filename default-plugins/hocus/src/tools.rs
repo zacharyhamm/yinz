@@ -2195,8 +2195,13 @@ pub const NO_PLUGIN_FOLDER: &str = "no plugin folder is configured; set `user_pl
 /// while pointing anywhere at all. Following one would let a read leave the folder and let an
 /// `overwrite=true` truncate a file the confirmation never named.
 ///
-/// Only the last component needs checking: the folder itself is the user's own configuration, and
-/// the name contributes exactly one component to the path.
+/// The last component is not the only one that can be a link: a module name (`app/ui`) puts one
+/// folder of the model's choosing in the path too, and a symlinked `app/` leads out of the plugin
+/// folder just as surely. That folder travels in `HOCUS_PLUGIN_MODULE_DIR` — set by `plugin_argv`
+/// only when the name had a folder in it — and is checked here as well.
+///
+/// The plugin folder *itself* is deliberately not checked: it is the user's own configuration
+/// rather than anything the model chose, and a dotfiles setup that symlinks it is not an escape.
 ///
 /// `-L` is true for a link whatever it points at, including a dangling one, so this refuses
 /// before `set -C` has to reason about what a link "existing" means.
@@ -2204,8 +2209,11 @@ pub const NO_PLUGIN_FOLDER: &str = "no plugin folder is configured; set `user_pl
 /// The check and the use of the path are two syscalls, so a link planted between them would still
 /// be followed. Nothing hocus offers writes into that folder except the guarded script below, and
 /// closing the window properly needs an `O_NOFOLLOW` open that no shell exposes.
-const PLUGIN_SYMLINK_GUARD: &str =
-    r#"if [ -L "$1" ]; then printf '%s\n' "$1 is a symlink; refusing" >&2; exit 1; fi"#;
+const PLUGIN_SYMLINK_GUARD: &str = concat!(
+    r#"if [ -L "$1" ]; then printf '%s\n' "$1 is a symlink; refusing" >&2; exit 1; fi"#,
+    "\n",
+    r#"if [ -n "${HOCUS_PLUGIN_MODULE_DIR-}" ] && [ -L "$HOCUS_PLUGIN_MODULE_DIR" ]; then printf '%s\n' "$HOCUS_PLUGIN_MODULE_DIR is a symlink; refusing" >&2; exit 1; fi"#,
+);
 
 /// Write `$HOCUS_PLUGIN_SOURCE` to `$1`, creating the folder `$2` first.
 ///
@@ -2225,19 +2233,48 @@ const PLUGIN_SYMLINK_GUARD: &str =
 /// One statement per line, rather than the `&&` chain this used to be: a compound `if` in the
 /// middle of a chain still lets what follows the next `;` run, so a failed `mkdir` would go on to
 /// write. Every step that can fail says `|| exit 1` for itself.
+///
+/// The guard runs *first*, before the `mkdir`: `mkdir -p` through a symlinked module folder
+/// succeeds silently (the folder already exists, as far as it can tell), so checking afterwards
+/// would be checking a link this script had already walked through.
 fn plugin_write_script(overwrite: bool) -> String {
     let noclobber = match overwrite {
         true => "",
         false => "set -C\n",
     };
     format!(
-        "mkdir -p \"$2\" || exit 1\n{PLUGIN_SYMLINK_GUARD}\n{noclobber}printf %s \
+        "{PLUGIN_SYMLINK_GUARD}\nmkdir -p \"$2\" || exit 1\n{noclobber}printf %s \
          \"$HOCUS_PLUGIN_SOURCE\" > \"$1\""
     )
 }
 
 /// The environment variable carrying a plugin's source to the write script.
 const PLUGIN_SOURCE_VAR: &str = "HOCUS_PLUGIN_SOURCE";
+
+/// The environment variable carrying the module folder to `PLUGIN_SYMLINK_GUARD`.
+///
+/// The environment rather than a positional argument because the positions differ per tool - `$2`
+/// is a line range for `plugin_read` and the folder to create for `plugin_write` - while the
+/// guard is one piece of text shared by all of them.
+const PLUGIN_MODULE_DIR_VAR: &str = "HOCUS_PLUGIN_MODULE_DIR";
+
+/// The folder a module name put in the path, if the name had one.
+///
+/// `None` for a plain plugin name, whose parent is the plugin folder itself: that one is the
+/// user's configuration and is deliberately left unchecked - see `PLUGIN_SYMLINK_GUARD`.
+fn plugin_module_dir(dir: &str, target: &str) -> Option<String> {
+    let parent = std::path::Path::new(target).parent()?.display().to_string();
+    (parent != dir).then_some(parent)
+}
+
+/// The environment every guarded plugin tool runs with: the module folder to check, when there
+/// is one.
+fn plugin_guard_env(dir: &str, target: &str) -> BTreeMap<String, String> {
+    match plugin_module_dir(dir, target) {
+        Some(module_dir) => BTreeMap::from([(PLUGIN_MODULE_DIR_VAR.to_owned(), module_dir)]),
+        None => BTreeMap::new(),
+    }
+}
 
 /// Resolve a plugin the model named against the user's plugin folder.
 ///
@@ -2355,7 +2392,7 @@ pub fn plugin_argv(
                     target.to_owned(),
                     format!("{start},{end}p"),
                 ],
-                BTreeMap::new(),
+                plugin_guard_env(dir, target),
             ))
         },
         // A reload runs nothing: this command exists to answer "may that file be loaded at all",
@@ -2372,7 +2409,7 @@ pub fn plugin_argv(
                 "sh".to_owned(),
                 target.to_owned(),
             ],
-            BTreeMap::new(),
+            plugin_guard_env(dir, target),
         )),
         // The lines tagged with this plugin's file. The runtime tags a plugin's `zellij.log`
         // and `print` output `[lua:<path>]`, and its loader errors name the path, so matching
@@ -2432,7 +2469,11 @@ pub fn plugin_argv(
                         .map(|parent| parent.display().to_string())
                         .unwrap_or_else(|| dir.to_owned()),
                 ],
-                BTreeMap::from([(PLUGIN_SOURCE_VAR.to_owned(), source)]),
+                {
+                    let mut env = plugin_guard_env(dir, target);
+                    env.insert(PLUGIN_SOURCE_VAR.to_owned(), source);
+                    env
+                },
             ))
         },
         other => Err(format!("no such tool: {other}")),

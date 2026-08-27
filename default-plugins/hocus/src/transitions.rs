@@ -84,6 +84,7 @@ impl State {
             view: std::mem::take(&mut self.view),
             job_auto_confirm: std::mem::take(&mut self.job_auto_confirm),
             plan: std::mem::take(&mut self.plan),
+            plugin_load: self.plugin_load.take(),
         }
     }
 
@@ -107,6 +108,7 @@ impl State {
         self.view = chat.view;
         self.job_auto_confirm = chat.job_auto_confirm;
         self.plan = chat.plan;
+        self.plugin_load = chat.plugin_load;
     }
 
     /// Run `f` against a parked chat by swapping it into the foreground for the
@@ -446,26 +448,65 @@ impl State {
         // job back anyway — `tick_jobs` still runs, for its countdown.
         let asked = self.drain_asks();
         let fired = self.tick_jobs(elapsed);
-        let fired = self.poll_plugin_load() || fired;
+        let fired = self.poll_plugin_loads() || fired;
         let frames = self.wants_frames();
         if frames {
             self.tick += 1;
         }
         let fired = asked || fired;
-        if frames || !self.jobs.is_empty() || !self.asks.is_empty() {
-            self.arm_timer(if frames { FRAME_SECONDS } else { JOB_SECONDS });
+        // A parked chat's plugin load keeps the chain running at frame rate even when nothing on
+        // screen wants frames: nothing else will wake us, and the report is due in 750ms.
+        let loads = self.plugin_load_pending();
+        if frames || loads || !self.jobs.is_empty() || !self.asks.is_empty() {
+            self.arm_timer(if frames || loads {
+                FRAME_SECONDS
+            } else {
+                JOB_SECONDS
+            });
         }
         // A quiet tick changed nothing on screen; asking for a render would
         // recomposite the whole session for nothing.
         frames || fired
     }
 
+    /// Whether any chat, foreground or parked, is waiting on a `plugin_reload`.
+    fn plugin_load_pending(&self) -> bool {
+        matches!(self.status, Status::AwaitingPluginLoad)
+            || self
+                .parked
+                .iter()
+                .any(|chat| matches!(chat.status, Status::AwaitingPluginLoad))
+    }
+
+    /// Poll every chat waiting on a `plugin_reload`, the foreground one and any parked with
+    /// `/history` still owed their report. Returns whether any transcript changed.
+    ///
+    /// Parked chats are swapped in one at a time through `with_parked`, which is how a parked
+    /// chat's stream is serviced too: `poll_plugin_load` and everything it calls only ever see
+    /// the chat they are for. Descending order, because a chat that settles inside `with_parked`
+    /// is dropped rather than re-parked and every later index shifts down with it.
+    fn poll_plugin_loads(&mut self) -> bool {
+        let mut fired = self.poll_plugin_load();
+        let parked: Vec<usize> = self
+            .parked
+            .iter()
+            .enumerate()
+            .filter(|(_, chat)| matches!(chat.status, Status::AwaitingPluginLoad))
+            .map(|(index, _)| index)
+            .collect();
+        for index in parked.into_iter().rev() {
+            fired = self.with_parked(index, |state| state.poll_plugin_load()) || fired;
+        }
+        fired
+    }
+
     /// Look at the pane a `plugin_reload` opened, once it has had time to load. Returns whether
     /// the head was answered.
     ///
-    /// Runs off the frame timer rather than a timer of its own: `wants_frames` is true while a
-    /// plugin load is awaited, so the chain is already running at `FRAME_SECONDS`, and a second
-    /// chain is exactly what `timer_armed` exists to prevent.
+    /// Runs off the frame timer rather than a timer of its own: the chain is already running at
+    /// `FRAME_SECONDS` while a load is awaited — `wants_frames` for the foreground chat, and
+    /// `plugin_load_pending` for a parked one — and a second chain is exactly what `timer_armed`
+    /// exists to prevent.
     ///
     /// Off wasm there is no host to ask, so the look itself lives in `tools::host` and this is
     /// only the clock around it.

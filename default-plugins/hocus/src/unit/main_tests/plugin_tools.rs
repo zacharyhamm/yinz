@@ -174,6 +174,51 @@ fn a_cleared_reload_waits_to_look_at_the_pane_before_answering() {
     assert!(state.plugin_load.is_none());
 }
 
+/// The watch belongs to the chat that asked for the reload, not to whatever is on screen:
+/// `/history` mid-wait must not strand the reload, and a second chat's reload must not take the
+/// first one's watch away.
+#[test]
+fn a_reload_awaited_by_a_parked_chat_is_still_answered() {
+    let mut state = plugin_state();
+    command_result(
+        &mut state,
+        "plugin_reload",
+        r#"{"name":"keys"}"#,
+        0,
+        b"",
+        b"",
+    );
+    assert!(matches!(state.status, Status::AwaitingPluginLoad));
+
+    // `/history` moving to another conversation, which leaves an idle chat in front.
+    let waiting = state.take_chat();
+    state.parked.push(waiting);
+    assert!(matches!(state.status, Status::Idle));
+    assert!(
+        state.plugin_load.is_none(),
+        "the watch went with the chat that asked"
+    );
+
+    state.timer_armed = false;
+    state.on_timer((PLUGIN_LOAD_MS as f64) / 1000.0);
+
+    assert!(tool_results(&state).is_empty(), "not this chat's reload");
+    let parked = state.parked.first().expect("still owed a reply");
+    let results: Vec<&Message> = parked
+        .messages
+        .iter()
+        .filter(|message| message.role == Role::Tool)
+        .collect();
+    assert_eq!(results.len(), 1);
+    assert!(
+        results[0].content.contains("no pane is running it yet"),
+        "{:?}",
+        results[0].content
+    );
+    assert!(parked.plugin_load.is_none());
+    assert!(!matches!(parked.status, Status::AwaitingPluginLoad));
+}
+
 /// Esc while the pane is being waited on answers the head like any other abort, so the model
 /// is not left with a call it never heard back from.
 #[test]

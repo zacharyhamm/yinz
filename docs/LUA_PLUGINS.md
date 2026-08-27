@@ -166,7 +166,8 @@ A command taking several values also accepts them by name where that reads bette
 a command with no required arguments can be called with none.
 
 `zellij.set_timeout(seconds)` sends one `timer` event; `zellij.set_interval(seconds)` keeps
-sending them until `zellij.clear_interval()`.
+sending them until `zellij.clear_interval()`. There is one interval per plugin: calling
+`set_interval` again changes the period rather than starting a second clock.
 
 A few things zellij spells as Rust types have a helper, so you do not have to know that:
 
@@ -321,7 +322,8 @@ number. Mutations are `put(entity, values, uid)`, `update(entity, filter, values
 `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `is_in`, `is_null`, `not_null`, `prefix`, `contains`, and
 `all(...)`, `any(...)`, `negate(p)`. Attribute kinds are `text`, `int`, `real`, `bool`, `blob`
 and `json`; a value written as `{ json = table }` is stored as JSON and `{ blob = "bytes" }` as
-a blob. `id`, `uid`, `created_at` and `updated_at` are on every row without being declared.
+a blob. To clear an attribute, write `zellij.data.null` - a `nil` has no key for a mutation to
+read. `id`, `uid`, `created_at` and `updated_at` are on every row without being declared.
 
 Everything in a plugin's own namespace is private to it. `shared_plugin_data` and a
 `namespace` argument reach the namespaces other plugins publish, on the same terms a wasm

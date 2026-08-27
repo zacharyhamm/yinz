@@ -138,6 +138,10 @@ struct Chat {
     pub(crate) view: View,
     pub(crate) job_auto_confirm: bool,
     pub(crate) plan: Plan,
+    /// Travels with the chat for the same reason `spotlight` does: the reload was asked for by
+    /// *this* conversation, and it is the one owed the report. A watch left on `State` alone
+    /// would be overwritten by another chat's reload and stranded when this one is parked.
+    pub(crate) plugin_load: Option<PluginLoadWatch>,
 }
 
 impl Chat {
@@ -215,8 +219,9 @@ pub struct State {
     /// readable. Empty means the host could not resolve one, in which case there is nowhere to
     /// write a plugin and the plugin tools say so rather than guessing at a path.
     pub user_plugin_dir: String,
-    /// The `plugin_reload` being watched, while `status` is `AwaitingPluginLoad`: the absolute
-    /// path that was asked to load, and the tick it was asked on.
+    /// The foreground chat's `plugin_reload`, while its `status` is `AwaitingPluginLoad`: the
+    /// absolute path that was asked to load, and the tick it was asked on. Parked chats carry
+    /// their own in `Chat::plugin_load`; `poll_plugin_load` polls those through `with_parked`.
     pub plugin_load: Option<PluginLoadWatch>,
     pub messages: Vec<Message>,
     pub input: TextInput,
