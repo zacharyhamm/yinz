@@ -183,9 +183,11 @@ fn an_overlay_floating_pane_is_gone_from_another_tab() {
         snapshot.contains("LEFT-PANE") && snapshot.contains("first tab shell")
     });
 
-    // Tab mode, then `n` for a new tab - which spawns a shell of its own.
+    // Tab mode, then `n` for a new tab - which applies the same two-pane layout.
     zellij.send_stdin(&keys::ctrl('t'));
     zellij.send_stdin(b"n");
+    let second_left = zellij.expect_pty_spawn();
+    second_left.output(b"second tab left");
     let second_shell = zellij.expect_pty_spawn();
     second_shell.output(b"second tab shell");
     second_shell.output(PROMPT);
