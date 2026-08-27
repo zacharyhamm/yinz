@@ -293,10 +293,7 @@ fn pane(id: u32, is_suppressed: bool) -> PaneInfo {
 fn manifest(tab_index: usize, panes: Vec<PaneInfo>) -> PaneManifest {
     let mut all = std::collections::HashMap::new();
     all.insert(tab_index, panes);
-    PaneManifest {
-        panes: all,
-        ..Default::default()
-    }
+    PaneManifest { panes: all }
 }
 
 #[test]

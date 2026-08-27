@@ -119,10 +119,7 @@ fn serialize_and_deserialize_session_info_with_data() {
                 has_bell_notification: false,
             },
         ],
-        panes: PaneManifest {
-            panes,
-            ..Default::default()
-        },
+        panes: PaneManifest { panes },
         connected_clients: 2,
         is_current_session: false,
         available_layouts: vec![
