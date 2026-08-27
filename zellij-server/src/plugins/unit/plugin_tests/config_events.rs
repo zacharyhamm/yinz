@@ -582,3 +582,92 @@ pub fn a_reload_replaces_the_hooks_and_the_configured_context_menu() {
         other => panic!("expected a menu, got: {other:?}"),
     }
 }
+
+/// A non-shared hook has one instance per client. Client 2 here is never registered via
+/// `AddClient`, so none of `WasmBridge`'s own proactive per-client provisioning (on plugin load,
+/// on a client connecting) ever runs for it - the only way it can get answered is if
+/// `request_context_menu` notices it has no owned instance and loads one itself. Before the fix,
+/// `plugin_ids` being non-empty (client 1's instance) was enough to skip loading anything, the
+/// event landed on client 1's instance tagged with client 2's id, and
+/// `message_is_directed_at_plugin` dropped it as a mismatch - so client 2's request produced no
+/// second load at all.
+#[test]
+#[serial(plugin_tests)]
+pub fn a_second_clients_context_menu_request_loads_its_own_hook_instance() {
+    use std::collections::BTreeMap;
+    use zellij_utils::data::ContextMenuContext;
+    use zellij_utils::input::hooks::{HookPoint, Hooks};
+
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread(Some(plugin_host_folder), None);
+
+    let hook_plugin = RunPluginOrAlias::RunPlugin(
+        RunPlugin::from_url(&format!("file:{}", *PLUGIN_FIXTURE)).unwrap(),
+    );
+    let _ = plugin_thread_sender.send(PluginInstruction::Reconfigure {
+        client_id: 1,
+        keybinds: None,
+        default_mode: None,
+        default_shell: None,
+        layout_dir: None,
+        user_plugin_dir: None,
+        builtin_plugins_dir: None,
+        hooks: Hooks::from_data(BTreeMap::from([(HookPoint::ContextMenu, hook_plugin)])),
+        context_menu: Default::default(),
+        was_written_to_disk: false,
+    });
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(1));
+
+    let _ = plugin_thread_sender.send(PluginInstruction::RequestContextMenu {
+        context: Box::new(ContextMenuContext {
+            request_id: 1,
+            client_id: 1,
+            ..Default::default()
+        }),
+        client_id: 1,
+    });
+
+    let mut plugin_ids_loaded = std::collections::HashSet::new();
+    let collect_loads_for = |plugin_ids_loaded: &mut std::collections::HashSet<u32>,
+                             want: usize| {
+        let deadline = std::time::Instant::now() + zellij_test_support::default_timeout();
+        while plugin_ids_loaded.len() < want && std::time::Instant::now() < deadline {
+            let Ok((instruction, _)) =
+                screen_receiver.recv_timeout(std::time::Duration::from_millis(200))
+            else {
+                continue;
+            };
+            if let ScreenInstruction::AddPlugin(_, _, _, _, _, _, plugin_id, ..) = instruction {
+                plugin_ids_loaded.insert(plugin_id);
+            }
+        }
+    };
+    // Wait for client 1's own load to land before client 2 asks, so client 2's request cannot be
+    // mistaken for the same in-flight load - it must see a plugin already registered.
+    collect_loads_for(&mut plugin_ids_loaded, 1);
+    assert_eq!(
+        plugin_ids_loaded.len(),
+        1,
+        "client 1's own first-ever request should load exactly one instance"
+    );
+
+    let _ = plugin_thread_sender.send(PluginInstruction::RequestContextMenu {
+        context: Box::new(ContextMenuContext {
+            request_id: 2,
+            client_id: 2,
+            ..Default::default()
+        }),
+        client_id: 2,
+    });
+    collect_loads_for(&mut plugin_ids_loaded, 2);
+    teardown();
+
+    assert_eq!(
+        plugin_ids_loaded.len(),
+        2,
+        "client 2's request must load its own instance rather than being silently dropped \
+         against client 1's, got: {plugin_ids_loaded:?}"
+    );
+}

@@ -329,6 +329,41 @@ fn a_key_the_menu_does_not_use_falls_through() {
         .context_menu_handles_key(&Some(KeyWithModifier::new(BareKey::Char('x'))), client_id));
 }
 
+/// Esc dismisses the menu no matter what modifiers ride along with it - it's the universal
+/// "get me out of here" key.
+#[test]
+fn esc_with_a_modifier_still_closes_the_menu() {
+    let (mut screen, client_id, _) = screen_with_open_menu((10, 5));
+    let ctrl_esc = Some(KeyWithModifier::new(BareKey::Esc).with_ctrl_modifier());
+
+    assert!(screen.context_menu_handles_key(&ctrl_esc, client_id));
+    assert!(!screen.context_menu_is_open(client_id));
+}
+
+/// Ctrl-j, Ctrl-Down, and Ctrl-Enter are distinct keys from the keybinding system's point of
+/// view, not the plain navigation/activation keys with an incidental modifier - so the menu must
+/// not treat them as such.
+#[test]
+fn a_modified_navigation_key_falls_through() {
+    let (mut screen, client_id, _) = screen_with_open_menu((10, 5));
+    let ctrl_down = Some(KeyWithModifier::new(BareKey::Down).with_ctrl_modifier());
+    let ctrl_j = Some(KeyWithModifier::new(BareKey::Char('j')).with_ctrl_modifier());
+
+    assert!(!screen.context_menu_handles_key(&ctrl_down, client_id));
+    assert!(!screen.context_menu_handles_key(&ctrl_j, client_id));
+    assert_eq!(screen.context_menus[&client_id].selected, None);
+}
+
+#[test]
+fn a_modified_enter_falls_through_rather_than_activating() {
+    let (mut screen, client_id, _) = screen_with_open_menu((10, 5));
+    screen.context_menu_handles_key(&Some(KeyWithModifier::new(BareKey::Down)), client_id);
+    let ctrl_enter = Some(KeyWithModifier::new(BareKey::Enter).with_ctrl_modifier());
+
+    assert!(!screen.context_menu_handles_key(&ctrl_enter, client_id));
+    assert!(screen.context_menu_is_open(client_id));
+}
+
 #[test]
 fn enter_with_nothing_highlighted_closes_rather_than_guessing() {
     let (mut screen, client_id, _) = screen_with_open_menu((10, 5));

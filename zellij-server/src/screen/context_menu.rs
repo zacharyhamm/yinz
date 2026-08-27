@@ -394,7 +394,9 @@ impl Screen {
                 self.render(None).non_fatal();
                 true
             },
-            BareKey::Down | BareKey::Up | BareKey::Char('j') | BareKey::Char('k') if has_items => {
+            BareKey::Down | BareKey::Up | BareKey::Char('j') | BareKey::Char('k')
+                if has_items && key.key_modifiers.is_empty() =>
+            {
                 let forward = matches!(key.bare_key, BareKey::Down | BareKey::Char('j'));
                 if let Some(menu) = self.context_menus.get_mut(&client_id) {
                     let items = menu.items.visible().to_vec();
@@ -403,7 +405,7 @@ impl Screen {
                 self.render(None).non_fatal();
                 true
             },
-            BareKey::Enter if has_items => {
+            BareKey::Enter if has_items && key.key_modifiers.is_empty() => {
                 let selected = self
                     .context_menus
                     .get(&client_id)
