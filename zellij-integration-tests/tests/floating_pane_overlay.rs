@@ -637,3 +637,52 @@ fn a_modal_command_pane_is_placed_on_the_surface_and_keeps_focus() {
 
     zellij.quit();
 }
+
+/// An overlay belongs to a tab, but it is drawn against the whole session surface and holds
+/// state no other pane does - hocus keeps a whole conversation in one. Closing the tab it
+/// happens to be sitting on used to take it down with the tab, because a tab's teardown names
+/// every pane in it. It has to move to the tab the user lands on instead.
+#[test]
+fn an_overlay_floating_pane_moves_to_another_tab_when_its_own_tab_closes() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(NO_BACKGROUND_PLUGINS)
+        .with_layout(LayoutInfo::Stringified(GLOBAL_AND_SHELL.to_owned()))
+        .start();
+    let global = zellij.expect_pty_spawn();
+    global.output(b"GLOBAL");
+    let shell = zellij.expect_pty_spawn();
+    shell.output(b"first tab shell");
+    shell.output(PROMPT);
+    zellij.wait_until("the global pane and shell load", |snapshot| {
+        snapshot.contains("GLOBAL") && snapshot.contains("first tab shell")
+    });
+
+    zellij.send_stdin(&keys::ctrl('t'));
+    zellij.send_stdin(b"n");
+    let second_shell = zellij.expect_pty_spawn();
+    second_shell.output(b"second tab shell");
+    second_shell.output(PROMPT);
+    zellij.wait_until("the second tab is up", |snapshot| {
+        snapshot.contains("second tab shell")
+    });
+
+    let overlay = open_overlay_pane(&zellij);
+    overlay.output(b"OVERLAY-CONTENT");
+    zellij.wait_until("the overlay is up on the second tab", |snapshot| {
+        snapshot.contains("OVERLAY-CONTENT")
+    });
+
+    zellij.run_cli_action(CliAction::CloseTab { tab_id: None });
+
+    zellij.wait_until("the first tab is back", |snapshot| {
+        snapshot.contains("first tab shell")
+    });
+    let snapshot = zellij.snapshot();
+    assert!(
+        snapshot.contains("OVERLAY-CONTENT"),
+        "the overlay must follow the user to the tab they landed on rather than closing with \
+         its own, got:\n{snapshot}"
+    );
+
+    zellij.quit();
+}

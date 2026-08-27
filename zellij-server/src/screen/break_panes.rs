@@ -305,13 +305,14 @@ impl Screen {
     }
     /// Tear down a pane that belongs to no tab.
     ///
-    /// Only reachable from [`Screen::break_multiple_panes_to_tab_with_id`], when a pane
-    /// extracted for a move fits in neither the destination nor the tab it came from.
-    /// The alternative is dropping the `Box<dyn Pane>`, which destroys the pane while
-    /// leaving its child process running with nothing attached to it - the failure mode
-    /// this whole path exists to prevent. Mirrors the teardown `close_tab_by_id` does
-    /// for the panes of a tab it removes.
-    fn close_homeless_pane(&mut self, pane_id: PaneId) {
+    /// Reached from [`Screen::break_multiple_panes_to_tab_with_id`], when a pane
+    /// extracted for a move fits in neither the destination nor the tab it came from,
+    /// and from [`Screen::move_overlay_panes_from_closed_tab`], for an overlay the tab
+    /// it was re-homed into would not take. The alternative is dropping the
+    /// `Box<dyn Pane>`, which destroys the pane while leaving its child process running
+    /// with nothing attached to it - the failure mode this whole path exists to prevent.
+    /// Mirrors the teardown `close_tab_by_id` does for the panes of a tab it removes.
+    pub(super) fn close_homeless_pane(&mut self, pane_id: PaneId) {
         let _ = self
             .bus
             .senders
