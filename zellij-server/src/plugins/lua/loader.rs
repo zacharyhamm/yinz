@@ -82,11 +82,16 @@ pub fn load_lua_plugin(source: &str, chunk_name: &str, env: PluginEnv) -> Result
         let loaded = lua
             .create_table()
             .map_err(|e| anyhow!("failed to define require: {}", e))?;
+        // The in-flight marker, made once per interpreter and never handed to Lua, so no module
+        // can return a value equal to it. See `require_sibling`.
+        let loading = lua
+            .create_table()
+            .map_err(|e| anyhow!("failed to define require: {}", e))?;
         lua.create_function(move |lua, name: String| {
             if name == "zellij" {
                 return Ok(LuaValue::Table(zellij.clone()));
             }
-            require_sibling(lua, plugin_dir.as_deref(), &loaded, &name)
+            require_sibling(lua, plugin_dir.as_deref(), &loaded, &loading, &name)
         })
         .map_err(|e| anyhow!("failed to define require: {}", e))?
     };
@@ -131,14 +136,20 @@ pub fn load_lua_plugin(source: &str, chunk_name: &str, env: PluginEnv) -> Result
 /// Modules load once per interpreter and are cached, as `require` does; a module that returns
 /// nothing is remembered as `true`, as `require` does. A module still loading when it is asked
 /// for again is a cycle, and says so rather than recursing until the stack goes.
+///
+/// The in-flight mark is `loading`, a table the host made and Lua never sees, compared by
+/// identity: any value a module could *return* - the string "loading" included - is a value a
+/// module may legitimately return, and marking with one would turn that module into a permanent
+/// false cycle.
 fn require_sibling(
     lua: &Lua,
     plugin_dir: Option<&Path>,
     loaded: &Table,
+    loading: &Table,
     name: &str,
 ) -> mlua::Result<LuaValue> {
     let cached: LuaValue = loaded.get(name)?;
-    if cached == LuaValue::String(lua.create_string("loading")?) {
+    if cached == LuaValue::Table(loading.clone()) {
         return Err(mlua::Error::runtime(format!(
             "require(\"{name}\") is circular: it is still being loaded"
         )));
@@ -191,7 +202,7 @@ fn require_sibling(
     let source = std::fs::read_to_string(&real).map_err(|e| {
         mlua::Error::runtime(format!("require(\"{name}\"): {}: {e}", real.display()))
     })?;
-    loaded.set(name, "loading")?;
+    loaded.set(name, loading.clone())?;
     let result: mlua::Result<LuaValue> = lua
         .load(&source)
         .set_name(real.display().to_string())

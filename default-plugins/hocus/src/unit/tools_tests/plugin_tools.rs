@@ -275,6 +275,51 @@ fn every_tool_that_opens_the_path_refuses_a_symlink_first() {
     }
 }
 
+/// The name may carry one folder, so the folder is the model's choosing too: a link there leads
+/// out of the plugin folder as surely as a link on the file, and the guard is given it to check.
+#[test]
+fn a_module_folder_is_checked_for_a_symlink_as_well() {
+    for (tool, arguments) in [
+        ("plugin_read", r#"{"name":"app/ui"}"#),
+        ("plugin_reload", r#"{"name":"app/ui"}"#),
+        ("plugin_write", r#"{"name":"app/ui","source":"x"}"#),
+        (
+            "plugin_write",
+            r#"{"name":"app/ui","source":"x","overwrite":true}"#,
+        ),
+    ] {
+        let (argv, env) = plugin_argv_for(tool, arguments).unwrap();
+        assert_eq!(
+            env.get("HOCUS_PLUGIN_MODULE_DIR").map(String::as_str),
+            Some(format!("{DIR}/app").as_str()),
+            "{tool} does not tell the guard which folder to check"
+        );
+        assert!(
+            argv[2].contains(r#"[ -L "$HOCUS_PLUGIN_MODULE_DIR" ]"#),
+            "{tool} follows a symlinked module folder: {}",
+            argv[2]
+        );
+    }
+}
+
+/// The plugin folder itself is the user's own configuration rather than anything the model
+/// chose, so a plain name hands the guard nothing to check and a symlinked plugin folder still
+/// works.
+#[test]
+fn a_plain_name_leaves_the_plugin_folder_unchecked() {
+    for (tool, arguments) in [
+        ("plugin_read", r#"{"name":"keys"}"#),
+        ("plugin_reload", r#"{"name":"keys"}"#),
+        ("plugin_write", r#"{"name":"keys","source":"x"}"#),
+    ] {
+        let (_, env) = plugin_argv_for(tool, arguments).unwrap();
+        assert!(
+            !env.contains_key("HOCUS_PLUGIN_MODULE_DIR"),
+            "{tool} checks the plugin folder itself"
+        );
+    }
+}
+
 /// The guard runs before the redirect, not merely somewhere in the script: an `overwrite=true`
 /// that truncates first and checks afterwards would have destroyed the file already.
 #[test]
@@ -285,8 +330,12 @@ fn a_write_checks_for_a_symlink_before_it_opens_anything() {
     ] {
         let (argv, _) = plugin_argv_for("plugin_write", arguments).unwrap();
         let guard = argv[2].find(r#"if [ -L "$1" ]"#).unwrap();
-        let redirect = argv[2].find("printf %s").unwrap();
+        let redirect = argv[2].find("printf %s \"$HOCUS_PLUGIN_SOURCE\"").unwrap();
         assert!(guard < redirect, "{}", argv[2]);
+        // And before the `mkdir`, which walks through a symlinked module folder without
+        // complaining and so must not run first.
+        let mkdir = argv[2].find("mkdir -p").unwrap();
+        assert!(guard < mkdir, "{}", argv[2]);
     }
 }
 

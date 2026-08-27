@@ -230,6 +230,56 @@ fn update_receives_a_normalized_event_and_reports_whether_to_render() {
     );
 }
 
+/// The host spawns a timer per `set_timeout` and cannot cancel one, so the interval re-arms
+/// itself from the `timer` event. Re-arming on *every* timer forked the chain: a second
+/// `set_interval`, or a `set_timeout` alongside one, left two permanent clocks calling the
+/// plugin back twice as often as it asked.
+#[test]
+fn overlapping_timers_collapse_back_to_one_interval() {
+    let mut plugin = load(
+        r#"
+        local zellij = require("zellij")
+        local M = {}
+        M.ticks = 0
+        function M.load()
+          zellij.set_interval(1)
+          zellij.set_interval(1)
+          zellij.set_timeout(1)
+        end
+        function M.update(event)
+          if event.name == "timer" then M.ticks = M.ticks + 1 end
+          return false
+        end
+        function M.render() return M.ticks .. "/" .. zellij.__timers end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    assert_eq!(
+        String::from_utf8(plugin.render(1, 10).unwrap()).unwrap(),
+        "0/3",
+        "three timers were asked for"
+    );
+
+    // The first two drain the ones already in the air rather than adding to them.
+    plugin.update(&Event::Timer(1.0)).unwrap();
+    plugin.update(&Event::Timer(1.0)).unwrap();
+    assert_eq!(
+        String::from_utf8(plugin.render(1, 10).unwrap()).unwrap(),
+        "2/1"
+    );
+
+    // The last one re-arms, and from here it is one clock however long it runs.
+    plugin.update(&Event::Timer(1.0)).unwrap();
+    plugin.update(&Event::Timer(1.0)).unwrap();
+    assert_eq!(
+        String::from_utf8(plugin.render(1, 10).unwrap()).unwrap(),
+        "4/1",
+        "one chain, not one per set_timeout"
+    );
+}
+
 #[test]
 fn a_list_payload_arrives_whole_rather_than_unwrapped() {
     // `TabUpdate(Vec<TabInfo>)` and a multi-field tuple variant serialize identically, so
@@ -1586,6 +1636,42 @@ fn text_helpers_pad_and_cut_by_columns() {
     );
 }
 
+/// The ellipsis is a character too. Cutting it with `sub` handed the terminal the first *byte*
+/// of "…", which is not a character at all.
+#[test]
+fn truncating_into_less_room_than_the_ellipsis_still_returns_characters() {
+    // One column leaves room for the ellipsis and nothing else.
+    assert_eq!(eval(r#"return zellij.text.truncate("hello", 1)"#), "…");
+    // No room at all, and a custom ellipsis wider than what is left.
+    assert_eq!(eval(r#"return zellij.text.truncate("hello", 0)"#), "");
+    assert_eq!(eval(r#"return zellij.text.truncate("hello", -1)"#), "");
+    assert_eq!(eval(r#"return zellij.text.truncate("hello", 1, "日")"#), "");
+    assert_eq!(
+        eval(r#"return zellij.text.truncate("hello", 2, "日")"#),
+        "日"
+    );
+    assert_eq!(
+        eval(r#"return zellij.text.truncate("hello", 1, "ab")"#),
+        "a"
+    );
+    // Whatever comes back is well-formed and fits, which is the whole contract.
+    for (source, width) in [
+        (r#"zellij.text.truncate("héllo wörld", 1)"#, 1),
+        (r#"zellij.text.truncate("日本語です", 3)"#, 3),
+        (r#"zellij.text.truncate("hello", 2, "……")"#, 2),
+    ] {
+        let out = eval(&format!("return {source}"));
+        assert!(
+            std::str::from_utf8(out.as_bytes()).is_ok(),
+            "{source} produced invalid UTF-8"
+        );
+        assert!(
+            unicode_width::UnicodeWidthStr::width(out.as_str()) <= width,
+            "{source} produced {out:?}, wider than {width}"
+        );
+    }
+}
+
 /// The wire form `zellij-tile`'s `Text::serialize` produces: flags, one `$`-terminated index
 /// group per colour level, then the UTF-8 bytes in decimal.
 #[test]
@@ -1719,6 +1805,26 @@ fn a_circular_require_is_an_error_rather_than_a_stack_overflow() {
         .map(|e| format!("{:#}", e))
         .unwrap();
     assert!(error.contains("circular"), "{error}");
+}
+
+/// The in-flight mark must be something a module cannot return: marking with the string
+/// "loading" made a module that legitimately returns it look circular forever after.
+#[test]
+fn a_module_may_return_the_value_the_cycle_check_marks_with() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("lib.lua"), "return 'loading'").unwrap();
+    let mut plugin = load_from_dir(
+        dir.path(),
+        r#"
+        local first = require("lib")
+        local again = require("lib")
+        local M = {}
+        function M.render() return first .. "|" .. again end
+        return M
+        "#,
+    )
+    .unwrap();
+    assert_eq!(plugin.render(1, 100).unwrap(), b"loading|loading");
 }
 
 /// A plugin that was not loaded from a file - a builtin, or a test - has no folder, and says
@@ -2255,6 +2361,13 @@ fn the_data_helpers_spell_the_stores_shapes() {
     assert_eq!(
         json(r#"zellij.data.put("note", { title = "t", done = false }, "u1")"#),
         r#"{"Put":{"entity":"note","uid":"u1","values":[["done",{"Bool":false}],["title",{"Text":"t"}]]}}"#
+    );
+    // `nil` cannot survive `pairs`, so a mutation that clears an attribute needs the sentinel -
+    // and the string the store spells `Null` with is still an ordinary `Text` a plugin may write.
+    assert_eq!(json(r#"zellij.data.value(zellij.data.null)"#), r#""Null""#);
+    assert_eq!(
+        json(r#"zellij.data.update("note", nil, { done = zellij.data.null, title = "Null" })"#),
+        r#"{"Update":{"entity":"note","values":[["done","Null"],["title",{"Text":"Null"}]]}}"#
     );
     assert_eq!(
         json(r#"zellij.data.delete("note", zellij.data.prefix("title", "x"))"#),

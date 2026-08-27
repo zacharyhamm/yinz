@@ -231,18 +231,29 @@ function zellij.open_terminal(cwd)
   return dispatch("open_terminal", { path = cwd })
 end
 
---- Ask to be sent a `timer` event in `seconds`. Timers do not repeat; set another one from the
---- handler if you want a ticking clock, or use `set_interval`.
-function zellij.set_timeout(seconds)
+--- Ask for a timer, counting it as outstanding.
+---
+--- The host spawns an independent timer per `set_timeout` and has no way to cancel one, and a
+--- `timer` event says nothing about which of them fired. Counting is what lets the interval below
+--- re-arm exactly once however many timers are in the air: see `__update`.
+local function arm(seconds)
+  zellij.__timers = (zellij.__timers or 0) + 1
   return dispatch("set_timeout", seconds)
 end
 
---- A `timer` event every `seconds`, until `clear_interval`. One interval per plugin: zellij has
---- one timer per plugin and no way to cancel it, so this is the timer being re-armed from the
---- `timer` event, and a second interval would replace the first.
+--- Ask to be sent a `timer` event in `seconds`. Timers do not repeat; set another one from the
+--- handler if you want a ticking clock, or use `set_interval`.
+function zellij.set_timeout(seconds)
+  return arm(seconds)
+end
+
+--- A `timer` event every `seconds`, until `clear_interval`. One interval per plugin: the interval
+--- is this one timer being re-armed from the `timer` event, so calling it again changes the
+--- period rather than starting a second clock — and a `set_timeout` outstanding alongside it does
+--- not fork the chain either, because only the timer that drains the count re-arms.
 function zellij.set_interval(seconds)
   zellij.__interval = seconds
-  return dispatch("set_timeout", seconds)
+  return arm(seconds)
 end
 
 function zellij.clear_interval()
@@ -418,11 +429,21 @@ end
 --- plain Lua into those on the way out and back into plain Lua on the way in.
 zellij.data = {}
 
---- A Lua value as the store spells it. `nil` is `Null`; an integer is `Int` and any other
---- number `Real`; `{ blob = "bytes" }` is a `Blob` and `{ json = value }` a `Text` holding
---- JSON, for a `json` attribute. A value already in the store's shape is passed through.
+--- The `Null` a mutation can actually carry: `{ done = zellij.data.null }` clears an attribute.
+---
+--- A sentinel rather than `nil`, because a mutation's values are read with `pairs` and a `nil`
+--- has no key to read - and rather than the bare string `"Null"` the store spells it with, which
+--- is also a perfectly ordinary `Text` a plugin may want to write.
+zellij.data.null = setmetatable({}, { __tostring = function() return "null" end })
+
+--- A Lua value as the store spells it. `nil` and `zellij.data.null` are `Null`; an integer is
+--- `Int` and any other number `Real`; `{ blob = "bytes" }` is a `Blob` and `{ json = value }` a
+--- `Text` holding JSON, for a `json` attribute. A value already in the store's shape is passed
+--- through.
 function zellij.data.value(v)
-  if v == nil then
+  -- Ahead of the `table` branch below, which would otherwise pass the sentinel through as if it
+  -- were a value already in the store's shape.
+  if v == nil or v == zellij.data.null then
     return "Null"
   end
   local t = type(v)
@@ -660,7 +681,29 @@ end
 --- the host (it is the same measurement the server uses) and the rest is built on it here.
 zellij.text = {}
 
+--- The longest prefix of `s` that fits in `columns`, cut on character boundaries.
+---
+--- Character by character rather than by byte or by code point: `sub` would cut a multibyte
+--- character in half and hand the terminal invalid UTF-8, and a code point is not a column.
+local function fit(s, columns)
+  local out = ""
+  if columns <= 0 then
+    return out
+  end
+  for _, code in utf8.codes(s) do
+    local char = utf8.char(code)
+    if zellij.text.width(out .. char) > columns then
+      break
+    end
+    out = out .. char
+  end
+  return out
+end
+
 --- `s` cut to at most `width` columns, ending in `ellipsis` (default "…") if it was longer.
+---
+--- The ellipsis is cut the same way when it is the part that does not fit - one column with the
+--- default "…" leaves no room for anything else, and a wider custom one may not fit at all.
 function zellij.text.truncate(s, width, ellipsis)
   s = tostring(s)
   if zellij.text.width(s) <= width then
@@ -668,18 +711,10 @@ function zellij.text.truncate(s, width, ellipsis)
   end
   ellipsis = ellipsis or "…"
   local room = width - zellij.text.width(ellipsis)
-  if room <= 0 then
-    return ellipsis:sub(1, 1)
+  if room < 0 then
+    return fit(ellipsis, width)
   end
-  local out = ""
-  for _, code in utf8.codes(s) do
-    local char = utf8.char(code)
-    if zellij.text.width(out .. char) > room then
-      break
-    end
-    out = out .. char
-  end
-  return out .. ellipsis
+  return fit(s, room) .. ellipsis
 end
 
 --- `s` padded with spaces on the right to exactly `width` columns, and cut if longer.
@@ -942,9 +977,15 @@ function zellij.__update(plugin, raw_event)
   local event = normalize_event(raw_event)
   zellij.__should_render = false
   local should_render = false
-  -- Re-armed before the handlers run, so a handler that raises does not stop the clock.
-  if event.name == "timer" and zellij.__interval then
-    dispatch("set_timeout", zellij.__interval)
+  -- Re-armed before the handlers run, so a handler that raises does not stop the clock. Only the
+  -- timer that leaves none outstanding re-arms: an overlapping `set_timeout`, or a second
+  -- `set_interval`, would otherwise leave one permanent chain per call, each firing the
+  -- callbacks again.
+  if event.name == "timer" then
+    zellij.__timers = math.max((zellij.__timers or 0) - 1, 0)
+    if zellij.__interval and zellij.__timers == 0 then
+      arm(zellij.__interval)
+    end
   end
   for _, handler in ipairs(handlers[event.name] or {}) do
     if handler(event) then
