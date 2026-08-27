@@ -527,7 +527,17 @@ pub(crate) fn screen_thread_main(
                         // it, and a client left on a global pane would be looking
                         // elsewhere when it did - so release that focus first. A no-op
                         // unless a global pane is focused.
-                        if should_focus_pane {
+                        //
+                        // An overlay is the exception: `activate_overlay` at the end of
+                        // this arm releases the same focus, but *remembers* it first, so
+                        // that closing the overlay hands the keyboard back to the global
+                        // pane it covered. Releasing it here would throw that away before
+                        // there was anything to remember it by - which is how the file
+                        // finder, opened from a global pane, used to leave the client on a
+                        // tab pane once it closed.
+                        let new_pane_is_overlay =
+                            matches!(new_pane_placement, NewPanePlacement::Overlay(..));
+                        if should_focus_pane && !new_pane_is_overlay {
                             screen.defocus_global_pane(client_id);
                         }
                         active_tab_and_connected_client_id_with_first_tab_fallback!(screen, client_id, |tab: &mut Tab, client_id: Option<ClientId>| {
