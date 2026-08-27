@@ -4,7 +4,7 @@ expression: normalized(&grid_snapshot)
 ---
  Zellij (test)  Tab #1  + 
 $
-                              ┌ Pane #2 ──────────────────────────────────────── PIN [ ] ┐
+                              ┌ [1] Pane #2 ──────────────────────────────────── PIN [ ] ┐
                               │$ █                                                       │
                               │                                                          │
                               │                                                          │

@@ -1,6 +1,5 @@
 ---
 source: zellij-server/src/panes/./unit/terminal_pane_tests.rs
-assertion_line: 277
 expression: "format!(\"{:?}\", terminal_pane.grid)"
 ---
 00 (C): SixelSixelSixelSixelSixelSixelSixelSixelSixelSixelSixelSixelSix
@@ -23,4 +22,3 @@ expression: "format!(\"{:?}\", terminal_pane.grid)"
 17 (C): SixelSixelSixelSixelSixelSixelSixelSixelSixelSixelSixelSixelSix
 18 (C): SixelSixelSixelSixelSixelSixelSixelSixelSixelSixelSixelSixelSix
 19 (C): SixelSixelSixelSixelSixelSixelSixelSixelSixelSixelSixelSixelSix
-

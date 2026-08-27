@@ -1,8 +1,8 @@
 ---
-source: zellij-server/src/./unit/screen_tests/global_panes_focus.rs
-expression: last_snapshot
+source: zellij-server/src/screen/../unit/screen_tests/global_panes_focus.rs
+expression: settled
 ---
-00 (C): ┌ P[..]1 ┐┌ Pane #1 ────────────────────────┐┌ from client ────────────────────┐
+00 (C): ┌ [[..]1 ┐┌ [0] Pane #1 ────────────────────┐┌ [91] from client ───────────────┐
 01 (C): │        ││                                 ││                                 │
 02 (C): │        ││                                 ││                                 │
 03 (C): │        ││                                 ││                                 │
@@ -12,7 +12,7 @@ expression: last_snapshot
 07 (C): │        ││                                 ││                                 │
 08 (C): │        ││                                 ││                                 │
 09 (C): │        ││                                 │└─────────────────────────────────┘
-10 (C): │        ││                                 │┌ from anchor ────────────────────┐
+10 (C): │        ││                                 │┌ [92] from anchor ───────────────┐
 11 (C): │        ││                                 ││                                 │
 12 (C): │        ││                                 ││                                 │
 13 (C): │        ││                                 ││                                 │

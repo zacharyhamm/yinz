@@ -618,7 +618,7 @@ impl Pane for TerminalPane {
             }
             format!("SEARCHING: {}{}", self.search_term, modifier_text)
         } else {
-            self.display_title()
+            self.framed_title()
         };
         let frame_color_override = self
             .pane_frame_color_override
@@ -1250,7 +1250,7 @@ impl Pane for TerminalPane {
         }
     }
     fn stack_list_entry_label(&self) -> String {
-        self.title_with_bell_indicator(self.display_title())
+        self.title_with_bell_indicator(self.framed_title())
     }
     fn custom_title(&self) -> Option<String> {
         if self.pane_name.is_empty() {
@@ -1451,6 +1451,18 @@ impl Pane for TerminalPane {
 }
 
 impl TerminalPane {
+    /// The frame's title: the pane's id, then [`Pane::display_title`].
+    ///
+    /// The id leads because it is how the pane is addressed from outside — a
+    /// `--pane-id` argument, hocus's agent list, a line in the log — and nothing
+    /// else on screen says what it is. Bracketed so it reads as a label rather
+    /// than as the first word of the title.
+    ///
+    /// Deliberately not folded into `display_title`: that is also a *tab's* name
+    /// when a tab holds one pane, and a pane id is not a name for a tab.
+    fn framed_title(&self) -> String {
+        format!("[{}] {}", self.pid, self.display_title())
+    }
     fn title_with_bell_indicator(&self, title: String) -> String {
         if self.has_bell_notification {
             format!("{} [!]", title)

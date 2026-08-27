@@ -1,7 +1,6 @@
 ---
 source: zellij-server/src/panes/./unit/terminal_pane_tests.rs
-expression: "format!(\"{:?}\", terminal_pane . grid)"
-
+expression: "format!(\"{:?}\", terminal_pane.grid)"
 ---
 00 (C): line 12
 01 (C): line 13
@@ -22,5 +21,4 @@ expression: "format!(\"{:?}\", terminal_pane . grid)"
 16 (C): line 28
 17 (C): line 29
 18 (C): line 30
-19 (C): 
-
+19 (C):

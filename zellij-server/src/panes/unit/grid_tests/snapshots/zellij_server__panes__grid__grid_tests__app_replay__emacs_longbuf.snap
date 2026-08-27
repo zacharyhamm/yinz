@@ -1,6 +1,5 @@
 ---
-source: zellij-server/src/panes/./unit/grid_tests.rs
-assertion_line: 1644
+source: zellij-server/src/panes/./unit/grid_tests/app_replay.rs
 expression: "format!(\"{:?}\", grid)"
 ---
 00 (C): ➜  mosaic git:(mosaic#130) emacs
@@ -62,5 +61,4 @@ expression: "format!(\"{:?}\", grid)"
 56 (C): 
 57 (C): 
 58 (C): 
-59 (C): 
-
+59 (C):

@@ -1,7 +1,6 @@
 ---
-source: zellij-server/src/panes/./unit/grid_tests.rs
+source: zellij-server/src/panes/./unit/grid_tests/app_replay.rs
 expression: "format!(\"{:?}\", grid)"
-
 ---
 00 (C): line 1                                                                                                              
 01 (C): line 2                                                                                                              
@@ -30,5 +29,4 @@ expression: "format!(\"{:?}\", grid)"
 24 (C): line 25                                                                                                             
 25 (C): line 26                                                                                                             
 26 (C): some-file                                                                                         10,1           Top
-27 (C): -- INSERT --                                                                                                        
-
+27 (C): -- INSERT --

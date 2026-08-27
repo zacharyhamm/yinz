@@ -1,6 +1,6 @@
 ---
-source: zellij-server/src/./unit/screen_tests.rs
-expression: "format!(\"{:#?}\", new_tab_instruction)"
+source: zellij-server/src/screen/../unit/screen_tests/cli_layouts_and_rename.rs
+expression: output
 ---
 NewTab(
     None,

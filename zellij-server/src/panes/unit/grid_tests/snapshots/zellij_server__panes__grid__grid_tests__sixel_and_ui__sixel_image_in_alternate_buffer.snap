@@ -1,6 +1,5 @@
 ---
-source: zellij-server/src/panes/./unit/grid_tests.rs
-assertion_line: 2267
+source: zellij-server/src/panes/./unit/grid_tests/sixel_and_ui.rs
 expression: "format!(\"{:?}\", grid)"
 ---
 00 (C): SixelSixelSixelSixelSixelSixelSixelSixelSixelSixelSixelSixelSix
@@ -32,5 +31,4 @@ expression: "format!(\"{:?}\", grid)"
 26 (C): 
 27 (C): 
 28 (C): 
-29 (C): 
-
+29 (C):

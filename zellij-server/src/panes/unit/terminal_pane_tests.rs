@@ -805,15 +805,15 @@ pub fn display_title_prefixes_a_custom_rename_pane_name_with_the_hostname() {
 #[test]
 pub fn a_title_prefix_survives_every_kind_of_title() {
     let mut terminal_pane = make_terminal_pane_for_bell();
-    terminal_pane.set_title_prefix(Some("zellij/topic".to_owned()));
-    assert_eq!(terminal_pane.display_title(), "zellij/topic");
+    terminal_pane.set_title_prefix(Some("zellij:topic".to_owned()));
+    assert_eq!(terminal_pane.display_title(), "zellij:topic");
     terminal_pane.grid.title = Some("running the tests".to_owned());
     assert_eq!(
         terminal_pane.display_title(),
-        "zellij/topic: running the tests"
+        "zellij:topic: running the tests"
     );
     terminal_pane.rename(b"custom-name".to_vec());
-    assert_eq!(terminal_pane.display_title(), "zellij/topic: custom-name");
+    assert_eq!(terminal_pane.display_title(), "zellij:topic: custom-name");
 }
 
 /// And the prefix does not become a name either: `current_title` is what the pane
@@ -823,7 +823,7 @@ pub fn a_title_prefix_survives_every_kind_of_title() {
 pub fn a_title_prefix_stays_out_of_the_raw_title() {
     let mut terminal_pane = make_terminal_pane_for_bell();
     let before = terminal_pane.current_title();
-    terminal_pane.set_title_prefix(Some("zellij/topic".to_owned()));
+    terminal_pane.set_title_prefix(Some("zellij:topic".to_owned()));
     assert_eq!(terminal_pane.current_title(), before);
     assert_eq!(terminal_pane.custom_title(), None);
     assert!(!terminal_pane.has_explicit_title());
@@ -833,7 +833,7 @@ pub fn a_title_prefix_stays_out_of_the_raw_title() {
 pub fn a_title_prefix_can_be_dropped() {
     let mut terminal_pane = make_terminal_pane_for_bell();
     terminal_pane.grid.title = Some("running the tests".to_owned());
-    terminal_pane.set_title_prefix(Some("zellij/topic".to_owned()));
+    terminal_pane.set_title_prefix(Some("zellij:topic".to_owned()));
     terminal_pane.set_title_prefix(None);
     assert_eq!(terminal_pane.display_title(), "running the tests");
 }
@@ -844,13 +844,34 @@ pub fn a_title_prefix_can_be_dropped() {
 pub fn a_title_prefix_follows_the_hostname() {
     let mut terminal_pane = make_terminal_pane_for_bell();
     terminal_pane.set_remote_host(Some("myhost".to_owned()));
-    terminal_pane.set_title_prefix(Some("zellij/topic".to_owned()));
-    assert_eq!(terminal_pane.display_title(), "myhost zellij/topic");
+    terminal_pane.set_title_prefix(Some("zellij:topic".to_owned()));
+    assert_eq!(terminal_pane.display_title(), "myhost zellij:topic");
     terminal_pane.grid.title = Some("running the tests".to_owned());
     assert_eq!(
         terminal_pane.display_title(),
-        "myhost zellij/topic: running the tests"
+        "myhost zellij:topic: running the tests"
     );
+}
+
+/// The frame is the one place the pane's id is written, so it leads whatever the
+/// title turns out to be — placeholder, OSC title, or an address and a title.
+#[test]
+pub fn a_framed_title_leads_with_the_pane_id() {
+    let mut terminal_pane = make_terminal_pane_for_bell();
+    assert_eq!(terminal_pane.framed_title(), "[1] Pane #0");
+    terminal_pane.set_title_prefix(Some("zellij:topic".to_owned()));
+    assert_eq!(terminal_pane.framed_title(), "[1] zellij:topic");
+    terminal_pane.grid.title = Some("my-shell".to_owned());
+    assert_eq!(terminal_pane.framed_title(), "[1] zellij:topic: my-shell");
+}
+
+/// `display_title` is also a tab's name when the tab holds one pane, so the id
+/// stays out of it.
+#[test]
+pub fn a_pane_id_stays_out_of_the_display_title() {
+    let mut terminal_pane = make_terminal_pane_for_bell();
+    terminal_pane.set_title_prefix(Some("zellij:topic".to_owned()));
+    assert_eq!(terminal_pane.display_title(), "zellij:topic");
 }
 
 #[test]

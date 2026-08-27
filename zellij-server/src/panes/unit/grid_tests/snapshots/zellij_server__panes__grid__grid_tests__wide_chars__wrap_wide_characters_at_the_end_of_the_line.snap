@@ -1,7 +1,6 @@
 ---
-source: zellij-server/src/panes/./unit/grid_tests.rs
+source: zellij-server/src/panes/./unit/grid_tests/wide_chars.rs
 expression: "format!(\"{:?}\", grid)"
-
 ---
 00 (C): aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 01 (W): Ｈ
@@ -23,5 +22,4 @@ expression: "format!(\"{:?}\", grid)"
 17 (W): ｌ
 18 (C): aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 19 (W): ｏ
-20 (C): 
-
+20 (C):
