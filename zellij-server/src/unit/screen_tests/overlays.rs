@@ -3835,6 +3835,149 @@ fn launch_or_focus_plugin_focuses_a_hidden_overlay() {
     );
 }
 
+/// Three tabs with the first closed, so ids and positions no longer agree: tab id 1 now sits at
+/// position 0 and tab id 2 at position 1. Every session looks like this after one tab is closed -
+/// `close_tab_by_id` renumbers positions and leaves ids alone - and `MoveTab` does the same by
+/// swapping positions under fixed ids.
+///
+/// The client is left on tab id 1, which is the arrangement that tells a position lookup apart
+/// from an id one: reading id 1 as a position lands on tab id 2, a real other tab, so the mistake
+/// shows up as a visible switch rather than as a lookup that finds nothing and quietly does
+/// nothing.
+fn screen_with_diverging_tab_ids(size: Size) -> Screen {
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 3, 2);
+    screen.close_tab_by_id(0).expect("TEST");
+    screen.switch_active_tab(0, None, true, 1).expect("TEST");
+    assert_eq!(screen.get_tab_position_by_id(1), Some(0), "TEST");
+    assert_eq!(screen.get_tab_position_by_id(2), Some(1), "TEST");
+    assert_eq!(screen.active_tab_ids.get(&1).copied(), Some(1), "TEST");
+    screen
+}
+
+/// `Ctrl e c` on a hocus that is already in the tab the user is standing in - which is where it
+/// almost always is, since every shipped `LaunchOrFocusPlugin` binding carries
+/// `move_to_focused_tab` and so keeps the pane with the client.
+///
+/// A reveal must not move the client. The tab holding the plugin is found by `self.tabs` key,
+/// which is a stable *id*, while `go_to_tab` names a tab by its *display position*; the two agree
+/// only until a tab is closed or moved. Reading the id as a position walked the client to
+/// whichever tab now sits at that number and then unhid hocus on the one it had just left - a tab
+/// switch, and no hocus.
+#[test]
+fn revealing_a_plugin_overlay_in_the_focused_tab_does_not_switch_tabs() {
+    let mut screen = screen_with_diverging_tab_ids(Size { cols: 80, rows: 12 });
+    let (run_plugin, popup_id) = open_overlay_plugin(&mut screen, 7, 1, popup_coordinates());
+    // Esc in hocus
+    screen
+        .tabs
+        .get_mut(&1)
+        .expect("TEST")
+        .hide_overlay_pane(popup_id);
+
+    assert!(screen
+        .focus_plugin_pane(&run_plugin, true, true, false, 1, &mut None)
+        .expect("TEST"));
+
+    assert_eq!(
+        screen.active_tab_ids.get(&1).copied(),
+        Some(1),
+        "a reveal leaves the client on the tab it is looking at - tab id 1 is at position 0, and \
+         reading its id as a position walks the client over to tab id 2"
+    );
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(popup_id),
+        "and the overlay that was asked for is the pane holding the keyboard, in that tab"
+    );
+}
+
+/// The other half of the same arm: without `move_to_focused_tab` the client goes to the plugin
+/// rather than the plugin coming to the client. That is still a tab named by position, and the
+/// plugin's tab id here runs past the end of the tab bar - the case where the old code switched to
+/// no tab at all and focused the pane in the background.
+#[test]
+fn focusing_a_plugin_without_moving_it_goes_to_the_tab_that_holds_it() {
+    let mut screen = screen_with_diverging_tab_ids(Size { cols: 80, rows: 12 });
+    screen.switch_active_tab(1, None, true, 1).expect("TEST"); // tab id 2
+    let (run_plugin, popup_id) = open_overlay_plugin(&mut screen, 7, 2, popup_coordinates());
+    screen.switch_active_tab(0, None, true, 1).expect("TEST"); // back to tab id 1
+
+    assert!(screen
+        .focus_plugin_pane(&run_plugin, false, false, false, 1, &mut None)
+        .expect("TEST"));
+
+    assert_eq!(
+        screen.active_tab_ids.get(&1).copied(),
+        Some(2),
+        "the client is taken to the tab that holds the plugin, named by position - id 2 is past \
+         the end of the tab bar and used to resolve to nothing at all"
+    );
+    assert_eq!(screen.active_pane_id(1), Some(popup_id));
+    assert!(
+        screen.tabs.get(&2).expect("TEST").pane_is_overlay(popup_id),
+        "and nothing moved - the pane is where it was"
+    );
+}
+
+/// The move arm, which compares ids and is right to. It is the one that would break if the id and
+/// position confusion below it were "fixed" by turning this comparison into a positional one, so
+/// it is pinned with ids and positions disagreeing.
+#[test]
+fn a_plugin_overlay_still_moves_to_the_focused_tab_when_ids_and_positions_disagree() {
+    let mut screen = screen_with_diverging_tab_ids(Size { cols: 80, rows: 12 });
+    screen.switch_active_tab(1, None, true, 1).expect("TEST"); // tab id 2
+    let (run_plugin, popup_id) = open_overlay_plugin(&mut screen, 7, 2, popup_coordinates());
+    screen.switch_active_tab(0, None, true, 1).expect("TEST"); // back to tab id 1
+
+    assert!(screen
+        .focus_plugin_pane(&run_plugin, true, true, false, 1, &mut None)
+        .expect("TEST"));
+
+    assert_eq!(
+        screen.active_tab_ids.get(&1).copied(),
+        Some(1),
+        "the pane comes to the client, so the client does not go anywhere"
+    );
+    assert!(
+        screen.tabs.get(&1).expect("TEST").pane_is_overlay(popup_id),
+        "and it arrives as an overlay on the tab the client is on"
+    );
+    assert!(
+        !screen
+            .tabs
+            .get(&2)
+            .expect("TEST")
+            .has_pane_with_pid(&popup_id),
+        "leaving nothing behind on the tab it came from"
+    );
+    assert_eq!(screen.active_pane_id(1), Some(popup_id));
+}
+
+/// A client with no tab of its own has nowhere for a `move_to_focused_tab` to move a pane *to*.
+/// The extraction happens before the destination is looked up, so taking the pane out for such a
+/// client would drop it on the way out of the function - a plugin pane gone with no `PaneClosed`
+/// and no `Unload`. Nothing in production reaches this (`resolve_tab_and_client` only hands over a
+/// client that has an active tab), which is exactly why the guard needs a test.
+#[test]
+fn a_plugin_pane_is_not_extracted_for_a_client_with_no_tab() {
+    let mut screen = screen_with_diverging_tab_ids(Size { cols: 80, rows: 12 });
+    let (run_plugin, popup_id) = open_overlay_plugin(&mut screen, 7, 2, popup_coordinates());
+    screen.active_tab_ids.remove(&1);
+
+    let found = screen
+        .focus_plugin_pane(&run_plugin, true, true, false, 1, &mut None)
+        .expect("TEST");
+
+    assert!(found, "the pane is still found - it is only not moved");
+    assert!(
+        screen.tabs.get(&2).expect("TEST").pane_is_overlay(popup_id),
+        "and it is still in the tab it started in, rather than dropped in transit"
+    );
+}
+
 /// `Ctrl e c` with no hocus running. `focus_plugin_pane` finds nothing, so `LaunchOrFocusPlugin`
 /// creates the pane instead - the `AddPlugin` path, which is what this mirrors: `should_focus`
 /// defaults to true and the placement is an overlay.
