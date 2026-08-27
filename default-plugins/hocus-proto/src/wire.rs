@@ -67,16 +67,6 @@ pub const OPENED_BY_AGENTS: &str = "agents";
 /// that separation forbids. The `a` keybinding's own path is the one that carries the url, and
 /// the only thing that opens a list.
 pub const AGENT_STRIP_OPEN: &str = "agent_strip_open";
-/// legacy hocus → hocus: open the overlay conversation.
-///
-/// The mirror of [`AGENT_STRIP_OPEN`], and for the same reason - a name whose only job is to carry
-/// a `plugin_url`, so the launch-or-reuse behind it opens an overlay-configured hocus. Nothing
-/// reads the payload, and the receiving half treats it as a no-op: by the time it arrives the
-/// message has already done its work.
-///
-/// Sent by a hocus restored from a pre-overlay session dump as a *global* pane, on its way out.
-/// See `hocus_proto::launch::is_legacy_global_instance`.
-pub const HOCUS_OPEN: &str = "hocus_open";
 /// hocus-agents → hocus: which row the cursor is on (`Selection` as JSON).
 ///
 /// Nothing is drawn from it any more — the summary box moved into the agents pane, which is

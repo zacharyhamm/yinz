@@ -73,28 +73,16 @@ struct State {
     /// which is drawn under the list and points at nothing: a click down there has to be
     /// rejected rather than mapped through `last_window_start` onto a row that was never drawn.
     last_list_rows: usize,
-    /// Whether this instance might be an agent list restored from a pre-overlay session dump, and
-    /// so a *global pane* on its way out. Set at `load` from the configuration and settled by the
-    /// first `PaneUpdate` — see `launch::may_be_legacy` and `launch::is_legacy_global_instance`.
-    legacy_suspect: bool,
-    /// Set once this half has closed itself, so it is asked for once.
-    migrating: bool,
 }
 
 register_plugin!(State);
 
 impl ZellijPlugin for State {
-    fn load(&mut self, configuration: BTreeMap<String, String>) {
-        // A half restored as a global pane by a pre-overlay session dump has to close itself, and
-        // `PaneUpdate` is the only place the server says so. Subscribed unconditionally rather
-        // than only when suspected: `subscribe` is cumulative and there is nothing to gain from
-        // two shapes of it. The handler renders nothing and returns `false`.
-        self.legacy_suspect = launch::may_be_legacy(&configuration);
+    fn load(&mut self, _configuration: BTreeMap<String, String>) {
         subscribe(&[
             EventType::Key,
             EventType::Mouse,
             EventType::PermissionRequestResult,
-            EventType::PaneUpdate,
         ]);
         set_selectable(true);
         rename_plugin_pane(get_plugin_ids().plugin_id, "agents");
@@ -103,35 +91,10 @@ impl ZellijPlugin for State {
         // from "some other plugin pane is". The pane it names follows with the
         // strip, a moment later.
         self.send_selection();
-        // See `say_hello_to_hocus`. Deferred while this half might be a legacy global pane. A legacy hocus sends the one
-        // handover this migration needs, and its replacement opens its own list; a second launch
-        // from here would be a second chance for the two to disagree about the configuration the
-        // lookup matches on, which is how you get two columns instead of one.
-        if !self.legacy_suspect {
-            self.say_hello_to_hocus();
-        }
+        self.say_hello_to_hocus();
     }
 
     fn update(&mut self, event: Event) -> bool {
-        if let Event::PaneUpdate(manifest) = &event {
-            if self.legacy_suspect {
-                if !self.migrating
-                    && launch::is_legacy_global_instance(get_plugin_ids().plugin_id, manifest)
-                {
-                    // Restored as a global pane by a dump written before this column became a pair
-                    // of overlays. Nothing but closing: the legacy hocus asks for the overlay
-                    // column, and the hocus that answers opens its own list beside itself.
-                    self.migrating = true;
-                    close_self();
-                    return false;
-                }
-                // An ordinary non-overlay launch after all, so the greeting that was held back
-                // while this was in doubt goes out now.
-                self.legacy_suspect = false;
-                self.say_hello_to_hocus();
-            }
-            return false;
-        }
         let selection = self.selection();
         let rendered = match event {
             Event::Key(key) => self.on_key(key),
