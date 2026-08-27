@@ -341,17 +341,6 @@ impl State {
         pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUBSCRIBE).with_payload(payload));
     }
 
-    /// Ask the daemon to read every agent's branch again.
-    ///
-    /// The rest of a snapshot is kept fresh by host events, but nothing tells
-    /// the daemon that a `git checkout` happened in a folder it already probed.
-    /// Cheap enough to ask on each agent-picker open: two `git` runs for each
-    /// distinct folder an agent is sitting in, and the answer arrives as an
-    /// ordinary snapshot.
-    pub(crate) fn request_branch_refresh() {
-        pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_REFRESH));
-    }
-
     /// Declare the shared entities and start watching the project rows.
     ///
     /// The watch hands back the rows it matched at the moment it was registered,

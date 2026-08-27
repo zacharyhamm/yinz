@@ -23,6 +23,7 @@ use zellij_utils::plugin_api::pipe_message::ProtobufPipeMessage;
 use zellij_utils::plugin_data_store::PluginDataStore;
 
 use crate::plugins::queues::Queues;
+use crate::plugins::wasm_bridge::WasmBridge;
 use zellij_utils::{
     data::EventType,
     data::InputMode,
@@ -65,18 +66,19 @@ fn configuration_matches_for_reload(
     running: &PluginUserConfiguration,
     requested: &PluginUserConfiguration,
 ) -> bool {
-    let without_caller_context = |configuration: &PluginUserConfiguration| {
-        let mut configuration = configuration.inner().clone();
-        configuration.remove("caller_cwd");
-        configuration.remove("caller_terminal_pane_id");
-        // A queued job's identity keys, added per launch by `WasmBridge::launch_job`.
-        configuration.remove("zellij_queue");
-        configuration.remove("zellij_queue_job_id");
-        configuration.remove("zellij_queue_enqueuer_plugin_id");
+    let without_launch_context = |configuration: &PluginUserConfiguration| {
+        let mut configuration = configuration.without_caller_context();
+        // A queued job's identity keys, added per launch by `WasmBridge::launch_job`. Stripped
+        // here rather than in `without_caller_context`, which every "is this the plugin that is
+        // already running?" comparison shares: a queued job *is* a distinct instance everywhere
+        // else, and only a reload lookup wants to see past that.
+        configuration.remove(WasmBridge::QUEUE_CONFIG_KEY);
+        configuration.remove(WasmBridge::QUEUE_JOB_ID_CONFIG_KEY);
+        configuration.remove(WasmBridge::QUEUE_ENQUEUER_CONFIG_KEY);
         configuration
     };
-    let requested = without_caller_context(requested);
-    requested.is_empty() || without_caller_context(running) == requested
+    let requested = without_launch_context(requested);
+    requested.is_empty() || without_launch_context(running) == requested
 }
 
 impl PluginMap {

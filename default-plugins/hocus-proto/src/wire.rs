@@ -28,19 +28,61 @@ pub const AGENT_SNAPSHOT: &str = "agent_snapshot";
 /// already probed changes the branch and nothing says so. Whoever shows a branch
 /// asks for this; the answer arrives as an ordinary snapshot.
 pub const AGENT_REFRESH: &str = "agent_refresh";
-/// hocus → hocus-agents: the agent strip as drawn rows, with the focused pane
-/// (`agents::Strip` as JSON).
+/// hocus → hocus-agents: the agent strip as drawn rows, with the focused pane and the
+/// daemon's idle summaries (`agents::Strip` as JSON).
 ///
 /// hocus stays the one place that knows which panes are agents, which project
 /// owns them and what branch they are on; the hocus-agents pane is a view over
 /// the finished rows, so the two can never disagree about a line.
+///
+/// The summaries ride along whole rather than only the selected one, because the selection
+/// lives in the agents pane and moves under `j`/`k` there: asking hocus for the box on every
+/// keystroke would put a round trip between the cursor and what it is pointing at.
 pub const AGENT_STRIP: &str = "agent_strip";
 /// hocus-agents → hocus: "I just loaded; send me the strip".
+///
+/// Carries a `plugin_url`, so it opens a hocus when there is none to ask - the agent list is a
+/// view over rows only hocus can compute, and a list with nothing feeding it is not worth
+/// having. The hocus it opens that way starts **hidden**: the user asked for a list, not for a
+/// conversation. [`OPENED_BY`] is what says so.
 pub const AGENT_STRIP_HELLO: &str = "agent_strip_hello";
+/// The argument on [`AGENT_STRIP_HELLO`] naming who sent it.
+///
+/// A hocus that receives the greeting *before its own first `PaneUpdate`* is the instance the
+/// greeting just launched - nothing else can be that early - and hides itself. One that has
+/// already heard from the server was open before the message and stays as it is.
+pub const OPENED_BY: &str = "opened_by";
+/// The value of [`OPENED_BY`] on a greeting from the agent list.
+pub const OPENED_BY_AGENTS: &str = "agents";
+/// hocus → hocus-agents: open the agent list, or reveal the one already open.
+///
+/// Deliberately a name of its own rather than a `plugin_url` hung on `AGENT_STRIP`: that message
+/// is sent on every snapshot, and a url attached to it would re-open the agent list every second
+/// after the user closed it. Nothing reads the payload - the message exists for the launch-or-reuse
+/// its url performs, and the pane answers with `AGENT_SELECTION` once it is up.
+///
+/// Sent **without** a url by `State::greet_agents_pane` on hocus's load, which is the same
+/// question asked of an agent list that already exists without opening one that does not: the
+/// two panes are separate surfaces now, and hocus opening the list unbidden is exactly what
+/// that separation forbids. The `a` keybinding's own path is the one that carries the url, and
+/// the only thing that opens a list.
+pub const AGENT_STRIP_OPEN: &str = "agent_strip_open";
+/// legacy hocus → hocus: open the overlay conversation.
+///
+/// The mirror of [`AGENT_STRIP_OPEN`], and for the same reason - a name whose only job is to carry
+/// a `plugin_url`, so the launch-or-reuse behind it opens an overlay-configured hocus. Nothing
+/// reads the payload, and the receiving half treats it as a no-op: by the time it arrives the
+/// message has already done its work.
+///
+/// Sent by a hocus restored from a pre-overlay session dump as a *global* pane, on its way out.
+/// See `hocus_proto::launch::is_legacy_global_instance`.
+pub const HOCUS_OPEN: &str = "hocus_open";
 /// hocus-agents → hocus: which row the cursor is on (`Selection` as JSON).
 ///
-/// The strip goes one way and this comes back: hocus draws the selected agent's
-/// summary, and the selection lives here, where the keys that move it are.
+/// Nothing is drawn from it any more — the summary box moved into the agents pane, which is
+/// where the cursor already lives. What is left is the one thing only this message carries:
+/// the agent list's *plugin id*, which is how hocus finds the pane it has to place beside
+/// itself. A pane url cannot tell two instances apart, so there is no other way to learn it.
 pub const AGENT_SELECTION: &str = "agent_selection";
 /// CLI → store: change something.
 pub const STORE_MUTATE: &str = "store_mutate";

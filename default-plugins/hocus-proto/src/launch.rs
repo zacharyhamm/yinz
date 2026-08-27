@@ -186,10 +186,74 @@ pub fn open(_spec: &Spec, _source_directory: std::path::PathBuf) -> Result<PaneI
     Err("agents cannot be started outside zellij".to_owned())
 }
 
+/// The plugin alias for each of the two hocus panes.
+///
+/// Aliases rather than `zellij:` urls: plugin identity is (location, configuration), an alias
+/// contributes its own block - `shared true` - to that configuration, and the keybindings open
+/// both halves by alias. A second spelling would open a second pane rather than reach the one
+/// already there.
+pub const HOCUS_ALIAS: &str = "hocus";
+pub const HOCUS_AGENTS_ALIAS: &str = "hocus-agents";
+
+/// The configuration that makes a launched hocus pane an overlay.
+///
+/// One definition for both halves and both directions. `LaunchOrFocusPlugin { overlay true;
+/// awaits_placement true }` writes exactly these keys, so a launch from a plugin has to match them
+/// character for character or the keybinding and the plugin address two different instances - and
+/// the failure looks like a duplicate pane rather than an error.
+///
+/// `awaits_placement` is here for that reason and not because a plugin-opened half needs it any
+/// less: it says "do not paint me at the default geometry I was born with, my owner will place
+/// me", which is what keeps a launched panel from flashing in the middle of the screen on top of
+/// its other half. Both halves place themselves through hocus's `apply_overlay_geometry`, which
+/// is what releases it.
+pub fn overlay_configuration() -> std::collections::BTreeMap<String, String> {
+    let mut configuration = std::collections::BTreeMap::new();
+    configuration.insert("overlay".to_owned(), "true".to_owned());
+    configuration.insert("awaits_placement".to_owned(), "true".to_owned());
+    configuration
+}
+
+/// Whether this instance is a *legacy* hocus half: one restored as a global pane.
+///
+/// hocus used to be a pair of global panes and is now a pair of overlays. Overlays are not
+/// serialized at all, but global panes are, so a session dump written before that change brings
+/// both halves back as global panes configured `shared true` and nothing else. Plugin identity is
+/// `(location, configuration)` and both halves now address each other with
+/// [`overlay_configuration`], so a restored pane matches nothing anybody asks for: the keybinding
+/// opens a second, overlay conversation beside a strip that will not go away on its own.
+///
+/// The manifest is the authority rather than the absent `overlay` key, because the two questions
+/// are not the same one. "My configuration says no overlay" is true of any deliberate non-overlay
+/// launch; "the server is drawing me as a global pane" is true of exactly the shape being migrated
+/// away from. The configuration is still worth reading first - it is known at `load`, before
+/// anything has been opened - but only as a suspicion for this to confirm.
+pub fn is_legacy_global_instance(
+    own_plugin_id: u32,
+    manifest: &zellij_tile::prelude::PaneManifest,
+) -> bool {
+    manifest
+        .global_panes
+        .iter()
+        .any(|pane| pane.is_plugin && pane.id == own_plugin_id)
+}
+
+/// Whether a half launched with this configuration might be a legacy one - the cheap half of
+/// [`is_legacy_global_instance`], answerable at `load` before any pane has been opened.
+///
+/// A suspicion and not a verdict: it is also true of a hocus someone put in a tiled layout on
+/// purpose. What it buys is that a suspect defers the launches it would otherwise make on load, so
+/// a legacy instance cannot seed an orphan half before it finds out what it is.
+pub fn may_be_legacy(configuration: &std::collections::BTreeMap<String, String>) -> bool {
+    configuration.get("overlay").map(|value| value.trim()) != Some("true")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use zellij_tile::prelude::PaneManifest;
 
     fn spec(kind: &str) -> Spec {
         Spec {
@@ -320,6 +384,65 @@ mod tests {
             plan(&Spec::default()).unwrap_err(),
             "an agent or a command is required",
         );
+    }
+
+    fn global_manifest(panes: Vec<zellij_tile::prelude::PaneInfo>) -> PaneManifest {
+        PaneManifest {
+            global_panes: panes,
+            ..Default::default()
+        }
+    }
+
+    fn plugin_pane(id: u32) -> zellij_tile::prelude::PaneInfo {
+        zellij_tile::prelude::PaneInfo {
+            id,
+            is_plugin: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_half_the_server_draws_as_a_global_pane_is_a_legacy_one() {
+        assert!(is_legacy_global_instance(
+            7,
+            &global_manifest(vec![plugin_pane(7)])
+        ));
+    }
+
+    /// The hocus overlays live on a tab and never appear in this list, which is the
+    /// whole reason the list is the discriminator.
+    #[test]
+    fn a_half_that_is_not_a_global_pane_is_not_a_legacy_one() {
+        assert!(!is_legacy_global_instance(7, &global_manifest(vec![])));
+        assert!(!is_legacy_global_instance(
+            7,
+            &global_manifest(vec![plugin_pane(9)])
+        ));
+    }
+
+    /// Terminal and plugin pane ids are separate number lines, so the kind has to be checked or a
+    /// global terminal that happens to share our number reads as us.
+    #[test]
+    fn a_global_terminal_with_our_number_is_not_us() {
+        let terminal = zellij_tile::prelude::PaneInfo {
+            id: 7,
+            is_plugin: false,
+            ..Default::default()
+        };
+        assert!(!is_legacy_global_instance(
+            7,
+            &global_manifest(vec![terminal])
+        ));
+    }
+
+    #[test]
+    fn only_a_half_configured_as_an_overlay_is_above_suspicion() {
+        assert!(!may_be_legacy(&overlay_configuration()));
+        assert!(may_be_legacy(&BTreeMap::new()));
+        assert!(may_be_legacy(&BTreeMap::from([(
+            "shared".to_owned(),
+            "true".to_owned()
+        )])));
     }
 
     /// A form field tabbed through and a JSON key sent as `""` are the same thing:

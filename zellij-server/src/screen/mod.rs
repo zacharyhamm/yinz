@@ -104,7 +104,7 @@ use crate::{
     output::HostKittyState,
     panes::kitty_graphics::KittyImageStore,
     panes::sixel::SixelImageStore,
-    panes::{PaneFactory, PaneId},
+    panes::{OverlayCarry, PaneFactory, PaneId},
     plugins::{PluginId, PluginInstruction, PluginRenderAsset},
     pty::{get_default_shell, ClientTabIndexOrPaneId, GlobalPaneSpawnContext, PtyInstruction},
     pty_writer::PtyWriteInstruction,
@@ -2321,6 +2321,7 @@ impl Screen {
         // the tab a pane leaves forgets that it was an overlay - carry the placement over, or the
         // pane lands in the new tab sized against its viewport and painted under the global panes
         let mut overlay_placement = None;
+        let mut overlay_carry = OverlayCarry::default();
         let focused_tab_index = *self.active_tab_ids.get(&client_id).unwrap_or(&0);
         let all_tabs = self.get_tabs_mut();
         for (tab_index, tab) in all_tabs.iter_mut() {
@@ -2328,6 +2329,7 @@ impl Screen {
                 tab_index_and_plugin_pane_id = Some((*tab_index, plugin_pane_id));
                 if move_to_focused_tab && focused_tab_index != *tab_index {
                     overlay_placement = tab.overlay_placement_for(plugin_pane_id);
+                    overlay_carry = tab.overlay_carry_for(plugin_pane_id);
                     plugin_pane_to_move_to_active_tab = tab.extract_pane(plugin_pane_id, true);
                 }
 
@@ -2345,6 +2347,16 @@ impl Screen {
                     pane_id,
                     placement.kind,
                     placement.coordinates.unwrap_or_default(),
+                    // this is the reveal path - `LaunchOrFocusPlugin` naming a plugin is the user
+                    // asking for it back, so an overlay that was hidden arrives shown, exactly as
+                    // the same-tab branch below reveals it through `focus_pane_if_exists`. Only
+                    // the hidden bit is overridden: a reveal is not a request to undo the drag,
+                    // and the plugin re-placing itself on arrival would do exactly that without
+                    // the user-stated position carried across.
+                    OverlayCarry {
+                        hidden: false,
+                        ..overlay_carry
+                    },
                     true,
                     Some(client_id),
                 )?;
@@ -2367,6 +2379,12 @@ impl Screen {
                     Some(client_id),
                 )?;
             }
+            // The tab now has this client on the overlay, but a client sitting on a global pane
+            // reads its focus from `Screen::active_pane_id`, which looks at the global panes
+            // first - so without this the pane comes back on screen and the keyboard does not
+            // follow it. The hide side has done the symmetric thing since overlays existed
+            // (`take_global_focus_after_overlay_close`); this is its other half.
+            self.activate_overlay(pane_id);
             // Set affected pane ID for CLI client output
             if let Some(ref mut completion) = completion_tx {
                 completion.set_affected_pane_id(pane_id);
@@ -2381,6 +2399,9 @@ impl Screen {
                     .with_context(err_context)?
                     .focus_pane_with_id(plugin_pane_id, should_float, should_be_in_place, client_id)
                     .context("failed to focus plugin pane")?;
+                // as above - and a no-op for a plugin that is not an overlay, which is what
+                // makes it safe to state once for every shape this branch focuses
+                self.activate_overlay(plugin_pane_id);
                 self.log_and_report_session_state()
                     .with_context(err_context)?;
                 // Set affected pane ID for CLI client output
@@ -3736,6 +3757,9 @@ impl Screen {
             let (active_swap_layout_name, is_swap_layout_dirty) = tab.swap_layout_info();
             let tab_viewport = tab.get_viewport();
             let tab_display_area = tab.get_display_area();
+            let tab_session_surface = self
+                .session_surface_for_tab(tab.id)
+                .unwrap_or_else(|| tab.get_session_surface());
             let selectable_tiled_panes_count = tab.get_selectable_tiled_panes_count();
             let selectable_floating_panes_count = tab.get_selectable_floating_panes_count();
 
@@ -3761,6 +3785,8 @@ impl Screen {
                     && !self.active_tab_ids.values().any(|i| i == &tab.id),
                 is_flashing_bell: tab.tab_bell_flash
                     && !self.active_tab_ids.values().any(|i| i == &tab.id),
+                session_surface_rows: tab_session_surface.rows,
+                session_surface_columns: tab_session_surface.cols,
             }
         })
     }

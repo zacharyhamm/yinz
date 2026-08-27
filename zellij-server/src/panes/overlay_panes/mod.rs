@@ -21,9 +21,26 @@
 //!
 //! Deliberately absent, and each absence is load-bearing rather than an oversight:
 //!
-//! - **No `show_panes`.** There is no layer to raise or lower: an overlay is drawn for as long as
-//!   it exists. The entire bug class this collection was made to remove came from code that read
-//!   "floating layer down" as "nothing on it is focused".
+//! - **No `show_panes`.** There is still no *layer* to raise or lower: the entire bug class this
+//!   collection was made to remove came from code that read "floating layer down" as "nothing on
+//!   it is focused", and that reading has nowhere to live here.
+//!
+//!   What does exist, and did not when this list was written, is **per-pane suppression**
+//!   (`hide_pane`/`unhide` via `show_pane`) - a different thing, and added openly per the note at
+//!   the end of this list. It names one overlay; every other overlay carries on being drawn. It
+//!   exists because a sidebar-shaped overlay has to go away on Esc *without unloading*: hocus
+//!   holds a live conversation, so closing it is not the same offer as hiding it.
+//!
+//!   The reason it cannot recreate the old bug class is that it never leaves a pane hidden and
+//!   focused: `hide_pane` moves clients off the pane and drops any drag holding it, in the same
+//!   breath that sets the flag, and `may_be_focused` refuses a hidden pane afterwards. So "not
+//!   drawn" and "not focused" cannot drift apart - which is exactly what "floating layer down"
+//!   allowed. `stack_layer_ids` is the single point the flag is read, so everything
+//!   visibility-shaped (render, occlusion, hit-testing, focus targets) inherits it, while
+//!   everything identity-shaped (`panes_contain`, `get_plugin_pane_id`, `placement_of`,
+//!   `reapply_coordinates`) deliberately does not: a hidden overlay is still an overlay that a
+//!   `LaunchOrFocusPlugin` has to be able to find, and still one whose geometry has to keep up
+//!   with the surface so it comes back where it belongs rather than where it last was.
 //! - **No `fullscreen_pane_id`.** What a fullscreen overlay would mean is undefined - an overlay
 //!   is drawn over the whole session surface already. It is not reachable from here, and since
 //!   Phase 4 `Tab`'s fullscreen paths refuse an overlay outright rather than falling through to
@@ -63,8 +80,24 @@
 //! now, its content is sized to that question, and there is no case of it sitting over something
 //! the user is trying to read. It is still draggable, like any other overlay.
 //!
+//! Neither claim is placement, and neither survives a move on its own: `extract_pane` drops the
+//! wrapper holding them, and a plugin that re-places itself would answer the move by putting the
+//! overlay back at its configured position and size. So both ride in [`OverlayCarry`], read from
+//! the source tab before the extraction and handed back to `add_pane`. That is the answer to the
+//! question this comment used to leave open - no `OverlayPlacement` field, and so no proto change,
+//! because none of these bits is placement.
+//!
 //! If one of the remaining absences turns out to be needed, that is a signal that the concept is
-//! not as clean as assumed. Say so rather than adding it quietly.
+//! not as clean as assumed. Say so rather than adding it quietly. Per-pane suppression is the one
+//! that has been needed so far, and the bullet above is that saying-so: the concept survived, but
+//! only because suppression turned out to be nameable in the same terms - one pane, its focus and
+//! its drag released with it, read at one point.
+//!
+//! One thing suppression is *not*, and must not become: a way for a *reveal* to be silently
+//! undone. The cross-tab paths carry `hidden` deliberately, and the two that mean "the user asked
+//! for this pane back" (`LaunchOrFocusPlugin { move_to_focused_tab }` and `break_pane_to_new_tab`)
+//! override it to `false` at the call site, in the open, rather than relying on the bit being lost
+//! in transit.
 //!
 //! Not to be confused with the nested-session **guest modal**
 //! (`crate::panes::nested_session_modal`), which shares the word and nothing else: it is a dialog
@@ -109,21 +142,59 @@ pub struct OverlayPane {
     pane: Box<dyn Pane>,
     kind: OverlayKind,
     coordinates: FloatingPaneCoordinates,
+    /// The in-memory half of this wrapper - see [`OverlayCarry`], which is how it survives an
+    /// extraction.
+    carry: OverlayCarry,
+}
+
+/// The half of an overlay's wrapper that is *not* placement: whether it is set aside, and whether
+/// where it sits is the user's doing.
+///
+/// Both are in-memory only, which is why neither is in `OverlayPlacement` - that struct crosses
+/// the protobuf boundary. `extract_pane` drops this wrapper on the way to another tab, so a mover
+/// reads this first ([`OverlayPanes::carry_of`], [`crate::tab::Tab::overlay_carry_for`]) and hands
+/// it back to `add_pane`. They travel together rather than one at a time because the failure mode
+/// of forgetting one is invisible: the overlay arrives, simply not as itself.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OverlayCarry {
+    /// Set aside by `hide_pane`: the overlay still exists, still holds its plugin and its
+    /// scrollback, and is still re-resolved against the surface - it is simply not drawn and
+    /// cannot be focused until `show_pane` names it again.
+    pub hidden: bool,
     /// The user dragged this overlay, so its `x`/`y` are theirs and a plugin re-asserting its
     /// placement no longer moves it (`change_pane_coordinates`).
     ///
-    /// Deliberately not in `OverlayPlacement`, which is what travels when an overlay follows a
-    /// client to another tab: that struct crosses the protobuf boundary, and the *coordinates* the
-    /// drag wrote travel in it already. Only the "the user said so" bit is in-memory, and it is
-    /// worth a proto change on the day a plugin re-places an overlay it has followed across.
-    position_is_user_stated: bool,
+    /// The *coordinates* the drag wrote travel in `OverlayPlacement` already; this is only the
+    /// "the user said so" bit. It used to be dropped by a move, which made every tab switch undo
+    /// the drag for a plugin that re-places itself - hocus's overlay column does, on every
+    /// `TabUpdate`.
+    pub position_is_user_stated: bool,
     /// The user resized this overlay, so its `width`/`height` are theirs and a plugin re-asserting
     /// its placement no longer resizes it (`change_pane_coordinates`).
     ///
-    /// The size twin of `position_is_user_stated`, and in memory for the same reason: the
-    /// *coordinates* the resize wrote travel in `OverlayPlacement` already, only the "the user
-    /// said so" bit does not.
-    size_is_user_stated: bool,
+    /// The size twin of `position_is_user_stated`, and here for the same reason: the *coordinates*
+    /// the resize wrote travel in `OverlayPlacement` already, only the "the user said so" bit does
+    /// not.
+    pub size_is_user_stated: bool,
+    /// This overlay is placed by its owner and has not been placed yet, so it is not painted.
+    ///
+    /// **Not `hidden`, deliberately.** `hidden` is the user setting a pane aside: it moves clients
+    /// off the pane, refuses focus, and is reported as `is_suppressed` - which is the very field a
+    /// plugin reads to tell that it was hidden or revealed. A pane that arrived a frame ago and is
+    /// waiting to be told where it goes has been neither hidden nor revealed, and saying so in
+    /// that field would have hocus believe the user had put it away. This suppresses *painting*
+    /// and nothing else: the pane exists, can be focused, and reports itself visible.
+    ///
+    /// What it buys is the flash. An overlay that named no coordinates is born half the surface,
+    /// centered (`OverlayPanes::base_geom`), and only its owner moves it out of there - a round
+    /// trip later, and only once the pane is on a tab for the placement to find. Until then the
+    /// panel that belongs in the corner is painted in the middle of the screen, on top of its
+    /// other half. Asked for at launch with `awaits_placement true`
+    /// (`RunPluginOrAlias::awaits_placement`), and released by the first
+    /// `change_pane_coordinates` - or by a `reapply_coordinates`, which is the safety valve: an
+    /// overlay whose owner never places it becomes visible at the default on the next resize
+    /// rather than being invisible for as long as it lives.
+    pub awaiting_placement: bool,
 }
 
 impl PaneLookup for BTreeMap<PaneId, OverlayPane> {
@@ -262,6 +333,7 @@ impl OverlayPanes {
         mut pane: Box<dyn Pane>,
         kind: OverlayKind,
         coordinates: FloatingPaneCoordinates,
+        carry: OverlayCarry,
     ) {
         let (surface, origin) = self.surface();
         // `adjust_coordinates` resolves the geometry and nothing else, so a coordinate that is
@@ -279,12 +351,97 @@ impl OverlayPanes {
                 pane,
                 kind,
                 coordinates,
-                position_is_user_stated: false,
-                size_is_user_stated: false,
+                carry,
             },
         );
         self.raise_within_class(pane_id);
         self.set_pane_frames().non_fatal();
+    }
+
+    /// Set `pane_id` aside: still here, still loaded, no longer drawn and no longer focusable.
+    ///
+    /// This is per-pane suppression, the shape `GlobalPaneManager::hide_edge` and
+    /// `Tab::suppress_pane` already have, and *not* a layer toggle - see the module doc. The two
+    /// things it does beyond setting the flag are the two that keep the rest of the collection
+    /// honest, and are the same two `hide_edge` does:
+    ///
+    /// - clients are moved off it, so `active_pane_id` never names a pane nobody can see. This is
+    ///   what lets every focus query stay unfiltered.
+    /// - a drag holding this pane is released, so the mouse is not left captured by a frame that
+    ///   is no longer painted - the same reasoning as `remove_pane`'s.
+    ///
+    /// Returns whether anything changed, so a caller can skip a render it does not need.
+    pub fn hide_pane(&mut self, pane_id: PaneId) -> bool {
+        match self.panes.get_mut(&pane_id) {
+            Some(overlay) if !overlay.carry.hidden => overlay.carry.hidden = true,
+            _ => return false,
+        }
+        if matches!(self.pane_being_moved_with_mouse, Some((dragged, ..)) if dragged == pane_id) {
+            self.pane_being_moved_with_mouse = None;
+        }
+        if self.is_modal(&pane_id) {
+            // A modal's clients may not simply fall to whatever is underneath. While this modal
+            // was on screen `may_be_focused` refused every non-modal overlay the keyboard, and
+            // setting the modal aside is not the user asking for that refusal to be reversed - it
+            // is the same modal, merely not drawn. So focus walks to the next *modal* down, or
+            // nowhere. `move_clients_out_of_pane`'s selectable-only rule is right for a
+            // dismissible overlay and wrong here for exactly this reason.
+            self.move_clients_out_of_modal(pane_id);
+        } else {
+            self.move_clients_out_of_pane(pane_id);
+        }
+        self.set_force_render();
+        true
+    }
+
+    /// Put `pane_id` back on screen. Deliberately does not focus it - *unless it is a modal with
+    /// no other modal above it*: `focus_pane_if_exists` is the path that reveals *and* focuses an
+    /// ordinary overlay, and a caller that only wants the pane drawn - hocus restoring its agent
+    /// list beside itself - should not move the keyboard by doing so.
+    ///
+    /// A lone modal is the exception because for a modal the two are not separable. The modal lock
+    /// is read off `stack_layer_ids`, which filters `hidden`, so this statement is what re-arms
+    /// it: the moment this pane is back in the stack, `may_be_focused` starts refusing every other
+    /// overlay the keyboard. Leaving it unfocused would put a dialog on screen that nobody is in
+    /// and that nothing else may be focused *past* - and the modal has no channel to learn it, so
+    /// it would sit there taking no input and letting nothing else take any either. Whoever
+    /// unsuppresses a modal is asking for the modal back, and a modal *is* its keyboard.
+    ///
+    /// **Unless another modal came up while this one was away**, which is the one case where that
+    /// reasoning inverts: the newer modal is the dialog the user is actually in, and it has no
+    /// channel to learn it lost either. So an outranked modal is neither raised nor focused - see
+    /// `outranked` below. It is not stranded by that: it is back in the stack, so the lock holds
+    /// either way, and closing the newer modal walks focus down onto this one
+    /// (`move_clients_out_of_pane`).
+    pub fn show_pane(&mut self, pane_id: PaneId) -> bool {
+        match self.panes.get_mut(&pane_id) {
+            Some(overlay) if overlay.carry.hidden => overlay.carry.hidden = false,
+            _ => return false,
+        }
+        // Whether a modal that opened while this one was set aside is on screen now. Read after
+        // the unhide, so `stack_layer_ids` is the stack as it will actually be.
+        //
+        // Doing *nothing* is what keeps this pane underneath that modal: it never gave up its
+        // place in `z_indices` - only `remove_pane` does that - and it was pushed there before the
+        // newer modal was, so its stored position is already below. `raise_within_class` would
+        // undo exactly that, because for a modal the top of its class *is* the top of the stack.
+        // A non-modal is never outranked here: `raise_within_class` already puts one below the
+        // lowest modal, which is where it belongs.
+        let outranked = self.is_modal(&pane_id)
+            && self.stack_layer_ids().iter().any(|other| {
+                *other != pane_id
+                    && self.is_modal(other)
+                    && self.get(other).is_some_and(|pane| pane.selectable())
+            });
+        if !outranked {
+            self.raise_within_class(pane_id);
+        }
+        self.set_pane_frames().non_fatal();
+        self.set_force_render();
+        if self.is_modal(&pane_id) && !outranked {
+            self.focus_pane_for_all_clients(pane_id);
+        }
+        true
     }
 
     /// Put `pane_id` at the top of its class in the occlusion stack: a modal at the very top,
@@ -349,11 +506,11 @@ impl OverlayPanes {
                 pane: with_pane,
                 kind: removed.kind,
                 coordinates: removed.coordinates,
-                // the slot keeps where the user put it, exactly as it keeps its kind and its
-                // coordinates - a pane swapped into a dragged overlay is the pane the user
-                // dragged
-                position_is_user_stated: removed.position_is_user_stated,
-                size_is_user_stated: removed.size_is_user_stated,
+                // the slot keeps where the user put it and whether it was set aside, exactly as
+                // it keeps its kind and its coordinates - a pane swapped into a dragged overlay
+                // is the pane the user dragged, and one swapped into a hidden slot is not
+                // suddenly on screen
+                carry: removed.carry,
             },
         );
         if let Some(index) = self.z_indices.iter().position(|p_id| p_id == &pane_id) {
@@ -372,11 +529,31 @@ impl OverlayPanes {
     pub fn panes_contain(&self, pane_id: &PaneId) -> bool {
         self.panes.contains_key(pane_id)
     }
+    /// Whether anything here is on screen.
+    ///
+    /// Visible panes only, because `Tab::overlays_are_rendered` is this and it gates both
+    /// `Tab::get_active_pane_id` and the occlusion stack: a tab holding nothing but a hidden
+    /// overlay has to behave exactly like a tab holding no overlay at all.
     pub fn has_panes(&self) -> bool {
-        !self.panes.is_empty()
+        self.panes.values().any(|overlay| !overlay.carry.hidden)
     }
+    /// Whether this collection holds nothing *at all*, hidden panes included - the lifecycle
+    /// question, as against `has_panes`'s drawing one.
     pub fn is_empty(&self) -> bool {
         self.panes.is_empty()
+    }
+    /// Whether `pane_id` is here but set aside. `false` for a pane that is not here at all.
+    pub fn is_hidden(&self, pane_id: &PaneId) -> bool {
+        self.carry_of(pane_id).hidden
+    }
+    /// The in-memory half of `pane_id`'s wrapper, for a caller about to extract it - see
+    /// [`OverlayCarry`]. Defaults for a pane that is not here at all, which is what a pane with
+    /// no wrapper to lose would arrive as anyway.
+    pub fn carry_of(&self, pane_id: &PaneId) -> OverlayCarry {
+        self.panes
+            .get(pane_id)
+            .map(|overlay| overlay.carry)
+            .unwrap_or_default()
     }
     pub fn len(&self) -> usize {
         self.panes.len()
@@ -464,8 +641,11 @@ impl OverlayPanes {
                 let mut pane_info_for_pane =
                     pane_info_for_pane(pane_id, overlay.pane.as_ref(), current_pane_group);
                 pane_info_for_pane.is_floating = true;
-                pane_info_for_pane.is_suppressed = false;
-                pane_info_for_pane.is_focused = self.active_panes.pane_id_is_focused(pane_id);
+                // a hidden overlay is set aside exactly as a suppressed tab pane is, and that is
+                // the field every consumer already reads to mean "here but not on screen"
+                pane_info_for_pane.is_suppressed = overlay.carry.hidden;
+                pane_info_for_pane.is_focused =
+                    !overlay.carry.hidden && self.active_panes.pane_id_is_focused(pane_id);
                 // an overlay cannot go fullscreen - there is no `fullscreen_pane_id` here
                 pane_info_for_pane.is_fullscreen = false;
                 pane_info_for_pane
@@ -477,16 +657,22 @@ impl OverlayPanes {
 
     /// The panes making up the occlusion stack, bottom-most first.
     ///
-    /// There is no visibility gate here and no filtering of any kind: an overlay is drawn for as
-    /// long as it exists. `FloatingPanes` has to filter this list (fullscreen, pinned-only,
-    /// layer-hidden) and warns that `stack_layer_ids` and `render` must stay derived from the same
-    /// list or a pane is clipped against its own geometry and erases itself - it maintains that by
+    /// The one gate here is `hidden` - a pane `hide_pane` set aside. There is no *layer*
+    /// visibility: an overlay that has not been set aside by name is drawn for as long as it
+    /// exists. `FloatingPanes` has to filter this list (fullscreen, pinned-only, layer-hidden)
+    /// and warns that `stack_layer_ids` and `render` must stay derived from the same list or a
+    /// pane is clipped against its own geometry and erases itself - it maintains that by
     /// hand-duplicating the filter chain in two places. Here `render` iterates this method
-    /// directly, so the two cannot drift.
+    /// directly, so the two cannot drift, and so this one filter is also what keeps a hidden
+    /// overlay out of the occlusion stack, out of hit-testing and out of every focus target.
     pub fn stack_layer_ids(&self) -> Vec<PaneId> {
         self.z_indices
             .iter()
-            .filter(|pane_id| self.panes.contains_key(pane_id))
+            .filter(|pane_id| {
+                self.panes.get(pane_id).is_some_and(|overlay| {
+                    !overlay.carry.hidden && !overlay.carry.awaiting_placement
+                })
+            })
             .copied()
             .collect()
     }
@@ -585,7 +771,12 @@ impl OverlayPanes {
     /// (`Tab::set_pane_selectable`), and putting one back would break the invariant that an active
     /// pane is selectable - a later `FocusPaneWithId` would route input to a pane that asked not
     /// to receive any. `FloatingPanes::focus_pane` refuses the same thing.
+    /// A hidden overlay is refused for the same reason a non-selectable one is: it is not on
+    /// screen, so a client left holding its keyboard could not see what was taking the input.
     pub fn may_be_focused(&self, pane_id: &PaneId) -> bool {
+        if self.is_hidden(pane_id) {
+            return false;
+        }
         if !self.get(pane_id).is_some_and(|pane| pane.selectable()) {
             return false;
         }
@@ -613,8 +804,14 @@ impl OverlayPanes {
     /// to hand the keyboard over. `Tab::focus_pane_with_id` chains this through `.or_else` into the
     /// floating and suppressed collections, so an `Err` here would go on to focus some *other*
     /// pane rather than leaving focus where the modal wants it.
+    ///
+    /// This is also the reveal path: a request naming a hidden overlay by id is the user asking
+    /// for it back (`LaunchOrFocusPlugin` reaches here through `Tab::focus_pane_with_id`), so it
+    /// is shown before it is focused - `may_be_focused` would otherwise refuse it for being
+    /// hidden and the pane would stay set aside.
     pub fn focus_pane_if_exists(&mut self, pane_id: PaneId, client_id: ClientId) -> Result<()> {
         if self.panes.contains_key(&pane_id) {
+            self.show_pane(pane_id);
             self.focus_pane(pane_id, client_id);
             Ok(())
         } else {
@@ -700,6 +897,37 @@ impl OverlayPanes {
             }
         }
     }
+    /// The modal twin of `move_clients_out_of_pane`: walk every client focused on `pane_id` down to
+    /// the next modal, or off this collection entirely.
+    ///
+    /// Used when a modal is set aside rather than closed. A closing modal may hand the keyboard to
+    /// whatever is underneath, because the lock goes with it; a hidden one keeps the lock (it is
+    /// still in `self.panes`, and `show_pane` puts it straight back into the stack), so handing the
+    /// keyboard down would focus a pane that `may_be_focused` refuses.
+    fn move_clients_out_of_modal(&mut self, pane_id: PaneId) {
+        let next = self.stack_layer_ids().into_iter().rev().find(|id| {
+            *id != pane_id
+                && self.is_modal(id)
+                && self.get(id).is_some_and(|pane| pane.selectable())
+        });
+        let focused_clients: Vec<ClientId> = self
+            .active_panes
+            .iter()
+            .filter(|(_, p_id)| **p_id == pane_id)
+            .map(|(c_id, _)| *c_id)
+            .collect();
+        for client_id in focused_clients {
+            match next {
+                Some(next_pane_id) => {
+                    self.active_panes
+                        .insert(client_id, next_pane_id, &self.panes)
+                },
+                None => {
+                    self.active_panes.remove(&client_id, &self.panes);
+                },
+            }
+        }
+    }
     fn move_clients_between_panes(&mut self, from_pane_id: PaneId, to_pane_id: PaneId) {
         let focused_clients: Vec<ClientId> = self
             .active_panes
@@ -758,11 +986,11 @@ impl OverlayPanes {
         // `reapply_coordinates` would do with it anyway. The one exception is a position the user
         // dragged: that one is carried over, because nothing else in the system remembers it.
         let mut new_coordinates = new_coordinates;
-        if overlay.position_is_user_stated {
+        if overlay.carry.position_is_user_stated {
             new_coordinates.x = overlay.coordinates.x;
             new_coordinates.y = overlay.coordinates.y;
         }
-        if overlay.size_is_user_stated {
+        if overlay.carry.size_is_user_stated {
             new_coordinates.width = overlay.coordinates.width;
             new_coordinates.height = overlay.coordinates.height;
         }
@@ -771,6 +999,9 @@ impl OverlayPanes {
         overlay.pane.set_geom(geom);
         overlay.pane.set_should_render(true);
         overlay.coordinates = new_coordinates;
+        // Somebody has placed it, which is the whole of what it was waiting for. See
+        // `OverlayCarry::awaiting_placement`.
+        overlay.carry.awaiting_placement = false;
 
         self.set_pane_frames().non_fatal();
         Ok(())
@@ -812,6 +1043,10 @@ impl OverlayPanes {
             let mut geom = Self::base_geom(&surface, overlay.pane.position_and_size());
             geom.adjust_coordinates(overlay.coordinates.clone(), surface, origin);
             overlay.pane.set_geom(geom);
+            // The safety valve for `awaiting_placement`: an overlay nobody ever placed would
+            // otherwise be invisible for as long as it lived. A resize shows it where it was born,
+            // which is the behaviour it would have had without the flag at all.
+            overlay.carry.awaiting_placement = false;
         }
         self.set_pane_frames().non_fatal();
         self.set_force_render();
@@ -900,13 +1135,13 @@ impl OverlayPanes {
 
         overlay.coordinates.width = Some(PercentOrFixed::Fixed(geom.cols.as_usize()));
         overlay.coordinates.height = Some(PercentOrFixed::Fixed(geom.rows.as_usize()));
-        overlay.size_is_user_stated = true;
+        overlay.carry.size_is_user_stated = true;
         if geom.x != before.x || geom.y != before.y {
             // `PaneGeom::apply_floating_pane_position` reads `Fixed(n)` as `origin + n`, so the
             // position round-trips exactly - the same arithmetic `move_pane_to_position` does
             overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x.saturating_sub(origin.0)));
             overlay.coordinates.y = Some(PercentOrFixed::Fixed(geom.y.saturating_sub(origin.1)));
-            overlay.position_is_user_stated = true;
+            overlay.carry.position_is_user_stated = true;
         }
 
         // this is also what resizes the pane's pty to the new geometry
@@ -975,7 +1210,7 @@ impl OverlayPanes {
         overlay.pane.set_should_render(true);
         overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x.saturating_sub(origin.0)));
         overlay.coordinates.y = Some(PercentOrFixed::Fixed(geom.y.saturating_sub(origin.1)));
-        overlay.position_is_user_stated = true;
+        overlay.carry.position_is_user_stated = true;
         self.set_pane_being_moved_with_mouse(pane_id, *click_position);
         self.set_force_render();
         true
@@ -1037,10 +1272,13 @@ impl OverlayPanes {
 
     /// The absolute geometries of the overlays owning cells outside the tab's own viewport - which,
     /// being drawn over the session, is most of them. Nothing but this tab paints those cells.
+    /// Hidden overlays are left out of both of these: they own no cells, and counting one would
+    /// keep `Tab::has_floating_panes_outside_viewport` true forever with nothing to paint.
     pub fn geoms_outside_viewport(&self) -> HashMap<PaneId, PaneGeom> {
         let viewport = *self.viewport.borrow();
         self.panes
             .iter()
+            .filter(|(_, overlay)| !overlay.carry.hidden)
             .filter_map(|(pane_id, overlay)| {
                 let geom = overlay.pane.position_and_size();
                 geom_is_outside_viewport(&geom, &viewport).then_some((*pane_id, geom))
@@ -1051,6 +1289,7 @@ impl OverlayPanes {
         let viewport = *self.viewport.borrow();
         self.panes
             .values()
+            .filter(|overlay| !overlay.carry.hidden)
             .any(|overlay| geom_is_outside_viewport(&overlay.pane.position_and_size(), &viewport))
     }
 
@@ -1163,12 +1402,21 @@ impl OverlayPanes {
         }
         let connected_clients: Vec<ClientId> = connected_clients.into_iter().collect();
 
-        // no visibility filter: an overlay keeps its focus for as long as it exists, which is the
-        // whole reason it is not a floating pane
+        // no *layer* visibility filter: an overlay keeps its focus for as long as it exists, which
+        // is the whole reason it is not a floating pane. A pane `hide_pane` set aside has already
+        // had its clients moved off it, so it contributes nothing here either.
         let mut active_panes = self.active_panes.clone_active_panes();
         active_panes.retain(|client_id, _| !inactive_clients.contains(client_id));
 
-        for (pane_id, overlay) in &self.panes {
+        // This loop feeds `output.add_pane_contents` and does not derive from `stack_layer_ids`,
+        // so it needs the hidden filter of its own - otherwise a hidden overlay's contents reach
+        // the render report with no geometry ever drawn for them. Same for an overlay still
+        // waiting to be placed, whose geometry is the centered default it was born with.
+        for (pane_id, overlay) in self
+            .panes
+            .iter()
+            .filter(|(_, overlay)| !overlay.carry.hidden && !overlay.carry.awaiting_placement)
+        {
             match pane_id {
                 PaneId::Terminal(_) => {
                     output.add_pane_contents(

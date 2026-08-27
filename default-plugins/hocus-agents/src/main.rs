@@ -1,19 +1,20 @@
-//! hocus-agents — the agent list as a real pane in the hocus sidebar strip.
+//! hocus-agents — the agent list, an overlay pane of its own.
 //!
 //! This used to be the top third of the hocus pane, drawn by hocus itself with
-//! an `agents_focused` flag deciding who owned the keys. Now it is its own
-//! global pane, split off above the chat in the same strip, so the ordinary
-//! pane-movement keys walk between the list and the conversation and each one
-//! keeps its own focus, scrollback and cursor.
+//! an `agents_focused` flag deciding who owned the keys. Then it was the upper
+//! half of a two-pane column. It is now simply its own pane, sitting beside the
+//! conversation rather than above it, and opening, hiding and being read on its
+//! own.
 //!
 //! **hocus computes, this pane draws.** Which panes are agents, which project
 //! owns them and what branch they are on takes the agentd snapshot, the project
 //! registry and the Git probes — all of which hocus already holds for its
 //! tools. Deriving them again here would mean a second copy of that state to
 //! keep in step, so hocus pipes the *finished rows* over (`wire::AGENT_STRIP`)
-//! and this plugin is a view: it windows them, tracks a selection, and focuses
-//! a pane on Enter. `AGENT_STRIP_HELLO` is the reload handshake — a freshly
-//! loaded instance announces itself and hocus answers with the current rows.
+//! and this plugin is a view: it windows them, tracks a selection, draws the
+//! selected agent's idle summary under the list, and focuses a pane on Enter.
+//! `AGENT_STRIP_HELLO` is the reload handshake — a freshly loaded instance
+//! announces itself and hocus answers with the current rows.
 //!
 //! Which pane the user is *in* comes over the same wire, and the cursor follows
 //! it: walking into an agent by any route — the pane keys, a tab switch, a tool
@@ -22,24 +23,32 @@
 //! draws it dim, which is the difference between "you are here" and "here is
 //! where you were".
 //!
-//! Either half of the strip spawns the other, through the same
-//! `launch_or_focus_global_pane_split` call: hocus splits this pane in above
-//! itself on load, and this pane splits hocus in below itself. So the `Ctrl+``
-//! keybinding keeps working unchanged — revealing hocus reveals the whole
-//! strip, and `hide_self()` here hides it likewise — and a binding that opens
-//! the list directly gets a whole sidebar rather than a view with nothing
-//! feeding it.
+//! **The two panes are separate, with one exception.** Esc here hides this pane
+//! and nothing else, and hocus's Esc hides hocus. Neither opens the other for the
+//! user. The exception is `say_hello_to_hocus`, which does carry hocus's url:
+//! this pane is a view over rows only hocus can compute, so a list with no hocus
+//! to ask has nothing to draw. The hocus that greeting launches starts **hidden**
+//! — `wire::OPENED_BY` is what tells it so — because the user asked for a list,
+//! not for a conversation.
 
 use std::collections::BTreeMap;
 
-use hocus_proto::agents::{Strip, StripRow};
+use hocus_proto::agents::{self, Strip, StripRow, Summaries};
+use hocus_proto::launch;
 use hocus_proto::wire;
+use unicode_width::UnicodeWidthStr;
 use zellij_tile::prelude::*;
 
 #[derive(Default)]
 struct State {
     /// The strip as hocus last sent it.
     rows: Vec<StripRow>,
+    /// What the daemon's model last made of each idle agent, as hocus last sent it.
+    ///
+    /// The whole map rather than only the selected row's: the selection moves here, under `j`/`k`,
+    /// and asking hocus for the box on every keystroke would put a round trip between the cursor
+    /// and what it is pointing at.
+    summaries: Summaries,
     /// Index into `rows`. Always on an `Agent` row when one exists.
     selected: usize,
     /// The last pane hocus reported focused, agent or not.
@@ -58,51 +67,69 @@ struct State {
     /// Where the last render's window into `rows` began — needed to map a mouse
     /// click's on-screen line back to an index into `rows`.
     last_window_start: usize,
+    /// How many rows the last render gave the list. The rest of the pane is the summary box,
+    /// which is drawn under the list and points at nothing: a click down there has to be
+    /// rejected rather than mapped through `last_window_start` onto a row that was never drawn.
+    last_list_rows: usize,
+    /// Whether this instance might be an agent list restored from a pre-overlay session dump, and
+    /// so a *global pane* on its way out. Set at `load` from the configuration and settled by the
+    /// first `PaneUpdate` — see `launch::may_be_legacy` and `launch::is_legacy_global_instance`.
+    legacy_suspect: bool,
+    /// Set once this half has closed itself, so it is asked for once.
+    migrating: bool,
 }
 
 register_plugin!(State);
 
 impl ZellijPlugin for State {
-    fn load(&mut self, _configuration: BTreeMap<String, String>) {
+    fn load(&mut self, configuration: BTreeMap<String, String>) {
+        // A half restored as a global pane by a pre-overlay session dump has to close itself, and
+        // `PaneUpdate` is the only place the server says so. Subscribed unconditionally rather
+        // than only when suspected: `subscribe` is cumulative and there is nothing to gain from
+        // two shapes of it. The handler renders nothing and returns `false`.
+        self.legacy_suspect = launch::may_be_legacy(&configuration);
         subscribe(&[
             EventType::Key,
             EventType::Mouse,
             EventType::PermissionRequestResult,
+            EventType::PaneUpdate,
         ]);
         set_selectable(true);
         rename_plugin_pane(get_plugin_ids().plugin_id, "agents");
-        // hocus pushes the strip on every change; this asks for the current one
-        // so a reload (or a session restore) does not sit empty until the next
-        // agentd snapshot.
-        pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP_HELLO));
         // Unconditional, and before there are any rows: what this first one carries
         // is the plugin id, which is how hocus tells "the agents pane is focused"
         // from "some other plugin pane is". The pane it names follows with the
         // strip, a moment later.
         self.send_selection();
-        // The chat is the other half of this strip, and it is the half that
-        // computes the rows drawn here. Usually hocus spawns *this* pane and
-        // this call adopts the hocus that did it; when a keybinding got here
-        // first there is no hocus yet, so split one in below. Idempotent
-        // server-side, and a no-op when this is not a global pane — the same
-        // contract hocus relies on in the other direction.
-        launch_or_focus_global_pane_split(
-            "hocus",
-            // the spelling hocus's own binding uses: plugin identity is
-            // (location, configuration), and a second spelling would make a
-            // second pane rather than adopt the one that is there
-            BTreeMap::new(),
-            // below the list, where the conversation belongs
-            false,
-            // sizes the *new* pane, leaving this one the remainder — the same
-            // two-thirds-to-the-chat split the other direction produces
-            Some(PercentOrFixed::Percent(67)),
-            // whoever opened this pane meant to land on the list
-            false,
-        );
+        // See `say_hello_to_hocus`. Deferred while this half might be a legacy global pane. A legacy hocus sends the one
+        // handover this migration needs, and its replacement opens its own list; a second launch
+        // from here would be a second chance for the two to disagree about the configuration the
+        // lookup matches on, which is how you get two columns instead of one.
+        if !self.legacy_suspect {
+            self.say_hello_to_hocus();
+        }
     }
 
     fn update(&mut self, event: Event) -> bool {
+        if let Event::PaneUpdate(manifest) = &event {
+            if self.legacy_suspect {
+                if !self.migrating
+                    && launch::is_legacy_global_instance(get_plugin_ids().plugin_id, manifest)
+                {
+                    // Restored as a global pane by a dump written before this column became a pair
+                    // of overlays. Nothing but closing: the legacy hocus asks for the overlay
+                    // column, and the hocus that answers opens its own list beside itself.
+                    self.migrating = true;
+                    close_self();
+                    return false;
+                }
+                // An ordinary non-overlay launch after all, so the greeting that was held back
+                // while this was in doubt goes out now.
+                self.legacy_suspect = false;
+                self.say_hello_to_hocus();
+            }
+            return false;
+        }
         let selection = self.selection();
         let rendered = match event {
             Event::Key(key) => self.on_key(key),
@@ -119,6 +146,14 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        if pipe_message.name == wire::AGENT_STRIP_OPEN {
+            // hocus asking for this pane. If it is reaching us at all then we already exist and
+            // the message opened nothing - but a hocus that reloaded has forgotten our id, and
+            // `send_selection` on load is the only other thing that ever tells it. Answering here
+            // is what stops a reloaded hocus being unable to place or hide the list beside it.
+            self.send_selection();
+            return false;
+        }
         if pipe_message.name != wire::AGENT_STRIP {
             return false;
         }
@@ -141,6 +176,7 @@ impl ZellijPlugin for State {
 
     fn render(&mut self, rows: usize, cols: usize) {
         if self.rows.is_empty() {
+            self.last_list_rows = 0;
             print_text_with_coordinates(
                 Text::new("no agents").dim_range(..),
                 0,
@@ -150,16 +186,23 @@ impl ZellijPlugin for State {
             );
             return;
         }
+        // The box is built first because the list has to be told how many rows are left. It is
+        // pinned to the foot of the pane, under the list rather than over it: the list is what
+        // the keys work, and a box that covered rows the cursor can move onto would hide the
+        // thing it is describing.
+        let summary = self.summary_box(rows, cols);
+        let list_rows = rows.saturating_sub(summary.len());
         // Window the list around the selection rather than tracking a scroll
         // offset: keeping it near the middle means it is always visible and the
         // list moves by one row per keypress in both directions.
         let start = self
             .selected
-            .saturating_sub(rows / 2)
-            .min(self.rows.len().saturating_sub(rows));
+            .saturating_sub(list_rows / 2)
+            .min(self.rows.len().saturating_sub(list_rows));
         self.last_window_start = start;
+        self.last_list_rows = list_rows;
         let live = self.live();
-        for (index, row) in self.rows.iter().skip(start).take(rows).enumerate() {
+        for (index, row) in self.rows.iter().skip(start).take(list_rows).enumerate() {
             let selected = start + index == self.selected;
             let text = match row {
                 // A header takes no marker column: nothing can land on it, and
@@ -181,14 +224,49 @@ impl ZellijPlugin for State {
             };
             print_text_with_coordinates(text, 0, index, Some(cols), None);
         }
+        render_summary(&summary, list_rows, cols);
+    }
+}
+
+/// Draw the box `summary_box` built, at the foot of the pane.
+///
+/// Every row is printed across the whole pane width with the margin as part of the string: a
+/// print only paints the columns it is given, and a row of the list showing through beside the
+/// box would read as part of it.
+fn render_summary(rows: &[String], top: usize, cols: usize) {
+    let Some(last) = rows.len().checked_sub(1) else {
+        return;
+    };
+    let width = rows[0].width();
+    for (index, row) in rows.iter().enumerate() {
+        let padded = format!(" {row}{}", " ".repeat(cols.saturating_sub(width + 1)));
+        let text = Text::new(&padded);
+        let text = match index == 0 || index == last {
+            // Border rows are frame all the way across.
+            true => text.dim_range(1..width + 1),
+            // Body rows are frame at each end and the model's words between.
+            false => text.dim_range(1..2).dim_range(width..width + 1),
+        };
+        // Found rather than counted: a label cut to fit may have lost the marker,
+        // and no kind can contain one (`valid_kind` allows no punctuation). The
+        // one is the margin column every row is printed behind.
+        let text = match index == 0 {
+            true => match row.chars().position(|c| c == '!') {
+                Some(at) => text.error_color_range(at + 1..at + 2),
+                None => text,
+            },
+            false => text,
+        };
+        print_text_with_coordinates(text, 0, top + index, Some(cols), None);
     }
 }
 
 impl State {
     fn on_key(&mut self, key: KeyWithModifier) -> bool {
         if key.bare_key == BareKey::Char('`') && key.has_modifiers(&[KeyModifier::Ctrl]) {
-            // hides the whole sidebar strip, chat included - the same gesture
-            // that revealed it
+            // puts this pane away - the same gesture that revealed it. This pane and
+            // nothing else: the conversation beside it, if there is one, is the user's
+            // to put away with its own Esc.
             hide_self();
             return false;
         }
@@ -229,7 +307,12 @@ impl State {
     /// feel like navigating to it and pressing Enter, whether or not it was
     /// already selected.
     fn on_click(&mut self, line: usize) -> bool {
-        let Some(index) = click_target(&self.rows, self.last_window_start, line) else {
+        let Some(index) = click_target(
+            &self.rows,
+            self.last_window_start,
+            self.last_list_rows,
+            line,
+        ) else {
             return false;
         };
         let moved = index != self.selected;
@@ -258,7 +341,11 @@ impl State {
     /// selected, because the answer to "which agent" has not changed, only
     /// whether you are in it.
     fn set_rows(&mut self, strip: Strip) -> bool {
-        let Strip { rows, focused } = strip;
+        let Strip {
+            rows,
+            focused,
+            summaries,
+        } = strip;
         let walked_to = focused
             .filter(|_| focused != self.focused)
             .and_then(|pane_id| position_of(&rows, pane_id));
@@ -274,11 +361,37 @@ impl State {
         let focused = focused.or(self.focused);
         let changed = self.rows != rows
             || self.selected != selected
+            || self.summaries != summaries
             || self.live() != live(&rows, selected, focused);
         self.rows = rows;
         self.selected = selected;
+        self.summaries = summaries;
         self.focused = focused;
         changed
+    }
+
+    /// The idle summary for the row under the cursor, as the rows of a framed box - empty when
+    /// there is nothing to say or nowhere to put it.
+    ///
+    /// The box is given at most half the pane so the list it is about is never reduced to a
+    /// couple of rows by a talkative model, and `agents::summary_box` caps it again at its own
+    /// ceiling. No focus gate, unlike the inset this replaced: that one was drawn in the pane
+    /// *beside* the list and had to say which pane it was about; this one is in the list, under
+    /// the row it names.
+    fn summary_box(&self, rows: usize, cols: usize) -> Vec<String> {
+        let Some(pane_id) = self.selection() else {
+            return Vec::new();
+        };
+        let Some(summary) = self.summaries.get(&pane_id) else {
+            return Vec::new();
+        };
+        let Some(StripRow::Agent { kind, .. }) = self.rows.get(self.selected) else {
+            return Vec::new();
+        };
+        // Room for the frame, a space either side of the text, and a margin column at each edge
+        // of the pane.
+        let width = cols.saturating_sub(2).min(agents::SUMMARY_BOX_MAX_COLS);
+        agents::summary_box(pane_id, kind, summary, width, rows / 2).unwrap_or_default()
     }
 
     /// Whether the selected row is the pane the user is actually in.
@@ -286,7 +399,8 @@ impl State {
         live(&self.rows, self.selected, self.focused)
     }
 
-    /// The agent the cursor is on, which is what hocus draws a summary for.
+    /// The agent the cursor is on: the row `Enter` focuses, and the one the summary box
+    /// under the list is about.
     ///
     /// `None` on a strip with nothing selectable in it. A header cannot be selected,
     /// so this is `Some` whenever there is an agent at all.
@@ -297,12 +411,46 @@ impl State {
         }
     }
 
-    /// Tell hocus where the cursor is.
+    /// Ask hocus for the current strip - and open one if there is none to ask.
+    ///
+    /// One message doing two jobs. It asks hocus for the current strip, so a reload (or a session
+    /// restore) does not sit empty until the next agentd snapshot - and, by naming hocus's url, it
+    /// opens a hocus if there is none. hocus is what computes the rows drawn here, so a list with
+    /// nothing feeding it is not worth having.
+    ///
+    /// The hocus it opens that way starts **hidden**, which is what keeps this from being the
+    /// coupling the two panes no longer have: the user asked for a list. `wire::OPENED_BY` is
+    /// the marker that says so, and `should_focus: false` keeps the keyboard here in the meantime.
+    ///
+    /// `MessageToPlugin` with a `plugin_url` is launch-or-reuse - an instance with the same
+    /// (location, configuration) is handed the message rather than a second one being spawned -
+    /// which is the same idempotence hocus relies on in the other direction.
+    ///
+    /// No coordinates: this pane does not know the panel's proportions. hocus places both panes
+    /// itself, on load and on every resize.
+    fn say_hello_to_hocus(&self) {
+        pipe_message_to_plugin(
+            MessageToPlugin::new(wire::AGENT_STRIP_HELLO)
+                .with_plugin_url(launch::HOCUS_ALIAS)
+                .with_plugin_config(launch::overlay_configuration())
+                .with_args(BTreeMap::from([(
+                    wire::OPENED_BY.to_owned(),
+                    wire::OPENED_BY_AGENTS.to_owned(),
+                )]))
+                // Only read if a hocus actually has to be launched, which is the case this is
+                // for: the user asked for a list, so the keyboard stays here rather than
+                // jumping to a conversation they did not ask to see - and which, being opened
+                // this way, hides itself the moment it has a pane to hide.
+                .new_plugin_instance_should_not_be_focused(),
+        );
+    }
+
+    /// Tell hocus where the cursor is, and - the part hocus actually needs - who we are.
     ///
     /// Called from the plugin entry points rather than from `on_key` and `set_rows`,
     /// which the tests drive directly and which stay free of host calls for that
-    /// reason. The plugin id goes along every time: it is how hocus knows that this
-    /// pane, and not the chat below it, is the one the daemon reports focused.
+    /// reason. The plugin id goes along every time: it is the only word hocus gets of
+    /// this pane's id, and without it hocus cannot place the list beside itself.
     fn send_selection(&self) {
         let selection = wire::Selection {
             plugin_id: get_plugin_ids().plugin_id,
@@ -336,8 +484,17 @@ fn selectable(row: &StripRow) -> bool {
 }
 
 /// The row a click on screen line `line` resolves to, if any - `None` for a
-/// header row or a click past the last row.
-fn click_target(rows: &[StripRow], window_start: usize, line: usize) -> Option<usize> {
+/// header row, a click past the last row, or a click on the summary box under
+/// the list, which `list_rows` is the height of the list above.
+fn click_target(
+    rows: &[StripRow],
+    window_start: usize,
+    list_rows: usize,
+    line: usize,
+) -> Option<usize> {
+    if line >= list_rows {
+        return None;
+    }
     let index = window_start + line;
     rows.get(index).filter(|row| selectable(row)).map(|_| index)
 }
@@ -382,6 +539,12 @@ mod tests {
         StripRow::Agent {
             pane_id,
             text: text.to_owned(),
+            // the second field of the line, the way hocus spells it
+            kind: text
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or("claude")
+                .to_owned(),
         }
     }
 
@@ -396,12 +559,13 @@ mod tests {
         ]
     }
 
-    /// A push from hocus with nobody in a terminal pane - what the sidebar
-    /// having the focus looks like on the wire.
+    /// A push from hocus with nobody in a terminal pane - what one of the hocus
+    /// panes having the focus looks like on the wire.
     fn unfocused(rows: Vec<StripRow>) -> Strip {
         Strip {
             rows,
             focused: None,
+            summaries: Summaries::new(),
         }
     }
 
@@ -410,6 +574,24 @@ mod tests {
         Strip {
             rows,
             focused: Some(pane_id),
+            summaries: Summaries::new(),
+        }
+    }
+
+    /// A push carrying one summary, for the box under the list.
+    fn with_summary(rows: Vec<StripRow>, pane_id: u32, text: &str, awaiting: bool) -> Strip {
+        Strip {
+            rows,
+            focused: None,
+            summaries: Summaries::from([(
+                pane_id,
+                agents::Summary {
+                    text: text.to_owned(),
+                    title: "running the tests".to_owned(),
+                    awaiting,
+                    hash: 1,
+                },
+            )]),
         }
     }
 
@@ -474,20 +656,28 @@ mod tests {
     fn a_click_resolves_to_the_agent_row_under_it() {
         let rows = strip();
         // line 3 is "  7  codex  idle", offset by a window that starts at 1
-        assert_eq!(click_target(&rows, 1, 2), Some(3));
+        assert_eq!(click_target(&rows, 1, rows.len(), 2), Some(3));
     }
 
     #[test]
     fn a_click_on_a_header_row_hits_nothing() {
         let rows = strip();
-        assert_eq!(click_target(&rows, 0, 0), None, "the Project header");
-        assert_eq!(click_target(&rows, 0, 1), None, "the Branch header");
+        assert_eq!(
+            click_target(&rows, 0, rows.len(), 0),
+            None,
+            "the Project header"
+        );
+        assert_eq!(
+            click_target(&rows, 0, rows.len(), 1),
+            None,
+            "the Branch header"
+        );
     }
 
     #[test]
     fn a_click_past_the_last_row_hits_nothing() {
         let rows = strip();
-        assert_eq!(click_target(&rows, 0, rows.len()), None);
+        assert_eq!(click_target(&rows, 0, rows.len(), rows.len()), None);
     }
 
     #[test]
@@ -617,5 +807,80 @@ mod tests {
         assert!(state.set_rows(focused_on(strip(), 4)));
         assert_eq!(state.selected, 2);
         assert!(!state.live());
+    }
+
+    // -- the summary box ----------------------------------------------------
+
+    /// The box is about the row under the cursor, and it names it: the pane id and the kind,
+    /// which is why `StripRow::Agent` carries the kind at all.
+    #[test]
+    fn the_box_names_the_selected_agent() {
+        let mut state = State::default();
+        state.set_rows(with_summary(strip(), 3, "Ran the tests, all green.", false));
+        let rows = state.summary_box(20, 40);
+        assert!(rows[0].starts_with("┌─ 3 · claude ─"), "{}", rows[0]);
+        assert!(rows.iter().any(|row| row.contains("all green")), "{rows:?}");
+
+        // and it follows the cursor off that row
+        state.on_key(KeyWithModifier::new(BareKey::Char('j')));
+        assert!(
+            state.summary_box(20, 40).is_empty(),
+            "pane 7 has no summary"
+        );
+    }
+
+    /// A pane with room for the list and nothing else draws the list. `summary_box` is given
+    /// half the pane, and `agents::summary_box` refuses anything it cannot frame.
+    #[test]
+    fn there_is_no_box_where_there_is_no_room_for_one() {
+        let mut state = State::default();
+        state.set_rows(with_summary(strip(), 3, "Ran the tests.", false));
+        assert!(state.summary_box(5, 40).is_empty(), "too few rows");
+        assert!(state.summary_box(20, 12).is_empty(), "too narrow");
+    }
+
+    /// The box takes its rows off the bottom of the pane, so the window into the list has to
+    /// shrink by exactly as many - otherwise a click maps to the row above or below the one
+    /// under the pointer.
+    #[test]
+    fn the_list_windows_above_the_box() {
+        let mut state = State::default();
+        state.set_rows(with_summary(strip(), 3, "Ran the tests, all green.", false));
+        let rows = 10;
+        let list_rows = rows - state.summary_box(rows, 40).len();
+        assert!(list_rows < rows, "the box took rows off the list");
+
+        // the whole strip still fits above the box here, so the window starts at the top and a
+        // click lands on the row it points at
+        assert!(state.rows.len() <= list_rows);
+        assert_eq!(click_target(&state.rows, 0, list_rows, 3), Some(3));
+    }
+
+    /// And a click *on* the box hits nothing. Without the height the line would be mapped
+    /// through the window start onto a row the box is covering, so pointing at the model's
+    /// words would focus an agent the user never pointed at.
+    #[test]
+    fn a_click_on_the_summary_box_hits_nothing() {
+        let mut state = State::default();
+        // a strip longer than the window, so the rows the box covers are real rows
+        let mut rows = strip();
+        for pane_id in 20..30 {
+            rows.push(agent(pane_id, &format!("  {pane_id}  claude  idle")));
+        }
+        state.set_rows(with_summary(rows, 3, "Ran the tests, all green.", false));
+
+        let pane_rows = 12;
+        let list_rows = pane_rows - state.summary_box(pane_rows, 40).len();
+        assert!(list_rows < pane_rows, "the box took rows off the list");
+        assert!(
+            state.rows.len() > list_rows,
+            "and the strip outruns what is left"
+        );
+
+        assert_eq!(click_target(&state.rows, 0, list_rows, list_rows), None);
+        assert!(
+            click_target(&state.rows, 0, list_rows, list_rows - 1).is_some(),
+            "the last row of the list is still clickable"
+        );
     }
 }

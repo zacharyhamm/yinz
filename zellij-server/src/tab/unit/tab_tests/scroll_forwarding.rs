@@ -243,7 +243,7 @@ fn accept_extracted_pane_keeps_an_overlay_an_overlay() {
         .unwrap();
     // read before the extraction, which is what forgets it
     let placement = source.placement_for_extraction(PaneId::Terminal(2));
-    assert!(matches!(placement, ExtractedPanePlacement::Overlay(_)));
+    assert!(matches!(placement, ExtractedPanePlacement::Overlay(..)));
     let pane = source.extract_pane(PaneId::Terminal(2), true).unwrap();
 
     assert!(matches!(

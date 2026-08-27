@@ -4,7 +4,7 @@
 //! gives plugins no scrollback of their own, so everything on screen is
 //! recomputed here from `State` each time and all scroll state is ours.
 
-use hocus_proto::agents;
+use hocus_proto::text::{sanitize, wrap, wrap_hard};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use zellij_tile::prelude::*;
@@ -14,18 +14,10 @@ use crate::{Picker, PickerKind, Role, RowKind, State, Status};
 
 /// Below this we can't lay out a title, a transcript row and an input row,
 /// so we say so instead of rendering nonsense.
-const MIN_ROWS: usize = 6;
-const MIN_COLS: usize = 24;
+pub(crate) const MIN_ROWS: usize = 6;
+pub(crate) const MIN_COLS: usize = 24;
 /// Rows the input box may grow to before it starts scrolling internally.
 const INPUT_MAX_ROWS: usize = 5;
-/// How wide the idle-summary inset is allowed to get. A box the full width of a
-/// wide pane reads as a second transcript rather than a note about one pane.
-const INSET_MAX_COLS: usize = 64;
-/// Below this the text inside the inset wraps into a column of single words.
-const INSET_MIN_COLS: usize = 20;
-/// Rows of summary the inset draws before it cuts the rest off. Two sentences is
-/// what the model is asked for; this is the ceiling for the ones that ignore it.
-const INSET_MAX_ROWS: usize = 6;
 
 const PROMPT: &str = "> ";
 /// The input box's prompt, which says which mode you are typing into.
@@ -38,170 +30,6 @@ fn prompt(state: &State) -> &'static str {
     } else {
         PROMPT
     }
-}
-
-// ---------------------------------------------------------------------------
-// Wrapping
-// ---------------------------------------------------------------------------
-
-/// Wrap `text` to `width` display columns.
-///
-/// Newlines are preserved (each one starts a new visual line, and blank lines
-/// survive), widths are measured in terminal columns rather than bytes, and a
-/// word too long to ever fit is hard-split at a column boundary rather than
-/// truncated.
-///
-/// Control characters are dropped: model output is rendered as plain text, so an
-/// escape sequence in a reply must not be able to repaint the pane. Tabs become
-/// four spaces, since a tab measures zero columns here but eight on screen.
-///
-/// Never returns an empty `Vec` - empty input is one empty line.
-pub fn wrap(text: &str, width: usize) -> Vec<String> {
-    let sanitized = sanitize(text);
-
-    if width == 0 {
-        // Nothing can fit; still honour the "one visual line per source line"
-        // contract so callers can't divide by zero or loop forever.
-        return sanitized.split('\n').map(|_| String::new()).collect();
-    }
-
-    let mut lines = Vec::new();
-    for source_line in sanitized.split('\n') {
-        wrap_line(source_line, width, &mut lines);
-    }
-    lines
-}
-
-fn sanitize(text: &str) -> String {
-    // Pushed into one buffer rather than flat_mapped: a Vec per character is a
-    // heap allocation per character, and the host interprets this wasm rather
-    // than compiling it, so that constant lands on every render.
-    let mut sanitized = String::with_capacity(text.len());
-    for ch in text.chars() {
-        match ch {
-            '\t' => sanitized.push_str("    "),
-            '\n' => sanitized.push('\n'),
-            ch if ch.is_control() => {},
-            ch => sanitized.push(ch),
-        }
-    }
-    sanitized
-}
-
-/// Wrap `text` to `width` columns for the input box: break mid-word, exactly at
-/// the edge, the way a terminal input does.
-///
-/// Word wrap is wrong here. It holds the word being typed whole, so the break
-/// lands nowhere near the keystroke that caused it, and it discards the spaces
-/// that caused a break, so trailing spaces are invisible and the cursor stalls
-/// on them.
-///
-/// A line that is exactly full is followed by an empty one so the cursor has a
-/// row to land on: that empty line is what makes the break happen *at* the edge
-/// rather than one keystroke later.
-fn wrap_hard(text: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return text.split('\n').map(|_| String::new()).collect();
-    }
-
-    let mut lines = Vec::new();
-    for source_line in text.split('\n') {
-        lines.extend(hard_split(source_line, width));
-    }
-    if lines.last().is_some_and(|line| line.width() == width) {
-        lines.push(String::new());
-    }
-    lines
-}
-
-fn wrap_line(line: &str, width: usize, out: &mut Vec<String>) {
-    let mut current = String::new();
-    let mut current_width = 0usize;
-    let mut pending_spaces = String::new();
-
-    for token in tokenize(line) {
-        let word = match token {
-            // Spaces are held back so a break can discard them: a wrapped line
-            // should not start with the space that caused the wrap. Held rather
-            // than collapsed so leading indentation survives, which matters for
-            // code in model output.
-            Token::Spaces(spaces) => {
-                pending_spaces.push_str(spaces);
-                continue;
-            },
-            Token::Word(word) => word,
-        };
-
-        let spaces_width = pending_spaces.width();
-        let word_width = word.width();
-
-        if current_width + spaces_width + word_width <= width {
-            current.push_str(&pending_spaces);
-            current.push_str(word);
-            current_width += spaces_width + word_width;
-        } else if word_width <= width {
-            out.push(std::mem::take(&mut current));
-            current.push_str(word);
-            current_width = word_width;
-        } else {
-            // Wider than the whole line however we break it: flush, then split
-            // at column boundaries. No hyphenation - this is a terminal.
-            if !current.is_empty() {
-                out.push(std::mem::take(&mut current));
-            }
-            let mut pieces = hard_split(word, width);
-            let last = pieces.pop().unwrap_or_default();
-            out.extend(pieces);
-            current_width = last.width();
-            current = last;
-        }
-        pending_spaces.clear();
-    }
-
-    // Always push, even when empty: a blank source line is a blank visual line.
-    out.push(current);
-}
-
-fn hard_split(word: &str, width: usize) -> Vec<String> {
-    let mut pieces = Vec::new();
-    let mut piece = String::new();
-    let mut piece_width = 0usize;
-    for ch in word.chars() {
-        let ch_width = ch.width().unwrap_or(0);
-        if piece_width + ch_width > width && !piece.is_empty() {
-            pieces.push(std::mem::take(&mut piece));
-            piece_width = 0;
-        }
-        piece.push(ch);
-        piece_width += ch_width;
-    }
-    pieces.push(piece);
-    pieces
-}
-
-enum Token<'a> {
-    Spaces(&'a str),
-    Word(&'a str),
-}
-
-/// Split into alternating runs of spaces and non-spaces.
-fn tokenize(line: &str) -> Vec<Token<'_>> {
-    let mut tokens = Vec::new();
-    let mut rest = line;
-    while !rest.is_empty() {
-        let is_space = rest.starts_with(' ');
-        let end = rest
-            .find(|ch: char| (ch == ' ') != is_space)
-            .unwrap_or(rest.len());
-        let (head, tail) = rest.split_at(end);
-        tokens.push(if is_space {
-            Token::Spaces(head)
-        } else {
-            Token::Word(head)
-        });
-        rest = tail;
-    }
-    tokens
 }
 
 // ---------------------------------------------------------------------------
@@ -978,118 +806,6 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
     state.transcript_rows = layout.transcript_rows;
 
     render_chat(state, body_y, cols, &layout);
-    // After the transcript, not instead of it: this is an overlay, and the last
-    // print at a coordinate is the one that shows — the trick the scroll badges
-    // already turn. The picker path above returns before here; two things
-    // covering the transcript at once is one too many.
-    render_summary_inset(state, body_y, layout.transcript_rows, cols);
-}
-
-/// What the selected agent was last seen doing, in a box over the head of the
-/// transcript.
-///
-/// Drawn only while the agents pane holds focus, so it is a thing the user reads
-/// *about the row under their cursor* while working the list beside it. It goes
-/// as soon as they walk anywhere else, which is why nothing dismisses it.
-///
-/// At the top rather than the foot: it belongs beside the list it is about, and the
-/// list is the pane directly above this one.
-fn render_summary_inset(state: &State, body_y: usize, transcript_rows: usize, cols: usize) {
-    let Some((pane_id, kind, summary)) = state.selected_summary() else {
-        return;
-    };
-    // Room for the frame, a space either side of the text, and a margin column
-    // at each edge of the pane.
-    let width = cols.saturating_sub(2).min(INSET_MAX_COLS);
-    let Some(rows) = inset_rows(pane_id, kind, summary, width, transcript_rows) else {
-        return;
-    };
-
-    let last = rows.len() - 1;
-    let top = body_y;
-    for (index, row) in rows.iter().enumerate() {
-        // Printed across the whole pane width, with the margin as part of the
-        // string: an overlay has to cover the transcript row it sits on, and a
-        // print only paints the columns it is given.
-        let padded = format!(" {row}{}", " ".repeat(cols - width - 1));
-        let text = Text::new(&padded);
-        let text = match index == 0 || index == last {
-            // Border rows are frame all the way across.
-            true => text.dim_range(1..width + 1),
-            // Body rows are frame at each end and the model's words between.
-            false => text.dim_range(1..2).dim_range(width..width + 1),
-        };
-        // Found rather than counted: a label cut to fit may have lost the marker,
-        // and no kind can contain one (`valid_kind` allows no punctuation). The
-        // one is the margin column every row is printed behind.
-        let text = match index == 0 {
-            true => match row.chars().position(|c| c == '!') {
-                Some(at) => text.error_color_range(at + 1..at + 2),
-                None => text,
-            },
-            false => text,
-        };
-        print_text_with_coordinates(text, 0, top + index, Some(cols), None);
-    }
-}
-
-/// The box itself: a header naming the pane, the summary wrapped inside it, and
-/// a footer. Every row is exactly `width` columns.
-///
-/// `None` when there is nowhere to put it — a box narrower than this wraps into a
-/// column of single words, and one shorter has no room for a line of text at all.
-/// Better nothing than either.
-fn inset_rows(
-    pane_id: u32,
-    kind: &str,
-    summary: &agents::Summary,
-    width: usize,
-    height: usize,
-) -> Option<Vec<String>> {
-    let inner = width.saturating_sub(4);
-    if inner < INSET_MIN_COLS || height < 3 {
-        return None;
-    }
-
-    let room = (height - 2).min(INSET_MAX_ROWS);
-    let mut lines = wrap(&summary.text, inner);
-    if lines.len() > room {
-        lines.truncate(room);
-        // The cut is marked rather than silent: a summary that stops mid-sentence
-        // reads as a summary that had nothing more to say.
-        let last = lines.last_mut().expect("room is at least one");
-        while last.width() + 1 > inner {
-            last.pop();
-        }
-        last.push('…');
-    }
-
-    let mut label = format!(" {pane_id} · {kind} ");
-    if summary.awaiting {
-        // The same claim the strip's `!` marker makes, in the one place the user
-        // is already looking.
-        label.push_str("! ");
-    }
-    // A label wider than the box it heads is cut rather than allowed to push the
-    // frame's corner off the row.
-    while label.width() > width - 3 {
-        label.pop();
-    }
-
-    Some(
-        [format!(
-            "┌─{label}{}┐",
-            "─".repeat(width - 3 - label.width())
-        )]
-        .into_iter()
-        .chain(
-            lines
-                .iter()
-                .map(|line| format!("│ {line}{} │", " ".repeat(inner - line.width()))),
-        )
-        .chain([format!("└{}┘", "─".repeat(width - 2))])
-        .collect(),
-    )
 }
 
 /// How the conversation lays out in the rows below the title: the transcript on
@@ -1447,19 +1163,21 @@ fn help_line(state: &State) -> &'static str {
     // Ahead of the `Status` match: a plan waits on the user rather than on the
     // tool queue, so the two are orthogonal and this is the nearer question.
     if state.awaiting_plan() {
-        return "carry out this plan?  <y> yes  <n> keep planning";
+        return "carry out this plan?  <y> yes  <n> keep planning  <Esc> hide";
     }
-    // Tools before the stream, matching what Esc actually does when both are
-    // outstanding.
+    // Esc hides from every one of these; Ctrl-c is what interrupts, and when a tool
+    // and a stream are both outstanding it takes the tool first.
     match state.status {
-        Status::ConfirmingTool => "run this?  <y> yes  <n> no  <Esc> abort",
-        Status::AwaitingCommand => "running…  <Esc> abort  <↑↓> scroll",
-        Status::AwaitingSearch => "searching…  <Esc> abort  <↑↓> scroll",
-        Status::AwaitingLinear => "reading linear…  <Esc> abort  <↑↓> scroll",
-        Status::Idle if state.is_streaming() => "streaming…  <Esc> cancel  <↑↓> scroll",
+        Status::ConfirmingTool => "run this?  <y> yes  <n> no  <Ctrl c> abort  <Esc> hide",
+        Status::AwaitingCommand => "running…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
+        Status::AwaitingSearch => "searching…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
+        Status::AwaitingLinear => "reading linear…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
+        Status::Idle if state.is_streaming() => {
+            "streaming…  <Ctrl c> cancel  <Esc> hide  <↑↓> scroll"
+        },
         Status::Idle if state.is_planning() => "planning  type /plan to leave  <Esc> hide",
         Status::Idle if !state.jobs.is_empty() => "<Ctrl l> new chat  <Esc> hide",
-        Status::Idle => "<Ctrl l> new chat  <Ctrl r> focus agents  <Esc> hide",
+        Status::Idle => "<Ctrl l> new chat  <Esc> hide",
     }
 }
 
@@ -1501,119 +1219,12 @@ mod tests {
         transcript(messages, cols).lines
     }
 
-    // -- wrap ---------------------------------------------------------------
+    // -- the input box's wrapping -------------------------------------------
 
-    #[test]
-    fn wrap_returns_one_empty_line_for_empty_input() {
-        assert_eq!(wrap("", 10), vec![""]);
-    }
-
-    #[test]
-    fn wrap_leaves_a_short_line_alone() {
-        assert_eq!(wrap("hello there", 40), vec!["hello there"]);
-    }
-
-    #[test]
-    fn wrap_breaks_on_word_boundaries() {
-        assert_eq!(wrap("aaa bbb ccc", 7), vec!["aaa bbb", "ccc"]);
-    }
-
-    #[test]
-    fn wrap_preserves_newlines_and_blank_lines() {
-        assert_eq!(
-            wrap("one\n\ntwo", 20),
-            vec!["one".to_string(), String::new(), "two".to_string()]
-        );
-    }
-
-    #[test]
-    fn wrap_preserves_leading_indentation() {
-        // Code in model output relies on this surviving.
-        assert_eq!(wrap("    indented", 40), vec!["    indented"]);
-    }
-
-    #[test]
-    fn wrap_drops_the_spaces_that_caused_a_break() {
-        assert_eq!(wrap("aaaa bbbb", 4), vec!["aaaa", "bbbb"]);
-    }
-
-    #[test]
-    fn wrap_measures_in_display_columns_not_bytes() {
-        // Each CJK character is two columns wide, so only two fit in four.
-        assert_eq!(wrap("日本語", 4), vec!["日本", "語"]);
-    }
-
-    #[test]
-    fn wrap_hard_splits_a_word_longer_than_the_line() {
-        assert_eq!(wrap("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
-    }
-
-    #[test]
-    fn wrap_hard_splits_after_flushing_the_current_line() {
-        assert_eq!(wrap("hi abcdefghij", 4), vec!["hi", "abcd", "efgh", "ij"]);
-    }
-
-    #[test]
-    fn wrap_terminates_on_zero_width() {
-        assert_eq!(wrap("anything at all", 0), vec![""]);
-        assert_eq!(wrap("two\nlines", 0), vec!["", ""]);
-    }
-
-    #[test]
-    fn wrap_expands_tabs_to_spaces() {
-        // A tab measures zero columns but prints as several, which would
-        // silently desync every width calculation downstream.
-        assert_eq!(wrap("a\tb", 20), vec!["a    b"]);
-    }
-
-    #[test]
-    fn wrap_strips_control_characters() {
-        // Model output is rendered as plain text; an escape sequence in a reply
-        // must not be able to repaint the pane.
-        assert_eq!(wrap("safe\u{1b}[31mtext", 40), vec!["safe[31mtext"]);
-    }
-
-    // -- wrap_hard (the input box) ------------------------------------------
-
-    #[test]
-    fn input_wrap_breaks_exactly_at_the_edge() {
-        assert_eq!(wrap_hard("abcdef", 4), vec!["abcd", "ef"]);
-    }
-
-    /// The cursor needs a row to sit on once a row is full, and that empty row
-    /// is what makes the break land on the keystroke that filled the line.
-    #[test]
-    fn input_wrap_adds_a_row_when_the_last_row_is_full() {
-        assert_eq!(wrap_hard("abcd", 4), vec!["abcd", ""]);
-    }
-
-    #[test]
-    fn input_wrap_keeps_trailing_spaces() {
-        // wrap() drops these; in an input the cursor has to move as you type them.
-        assert_eq!(wrap_hard("ab ", 4), vec!["ab "]);
-    }
-
-    #[test]
-    fn input_wrap_preserves_newlines_and_blank_lines() {
-        assert_eq!(
-            wrap_hard("one\n\ntwo", 20),
-            vec!["one".to_string(), String::new(), "two".to_string()]
-        );
-    }
-
-    #[test]
-    fn input_wrap_measures_in_display_columns_not_bytes() {
-        assert_eq!(wrap_hard("日本語", 4), vec!["日本", "語"]);
-    }
-
-    #[test]
-    fn input_wrap_terminates_on_zero_width() {
-        assert_eq!(wrap_hard("two\nlines", 0), vec!["", ""]);
-    }
-
-    /// The bug this replaced word wrap for: a full row put the cursor at column
-    /// `cols`, one past the last column, and zellij hides a plugin cursor that
-    /// sits outside the pane.
+    /// The bug `wrap_hard` replaced word wrap for: a full row put the cursor at
+    /// column `cols`, one past the last column, and zellij hides a plugin cursor
+    /// that sits outside the pane. The wrapper itself lives in `hocus_proto::text`
+    /// now; the prompt it has to leave room for is still ours.
     #[test]
     fn the_cursor_stays_inside_the_pane_when_a_row_is_full() {
         let cols = 24;
@@ -2346,93 +1957,5 @@ mod tests {
     fn a_tool_call_summary_is_not_the_loaders_home() {
         let lines = transcript_lines(&[Message::assistant("list_session {}")], 40);
         assert!(!ends_with_empty_reply(&lines));
-    }
-
-    // -- the idle summary inset ---------------------------------------------
-
-    fn summary(text: &str, awaiting: bool) -> agents::Summary {
-        agents::Summary {
-            text: text.to_owned(),
-            title: "running the tests".to_owned(),
-            awaiting,
-            hash: 1,
-        }
-    }
-
-    /// Every row exactly as wide as every other, or the frame does not close and
-    /// the transcript shows through the ragged end of it.
-    #[test]
-    fn the_inset_is_a_box_of_one_width() {
-        let rows = inset_rows(
-            7,
-            "claude",
-            &summary("Ran the tests, all green.", false),
-            30,
-            10,
-        )
-        .expect("room for a box");
-        assert_eq!(rows.len(), 3, "a header, one line of summary, a footer");
-        for row in &rows {
-            assert_eq!(row.width(), 30, "{row}");
-        }
-        assert!(rows[0].starts_with("┌─ 7 · claude ─"), "{}", rows[0]);
-        assert!(rows[0].ends_with('┐'));
-        assert_eq!(
-            rows[1], "│ Ran the tests, all green.  │",
-            "padded to the frame"
-        );
-        assert!(rows[2].starts_with('└') && rows[2].ends_with('┘'));
-    }
-
-    /// The claim the strip's `!` makes, in the box the user is already reading.
-    #[test]
-    fn a_blocked_agent_is_marked_in_the_header() {
-        let rows = inset_rows(7, "claude", &summary("Shall I?", true), 30, 10).expect("a box");
-        assert!(rows[0].contains("! "), "{}", rows[0]);
-        assert_eq!(rows[0].width(), 30);
-        // And an agent that merely finished is not.
-        let rows = inset_rows(7, "claude", &summary("Shall I?", false), 30, 10).expect("a box");
-        assert!(!rows[0].contains('!'), "{}", rows[0]);
-    }
-
-    /// A model told to write two sentences occasionally writes ten, and the box
-    /// has to end above the input either way.
-    #[test]
-    fn a_long_summary_is_cut_to_the_room_there_is_and_marked_where_it_was_cut() {
-        let long = "word ".repeat(200);
-        let rows = inset_rows(7, "claude", &summary(&long, false), 30, 40).expect("a box");
-        assert_eq!(rows.len(), INSET_MAX_ROWS + 2, "the ceiling, not the text");
-        let last = &rows[INSET_MAX_ROWS];
-        assert!(last.contains('…'), "{last}");
-        assert_eq!(last.width(), 30);
-
-        // And the transcript is the tighter of the two ceilings.
-        let rows = inset_rows(7, "claude", &summary(&long, false), 30, 5).expect("a box");
-        assert_eq!(rows.len(), 5);
-    }
-
-    /// Better nothing than a column of single words, or a box drawn over the
-    /// input line because there was nowhere else for it to go.
-    #[test]
-    fn there_is_no_box_where_there_is_no_room_for_one() {
-        let one = summary("Ran the tests.", false);
-        assert!(inset_rows(7, "claude", &one, INSET_MIN_COLS + 3, 10).is_none());
-        assert!(inset_rows(7, "claude", &one, 30, 2).is_none());
-        assert!(
-            inset_rows(7, "claude", &one, 30, 3).is_some(),
-            "just enough"
-        );
-    }
-
-    /// A kind is up to 32 characters and a pane can be in a narrow split, so the
-    /// header can be asked for more room than the box has. The corner survives.
-    #[test]
-    fn a_header_too_wide_for_its_box_is_cut_rather_than_burst() {
-        let kind = "a-very-long-agent-kind-indeed-xx";
-        let rows = inset_rows(7, kind, &summary("Done.", true), 26, 10).expect("a box");
-        for row in &rows {
-            assert_eq!(row.width(), 26, "{row}");
-        }
-        assert!(rows[0].ends_with('┐'), "{}", rows[0]);
     }
 }

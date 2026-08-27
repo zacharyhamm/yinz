@@ -2085,6 +2085,8 @@ impl TryFrom<ProtobufTabInfo> for TabInfo {
             tab_id: protobuf_tab_info.tab_id as usize,
             has_bell_notification: protobuf_tab_info.has_bell_notification,
             is_flashing_bell: protobuf_tab_info.is_flashing_bell,
+            session_surface_rows: protobuf_tab_info.session_surface_rows as usize,
+            session_surface_columns: protobuf_tab_info.session_surface_columns as usize,
         })
     }
 }
@@ -2116,6 +2118,8 @@ impl TryFrom<TabInfo> for ProtobufTabInfo {
             tab_id: tab_info.tab_id as u32,
             has_bell_notification: tab_info.has_bell_notification,
             is_flashing_bell: tab_info.is_flashing_bell,
+            session_surface_rows: tab_info.session_surface_rows as u32,
+            session_surface_columns: tab_info.session_surface_columns as u32,
         })
     }
 }
@@ -2746,6 +2750,11 @@ fn serialize_tab_update_event_with_non_default_values() {
             tab_id: 0,
             has_bell_notification: false,
             is_flashing_bell: false,
+            // deliberately larger than the display area, and different on each axis: the two pairs
+            // are separate rectangles and a round trip that swapped them would still pass if they
+            // agreed
+            session_surface_rows: 12,
+            session_surface_columns: 14,
         },
         TabInfo {
             position: 1,
@@ -2767,6 +2776,8 @@ fn serialize_tab_update_event_with_non_default_values() {
             tab_id: 1,
             has_bell_notification: false,
             is_flashing_bell: false,
+            session_surface_rows: 12,
+            session_surface_columns: 14,
         },
         TabInfo::default(),
     ]);
@@ -2987,6 +2998,11 @@ fn serialize_session_update_event_with_non_default_values() {
             tab_id: 0,
             has_bell_notification: false,
             is_flashing_bell: false,
+            // deliberately larger than the display area, and different on each axis: the two pairs
+            // are separate rectangles and a round trip that swapped them would still pass if they
+            // agreed
+            session_surface_rows: 12,
+            session_surface_columns: 14,
         },
         TabInfo {
             position: 1,
@@ -3008,6 +3024,8 @@ fn serialize_session_update_event_with_non_default_values() {
             tab_id: 1,
             has_bell_notification: false,
             is_flashing_bell: false,
+            session_surface_rows: 12,
+            session_surface_columns: 14,
         },
         TabInfo::default(),
     ];

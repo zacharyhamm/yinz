@@ -143,39 +143,9 @@ Two rules learned the hard way, both from tests that were flaky for years:
 converted in bulk: changing scheduling everywhere at once is a bigger perturbation than the
 problem, and this suite's flakes shift when scheduling does.
 
-## Kitty graphics conformance
+Kitty graphics conformance: see `zellij-server/src/panes/kitty_graphics/CLAUDE.md`.
 
-The kitty graphics suite is written against the protocol specification
-(`docs/`-external: kitty's `graphics-protocol.rst`), not against the implementation, so a failure
-means the protocol work is not done rather than that the test is wrong. It used to carry an
-expected-red set in modules ending `_red`; all nine deviations are now closed and **nothing is
-skipped** — `cargo x test` and `cargo x integration-test` are both fully green.
-
-Write new conformance tests against the spec the same way, and quote the sentence being tested.
-The module doc comment of `zellij-server/src/panes/kitty_graphics/mod.rs` records what was closed
-and — more importantly — the eleven judgement calls that are deliberately pinned as-is, where the
-spec does not say enough to call the behaviour wrong or two of its rules pull against each other.
-Read those before changing anything they cover; the most load-bearing is that animation stores and
-composes real frames but has no playback clock.
-
-## Benchmarks
-
-`cargo x bench` runs `zellij-server/benches/multi_pane_render.rs`: N terminal panes tiled over
-one surface, all fed synthetic pty bytes at once, measured as three criterion groups —
-`ingest` (vte parse only), `frame` (parse + diff + serialize, the headline number) and
-`render_only` (diff + serialize with ingest untimed). Five workloads × pane counts 1–16.
-
-Benchmarks are **not** run by CI and are not part of `cargo x test` (the `[[bench]]` target sets
-`test = false`). Run them by hand around a change to the render path:
-
-```sh
-cargo x bench -- --save-baseline main     # before
-cargo x bench -- --baseline main          # after; criterion prints the deltas
-cargo x bench -- frame/plain_text         # a bare filter narrows the run
-```
-
-First build is slow — `[profile.bench]` optimizes the whole server. Timings are only comparable
-within one machine, and the workloads are seeded so input never drifts between runs.
+Benchmarks: see `.claude/skills/bench/SKILL.md` (`cargo x bench`).
 
 ## Layout
 
@@ -211,32 +181,6 @@ Read `docs/ARCHITECTURE.md` before changing server internals, and
 
 ## Lua plugins
 
-Plugins come in two kinds: wasm modules (every builtin) and Lua scripts. The Lua runtime lives in
-`zellij-server/src/plugins/lua/`; `docs/LUA_PLUGINS.md` is the user-facing guide.
-
-The two runtimes share everything above `RunningPlugin`: event routing, subscriptions, rendering,
-and — importantly — the whole command surface. `zellij_exports.rs` has one dispatcher,
-`run_plugin_command(&mut PluginEnv, PluginCommand)`, and both runtimes call it, so a capability is
-never implemented twice. What differs is confined to the `PluginBackend` enum and the entrypoint
-methods on `RunningPlugin`.
-
-Two things to know before changing this:
-
-- **Ergonomics belong in `lua/prelude.lua`, not in Rust.** Rust exposes exactly one function to
-  Lua (`__dispatch`), mirroring the single `host_run_plugin_command` wasm import. `zellij.on`,
-  event normalization and config merging are all Lua. Widening the Rust boundary should be a last
-  resort.
-- **Lua plugins are not sandboxed by their runtime the way wasm plugins are**, so `lua/loader.rs`
-  opens a restricted stdlib with no `io`/`os`/`dofile`/`loadlib`. Do not open those up: the
-  permission system is the only thing standing between a plugin and the server's authority, and
-  an unrestricted `io` would make it decorative.
-
-`PluginCommand` derives `Deserialize`, and `lua/command.rs` is one `from_value` call, so the whole
-command surface is reachable from Lua and no command needs a match arm. Two consequences worth
-knowing: serde's variant names are now a second contract alongside the hand-written protobuf one
-in `plugin_api/plugin_command.rs` (a test walks `CommandType` to catch drift), and a new command
-needs nothing at all done to it to be callable from Lua.
-
-Replies are the exception, and are still per-command: the response types are prost-generated with
-no serde representation, so `lua/response.rs` decodes the ones it knows and hands back raw bytes
-for the rest. `zellij-tile/src/shim.rs` is the reference for what each response means.
+Plugins come in two kinds: wasm modules (every builtin) and Lua scripts. See
+`zellij-server/src/plugins/lua/CLAUDE.md` before changing the Lua runtime; `docs/LUA_PLUGINS.md`
+is the user-facing guide.

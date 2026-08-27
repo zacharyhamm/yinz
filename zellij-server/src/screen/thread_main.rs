@@ -527,7 +527,17 @@ pub(crate) fn screen_thread_main(
                         // it, and a client left on a global pane would be looking
                         // elsewhere when it did - so release that focus first. A no-op
                         // unless a global pane is focused.
-                        if should_focus_pane {
+                        //
+                        // An overlay is the exception: `activate_overlay` at the end of
+                        // this arm releases the same focus, but *remembers* it first, so
+                        // that closing the overlay hands the keyboard back to the global
+                        // pane it covered. Releasing it here would throw that away before
+                        // there was anything to remember it by - which is how the file
+                        // finder, opened from a global pane, used to leave the client on a
+                        // tab pane once it closed.
+                        let new_pane_is_overlay =
+                            matches!(new_pane_placement, NewPanePlacement::Overlay(..));
+                        if should_focus_pane && !new_pane_is_overlay {
                             screen.defocus_global_pane(client_id);
                         }
                         active_tab_and_connected_client_id_with_first_tab_fallback!(screen, client_id, |tab: &mut Tab, client_id: Option<ClientId>| {
@@ -3632,6 +3642,22 @@ pub(crate) fn screen_thread_main(
                     screen.log_and_report_session_state()?;
                     continue;
                 }
+                // Before the tab loop: an overlay is in none of the collections
+                // `has_non_suppressed_pane_with_pid` walks, so without this arm hiding one is a
+                // silent no-op. It is also not `suppress_pane`, which extracts the pane and would
+                // lose the kind and coordinates that make it an overlay.
+                if screen.tab_containing_overlay(pane_id).is_some() {
+                    // asked while the overlay still holds the focus: `hide_pane` moves clients off
+                    // it, and this reads which of them had a global pane suspended underneath
+                    let restore = screen.take_global_focus_after_overlay_close(pane_id);
+                    if let Some(tab) = screen.tab_containing_overlay_mut(pane_id) {
+                        tab.hide_overlay_pane(pane_id);
+                    }
+                    screen.restore_global_focus(restore);
+                    screen.render(None)?;
+                    screen.log_and_report_session_state()?;
+                    continue;
+                }
                 let all_tabs = screen.get_tabs_mut();
                 for tab in all_tabs.values_mut() {
                     if tab.has_non_suppressed_pane_with_pid(&pane_id) {
@@ -3649,6 +3675,12 @@ pub(crate) fn screen_thread_main(
                     screen.log_and_report_session_state()?;
                     continue;
                 }
+                if let Some(tab) = screen.tab_containing_overlay_mut(pane_id) {
+                    tab.show_overlay_pane(pane_id);
+                    screen.render(None)?;
+                    screen.log_and_report_session_state()?;
+                    continue;
+                }
                 if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
                     tab.unsuppress_pane(pane_id, should_float_if_hidden);
                     drop(screen.render(None));
@@ -3658,6 +3690,12 @@ pub(crate) fn screen_thread_main(
             ScreenInstruction::UnsuppressOrExpandPane(pane_id, should_float_if_hidden) => {
                 if screen.global_panes.pane(pane_id).is_some() {
                     screen.show_pane(pane_id)?;
+                    screen.render(None)?;
+                    screen.log_and_report_session_state()?;
+                    continue;
+                }
+                if let Some(tab) = screen.tab_containing_overlay_mut(pane_id) {
+                    tab.show_overlay_pane(pane_id);
                     screen.render(None)?;
                     screen.log_and_report_session_state()?;
                     continue;

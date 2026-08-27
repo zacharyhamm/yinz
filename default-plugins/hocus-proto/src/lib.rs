@@ -1,8 +1,8 @@
 //! Pure logic and wire types shared by the hocus plugins.
 //!
 //! All of it tests on the host triple without the wasm dance — and the plugins
-//! that link it (`hocus`, `hocus-agentd`, `hocus-ask`, `hocus-new-agent`,
-//! `hocus-store`) cannot
+//! that link it (`hocus`, `hocus-agents`, `hocus-agentd`, `hocus-ask`,
+//! `hocus-new-agent`, `hocus-store`) cannot
 //! drift apart on a message shape, or on a stored schema, which would otherwise
 //! show up only as a silent deserialize failure at runtime.
 //!
@@ -20,5 +20,6 @@ pub mod panes;
 pub mod paths;
 pub mod projects;
 pub mod store;
+pub mod text;
 pub mod todos;
 pub mod wire;

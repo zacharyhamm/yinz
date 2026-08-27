@@ -187,58 +187,37 @@ impl State {
         });
     }
 
-    /// Ctrl-r's answer: bring the agents pane into view and focus it, spawning
-    /// or adopting it as needed - the same call that spawns it on load, with
-    /// focus this time.
-    ///
-    /// The branches the list groups by are the only part of a snapshot that
-    /// goes stale on its own — a checkout in an agent's folder changes one and
-    /// no host event says so — so focusing the list asks for a fresh probe.
-    /// The answer arrives as an ordinary snapshot and is pushed to the pane.
-    pub(crate) fn focus_agents_pane(&mut self) -> bool {
-        self.autosave();
-        // focus is leaving the conversation, so a temporary list would sit
-        // open with nobody holding it
-        let had_picker = self.picker.take().is_some();
-        Self::launch_agents_pane(true);
-        Self::request_branch_refresh();
-        had_picker
-    }
-
-    /// Spawn the hocus-agents pane as a split above this pane in its own global
-    /// strip - or reveal the existing one. Idempotent server-side (an existing
-    /// hocus-agents global pane is adopted, not split again), and a no-op when
-    /// hocus is not running as a global pane.
-    ///
-    /// One place for the call so the spawn on load and every later focus use
-    /// the same url and configuration — plugin identity is (location,
-    /// configuration), and two spellings would make two panes.
-    pub(crate) fn launch_agents_pane(should_focus: bool) {
-        launch_or_focus_global_pane_split(
-            "hocus-agents",
-            BTreeMap::new(),
-            // above the conversation, where the strip used to be drawn
-            true,
-            Some(PercentOrFixed::Percent(33)),
-            should_focus,
-        );
-    }
-
     /// The agent strip as the hocus-agents pane should draw it.
     pub(crate) fn current_strip(&self) -> agents::Strip {
+        let rows = agents::strip_rows(
+            &self.panes,
+            &self.manual_kinds,
+            &self.activity,
+            &self.pane_projects(),
+            &self.pane_branches(),
+            &self.summaries,
+        );
+        // Only the summaries with a row to sit under. A summary outlives the pane it is about -
+        // that is deliberate, it is an account of a moment - but the box is drawn *for the
+        // selected row*, and a summary no row names can never be selected.
+        let summaries = rows
+            .iter()
+            .filter_map(|row| match row {
+                agents::StripRow::Agent { pane_id, .. } => Some(*pane_id),
+                _ => None,
+            })
+            .filter_map(|pane_id| {
+                let summary = self.summaries.get(&pane_id)?;
+                Some((pane_id, summary.clone()))
+            })
+            .collect();
         agents::Strip {
-            rows: agents::strip_rows(
-                &self.panes,
-                &self.manual_kinds,
-                &self.activity,
-                &self.pane_projects(),
-                &self.pane_branches(),
-                &self.summaries,
-            ),
+            rows,
             // the raw focus, not `last_focused_agent`: the pane puts its cursor on
             // the agent you moved to and dims it when you move off, and a sticky
             // value could never say the second thing
             focused: self.focused_pane,
+            summaries,
         }
     }
 

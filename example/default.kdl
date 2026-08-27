@@ -164,6 +164,8 @@ keybinds {
         bind "n" {
             LaunchOrFocusPlugin "hocus-new-agent" {
                 floating true
+                overlay true
+                modal true
                 move_to_focused_tab true
             };
             SwitchToMode "Normal"
@@ -171,28 +173,39 @@ keybinds {
         bind "d" {
             LaunchOrFocusPlugin "hocus-duplicate-agent" {
                 floating true
+                overlay true
+                modal true
                 move_to_focused_tab true
             };
             SwitchToMode "Normal"
         }
-        // Land on the agent list, the top pane of the hocus sidebar, without
-        // going through the conversation first. Reveals the strip if it was
-        // hidden, and starts one from scratch — chat pane included — if hocus
-        // is not running at all.
+        // Land on the agent list, without going through the conversation
+        // first. The list is its own pane: this reveals it if it was hidden and
+        // opens one if there is none, and leaves the conversation exactly as it
+        // was — hidden if it was hidden, where it is if it is on screen.
+        //
+        // `awaits_placement` says hocus puts this pane where it goes, so don't
+        // paint it at the centered default it is born with in the meantime —
+        // otherwise opening one half flashes in the middle of the screen, on
+        // top of the other. The key is part of plugin identity, like `overlay`,
+        // so it has to match what the halves launch each other with.
         bind "a" {
             LaunchOrFocusPlugin "hocus-agents" {
-                global true
-                edge "left"
-                size "25%"
+                floating true
+                overlay true
+                awaits_placement true
+                move_to_focused_tab true
             };
             SwitchToMode "Normal"
         }
-        // The conversation itself, the bottom pane of the same sidebar.
+        // The conversation, in the corner. Its own pane too: opening it pushes
+        // an open agent list one width to the right rather than replacing it.
         bind "c" {
             LaunchOrFocusPlugin "hocus" {
-                global true
-                edge "left"
-                size "25%"
+                floating true
+                overlay true
+                awaits_placement true
+                move_to_focused_tab true
             };
             SwitchToMode "Normal"
         }
@@ -204,6 +217,7 @@ keybinds {
         bind "k" {
             LaunchOrFocusPlugin "hocus-ask" {
                 floating true
+                overlay true
                 move_to_focused_tab true
             };
             SwitchToMode "Normal"
@@ -331,11 +345,31 @@ plugins {
     //                       the session was started from. Defaults to LINEAR_API_KEY.
     //                       Unset, the `linear_*` tools stay advertised and answer with a
     //                       sentence saying which variable to set; nothing else changes.
+    //
+    // hocus draws itself as an overlay panel in the bottom-left corner of the
+    // screen — over a tab rather than beside it, so no tab is shrunk to make
+    // room. The agent list is a second pane the same size, sitting to its right;
+    // with the conversation hidden the list takes the corner instead. Three keys
+    // size both, and hocus re-places them whenever the terminal is resized:
+    //
+    //   width   a pane's width. A percentage of the screen ("30%", the default)
+    //           or a fixed number of columns ("60"). With both panes on screen
+    //           neither may exceed half of what the padding leaves.
+    //   height  a pane's height. A percentage of the screen ("66%", the
+    //           default) or a fixed number of rows ("30"). A pane is anchored
+    //           to the bottom, so this grows upward.
+    //   pad     cells of clear screen left around the panel on every side.
+    //           Default 3, capped at a quarter of the screen.
+    //
+    // Esc hides the pane you are in without unloading it — the conversation, the
+    // parked chats and anything still streaming are all still there. The two
+    // panes hide and open separately: `Ctrl e c` brings the conversation back,
+    // `Ctrl e a` the agent list.
     hocus location="zellij:hocus" {
         shared true
     }
-    // The agent list, bound to Ctrl e a above — the top pane of the sidebar
-    // hocus spawns as a split of its own global pane.
+    // The agent list, bound to Ctrl e a above — its own overlay pane, beside the
+    // conversation or in its place. Sized by hocus's `width` and `height`, above.
     hocus-agents location="zellij:hocus-agents" {
         shared true
     }
