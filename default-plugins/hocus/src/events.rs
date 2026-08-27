@@ -182,21 +182,6 @@ impl State {
     /// url cannot tell two instances apart, so there would be nothing gained by matching on one.
     pub(crate) fn on_panes(&mut self, manifest: PaneManifest) -> bool {
         let own_id = self.own_plugin_id;
-        // The first thing this event is good for, and the one thing that has to happen before
-        // anything else reads the manifest: settling whether this instance is a hocus restored as
-        // a *global pane* by a pre-overlay session dump. If it is, it hands over and closes, and
-        // none of the overlay bookkeeping below is about a pane that will still be here.
-        if self.legacy_suspect {
-            if hocus_proto::launch::is_legacy_global_instance(own_id, &manifest) {
-                self.migrate_to_overlay();
-                return false;
-            }
-            // Suspected on the configuration alone and cleared here: this is an ordinary
-            // non-overlay hocus, so it does the load-time work it deferred while it was in doubt.
-            self.legacy_suspect = false;
-            self.greet_agents_pane();
-            self.apply_overlay_geometry();
-        }
         // An agent list the user closed has to be forgotten, or `open_agents_pane` keeps
         // revealing a pane that is not there and never opens a new one. Cleared from the whole
         // manifest rather than from our own tab: the two halves can be on different tabs for as

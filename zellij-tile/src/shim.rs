@@ -724,8 +724,8 @@ pub fn open_command_pane_floating(
     OpenCommandPaneFloatingResponse::try_from(response).unwrap()
 }
 
-/// Open a command pane as an overlay: over the whole session surface, above the global panes,
-/// rather than on the tab's floating layer.
+/// Open a command pane as an overlay: over the whole session surface, above the tab's own panes,
+/// rather than on its floating layer.
 ///
 /// A terminal pane carries no plugin configuration, so the placement is the only thing that can
 /// say it is an overlay - and whether it is a modal, which may not have focus taken from it.
@@ -3364,37 +3364,6 @@ pub fn set_floating_pane_pinned(pane_id: PaneId, should_be_pinned: bool) {
     unsafe { host_run_plugin_command() };
 }
 
-pub fn set_global_pane_placement(pane_id: PaneId, placement: GlobalPanePlacement) {
-    let plugin_command = PluginCommand::SetGlobalPanePlacement(pane_id, placement);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-}
-
-/// Launch `plugin_url` as a split of this plugin's own global pane (before it towards the strip's
-/// start when `before`, with an optional share of the strip's long axis), or reveal - and focus,
-/// when `should_focus` - an existing global pane for that plugin. No-op when the calling plugin is
-/// not a global pane.
-pub fn launch_or_focus_global_pane_split(
-    plugin_url: &str,
-    config: BTreeMap<String, String>,
-    before: bool,
-    length: Option<PercentOrFixed>,
-    should_focus: bool,
-) {
-    let plugin_command = PluginCommand::LaunchOrFocusGlobalPaneSplit {
-        plugin_url: plugin_url.to_owned(),
-        config,
-        before,
-        length,
-        should_focus,
-        skip_cache: false,
-    };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-}
-
 pub fn stack_panes(pane_ids: Vec<PaneId>) {
     let plugin_command = PluginCommand::StackPanes(pane_ids);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
@@ -3411,8 +3380,7 @@ pub fn change_floating_panes_coordinates(
     unsafe { host_run_plugin_command() };
 }
 
-/// Move or resize an overlay - a pane drawn over the whole session surface, above the global
-/// panes.
+/// Move or resize an overlay - a pane drawn over the whole session surface.
 ///
 /// Its kind - dismissible or modal - was decided when it was born and is left alone here. Use
 /// `change_floating_panes_coordinates` for a pane on a tab's floating layer.
@@ -3532,10 +3500,8 @@ pub fn highlight_and_unhighlight_panes(
 /// How much can be revealed depends on where this client's keyboard focus is,
 /// because Zellij gives a client one tab that is both the one it sees and the
 /// one it types into. A suppressed or hidden floating pane is always brought
-/// out; a pane in another tab is switched to only when focus is parked on a
-/// session-global pane, which no tab owns and which therefore keeps focus across
-/// the switch. Otherwise the highlight is applied where the pane stands and the
-/// client's view is left alone - that is the promise, focus does not move.
+/// out; a pane in another tab is left where it stands, with the highlight applied
+/// there and the client's view untouched - that is the promise, focus does not move.
 pub fn reveal_pane_with_id(pane_id: PaneId, label: Option<String>) {
     let plugin_command = PluginCommand::RevealPaneWithId(pane_id, label);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();

@@ -63,7 +63,6 @@ pub fn send_configuration_to_plugins() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -133,7 +132,6 @@ pub fn request_plugin_permissions() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -235,7 +233,6 @@ pub fn granted_permission_request_result() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -329,7 +326,6 @@ pub fn denied_permission_request_result() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,

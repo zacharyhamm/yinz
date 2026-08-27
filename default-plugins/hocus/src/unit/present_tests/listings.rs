@@ -25,41 +25,15 @@ fn a_session_listing_becomes_tabs_of_panes() {
     assert!(!shown.contains("floating"), "{shown}");
 }
 
-/// A global pane is in no tab, so it cannot be shown under one. Without a section of
-/// its own the key `list_session` now carries would render nowhere at all — the user
-/// would read a listing that silently omits a pane they are looking at.
+/// A listing is a session's tabs and their panes, with a marks key only when
+/// something in it actually carries a mark.
 #[test]
-fn global_panes_are_shown_in_a_section_of_their_own() {
-    let raw = r#"{"session":"work","tabs":[{"tab_number":1,"tab_id":1,"name":"edit",
-        "active":true,"panes":[
-          {"pane_id":3,"is_plugin":false,"title":"vim","focused":false,"floating":false,
-           "command":"vim","exit_status":null}]}],
-        "global_panes":[
-          {"pane_id":5,"is_plugin":true,"title":"hocus","focused":true,"hidden":false,
-           "edge":"right","size":"30%","command":null,"exit_status":null},
-          {"pane_id":6,"is_plugin":false,"title":"status","focused":false,"hidden":true,
-           "edge":"bottom","size":"3","command":null,"exit_status":null}]}"#;
-    let shown = present(&call("list_session", "{}"), raw).expect("presented");
-    assert!(shown.contains("**global**"), "{shown}");
-    assert!(shown.contains("5   *p  hocus   right   30%"), "{shown}");
-    assert!(shown.contains("6   h   status  bottom  3"), "{shown}");
-    // The tab's own pane is still under its tab, not swept into the new section.
-    assert!(shown.contains("**1: edit** — active"), "{shown}");
-    // The marks are only readable with a key, and the globals carry two new ones.
-    assert!(shown.contains("h hidden"), "{shown}");
-    assert!(shown.contains("p plugin"), "{shown}");
-}
-
-/// The key is absent for the great majority of sessions, and its absence must read
-/// exactly as it did before there was such a key at all.
-#[test]
-fn a_session_without_global_panes_renders_as_it_always_did() {
+fn a_listing_renders_its_tabs_and_their_panes() {
     let raw = r#"{"session":"work","tabs":[{"tab_number":1,"tab_id":1,"name":"edit",
         "active":true,"panes":[
           {"pane_id":3,"is_plugin":false,"title":"vim","focused":true,"floating":false,
            "command":"vim","exit_status":null}]}]}"#;
     let shown = present(&call("list_session", "{}"), raw).expect("presented");
-    assert!(!shown.contains("global"), "{shown}");
     assert!(!shown.contains("hidden"), "{shown}");
     assert!(shown.contains("3   *  vim    running"), "{shown}");
 }

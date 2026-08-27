@@ -54,7 +54,6 @@ pub fn switch_to_tab_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -131,7 +130,6 @@ pub fn hide_self_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -203,7 +201,6 @@ pub fn show_self_plugin_command() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -284,7 +281,6 @@ pub fn close_terminal_pane_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -357,7 +353,6 @@ pub fn close_plugin_pane_plugin_command() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -438,7 +433,6 @@ pub fn focus_terminal_pane_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -511,7 +505,6 @@ pub fn focus_plugin_pane_plugin_command() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,
@@ -592,7 +585,6 @@ pub fn rename_terminal_pane_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -669,7 +661,6 @@ pub fn rename_plugin_pane_plugin_command() {
         None,
         None,
         None,
-        None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -742,7 +733,6 @@ pub fn rename_tab_plugin_command() {
         None,
         None,
         false,
-        None,
         None,
         None,
         None,

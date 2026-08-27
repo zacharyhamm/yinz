@@ -2,55 +2,20 @@
 //! keyboard focus.
 //!
 //! The whole feature turns on one thing: `active_tab_ids` is at once the tab a
-//! client sees and the tab it types into, so a tab switch normally relocates
-//! focus. A global pane is the exception, and these pin that a reveal trades on
-//! it rather than on luck.
+//! client sees and the tab it types into, so a tab switch would relocate focus.
+//! A reveal therefore never switches tabs - these pin that.
 
 use super::*;
 
-/// Two tabs, a terminal in each, and a global pane down the left. `client_id` 1
-/// starts on tab 0.
-fn screen_with_two_tabs_and_a_global_pane() -> Screen {
+/// Two tabs with a terminal in each. `client_id` 1 starts on tab 0.
+fn screen_with_two_tabs() -> Screen {
     let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
     new_tab(&mut screen, 1, 0);
     new_tab(&mut screen, 2, 1);
-    insert_left_global_pane(&mut screen, 10);
     // `new_tab` leaves the client on the tab it just made; the reveal is only
     // interesting from somewhere else.
     screen.go_to_tab(1, 1).expect("TEST");
     screen
-}
-
-/// The case the whole thing exists for: keyboard focus is parked on the sidebar,
-/// so the tab underneath it can be changed out without the user losing the keys.
-#[test]
-fn a_client_on_a_global_pane_is_carried_to_the_panes_tab_and_keeps_the_keyboard() {
-    let client_id = 1;
-    let mut screen = screen_with_two_tabs_and_a_global_pane();
-    let global_pane_id = PaneId::Terminal(99);
-    screen
-        .focus_global_pane(global_pane_id, client_id)
-        .expect("TEST");
-    assert_eq!(screen.get_active_tab(client_id).unwrap().position, 0);
-
-    screen
-        .reveal_pane_with_id(
-            PaneId::Terminal(2),
-            Some("hocus: send_input?".into()),
-            client_id,
-        )
-        .expect("TEST");
-
-    assert_eq!(
-        screen.get_active_tab(client_id).unwrap().position,
-        1,
-        "the tab holding the pane should have been brought into view"
-    );
-    assert_eq!(
-        screen.get_active_pane_id(&client_id),
-        Some(global_pane_id),
-        "and the keyboard should not have gone with it"
-    );
 }
 
 /// The client is typing into a pane in a tab. There is no way to change what it
@@ -59,7 +24,7 @@ fn a_client_on_a_global_pane_is_carried_to_the_panes_tab_and_keeps_the_keyboard(
 #[test]
 fn a_client_focused_inside_a_tab_is_not_dragged_out_of_it() {
     let client_id = 1;
-    let mut screen = screen_with_two_tabs_and_a_global_pane();
+    let mut screen = screen_with_two_tabs();
     let focused_before = screen.get_active_pane_id(&client_id);
     assert_eq!(focused_before, Some(PaneId::Terminal(1)));
 
@@ -84,7 +49,7 @@ fn a_client_focused_inside_a_tab_is_not_dragged_out_of_it() {
 #[test]
 fn a_pane_that_cannot_be_revealed_is_still_marked() {
     let client_id = 1;
-    let mut screen = screen_with_two_tabs_and_a_global_pane();
+    let mut screen = screen_with_two_tabs();
 
     screen
         .reveal_pane_with_id(
@@ -109,7 +74,7 @@ fn a_pane_that_cannot_be_revealed_is_still_marked() {
 fn the_mark_is_drawn_only_for_the_client_it_was_raised_for() {
     let asking_client = 1;
     let other_client = 2;
-    let mut screen = screen_with_two_tabs_and_a_global_pane();
+    let mut screen = screen_with_two_tabs();
 
     screen
         .reveal_pane_with_id(
@@ -137,7 +102,7 @@ fn the_mark_is_drawn_only_for_the_client_it_was_raised_for() {
 fn a_client_cannot_clear_a_mark_raised_for_someone_else() {
     let asking_client = 1;
     let other_client = 2;
-    let mut screen = screen_with_two_tabs_and_a_global_pane();
+    let mut screen = screen_with_two_tabs();
     screen
         .reveal_pane_with_id(PaneId::Terminal(2), None, asking_client)
         .expect("TEST");
@@ -171,7 +136,7 @@ fn a_client_cannot_clear_a_mark_raised_for_someone_else() {
 /// all of them.
 #[test]
 fn an_override_raised_for_nobody_in_particular_belongs_to_every_client() {
-    let mut screen = screen_with_two_tabs_and_a_global_pane();
+    let mut screen = screen_with_two_tabs();
     screen.with_pane(PaneId::Terminal(2), |pane| {
         pane.add_red_pane_frame_color_override(Some("exited 1".to_owned()))
     });

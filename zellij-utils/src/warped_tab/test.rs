@@ -756,10 +756,9 @@ fn a_tab_keeps_its_shape_at_a_size_it_was_never_arranged_for(tc: hegel::TestCase
 //
 // `TiledPanes` keeps rectangles, not a tree, and nothing holds those rectangles
 // to a shape a tree could have produced. The arrangement below is the one that
-// sent us here: a tab with a global pane docked beside it has its ui strips
-// widened over the strip so they span the screen, while the panes between them
-// stay inset - so the tab is a plus sign rather than a rectangle, and no split
-// line spans it in either direction. Every one of those panes still has a
+// sent us here: a tab whose ui strips span the screen while the panes between
+// them stay inset - so the tab is a plus sign rather than a rectangle, and no
+// split line spans it in either direction. Every one of those panes still has a
 // process in it, so every one of them still has to travel.
 
 fn manifest(x: usize, y: usize, cols: usize, rows: usize, run: Run) -> PaneLayoutManifest {
@@ -793,10 +792,9 @@ fn ui_plugin() -> Run {
     }))
 }
 
-/// A 100x40 screen with a 20-column global pane down its left side: the ui
-/// strips span all 100 columns, the four terminals have only the 80 beside the
-/// global pane.
-fn a_tab_beside_a_global_pane() -> Vec<PaneLayoutManifest> {
+/// A 100x40 screen whose ui strips span all 100 columns while the four
+/// terminals between them have only the 80 to their right.
+fn a_tab_whose_ui_strips_reach_past_its_panes() -> Vec<PaneLayoutManifest> {
     vec![
         manifest(0, 0, 100, 1, ui_plugin()),
         manifest(20, 1, 40, 19, shell()),
@@ -810,13 +808,13 @@ fn a_tab_beside_a_global_pane() -> Vec<PaneLayoutManifest> {
 #[test]
 fn a_tab_that_is_not_a_tree_of_splits_travels_anyway() {
     let viewport = Size { cols: 80, rows: 40 };
-    let tiled = a_tab_beside_a_global_pane();
+    let tiled = a_tab_whose_ui_strips_reach_past_its_panes();
 
     // The premise: this is genuinely not a layout. If some later change makes it
     // one, this test stops testing what it was written for.
     assert!(
         get_tiled_panes_layout_from_panegeoms(&tiled, None).is_none(),
-        "a tab beside a global pane is expected to be inexpressible as a layout",
+        "a tab whose strips reach past its panes is expected to be inexpressible as a layout",
     );
 
     let arrangement = layout_for_warped_tab(&tiled, &[], viewport)
@@ -846,7 +844,7 @@ fn an_approximated_tab_keeps_the_shape_it_can() {
     // once the strips are pulled in - so each pane should land in its own
     // quadrant rather than in a neighbour's.
     let viewport = Size { cols: 80, rows: 40 };
-    let tiled = a_tab_beside_a_global_pane();
+    let tiled = a_tab_whose_ui_strips_reach_past_its_panes();
     let arrangement = layout_for_warped_tab(&tiled, &[], viewport).unwrap();
 
     let filled = slots_as_the_receiver_fills_them(&arrangement, &arrangement.tiled_order, viewport)
@@ -914,9 +912,8 @@ fn any_arrangement_at_all_can_be_warped(tc: hegel::TestCase) {
 
 #[hegel::test]
 fn widening_a_tabs_ui_strips_does_not_strand_a_pane(tc: hegel::TestCase) {
-    // The same wrinkle a global pane puts in a tab, put into arrangements of
-    // every shape: the topmost and bottommost full-width panes reach further out
-    // than the panes between them.
+    // The same wrinkle, put into arrangements of every shape: the topmost and
+    // bottommost full-width panes reach further out than the panes between them.
     let viewport = Size {
         cols: tc.draw(generators::integers::<usize>().min_value(20).max_value(400)),
         rows: tc.draw(generators::integers::<usize>().min_value(10).max_value(200)),

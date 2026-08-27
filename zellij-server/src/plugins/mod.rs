@@ -32,11 +32,7 @@ use crate::panes::PaneId;
 use crate::route::NotificationEnd;
 use crate::screen::ScreenInstruction;
 use crate::session_layout_metadata::SessionLayoutMetadata;
-use crate::{
-    pty::{GlobalPaneSpawnContext, PtyInstruction},
-    thread_bus::Bus,
-    ClientId, ServerInstruction,
-};
+use crate::{pty::PtyInstruction, thread_bus::Bus, ClientId, ServerInstruction};
 use zellij_utils::data::PaneRenderReport;
 use zellij_utils::input::hooks::{HookPoint, Hooks};
 use zellij_utils::input::layout::TabLayoutInfo;
@@ -88,7 +84,6 @@ pub enum PluginInstruction {
         Option<bool>,     // should focus plugin
         Option<FloatingPaneCoordinates>,
         Option<NotificationEnd>, // completion signal
-        Option<GlobalPaneSpawnContext>,
         // the overlay placement the launcher stated outright, rather than the one derived from
         // the plugin's own `overlay`/`modal` configuration
         Option<OverlayPlacement>,
@@ -396,20 +391,10 @@ pub(crate) fn plugin_thread_main(
                 skip_cache,
                 should_focus_plugin,
                 floating_pane_coordinates,
-                mut completion_tx,
-                global_placement,
+                completion_tx,
                 overlay_placement,
             ) => {
                 run_plugin_or_alias.populate_run_plugin_if_needed(&plugin_aliases);
-                if global_placement.is_some() && run_plugin_or_alias.requests_overlay() {
-                    if let Some(completion) = completion_tx.as_mut() {
-                        completion.set_exit_status(1);
-                        completion.set_error_message(
-                            "global plugins cannot be overlays or modal".to_owned(),
-                        );
-                    }
-                    continue;
-                }
                 let cwd = run_plugin_or_alias.get_initial_cwd().or(cwd).or_else(|| {
                     if let Some(plugin_id) = focused_plugin_id {
                         wasm_bridge.get_plugin_cwd(plugin_id, client_id)
@@ -428,54 +413,23 @@ pub(crate) fn plugin_thread_main(
                     Some(client_id),
                 ) {
                     Ok((plugin_id, client_id)) => {
-                        if let Some(properties) = global_placement {
-                            let pane_title = pane_title.unwrap_or_else(|| {
-                                format!(
-                                    "({}) - {}",
-                                    cwd.as_ref()
-                                        .map(|cwd| cwd.display().to_string())
-                                        .unwrap_or(".".to_owned()),
-                                    run_plugin_or_alias.location_string()
-                                )
-                            });
-                            drop(
-                                bus.senders
-                                    .send_to_screen(ScreenInstruction::NewGlobalPane {
-                                        pane_id: PaneId::Plugin(plugin_id),
-                                        initial_pane_title: Some(pane_title),
-                                        hold_for_command: None,
-                                        invoked_with: Some(Run::Plugin(run_plugin_or_alias)),
-                                        placement: properties.placement,
-                                        borderless: properties.borderless,
-                                        initially_hidden: properties.initially_hidden,
-                                        should_focus: properties.should_focus
-                                            && should_focus_plugin.unwrap_or(true),
-                                        client_id: Some(client_id),
-                                        completion_tx,
-                                        set_blocking: false,
-                                        declaration_order: properties.declaration_order,
-                                        split: properties.split,
-                                    }),
-                            );
-                        } else {
-                            drop(bus.senders.send_to_screen(ScreenInstruction::AddPlugin(
-                                should_float,
-                                should_be_open_in_place,
-                                close_replaced_pane,
-                                run_plugin_or_alias,
-                                pane_title,
-                                tab_index,
-                                plugin_id,
-                                pane_id_to_replace,
-                                cwd.clone(),
-                                start_suppressed,
-                                floating_pane_coordinates,
-                                should_focus_plugin,
-                                Some(client_id),
-                                completion_tx,
-                                overlay_placement,
-                            )));
-                        }
+                        drop(bus.senders.send_to_screen(ScreenInstruction::AddPlugin(
+                            should_float,
+                            should_be_open_in_place,
+                            close_replaced_pane,
+                            run_plugin_or_alias,
+                            pane_title,
+                            tab_index,
+                            plugin_id,
+                            pane_id_to_replace,
+                            cwd.clone(),
+                            start_suppressed,
+                            floating_pane_coordinates,
+                            should_focus_plugin,
+                            Some(client_id),
+                            completion_tx,
+                            overlay_placement,
+                        )));
 
                         drop(bus.senders.send_to_pty(PtyInstruction::ReportPluginCwd(
                             plugin_id,

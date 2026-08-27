@@ -428,12 +428,9 @@ pub struct State {
     focused_plugin: Option<u32>,
     /// The session surface the overlays are placed against, from the active tab's `TabInfo`.
     ///
-    /// The *surface*, not the tab's display area, and the difference is the whole reason these are
-    /// named as they are: an overlay's coordinates are resolved against the session surface
-    /// (`OverlayPanes::surface`), which is the display area grown back over the global-pane
-    /// strips. Placing against the display area places against the tab centre, which is smaller by
-    /// whatever the global panes took. `overlay::surface_of` is what reads the right pair off a
-    /// `TabInfo`; `overlay::overlay_geometry` does the arithmetic.
+    /// An overlay's coordinates are resolved against the whole session surface
+    /// (`OverlayPanes::surface`), which a tab occupies in full. `overlay::surface_of` reads the
+    /// pair off a `TabInfo`; `overlay::overlay_geometry` does the arithmetic.
     pub(crate) surface_rows: usize,
     pub(crate) surface_cols: usize,
     /// This plugin's own pane id, read once at load.
@@ -516,22 +513,6 @@ pub struct State {
     /// *what they were last placed against*.
     #[cfg(test)]
     pub(crate) placed_against: (usize, usize),
-    /// Whether this instance might be a hocus restored from a pre-overlay session dump, and so
-    /// one that has to hand over to an overlay-configured hocus and close.
-    ///
-    /// Set at `load` from the configuration (`launch::may_be_legacy`) and confirmed - or cleared -
-    /// by the first `PaneUpdate` (`launch::is_legacy_global_instance`). Two stages because neither
-    /// signal alone is enough: the configuration is known before anything has been opened but is
-    /// also true of a deliberate non-overlay launch, and the manifest is conclusive but arrives
-    /// after `load` would already have greeted the agent list. A suspect defers that, so a legacy
-    /// instance cannot adopt a half it is about to hand over.
-    pub(crate) legacy_suspect: bool,
-    /// Set once the handover has been sent, so it is sent exactly once.
-    ///
-    /// Belt and braces rather than the thing that makes it safe: the handover names an
-    /// overlay-configured hocus, which is a different identity from this one, so it can never be
-    /// routed back here however many times it is sent.
-    pub(crate) migrating: bool,
     /// The agents pane, as it announced itself.
     ///
     /// Learned from the first `AGENT_SELECTION` rather than assumed, because a plugin
@@ -632,8 +613,6 @@ impl Default for State {
             own_plugin_id: 0,
             surface_rows: 0,
             surface_cols: 0,
-            legacy_suspect: false,
-            migrating: false,
             own_tab_index: None,
             agents_tab_index: None,
             agents_visible: false,
@@ -741,18 +720,11 @@ impl ZellijPlugin for State {
         // which is what lets us place it beside ourselves. No url, so nothing is launched.
         // Fire-and-forget, so calling it before the permission grant resolves is fine - and a
         // builtin is exempt from the gate anyway.
-        //
-        // Deferred for an instance that might be a legacy global pane: it is on its way out, and
-        // has no business adopting a list the overlay hocus replacing it will greet for itself.
-        // `on_panes` does this instead, once the manifest has said which it is.
-        self.legacy_suspect = hocus_proto::launch::may_be_legacy(&self.kdl);
-        if !self.legacy_suspect {
-            self.greet_agents_pane();
-            // Places this pane, and the agent list once it announces itself. Does nothing useful
-            // until the first `TabUpdate` says how big the screen is, which is why `on_tabs` calls
-            // it too.
-            self.apply_overlay_geometry();
-        }
+        self.greet_agents_pane();
+        // Places this pane, and the agent list once it announces itself. Does nothing useful
+        // until the first `TabUpdate` says how big the screen is, which is why `on_tabs` calls
+        // it too.
+        self.apply_overlay_geometry();
     }
 
     fn update(&mut self, event: Event) -> bool {
@@ -787,12 +759,6 @@ impl ZellijPlugin for State {
         match pipe_message.name.as_str() {
             wire::AGENT_HELLO => {
                 self.subscribe_to_agentd();
-                return false;
-            },
-            wire::HOCUS_OPEN => {
-                // A legacy hocus on its way out asked for us to exist. That request was answered
-                // by the launch-or-reuse behind the url before this arrived, so there is nothing
-                // left to do with the message itself.
                 return false;
             },
             wire::AGENT_STRIP_HELLO => {

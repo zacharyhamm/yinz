@@ -315,7 +315,6 @@ fn control_payload_to_server_msg(
                 no_focus: false,
                 borderless: None,
                 tab_id: None,
-                global_placement: None,
             })
         },
         WebClientToWebServerControlMessagePayload::NewTab => client_action(Action::NewTab {

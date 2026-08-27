@@ -31,8 +31,8 @@ use zellij_utils::{
     data::{
         CommandOrPlugin, Event, FloatingPaneCoordinates, GetPaneCwdResponse,
         GetPaneGitProbeResponse, GetPanePidResponse, GetPaneRunningCommandResponse,
-        GlobalPanePlacement, NewPanePlacement, OriginatingPlugin, OverlayPlacement, PaneGitProbe,
-        SessionInfo, WarpPlacement, WarpedPane, WarpedTab,
+        NewPanePlacement, OriginatingPlugin, OverlayPlacement, PaneGitProbe, SessionInfo,
+        WarpPlacement, WarpedPane, WarpedTab,
     },
     errors::prelude::*,
     errors::{ContextType, PtyContext},
@@ -49,38 +49,6 @@ use zellij_utils::{
 
 pub type VteBytes = Vec<u8>;
 pub type TabIndex = u32;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct GlobalPaneSpawnContext {
-    pub placement: GlobalPanePlacement,
-    pub borderless: bool,
-    pub initially_hidden: bool,
-    pub should_focus: bool,
-    pub declaration_order: Option<usize>,
-    /// When set, the new pane splits this existing global pane's strip span instead of claiming
-    /// the whole edge. The anchor may close between spawn and arrival; Screen then falls back to
-    /// a plain edge insert with `placement`.
-    pub split: Option<GlobalSplitAnchor>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct GlobalSplitAnchor {
-    pub anchor: PaneId,
-    pub before: bool,
-}
-
-impl From<GlobalPanePlacement> for GlobalPaneSpawnContext {
-    fn from(placement: GlobalPanePlacement) -> Self {
-        Self {
-            placement,
-            borderless: false,
-            initially_hidden: false,
-            should_focus: true,
-            declaration_order: None,
-            split: None,
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClientTabIndexOrPaneId {
@@ -102,41 +70,18 @@ fn new_terminal_screen_instruction(
     client_or_tab_index: ClientTabIndexOrPaneId,
     completion_tx: Option<NotificationEnd>,
     set_blocking: bool,
-    global_context: Option<GlobalPaneSpawnContext>,
 ) -> ScreenInstruction {
-    match global_context {
-        Some(context) => ScreenInstruction::NewGlobalPane {
-            pane_id,
-            initial_pane_title: pane_title,
-            hold_for_command,
-            invoked_with,
-            placement: context.placement,
-            borderless: context.borderless,
-            initially_hidden: context.initially_hidden || start_suppressed,
-            should_focus: context.should_focus
-                && matches!(client_or_tab_index, ClientTabIndexOrPaneId::ClientId(_)),
-            client_id: match client_or_tab_index {
-                ClientTabIndexOrPaneId::ClientId(client_id)
-                | ClientTabIndexOrPaneId::ClientIdNoFocus(client_id) => Some(client_id),
-                _ => None,
-            },
-            completion_tx,
-            set_blocking,
-            declaration_order: context.declaration_order,
-            split: context.split,
-        },
-        None => ScreenInstruction::NewPane(
-            pane_id,
-            pane_title,
-            hold_for_command,
-            invoked_with,
-            new_pane_placement,
-            start_suppressed,
-            client_or_tab_index,
-            completion_tx,
-            set_blocking,
-        ),
-    }
+    ScreenInstruction::NewPane(
+        pane_id,
+        pane_title,
+        hold_for_command,
+        invoked_with,
+        new_pane_placement,
+        start_suppressed,
+        client_or_tab_index,
+        completion_tx,
+        set_blocking,
+    )
 }
 
 /// What `Pty::adopt_terminal` hands back so Screen can build the pane.
@@ -208,7 +153,6 @@ pub enum PtyInstruction {
         ClientTabIndexOrPaneId,
         Option<NotificationEnd>, // completion signal
         bool,                    // set_blocking
-        Option<GlobalPaneSpawnContext>,
     ), // bool (if Some) is
     // should_float, String is an optional pane name
     OpenInPlaceEditor(
@@ -343,7 +287,6 @@ pub enum PtyInstruction {
         Option<bool>,    // should focus plugin
         Option<FloatingPaneCoordinates>,
         Option<NotificationEnd>,
-        Option<GlobalPaneSpawnContext>,
         // the overlay placement the launcher stated outright, rather than the one derived from
         // the plugin's own `overlay`/`modal` configuration
         Option<OverlayPlacement>,
@@ -436,7 +379,6 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 client_or_tab_index,
                 completion_tx,
                 set_blocking,
-                global_placement,
             ) => {
                 let err_context =
                     || format!("failed to spawn terminal for {:?}", client_or_tab_index);
@@ -532,7 +474,6 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                             client_or_tab_index,
                             completion_tx,
                             set_blocking,
-                            global_placement,
                         );
                         pty.bus
                             .senders
@@ -553,7 +494,6 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                                     client_or_tab_index,
                                     completion_tx,
                                     set_blocking,
-                                    global_placement,
                                 );
                                 pty.bus
                                     .senders
@@ -1145,7 +1085,6 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 should_focus_plugin,
                 floating_pane_coordinates,
                 completion_tx,
-                global_placement,
                 overlay_placement,
             ) => {
                 pty.fill_plugin_cwd(
@@ -1163,7 +1102,6 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     should_focus_plugin,
                     floating_pane_coordinates,
                     completion_tx,
-                    global_placement,
                     overlay_placement,
                 )?;
             },
@@ -2716,7 +2654,6 @@ impl Pty {
         should_focus_plugin: Option<bool>,
         floating_pane_coordinates: Option<FloatingPaneCoordinates>,
         completion_tx: Option<NotificationEnd>,
-        global_placement: Option<GlobalPaneSpawnContext>,
         overlay_placement: Option<OverlayPlacement>,
     ) -> Result<()> {
         let get_focused_cwd = || {
@@ -2776,7 +2713,6 @@ impl Pty {
             should_focus_plugin,
             floating_pane_coordinates,
             completion_tx,
-            global_placement,
             overlay_placement,
         ))?;
         Ok(())

@@ -1006,9 +1006,6 @@ pub fn send_cli_new_pane_in_place_with_close_replaced_pane() {
         near_current_pane: false,
         no_focus: false,
         borderless: None,
-        global: false,
-        edge: None,
-        size: None,
         tab_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
@@ -1101,9 +1098,6 @@ pub fn send_cli_launch_or_focus_plugin_in_place_with_close_replaced_pane() {
         url: "file:/path/to/fake/plugin".to_owned(),
         configuration: Default::default(),
         skip_plugin_cache: false,
-        global: false,
-        edge: None,
-        size: None,
         tab_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);

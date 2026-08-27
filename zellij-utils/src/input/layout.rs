@@ -12,8 +12,8 @@
 use crate::downloader::Downloader;
 use crate::{
     data::{
-        Direction, GlobalPanePlacement, LayoutInfo, LayoutMetadata, LayoutParsingError,
-        LayoutWithError, OverlayPlacement,
+        Direction, LayoutInfo, LayoutMetadata, LayoutParsingError, LayoutWithError,
+        OverlayPlacement,
     },
     home::{default_layout_dir, find_default_config_dir},
     input::{
@@ -845,18 +845,8 @@ pub type SwapFloatingLayout = (
     Option<String>,
 ); // Option<String> is the swap layout name
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub struct GlobalPaneLayout {
-    pub run: Option<Run>,
-    pub placement: GlobalPanePlacement,
-    pub borderless: bool,
-    pub focus: bool,
-    pub hidden: bool,
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
 pub struct Layout {
-    pub global_panes: Vec<GlobalPaneLayout>,
     pub tabs: Vec<(Option<String>, TiledPaneLayout, Vec<FloatingPaneLayout>)>,
     pub focused_tab_index: Option<usize>,
     pub template: Option<(TiledPaneLayout, Vec<FloatingPaneLayout>)>,

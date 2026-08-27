@@ -555,7 +555,6 @@ impl Screen {
         for tab in self.tabs.values_mut() {
             let _ = tab.update_input_modes();
         }
-        let _ = self.update_global_input_modes([client_id]);
         let _ = self.render(None);
     }
 
@@ -620,10 +619,6 @@ impl Screen {
         if clients_to_update.is_empty() {
             return;
         }
-        let client_ids: Vec<_> = clients_to_update
-            .iter()
-            .map(|(client_id, _)| *client_id)
-            .collect();
         for (client_id, mode_info) in clients_to_update {
             for tab in self.tabs.values_mut() {
                 tab.change_mode_info(mode_info.clone(), client_id);
@@ -632,7 +627,6 @@ impl Screen {
         for tab in self.tabs.values_mut() {
             let _ = tab.update_input_modes();
         }
-        let _ = self.update_global_input_modes(client_ids);
         let _ = self.render(None);
     }
 
@@ -708,7 +702,6 @@ impl Screen {
         for tab in self.tabs.values_mut() {
             let _ = tab.update_input_modes();
         }
-        let _ = self.update_global_input_modes(client_ids);
         let _ = self.render(None);
     }
 

@@ -186,14 +186,10 @@ fn create_layout_applier_fixtures(
     let session_is_mirrored = true;
     let draw_pane_frames = PaneFrameStyle::Full;
     let default_mode_info = ModeInfo::default();
-    let display_area_origin = Rc::new(RefCell::new((0, 0)));
 
     let tiled_panes = TiledPanes::new(
         display_area.clone(),
-        display_area_origin.clone(),
         viewport.clone(),
-        Rc::new(RefCell::new(vec![])),
-        Rc::new(RefCell::new(vec![])),
         connected_clients_set.clone(),
         connected_clients.clone(),
         mode_info.clone(),
@@ -212,9 +208,7 @@ fn create_layout_applier_fixtures(
     // Create FloatingPanes
     let floating_panes = FloatingPanes::new(
         display_area.clone(),
-        display_area_origin,
         viewport.clone(),
-        Rc::new(RefCell::new(vec![])),
         connected_clients_set,
         connected_clients.clone(),
         mode_info,
@@ -328,14 +322,10 @@ fn create_layout_applier_fixtures_with_receivers(
     let session_is_mirrored = true;
     let draw_pane_frames = PaneFrameStyle::Full;
     let default_mode_info = ModeInfo::default();
-    let display_area_origin = Rc::new(RefCell::new((0, 0)));
 
     let tiled_panes = TiledPanes::new(
         display_area.clone(),
-        display_area_origin.clone(),
         viewport.clone(),
-        Rc::new(RefCell::new(vec![])),
-        Rc::new(RefCell::new(vec![])),
         connected_clients_set.clone(),
         connected_clients.clone(),
         mode_info.clone(),
@@ -354,9 +344,7 @@ fn create_layout_applier_fixtures_with_receivers(
     // Create FloatingPanes
     let floating_panes = FloatingPanes::new(
         display_area.clone(),
-        display_area_origin,
         viewport.clone(),
-        Rc::new(RefCell::new(vec![])),
         connected_clients_set,
         connected_clients.clone(),
         mode_info,

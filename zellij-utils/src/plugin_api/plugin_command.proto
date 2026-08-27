@@ -15,7 +15,7 @@ import "plugin_data.proto";
 package api.plugin_command;
 
 enum CommandName {
-  reserved 216, 219, 222;
+  reserved 216, 219, 222, 230, 246;
   Subscribe = 0;
   Unsubscribe = 1;
   SetSelectable = 2;
@@ -220,7 +220,6 @@ enum CommandName {
   ToggleFocusNoUiFullscreen = 227;
   FocusHostSession = 228;
   CancelWebRequest = 229;
-  SetGlobalPanePlacement = 230;
   ListRecordings = 231;
   SearchRecordings = 232;
   Notify = 233;
@@ -237,7 +236,6 @@ enum CommandName {
   ListNotifications = 250;
   WarpTabToSession = 244;
   WarpTabFromSession = 245;
-  LaunchOrFocusGlobalPaneSplit = 246;
   GetPluginAliasConfiguration = 247;
   SetTabProjects = 248;
   RevealPaneWithId = 249;
@@ -262,7 +260,7 @@ enum CommandName {
 }
 
 message PluginCommand {
-  reserved 165, 167;
+  reserved 165, 167, 173, 187;
   CommandName name = 1;
   oneof payload {
     SubscribePayload subscribe_payload = 2;
@@ -421,7 +419,6 @@ message PluginCommand {
     SetPaneFrameStylePayload set_pane_frame_style_payload = 170;
     ToggleFloatingPanesPayload toggle_floating_panes_payload = 171;
     CancelWebRequestPayload cancel_web_request_payload = 172;
-    SetGlobalPanePlacementPayload set_global_pane_placement_payload = 173;
     SearchRecordingsPayload search_recordings_payload = 174;
     string notify_payload = 175;
     WarpPaneToSessionPayload warp_pane_to_session_payload = 176;
@@ -435,7 +432,6 @@ message PluginCommand {
     DataUnwatchPayload data_unwatch_payload = 184;
     WarpTabToSessionPayload warp_tab_to_session_payload = 185;
     WarpTabFromSessionPayload warp_tab_from_session_payload = 186;
-    LaunchOrFocusGlobalPaneSplitPayload launch_or_focus_global_pane_split_payload = 187;
     GetPluginAliasConfigurationPayload get_plugin_alias_configuration_payload = 188;
     SetTabProjectsPayload set_tab_projects_payload = 189;
     RevealPaneWithIdPayload reveal_pane_with_id_payload = 190;
@@ -939,20 +935,6 @@ message StackPanesPayload {
 message SetFloatingPanePinnedPayload {
   PaneId pane_id = 1;
   bool should_be_pinned = 2;
-}
-
-message SetGlobalPanePlacementPayload {
-  PaneId pane_id = 1;
-  action.GlobalPanePlacement placement = 2;
-}
-
-message LaunchOrFocusGlobalPaneSplitPayload {
-  string plugin_url = 1;
-  repeated ContextItem plugin_configuration = 2;
-  bool before = 3;
-  optional action.GlobalPaneSize length = 4;
-  bool should_focus = 5;
-  bool skip_cache = 6;
 }
 
 message TogglePaneBorderlessPayload {

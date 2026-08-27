@@ -261,7 +261,6 @@ impl Harness {
             None,
             None,
             None,
-            None,
         ));
     }
 

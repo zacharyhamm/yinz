@@ -175,9 +175,6 @@ fn main() {
                 no_focus,
                 borderless,
                 tab_id,
-                global: false,
-                edge: None,
-                size: None,
             };
             commands::send_action_to_session(command_cli_action, opts.session, config);
             std::process::exit(0);
@@ -237,9 +234,6 @@ fn main() {
                 no_focus,
                 borderless,
                 tab_id,
-                global: false,
-                edge: None,
-                size: None,
             };
             commands::send_action_to_session(command_cli_action, opts.session, config);
             std::process::exit(0);

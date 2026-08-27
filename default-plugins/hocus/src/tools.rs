@@ -19,8 +19,8 @@ use hocus_proto::projects::{self, Project};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use zellij_tile::prelude::{
-    FloatingPaneCoordinates, GitCheckout, GlobalPaneEdge, GlobalPanePlacement, PaneId,
-    PercentOrFixed, PermissionType, SessionInfo, WarpPlacement,
+    FloatingPaneCoordinates, GitCheckout, PaneId, PercentOrFixed, PermissionType, SessionInfo,
+    WarpPlacement,
 };
 
 use crate::log::truncate_str;
@@ -741,7 +741,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "move_pane",
-            "Move one tiled pane toward a unique neighbor; use swap_panes for two named panes, set_floating_pane_geometry for floating panes, set_global_pane_placement for global ones.",
+            "Move one tiled pane toward a unique neighbor; use swap_panes for two named panes, set_floating_pane_geometry for floating panes.",
             json!({
                 "type": "object",
                 "properties": {
@@ -853,24 +853,6 @@ pub fn specs() -> Value {
                     "y": { "type": "string" },
                     "width": { "type": "string" },
                     "height": { "type": "string" },
-                },
-                "required": ["pane_id", "is_plugin"],
-            }),
-        ),
-        tool(
-            "set_global_pane_placement",
-            "Move or resize a global pane, which is in no tab. Omitted fields keep their value.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "pane_id": pane["pane_id"],
-                    "is_plugin": pane["is_plugin"],
-                    "edge": {
-                        "type": "string",
-                        "enum": ["left", "right", "top", "bottom"],
-                    },
-                    "size": { "type": "string", "description": "Thickness in cells or a percentage." },
-                    "length": { "type": "string", "description": "Share of the edge, or \"auto\"." },
                 },
                 "required": ["pane_id", "is_plugin"],
             }),
@@ -1547,8 +1529,8 @@ impl PaneDirection {
 #[derive(Debug, Clone)]
 struct PanePosition {
     id: PaneId,
-    /// `None` for a global pane, which is in no tab. A sentinel would be worse than an
-    /// option: two global panes would compare as "the same tab" in `plan_swap`.
+    /// An option rather than a sentinel: panes with no tab would otherwise compare as
+    /// "the same tab" in `plan_swap`.
     tab_position: Option<usize>,
     x: usize,
     y: usize,
@@ -1559,10 +1541,6 @@ struct PanePosition {
     floating: bool,
     fullscreen: bool,
     floating_layer_visible: bool,
-    /// The placement, when this is a global pane. The whole placement rather than a
-    /// flag: a refusal that names the edge the pane is on is one the model can write
-    /// the follow-up `set_global_pane_placement` call from.
-    global: Option<GlobalPanePlacement>,
 }
 
 impl PanePosition {
@@ -1572,10 +1550,6 @@ impl PanePosition {
             && !self.floating
             && !self.fullscreen
             && !self.floating_layer_visible
-            // A left-edge global pane really does abut the leftmost tiled pane, so
-            // without this it would join every neighbour set and make every leftward
-            // move ambiguous.
-            && self.global.is_none()
     }
 }
 
@@ -1595,13 +1569,6 @@ fn plan_swap(
         .iter()
         .find(|pane| pane.id == second_id)
         .ok_or_else(|| "pane is not in the current session; call list_session again".to_owned())?;
-    // Before the tab and `can_move` checks, both of which a global pane also fails —
-    // with a sentence that sends the model looking for the wrong thing.
-    for pane in [first, second] {
-        if let Some(placement) = &pane.global {
-            return Err(global_pane_refusal(pane.id, placement, "swap_panes"));
-        }
-    }
     if first.tab_position != second.tab_position {
         return Err("swap_panes needs both panes in the same tab".to_owned());
     }
@@ -1643,9 +1610,6 @@ fn plan_move(
         .iter()
         .find(|pane| pane.id == source_id)
         .ok_or_else(|| "pane is not in the current session; call list_session again".to_owned())?;
-    if let Some(placement) = &source.global {
-        return Err(global_pane_refusal(source_id, placement, "move_pane"));
-    }
     if !source.can_move() {
         return Err(
             "move_pane only supports visible selectable tiled panes; use set_floating_pane_geometry for floating panes"
@@ -1754,11 +1718,6 @@ pub struct Args {
     pub from_session: Option<String>,
     pub placement: Option<String>,
     pub host_id: Option<String>,
-    // Placing a global pane. `placement` above is the warp tools' and means something
-    // else entirely, so these are spelled out.
-    pub edge: Option<String>,
-    pub size: Option<String>,
-    pub length: Option<String>,
     // The file tools. `query` above is `search_files`'s pattern.
     pub path: Option<String>,
     pub pattern: Option<String>,
@@ -1986,40 +1945,6 @@ impl Args {
             None,
         )
         .ok_or_else(|| "at least one of x, y, width or height is required".to_owned())
-    }
-
-    /// Where a global pane should sit, completed from where it sits now.
-    ///
-    /// A placement is an edge and a size together, so a call that gives only one of
-    /// them has to inherit the other: "make it wider" must not silently move the pane
-    /// to the left edge, which is what `GlobalPanePlacement::default()` would do.
-    /// `length: "auto"` is how a pane goes back to dividing the strip evenly.
-    pub fn global_placement(
-        &self,
-        current: GlobalPanePlacement,
-    ) -> Result<GlobalPanePlacement, String> {
-        let edge = match self.edge.as_deref() {
-            None => current.edge,
-            Some("left") => GlobalPaneEdge::Left,
-            Some("right") => GlobalPaneEdge::Right,
-            Some("top") => GlobalPaneEdge::Top,
-            Some("bottom") => GlobalPaneEdge::Bottom,
-            Some(other) => {
-                return Err(format!(
-                    "unknown edge {other:?}; edge must be left, right, top or bottom"
-                ))
-            },
-        };
-        let size = match self.size.as_deref() {
-            Some(size) => percent_or_fixed("size", size, false)?,
-            None => current.size,
-        };
-        let length = match self.length.as_deref() {
-            None => current.length,
-            Some("auto") => None,
-            Some(length) => Some(percent_or_fixed("length", length, false)?),
-        };
-        Ok(GlobalPanePlacement { edge, size, length })
     }
 
     pub fn terminal_pane_id(&self) -> Result<u32, String> {
@@ -2786,11 +2711,8 @@ fn moved_panes_result(tab_id: Option<usize>) -> String {
 pub struct SessionTabs {
     /// The stable `tab_id` of every tab, in display order.
     pub tabs: Vec<usize>,
-    /// Every pane in the session's tabs, tabs flattened. Global panes are not in here:
-    /// they are in no tab, and a move to a tab is exactly what they cannot do.
+    /// Every pane in the session's tabs, tabs flattened.
     pub panes: Vec<PaneId>,
-    /// The session's global panes, which are in no tab at all.
-    pub global_panes: Vec<(PaneId, GlobalPanePlacement)>,
 }
 
 fn describe_pane(pane: PaneId) -> String {
@@ -2798,41 +2720,6 @@ fn describe_pane(pane: PaneId) -> String {
         PaneId::Terminal(id) => format!("pane {id}"),
         PaneId::Plugin(id) => format!("plugin pane {id}"),
     }
-}
-
-/// The word `list_session` prints for an edge and `set_global_pane_placement` accepts.
-/// One function for both so the listing can never name an edge the tool would refuse.
-fn edge_name(edge: GlobalPaneEdge) -> &'static str {
-    match edge {
-        GlobalPaneEdge::Left => "left",
-        GlobalPaneEdge::Right => "right",
-        GlobalPaneEdge::Top => "top",
-        GlobalPaneEdge::Bottom => "bottom",
-    }
-}
-
-/// A `PercentOrFixed` as the model wrote it: `"30%"` or a count of cells.
-fn size_text(size: PercentOrFixed) -> String {
-    match size {
-        PercentOrFixed::Percent(percent) => format!("{percent}%"),
-        PercentOrFixed::Fixed(fixed) => fixed.to_string(),
-    }
-}
-
-/// The one sentence every tool that cannot act on a global pane answers with.
-///
-/// A global pane belongs to the session rather than to a tab — it has no slot in any
-/// tab's layout, which is why the host refuses it for every tab operation. Saying only
-/// that would leave the model to guess; naming the edge it is on and the tool that
-/// *can* move it makes the next call writable from this sentence alone.
-fn global_pane_refusal(pane: PaneId, placement: &GlobalPanePlacement, tool: &str) -> String {
-    format!(
-        "{} is a global pane on the {} edge: it belongs to the whole session rather than to \
-         a tab, so {tool} cannot act on it; use set_global_pane_placement to change its edge \
-         or size",
-        describe_pane(pane),
-        edge_name(placement.edge),
-    )
 }
 
 /// `"20"` or `"20%"`, as every geometry argument is written.
@@ -2875,15 +2762,6 @@ pub fn check_move_to_tab(
     panes: &[PaneId],
     session: &SessionTabs,
 ) -> Result<(), String> {
-    // A global pane is in the session and still cannot be moved to a tab, so it is
-    // answered before the membership check rather than by it.
-    if let Some((pane, placement)) = session
-        .global_panes
-        .iter()
-        .find(|(global, _)| panes.contains(global))
-    {
-        return Err(global_pane_refusal(*pane, placement, "move_panes_to_tab"));
-    }
     if let Some(missing) = panes.iter().find(|pane| !session.panes.contains(pane)) {
         return Err(format!(
             "{} is not in this session; call list_session for the current panes",
@@ -2952,36 +2830,7 @@ pub fn session_listing(session: &SessionInfo) -> Value {
         })
         .collect();
 
-    // Global panes are in no tab, so they are in their own field of the manifest and
-    // the tab walk above cannot see them. Without this they are invisible to the
-    // model, which is how a pane the user is looking at — often hocus itself — became
-    // a pane hocus would say is "not in the current session".
-    let global_panes: Vec<Value> = session
-        .panes
-        .global_panes
-        .iter()
-        .filter(|pane| !pane.is_suppressed)
-        .map(|pane| {
-            json!({
-                "pane_id": pane.id,
-                "is_plugin": pane.is_plugin,
-                "title": pane.title,
-                "focused": pane.is_focused,
-                "hidden": pane.is_hidden,
-                "edge": pane.global_placement.map(|placement| edge_name(placement.edge)),
-                "size": pane.global_placement.map(|placement| size_text(placement.size)),
-                "command": pane.terminal_command,
-                "exit_status": pane.exit_status,
-            })
-        })
-        .collect();
-
-    // The common session has none, and this listing is built every turn.
-    if global_panes.is_empty() {
-        json!({ "session": session.name, "tabs": tabs })
-    } else {
-        json!({ "session": session.name, "tabs": tabs, "global_panes": global_panes })
-    }
+    json!({ "session": session.name, "tabs": tabs })
 }
 
 // ---------------------------------------------------------------------------
@@ -3036,27 +2885,17 @@ mod host {
                 let Some(pinned) = args.pinned else {
                     return "pinned is required".to_owned();
                 };
-                if let Some(refusal) = refuse_if_global(pane, "set_pane_pinned") {
-                    return refusal;
-                }
                 set_floating_pane_pinned(pane, pinned);
                 if pinned { "pinned" } else { "unpinned" }.to_owned()
             }),
             "set_floating_pane_geometry" => {
                 with_pane(&args, |pane| match args.floating_geometry() {
                     Ok(geometry) => {
-                        if let Some(refusal) = refuse_if_global(pane, "set_floating_pane_geometry")
-                        {
-                            return refusal;
-                        }
                         change_floating_panes_coordinates(vec![(pane, geometry)]);
                         "geometry set".to_owned()
                     },
                     Err(error) => error,
                 })
-            },
-            "set_global_pane_placement" => {
-                with_pane(&args, |pane| set_global_pane_placement_tool(pane, &args))
             },
             "rerun_pane" => match args.terminal_pane_id() {
                 Ok(id) => {
@@ -3650,10 +3489,6 @@ mod host {
             }
             move_pane_with_pane_id_in_direction(pane, host_direction(direction));
         } else {
-            // The directionless move has no plan to be refused by, so it asks here.
-            if let Some(refusal) = refuse_if_global(pane, "move_pane") {
-                return refusal;
-            }
             move_pane_with_pane_id(pane);
         }
         "moved".to_owned()
@@ -3686,40 +3521,6 @@ mod host {
         }
     }
 
-    /// The session's global panes and where each one sits.
-    ///
-    /// Global panes are in no tab, so they are in their own field of the manifest and
-    /// the tab walk every other reader does cannot see them. Every tool that has to
-    /// tell a global pane from a tab pane comes through here.
-    fn global_placements() -> Result<Vec<(PaneId, GlobalPanePlacement)>, String> {
-        let snapshot =
-            get_session_list().map_err(|error| format!("could not list sessions: {error}"))?;
-        let session = snapshot
-            .live_sessions
-            .iter()
-            .find(|session| session.is_current_session)
-            .ok_or_else(|| "the current session is not in the session list".to_owned())?;
-        Ok(session
-            .panes
-            .global_panes
-            .iter()
-            .filter_map(|pane| Some((pane_id_of(pane), pane.global_placement?)))
-            .collect())
-    }
-
-    /// The refusal for a tool that cannot act on a global pane, if `pane` is one.
-    ///
-    /// For the tools with no plan of their own to hang the check on. A snapshot we
-    /// cannot read is not grounds to refuse — fall through and let the host be the
-    /// judge, the same way `move_panes_to_tab` does.
-    fn refuse_if_global(pane: PaneId, tool: &str) -> Option<String> {
-        global_placements()
-            .ok()?
-            .iter()
-            .find(|(id, _)| *id == pane)
-            .map(|(id, placement)| global_pane_refusal(*id, placement, tool))
-    }
-
     fn current_pane_positions() -> Result<Vec<PanePosition>, String> {
         let snapshot =
             get_session_list().map_err(|error| format!("could not list sessions: {error}"))?;
@@ -3747,26 +3548,9 @@ mod host {
                     floating: pane.is_floating,
                     fullscreen: tab.is_fullscreen_active,
                     floating_layer_visible: tab.are_floating_panes_visible,
-                    global: None,
                 })
         });
-        // Global panes come along so a move naming one can be refused in its own
-        // words. `can_move` keeps them out of every neighbour set.
-        let global = session.panes.global_panes.iter().map(|pane| PanePosition {
-            id: pane_id_of(pane),
-            tab_position: None,
-            x: pane.pane_x,
-            y: pane.pane_y,
-            columns: pane.pane_columns,
-            rows: pane.pane_rows,
-            visible: !pane.is_suppressed && !pane.is_hidden,
-            selectable: pane.is_selectable,
-            floating: false,
-            fullscreen: false,
-            floating_layer_visible: false,
-            global: pane.global_placement,
-        });
-        Ok(in_tabs.chain(global).collect())
+        Ok(in_tabs.collect())
     }
 
     fn resize_pane(pane: PaneId, args: &Args) -> String {
@@ -3784,9 +3568,6 @@ mod host {
     }
 
     fn toggle_pane(pane: PaneId, args: &Args) -> String {
-        if let Some(refusal) = refuse_if_global(pane, "toggle_pane") {
-            return refusal;
-        }
         match args.what.as_deref() {
             Some("fullscreen") => {
                 toggle_pane_id_fullscreen(pane);
@@ -3811,12 +3592,6 @@ mod host {
             .ok_or_else(|| "the current session is not in the session list".to_owned())?;
         Ok(SessionTabs {
             tabs: session.tabs.iter().map(|tab| tab.tab_id).collect(),
-            global_panes: session
-                .panes
-                .global_panes
-                .iter()
-                .filter_map(|pane| Some((pane_id_of(pane), pane.global_placement?)))
-                .collect(),
             panes: session
                 .tabs
                 .iter()
@@ -3853,49 +3628,8 @@ mod host {
     fn stack_panes_tool(args: &Args) -> String {
         match args.pane_ids(2) {
             Ok(panes) => {
-                if let Some(refusal) = panes
-                    .iter()
-                    .find_map(|pane| refuse_if_global(*pane, "stack_panes"))
-                {
-                    return refusal;
-                }
                 stack_panes(panes);
                 "stacked".to_owned()
-            },
-            Err(error) => error,
-        }
-    }
-
-    /// Re-place a global pane along a screen edge.
-    ///
-    /// The one thing that *can* move a global pane, since it has no slot in any tab's
-    /// layout to be moved within. The current placement is read first for two reasons:
-    /// a pane that is not global has none, which is a clearer refusal than the host's
-    /// silence; and a call that names only a size inherits the edge it is already on.
-    ///
-    /// The host can still refuse a placement it cannot allocate — a strip that leaves
-    /// no usable tab area, or panes that do not fit their edge. `SetGlobalPanePlacement`
-    /// carries no completion channel, so that refusal is logged server-side and never
-    /// reaches us; what can be checked here is checked here.
-    fn set_global_pane_placement_tool(pane: PaneId, args: &Args) -> String {
-        let current = match global_placements() {
-            Ok(placements) => placements
-                .into_iter()
-                .find(|(id, _)| *id == pane)
-                .map(|(_, placement)| placement),
-            Err(error) => return error,
-        };
-        let Some(current) = current else {
-            return format!(
-                "{} is not a global pane; only a pane on a screen edge has a placement — use \
-                 move_pane or move_panes_to_tab for a pane in a tab",
-                describe_pane(pane),
-            );
-        };
-        match args.global_placement(current) {
-            Ok(placement) => {
-                set_global_pane_placement(pane, placement);
-                "placement set".to_owned()
             },
             Err(error) => error,
         }

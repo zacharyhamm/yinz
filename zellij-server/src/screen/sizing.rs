@@ -56,25 +56,24 @@ impl Screen {
             })
     }
 
-    // The single surface every global pane is allocated over: the smallest client viewport, so a
-    // global pane stays visible to every client.
+    // The single surface every tab is laid out over: the smallest client viewport, so every tab
+    // stays visible to every client.
     //
     // When no client contributes a size - every regular client has detached and only watchers
-    // remain - the last area the panes were laid out over stands in, so the layout is kept rather
-    // than collapsed to nothing. The per-client lookup is the remaining fallback, for before the
-    // first reflow has happened.
+    // remain - the last surface the tabs were laid out over stands in, so the layout is kept
+    // rather than collapsed to nothing.
     //
     // Takes `connected_clients` via `session_size`, so bind it to a local before calling anything
-    // that borrows it again (`get_first_client_id`, and so `resize_global_panes_to`).
+    // that borrows it again (`get_first_client_id`).
     pub(super) fn surface_size(&self) -> Size {
-        self.session_size()
-            .or_else(|| {
-                self.global_panes.area().map(|area| Size {
-                    rows: area.rows,
-                    cols: area.cols,
-                })
-            })
-            .unwrap_or_else(|| self.size_for_client(None))
+        self.session_size().unwrap_or(self.last_surface_size)
+    }
+
+    // Remember the surface the tabs were last laid out over, for when every client has detached.
+    pub(super) fn remember_surface_size(&mut self) {
+        if let Some(size) = self.session_size() {
+            self.last_surface_size = size;
+        }
     }
 
     // Stands in for the terminal-wide resize the removed `Screen::size` used to model: put every
@@ -96,7 +95,8 @@ impl Screen {
 
     pub fn resize_to_clients(&mut self) -> Result<()> {
         let err_context = || "failed to resize to client sizes".to_string();
-        self.reflow_global_panes().with_context(err_context)?;
+        // `reflow_all_tabs` records the surface it laid the tabs out over
+        self.reflow_all_tabs().with_context(err_context)?;
         self.log_and_report_session_state()
             .with_context(err_context)?;
         self.render(None).with_context(err_context)
@@ -110,19 +110,13 @@ impl Screen {
                     .and_then(|client_id| self.client_sizes.get(&client_id).copied())
             })
             .or_else(|| self.client_sizes.values().next().copied())
-            // every client has detached, so nobody contributes a size - the last area the global
-            // panes were laid out over is what `surface_size` falls back to, and a tab created
-            // here (`zellij action new-tab` against a detached session) has to match it or it is
-            // built with no rows to put a pane in and closed on the next render tick
-            .or_else(|| {
-                self.global_panes.area().map(|area| Size {
-                    rows: area.rows,
-                    cols: area.cols,
-                })
-            })
-            // and before the first client has reported one, the size the session was built with -
-            // never a zero size, which is not a layout anything can be laid out against
-            .unwrap_or(self.initial_size)
+            // every client has detached, so nobody contributes a size - the surface the tabs were
+            // last laid out over is what stands in, and a tab created here (`zellij action
+            // new-tab` against a detached session) has to match it or it is built with no rows to
+            // put a pane in and closed on the next render tick. Before the first client has
+            // reported a size that is the size the session was built with - never a zero size,
+            // which is not a layout anything can be laid out against.
+            .unwrap_or(self.last_surface_size)
     }
 
     pub(super) fn size_of_tab_of_client(&self, client_id: ClientId) -> Size {

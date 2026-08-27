@@ -140,7 +140,6 @@ impl RebindLeadersScreen {
                             direction: None,
                             pane_name: None,
                             start_suppressed: false,
-                            global_placement: None,
                         }] {
                             Some(k.key_modifiers.clone())
                         } else {
@@ -960,7 +959,6 @@ impl RebindLeadersScreen {
                 direction: None,
                 pane_name: None,
                 start_suppressed: false,
-                global_placement: None,
             }],
             KeyWithModifier::new_with_modifiers(
                 BareKey::Char('n'),

@@ -5,16 +5,18 @@
 //!
 //! `strip_rows` and the hocus-agents selection logic are unit-tested down to
 //! the row text, but they say nothing about layout — the list is a real pane
-//! now, spawned by hocus as a split of its own global strip, and only a real
-//! session with a real grid to read says the split happened, the rows went to
-//! the right pane, and hiding the sidebar takes both panes with it.
+//! now, opened as an overlay beside hocus, and only a real
+//! session with a real grid to read says the split happened and the rows went
+//! to the right pane.
 
+use std::time::{Duration, Instant};
 use zellij_integration_tests::test_env::{write_git_repository, write_git_worktree};
-use zellij_integration_tests::{keys, LayoutInfo, TestRunner, TestSession, TERMINAL_SIZE};
+use zellij_integration_tests::{
+    keys, GridSnapshot, LayoutInfo, TestRunner, TestSession, TERMINAL_SIZE,
+};
 
-/// hocus with the daemon that finds agents for it, as the real config has it,
-/// plus the agents pane hocus spawns beside itself and a binding to reveal the
-/// sidebar after it has been hidden.
+/// hocus with the daemon that finds agents for it, plus bindings for the two
+/// independent panes.
 ///
 /// `zellij:` rather than `file:` for the same reason `hocus_store` gives: hocus
 /// relies on being a builtin for the permissions it never asks for.
@@ -22,36 +24,18 @@ const HOCUS_CONFIG: &str = r#"keybinds {
   normal {
     bind "Ctrl b" {
       LaunchOrFocusPlugin "hocus" {
-        global true
-        edge "left"
-        size "50%"
+        floating true
+        overlay true
+        awaits_placement true
+        move_to_focused_tab true
       }
     }
-  }
-}
-plugins {
-  hocus location="zellij:hocus" {
-    shared true
-  }
-  hocus-agents location="zellij:hocus-agents" {
-    shared true
-  }
-  hocus-agentd location="zellij:hocus-agentd"
-}
-load_plugins clear-defaults=true {
-  "hocus-agentd"
-}
-"#;
-
-/// The same plugins, but the binding opens the *agent list* rather than the
-/// conversation — the shipped `Alt g`, under a key the harness can send.
-const HOCUS_AGENTS_BINDING_CONFIG: &str = r#"keybinds {
-  normal {
-    bind "Ctrl b" {
+    bind "Ctrl a" {
       LaunchOrFocusPlugin "hocus-agents" {
-        global true
-        edge "left"
-        size "50%"
+        floating true
+        overlay true
+        awaits_placement true
+        move_to_focused_tab true
       }
     }
   }
@@ -81,7 +65,27 @@ const NO_SIDEBAR_LAYOUT: &str = r#"layout {
 /// The daemon finds the checkout an agent is in; only the store turns one into
 /// a project and pushes the registry back. Without it every agent groups under
 /// the header that names nothing, however well detection worked.
-const HOCUS_PROJECT_CONFIG: &str = r#"plugins {
+const HOCUS_PROJECT_CONFIG: &str = r#"keybinds {
+  normal {
+    bind "Ctrl b" {
+      LaunchOrFocusPlugin "hocus" {
+        floating true
+        overlay true
+        awaits_placement true
+        move_to_focused_tab true
+      }
+    }
+    bind "Ctrl a" {
+      LaunchOrFocusPlugin "hocus-agents" {
+        floating true
+        overlay true
+        awaits_placement true
+        move_to_focused_tab true
+      }
+    }
+  }
+}
+plugins {
   hocus location="zellij:hocus" {
     shared true
   }
@@ -97,18 +101,44 @@ load_plugins clear-defaults=true {
 }
 "#;
 
-/// hocus as the left global sidebar it really runs as, beside a pane named
-/// after an agent — which is what detection reads when a pane's command names
-/// nothing. hocus spawns the agents pane above itself on load.
-const HOCUS_LAYOUT: &str = r#"layout {
-    global_panes {
-        pane edge="left" size="50%" focus=true {
-            plugin location="hocus"
+fn wait_with_resizes(zellij: &TestSession, what: &str, predicate: impl Fn(&GridSnapshot) -> bool) {
+    let resizer = zellij.resize_sender();
+    let wider = std::cell::Cell::new(false);
+    let last_resize = std::cell::Cell::new(Instant::now() - Duration::from_secs(1));
+    zellij.wait_until(what, |grid_snapshot| {
+        if predicate(grid_snapshot) {
+            return true;
         }
-    }
-    pane name="claude"
+        if last_resize.get().elapsed() < Duration::from_millis(250) {
+            return false;
+        }
+        let mut size = TERMINAL_SIZE;
+        if wider.replace(!wider.get()) {
+            size.cols += 1;
+        }
+        let _ = resizer.resize(size);
+        last_resize.set(Instant::now());
+        false
+    });
 }
-"#;
+
+fn open_sidebar(zellij: &TestSession) {
+    zellij.send_stdin(&keys::ctrl('b'));
+    wait_with_resizes(zellij, "hocus asks for permissions", |grid_snapshot| {
+        grid_snapshot.contains("Allow? (y/n)")
+    });
+    zellij.send_stdin(&keys::key('y'));
+    wait_with_resizes(
+        zellij,
+        "the conversation overlay is placed",
+        |grid_snapshot| grid_snapshot.contains("hocus — "),
+    );
+
+    zellij.send_stdin(&keys::ctrl('a'));
+    wait_with_resizes(zellij, "both overlay panes are placed", |grid_snapshot| {
+        grid_snapshot.contains("hocus — ") && grid_snapshot.contains("agents")
+    });
+}
 
 /// Put a line into hocus and send it. Pasted rather than typed for the reason
 /// `hocus_store` gives: a typed burst outruns the render.
@@ -143,11 +173,6 @@ fn an_agent_that_never_leaves_its_folder_lands_under_its_project() {
     // covered by the test below.
     let layout = format!(
         r#"layout {{
-    global_panes {{
-        pane edge="left" size="50%" focus=true {{
-            plugin location="hocus"
-        }}
-    }}
     pane cwd="{}"
 }}
 "#,
@@ -161,19 +186,15 @@ fn an_agent_that_never_leaves_its_folder_lands_under_its_project() {
     agent.run_foreground(&["claude"]);
     agent.output(b"$ ");
 
-    zellij.wait_until("hocus asks for permissions", |grid_snapshot| {
-        grid_snapshot.contains("Allow? (y/n)")
-    });
-    zellij.send_stdin(&keys::key('y'));
-    zellij.wait_until("the prompt is dismissed", |grid_snapshot| {
-        !grid_snapshot.contains("Allow? (y/n)")
-    });
+    open_sidebar(&zellij);
 
     // The project is named for the folder the checkout is in, and the branch is
-    // the one it has out. Both arrive in the agents pane hocus spawned above
+    // the one it has out. Both arrive in the agents pane hocus spawned beside
     // itself, without anyone focusing anything.
     zellij.wait_until("the agent is under its project", |grid_snapshot| {
-        grid_snapshot.contains("hocus-project") && grid_snapshot.contains("trunk")
+        grid_snapshot.contains("hocus-project")
+            && grid_snapshot.contains("trunk")
+            && grid_snapshot.contains("hocus — ")
     });
 
     let screen = zellij.snapshot();
@@ -182,8 +203,8 @@ fn an_agent_that_never_leaves_its_folder_lands_under_its_project() {
             .row_of_line(needle)
             .unwrap_or_else(|| panic!("{needle:?} is on screen:\n{}", screen.text))
     };
-    // The agents pane sits above the conversation in the same strip: headers,
-    // then the agent row with the list's selection on it, then the chat title.
+    // The agents pane sits beside the conversation in the same strip: headers,
+    // then the agent row with the list's selection on it.
     let project = row("hocus-project");
     assert_eq!(row("  trunk"), project + 1, "the branch header under it");
     assert_eq!(
@@ -191,10 +212,10 @@ fn an_agent_that_never_leaves_its_folder_lands_under_its_project() {
         project + 2,
         "the selected agent row"
     );
-    assert!(
-        row("hocus — ") > project + 2,
-        "the conversation is below the agent list:\n{}",
-        screen.text,
+    assert_eq!(
+        row("hocus — "),
+        row("agents ─"),
+        "the panes are side by side"
     );
     assert!(
         !screen.text.contains("no project"),
@@ -220,11 +241,6 @@ fn an_agent_in_a_nested_worktree_shows_its_own_branch() {
     let worktree = write_git_worktree(&repository, "topic", "topic");
     let layout = format!(
         r#"layout {{
-    global_panes {{
-        pane edge="left" size="50%" focus=true {{
-            plugin location="hocus"
-        }}
-    }}
     pane cwd="{}"
     pane cwd="{}"
 }}
@@ -243,7 +259,7 @@ fn an_agent_in_a_nested_worktree_shows_its_own_branch() {
     worktree_agent.run_foreground(&["claude"]);
     worktree_agent.output(b"$ ");
 
-    allow(&zellij);
+    open_sidebar(&zellij);
 
     // The *indented* headers, and both agent rows. A bare `contains("topic")`
     // is not enough: the project takes its name from whichever checkout is
@@ -254,6 +270,7 @@ fn an_agent_in_a_nested_worktree_shows_its_own_branch() {
             && grid_snapshot.contains("  trunk")
             && grid_snapshot.contains("0  claude")
             && grid_snapshot.contains("1  claude")
+            && grid_snapshot.contains("hocus — ")
             && !grid_snapshot.contains("no branch")
             && !grid_snapshot.contains("no project")
     });
@@ -302,25 +319,9 @@ fn an_agent_in_a_nested_worktree_shows_its_own_branch() {
     zellij.quit();
 }
 
-/// Grant hocus its permissions and wait for the dialog to go.
-fn allow(zellij: &TestSession) {
-    zellij.wait_until("hocus asks for permissions", |grid_snapshot| {
-        grid_snapshot.contains("Allow? (y/n)")
-    });
-    zellij.send_stdin(&keys::key('y'));
-    zellij.wait_until("the prompt is dismissed", |grid_snapshot| {
-        !grid_snapshot.contains("Allow? (y/n)")
-    });
-}
-
 /// A sidebar beside two unnamed panes — nothing about either says "agent" until
 /// something runs in it.
 const UNNAMED_PANES_LAYOUT: &str = r#"layout {
-    global_panes {
-        pane edge="left" size="50%" focus=true {
-            plugin location="hocus"
-        }
-    }
     pane
     pane
 }
@@ -349,7 +350,7 @@ fn an_agent_that_shells_out_stays_in_the_list_until_it_is_really_gone() {
     let second = zellij.expect_pty_spawn();
     first.output(b"$ ");
     second.output(b"$ ");
-    allow(&zellij);
+    open_sidebar(&zellij);
 
     first.run_foreground(&["claude"]);
     zellij.wait_until("the agent is listed", |grid_snapshot| {
@@ -399,11 +400,6 @@ fn an_agent_that_shells_out_stays_in_the_list_until_it_is_really_gone() {
 #[test]
 fn a_pane_launched_as_a_command_is_an_agent_without_a_title() {
     let layout = r#"layout {
-    global_panes {
-        pane edge="left" size="50%" focus=true {
-            plugin location="hocus"
-        }
-    }
     pane command="claude"
 }
 "#;
@@ -413,7 +409,7 @@ fn a_pane_launched_as_a_command_is_an_agent_without_a_title() {
         .start();
     let agent = zellij.expect_pty_spawn();
     agent.output(b"$ ");
-    allow(&zellij);
+    open_sidebar(&zellij);
 
     zellij.wait_until("the agent is listed", |grid_snapshot| {
         grid_snapshot.contains("0  claude  running")
@@ -421,33 +417,31 @@ fn a_pane_launched_as_a_command_is_an_agent_without_a_title() {
     zellij.quit();
 }
 
-/// The agent list is a real pane above the conversation, and the sidebar hides
-/// and returns as one unit.
+/// The agent list is a real pane beside the conversation, and either pane can
+/// hide without taking the other with it.
 #[test]
-fn the_agent_list_is_its_own_pane_and_the_sidebar_hides_as_one_strip() {
+fn the_agent_list_and_conversation_are_independent_overlay_panes() {
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config(HOCUS_CONFIG)
-        .with_layout(LayoutInfo::Stringified(HOCUS_LAYOUT.to_owned()))
+        .with_layout(LayoutInfo::Stringified(NO_SIDEBAR_LAYOUT.to_owned()))
         .start();
     let agent = zellij.expect_pty_spawn();
     agent.output(b"$ ");
 
-    zellij.wait_until("hocus asks for permissions", |grid_snapshot| {
-        grid_snapshot.contains("Allow? (y/n)")
-    });
-    zellij.send_stdin(&keys::key('y'));
-    zellij.wait_until("the prompt is dismissed", |grid_snapshot| {
-        !grid_snapshot.contains("Allow? (y/n)")
+    open_sidebar(&zellij);
+    zellij.send_stdin(&keys::ctrl('b'));
+    zellij.wait_until("the conversation is ready", |grid_snapshot| {
+        grid_snapshot.contains("hocus — ") && grid_snapshot.cursor.is_some()
     });
 
-    // Something in the transcript to look for underneath the agent list. A
+    // Something in the transcript to look for beside the agent list. A
     // slash command runs the tool inline, so no API key is involved.
     submit(
         &zellij,
         r#"/project_assign {"name": "marker", "root": "/work/marker"}"#,
     );
     zellij.wait_until("the transcript has something in it", |grid_snapshot| {
-        grid_snapshot.contains("assigned tab 0 to project marker")
+        grid_snapshot.contains("assigned tab 0 to project") && grid_snapshot.contains("marker")
     });
 
     zellij.wait_until("the agents pane is populated", |grid_snapshot| {
@@ -464,89 +458,30 @@ fn the_agent_list_is_its_own_pane_and_the_sidebar_hides_as_one_strip() {
     // Nothing here owns a project and a pane the harness fakes reports no
     // folder to read a branch out of, so both headers stand in for what they
     // could not name — and the agent sits under them either way, in its own
-    // pane above the conversation.
+    // pane beside the conversation.
     let no_project = row("no project");
     assert_eq!(row("  no branch"), no_project + 1);
     assert_eq!(row(">     0  claude  running"), no_project + 2);
     let title = row("hocus — ");
-    assert!(
-        title > no_project + 2,
-        "the conversation pane sits below the agent list:\n{}",
-        screen.text,
-    );
-    assert!(
-        (title..screen.text.lines().count()).contains(&row("assigned tab 0 to project marker")),
-        "the transcript is in the conversation pane:\n{}",
-        screen.text,
-    );
+    assert_eq!(title, row("agents ─"), "the panes are side by side");
+    assert!(screen.text.contains("assigned tab 0 to project"));
 
-    // Esc in the conversation hides the whole sidebar strip: the agent list
-    // goes with the chat, because they are one sidebar.
+    // Esc in the conversation hides only that pane; the list is independent.
     zellij.send_stdin(&keys::ESC);
-    zellij.wait_until("the sidebar is hidden", |grid_snapshot| {
-        !grid_snapshot.contains("hocus — ") && !grid_snapshot.contains("0  claude  running")
+    zellij.wait_until("the conversation is hidden", |grid_snapshot| {
+        !grid_snapshot.contains("hocus — ") && grid_snapshot.contains("0  claude  running")
     });
 
-    // And the launch binding brings the whole strip back, both panes intact.
+    // And the launch binding brings the conversation back beside the intact list.
     zellij.send_stdin(&keys::ctrl('b'));
     zellij.wait_until("the sidebar is back", |grid_snapshot| {
         grid_snapshot.contains("hocus — ") && grid_snapshot.contains("0  claude  running")
     });
     zellij.wait_until(
         "the conversation survived the round trip",
-        |grid_snapshot| grid_snapshot.contains("assigned tab 0 to project marker"),
-    );
-    zellij.quit();
-}
-
-#[test]
-fn opening_the_agent_list_with_nothing_running_builds_the_whole_sidebar() {
-    // The list is a view: hocus computes the rows and pipes them over. So a
-    // binding that opens the list on a session with no sidebar has to end up
-    // with a conversation behind it, or it draws an empty pane forever. The
-    // two halves spawn each other for exactly this reason, and only a real
-    // session says the second half arrived.
-    let mut zellij = TestRunner::new(TERMINAL_SIZE)
-        .with_config(HOCUS_AGENTS_BINDING_CONFIG)
-        .with_layout(LayoutInfo::Stringified(NO_SIDEBAR_LAYOUT.to_owned()))
-        .start();
-    let agent = zellij.expect_pty_spawn();
-    agent.output(b"$ ");
-
-    zellij.send_stdin(&keys::ctrl('b'));
-
-    // hocus is the half that asks for permissions, so being asked at all is
-    // the proof that opening the list brought the conversation with it.
-    zellij.wait_until("hocus asks for permissions", |grid_snapshot| {
-        grid_snapshot.contains("Allow? (y/n)")
-    });
-    // The binding put focus on the list, which is the whole point of it — so
-    // the answer has to be typed into the pane that asked, one below.
-    zellij.send_stdin(&keys::alt('j'));
-    zellij.send_stdin(&keys::key('y'));
-    zellij.wait_until("the prompt is dismissed", |grid_snapshot| {
-        !grid_snapshot.contains("Allow? (y/n)")
-    });
-
-    zellij.wait_until("the agent list is populated", |grid_snapshot| {
-        grid_snapshot.contains("0  claude  running")
-    });
-    zellij.wait_until("the conversation is there too", |grid_snapshot| {
-        grid_snapshot.contains("hocus — ")
-    });
-
-    // And in the usual order: the list on top, the conversation below it, the
-    // same strip hocus builds when it is the one that opens first.
-    let screen = zellij.snapshot();
-    let row = |needle: &str| {
-        screen
-            .row_of_line(needle)
-            .unwrap_or_else(|| panic!("{needle:?} is on screen:\n{}", screen.text))
-    };
-    assert!(
-        row("hocus — ") > row("0  claude  running"),
-        "the conversation sits below the agent list:\n{}",
-        screen.text,
+        |grid_snapshot| {
+            grid_snapshot.contains("assigned tab 0 to project") && grid_snapshot.contains("marker")
+        },
     );
     zellij.quit();
 }
