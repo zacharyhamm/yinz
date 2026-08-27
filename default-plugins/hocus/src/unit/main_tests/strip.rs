@@ -106,18 +106,17 @@ fn the_strip_carries_the_focused_pane_agent_or_not() {
 }
 
 /// The id the agents pane announces itself with. Any number; what matters is
-/// that hocus compares it against the plugin pane the daemon reports focused.
+/// that hocus records it, because it is the only thing that lets hocus place the
+/// list beside itself.
 const AGENTS_PANE: u32 = 11;
 
 /// `state_with_panes` - one `codex` agent on pane 3, one shell on pane 4 - with
-/// the agents pane known, `selected` under its cursor, and pane 3 holding a
-/// summary. `polls` is how long ago the agent was last seen moving, which the
-/// inset does not care about and the tests below say so.
-fn state_with_summary(selected: Option<u32>, polls: u32) -> State {
+/// the agents pane known and pane 3 holding a summary. `polls` is how long ago
+/// the agent was last seen moving.
+fn state_with_summary(polls: u32) -> State {
     let mut state = state_with_panes();
     state.agents_plugin = Some(AGENTS_PANE);
     state.focused_plugin = Some(AGENTS_PANE);
-    state.agents_selected = selected;
     state.activity = agents::Activity::from([(3, (11, polls))]);
     state.summaries = agents::Summaries::from([(
         3,
@@ -131,80 +130,64 @@ fn state_with_summary(selected: Option<u32>, polls: u32) -> State {
     state
 }
 
-/// The inset is a note about the row the user's cursor is on in the agents
-/// pane, which is neither the focused pane nor the sticky `last_focused_agent`.
+/// The summary box is drawn in the agents pane now, so what hocus owes it is the
+/// summary itself - on the same message as the rows, keyed by the pane each row
+/// names.
 #[test]
-fn the_selected_agents_summary_is_what_the_inset_draws() {
-    let state = state_with_summary(Some(3), 2);
-    let (pane_id, kind, summary) = state.selected_summary().expect("the selected agent");
-    assert_eq!((pane_id, kind), (3, "codex"));
+fn the_strip_carries_the_summary_of_every_agent_on_it() {
+    let state = state_with_summary(2);
+    let strip = state.current_strip();
+    let summary = strip.summaries.get(&3).expect("pane 3's summary");
     assert_eq!(summary.text, "Ran the tests.");
-    assert_eq!(state.inset_key(), Some((3, 11, true)));
+    assert!(summary.awaiting, "and the claim the `!` marker makes");
 }
 
-/// What is asked for is the *last* thing the daemon made of this agent, so an
-/// agent that has gone back to work goes on showing it. The `!` marker in the
-/// header says which of the two kinds of stop it was; the pane id says which
-/// pane it was about; neither claims to be an account of right now.
+/// What is carried is the *last* thing the daemon made of an agent, so one that
+/// has gone back to work goes on carrying it: the box is an account of a moment,
+/// which is why its header names the pane.
 #[test]
-fn an_agent_back_at_work_still_shows_its_last_summary() {
-    let state = state_with_summary(Some(3), 0);
-    assert_eq!(state.inset_key(), Some((3, 11, true)));
+fn an_agent_back_at_work_still_carries_its_last_summary() {
+    assert!(state_with_summary(0)
+        .current_strip()
+        .summaries
+        .contains_key(&3));
 }
 
-/// Anywhere but the list, the box is not what the user is reading.
+/// A summary outlives the pane it is about. The box is drawn *for a row*, so one
+/// no row names could never be selected and has no business on the wire.
 #[test]
-fn nothing_is_drawn_unless_the_agents_pane_holds_the_focus() {
-    // Standing in the agent itself.
-    let mut state = state_with_summary(Some(3), 2);
-    state.focused_plugin = None;
-    state.focused_pane = Some(3);
-    assert!(state.selected_summary().is_none());
+fn a_summary_with_no_row_to_sit_under_is_not_sent() {
+    let mut state = state_with_summary(2);
+    state.summaries.insert(
+        99,
+        agents::Summary {
+            text: "a pane that has since closed".to_owned(),
+            title: String::new(),
+            awaiting: false,
+            hash: 1,
+        },
+    );
+    let strip = state.current_strip();
+    assert!(strip.summaries.contains_key(&3));
+    assert!(!strip.summaries.contains_key(&99), "no row names pane 99");
+    // and the shell on pane 4 is no agent, so it has no row either
+    assert!(!strip.summaries.contains_key(&4));
+}
 
-    // In another plugin pane - hocus itself, most often.
-    let mut state = state_with_summary(Some(3), 2);
-    state.focused_plugin = Some(AGENTS_PANE + 1);
-    assert!(state.selected_summary().is_none());
-
-    // And before the agents pane has said which id it is, there is nothing to
-    // compare a focused plugin pane against.
-    let mut state = state_with_summary(Some(3), 2);
+/// The one thing hocus still wants from `AGENT_SELECTION`: the list's plugin id.
+/// It is not worth a repaint here - nothing on this pane's screen comes from it -
+/// but it is what `apply_overlay_geometry` needs to place the list.
+#[test]
+fn a_selection_message_is_how_hocus_learns_the_agent_lists_id() {
+    let mut state = state_with_summary(2);
     state.agents_plugin = None;
-    assert!(state.selected_summary().is_none());
-}
 
-#[test]
-fn nothing_is_drawn_for_a_selection_that_is_no_agent_or_has_nothing_to_say() {
-    // A shell, with the agent's summary still in the map beside it.
-    assert!(state_with_summary(Some(4), 2).selected_summary().is_none());
-    // A strip with nothing selectable on it.
-    assert!(state_with_summary(None, 2).selected_summary().is_none());
-    // An agent the daemon has never had an answer about.
-    let mut state = state_with_summary(Some(3), 2);
-    state.summaries.clear();
-    assert!(state.selected_summary().is_none());
-}
-
-/// The agents pane's cursor arrives on a pipe, and moving it is worth a
-/// repaint here: nothing the user typed in this pane changed, but the box did.
-#[test]
-fn a_selection_message_moves_the_inset_and_repaints() {
-    let mut state = state_with_summary(None, 2);
-    state.agents_plugin = None;
-    state.agents_selected = None;
-
-    // The first message carries the plugin id and no selection yet.
     assert!(!state.pipe(selection(AGENTS_PANE, None)));
     assert_eq!(state.agents_plugin, Some(AGENTS_PANE));
-    assert_eq!(state.inset_key(), None);
 
-    // Walking onto the agent brings the box with it.
-    assert!(state.pipe(selection(AGENTS_PANE, Some(3))));
-    assert_eq!(state.inset_key(), Some((3, 11, true)));
-
-    // And off it again, onto a pane with nothing to show.
-    assert!(state.pipe(selection(AGENTS_PANE, Some(4))));
-    assert_eq!(state.inset_key(), None);
+    // and walking the list is silent here
+    assert!(!state.pipe(selection(AGENTS_PANE, Some(3))));
+    assert_eq!(state.agents_plugin, Some(AGENTS_PANE));
 }
 
 /// One `AGENT_SELECTION` from the agents pane.

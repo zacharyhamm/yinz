@@ -194,7 +194,13 @@ fn overlay_panes_with(
 
 fn add(panes: &mut OverlayPanes, id: u32, kind: OverlayKind, coords: FloatingPaneCoordinates) {
     let pane_id = PaneId::Terminal(id);
-    panes.add_pane(pane_id, mock_pane(pane_id), kind, coords);
+    panes.add_pane(
+        pane_id,
+        mock_pane(pane_id),
+        kind,
+        coords,
+        OverlayCarry::default(),
+    );
 }
 
 #[test]
@@ -1354,4 +1360,584 @@ fn the_keyboard_path_resizes_the_client_s_own_overlay() {
         .resize_active_pane(1, &grow(Direction::Right))
         .unwrap());
     assert_eq!(size(&panes, 1), (53, 10));
+}
+
+// ---- per-pane suppression --------------------------------------------------------------------
+//
+// `hide_pane` sets one overlay aside without unloading it, so hocus's Esc can put the sidebar away
+// and keep the conversation. What these pin is the line between the queries that must stop seeing
+// a hidden overlay (everything that draws, occludes, hit-tests or focuses) and the ones that must
+// keep seeing it (everything that identifies it, so a `LaunchOrFocusPlugin` can find it again).
+
+#[test]
+fn a_hidden_overlay_is_drawn_nowhere_but_is_still_here() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    assert!(panes.hide_pane(PaneId::Terminal(1)));
+
+    assert!(
+        panes.stack_layer_ids().is_empty(),
+        "out of the occlusion stack, which is what render, layers and hit-testing all read"
+    );
+    assert!(panes.layers().is_empty());
+    assert!(panes.rendered_pane_ids().is_empty());
+    assert!(
+        !panes.has_panes(),
+        "a collection holding only a hidden overlay draws nothing, so the tab must behave as if \
+         it had no overlay at all"
+    );
+    assert!(
+        !panes.is_empty(),
+        "but it is not empty - the pane is still loaded, which is the whole point"
+    );
+
+    assert!(panes.panes_contain(&PaneId::Terminal(1)));
+    assert!(panes.get(&PaneId::Terminal(1)).is_some());
+    assert!(
+        panes.placement_of(&PaneId::Terminal(1)).is_some(),
+        "still an overlay, and still able to say how it is placed"
+    );
+    assert!(panes.is_hidden(&PaneId::Terminal(1)));
+}
+
+#[test]
+fn hiding_an_overlay_moves_its_clients_to_the_one_below_it() {
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    add(
+        &mut panes,
+        2,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    panes.focus_pane(PaneId::Terminal(2), 1);
+
+    panes.hide_pane(PaneId::Terminal(2));
+    assert_eq!(
+        panes.active_pane_id(1),
+        Some(PaneId::Terminal(1)),
+        "focus walks down to the overlay still on screen"
+    );
+
+    panes.hide_pane(PaneId::Terminal(1));
+    assert_eq!(
+        panes.active_pane_id(1),
+        None,
+        "hiding the last one leaves nobody holding a keyboard nobody can see - this is what lets \
+         every focus query stay unfiltered"
+    );
+}
+
+#[test]
+fn a_hidden_overlay_may_not_be_focused_until_it_is_shown() {
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    panes.hide_pane(PaneId::Terminal(1));
+
+    assert!(!panes.may_be_focused(&PaneId::Terminal(1)));
+    panes.focus_pane(PaneId::Terminal(1), 1);
+    assert_eq!(panes.active_pane_id(1), None, "the focus was refused");
+
+    assert!(panes.show_pane(PaneId::Terminal(1)));
+    panes.focus_pane(PaneId::Terminal(1), 1);
+    assert_eq!(panes.active_pane_id(1), Some(PaneId::Terminal(1)));
+}
+
+#[test]
+fn focusing_a_hidden_overlay_by_id_reveals_it() {
+    // the reveal path: `LaunchOrFocusPlugin` naming a hidden hocus is the user asking for it back,
+    // and `Tab::focus_pane_with_id` routes through here
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    panes.hide_pane(PaneId::Terminal(1));
+
+    panes
+        .focus_pane_if_exists(PaneId::Terminal(1), 1)
+        .expect("the overlay is ours");
+    assert!(!panes.is_hidden(&PaneId::Terminal(1)), "shown");
+    assert_eq!(
+        panes.active_pane_id(1),
+        Some(PaneId::Terminal(1)),
+        "and focused - being shown without being focused would leave the user's request half done"
+    );
+}
+
+#[test]
+fn hiding_an_overlay_mid_drag_releases_the_mouse() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    let corner = frame_corner(&panes, 1);
+    panes.set_pane_being_moved_with_mouse(PaneId::Terminal(1), corner);
+    assert!(panes.pane_is_being_moved_with_mouse());
+
+    panes.hide_pane(PaneId::Terminal(1));
+    assert!(
+        !panes.pane_is_being_moved_with_mouse(),
+        "a drag left pointing at a pane that is no longer painted would swallow every mouse event \
+         until a release arrived"
+    );
+}
+
+#[test]
+fn a_hidden_overlay_does_not_take_the_mouse_or_the_cells_under_it() {
+    let strip = GlobalPaneStrip {
+        geom: geom(0, 0, 10, 20),
+        edge: GlobalPaneEdge::Left,
+    };
+    let (mut panes, _display_area) = overlay_panes_with(90, 20, (10, 0), vec![strip]);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("100%", "100%"),
+    );
+    let inside = Position::new(5, 5);
+    assert_eq!(panes.get_pane_id_at(&inside), Some(PaneId::Terminal(1)));
+    assert!(panes.has_panes_outside_viewport());
+
+    panes.hide_pane(PaneId::Terminal(1));
+    assert_eq!(
+        panes.get_pane_id_at(&inside),
+        None,
+        "the click goes to whatever is underneath"
+    );
+    assert!(
+        !panes.has_panes_outside_viewport(),
+        "a hidden overlay owns no cells - counting one would leave the tab painting over the \
+         global panes with nothing to paint"
+    );
+}
+
+#[test]
+fn a_hidden_overlay_reports_itself_suppressed_and_unfocused() {
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    panes.focus_pane(PaneId::Terminal(1), 1);
+    let visible = panes.pane_info(&HashMap::new());
+    assert!(!visible[0].is_suppressed);
+
+    panes.hide_pane(PaneId::Terminal(1));
+    let hidden = panes.pane_info(&HashMap::new());
+    assert_eq!(
+        hidden.len(),
+        1,
+        "still reported, so a plugin can see the state"
+    );
+    assert!(
+        hidden[0].is_suppressed,
+        "the one bit a plugin can read to tell it was hidden - hocus keys its reveal off this"
+    );
+    assert!(!hidden[0].is_focused);
+}
+
+#[test]
+fn a_hidden_overlay_is_still_re_resolved_against_a_new_surface() {
+    let (mut panes, display_area) = overlay_panes_with(80, 20, (0, 0), vec![]);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    panes.hide_pane(PaneId::Terminal(1));
+
+    *display_area.borrow_mut() = Size {
+        rows: 40,
+        cols: 160,
+    };
+    panes.reapply_coordinates();
+    panes.show_pane(PaneId::Terminal(1));
+
+    let geom = panes.get(&PaneId::Terminal(1)).unwrap().position_and_size();
+    assert_eq!(
+        (geom.cols.as_usize(), geom.rows.as_usize()),
+        (80, 20),
+        "it comes back where its coordinates put it on the surface as it is now, not where it was \
+         when it was hidden"
+    );
+}
+
+#[test]
+fn a_replaced_hidden_overlay_is_still_hidden() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    panes.hide_pane(PaneId::Terminal(1));
+    panes
+        .replace_pane(PaneId::Terminal(1), mock_pane(PaneId::Terminal(2)))
+        .expect("replaced");
+
+    assert!(
+        panes.is_hidden(&PaneId::Terminal(2)),
+        "the slot's hidden-ness travels with the slot, as its kind and coordinates already do - a \
+         pane swapped into a hidden overlay is not suddenly on screen"
+    );
+    assert!(panes.stack_layer_ids().is_empty());
+}
+
+#[test]
+fn a_modal_opened_while_an_overlay_is_hidden_still_outranks_it_when_it_comes_back() {
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    panes.hide_pane(PaneId::Terminal(1));
+    add(&mut panes, 2, OverlayKind::Modal, coordinates("50%", "50%"));
+    panes.focus_pane(PaneId::Terminal(2), 1);
+
+    assert_eq!(
+        panes.topmost_modal_pane_id(),
+        Some(PaneId::Terminal(2)),
+        "a hidden overlay is not in the running for the top of the stack either way"
+    );
+    panes.show_pane(PaneId::Terminal(1));
+    assert_eq!(
+        *panes.stack_layer_ids().last().unwrap(),
+        PaneId::Terminal(2),
+        "coming back puts it at the top of its own class, which is still below the modal"
+    );
+    assert!(
+        !panes.may_be_focused(&PaneId::Terminal(1)),
+        "and the modal keeps the keyboard"
+    );
+    assert_eq!(panes.active_pane_id(1), Some(PaneId::Terminal(2)));
+}
+
+// ---- a modal that was set aside ----------------------------------------------------------------
+//
+// Suppression and modality pull against each other, and the seam between them is `stack_layer_ids`:
+// the modal lock is read off it, and it filters `hidden`. So hiding a modal quietly lifts the lock
+// and showing it quietly puts it back - which means neither statement can be only about drawing.
+// A modal *is* its keyboard: it has no channel to learn it lost focus, so "on screen" and "holding
+// the keyboard" have to move together for one, exactly as "not drawn" and "not focused" already do
+// for every overlay.
+
+#[test]
+fn showing_a_hidden_modal_takes_the_keyboard_back() {
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    add(&mut panes, 2, OverlayKind::Modal, coordinates("50%", "50%"));
+    panes.focus_pane(PaneId::Terminal(2), 1);
+
+    panes.hide_pane(PaneId::Terminal(2));
+    panes.show_pane(PaneId::Terminal(2));
+
+    assert_eq!(
+        panes.active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "the modal is back, and a modal that is back is a modal that is focused"
+    );
+    assert_eq!(
+        panes.stack_layer_ids(),
+        vec![PaneId::Terminal(1), PaneId::Terminal(2)],
+        "and back at the top of the stack, above the dismissible it outranks"
+    );
+}
+
+/// The bug this is all for. Before, the round trip left a dialog drawn over everything, holding
+/// the lock that refuses every other overlay the keyboard, while the keyboard itself had fallen
+/// through to whatever was underneath - so nobody could type into the modal and nothing else could
+/// be focused past it.
+#[test]
+fn a_modal_put_back_locks_the_others_out_and_holds_the_keyboard_itself() {
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    add(&mut panes, 2, OverlayKind::Modal, coordinates("50%", "50%"));
+    panes.focus_pane(PaneId::Terminal(2), 1);
+
+    panes.hide_pane(PaneId::Terminal(2));
+    panes.show_pane(PaneId::Terminal(2));
+
+    panes.focus_pane(PaneId::Terminal(1), 1);
+    assert!(
+        !panes.may_be_focused(&PaneId::Terminal(1)),
+        "the lock is armed again - the modal is back in the stack"
+    );
+    assert_eq!(
+        panes.active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "and the pane holding that lock is the one holding the keyboard, rather than the two \
+         having come apart"
+    );
+}
+
+#[test]
+fn hiding_a_modal_does_not_hand_the_keyboard_to_the_overlay_under_it() {
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    add(&mut panes, 2, OverlayKind::Modal, coordinates("50%", "50%"));
+    panes.focus_pane(PaneId::Terminal(2), 1);
+
+    panes.hide_pane(PaneId::Terminal(2));
+
+    assert_eq!(
+        panes.active_pane_id(1),
+        None,
+        "setting a modal aside is not the user withdrawing the refusal it was making - the \
+         dismissible underneath was not focusable a moment ago and does not become so now"
+    );
+}
+
+/// A modal *closing* does walk focus down (`move_clients_out_of_pane`), and a modal below is the
+/// one thing it may walk down to. Hiding follows the same rule for the same reason.
+#[test]
+fn hiding_a_modal_over_a_modal_walks_the_keyboard_to_the_modal_below() {
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(&mut panes, 1, OverlayKind::Modal, coordinates("50%", "50%"));
+    add(&mut panes, 2, OverlayKind::Modal, coordinates("50%", "50%"));
+    panes.focus_pane(PaneId::Terminal(2), 1);
+
+    panes.hide_pane(PaneId::Terminal(2));
+
+    assert_eq!(panes.active_pane_id(1), Some(PaneId::Terminal(1)));
+}
+
+#[test]
+fn showing_a_modal_gives_it_to_every_connected_client() {
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    panes.connected_clients.borrow_mut().insert(2);
+    add(&mut panes, 1, OverlayKind::Modal, coordinates("50%", "50%"));
+    panes.focus_pane_for_all_clients(PaneId::Terminal(1));
+
+    panes.hide_pane(PaneId::Terminal(1));
+    panes.show_pane(PaneId::Terminal(1));
+
+    assert_eq!(panes.active_pane_id(1), Some(PaneId::Terminal(1)));
+    assert_eq!(
+        panes.active_pane_id(2),
+        Some(PaneId::Terminal(1)),
+        "a modal is focused for everybody, and coming back is no different from opening"
+    );
+}
+
+/// The other half of the contract, and the one hocus depends on: showing an *ordinary* overlay is
+/// still only about drawing it. hocus restores its agent list beside itself without wanting the
+/// keyboard to leave the conversation.
+#[test]
+fn showing_a_hidden_dismissible_overlay_still_leaves_the_keyboard_alone() {
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    add(
+        &mut panes,
+        2,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    panes.focus_pane(PaneId::Terminal(1), 1);
+    panes.hide_pane(PaneId::Terminal(2));
+
+    panes.show_pane(PaneId::Terminal(2));
+
+    assert_eq!(
+        panes.active_pane_id(1),
+        Some(PaneId::Terminal(1)),
+        "the pane that was drawn again is not the pane that is focused"
+    );
+}
+
+/// `focus_pane_if_exists` reveals through `show_pane`, so a modal now arrives focused twice over.
+/// Its contract is unchanged: `Ok` still means "this overlay is mine", which is what keeps
+/// `Tab::focus_pane_with_id`'s `.or_else` chain from going on to focus something else.
+#[test]
+fn focusing_a_hidden_modal_by_id_reveals_it_and_still_reports_it_is_ours() {
+    let mut panes = overlay_panes(80, 20);
+    panes.connected_clients.borrow_mut().insert(1);
+    add(&mut panes, 1, OverlayKind::Modal, coordinates("50%", "50%"));
+    panes.hide_pane(PaneId::Terminal(1));
+
+    assert!(panes.focus_pane_if_exists(PaneId::Terminal(1), 1).is_ok());
+    assert!(!panes.is_hidden(&PaneId::Terminal(1)));
+    assert_eq!(panes.active_pane_id(1), Some(PaneId::Terminal(1)));
+}
+
+// ---- an overlay that is placed by its owner ---------------------------------------------------
+//
+// A launch that named no coordinates is born half the surface, *centered*. For hocus's pair of
+// corner panels that is squarely on top of each other, and only their owner moves them out of
+// there - a round trip later, once the pane is on a tab for the placement to find. The flag says
+// "do not paint me until somebody has placed me"; see `OverlayCarry::awaiting_placement`.
+
+fn add_awaiting_placement(panes: &mut OverlayPanes, id: u32) {
+    let pane_id = PaneId::Terminal(id);
+    panes.add_pane(
+        pane_id,
+        mock_pane(pane_id),
+        OverlayKind::Dismissible,
+        FloatingPaneCoordinates::default(),
+        OverlayCarry {
+            awaiting_placement: true,
+            ..Default::default()
+        },
+    );
+}
+
+#[test]
+fn an_overlay_awaiting_placement_is_not_drawn() {
+    let mut panes = overlay_panes(80, 20);
+    add_awaiting_placement(&mut panes, 1);
+
+    assert!(
+        panes.rendered_pane_ids().is_empty(),
+        "nothing is painted for it"
+    );
+    assert!(
+        panes.layers().is_empty(),
+        "and nothing is clipped against it either, or it would erase what is underneath"
+    );
+    assert!(
+        panes.panes_contain(&PaneId::Terminal(1)),
+        "it exists all the same - this is not `hide_pane`"
+    );
+}
+
+/// Not `hidden`, which is the user setting a pane aside and is reported as `is_suppressed`. A
+/// plugin reads that field to tell that it was hidden or revealed, and a pane a frame old has been
+/// neither.
+#[test]
+fn an_overlay_awaiting_placement_does_not_report_itself_hidden() {
+    let mut panes = overlay_panes(80, 20);
+    add_awaiting_placement(&mut panes, 1);
+
+    assert!(!panes.is_hidden(&PaneId::Terminal(1)));
+    let info = panes.pane_info(&HashMap::new());
+    assert_eq!(info.len(), 1);
+    assert!(!info[0].is_suppressed);
+}
+
+#[test]
+fn the_first_placement_is_what_draws_it() {
+    let mut panes = overlay_panes(80, 20);
+    add_awaiting_placement(&mut panes, 1);
+
+    panes
+        .change_pane_coordinates(PaneId::Terminal(1), coordinates("60%", "50%"))
+        .unwrap();
+
+    assert_eq!(panes.rendered_pane_ids(), vec![PaneId::Terminal(1)]);
+    assert_eq!(
+        panes
+            .get(&PaneId::Terminal(1))
+            .unwrap()
+            .position_and_size()
+            .cols
+            .as_usize(),
+        48,
+        "and it is drawn where it was placed, not where it was born"
+    );
+}
+
+/// The safety valve. An overlay whose owner never places it would otherwise be invisible for as
+/// long as it lived; a resize shows it where it was born, which is what it would have done without
+/// the flag at all.
+#[test]
+fn a_resize_releases_an_overlay_nobody_ever_placed() {
+    let (mut panes, display_area) = overlay_panes_with(80, 20, (0, 0), vec![]);
+    add_awaiting_placement(&mut panes, 1);
+    assert!(panes.rendered_pane_ids().is_empty());
+
+    *display_area.borrow_mut() = Size {
+        cols: 100,
+        rows: 30,
+    };
+    panes.reapply_coordinates();
+
+    assert_eq!(panes.rendered_pane_ids(), vec![PaneId::Terminal(1)]);
+}
+
+/// It travels, so a pane that was still waiting when the user switched tabs is still waiting when
+/// it arrives - and one that had been placed does not go blank on the way across.
+#[test]
+fn awaiting_placement_survives_a_move_between_collections() {
+    let mut panes = overlay_panes(80, 20);
+    add_awaiting_placement(&mut panes, 1);
+    let carry = panes.carry_of(&PaneId::Terminal(1));
+    assert!(carry.awaiting_placement);
+
+    let pane = panes.remove_pane(PaneId::Terminal(1)).unwrap();
+    let mut elsewhere = overlay_panes(80, 20);
+    elsewhere.add_pane(
+        PaneId::Terminal(1),
+        pane,
+        OverlayKind::Dismissible,
+        FloatingPaneCoordinates::default(),
+        carry,
+    );
+    assert!(elsewhere.rendered_pane_ids().is_empty());
+
+    elsewhere
+        .change_pane_coordinates(PaneId::Terminal(1), coordinates("60%", "50%"))
+        .unwrap();
+    let carry = elsewhere.carry_of(&PaneId::Terminal(1));
+    assert!(
+        !carry.awaiting_placement,
+        "and a placed overlay carries that across rather than going blank on the next move"
+    );
 }

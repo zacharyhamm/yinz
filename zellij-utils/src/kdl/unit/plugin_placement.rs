@@ -268,3 +268,98 @@ fn terminal_global_placement_rejects_edge_and_size_without_global_true() {
         );
     }
 }
+
+/// `awaits_placement` reaches the configuration map beside `overlay`, and nothing else does.
+///
+/// The map is plugin identity, and this key has to be in it for the same reason `overlay` is:
+/// hocus's two halves are opened both by these keybindings and by each other
+/// (`hocus_proto::launch::overlay_configuration`), and a launch whose configuration differs by one
+/// key addresses a different instance - which shows up as a duplicate pane rather than an error.
+/// The pair asserted below is exactly what that function writes; `floating` and
+/// `move_to_focused_tab` are launch properties rather than configuration and stay out of it.
+#[test]
+fn awaits_placement_reaches_the_configuration_beside_overlay() {
+    let binding = |block: &str| {
+        let source = format!(
+            r#"
+            keybinds {{
+                normal {{
+                    bind "Ctrl o" {{
+                        LaunchOrFocusPlugin "hocus" {{
+                            {block}
+                        }}
+                    }}
+                }}
+            }}
+        "#
+        );
+        let document: KdlDocument = source.parse().unwrap();
+        let keybinds = Keybinds::from_kdl(
+            document.get("keybinds").unwrap(),
+            Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+        let key = KeyWithModifier::new(BareKey::Char('o')).with_ctrl_modifier();
+        let Some(Action::LaunchOrFocusPlugin { plugin, .. }) = keybinds
+            .get_actions_for_key_in_mode(&InputMode::Normal, &key)
+            .and_then(|actions| actions.first())
+        else {
+            panic!("expected LaunchOrFocusPlugin");
+        };
+        match plugin {
+            RunPluginOrAlias::RunPlugin(plugin) => plugin.configuration.inner().clone(),
+            RunPluginOrAlias::Alias(alias) => alias
+                .configuration
+                .as_ref()
+                .map(|configuration| configuration.inner().clone())
+                .unwrap_or_default(),
+        }
+    };
+
+    let overlay = binding(
+        "floating true
+                            overlay true
+                            awaits_placement true
+                            move_to_focused_tab true",
+    );
+    assert_eq!(
+        overlay,
+        [
+            ("awaits_placement".to_owned(), "true".to_owned()),
+            ("overlay".to_owned(), "true".to_owned()),
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeMap<_, _>>(),
+        "character for character what `overlay_configuration` writes, and nothing besides"
+    );
+
+    // and it survives a dump-and-reload, or `zellij setup --dump-config` would hand the user a
+    // config whose `c` binding addressed a different instance from the one they were running
+    let source = r#"
+        keybinds {
+            normal {
+                bind "Ctrl o" {
+                    LaunchOrFocusPlugin "hocus" {
+                        floating true
+                        overlay true
+                        awaits_placement true
+                        move_to_focused_tab true
+                    }
+                }
+            }
+        }
+    "#;
+    let document: KdlDocument = source.parse().unwrap();
+    let keybinds = Keybinds::from_kdl(
+        document.get("keybinds").unwrap(),
+        Default::default(),
+        &Default::default(),
+    )
+    .unwrap();
+    let serialized = Keybinds::to_kdl(&keybinds, true).to_string();
+    assert!(
+        serialized.contains("awaits_placement true"),
+        "not in the dump: {serialized}"
+    );
+}

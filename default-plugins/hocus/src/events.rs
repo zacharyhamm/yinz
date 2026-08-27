@@ -12,6 +12,11 @@ impl State {
         key.bare_key == BareKey::Char('`') && key.has_modifiers(&[KeyModifier::Ctrl])
     }
 
+    /// The interrupt. Split out from Esc, which now only ever hides.
+    pub(crate) fn is_interrupt_key(key: &KeyWithModifier) -> bool {
+        key.bare_key == BareKey::Char('c') && key.has_modifiers(&[KeyModifier::Ctrl])
+    }
+
     /// Re-resolve the config after Zellij reports the KDL block changed.
     ///
     /// Gated on `self.granted` — before the grant `self.env` is empty, and
@@ -112,6 +117,52 @@ impl State {
         self.auto_tab_projects
             .retain(|id, _| tabs.iter().any(|tab| tab.tab_id == *id));
         self.tabs = tabs;
+        // The column is placed against the screen, and this is the only event that reports its
+        // size - there is no resize event for a plugin, and `render` is handed the pane's size
+        // rather than the screen's.
+        if let Some(active) = self.tabs.iter().find(|tab| tab.active) {
+            let (rows, cols) = overlay::surface_of(active);
+            let position = active.position;
+            let resized = (rows, cols) != (self.surface_rows, self.surface_cols);
+            if resized {
+                self.surface_rows = rows;
+                self.surface_cols = cols;
+            }
+            // Where this client is now, against where they were. The rule that reads it is in
+            // `overlay::tab_to_follow`: only the client the panes are sitting with may move them,
+            // because every client gets its own `TabUpdate` and obeying all of them puts two
+            // clients on different tabs into a move loop with each other.
+            let was_on = self.client_tabs.insert(self.client, position);
+            // Not while *both* panes are set aside: a panel the user has put away does not chase
+            // their tab switches, and comes back where it is asked for - see `on_panes`. A hidden
+            // conversation beside a visible list still follows, or the tab switch strands the list
+            // on the tab it was opened from.
+            if !self.hidden || self.agents_visible {
+                if let Some(target) = overlay::tab_to_follow(self.own_tab_index, was_on, position) {
+                    self.follow_tab(target);
+                }
+            }
+            // Outside the visibility gate, deliberately, where the tab-following above is not. The
+            // surface is cached a few lines up whatever is on screen, and this event is the only
+            // thing that ever reports it - so a resize seen while both panes were set aside is the
+            // last word on the surface and would never be re-reported. Skipping the placement for
+            // it would leave a pane revealed afterwards at the old size, in the old corner.
+            //
+            // Placing a hidden pane is not painting one: the server re-resolves a hidden overlay
+            // like any other (`OverlayPanes::reapply_coordinates`) and gates the paint separately
+            // (`stack_layer_ids`), and `hide_self_only` already places from behind the hide. It has
+            // to be hocus that restates it - these coordinates are `Fixed`, because the panes are
+            // anchored to the *bottom*, so nothing on the server can recompute them.
+            //
+            // `!placed` as well as `resized`: the first `TabUpdate` is the only one that ever
+            // reports a *change* of display area, so a placement it could not land - our pane
+            // not being on a tab yet - would otherwise never be retried. See `State::placed`.
+            // `!agents_placed` for the same reason, about the other pane - see
+            // `State::agents_placed`.
+            if resized || !self.placed || !self.agents_placed {
+                self.apply_overlay_geometry();
+            }
+        }
         // Rather than deriving the active project a second way here. Switching tabs
         // does not change which agent was focused last, but a tab that went away
         // can still change the answer.
@@ -119,24 +170,197 @@ impl State {
         false
     }
 
+    /// Watch our own pane for the two things only the server knows: which tab it is on, and
+    /// whether it has been set aside.
+    ///
+    /// The reveal comes from *outside* - the `c` keybinding, or a `show_self` from a tool - and
+    /// this is the only word hocus gets of it. `is_suppressed` is what an overlay reports while
+    /// hidden, the same field a suppressed tab pane uses.
+    ///
+    /// The agent list is *not* discovered here. It announces itself with `AGENT_SELECTION` on
+    /// load, which carries its plugin id and is what `agents_plugin` is already set from; a pane
+    /// url cannot tell two instances apart, so there would be nothing gained by matching on one.
+    pub(crate) fn on_panes(&mut self, manifest: PaneManifest) -> bool {
+        let own_id = self.own_plugin_id;
+        // The first thing this event is good for, and the one thing that has to happen before
+        // anything else reads the manifest: settling whether this instance is a hocus restored as
+        // a *global pane* by a pre-overlay session dump. If it is, it hands over and closes, and
+        // none of the overlay bookkeeping below is about a pane that will still be here.
+        if self.legacy_suspect {
+            if hocus_proto::launch::is_legacy_global_instance(own_id, &manifest) {
+                self.migrate_to_overlay();
+                return false;
+            }
+            // Suspected on the configuration alone and cleared here: this is an ordinary
+            // non-overlay hocus, so it does the load-time work it deferred while it was in doubt.
+            self.legacy_suspect = false;
+            self.greet_agents_pane();
+            self.apply_overlay_geometry();
+        }
+        // An agent list the user closed has to be forgotten, or `open_agents_pane` keeps
+        // revealing a pane that is not there and never opens a new one. Cleared from the whole
+        // manifest rather than from our own tab: the two halves can be on different tabs for as
+        // long as it takes a `follow_tab` to land.
+        //
+        // Whether it is *drawn* is read in the same pass, because the `a` keybinding can reveal
+        // the list on its own while this half is still set aside - see below.
+        let mut agents_visible = false;
+        // Read in the same pass, and for the same reason: it is the only word this half gets about
+        // what happened to the other one. `rejoin` reads it to tell a list the user summoned from
+        // an apart list that was simply left behind - both bindings focus what they summon.
+        let mut agents_focused = false;
+        if let Some(agents_id) = self.agents_plugin {
+            self.agents_tab_index = manifest.panes.iter().find_map(|(tab_index, panes)| {
+                let agents = panes
+                    .iter()
+                    .find(|pane| pane.is_plugin && pane.id == agents_id)?;
+                agents_visible = !agents.is_suppressed;
+                agents_focused = agents.is_focused;
+                Some(*tab_index)
+            });
+            if self.agents_tab_index.is_none() {
+                self.agents_plugin = None;
+                // A list that is gone is nothing to place. Said rather than left behind, because
+                // the next one the user opens is a fresh pane at the centered default and the
+                // retry that moves it out of the way reads this.
+                self.agents_placed = true;
+            }
+        }
+        // Held for `on_tabs`, which has no manifest of its own and has to know whether there is
+        // anything on screen to carry to the tab the user switched to.
+        self.agents_visible = agents_visible;
+        for (tab_index, panes) in &manifest.panes {
+            let Some(own) = panes
+                .iter()
+                .find(|pane| pane.is_plugin && pane.id == own_id)
+            else {
+                continue;
+            };
+            self.own_tab_index = Some(*tab_index);
+            // The manifest is what makes a placement possible at all: it names the tab a pane is
+            // on, which is the thing `change_overlay_coordinates` needs to find it. A pane still
+            // sitting at the centered default the host gave it is placed here, whichever event
+            // failed to place it first. Converges by construction - the call sets both flags.
+            //
+            // Either half, and the list's half is the one that had nowhere else to be caught:
+            // `agents_tab_index` was read from this very manifest a few lines up, so this is the
+            // first pass that can place a list which announced itself before it was on a tab.
+            if !self.placed || !self.agents_placed {
+                self.apply_overlay_geometry();
+            }
+            if own.is_suppressed {
+                // the hide we asked for has landed. A suppressed conversation beside a visible
+                // list is an ordinary state now, not half of anything: the two panes hide
+                // separately, so there is nothing here to put back together.
+                self.hide_pending = false;
+                self.hidden = true;
+            } else if self.open_hidden {
+                // This instance was launched by the agent list's greeting, which asked for a list
+                // and not for a conversation. Done here rather than where the greeting arrived,
+                // because a `hide_self` issued before the pane is on a tab is dropped silently -
+                // the manifest finding our pane is the first moment it can land.
+                self.open_hidden = false;
+                self.hide_self_only();
+            } else if self.hide_pending {
+                // A snapshot taken before our hide reached the server. Reading this as a reveal
+                // would un-hide the pane the instant the user pressed Esc, so a hide we have
+                // asked for but not yet seen suppresses exactly one thing: this inference.
+            } else if self.hidden {
+                self.reveal_self();
+            }
+            break;
+        }
+        self.rejoin_agents_pane(agents_focused);
+        false
+    }
+
+    /// Put a parted pair back together, in whichever direction the user asked for.
+    ///
+    /// `follow_tab` moves the pair together and so cannot part them, but two paths outside hocus
+    /// can. The `a` and `c` keybindings carry `move_to_focused_tab`, which moves only the pane the
+    /// binding names - so a summon from another tab brings one half across and leaves the other
+    /// where it was. `follow_tab` is no help afterwards: `own_tab_index` has already been set from
+    /// this very manifest, so it reads as a pane that is where it belongs and returns.
+    ///
+    /// **Which half moved decides which way this goes**, and `overlay::rejoin` is where that is
+    /// decided - see it for why the answer is "whichever half the server focused". Dragging
+    /// unconditionally was wrong in one of the two cases: an unconditional drag took the list the
+    /// user had just summoned with `a` straight off their tab again.
+    ///
+    /// Converges by construction either way: the move is what makes the next manifest report the
+    /// two together, at which point this does nothing.
+    fn rejoin_agents_pane(&mut self, agents_is_focused: bool) {
+        let (Some(agents_id), Some(own_tab), Some(agents_tab)) = (
+            self.agents_plugin,
+            self.own_tab_index,
+            self.agents_tab_index,
+        ) else {
+            return;
+        };
+        let agents_tab_is_someones = self.client_tabs.values().any(|tab| *tab == agents_tab);
+        match overlay::rejoin(
+            own_tab,
+            agents_tab,
+            agents_is_focused,
+            agents_tab_is_someones,
+        ) {
+            // `follow_tab` carries both panes and restates both indices, so the list stays where
+            // the user put it and the conversation arrives beside it.
+            Some(overlay::Rejoin::Follow(tab_index)) => self.follow_tab(tab_index),
+            Some(overlay::Rejoin::Drag(tab_index)) => {
+                break_panes_to_tab_with_index(&[PaneId::Plugin(agents_id)], tab_index, false);
+                self.agents_tab_index = Some(tab_index);
+                // The destination resolves coordinates against its own surface, and the list
+                // arrives with whatever the keybinding's launch gave it - the same restatement
+                // `follow_tab` makes.
+                self.apply_overlay_geometry();
+            },
+            None => {},
+        }
+    }
+
     pub(crate) fn on_key(&mut self, key: KeyWithModifier) -> bool {
         if Self::is_toggle_key(&key) {
-            hide_self();
+            self.hide_self_only();
             return false;
         }
 
-        // These must be caught before TextInput sees them. Its bare-key arm
+        // This must be caught before TextInput sees it. Its bare-key arm
         // doesn't check for modifiers, so it would take Ctrl-l as a literal 'l'
         // and Alt-Enter as a submit.
         if key.bare_key == BareKey::Char('l') && key.has_modifiers(&[KeyModifier::Ctrl]) {
             return self.new_chat();
         }
-        if key.bare_key == BareKey::Char('r') && key.has_modifiers(&[KeyModifier::Ctrl]) {
-            return self.focus_agents_pane();
-        }
         // The temporary lists are modal while open.
         if self.picker.is_some() {
             return self.picker_key(key);
+        }
+        // Interrupt whatever is running. This used to be Esc's job, which meant a
+        // streaming reply could not be put away without also being killed - the
+        // state you are most likely to want out of the way was the one state where
+        // hiding cost you the answer.
+        if Self::is_interrupt_key(&key) {
+            // A plan first: nothing is running while one waits, so it is the only
+            // outstanding question, and `abort_tools` would push "tools aborted"
+            // over an empty queue. Esc leaves the prompt standing, exactly as it
+            // does for a tool waiting on y/n — hiding answers nothing.
+            if self.awaiting_plan() {
+                return self.decline_plan();
+            }
+            // Tools next, because they are the nearer thing: a stream and a tool
+            // run can both be outstanding, and the tool is the one the prompt is
+            // asking about.
+            if self.tools_busy() {
+                return self.abort_tools();
+            }
+            if self.is_streaming() {
+                return self.cancel_stream();
+            }
+            // Nothing to interrupt, so it falls back to what Ctrl-c means in a
+            // shell - and to what TextInput would have done with it anyway, before
+            // this arm started taking the key first.
+            self.input.clear();
+            return true;
         }
         // The confirmation prompt owns y/n outright, for the same reason: they
         // would otherwise be typed into the input box.
@@ -181,24 +405,16 @@ impl State {
 
         match self.input.handle_key(key) {
             InputAction::Submit => self.submit(),
-            // A plan first: nothing is running while one waits, so it is the
-            // only outstanding question. Esc reads as `n` here, the
-            // conservative answer it is everywhere else in this pane — and
-            // going to `abort_tools` instead would push "tools aborted" over an
-            // empty queue.
-            InputAction::Cancel if self.awaiting_plan() => self.decline_plan(),
-            // Then tools, because they are the nearer thing: a stream and a
-            // tool run can now both be outstanding, and the tool is the one the
-            // prompt is asking about.
-            InputAction::Cancel if self.tools_busy() => self.abort_tools(),
-            // One instance holds every stream, so whoever presses Esc can
-            // cancel whatever is arriving, no matter who started it.
-            InputAction::Cancel if self.is_streaming() => self.cancel_stream(),
             InputAction::Cancel => {
-                // Hide the session-global sidebar without unloading the plugin.
-                // The launch binding restores the same plugin from any tab.
+                // Esc is unconditionally "put hocus away" now; Ctrl-c is the
+                // interrupt. Nothing is torn down by hiding: a stream keeps
+                // arriving into a suppressed pane and a tool call waiting on y/n
+                // is still waiting when the pane comes back.
+                //
+                // Hidden, not unloaded; the agent list beside it, if there is one,
+                // stays. The launch binding restores the same plugin from any tab.
                 // Ctrl-l starts a new archived conversation.
-                hide_self();
+                self.hide_self_only();
                 false
             },
             InputAction::Continue => true,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::panes::OverlayCarry;
 use std::collections::BTreeMap;
 use zellij_utils::data::{OverlayKind, OverlayPlacement, Resize, ResizeStrategy};
 
@@ -154,6 +155,70 @@ fn popup_overlay_uses_the_whole_surface_and_temporarily_takes_global_focus() {
     );
 }
 
+/// The hocus column is two overlays, hidden one after the other, and the first of them is not
+/// the one the client is on. Consuming every suspended-focus entry for the tab therefore threw
+/// away the entry belonging to the client sitting on the *second* overlay, and by the time that
+/// one was hidden there was nothing left to restore - the client fell back onto a tiled pane
+/// instead of the global pane the column was opened from.
+#[test]
+fn hiding_a_sibling_overlay_leaves_the_focused_overlay_s_global_focus_to_restore() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size {
+        cols: 120,
+        rows: 20,
+    };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 40);
+    screen.render_to_clients().expect("TEST");
+    screen
+        .focus_global_pane(PaneId::Terminal(99), 1)
+        .expect("TEST");
+
+    let overlay = |y: usize| {
+        NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(
+            FloatingPaneCoordinates {
+                x: Some(PercentOrFixed::Fixed(2)),
+                y: Some(PercentOrFixed::Fixed(y)),
+                width: Some(PercentOrFixed::Fixed(30)),
+                height: Some(PercentOrFixed::Fixed(4)),
+                ..Default::default()
+            },
+        )))
+    };
+
+    // the agent list, above the chat and never focused
+    let agents = PaneId::Terminal(3);
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .new_pane(agents, None, None, false, false, overlay(4), Some(1), None)
+        .expect("TEST");
+    // the chat, which is what the client is on
+    let chat = PaneId::Terminal(2);
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .new_pane(chat, None, None, false, true, overlay(9), Some(1), None)
+        .expect("TEST");
+    screen.activate_overlay(chat);
+    assert_eq!(screen.active_pane_id(1), Some(chat));
+
+    // `hide_column` hides the list first, then itself - two `SuppressPane`s, in that order
+    for pane_id in [agents, chat] {
+        let restore = screen.take_global_focus_after_overlay_close(pane_id);
+        screen.tabs.get_mut(&0).unwrap().hide_overlay_pane(pane_id);
+        screen.restore_global_focus(restore);
+    }
+
+    assert_eq!(
+        screen.global_panes.focused_pane_id(1),
+        Some(PaneId::Terminal(99)),
+        "hiding the whole column puts the client back on the global pane it came from"
+    );
+}
+
 /// A pane's z-index has to be its place in the occlusion stack, which is not the same as its place
 /// among the panes a given render pass happens to draw. Taking the index from the pass rather than
 /// from the stack clips a pane against its own geometry, dropping every one of its chunks - the
@@ -224,6 +289,147 @@ fn a_global_pane_does_not_paint_over_an_overlay_in_another_client_s_tab() {
     );
 }
 
+/// Where the plugin popups in these tests are placed. Fixed on both axes, so a drag is visible as
+/// a difference in the resolved geometry.
+fn popup_coordinates() -> FloatingPaneCoordinates {
+    FloatingPaneCoordinates {
+        x: Some(PercentOrFixed::Fixed(2)),
+        y: Some(PercentOrFixed::Fixed(2)),
+        width: Some(PercentOrFixed::Percent(60)),
+        height: Some(PercentOrFixed::Fixed(4)),
+        ..Default::default()
+    }
+}
+
+/// The whole point of `awaits_placement`, through the door a keybinding launch actually comes in
+/// by.
+///
+/// `overlay true` alone puts the pane on screen at `base_geom`'s half-size-centered default, and
+/// its owner only moves it out of there a round trip later - which for hocus's two corner panels
+/// is a flash in the middle of the screen, on top of each other. With the flag the pane exists,
+/// can be focused, and is simply not painted until somebody places it.
+#[test]
+fn an_overlay_that_awaits_placement_is_not_painted_until_it_is_placed() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_new_screen(size, false, false);
+    new_tab(&mut screen, 1, 0);
+
+    let configuration = [
+        ("overlay".to_owned(), "true".to_owned()),
+        ("awaits_placement".to_owned(), "true".to_owned()),
+    ]
+    .into_iter()
+    .collect();
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/fake/popup", &Some(configuration), None, None)
+            .unwrap();
+    let plugin_sender = screen.bus.senders.to_plugin.clone().unwrap_or_else(|| {
+        let (plugin_tx, _plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+        SenderWithContext::new(plugin_tx)
+    });
+    let pane = PaneFactory::plugin(
+        9,
+        Default::default(),
+        plugin_sender,
+        "popup".to_owned(),
+        "popup".to_owned(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.connected_clients.borrow().keys().copied().collect(),
+        screen.style,
+        Some(Run::Plugin(run_plugin)),
+        screen.debug,
+        screen.arrow_fonts,
+        screen.styled_underlines,
+    );
+    let pane_id = PaneId::Plugin(9);
+    let tab = screen.tabs.get_mut(&0).expect("TEST");
+    // the door `LaunchOrFocusPlugin { floating true; overlay true }` comes in by: overlay-ness is
+    // re-derived from the configuration, and so is this
+    tab.add_floating_pane(pane, pane_id, Some(popup_coordinates()), true, Some(1))
+        .expect("TEST");
+
+    assert!(
+        tab.pane_is_overlay(pane_id),
+        "it is an overlay, and it exists"
+    );
+    assert!(
+        tab.overlay_carry_for(pane_id).awaiting_placement,
+        "and it is waiting to be told where it goes"
+    );
+    // `position_is_on_an_overlay` asks `visible_pane_id_at`, which derives from the same one list
+    // the painting does - so this is "nothing is drawn there", not merely "nothing is clickable"
+    let inside = Position::new(3, 3);
+    assert!(
+        !tab.position_is_on_an_overlay(&inside),
+        "nothing is painted for it until somebody places it"
+    );
+
+    tab.change_overlay_coordinates(&pane_id, popup_coordinates())
+        .expect("TEST");
+    assert!(
+        !tab.overlay_carry_for(pane_id).awaiting_placement
+            && tab.position_is_on_an_overlay(&inside),
+        "the first placement is what draws it"
+    );
+}
+
+/// Put a *plugin* overlay in `tab_id`, returning what `focus_plugin_pane` has to be asked for to
+/// find it again and the pane's id.
+///
+/// A plugin rather than a terminal because `move_to_focused_tab` is a `LaunchOrFocusPlugin` thing:
+/// the pane is looked up by its `RunPluginOrAlias`, which is why that comes back out.
+fn open_overlay_plugin(
+    screen: &mut Screen,
+    plugin_id: u32,
+    tab_id: usize,
+    coordinates: FloatingPaneCoordinates,
+) -> (RunPluginOrAlias, PaneId) {
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/fake/popup", &None, None, None).unwrap();
+    let plugin_sender = screen.bus.senders.to_plugin.clone().unwrap_or_else(|| {
+        let (plugin_tx, _plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+        SenderWithContext::new(plugin_tx)
+    });
+    let popup = PaneFactory::plugin(
+        plugin_id,
+        Default::default(),
+        plugin_sender,
+        "popup".to_owned(),
+        "popup".to_owned(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.connected_clients.borrow().keys().copied().collect(),
+        screen.style,
+        Some(Run::Plugin(run_plugin.clone())),
+        screen.debug,
+        screen.arrow_fonts,
+        screen.styled_underlines,
+    );
+    let popup_id = PaneId::Plugin(plugin_id);
+    let tab = screen.tabs.get_mut(&tab_id).expect("TEST");
+    tab.show_floating_panes();
+    tab.add_overlay_pane(
+        popup,
+        popup_id,
+        OverlayKind::Dismissible,
+        coordinates,
+        OverlayCarry::default(),
+        true,
+        Some(1),
+    )
+    .expect("TEST");
+    (run_plugin, popup_id)
+}
+
 /// A popup bound with `move_to_focused_tab` follows the client from tab to tab. The tab it leaves
 /// forgets the coordinates it was placed with, so unless they travel with it the popup lands in
 /// the new tab as an ordinary floating pane - sized against the tab's viewport, and painted under
@@ -243,51 +449,9 @@ fn an_overlay_popup_stays_an_overlay_when_it_follows_the_client_to_another_tab()
     screen.render_to_clients().expect("TEST");
     while server_receiver.try_recv().is_ok() {}
 
-    let run_plugin =
-        RunPluginOrAlias::from_url("file:/path/to/fake/popup", &None, None, None).unwrap();
-    let plugin_sender = screen.bus.senders.to_plugin.clone().unwrap_or_else(|| {
-        let (plugin_tx, _plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
-        SenderWithContext::new(plugin_tx)
-    });
-    let popup = PaneFactory::plugin(
-        7,
-        Default::default(),
-        plugin_sender,
-        "popup".to_owned(),
-        "popup".to_owned(),
-        screen.sixel_image_store.clone(),
-        screen.kitty_image_store.clone(),
-        screen.terminal_emulator_colors.clone(),
-        screen.terminal_emulator_color_codes.clone(),
-        Rc::new(RefCell::new(LinkHandler::new())),
-        screen.character_cell_size.clone(),
-        screen.connected_clients.borrow().keys().copied().collect(),
-        screen.style,
-        Some(Run::Plugin(run_plugin.clone())),
-        screen.debug,
-        screen.arrow_fonts,
-        screen.styled_underlines,
-    );
-    let popup_id = PaneId::Plugin(7);
-    let coordinates = FloatingPaneCoordinates {
-        x: Some(PercentOrFixed::Fixed(2)),
-        y: Some(PercentOrFixed::Fixed(2)),
-        width: Some(PercentOrFixed::Percent(60)),
-        height: Some(PercentOrFixed::Fixed(4)),
-        ..Default::default()
-    };
+    let coordinates = popup_coordinates();
+    let (run_plugin, popup_id) = open_overlay_plugin(&mut screen, 7, 0, coordinates.clone());
     let first_tab = screen.tabs.get_mut(&0).expect("TEST");
-    first_tab.show_floating_panes();
-    first_tab
-        .add_overlay_pane(
-            popup,
-            popup_id,
-            OverlayKind::Dismissible,
-            coordinates,
-            true,
-            Some(1),
-        )
-        .expect("TEST");
     assert!(first_tab.pane_is_overlay(popup_id));
     let placed_at = first_tab
         .get_pane_with_id(popup_id)
@@ -2699,6 +2863,123 @@ fn a_modal_broken_out_to_the_neighbouring_tab_arrives_as_a_modal() {
     );
 }
 
+/// `Screen::break_pane` - the plain "break the active pane out to its own new tab" action - was
+/// the one break path that never asked `placement_for_extraction`: it extracted whatever was
+/// active and handed it to `add_tiled_pane` unconditionally. With an overlay up the active pane
+/// *is* the overlay, so a modal broken out this way arrived in the new tab as an ordinary tiled
+/// pane, stripped of its kind and coordinates.
+#[test]
+fn a_modal_broken_out_to_its_own_new_tab_arrives_as_a_modal() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .vertical_split(PaneId::Terminal(2), None, 1, None, None)
+        .expect("TEST");
+
+    let modal = PaneId::Terminal(3);
+    open_modal_terminal_in_tab(&mut screen, 0, modal);
+    assert_eq!(screen.active_pane_id(1), Some(modal), "pre-condition");
+
+    let tabs_before: HashSet<usize> = screen.tabs.keys().copied().collect();
+    screen
+        .break_pane(None, Box::new(Layout::default()), 1)
+        .expect("TEST");
+    let new_tab_id = *screen
+        .tabs
+        .keys()
+        .find(|tab_id| !tabs_before.contains(tab_id))
+        .expect("the break was refused");
+
+    assert!(
+        screen.tabs[&new_tab_id].pane_is_overlay(modal),
+        "it is an overlay in the tab it made"
+    );
+    assert!(
+        screen.tabs[&new_tab_id]
+            .overlay_placement_for(modal)
+            .expect("TEST")
+            .is_modal(),
+        "and a modal, not merely a dismissible overlay"
+    );
+    assert!(
+        !screen.tabs[&new_tab_id].are_floating_panes_visible(),
+        "and did not raise the new tab's floating layer on the way in"
+    );
+    assert!(
+        !screen.tabs[&0].has_pane_with_pid(&modal),
+        "and is no longer in the tab it came from"
+    );
+    assert_eq!(
+        screen.tabs[&0].get_selectable_tiled_panes_count(),
+        2,
+        "which kept both of the panes the overlay was covering"
+    );
+}
+
+/// An overlay is not on a layer and does not tile, so taking it out cannot leave its tab without
+/// a pane - but the guard counted only what was underneath it, so over a single tiled pane the
+/// break was refused with "Cannot break single pane out!".
+#[test]
+fn an_overlay_can_be_broken_out_over_a_single_tiled_pane() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+
+    let modal = PaneId::Terminal(2);
+    open_modal_terminal_in_tab(&mut screen, 0, modal);
+    assert_eq!(
+        screen.tabs[&0].get_selectable_tiled_panes_count(),
+        1,
+        "pre-condition: nothing but the overlay and the pane it covers"
+    );
+
+    let tabs_before: HashSet<usize> = screen.tabs.keys().copied().collect();
+    screen
+        .break_pane(None, Box::new(Layout::default()), 1)
+        .expect("TEST");
+    let new_tab_id = *screen
+        .tabs
+        .keys()
+        .find(|tab_id| !tabs_before.contains(tab_id))
+        .expect("the break was refused");
+
+    assert!(screen.tabs[&new_tab_id].pane_is_overlay(modal));
+    assert!(screen.tabs[&0].has_pane_with_pid(&PaneId::Terminal(1)));
+}
+
+/// An overlay does not tile, so the new tab still wants the layout's pane underneath it. The
+/// tiled arm tells the layout "this pane already exists, do not spawn it" - doing that for an
+/// overlay would leave a modal floating over an empty tab.
+#[test]
+fn breaking_an_overlay_out_still_spawns_the_new_tabs_own_pane() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    let (plugin_tx, plugin_rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+
+    open_modal_terminal_in_tab(&mut screen, 0, PaneId::Terminal(2));
+    screen
+        .break_pane(None, Box::new(Layout::default()), 1)
+        .expect("TEST");
+
+    let ignored = plugin_rx
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            PluginInstruction::NewTab(_, _, tiled_panes_layout, ..) => tiled_panes_layout,
+            _ => None,
+        })
+        .expect("no new tab was requested of the plugin thread")
+        .run_instructions_to_ignore;
+    assert!(
+        ignored.is_empty(),
+        "the overlay must not stand in for the new tab's own pane: {ignored:?}"
+    );
+}
+
 /// `execute_focus_on_hover` asked whether the hovered pane was on the *visible floating layer*,
 /// and an overlay answers `false` - so with the layer up, focus-follows-mouse over a modal
 /// reduced to a hover and left the keyboard where it was. An overlay is painted over everything
@@ -2850,6 +3131,54 @@ fn a_modal_opened_over_a_modal_takes_both_and_hands_them_back_when_it_closes() {
         screen.active_pane_id(1),
         Some(PaneId::Terminal(2)),
         "closing it walks the keyboard back down to the modal underneath"
+    );
+}
+
+/// The reveal side of that rule. A modal that was set aside before a newer one opened is not the
+/// dialog the user is in, so unsuppressing it must put it back *underneath* the newer modal and
+/// leave the keyboard alone - `show_pane`'s unconditional raise-and-focus used to do the opposite,
+/// because for a modal the top of its own class is the top of the whole stack.
+#[test]
+fn an_unsuppressed_modal_stays_below_the_modal_that_came_up_while_it_was_away() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_of_kind(&mut screen, 2, "FIRSTMODAL", OverlayKind::Modal);
+    screen
+        .tab_containing_overlay_mut(PaneId::Terminal(2))
+        .expect("TEST")
+        .hide_overlay_pane(PaneId::Terminal(2));
+    open_overlay_of_kind(&mut screen, 3, "SECONDMODAL", OverlayKind::Modal);
+    assert_eq!(screen.active_pane_id(1), Some(PaneId::Terminal(3)));
+
+    screen
+        .tab_containing_overlay_mut(PaneId::Terminal(2))
+        .expect("TEST")
+        .show_overlay_pane(PaneId::Terminal(2));
+
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(3)),
+        "the newer modal keeps the keyboard - it has no way to learn otherwise"
+    );
+    let frame = rendered_frame(&mut screen, size);
+    assert!(
+        frame.contains("SECONDMODAL"),
+        "and the top of the stack, got:\n{frame}"
+    );
+    assert!(
+        !frame.contains("FIRSTMODAL"),
+        "the revealed modal is back on screen, underneath it, got:\n{frame}"
+    );
+
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .close_pane(PaneId::Terminal(3), false, None);
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "so the revealed modal is not stranded: closing the newer one walks focus down to it"
     );
 }
 
@@ -3762,5 +4091,552 @@ fn a_dragged_overlay_stays_where_it_was_dropped_across_a_resize() {
         (after.x, after.y),
         (dropped_at.x, dropped_at.y),
         "the overlay stays where it was dropped instead of being re-centred"
+    );
+}
+
+/// Where an overlay was dropped is *in-memory* state on the wrapper `extract_pane` throws away,
+/// so it has to be carried across a tab move by hand - exactly as suppression is, and now in the
+/// same `OverlayCarry`.
+///
+/// Without that, the position survives the move (it is in the coordinates, which do travel) and is
+/// then overwritten by the plugin's very next placement, because the destination no longer knows
+/// the user had a say. hocus's overlay column re-places itself on every `TabUpdate` and moves
+/// itself between tabs, so for it every tab switch undid the drag.
+#[test]
+fn a_dragged_overlay_stays_where_it_was_dropped_across_a_tab_move() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen.switch_active_tab(0, None, true, 1).expect("TEST");
+    let opened_with = overlay_coordinates();
+    open_overlay_with(&mut screen, 3, opened_with.clone());
+    drag_overlay_by(&mut screen, 3, 20, 4);
+    let dropped_at = floating_geom(&screen, 3);
+
+    screen
+        .break_multiple_panes_to_tab_with_id(vec![PaneId::Terminal(3)], 1, false, 1)
+        .expect("TEST");
+    // the plugin restating its placement on the far side, which is what `follow_tab` does the
+    // instant the move lands
+    screen.change_overlay_coordinates(vec![(PaneId::Terminal(3), opened_with)]);
+
+    let after = screen.tabs[&1]
+        .get_pane_with_id(PaneId::Terminal(3))
+        .expect("TEST")
+        .position_and_size();
+    assert_eq!(
+        (after.x, after.y),
+        (dropped_at.x, dropped_at.y),
+        "the overlay arrives where the user dropped it, and the plugin's restated placement takes \
+         only its size"
+    );
+}
+
+/// The same carry on the reveal path, which is the one the `a` and `c` keybindings take.
+///
+/// `LaunchOrFocusPlugin { move_to_focused_tab }` overrides exactly one bit of what it carries -
+/// naming a plugin is the user asking for it back, so a hidden overlay arrives shown. It must not
+/// quietly override the other: a reveal is not a request to undo the drag, and the plugin
+/// re-placing itself on arrival is what would do that.
+#[test]
+fn a_dragged_overlay_revealed_onto_another_tab_arrives_shown_and_still_dragged() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen.switch_active_tab(0, None, true, 1).expect("TEST");
+    let coordinates = popup_coordinates();
+    let (run_plugin, popup_id) = open_overlay_plugin(&mut screen, 7, 0, coordinates.clone());
+
+    let geom = screen.tabs[&0]
+        .get_pane_with_id(popup_id)
+        .expect("TEST")
+        .position_and_size();
+    let from = Position::new(geom.y as i32, geom.x as u16);
+    let to = Position::new(geom.y as i32 + 5, geom.x as u16 + 12);
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(from), 1);
+    screen.handle_mouse_event(MouseEvent::new_left_motion_event(to), 1);
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(to), 1);
+    let dropped_at = screen.tabs[&0]
+        .get_pane_with_id(popup_id)
+        .expect("TEST")
+        .position_and_size();
+
+    // Esc puts the column away, and the user asks for it back from the other tab
+    assert!(screen
+        .tabs
+        .get_mut(&0)
+        .expect("TEST")
+        .hide_overlay_pane(popup_id));
+    screen.switch_active_tab(1, None, true, 1).expect("TEST");
+    assert!(screen
+        .focus_plugin_pane(&run_plugin, false, true, false, 1, &mut None)
+        .expect("TEST"));
+
+    let second_tab = screen.tabs.get(&1).expect("TEST");
+    assert!(
+        second_tab.overlays_are_rendered(),
+        "the reveal half of the move still happens - a pane asked for by name comes back shown"
+    );
+    // the plugin restating its placement, as hocus does the instant it hears where it landed
+    screen.change_overlay_coordinates(vec![(popup_id, coordinates)]);
+    let after = screen.tabs[&1]
+        .get_pane_with_id(popup_id)
+        .expect("TEST")
+        .position_and_size();
+    assert_eq!(
+        (after.x, after.y),
+        (dropped_at.x, dropped_at.y),
+        "and the drag came with it"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Per-pane suppression: an overlay set aside without being unloaded.
+//
+// hocus draws itself as an overlay column in the bottom-left corner, and Esc has to put it away
+// while keeping the conversation, the parked chats and anything still streaming. That is what
+// `SuppressPane` on an overlay now means. These pin the instruction routing; the collection's own
+// rules are pinned in `overlay_panes/unit/overlay_panes_tests.rs`.
+// ---------------------------------------------------------------------------
+
+/// `SuppressPane` on an overlay hides it in place rather than extracting it.
+///
+/// The extraction is the thing to avoid: `Tab::suppress_pane` moves a pane into `suppressed_panes`,
+/// which drops the kind and coordinates that make it an overlay - the same loss
+/// `placement_for_extraction` exists to prevent on a cross-tab move. Before this arm existed the
+/// instruction fell through to the tab loop and did exactly that.
+#[test]
+fn suppressing_an_overlay_hides_it_in_place() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "OVERLAY", true);
+    let before = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+
+    assert!(screen.tabs[&0].pane_is_overlay(PaneId::Terminal(2)));
+    screen
+        .tab_containing_overlay_mut(PaneId::Terminal(2))
+        .expect("TEST")
+        .hide_overlay_pane(PaneId::Terminal(2));
+
+    assert!(
+        screen.tabs[&0].pane_is_overlay(PaneId::Terminal(2)),
+        "still an overlay, and still loaded - hiding is not closing"
+    );
+    assert!(
+        !screen.tabs[&0].overlays_are_rendered(),
+        "but nothing is drawn for it"
+    );
+    let frame = rendered_frame(&mut screen, size);
+    assert!(
+        !frame.contains("OVERLAY"),
+        "and the cells it vacated are repainted, got:\n{frame}"
+    );
+
+    screen
+        .tab_containing_overlay_mut(PaneId::Terminal(2))
+        .expect("TEST")
+        .show_overlay_pane(PaneId::Terminal(2));
+    let after = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+    assert_eq!(
+        (
+            before.x,
+            before.y,
+            before.cols.as_usize(),
+            before.rows.as_usize()
+        ),
+        (
+            after.x,
+            after.y,
+            after.cols.as_usize(),
+            after.rows.as_usize()
+        ),
+        "and it comes back exactly where it was"
+    );
+}
+
+/// A hidden overlay is re-resolved while hidden, so it comes back sized for the screen as it is
+/// now rather than as it was when it went away.
+#[test]
+fn a_hidden_overlay_survives_a_resize_and_returns_proportional() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "OVERLAY", true);
+    screen
+        .tabs
+        .get_mut(&0)
+        .expect("TEST")
+        .hide_overlay_pane(PaneId::Terminal(2));
+
+    let bigger = Size {
+        cols: 160,
+        rows: 40,
+    };
+    screen.resize_to_screen(bigger).expect("TEST");
+    screen
+        .tabs
+        .get_mut(&0)
+        .expect("TEST")
+        .show_overlay_pane(PaneId::Terminal(2));
+
+    let geom = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+    assert_eq!(
+        geom.cols.as_usize(),
+        96,
+        "60% of the surface as it is now, not the 48 it had when it was hidden"
+    );
+}
+
+/// A tab whose only overlay is hidden must behave exactly like a tab with no overlay at all -
+/// otherwise `get_active_pane_id` keeps preferring the overlay collection and the occlusion stack
+/// keeps a layer for a pane nothing draws.
+#[test]
+fn a_tab_holding_only_a_hidden_overlay_has_no_overlays_to_render() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "OVERLAY", true);
+    assert!(screen.tabs[&0].overlays_are_rendered());
+
+    screen
+        .tabs
+        .get_mut(&0)
+        .expect("TEST")
+        .hide_overlay_pane(PaneId::Terminal(2));
+    assert!(!screen.tabs[&0].overlays_are_rendered());
+    assert_ne!(
+        screen.tabs[&0].get_active_pane_id(1),
+        Some(PaneId::Terminal(2)),
+        "and the keyboard is not left on a pane nobody can see"
+    );
+}
+
+/// An overlay in a tab nobody is looking at still hears broadcast events.
+///
+/// This is what lets hocus follow tab switches at all: it moves itself when it sees the
+/// `TabUpdate`, and the overlay it moves is by definition sitting in the tab the user just left.
+/// The active-tab walk in `targeted_plugin_ids` would never reach it.
+#[test]
+fn an_overlay_in_a_background_tab_is_still_a_broadcast_target() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    let plugin_sender = screen.bus.senders.to_plugin.clone().unwrap_or_else(|| {
+        let (plugin_tx, _plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+        SenderWithContext::new(plugin_tx)
+    });
+    let overlay = PaneFactory::plugin(
+        9,
+        Default::default(),
+        plugin_sender,
+        "overlay".to_owned(),
+        "overlay".to_owned(),
+        screen.sixel_image_store.clone(),
+        screen.kitty_image_store.clone(),
+        screen.terminal_emulator_colors.clone(),
+        screen.terminal_emulator_color_codes.clone(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        screen.character_cell_size.clone(),
+        screen.connected_clients.borrow().keys().copied().collect(),
+        screen.style,
+        None,
+        screen.debug,
+        screen.arrow_fonts,
+        screen.styled_underlines,
+    );
+    screen
+        .tabs
+        .get_mut(&0)
+        .expect("TEST")
+        .add_overlay_pane(
+            overlay,
+            PaneId::Plugin(9),
+            OverlayKind::Dismissible,
+            FloatingPaneCoordinates::default(),
+            OverlayCarry::default(),
+            true,
+            Some(1),
+        )
+        .expect("TEST");
+
+    // client 1 is looking at tab 1, so the overlay in tab 0 is in nobody's active tab
+    screen.go_to_tab(2, 1).expect("TEST");
+    assert_eq!(screen.active_tab_ids.get(&1), Some(&1));
+
+    let targets = screen.targeted_plugin_ids(1, EventType::TabUpdate);
+    assert!(
+        targets.contains(&9),
+        "an overlay left behind on another tab must still hear the event it moves on, got {targets:?}"
+    );
+    let targets = screen.targeted_plugin_ids(1, EventType::PaneUpdate);
+    assert!(
+        targets.contains(&9),
+        "and the other state event, which is how it learns it was hidden or revealed, got {targets:?}"
+    );
+    // ...but only those two. An `InputReceived` is one client's keystroke on one tab, and an
+    // overlay sitting somewhere else would answer it by clearing UI the user never typed at.
+    let targets = screen.targeted_plugin_ids(1, EventType::InputReceived);
+    assert!(
+        !targets.contains(&9),
+        "input performed on another tab is not this overlay's business, got {targets:?}"
+    );
+}
+
+/// Why `SuppressPane`'s overlay arm has to come *before* the tab loop.
+///
+/// An overlay is matched by `has_non_suppressed_pane_with_pid` like any other pane, so without an
+/// arm of its own the instruction reaches `Tab::suppress_pane`, which extracts the pane into
+/// `suppressed_panes` and loses the kind and coordinates that make it an overlay. This pins the
+/// precondition rather than the arm: if this assertion ever goes false the arm is no longer load
+/// bearing, and if it stays true the arm must stay ahead of the loop.
+#[test]
+fn an_overlay_would_be_caught_by_the_tab_suppression_loop() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "OVERLAY", true);
+
+    assert!(
+        screen.tabs[&0].has_non_suppressed_pane_with_pid(&PaneId::Terminal(2)),
+        "the tab loop would claim this overlay, so the overlay arm must be reached first"
+    );
+    assert!(
+        screen.tab_containing_overlay(PaneId::Terminal(2)).is_some(),
+        "and the overlay arm's own lookup finds it"
+    );
+}
+
+/// A plugin's `show_pane_with_id(.., should_focus_pane = false)` arrives as
+/// `ScreenInstruction::UnsuppressOrExpandPane`, whose overlay arm is `Tab::show_overlay_pane` -
+/// the "put it back on screen, don't move the keyboard" path hocus uses to restore its agent list.
+///
+/// For a *modal* that separation does not exist. The modal lock is re-armed by this very
+/// statement, so a modal restored without its keyboard is a dialog nobody can type into that
+/// nothing else may be focused past. The plugin-facing bool decides whether an ordinary overlay
+/// takes focus; it does not get to decide whether a modal is a modal.
+#[test]
+fn unsuppressing_a_modal_overlay_gives_it_the_keyboard_back() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+
+    let modal_id = add_modal_plugin_overlay(&mut screen, 7);
+    assert_eq!(
+        screen.get_active_tab_mut(1).unwrap().get_active_pane_id(1),
+        Some(modal_id)
+    );
+
+    screen
+        .tab_containing_overlay_mut(modal_id)
+        .expect("TEST")
+        .hide_overlay_pane(modal_id);
+    assert_ne!(
+        screen.get_active_tab_mut(1).unwrap().get_active_pane_id(1),
+        Some(modal_id),
+        "a modal that is not drawn does not hold the keyboard either"
+    );
+
+    screen
+        .tab_containing_overlay_mut(modal_id)
+        .expect("TEST")
+        .show_overlay_pane(modal_id);
+    assert_eq!(
+        screen.get_active_tab_mut(1).unwrap().get_active_pane_id(1),
+        Some(modal_id),
+        "and one that is drawn again does"
+    );
+}
+
+/// `Ctrl e c` on a hocus that was put away with Esc. `LaunchOrFocusPlugin` is the user asking for
+/// the pane back, so it has to come back *and* take the keyboard - a pane that reappears while
+/// typing still goes to whatever is underneath is worse than one that never reappeared.
+#[test]
+fn launch_or_focus_plugin_focuses_a_hidden_overlay() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    let (run_plugin, popup_id) = open_overlay_plugin(&mut screen, 2, 0, popup_coordinates());
+    assert_eq!(screen.active_pane_id(1), Some(popup_id));
+
+    // Esc in hocus: `hide_self` -> `ScreenInstruction::SuppressPane` -> `hide_overlay_pane`
+    screen.tabs.get_mut(&0).unwrap().hide_overlay_pane(popup_id);
+    assert_ne!(
+        screen.active_pane_id(1),
+        Some(popup_id),
+        "a hidden overlay does not hold the keyboard"
+    );
+
+    let mut completion = None;
+    assert!(screen
+        .focus_plugin_pane(&run_plugin, true, true, false, 1, &mut completion)
+        .expect("TEST"));
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(popup_id),
+        "the revealed overlay takes the keyboard"
+    );
+}
+
+/// The same reveal, for a client whose focus is on a global pane. `Screen::active_pane_id` reads
+/// the global focus before it reads the tab, so focusing the overlay inside the tab is only half
+/// of the move - the other half is suspending the global focus, which is what `activate_overlay`
+/// does for every other path that puts an overlay under a client's keyboard.
+#[test]
+fn launch_or_focus_plugin_focuses_a_hidden_overlay_over_a_global_pane() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size {
+        cols: 120,
+        rows: 20,
+    };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 40);
+    screen.render_to_clients().expect("TEST");
+    screen
+        .focus_global_pane(PaneId::Terminal(99), 1)
+        .expect("TEST");
+    let (run_plugin, popup_id) = open_overlay_plugin(&mut screen, 2, 0, popup_coordinates());
+    screen.activate_overlay(popup_id);
+
+    let restore = screen.take_global_focus_after_overlay_close(popup_id);
+    screen.tabs.get_mut(&0).unwrap().hide_overlay_pane(popup_id);
+    screen.restore_global_focus(restore);
+    assert_eq!(
+        screen.global_panes.focused_pane_id(1),
+        Some(PaneId::Terminal(99)),
+        "hiding puts the client back on the global pane it came from"
+    );
+
+    let mut completion = None;
+    assert!(screen
+        .focus_plugin_pane(&run_plugin, true, true, false, 1, &mut completion)
+        .expect("TEST"));
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(popup_id),
+        "the revealed overlay takes the keyboard back off the global pane"
+    );
+}
+
+/// `Ctrl e c` with no hocus running. `focus_plugin_pane` finds nothing, so `LaunchOrFocusPlugin`
+/// creates the pane instead - the `AddPlugin` path, which is what this mirrors: `should_focus`
+/// defaults to true and the placement is an overlay.
+#[test]
+fn a_newly_created_overlay_plugin_takes_the_keyboard() {
+    let size = Size { cols: 80, rows: 12 };
+    let (mut screen, _plugin_rx) = screen_with_plugin_sender(size);
+    new_tab(&mut screen, 1, 0);
+
+    let popup_id = PaneId::Plugin(2);
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/fake/popup", &None, None, None).unwrap();
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .new_pane(
+            popup_id,
+            Some("popup".to_owned()),
+            Some(Run::Plugin(run_plugin)),
+            false,
+            true,
+            NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(popup_coordinates()))),
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+    screen.activate_overlay(popup_id);
+
+    assert_eq!(screen.active_pane_id(1), Some(popup_id));
+}
+
+/// The same creation, for a client sitting on a global pane.
+#[test]
+fn a_newly_created_overlay_plugin_takes_the_keyboard_off_a_global_pane() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size {
+        cols: 120,
+        rows: 20,
+    };
+    let (mut screen, _plugin_rx) = screen_with_plugin_sender(size);
+    new_tab(&mut screen, 1, 0);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 40);
+    screen.render_to_clients().expect("TEST");
+    screen
+        .focus_global_pane(PaneId::Terminal(99), 1)
+        .expect("TEST");
+
+    let popup_id = PaneId::Plugin(2);
+    let run_plugin =
+        RunPluginOrAlias::from_url("file:/path/to/fake/popup", &None, None, None).unwrap();
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .new_pane(
+            popup_id,
+            Some("popup".to_owned()),
+            Some(Run::Plugin(run_plugin)),
+            false,
+            true,
+            NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(popup_coordinates()))),
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+    screen.activate_overlay(popup_id);
+
+    assert_eq!(screen.active_pane_id(1), Some(popup_id));
+}
+
+/// The arrangement hocus actually runs: two overlay plugins side by side, the conversation and
+/// the agent list. Esc in the conversation hands the keyboard to the list (`move_clients_out_of_pane`
+/// walks focus down the stack rather than off it), so `Ctrl e c` has to take it back off a
+/// *sibling overlay* rather than off a tiled pane - a different arm of `focus_pane_with_id`.
+#[test]
+fn launch_or_focus_plugin_takes_the_keyboard_back_from_a_sibling_overlay() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+
+    let coordinates = |x: usize| FloatingPaneCoordinates {
+        x: Some(PercentOrFixed::Fixed(x)),
+        y: Some(PercentOrFixed::Fixed(2)),
+        width: Some(PercentOrFixed::Fixed(20)),
+        height: Some(PercentOrFixed::Fixed(4)),
+        ..Default::default()
+    };
+    let (_, agents_id) = open_overlay_plugin(&mut screen, 3, 0, coordinates(24));
+    let (chat_run, chat_id) = open_overlay_plugin(&mut screen, 2, 0, coordinates(2));
+    assert_eq!(screen.active_pane_id(1), Some(chat_id));
+
+    screen.tabs.get_mut(&0).unwrap().hide_overlay_pane(chat_id);
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(agents_id),
+        "hiding the conversation drops the client onto the list beside it"
+    );
+
+    let mut completion = None;
+    assert!(screen
+        .focus_plugin_pane(&chat_run, true, true, false, 1, &mut completion)
+        .expect("TEST"));
+    assert_eq!(
+        screen.active_pane_id(1),
+        Some(chat_id),
+        "the revealed conversation takes the keyboard back from the list"
     );
 }

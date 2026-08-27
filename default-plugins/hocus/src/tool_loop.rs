@@ -41,7 +41,7 @@ impl State {
             if needs_confirmation && !self.job_auto_confirm {
                 self.status = Status::ConfirmingTool;
                 self.pin_to_bottom();
-                // The prompt renders into the sidebar, and the sidebar is very
+                // The prompt renders into hocus's own pane, which is very
                 // often not the thing being looked at: Esc hides it, a parked
                 // chat can be confirming while another is in the foreground, and
                 // a scheduled run with `show: false` never opens it at all. A
@@ -197,7 +197,7 @@ impl State {
         // queue runs one call at a time, and its head owns the deferred result
         // the host is about to deliver.
         if self.tools_busy() {
-            let notice = "a tool is already running — <Esc> aborts it";
+            let notice = "a tool is already running — <Ctrl c> aborts it";
             self.messages.push(Message::notice(notice));
             self.log("notice", serde_json::json!({"content": notice}));
             return true;
@@ -751,9 +751,10 @@ impl State {
     }
 
     pub(crate) fn project_assign(&mut self, args: &tools::Args) -> String {
-        // The focused agent's tab before the active one: hocus is a global pane, so
-        // "the tab I am in" is a question it cannot answer about itself, and the
-        // agent the user was last looking at is the tab they mean.
+        // The focused agent's tab before the active one. hocus's overlay does sit in a
+        // tab now, but that tab is the active one by construction — it follows every
+        // switch — so "the tab I am in" still answers the wrong question. The agent the
+        // user was last looking at is the tab they mean.
         let tab_id = match args.tab_id.or_else(|| self.focused_tab()).or_else(|| {
             self.tabs
                 .iter()
@@ -1015,7 +1016,7 @@ impl State {
 
     /// Take note of which pane the user is looking at.
     ///
-    /// Only an agent pane is remembered. Anything else — the sidebar, a shell, an
+    /// Only an agent pane is remembered. Anything else — hocus itself, a shell, an
     /// editor — leaves the last agent standing, which is what makes the active
     /// project survive the user coming here to ask about it.
     pub(crate) fn note_focus(&mut self, focused: Option<u32>) {
@@ -1195,9 +1196,10 @@ impl State {
         self.auto_tab_projects
             .retain(|tab_id, _| !self.tab_projects.contains_key(tab_id));
         // A closed tab is still named by the panes of the last snapshot, so without
-        // this it comes straight back. Only when we have heard of any tab at all:
-        // an empty list is "nobody has told us" — hocus is a global pane and an
-        // older host sends it no `TabUpdate` — and is not the same as "no tabs".
+        // this it comes straight back. Only when we have heard of any tab at all: an
+        // empty list is "nobody has told us" — hocus's overlay may be sitting in a tab
+        // nobody is looking at, and it is the host's routing of `TabUpdate` to overlays
+        // in every tab that gets it the news — and is not the same as "no tabs".
         if !self.tabs.is_empty() {
             self.auto_tab_projects
                 .retain(|tab_id, _| self.tabs.iter().any(|tab| tab.tab_id == *tab_id));
@@ -1483,30 +1485,11 @@ impl State {
         })
     }
 
-    /// The agent selected in the agents pane and what the daemon last made of it, for
-    /// the inset drawn at the head of the transcript.
+    /// Take the agents pane's announcement of itself.
     ///
-    /// Drawn only while the agents pane itself holds the focus. That is the moment the
-    /// note is for: the user is working the list, deciding which agent to walk into,
-    /// and the box says what the one under the cursor was last seen doing. Standing in
-    /// an agent, or here in the chat, it is not what anyone is reading, so it goes.
-    ///
-    /// No idleness gate, unlike `waiting_marker` and the strip's `!`: what is asked for
-    /// here is the *last* thing the daemon made of this agent, and an agent that has
-    /// gone back to work still has one. The header carries the pane id, so what the box
-    /// claims to be is an account of a moment, not of right now.
-    pub(crate) fn selected_summary(&self) -> Option<(u32, &str, &agents::Summary)> {
-        if self.focused_plugin.is_none() || self.focused_plugin != self.agents_plugin {
-            return None;
-        }
-        let pane_id = self.agents_selected?;
-        let summary = self.summaries.get(&pane_id)?;
-        let pane = self.panes.iter().find(|pane| pane.pane_id == pane_id)?;
-        let (kind, _) = agents::classify(pane, &self.manual_kinds)?;
-        Some((pane_id, kind, summary))
-    }
-
-    /// Take the agents pane's cursor. Answers whether the inset moved with it.
+    /// Nothing is drawn from it here any more - the summary box moved into the agents pane, which
+    /// is where the cursor that picks it lives. What is left is the one thing only this message
+    /// carries: the list's plugin id, which is what `apply_overlay_geometry` needs to place it.
     pub(crate) fn on_selection(&mut self, message: &PipeMessage) -> bool {
         let Some(selection) = message
             .payload
@@ -1515,18 +1498,24 @@ impl State {
         else {
             return false;
         };
-        let inset = self.inset_key();
+        let announced = self.agents_plugin != Some(selection.plugin_id);
         self.agents_plugin = Some(selection.plugin_id);
-        self.agents_selected = selection.pane_id;
-        self.inset_key() != inset
-    }
-
-    /// What the inset is showing, small enough to hold across a snapshot and
-    /// compare. The hash names the screen the summary was made from, so a change
-    /// here is a change on screen and nothing else is.
-    pub(crate) fn inset_key(&self) -> Option<(u32, u64, bool)> {
-        self.selected_summary()
-            .map(|(pane_id, _, summary)| (pane_id, summary.hash, summary.awaiting))
+        if announced {
+            // `agents_tab_index` was about the *previous* id and is the evidence
+            // `apply_overlay_geometry` reads to decide whether a placement landed. Left standing it
+            // would say this pane was already placed, and the retry that exists for exactly this
+            // case would never run.
+            self.agents_tab_index = None;
+        }
+        // This is the only word hocus gets of the list's id, and it can arrive after the
+        // `TabUpdate` that placed the conversation - in which case that pass placed this pane
+        // alone, and no later same-sized update would come back to it, leaving the list at the
+        // centred default the host gave it. Gated on the id actually changing: walking the list
+        // under `j`/`k` sends one of these per keystroke, and none of them move anything.
+        if announced {
+            self.apply_overlay_geometry();
+        }
+        false
     }
 
     /// Merge an event-fed daemon snapshot.

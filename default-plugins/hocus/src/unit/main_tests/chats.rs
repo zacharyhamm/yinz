@@ -155,22 +155,6 @@ fn a_settled_chat_is_not_parked_when_you_leave_it() {
     assert!(state.parked.is_empty(), "nothing outstanding, nothing held");
 }
 
-/// Agent focus drives the session, not the conversation, so an arriving
-/// reply is no reason to refuse it — and the reply keeps arriving behind it.
-#[test]
-fn focusing_the_agents_pane_leaves_an_arriving_reply_alone() {
-    let mut state = ready_state();
-    state.focus_agents_pane();
-
-    state.on_chunk(
-        "hocus-1",
-        b"data: {\"choices\":[{\"delta\":{\"content\":\"tokens\"}}]}\n",
-        false,
-        None,
-    );
-    assert_eq!(state.messages[1].content, "tokens", "still landing");
-}
-
 /// The gate that keeps a stream from writing the file once per socket read.
 #[test]
 fn autosave_holds_off_until_the_reply_has_landed() {

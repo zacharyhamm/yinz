@@ -176,12 +176,6 @@ fn slash_commands_open_the_lists_and_tab_stays_put() {
 
     state.picker_key(KeyWithModifier::new(BareKey::Tab));
     assert!(matches!(picker(&state).kind, PickerKind::Chats(_)));
-
-    state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier());
-    assert!(
-        state.picker.is_none(),
-        "handing focus to the agents pane dismisses the temporary list"
-    );
 }
 
 #[test]

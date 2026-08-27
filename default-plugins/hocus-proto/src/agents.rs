@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use unicode_width::UnicodeWidthStr;
 
 /// How many lines of a pane the model sees for each agent in one `agent_list`.
 const PREVIEW_LINES: usize = 20;
@@ -474,6 +475,79 @@ pub fn summary_toast(pane_id: u32, kind: Option<&str>, summary: &Summary) -> Str
     format!("{headline}\n{}", summary.text)
 }
 
+/// How wide the summary box is allowed to get. A box the full width of a wide pane reads as a
+/// second list rather than a note about one row of the one above it.
+pub const SUMMARY_BOX_MAX_COLS: usize = 64;
+/// Below this the text inside the box wraps into a column of single words.
+pub const SUMMARY_BOX_MIN_COLS: usize = 20;
+/// Rows of summary the box draws before it cuts the rest off. Two sentences is what the model
+/// is asked for; this is the ceiling for the ones that ignore it.
+pub const SUMMARY_BOX_MAX_ROWS: usize = 6;
+
+/// The idle summary as a framed box: a header naming the pane, the model's words wrapped
+/// inside it, and a footer. Every row is exactly `width` columns.
+///
+/// Drawn at the foot of the agents pane, under the list, for the agent the cursor is on. It
+/// used to be drawn over the head of hocus's transcript, in the pane *beside* the list; it is
+/// here now because the two panes are separate surfaces and a note about the row under your
+/// cursor belongs in the pane that cursor is in.
+///
+/// `None` when there is nowhere to put it - a box narrower than [`SUMMARY_BOX_MIN_COLS`] wraps
+/// into a column of single words, and one shorter than three rows has no room for a line of
+/// text at all. Better nothing than either.
+pub fn summary_box(
+    pane_id: u32,
+    kind: &str,
+    summary: &Summary,
+    width: usize,
+    height: usize,
+) -> Option<Vec<String>> {
+    let inner = width.saturating_sub(4);
+    if inner < SUMMARY_BOX_MIN_COLS || height < 3 {
+        return None;
+    }
+
+    let room = (height - 2).min(SUMMARY_BOX_MAX_ROWS);
+    let mut lines = crate::text::wrap(&summary.text, inner);
+    if lines.len() > room {
+        lines.truncate(room);
+        // The cut is marked rather than silent: a summary that stops mid-sentence
+        // reads as a summary that had nothing more to say.
+        let last = lines.last_mut().expect("room is at least one");
+        while last.width() + 1 > inner {
+            last.pop();
+        }
+        last.push('…');
+    }
+
+    let mut label = format!(" {pane_id} · {kind} ");
+    if summary.awaiting {
+        // The same claim the strip's `!` marker makes, in the one place the user
+        // is already looking.
+        label.push_str("! ");
+    }
+    // A label wider than the box it heads is cut rather than allowed to push the
+    // frame's corner off the row.
+    while label.width() > width - 3 {
+        label.pop();
+    }
+
+    Some(
+        [format!(
+            "┌─{label}{}┐",
+            "─".repeat(width - 3 - label.width())
+        )]
+        .into_iter()
+        .chain(
+            lines
+                .iter()
+                .map(|line| format!("│ {line}{} │", " ".repeat(inner - line.width()))),
+        )
+        .chain([format!("└{}┘", "─".repeat(width - 2))])
+        .collect(),
+    )
+}
+
 /// Whether a pane holds enough to be worth asking about.
 pub fn worth_summarizing(text: &str) -> bool {
     text.trim().chars().count() >= SUMMARY_MIN_CHARS
@@ -629,8 +703,17 @@ pub enum StripRow {
     Project(String),
     /// The branch they are checked out on, under the project header above it.
     Branch(String),
-    /// One agent: the pane it names, and the line as drawn.
-    Agent { pane_id: u32, text: String },
+    /// One agent: the pane it names, the line as drawn, and what kind of agent it is.
+    ///
+    /// `kind` is not in `text` - the line already spells it, with the host appended - but the
+    /// summary box's header wants it on its own, and classification is hocus's job. Carrying it
+    /// is cheaper than a second classifier in the pane that draws the box.
+    Agent {
+        pane_id: u32,
+        text: String,
+        #[serde(default)]
+        kind: String,
+    },
 }
 
 /// The agent strip as the hocus-agents pane should draw it: the rows, and the
@@ -642,10 +725,16 @@ pub enum StripRow {
 /// focused pane — a shell or an editor, not only an agent — so the panel can
 /// tell "you are on this agent" from "you were on this agent"; see
 /// `wire::AGENT_STRIP`.
+///
+/// The summaries ride along too, for the box the agents pane draws under its list. Only the
+/// ones naming a pane in `rows` are sent: a summary outlives the pane it is about, and the
+/// list has no row to put an orphan under.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Strip {
     pub rows: Vec<StripRow>,
     pub focused: Option<u32>,
+    #[serde(default)]
+    pub summaries: Summaries,
 }
 
 /// The agent strip: every agent as a line, under a project header and a branch
@@ -659,6 +748,11 @@ pub struct Strip {
 /// Neither is repeated on the agent's own line: the headers carry them, so an
 /// agent row stays short enough to read in a narrow sidebar. Agents of no known
 /// project come last, under a header that says so.
+/// One agent, sorted before it becomes a row: its project, its branch, its pane, the line as
+/// drawn, and the kind that line names. Named because clippy counts the tuple's arms, and
+/// because the sort below reads better against a name than against five anonymous slots.
+type SortableAgent<'a> = (Option<&'a str>, Option<&'a str>, u32, String, &'a str);
+
 pub fn strip_rows(
     panes: &[AgentPane],
     manual: &BTreeMap<u32, String>,
@@ -667,7 +761,7 @@ pub fn strip_rows(
     branches: &BTreeMap<u32, String>,
     summaries: &Summaries,
 ) -> Vec<StripRow> {
-    let mut agents: Vec<(Option<&str>, Option<&str>, u32, String)> = panes
+    let mut agents: Vec<SortableAgent<'_>> = panes
         .iter()
         .filter_map(|pane| {
             let (kind, _) = classify(pane, manual)?;
@@ -694,6 +788,7 @@ pub fn strip_rows(
                 branches.get(&pane.pane_id).map(String::as_str),
                 pane.pane_id,
                 row,
+                kind,
             ))
         })
         .collect();
@@ -714,7 +809,7 @@ pub fn strip_rows(
     let mut project: Option<Option<&str>> = None;
     let mut branch: Option<Option<&str>> = None;
     let mut rows = Vec::with_capacity(agents.len());
-    for (owner, checkout, pane_id, text) in agents {
+    for (owner, checkout, pane_id, text, kind) in agents {
         if project != Some(owner) {
             rows.push(StripRow::Project(owner.unwrap_or(NO_PROJECT).to_owned()));
             project = Some(owner);
@@ -729,7 +824,11 @@ pub fn strip_rows(
             )));
             branch = Some(checkout);
         }
-        rows.push(StripRow::Agent { pane_id, text });
+        rows.push(StripRow::Agent {
+            pane_id,
+            text,
+            kind: kind.to_owned(),
+        });
     }
     rows
 }
@@ -1049,14 +1148,24 @@ mod tests {
     fn agent(pane_id: u32, text: &str) -> StripRow {
         StripRow::Agent {
             pane_id,
+            kind: kind_in(text),
             text: format!("  {text}"),
         }
+    }
+
+    /// The kind `strip_rows` would have put on the row, read back off the line it drew.
+    /// The line spells it as the second field, with `@host` appended for a remote pane;
+    /// the field carries the bare kind.
+    fn kind_in(text: &str) -> String {
+        let kind = text.split_whitespace().nth(1).unwrap_or_default();
+        kind.split('@').next().unwrap_or_default().to_owned()
     }
 
     /// An agent row the model said is blocked on a confirmation.
     fn waiting(pane_id: u32, text: &str) -> StripRow {
         StripRow::Agent {
             pane_id,
+            kind: kind_in(text),
             text: format!("! {text}"),
         }
     }
@@ -2172,5 +2281,97 @@ mod tests {
         let owners = owners(&[(5, "hocus"), (6, "pocus"), (7, "hocus")]);
 
         assert!(tab_projects(&panes, &manual(&[]), &owners).is_empty());
+    }
+
+    // -- the idle summary box -------------------------------------------------
+
+    fn a_summary(text: &str, awaiting: bool) -> Summary {
+        Summary {
+            text: text.to_owned(),
+            title: "running the tests".to_owned(),
+            awaiting,
+            hash: 1,
+        }
+    }
+
+    /// Every row exactly as wide as every other, or the frame does not close and
+    /// the transcript shows through the ragged end of it.
+    #[test]
+    fn the_inset_is_a_box_of_one_width() {
+        let rows = summary_box(
+            7,
+            "claude",
+            &a_summary("Ran the tests, all green.", false),
+            30,
+            10,
+        )
+        .expect("room for a box");
+        assert_eq!(rows.len(), 3, "a header, one line of summary, a footer");
+        for row in &rows {
+            assert_eq!(row.width(), 30, "{row}");
+        }
+        assert!(rows[0].starts_with("┌─ 7 · claude ─"), "{}", rows[0]);
+        assert!(rows[0].ends_with('┐'));
+        assert_eq!(
+            rows[1], "│ Ran the tests, all green.  │",
+            "padded to the frame"
+        );
+        assert!(rows[2].starts_with('└') && rows[2].ends_with('┘'));
+    }
+
+    /// The claim the strip's `!` makes, in the box the user is already reading.
+    #[test]
+    fn a_blocked_agent_is_marked_in_the_header() {
+        let rows = summary_box(7, "claude", &a_summary("Shall I?", true), 30, 10).expect("a box");
+        assert!(rows[0].contains("! "), "{}", rows[0]);
+        assert_eq!(rows[0].width(), 30);
+        // And an agent that merely finished is not.
+        let rows = summary_box(7, "claude", &a_summary("Shall I?", false), 30, 10).expect("a box");
+        assert!(!rows[0].contains('!'), "{}", rows[0]);
+    }
+
+    /// A model told to write two sentences occasionally writes ten, and the box
+    /// has to end above the input either way.
+    #[test]
+    fn a_long_summary_is_cut_to_the_room_there_is_and_marked_where_it_was_cut() {
+        let long = "word ".repeat(200);
+        let rows = summary_box(7, "claude", &a_summary(&long, false), 30, 40).expect("a box");
+        assert_eq!(
+            rows.len(),
+            SUMMARY_BOX_MAX_ROWS + 2,
+            "the ceiling, not the text"
+        );
+        let last = &rows[SUMMARY_BOX_MAX_ROWS];
+        assert!(last.contains('…'), "{last}");
+        assert_eq!(last.width(), 30);
+
+        // And the transcript is the tighter of the two ceilings.
+        let rows = summary_box(7, "claude", &a_summary(&long, false), 30, 5).expect("a box");
+        assert_eq!(rows.len(), 5);
+    }
+
+    /// Better nothing than a column of single words, or a box drawn over the
+    /// input line because there was nowhere else for it to go.
+    #[test]
+    fn there_is_no_box_where_there_is_no_room_for_one() {
+        let one = a_summary("Ran the tests.", false);
+        assert!(summary_box(7, "claude", &one, SUMMARY_BOX_MIN_COLS + 3, 10).is_none());
+        assert!(summary_box(7, "claude", &one, 30, 2).is_none());
+        assert!(
+            summary_box(7, "claude", &one, 30, 3).is_some(),
+            "just enough"
+        );
+    }
+
+    /// A kind is up to 32 characters and a pane can be in a narrow split, so the
+    /// header can be asked for more room than the box has. The corner survives.
+    #[test]
+    fn a_header_too_wide_for_its_box_is_cut_rather_than_burst() {
+        let kind = "a-very-long-agent-kind-indeed-xx";
+        let rows = summary_box(7, kind, &a_summary("Done.", true), 26, 10).expect("a box");
+        for row in &rows {
+            assert_eq!(row.width(), 26, "{row}");
+        }
+        assert!(rows[0].ends_with('┐'), "{}", rows[0]);
     }
 }

@@ -781,6 +781,10 @@ pub struct TabInfo {
     pub has_bell_notification: bool,
     #[prost(bool, tag="19")]
     pub is_flashing_bell: bool,
+    #[prost(uint32, tag="20")]
+    pub session_surface_rows: u32,
+    #[prost(uint32, tag="21")]
+    pub session_surface_columns: u32,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

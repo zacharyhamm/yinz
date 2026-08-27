@@ -6738,28 +6738,23 @@ Config {
                             name: "hocus-agents",
                             configuration: Some(
                                 PluginUserConfiguration(
-                                    {},
+                                    {
+                                        "awaits_placement": "true",
+                                        "overlay": "true",
+                                    },
                                 ),
                             ),
                             initial_cwd: None,
                             run_plugin: None,
                         },
                     ),
-                    should_float: false,
-                    move_to_focused_tab: false,
+                    should_float: true,
+                    move_to_focused_tab: true,
                     should_open_in_place: false,
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: Some(
-                        GlobalPanePlacement {
-                            edge: Left,
-                            size: Percent(
-                                25,
-                            ),
-                            length: None,
-                        },
-                    ),
+                    global_placement: None,
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -6789,28 +6784,23 @@ Config {
                             name: "hocus",
                             configuration: Some(
                                 PluginUserConfiguration(
-                                    {},
+                                    {
+                                        "awaits_placement": "true",
+                                        "overlay": "true",
+                                    },
                                 ),
                             ),
                             initial_cwd: None,
                             run_plugin: None,
                         },
                     ),
-                    should_float: false,
-                    move_to_focused_tab: false,
+                    should_float: true,
+                    move_to_focused_tab: true,
                     should_open_in_place: false,
                     close_replaced_pane: false,
                     skip_cache: false,
                     tab_id: None,
-                    global_placement: Some(
-                        GlobalPanePlacement {
-                            edge: Left,
-                            size: Percent(
-                                25,
-                            ),
-                            length: None,
-                        },
-                    ),
+                    global_placement: None,
                 },
                 SwitchToMode {
                     input_mode: Normal,
