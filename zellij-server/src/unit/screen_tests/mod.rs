@@ -20,6 +20,7 @@ use zellij_utils::errors::{prelude::*, ErrorContext};
 use zellij_utils::input::actions::Action;
 use zellij_utils::input::command::{RunCommand, TerminalAction};
 use zellij_utils::input::config::Config;
+use zellij_utils::input::context_menu::ContextMenu;
 use zellij_utils::input::keybinds::Keybinds;
 use zellij_utils::input::layout::{
     FloatingPaneLayout, Layout, PercentOrFixed, PluginAlias, PluginUserConfiguration, Run,
@@ -399,6 +400,8 @@ fn create_new_screen_with_kitty_graphics(
         visual_bell,
         false, // focus_follows_mouse
         false, // mouse_click_through
+        false, // context_menu_on_right_click
+        ContextMenu::default(),
         web_server_ip,
         web_server_port,
         NestedSessionHandling::default(),
@@ -1027,6 +1030,8 @@ fn create_new_screen_with_message_capture(
         visual_bell,
         false, // focus_follows_mouse
         false, // mouse_click_through
+        false, // context_menu_on_right_click
+        ContextMenu::default(),
         web_server_ip,
         web_server_port,
         NestedSessionHandling::default(),
@@ -1177,6 +1182,8 @@ fn create_new_screen_with_forward_capture(size: Size) -> (Screen, ForwardCapture
         visual_bell,
         false, // focus_follows_mouse
         false, // mouse_click_through
+        false, // context_menu_on_right_click
+        ContextMenu::default(),
         web_server_ip,
         web_server_port,
         NestedSessionHandling::default(),
@@ -1325,6 +1332,8 @@ fn create_new_screen_with_theme_capture(size: Size) -> (Screen, ThemeCapture) {
         true,
         false,
         false,
+        false, // context_menu_on_right_click
+        ContextMenu::default(),
         web_server_ip,
         web_server_port,
         NestedSessionHandling::default(),
@@ -1456,6 +1465,8 @@ fn create_non_mirrored_screen(size: Size) -> Screen {
         true,  // visual_bell
         false, // focus_follows_mouse
         false, // mouse_click_through
+        false, // context_menu_on_right_click
+        ContextMenu::default(),
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
         8080,
         NestedSessionHandling::default(),
@@ -2050,6 +2061,7 @@ mod cli_actions;
 mod cli_layouts_and_rename;
 mod cli_pane_and_tab_id;
 mod clients;
+mod context_menu;
 mod floating_panes;
 mod hooks;
 mod host_query;

@@ -514,3 +514,71 @@ pub fn get_session_environment_variables_plugin_command() {
     });
     assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }
+
+/// The plugin thread holds the hook bindings and the configured context menu as state captured at
+/// session start, so a reload that does not hand the new ones over leaves every hook point and
+/// every right-click answering out of the config the session began with.
+#[test]
+#[serial(plugin_tests)]
+pub fn a_reload_replaces_the_hooks_and_the_configured_context_menu() {
+    use zellij_utils::data::{ContextMenuContext, ContextMenuItem};
+    use zellij_utils::input::context_menu::ContextMenu;
+    use zellij_utils::input::hooks::Hooks;
+
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread(Some(plugin_host_folder), None);
+    let client_id = 1;
+
+    let reloaded = ContextMenu::from_items(vec![ContextMenuItem::new(
+        "Only this",
+        vec![Action::CloseFocus],
+    )]);
+    let _ = plugin_thread_sender.send(PluginInstruction::Reconfigure {
+        client_id,
+        keybinds: None,
+        default_mode: None,
+        default_shell: None,
+        layout_dir: None,
+        user_plugin_dir: None,
+        builtin_plugins_dir: None,
+        // No hook bound, so the answer comes straight out of the configuration below. That is also
+        // what proves the hooks were replaced: the default binds the shipped hook to this point.
+        hooks: Hooks::from_data(Default::default()),
+        context_menu: reloaded.clone(),
+        was_written_to_disk: false,
+    });
+    let _ = plugin_thread_sender.send(PluginInstruction::RequestContextMenu {
+        context: Box::new(ContextMenuContext {
+            request_id: 7,
+            client_id,
+            ..Default::default()
+        }),
+        client_id,
+    });
+
+    let answer = screen_receiver
+        .recv_timeout(zellij_test_support::default_timeout())
+        .map(|(instruction, _)| instruction)
+        .expect("the plugin thread answers every request");
+    teardown();
+
+    match answer {
+        ScreenInstruction::SetContextMenu {
+            request_id,
+            items,
+            plugin_id,
+            ..
+        } => {
+            assert_eq!(request_id, 7);
+            assert_eq!(plugin_id, None, "nobody answered but the configuration");
+            assert_eq!(
+                items.iter().map(|item| &item.label).collect::<Vec<_>>(),
+                vec!["Only this"],
+                "the reloaded menu, not the one the session started with"
+            );
+        },
+        other => panic!("expected a menu, got: {other:?}"),
+    }
+}

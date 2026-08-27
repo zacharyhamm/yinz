@@ -4,6 +4,7 @@ use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
 use crate::panes::kitty_graphics::{
     InterceptorResult, KittyApcInterceptor, KittyHostSupport, KittyImageStore,
 };
+use crate::panes::selection::Selection;
 use crate::panes::sixel::SixelImageStore;
 use crate::panes::FrameColorOverride;
 use crate::panes::LinkHandler;
@@ -14,7 +15,7 @@ use crate::panes::{
 };
 use crate::pty::VteBytes;
 use crate::route::NotificationEnd;
-use crate::tab::{AdjustedInput, GuestChoiceIndicator, Pane};
+use crate::tab::{AdjustedInput, GuestChoiceIndicator, Pane, TextAroundPosition};
 use crate::ClientId;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -1464,6 +1465,22 @@ impl Pane for TerminalPane {
     }
     fn terminal_emulator_wants_mouse(&self) -> bool {
         self.grid.mouse_tracking != crate::panes::grid::MouseTracking::Off
+    }
+    fn text_around_position(&self, position: &Position) -> Option<TextAroundPosition> {
+        // The same two lookups double-click and triple-click already use, read rather than
+        // selected: this must not disturb the selection the caller is about to record.
+        let text_for = |bounds: Option<(Position, Position)>| {
+            let (start, end) = bounds?;
+            let mut selection = Selection::default();
+            selection.set_start_and_end_positions(start, end);
+            self.grid
+                .text_for_selection(&selection)
+                .filter(|text| !text.trim().is_empty())
+        };
+        Some(TextAroundPosition {
+            word: text_for(self.grid.word_around_position(position)),
+            line: text_for(self.grid.canonical_line_around_position(position)),
+        })
     }
 }
 

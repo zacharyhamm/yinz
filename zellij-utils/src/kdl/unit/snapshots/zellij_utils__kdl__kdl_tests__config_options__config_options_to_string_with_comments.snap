@@ -347,6 +347,11 @@ web_sharing "disabled"
 // default is false
 // mouse_click_through false
  
+// Whether right-clicking a pane opens a context menu. A program that is tracking the
+// mouse itself keeps its own right-click either way.
+// default is false
+// context_menu_on_right_click false
+ 
 // Whether triple-clicking inside command output marked by the shell (OSC 133) selects
 // the command and its output instead of the logical line
 // default is true

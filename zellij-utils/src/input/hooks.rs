@@ -35,14 +35,19 @@ pub enum HookPoint {
     /// An agent pane's command exited and the pane is holding. The hook plugin is opened in
     /// place of that pane, which is suppressed behind it rather than closed.
     AgentExit,
+    /// A right-click asked for a context menu. The hook plugin is *not* opened at all: it runs
+    /// headless, is handed the click as `Event::ContextMenuRequested`, and answers with
+    /// `set_context_menu`. The menu itself is drawn by the server and is not a pane.
+    ContextMenu,
 }
 
 impl HookPoint {
-    pub const ALL: &'static [HookPoint] = &[HookPoint::AgentExit];
+    pub const ALL: &'static [HookPoint] = &[HookPoint::AgentExit, HookPoint::ContextMenu];
 
     pub fn as_str(&self) -> &'static str {
         match self {
             HookPoint::AgentExit => "agent_exit",
+            HookPoint::ContextMenu => "context_menu",
         }
     }
 }
@@ -58,6 +63,7 @@ impl FromStr for HookPoint {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "agent_exit" | "agent-exit" => Ok(HookPoint::AgentExit),
+            "context_menu" | "context-menu" => Ok(HookPoint::ContextMenu),
             _ => Err(format!(
                 "no such hook point: '{}'. Known hook points: {}",
                 s,
@@ -97,6 +103,9 @@ impl Hooks {
         let mut hooks = BTreeMap::new();
         if let Ok(plugin) = RunPluginOrAlias::from_url("zellij:agent-exit", &None, None, None) {
             hooks.insert(HookPoint::AgentExit, plugin);
+        }
+        if let Ok(plugin) = RunPluginOrAlias::from_url("zellij:context-menu", &None, None, None) {
+            hooks.insert(HookPoint::ContextMenu, plugin);
         }
         Hooks { hooks }
     }
@@ -138,12 +147,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_default_hooks_bind_the_shipped_agent_exit_screen() {
+    fn the_default_hooks_bind_the_shipped_plugins() {
         let hooks = Hooks::default();
         assert_eq!(
             hooks.get(HookPoint::AgentExit).map(|p| p.location_string()),
             Some("zellij:agent-exit".to_owned()),
             "a session with no config still shows the agent-exit screen"
+        );
+        assert_eq!(
+            hooks
+                .get(HookPoint::ContextMenu)
+                .map(|p| p.location_string()),
+            Some("zellij:context-menu".to_owned()),
+            "and still has a menu to offer, once the option turns it on"
         );
     }
 
@@ -177,10 +193,18 @@ mod tests {
     }
 
     #[test]
-    fn clearing_a_point_unbinds_it() {
+    fn clearing_a_point_unbinds_it_and_leaves_the_others() {
         let mut hooks = Hooks::default();
         hooks.clear(HookPoint::AgentExit);
         assert!(hooks.get(HookPoint::AgentExit).is_none());
+        assert!(
+            hooks.get(HookPoint::ContextMenu).is_some(),
+            "clearing one point says nothing about any other"
+        );
+
+        for point in HookPoint::ALL {
+            hooks.clear(*point);
+        }
         assert!(hooks.is_empty());
     }
 }

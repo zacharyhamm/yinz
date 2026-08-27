@@ -7188,6 +7188,7 @@ Config {
         visual_bell: None,
         focus_follows_mouse: None,
         mouse_click_through: None,
+        context_menu_on_right_click: None,
         osc133_command_selection: None,
         word_separators: None,
         web_server_ip: None,
@@ -7529,6 +7530,137 @@ Config {
                     relative_path: None,
                 },
             ),
+            ContextMenu: RunPlugin(
+                RunPlugin {
+                    _allow_exec_host_cmd: false,
+                    location: Zellij(
+                        PluginTag(
+                            "context-menu",
+                        ),
+                    ),
+                    configuration: PluginUserConfiguration(
+                        {},
+                    ),
+                    initial_cwd: None,
+                    relative_path: None,
+                },
+            ),
         },
+    },
+    context_menu: ContextMenu {
+        items: [
+            ContextMenuItem {
+                id: Some(
+                    0,
+                ),
+                label: "Copy",
+                shortcut: None,
+                actions: [
+                    Copy,
+                ],
+                context: {},
+                disabled: false,
+                separator: false,
+            },
+            ContextMenuItem {
+                id: Some(
+                    1,
+                ),
+                label: "",
+                shortcut: None,
+                actions: [],
+                context: {},
+                disabled: false,
+                separator: true,
+            },
+            ContextMenuItem {
+                id: Some(
+                    2,
+                ),
+                label: "Split right",
+                shortcut: None,
+                actions: [
+                    NewPane {
+                        direction: Some(
+                            Right,
+                        ),
+                        pane_name: None,
+                        start_suppressed: false,
+                    },
+                ],
+                context: {},
+                disabled: false,
+                separator: false,
+            },
+            ContextMenuItem {
+                id: Some(
+                    3,
+                ),
+                label: "Split down",
+                shortcut: None,
+                actions: [
+                    NewPane {
+                        direction: Some(
+                            Down,
+                        ),
+                        pane_name: None,
+                        start_suppressed: false,
+                    },
+                ],
+                context: {},
+                disabled: false,
+                separator: false,
+            },
+            ContextMenuItem {
+                id: Some(
+                    4,
+                ),
+                label: "Fullscreen",
+                shortcut: None,
+                actions: [
+                    ToggleFocusFullscreen,
+                ],
+                context: {},
+                disabled: false,
+                separator: false,
+            },
+            ContextMenuItem {
+                id: Some(
+                    5,
+                ),
+                label: "",
+                shortcut: None,
+                actions: [],
+                context: {},
+                disabled: false,
+                separator: true,
+            },
+            ContextMenuItem {
+                id: Some(
+                    6,
+                ),
+                label: "Move to new tab",
+                shortcut: None,
+                actions: [
+                    BreakPane,
+                ],
+                context: {},
+                disabled: false,
+                separator: false,
+            },
+            ContextMenuItem {
+                id: Some(
+                    7,
+                ),
+                label: "Close pane",
+                shortcut: None,
+                actions: [
+                    CloseFocus,
+                ],
+                context: {},
+                disabled: false,
+                separator: false,
+            },
+        ],
     },
 }

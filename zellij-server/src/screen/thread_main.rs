@@ -80,6 +80,7 @@ pub(crate) fn screen_thread_main(
         );
     }
 
+    let context_menu = config.context_menu.clone();
     let config_options = config.options;
     let arrow_fonts = !config_options.simplified_ui.unwrap_or_default();
     let pane_frame_style = PaneFrameStyle::from_options(&config_options);
@@ -149,6 +150,7 @@ pub(crate) fn screen_thread_main(
     let visual_bell = config_options.visual_bell.unwrap_or(true);
     let focus_follows_mouse = config_options.focus_follows_mouse.unwrap_or(false);
     let mouse_click_through = config_options.mouse_click_through.unwrap_or(false);
+    let context_menu_on_right_click = config_options.context_menu_on_right_click.unwrap_or(false);
     let nested_session_handling = config_options.nested_session_handling.unwrap_or_default();
     let dangerously_enable_paste_buffer_read = config_options
         .dangerously_enable_paste_buffer_read
@@ -199,6 +201,8 @@ pub(crate) fn screen_thread_main(
         visual_bell,
         focus_follows_mouse,
         mouse_click_through,
+        context_menu_on_right_click,
+        context_menu,
         web_server_ip,
         web_server_port,
         nested_session_handling,
@@ -540,6 +544,20 @@ pub(crate) fn screen_thread_main(
                             )]));
                         continue;
                     }
+                }
+                // An open context menu takes the keys it uses - arrows, Enter, Esc - before any
+                // pane sees them. Anything else falls through and reaches the pane as usual; the
+                // focus or layout change it causes then closes the menu, which is what pressing an
+                // unrelated key while a menu is up means anyway.
+                if screen.context_menu_handles_key(&key_with_modifier, client_id) {
+                    continue;
+                }
+                // A key the menu did not want is about to do something else - reach the pane, or
+                // fire whatever the current mode binds it to. Either way the menu is answering a
+                // question about a moment that has passed, so it gets out of the way. This is the
+                // same discipline `defocus_dismissible_panes` applies to dismissible overlays.
+                if screen.close_context_menu(client_id) {
+                    screen.render(None)?;
                 }
                 let mut state_changed = false;
                 let client_input_mode = screen.get_client_input_mode(client_id);
@@ -1363,6 +1381,9 @@ pub(crate) fn screen_thread_main(
                 // waiting for it
                 exit_status,
             ) => {
+                // A menu opened over this pane is offering to act on something that is about to
+                // stop existing.
+                screen.close_context_menus_for_pane(id);
                 screen.repaint_tab_of_closing_overlay(id);
                 match client_id {
                     Some(client_id) => {
@@ -3549,6 +3570,25 @@ pub(crate) fn screen_thread_main(
                 screen.sync_animation_clock(now)?;
                 screen.render(None)?;
             },
+            ScreenInstruction::ContextMenuTimedOut(request_id, client_id) => {
+                screen.context_menu_timed_out(request_id, client_id);
+            },
+            ScreenInstruction::SetContextMenu {
+                request_id,
+                items,
+                plugin_id,
+                client_id,
+            } => {
+                screen.set_context_menu_items(request_id, items, plugin_id, client_id);
+            },
+            ScreenInstruction::ActivateContextMenuItem {
+                pane_id,
+                actions,
+                client_id,
+            } => {
+                screen.dispatch_context_menu_actions(pane_id, actions, client_id);
+                screen.render(None)?;
+            },
             ScreenInstruction::DismissNotification(id) => {
                 // the toast stays in the stack, sliding back out, until
                 // `reap_settled_notifications` sees its reveal reach zero and actually removes it
@@ -3663,6 +3703,8 @@ pub(crate) fn screen_thread_main(
                 visual_bell,
                 focus_follows_mouse,
                 mouse_click_through,
+                context_menu_on_right_click,
+                context_menu,
                 osc133_command_selection,
                 word_separators,
                 nested_session_handling,
@@ -3693,6 +3735,8 @@ pub(crate) fn screen_thread_main(
                         visual_bell,
                         focus_follows_mouse,
                         mouse_click_through,
+                        context_menu_on_right_click,
+                        context_menu,
                         osc133_command_selection,
                         word_separators,
                         nested_session_handling,

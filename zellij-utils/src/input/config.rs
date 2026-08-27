@@ -13,6 +13,7 @@ use thiserror::Error;
 
 use std::convert::TryFrom;
 
+use super::context_menu::ContextMenu;
 use super::hooks::Hooks;
 use super::keybinds::Keybinds;
 use super::layout::RunPluginOrAlias;
@@ -47,6 +48,9 @@ pub struct Config {
     /// The plugin bound to each hook point. Defaults to the shipped `agent_exit` screen; see
     /// `input::hooks`.
     pub hooks: Hooks,
+    /// The items a right-click menu offers before its hook plugin has had its say; see
+    /// `input::context_menu`.
+    pub context_menu: ContextMenu,
 }
 
 #[derive(Error, Debug, Serialize, Deserialize)]
@@ -695,6 +699,7 @@ pub async fn watch_layout_dir_changes<F, Fut>(
 mod config_test {
     use super::*;
     use crate::data::{InputMode, Palette, PaletteColor, StyleDeclaration, Styling};
+    use crate::input::actions::Action;
     use crate::input::hooks::HookPoint;
     use crate::input::layout::RunPlugin;
     use crate::input::options::{Clipboard, OnForceClose};
@@ -1449,6 +1454,89 @@ mod config_test {
             config.env,
             EnvironmentVariables::from_data(expected_env_config),
             "Env variables defined in config"
+        );
+    }
+
+    #[test]
+    fn context_menu_items_parse_labels_and_actions() {
+        let config = Config::from_kdl(
+            r#"
+            context_menu {
+                "Copy" {
+                    Copy
+                }
+                separator
+                "Close pane" shortcut="Ctrl-w" {
+                    CloseFocus
+                }
+            }
+            "#,
+            None,
+        )
+        .unwrap();
+        let items = config.context_menu.items();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].label, "Copy");
+        assert_eq!(items[0].actions, vec![Action::Copy]);
+        assert!(items[1].separator);
+        assert_eq!(items[2].label, "Close pane");
+        assert_eq!(items[2].shortcut.as_deref(), Some("Ctrl-w"));
+        assert_eq!(items[2].actions, vec![Action::CloseFocus]);
+    }
+
+    /// Unlike `load_plugins`, a `context_menu` block is not additive: a menu somebody wrote out is
+    /// the menu they want. Asserted rather than merely documented, because the divergence is the
+    /// sort of thing a later change would "fix" without noticing.
+    #[test]
+    fn a_context_menu_block_replaces_the_defaults() {
+        let config =
+            Config::from_kdl("context_menu {\n \"Only this\" {\n Copy\n }\n}", None).unwrap();
+        assert_eq!(config.context_menu.items().len(), 1);
+        assert_eq!(config.context_menu.items()[0].label, "Only this");
+    }
+
+    #[test]
+    fn an_empty_context_menu_block_means_no_configured_items() {
+        let config = Config::from_kdl("context_menu {\n}", None).unwrap();
+        assert!(
+            config.context_menu.is_empty(),
+            "which is a fine thing to write when the hook plugin supplies everything"
+        );
+    }
+
+    #[test]
+    fn a_config_that_says_nothing_about_the_context_menu_keeps_the_defaults() {
+        let config = Config::from_kdl("keybinds {\n}", None).unwrap();
+        assert!(!config.context_menu.is_empty());
+    }
+
+    #[test]
+    fn a_context_menu_item_with_no_actions_is_a_config_error() {
+        let err = Config::from_kdl("context_menu {\n \"Does nothing\"\n}", None).unwrap_err();
+        let message = format!("{err:?}");
+        assert!(message.contains("Does nothing"), "{message}");
+    }
+
+    #[test]
+    fn context_menu_survives_serialization() {
+        let config = Config::from_kdl(
+            "context_menu {\n \"Copy\" shortcut=\"Ctrl-c\" {\n Copy\n }\n separator\n}",
+            None,
+        )
+        .unwrap();
+        let round_tripped = Config::from_kdl(&config.to_string(false), None).unwrap();
+        assert_eq!(round_tripped.context_menu, config.context_menu);
+    }
+
+    #[test]
+    fn the_default_hooks_bind_the_shipped_context_menu() {
+        let config = Config::from_kdl("keybinds {\n}", None).unwrap();
+        assert_eq!(
+            config
+                .hooks
+                .get(HookPoint::ContextMenu)
+                .map(|p| p.location_string()),
+            Some("zellij:context-menu".to_owned())
         );
     }
 

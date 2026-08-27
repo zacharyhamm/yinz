@@ -408,6 +408,45 @@ hooks {
     agent_exit "zellij:agent-exit"
     // agent_exit "file:~/.config/zellij/hooks/agent-exit.lua"
     // agent_exit ""   // turn it off: the pane just holds
+
+    // context_menu  a right-click asked for a menu. Unlike agent_exit this plugin
+    //               gets no pane: it runs headless, is handed the click as a
+    //               `context_menu_requested` event, and answers with
+    //               `set_context_menu`. The menu itself is drawn by zellij.
+    context_menu "zellij:context-menu"
+    // context_menu ""   // turn it off: the menu shows the items below and nothing else
+}
+
+// What a right-click menu offers, before the `context_menu` hook plugin has had
+// its say. A node's name is the label and its children are actions - the same
+// actions a keybinding takes. `separator` draws a rule.
+//
+// This block *replaces* the items below rather than adding to them, so write out
+// the whole menu you want. An empty block means "nothing but what the plugin
+// supplies".
+//
+// Needs `context_menu_on_right_click true` in the options above to appear at all.
+context_menu {
+    "Copy" {
+        Copy
+    }
+    separator
+    "Split right" {
+        NewPane "Right"
+    }
+    "Split down" {
+        NewPane "Down"
+    }
+    "Fullscreen" {
+        ToggleFocusFullscreen
+    }
+    separator
+    "Move to new tab" {
+        BreakPane
+    }
+    "Close pane" {
+        CloseFocus
+    }
 }
 
 // Choose what to do when zellij receives SIGTERM, SIGINT, SIGQUIT or SIGHUP
@@ -712,6 +751,15 @@ hooks {
 // Default: true
 //
 // mouse_hover_effects false
+
+// Whether right-clicking a pane opens a context menu. A program that is tracking
+// the mouse itself (vim, htop) keeps its own right-click either way, so this can
+// go quiet and come back as you start and quit an editor.
+// What the menu says is the `context_menu` block below, filtered by the
+// `context_menu` hook plugin.
+// Default: false
+//
+// context_menu_on_right_click true
 
 // Whether to output OSC8 hyperlink sequences
 // Default: true

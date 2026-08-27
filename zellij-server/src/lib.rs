@@ -452,6 +452,11 @@ impl SessionMetaData {
                     visual_bell: new_config.options.visual_bell.unwrap_or(true),
                     focus_follows_mouse: new_config.options.focus_follows_mouse.unwrap_or(false),
                     mouse_click_through: new_config.options.mouse_click_through.unwrap_or(false),
+                    context_menu_on_right_click: new_config
+                        .options
+                        .context_menu_on_right_click
+                        .unwrap_or(false),
+                    context_menu: new_config.context_menu.clone(),
                     osc133_command_selection: new_config
                         .options
                         .osc133_command_selection
@@ -487,6 +492,8 @@ impl SessionMetaData {
                         self.config_dir.clone(),
                     ),
                     builtin_plugins_dir: new_config.options.builtin_plugins_dir,
+                    hooks: new_config.hooks,
+                    context_menu: new_config.context_menu,
                     was_written_to_disk: config_was_written_to_disk,
                 })
                 .unwrap();
@@ -2140,6 +2147,7 @@ fn init_session(
             let builtin_plugins_dir = config_options.builtin_plugins_dir.clone();
             let background_plugins = config.background_plugins.clone();
             let hooks = config.hooks.clone();
+            let context_menu = config.context_menu.clone();
             let session_env_vars = session_env_vars.clone();
             move || {
                 plugin_thread_main(
@@ -2160,6 +2168,7 @@ fn init_session(
                     default_keybinds,
                     background_plugins,
                     hooks,
+                    context_menu,
                     builtin_plugins_dir,
                     client_id,
                 )

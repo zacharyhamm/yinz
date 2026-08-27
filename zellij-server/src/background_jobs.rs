@@ -173,6 +173,9 @@ pub enum BackgroundJob {
     /// the screen knows the coarsest cadence every live surface can live with.
     StartAnimationClock(Duration),
     StopAnimationClock,
+    /// Give up waiting for a context menu's hook plugin and show the configured items instead.
+    /// (request id, client id, timeout in milliseconds)
+    ContextMenuTimeout(u64, ClientId, u64),
     RenderToClients,
     QueryZellijWebServerStatus,
     ClearHelpText {
@@ -701,6 +704,20 @@ pub(crate) fn background_jobs_main(
                         tokio::time::sleep(Duration::from_secs(timeout_secs)).await;
                         let _ = senders.send_to_screen(ScreenInstruction::DismissNotification(
                             notification_id,
+                        ));
+                    }
+                });
+            },
+            // Like `DismissNotification`, deliberately not gated on `job_already_running`: every
+            // menu has its own request id and needs its own timer, and a right-click while another
+            // menu's timer is pending is ordinary.
+            BackgroundJob::ContextMenuTimeout(request_id, client_id, timeout_ms) => {
+                runtime.spawn({
+                    let senders = bus.senders.clone();
+                    async move {
+                        tokio::time::sleep(Duration::from_millis(timeout_ms)).await;
+                        let _ = senders.send_to_screen(ScreenInstruction::ContextMenuTimedOut(
+                            request_id, client_id,
                         ));
                     }
                 });

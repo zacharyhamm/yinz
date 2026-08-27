@@ -135,10 +135,16 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
 ///
 /// Kept separate from `BUILTIN_PLUGIN_NAMES` rather than merged into it because everything
 /// that reads that list is looking for something to load wasm for.
-pub const BUILTIN_LUA_PLUGINS: &[(&str, &str)] = &[(
-    "agent-exit",
-    include_str!("../assets/plugins/agent-exit.lua"),
-)];
+pub const BUILTIN_LUA_PLUGINS: &[(&str, &str)] = &[
+    (
+        "agent-exit",
+        include_str!("../assets/plugins/agent-exit.lua"),
+    ),
+    (
+        "context-menu",
+        include_str!("../assets/plugins/context-menu.lua"),
+    ),
+];
 
 /// The source of a builtin Lua plugin, if `name` names one.
 pub fn builtin_lua_plugin(name: &str) -> Option<&'static str> {

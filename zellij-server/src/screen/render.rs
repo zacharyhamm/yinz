@@ -137,7 +137,7 @@ impl Screen {
             }
 
             // notifications paint over the panes, so they're emitted once every tab has rendered
-            if !self.notifications.is_empty() {
+            if !self.notifications.is_empty() || !self.context_menus.is_empty() {
                 let regular_client_ids: Vec<ClientId> = self
                     .connected_clients
                     .borrow()
@@ -146,6 +146,11 @@ impl Screen {
                     .copied()
                     .collect();
                 self.render_notifications(&mut output, session_surface, &regular_client_ids, now)
+                    .context(err_context)?;
+                // Above the toasts: a menu is something the user opened and is looking at right
+                // now, and a toast arriving underneath it must not cover the row they are about
+                // to click.
+                self.render_context_menus(&mut output, session_surface, &regular_client_ids)
                     .context(err_context)?;
             }
 
@@ -304,6 +309,19 @@ impl Screen {
                     }
                     tab.render(&mut watcher_output, Some(followed_client_id))
                         .context(err_context)?;
+                }
+                // A watcher is watching a particular client's screen, so it sees that client's
+                // menu too - otherwise the watcher would see a pane the followed user is plainly
+                // interacting with and no sign of what they are interacting with it through.
+                if let Some(watcher_surface) =
+                    self.session_surface_for_tab(focused_tab_index_of_followed_client_id)
+                {
+                    self.render_context_menus(
+                        &mut watcher_output,
+                        watcher_surface,
+                        &[followed_client_id],
+                    )
+                    .context(err_context)?;
                 }
                 if let Some(tab) = self.tabs.get(&focused_tab_index_of_followed_client_id) {
                     watcher_output
