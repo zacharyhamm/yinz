@@ -15,6 +15,21 @@ use std::time::{Duration, Instant};
 use crate::data::PaletteColor;
 use crate::shared::eightbit_to_rgb;
 
+/// The shared animation clock's fast cadence - roughly 60fps, and the frame budget every
+/// continuously moving surface is sampled against.
+///
+/// This only guarantees a *wakeup*. Nothing advances on a tick: the frame samples every live
+/// animation at one `Instant` just before it composites, so a tick the screen thread was too busy
+/// to service costs a frame and never a position. That is also why this is well inside the render
+/// debounce (`REPAINT_DELAY_MS` in `zellij-server/src/background_jobs.rs`) rather than a multiple
+/// of it - the debounce coalescing two ticks into one frame is a dropped frame, not a stretched
+/// animation.
+///
+/// It is the *fast* cadence rather than the only one: a surface whose appearance changes on a
+/// coarse schedule - the plugin loading dots - asks the same clock for its own, slower period. See
+/// `Screen::animation_clock_period`.
+pub const FRAME_PERIOD: Duration = Duration::from_millis(16);
+
 /// The shortest a re-aimed tween is allowed to take.
 ///
 /// Three frames at the animation clock's 16ms. A correction that finishes inside a frame or two

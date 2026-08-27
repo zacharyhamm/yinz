@@ -168,7 +168,10 @@ pub enum BackgroundJob {
     WebRequestStreamFinished(StreamKey, u64, Option<String>), // u64 - generation, Option<String> - error
     HighlightPanesWithMessage(Vec<PaneId>, String),
     DismissNotification(u64, u64), // notification id, timeout in seconds
-    StartAnimationClock,
+    /// Wake the screen for a frame every `Duration`, until [`BackgroundJob::StopAnimationClock`].
+    /// The period is `Screen`'s to choose - see `Screen::animation_clock_period` - because only
+    /// the screen knows the coarsest cadence every live surface can live with.
+    StartAnimationClock(Duration),
     StopAnimationClock,
     RenderToClients,
     QueryZellijWebServerStatus,
@@ -205,15 +208,6 @@ impl From<&BackgroundJob> for BackgroundJobContext {
 
 static LONG_FLASH_DURATION_MS: u64 = 1000;
 static FLASH_DURATION_MS: u64 = 400; // Doherty threshold
-/// The shared animation clock's period - roughly 60fps, and the frame budget every animated
-/// surface is sampled against.
-///
-/// This only guarantees a *wakeup*. Nothing advances on a tick: `render_to_clients` samples every
-/// live animation at one `Instant` just before it composites, so a tick the screen thread was too
-/// busy to service costs a frame and never a position. That is also why this is well inside
-/// `REPAINT_DELAY_MS` below rather than a multiple of it - the debounce coalescing two ticks into
-/// one frame is a dropped frame, not a stretched animation.
-static ANIMATION_TICK_MS: u64 = 16;
 static SESSION_METADATA_WRITE_INTERVAL_MS: u64 = 1000;
 static UPDATE_AND_REPORT_CWDS_INTERVAL_MS: u64 = 1000;
 static DEFAULT_SERIALIZATION_INTERVAL: u64 = 60000;
@@ -249,8 +243,9 @@ pub(crate) fn background_jobs_main(
 ) -> Result<()> {
     let err_context = || "failed to write to pty".to_string();
     let mut running_jobs: HashMap<BackgroundJob, Instant> = HashMap::new();
-    // the shared animation clock's cancel flag, `Some` while it is running.
-    let mut animation_clock: Option<Arc<AtomicBool>> = None;
+    // the shared animation clock's cancel flag and the period it is ticking at, `Some` while it is
+    // running.
+    let mut animation_clock: Option<(Arc<AtomicBool>, Duration)> = None;
     let current_session_name = Arc::new(Mutex::new(String::default()));
     let current_session_info = Arc::new(Mutex::new(SessionInfo::default()));
     let current_session_plugin_list: Arc<Mutex<BTreeMap<PluginId, RunPlugin>>> =
@@ -378,23 +373,28 @@ pub(crate) fn background_jobs_main(
             },
             // One clock for every animated surface, not one per surface: they are all sampled by
             // the same `render_to_clients` at the same instant, so a second clock would only buy
-            // duplicate wakeups. Idempotent - any surface starting an animation sends this, and
-            // whoever gets there first owns the task.
-            BackgroundJob::StartAnimationClock => {
+            // duplicate wakeups. What varies is its *period*, and the screen sends this again with
+            // a new one whenever the coarsest cadence its live surfaces can live with changes - so
+            // a request for the period already running is a no-op, and any other request replaces
+            // the task rather than adding to it.
+            BackgroundJob::StartAnimationClock(period) => {
                 if animation_clock
                     .as_ref()
-                    .is_some_and(|flag| flag.load(Ordering::SeqCst))
+                    .is_some_and(|(flag, running_period)| {
+                        *running_period == period && flag.load(Ordering::SeqCst)
+                    })
                 {
                     continue;
+                }
+                if let Some((previous, _)) = animation_clock.take() {
+                    previous.store(false, Ordering::SeqCst);
                 }
                 let running = Arc::new(AtomicBool::new(true));
                 runtime.spawn({
                     let senders = bus.senders.clone();
                     let running = running.clone();
                     async move {
-                        let mut tick = tokio::time::interval(std::time::Duration::from_millis(
-                            ANIMATION_TICK_MS,
-                        ));
+                        let mut tick = tokio::time::interval(period);
                         // `Skip` rather than the default `Burst`: a tick the screen thread was too
                         // busy to service must be dropped, not replayed as a backlog of wakeups
                         // that all arrive at once and then ask for the same frame several times.
@@ -405,10 +405,10 @@ pub(crate) fn background_jobs_main(
                         }
                     }
                 });
-                animation_clock = Some(running);
+                animation_clock = Some((running, period));
             },
             BackgroundJob::StopAnimationClock => {
-                if let Some(running) = animation_clock.take() {
+                if let Some((running, _)) = animation_clock.take() {
                     running.store(false, Ordering::SeqCst);
                 }
             },
@@ -845,7 +845,7 @@ pub(crate) fn background_jobs_main(
                 }
             },
             BackgroundJob::Exit => {
-                if let Some(clock) = animation_clock.take() {
+                if let Some((clock, _)) = animation_clock.take() {
                     clock.store(false, Ordering::SeqCst);
                 }
                 for nested_guest_ping in nested_guest_pings.values() {

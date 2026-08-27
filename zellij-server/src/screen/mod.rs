@@ -56,6 +56,7 @@
 //! - `active_tab_ids: BTreeMap<ClientId, usize>`: Maps clients to active tab ID
 //! - `tab_history: BTreeMap<ClientId, Vec<usize>>`: History of tab IDs per client
 
+use crate::ui::loading_indication::DOT_PERIOD;
 use crate::ui::notification::{ENTER_DURATION, ENTER_EASING};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -64,7 +65,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::str;
 use std::time::{Duration, Instant};
-use zellij_utils::animation::Tween;
+use zellij_utils::animation::{Tween, FRAME_PERIOD};
 
 use crate::route::NotificationEnd;
 
@@ -682,6 +683,10 @@ pub(crate) struct Screen {
     /// are derived from how long the load has been running, so this only records *which* plugins
     /// are still loading.
     animating_plugin_loads: HashSet<u32>,
+    /// The period last requested of the shared animation clock, `None` while it is stopped. Kept
+    /// so `sync_animation_clock` is a no-op on the overwhelming majority of ticks rather than a
+    /// message on the bus sixty times a second.
+    animation_clock: Option<Duration>,
     /// The floating pane geometries each tab was last rendered with. The global panes paint
     /// clipped against these, so the cells a floating pane covers are dropped from their chunks
     /// and have no grid diff of their own - once the pane moves off them, only a full repaint
@@ -824,13 +829,78 @@ impl Screen {
         Instant::now()
     }
 
-    /// Whether anything on screen still wants a frame, so the shared animation clock knows when to
-    /// stop. Derived from the animated state itself rather than from a registration list, which is
-    /// what stops it getting stuck on and burning wakeups over an idle session.
+    /// How often the shared clock should wake at `now`, or `None` if nothing on screen wants a
+    /// frame any more.
+    ///
+    /// Derived from the animated state itself rather than from a registration list, which is what
+    /// stops the clock getting stuck on and burning wakeups over an idle session.
+    ///
+    /// Two cadences, because the surfaces genuinely differ. A toast sliding or a bell fading is
+    /// continuous motion and needs [`FRAME_PERIOD`]. The plugin loading dots are a four-character
+    /// "still working" pulse that changes once every [`DOT_PERIOD`], and holding the clock at 60fps
+    /// for them means a full `render_to_clients` - global panes, every tab's layout, every pane's
+    /// composition - sixty times a second for the entire time any plugin is loading, which on a
+    /// plugin that never finishes is forever.
+    ///
+    /// The aggregate is computed here rather than requested by each surface on purpose: a plugin
+    /// load starting while a toast is mid-slide must not be able to drop the clock to the dot
+    /// period underneath it.
+    pub(crate) fn animation_clock_period(&self, now: Instant) -> Option<Duration> {
+        if self.notifications_are_animating(now) || !self.fading_frame_panes.is_empty() {
+            Some(FRAME_PERIOD)
+        } else if !self.animating_plugin_loads.is_empty() {
+            Some(DOT_PERIOD)
+        } else {
+            None
+        }
+    }
+
+    /// Whether anything on screen still wants a frame. Production asks
+    /// [`Screen::animation_clock_period`] the sharper question - *how often* - so this is the
+    /// tests' way of asserting the clock stops.
+    #[cfg(test)]
     pub(crate) fn animations_are_live(&self, now: Instant) -> bool {
-        self.notifications_are_animating(now)
-            || !self.fading_frame_panes.is_empty()
-            || !self.animating_plugin_loads.is_empty()
+        self.animation_clock_period(now).is_some()
+    }
+
+    /// Tell the shared clock what it should be doing, if that has changed since we last said so.
+    ///
+    /// Called after anything that starts or ends an animation, and on every tick - so a cadence
+    /// that becomes coarser, or an animation that ends, is picked up within one period without
+    /// every surface having to know about every other one.
+    pub(crate) fn sync_animation_clock(&mut self, now: Instant) -> Result<()> {
+        let wanted = self.animation_clock_period(now);
+        if wanted == self.animation_clock {
+            return Ok(());
+        }
+        match wanted {
+            Some(period) => self
+                .bus
+                .senders
+                .send_to_background_jobs(BackgroundJob::StartAnimationClock(period))?,
+            None => self
+                .bus
+                .senders
+                .send_to_background_jobs(BackgroundJob::StopAnimationClock)?,
+        }
+        self.animation_clock = wanted;
+        Ok(())
+    }
+
+    /// One wakeup from the shared animation clock. Nothing is advanced here: every animation is
+    /// sampled inside `render_to_clients` at the instant the frame is composited, so a tick that
+    /// arrives late - or never - costs a frame and never a position.
+    ///
+    /// The frame is asked for unconditionally, including on the tick that finds everything settled.
+    /// That last one is the frame that actually *paints* the settled state: renders are debounced
+    /// by `REPAINT_DELAY_MS`, so the frame a still-animating tick asks for is composited up to that
+    /// long before the deadline it was aiming at. Without a tick past the deadline asking for one
+    /// more, a dismissing toast is left painted a sliver short of gone - and never reaped, because
+    /// `reap_settled_notifications` only runs inside a frame - until unrelated output happens to
+    /// repaint.
+    pub(crate) fn on_animation_tick(&mut self, now: Instant) -> Result<()> {
+        self.render(None)?;
+        self.sync_animation_clock(now)
     }
 
     /// Redraw the loading indicator of every plugin still loading. The pane itself skips the write
@@ -1051,6 +1121,7 @@ impl Screen {
             last_notification_fill: HashMap::new(),
             fading_frame_panes: HashSet::new(),
             animating_plugin_loads: HashSet::new(),
+            animation_clock: None,
             last_rendered_floating_stacks: BTreeMap::new(),
             global_last_active_tab_id: 0,
             tabs: BTreeMap::new(),

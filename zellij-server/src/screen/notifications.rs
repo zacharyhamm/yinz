@@ -4,7 +4,6 @@ use std::time::Instant;
 use zellij_utils::errors::prelude::*;
 
 use super::{NotificationLayout, Screen};
-use crate::background_jobs::BackgroundJob;
 use crate::output::Output;
 use crate::panes::PaneId;
 use crate::ui::damage::{overlay_damage, CellRect};
@@ -350,9 +349,7 @@ impl Screen {
                     scaled_duration(revealed, 1.0, EXIT_DURATION),
                     EXIT_EASING,
                 );
-                self.bus
-                    .senders
-                    .send_to_background_jobs(BackgroundJob::StartAnimationClock)?;
+                self.sync_animation_clock(now)?;
             }
         }
         Ok(())
