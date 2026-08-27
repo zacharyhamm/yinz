@@ -258,6 +258,7 @@ enum CommandName {
   FsRemove = 266;
   FsCreateDir = 267;
   FsRename = 268;
+  GrantPluginPermissions = 269;
 }
 
 message PluginCommand {
@@ -456,6 +457,7 @@ message PluginCommand {
     FsRemovePayload fs_remove_payload = 207;
     FsCreateDirPayload fs_create_dir_payload = 208;
     FsRenamePayload fs_rename_payload = 209;
+    GrantPluginPermissionsPayload grant_plugin_permissions_payload = 210;
   }
 }
 
@@ -495,6 +497,11 @@ message FsCreateDirPayload {
 message FsRenamePayload {
   string from = 1;
   string to = 2;
+}
+
+message GrantPluginPermissionsPayload {
+  string plugin_url = 1;
+  repeated plugin_permission.PermissionType permissions = 2;
 }
 
 // Every Fs command answers, so that a failure can be raised rather than logged.

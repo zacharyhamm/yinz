@@ -36,7 +36,7 @@ fn request_body_adds_the_tool_first_policy_when_tools_are_enabled() {
 fn hocus_prompt_contract_keeps_global_routing_rules() {
     assert_eq!(
         TOOL_FIRST_PROMPT,
-        "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_tab`/`warp_pane` move current items out; `warp_tab_here`/`warp_pane_here` move listed items in. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. Zellij Lua plugins: call `plugin_docs` before writing one; `plugin_list`/`plugin_read`/`plugin_write`/`plugin_reload` manage the user's plugin folder. Make independent calls together."
+        "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_tab`/`warp_pane` move current items out; `warp_tab_here`/`warp_pane_here` move listed items in. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. Zellij Lua plugins: call `plugin_docs` before writing one; `plugin_list`/`plugin_read`/`plugin_write`/`plugin_reload` manage the user's plugin folder; `plugin_reload` reports what the pane shows, `plugin_log` what the plugin logged. Make independent calls together."
     );
 }
 
@@ -98,7 +98,7 @@ fn request_body_advertises_the_tools_when_they_are_enabled() {
     let mut cfg = test_config();
     cfg.tools = true;
     let body = body_value(&cfg, &[Message::user("hi")]);
-    assert_eq!(body["tools"].as_array().unwrap().len(), 65);
+    assert_eq!(body["tools"].as_array().unwrap().len(), 66);
 }
 
 /// The tool payload is paid for on every turn, so it is capped rather than left to
@@ -536,7 +536,7 @@ fn acting_sends_the_body_it_always_did() {
     let transcript = [Message::user("hi")];
     let body: serde_json::Value =
         serde_json::from_slice(&request_body(&cfg, &transcript, true)).unwrap();
-    assert_eq!(body["tools"].as_array().unwrap().len(), 65);
+    assert_eq!(body["tools"].as_array().unwrap().len(), 66);
     assert!(!body["messages"][0]["content"]
         .as_str()
         .unwrap()

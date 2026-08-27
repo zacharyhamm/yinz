@@ -1897,7 +1897,18 @@ impl WasmBridge {
                                                         );
                                                     },
                                                     Err(e) => {
-                                                        log::error!("{}", e);
+                                                        log::error!("{:?}", e);
+                                                        // The same treatment the live event path
+                                                        // gives it: an error raised while the events
+                                                        // cached during a load replay is still the
+                                                        // plugin's error, and belongs in its pane.
+                                                        let stringified_error = format!("{:?}", e)
+                                                            .replace("\n", "\n\r");
+                                                        handle_plugin_crash(
+                                                            plugin_id,
+                                                            stringified_error,
+                                                            senders.clone(),
+                                                        );
                                                     },
                                                 }
                                             },
@@ -2123,6 +2134,75 @@ impl WasmBridge {
                 },
             };
         }
+    }
+    /// Grant `permissions` to the plugin at `plugin_url`, on top of whatever it already has.
+    ///
+    /// The cache is keyed the way `cache_plugin_permissions` keys it - by the location's string
+    /// form - so the plugin's own later `request_permission` finds the grant and never prompts.
+    /// An instance already running is told too, with the same event a prompt's answer sends,
+    /// so it does not have to be reloaded to use what it was given.
+    pub fn grant_permissions_to_location(
+        &mut self,
+        plugin_url: &str,
+        permissions: Vec<PermissionType>,
+        shutdown_sender: Sender<()>,
+    ) -> Result<()> {
+        let err_context = || format!("Failed to grant permissions to {plugin_url}");
+        let location = RunPluginLocation::parse(plugin_url, None)
+            .map_err(|e| anyhow!("{}", e))
+            .with_context(err_context)?;
+        let key = location.to_string();
+
+        let mut permission_cache = PermissionCache::from_path_or_default(None);
+        let mut granted: Vec<PermissionType> = permission_cache
+            .get_permissions(key.clone())
+            .cloned()
+            .unwrap_or_default();
+        for permission in permissions {
+            if !granted.contains(&permission) {
+                granted.push(permission);
+            }
+        }
+        permission_cache.cache(key, granted.clone());
+        permission_cache.write_to_file().with_context(err_context)?;
+
+        let running: Vec<PluginId> = self
+            .plugin_map
+            .lock()
+            .unwrap()
+            .running_plugins()
+            .into_iter()
+            .filter_map(|(plugin_id, _client_id, running_plugin)| {
+                let mut running_plugin = running_plugin.lock().unwrap();
+                let env = running_plugin.env();
+                let is_it = env.plugin.location == location
+                    || env
+                        .resolved_source_path
+                        .as_ref()
+                        .is_some_and(|path| RunPluginLocation::File(path.clone()) == location);
+                if !is_it {
+                    return None;
+                }
+                running_plugin
+                    .env_mut()
+                    .set_permissions(HashSet::from_iter(granted.clone()));
+                Some(plugin_id)
+            })
+            .collect();
+        let updates: Vec<_> = running
+            .into_iter()
+            .map(|plugin_id| {
+                (
+                    Some(plugin_id),
+                    None,
+                    Event::PermissionRequestResult(PermissionStatus::Granted),
+                )
+            })
+            .collect();
+        if !updates.is_empty() {
+            self.update_plugins(updates, shutdown_sender)?;
+        }
+        Ok(())
     }
     pub fn cache_plugin_permissions(
         &mut self,

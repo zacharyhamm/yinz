@@ -197,6 +197,12 @@ pub enum Status {
     /// claimants for the same reply and let call order decide — exactly the
     /// coupling `on_response`'s "was this mine?" contract exists to prevent.
     AwaitingLinear,
+    /// The head of `pending` is a `plugin_reload` whose plugin has been asked to load, waiting
+    /// on the timer to go and look at the pane it landed in.
+    ///
+    /// A reload is fire-and-forget on the host, so the only way to say whether it worked is to
+    /// read the pane afterwards; this is the state between asking and looking.
+    AwaitingPluginLoad,
 }
 
 /// Whether this conversation is planning rather than acting, and how far along.

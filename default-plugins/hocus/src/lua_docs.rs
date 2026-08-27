@@ -13,19 +13,43 @@ const GUIDE: &str = include_str!("../../../docs/LUA_PLUGINS.md");
 const EXAMPLE_CLOCK: &str = include_str!("../../../example-plugins/clock.lua");
 const EXAMPLE_PLAYGROUND: &str = include_str!("../../../example-plugins/playground.lua");
 const EXAMPLE_AGENT_COMMIT: &str = include_str!("../../../example-plugins/agent-commit.lua");
+const EXAMPLE_DASHBOARD: &str = include_str!("../../../example-plugins/dashboard.lua");
+/// The Lua half of the API, verbatim: the argument sugar and the named wrappers live here, so
+/// a model that has read it does not have to guess how a command is spelled. Served in three
+/// parts, cut at its own section markers, so that none is more than a tool call should cost.
+const PRELUDE: &str = include_str!("../../../zellij-server/src/plugins/lua/prelude.lua");
+const PRELUDE_CUTS: [&str; 2] = ["\n-- Data ", "\n-- Rendering "];
+
+/// Part `index` of the prelude: before the first cut, between the two, or after the second.
+fn prelude_part(index: usize) -> &'static str {
+    let starts: Vec<usize> = PRELUDE_CUTS
+        .iter()
+        .filter_map(|cut| PRELUDE.find(cut).map(|at| at + 1))
+        .collect();
+    let start = index
+        .checked_sub(1)
+        .and_then(|i| starts.get(i).copied())
+        .unwrap_or(0);
+    let end = starts.get(index).copied().unwrap_or(PRELUDE.len());
+    &PRELUDE[start..end]
+}
 
 /// The section names the schema advertises, and the only ones `section` accepts.
 ///
 /// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
 /// editing the guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 14] = [
+pub const SECTIONS: [&str; 22] = [
     "index",
     "quickstart",
     "contract",
     "events",
     "commands",
+    "rendering",
+    "modules",
+    "data",
     "queues",
     "hooks",
+    "files",
     "errors",
     "files",
     "restrictions",
@@ -33,6 +57,10 @@ pub const SECTIONS: [&str; 14] = [
     "example_clock",
     "example_playground",
     "example_agent_commit",
+    "example_dashboard",
+    "prelude",
+    "prelude_data",
+    "prelude_ui",
 ];
 
 /// The `##` heading each guide section is cut at. Examples are not in the guide and are absent.
@@ -42,8 +70,12 @@ fn heading(section: &str) -> Option<&'static str> {
         "contract" => "The contract",
         "events" => "Events",
         "commands" => "Commands",
+        "rendering" => "Rendering",
+        "modules" => "Modules",
+        "data" => "Data",
         "queues" => "Work queues",
         "hooks" => "Hooks",
+        "files" => "Files",
         "errors" => "Errors",
         "files" => "Files",
         "restrictions" => "What Lua plugins may not do",
@@ -77,6 +109,10 @@ fn index() -> String {
             "example_clock" => "example: the small one".to_owned(),
             "example_playground" => "example: every shape of command in use".to_owned(),
             "example_agent_commit" => "example: an agent_exit hook".to_owned(),
+            "example_dashboard" => "example: a themed dashboard - zellij.ui, a timer, a command, keys and the mouse".to_owned(),
+            "prelude" => "the Lua side of the API itself: events, commands, files, and every named wrapper".to_owned(),
+            "prelude_data" => "its zellij.data part: the persistent store, with every helper".to_owned(),
+            "prelude_ui" => "the rest of it: zellij.text (widths), zellij.ui (themed text, ribbons, tables, lists)".to_owned(),
             other => match heading(other) {
                 Some(heading) => format!("the guide's \"{heading}\""),
                 None => continue,
@@ -98,6 +134,10 @@ pub fn section(name: &str) -> Option<String> {
         "example_clock" => Some(fenced(EXAMPLE_CLOCK)),
         "example_playground" => Some(fenced(EXAMPLE_PLAYGROUND)),
         "example_agent_commit" => Some(fenced(EXAMPLE_AGENT_COMMIT)),
+        "example_dashboard" => Some(fenced(EXAMPLE_DASHBOARD)),
+        "prelude" => Some(fenced(prelude_part(0))),
+        "prelude_data" => Some(fenced(prelude_part(1))),
+        "prelude_ui" => Some(fenced(prelude_part(2))),
         other => heading(other).and_then(guide_section),
     }
 }

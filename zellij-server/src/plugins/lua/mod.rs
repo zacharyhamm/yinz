@@ -196,13 +196,45 @@ fn dispatch(
 
 /// Serialize a host value for Lua. An absent `Option` becomes `nil`, not mlua's `null`
 /// userdata: a plugin checking `if event.payload then` must get the answer Lua would give.
+///
+/// It is serialized as `null` first and turned into `nil` afterwards, rather than as `nil`
+/// directly, because of where a `None` can sit: mlua builds a tuple variant's fields with
+/// `raw_push`, and pushing `nil` is a no-op, so `CommandPaneExited(7, None, context)` would
+/// arrive as `{ 7, context }` with the context in the exit code's place. A `null` holds the
+/// slot; clearing it afterwards leaves the slot empty and everything after it where it was.
 pub(crate) fn to_lua_value<T: serde::Serialize + ?Sized>(lua: &Lua, value: &T) -> Result<LuaValue> {
     use mlua::{serde::SerializeOptions, LuaSerdeExt};
-    lua.to_value_with(
-        value,
-        SerializeOptions::new()
-            .serialize_none_to_null(false)
-            .serialize_unit_to_null(false),
-    )
-    .map_err(lua_err)
+    let value = lua
+        .to_value_with(
+            value,
+            SerializeOptions::new()
+                .serialize_none_to_null(true)
+                .serialize_unit_to_null(false),
+        )
+        .map_err(lua_err)?;
+    nulls_to_nil(lua, value).map_err(lua_err)
+}
+
+/// Replace every mlua `null` in `value`, at any depth, with `nil`. Clearing a table slot keeps
+/// the slots after it in place, which is the whole point - see [`to_lua_value`].
+fn nulls_to_nil(lua: &Lua, value: LuaValue) -> mlua::Result<LuaValue> {
+    use mlua::LuaSerdeExt;
+    if value == lua.null() {
+        return Ok(LuaValue::Nil);
+    }
+    if let LuaValue::Table(table) = &value {
+        let entries: Vec<(LuaValue, LuaValue)> = table
+            .pairs::<LuaValue, LuaValue>()
+            .collect::<mlua::Result<_>>()?;
+        for (key, entry) in entries {
+            let is_null = entry == lua.null();
+            let is_table = matches!(entry, LuaValue::Table(_));
+            if is_null {
+                table.raw_set(key, LuaValue::Nil)?;
+            } else if is_table {
+                table.raw_set(key, nulls_to_nil(lua, entry)?)?;
+            }
+        }
+    }
+    Ok(value)
 }

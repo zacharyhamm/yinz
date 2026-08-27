@@ -450,6 +450,10 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::RequestPluginPermissions(permissions) => {
                 request_permission(env, permissions)?
             },
+            PluginCommand::GrantPluginPermissions {
+                plugin_url,
+                permissions,
+            } => grant_plugin_permissions(env, plugin_url, permissions)?,
             PluginCommand::SwitchSession(connect_to_session) => switch_session(
                 env,
                 connect_to_session.name,
@@ -1010,6 +1014,28 @@ fn show_cursor(env: &PluginEnv, cursor_position: Option<(usize, usize)>) {
             )
         })
         .non_fatal();
+}
+
+/// Grant another plugin permissions ahead of its prompt. Refused for anything but a builtin:
+/// `check_command_permission` already waves a builtin through, so the gate has to be here, and
+/// a non-builtin reaching it would be a plugin handing out authority it was never given.
+fn grant_plugin_permissions(
+    env: &PluginEnv,
+    plugin_url: String,
+    permissions: Vec<PermissionType>,
+) -> Result<()> {
+    if !env.plugin.is_builtin() {
+        return Err(anyhow!(
+            "only a builtin plugin may grant permissions to another plugin; {} is not one",
+            env.name()
+        ));
+    }
+    env.senders
+        .send_to_plugin(PluginInstruction::GrantPermissionsToLocation {
+            plugin_url,
+            permissions,
+        })
+        .with_context(|| format!("failed to grant permissions from {}", env.name()))
 }
 
 fn request_permission(env: &PluginEnv, permissions: Vec<PermissionType>) -> Result<()> {
@@ -7146,6 +7172,9 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
             PermissionType::Reconfigure
         },
         PluginCommand::ChangeHostFolder(..) => PermissionType::FullHdAccess,
+        // Nominal: the handler refuses anything that is not a builtin, and a builtin is never
+        // asked. Listed so that the command is not permissionless on paper.
+        PluginCommand::GrantPluginPermissions { .. } => PermissionType::ChangeApplicationState,
         PluginCommand::FsRead { .. }
         | PluginCommand::FsList { .. }
         | PluginCommand::FsMetadata { .. } => PermissionType::ReadFiles,

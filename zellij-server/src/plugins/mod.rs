@@ -265,6 +265,13 @@ pub enum PluginInstruction {
         success: bool,
         payload: Option<String>,
     },
+    /// Grant permissions to every plugin at a location, running or not, as if the user had
+    /// answered its prompt. Sent only on behalf of a builtin - see `grant_plugin_permissions`
+    /// in `zellij_exports`.
+    GrantPermissionsToLocation {
+        plugin_url: String,
+        permissions: Vec<PermissionType>,
+    },
     /// A plugin failed to load or trapped. Only queued jobs act on this: a job that can no
     /// longer run must not keep its slot.
     PluginFailed {
@@ -1358,6 +1365,14 @@ pub(crate) fn plugin_thread_main(
             } => {
                 wasm_bridge
                     .queue_finish_job(plugin_id, success, payload)
+                    .non_fatal();
+            },
+            PluginInstruction::GrantPermissionsToLocation {
+                plugin_url,
+                permissions,
+            } => {
+                wasm_bridge
+                    .grant_permissions_to_location(&plugin_url, permissions, shutdown_send.clone())
                     .non_fatal();
             },
             PluginInstruction::PluginFailed {

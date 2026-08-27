@@ -1,5 +1,7 @@
 //! Creating a Lua interpreter for one plugin and running its source.
 
+use std::path::Path;
+
 use mlua::{Lua, StdLib, Table, Value as LuaValue};
 use zellij_utils::errors::prelude::*;
 
@@ -66,25 +68,35 @@ pub fn load_lua_plugin(source: &str, chunk_name: &str, env: PluginEnv) -> Result
         .map_err(|e| anyhow!("failed to load zellij's Lua prelude: {}", e))?;
 
     install_json(&lua, &zellij)?;
+    install_log(&lua, &zellij, chunk_name)?;
+    install_text_width(&lua, &zellij)?;
 
-    // Plugins say `require("zellij")`, which is the convention Lua modules are written against,
-    // even though `require` itself is not available for anything else.
-    let require_zellij = {
+    // `require("zellij")` is the module itself; anything else is a file next to the plugin.
+    let require = {
         let zellij = zellij.clone();
-        lua.create_function(move |_, name: String| {
+        let plugin_dir = env
+            .resolved_source_path
+            .as_ref()
+            .and_then(|path| path.parent())
+            .map(Path::to_path_buf);
+        let loaded = lua
+            .create_table()
+            .map_err(|e| anyhow!("failed to define require: {}", e))?;
+        // The in-flight marker, made once per interpreter and never handed to Lua, so no module
+        // can return a value equal to it. See `require_sibling`.
+        let loading = lua
+            .create_table()
+            .map_err(|e| anyhow!("failed to define require: {}", e))?;
+        lua.create_function(move |lua, name: String| {
             if name == "zellij" {
-                Ok(zellij.clone())
-            } else {
-                Err(mlua::Error::runtime(format!(
-                    "plugins may only require(\"zellij\"), not \"{}\"",
-                    name
-                )))
+                return Ok(LuaValue::Table(zellij.clone()));
             }
+            require_sibling(lua, plugin_dir.as_deref(), &loaded, &loading, &name)
         })
         .map_err(|e| anyhow!("failed to define require: {}", e))?
     };
     globals
-        .set("require", require_zellij)
+        .set("require", require)
         .map_err(|e| anyhow!("failed to define require: {}", e))?;
     globals
         .set("zellij", zellij.clone())
@@ -109,6 +121,120 @@ pub fn load_lua_plugin(source: &str, chunk_name: &str, env: PluginEnv) -> Result
         zellij,
         env,
     })
+}
+
+/// `require("<name>")` for a file beside the plugin: `<name>.lua`, or `<name>/init.lua`, with
+/// `.` in the name meaning `/` as Lua's own `require` reads it.
+///
+/// This is the one place a plugin runs code it did not arrive with, so it is host-mediated and
+/// confined rather than `package.path`: the file has to be under the plugin's own folder *after*
+/// symlinks are followed, so a link out of the folder is refused rather than followed, and a
+/// name that climbs (`..`) or starts at the root never reaches the disk. The confinement is the
+/// same argument `zellij.fs` makes, and it is what lets a plugin be split across files without
+/// reopening `package`.
+///
+/// Modules load once per interpreter and are cached, as `require` does; a module that returns
+/// nothing is remembered as `true`, as `require` does. A module still loading when it is asked
+/// for again is a cycle, and says so rather than recursing until the stack goes.
+///
+/// The in-flight mark is `loading`, a table the host made and Lua never sees, compared by
+/// identity: any value a module could *return* - the string "loading" included - is a value a
+/// module may legitimately return, and marking with one would turn that module into a permanent
+/// false cycle.
+fn require_sibling(
+    lua: &Lua,
+    plugin_dir: Option<&Path>,
+    loaded: &Table,
+    loading: &Table,
+    name: &str,
+) -> mlua::Result<LuaValue> {
+    let cached: LuaValue = loaded.get(name)?;
+    if cached == LuaValue::Table(loading.clone()) {
+        return Err(mlua::Error::runtime(format!(
+            "require(\"{name}\") is circular: it is still being loaded"
+        )));
+    }
+    if cached != LuaValue::Nil {
+        return Ok(cached);
+    }
+    let Some(plugin_dir) = plugin_dir else {
+        return Err(mlua::Error::runtime(format!(
+            "plugins may only require(\"zellij\") here, not \"{name}\": this plugin was not \
+             loaded from a file, so it has no folder to find a module in"
+        )));
+    };
+    let relative = name.replace('.', "/");
+    let relative = Path::new(&relative);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err(mlua::Error::runtime(format!(
+            "require(\"{name}\"): a module name is a file beside the plugin, not a path"
+        )));
+    }
+    let root = plugin_dir.canonicalize().map_err(|e| {
+        mlua::Error::runtime(format!(
+            "require(\"{name}\"): the plugin's folder cannot be read: {e}"
+        ))
+    })?;
+    let candidates = [
+        plugin_dir.join(relative).with_extension("lua"),
+        plugin_dir.join(relative).join("init.lua"),
+    ];
+    let Some(path) = candidates.iter().find(|path| path.is_file()) else {
+        return Err(mlua::Error::runtime(format!(
+            "require(\"{name}\"): no module found; looked for {} and {}",
+            candidates[0].display(),
+            candidates[1].display()
+        )));
+    };
+    let real = path.canonicalize().map_err(|e| {
+        mlua::Error::runtime(format!("require(\"{name}\"): {}: {e}", path.display()))
+    })?;
+    if !real.starts_with(&root) {
+        return Err(mlua::Error::runtime(format!(
+            "require(\"{name}\"): {} leads outside the plugin's folder and is refused",
+            path.display()
+        )));
+    }
+    let source = std::fs::read_to_string(&real).map_err(|e| {
+        mlua::Error::runtime(format!("require(\"{name}\"): {}: {e}", real.display()))
+    })?;
+    loaded.set(name, loading.clone())?;
+    let result: mlua::Result<LuaValue> = lua
+        .load(&source)
+        .set_name(real.display().to_string())
+        .eval();
+    let value = match result {
+        Ok(LuaValue::Nil) => LuaValue::Boolean(true),
+        Ok(value) => value,
+        Err(e) => {
+            loaded.set(name, LuaValue::Nil)?;
+            return Err(e);
+        },
+    };
+    loaded.set(name, value.clone())?;
+    Ok(value)
+}
+
+/// Install `zellij.text.width`: a string's width in terminal columns.
+///
+/// In Rust because the answer is a table of Unicode properties the server already links, and
+/// because it has to agree with what the server draws: this is the same measurement the grid
+/// uses. `zellij.text.pad` and friends in the prelude are built on it.
+fn install_text_width(lua: &Lua, zellij: &Table) -> Result<()> {
+    use unicode_width::UnicodeWidthStr;
+    let text: Table = zellij
+        .get("text")
+        .map_err(|e| anyhow!("failed to read zellij.text: {}", e))?;
+    let width = lua
+        .create_function(|_, s: mlua::LuaString| Ok(s.to_str()?.width()))
+        .map_err(|e| anyhow!("failed to define zellij.text.width: {}", e))?;
+    text.set("width", width)
+        .map_err(|e| anyhow!("failed to define zellij.text.width: {}", e))?;
+    Ok(())
 }
 
 /// Replace the global named `name` with a fresh table holding only `allowed`, taken from it.
@@ -136,6 +262,41 @@ fn restrict_table(lua: &Lua, globals: &Table, name: &str, allowed: &[&str]) -> R
     globals
         .set(name, restricted)
         .map_err(|e| anyhow!("failed to restrict '{}': {}", name, e))?;
+    Ok(())
+}
+
+/// Install `zellij.log(...)`, and point `print` at it.
+///
+/// A plugin has no terminal of its own: stock `print` writes to the server process's stdout,
+/// which is nowhere a plugin author can look. Both go to zellij's log instead, tagged with the
+/// plugin's file so one plugin's lines can be told from another's (`[lua:<chunk>]`), which is
+/// also what a tool tailing the log for a given plugin greps for. A wasm plugin gets the same
+/// treatment for free, since the host captures its stderr.
+///
+/// Values are joined with tabs the way `print` does, so `print(a, b)` reads as expected.
+fn install_log(lua: &Lua, zellij: &Table, chunk_name: &str) -> Result<()> {
+    let tag = format!("[lua:{}]", chunk_name);
+    let log = lua
+        .create_function(move |_, values: mlua::MultiValue| {
+            let line = values
+                .iter()
+                .map(|value| match value {
+                    LuaValue::String(s) => s.to_string_lossy().to_string(),
+                    // `tostring` semantics, so a number or a table reads the way it would in Lua.
+                    other => other.to_string().unwrap_or_else(|_| format!("{:?}", other)),
+                })
+                .collect::<Vec<_>>()
+                .join("\t");
+            log::info!("{} {}", tag, line);
+            Ok(())
+        })
+        .map_err(|e| anyhow!("failed to define zellij.log: {}", e))?;
+    zellij
+        .set("log", log.clone())
+        .map_err(|e| anyhow!("failed to define zellij.log: {}", e))?;
+    lua.globals()
+        .set("print", log)
+        .map_err(|e| anyhow!("failed to redirect print: {}", e))?;
     Ok(())
 }
 
