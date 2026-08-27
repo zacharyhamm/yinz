@@ -23,11 +23,19 @@ impl Screen {
         )
     }
 
-    /// Lay every tab out over the shared session surface.
+    /// Lay every tab out over the shared session surface, and record that surface as the one the
+    /// tabs now sit on.
+    ///
+    /// The recording belongs here rather than at the debounced render that follows: a client that
+    /// attaches and detaches inside that window would otherwise leave `last_surface_size` on its
+    /// pre-attach value, and `surface_size` / `size_for_client` stand in with it once every client
+    /// has detached - so the next render tick would snap the tabs back, and a `zellij action
+    /// new-tab` would build a tab the reattaching client cannot match.
     pub(super) fn reflow_all_tabs(&mut self) -> Result<()> {
         for tab_id in self.tabs.keys().copied().collect::<Vec<_>>() {
             self.reflow_tab(tab_id)?;
         }
+        self.remember_surface_size();
         Ok(())
     }
 

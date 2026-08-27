@@ -95,7 +95,7 @@ impl Screen {
 
     pub fn resize_to_clients(&mut self) -> Result<()> {
         let err_context = || "failed to resize to client sizes".to_string();
-        self.remember_surface_size();
+        // `reflow_all_tabs` records the surface it laid the tabs out over
         self.reflow_all_tabs().with_context(err_context)?;
         self.log_and_report_session_state()
             .with_context(err_context)?;
