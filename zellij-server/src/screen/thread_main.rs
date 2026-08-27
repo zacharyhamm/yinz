@@ -31,6 +31,7 @@ use zellij_utils::data::{
 };
 use zellij_utils::envs::set_session_name;
 use zellij_utils::errors::ContextType;
+use zellij_utils::input::command::{RunCommand, TerminalAction};
 use zellij_utils::input::config::Config;
 use zellij_utils::input::get_mode_info;
 use zellij_utils::input::layout::{Layout, Run};
@@ -104,6 +105,14 @@ pub(crate) fn screen_thread_main(
         .default_shell
         .clone()
         .unwrap_or_else(|| get_default_shell());
+    let default_shell_action = config_options.default_shell.clone().map(|shell| {
+        TerminalAction::RunCommand(RunCommand {
+            command: shell,
+            cwd: config_options.default_cwd.clone(),
+            use_terminal_title: true,
+            ..Default::default()
+        })
+    });
     let default_editor = config_options
         .scrollback_editor
         .clone()
@@ -179,6 +188,7 @@ pub(crate) fn screen_thread_main(
         default_layout,
         default_layout_name,
         default_shell,
+        default_shell_action,
         session_serialization,
         serialize_pane_viewport,
         scrollback_lines_to_serialize,
@@ -523,6 +533,16 @@ pub(crate) fn screen_thread_main(
                 completion,
             } => {
                 screen.are_floating_panes_visible_in_tab(client_id, tab_id, completion)?;
+            },
+            ScreenInstruction::ContextMenuHandleKeyIfOpen {
+                key,
+                client_id,
+                completion,
+            } => {
+                let handled = screen.context_menu_handles_key(&key, client_id);
+                if let Some(mut completion) = completion {
+                    completion.set_stdout_message(handled.to_string());
+                }
             },
             ScreenInstruction::WriteCharacter(
                 key_with_modifier,
@@ -3692,6 +3712,7 @@ pub(crate) fn screen_thread_main(
                 host_theme_light,
                 simplified_ui,
                 default_shell,
+                default_cwd,
                 pane_frame_style,
                 copy_to_clipboard,
                 copy_command,
@@ -3724,6 +3745,7 @@ pub(crate) fn screen_thread_main(
                         theme,
                         simplified_ui,
                         default_shell,
+                        default_cwd,
                         pane_frame_style,
                         copy_command,
                         copy_to_clipboard,

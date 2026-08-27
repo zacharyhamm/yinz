@@ -378,6 +378,7 @@ fn create_new_screen_with_kitty_graphics(
         default_layout,
         default_layout_name,
         default_shell,
+        None, // default_shell_action
         session_serialization,
         serialize_pane_viewport,
         scrollback_lines_to_serialize,
@@ -1008,6 +1009,7 @@ fn create_new_screen_with_message_capture(
         default_layout,
         default_layout_name,
         default_shell,
+        None, // default_shell_action
         session_serialization,
         serialize_pane_viewport,
         scrollback_lines_to_serialize,
@@ -1160,6 +1162,7 @@ fn create_new_screen_with_forward_capture(size: Size) -> (Screen, ForwardCapture
         default_layout,
         default_layout_name,
         default_shell,
+        None, // default_shell_action
         session_serialization,
         serialize_pane_viewport,
         scrollback_lines_to_serialize,
@@ -1310,6 +1313,7 @@ fn create_new_screen_with_theme_capture(size: Size) -> (Screen, ThemeCapture) {
         default_layout,
         None,
         default_shell,
+        None, // default_shell_action
         true,
         false,
         None,
@@ -1443,6 +1447,7 @@ fn create_non_mirrored_screen(size: Size) -> Screen {
         Box::default(),
         None, // default_layout_name
         PathBuf::from("my_default_shell"),
+        None,  // default_shell_action
         true,  // session_serialization
         false, // serialize_pane_viewport
         None,  // scrollback_lines_to_serialize

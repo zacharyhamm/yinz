@@ -76,6 +76,15 @@ pub enum ScreenInstruction {
         tab_id: Option<usize>,
         completion: Option<NotificationEnd>,
     },
+    /// A synchronous "does the open menu want this key" check, sent from `route.rs` before mode
+    /// keybindings are resolved - see the doc comment on `context_menu_handles_key` for why this
+    /// has to happen there rather than after `WriteCharacter` is dispatched. `completion`'s
+    /// `stdout_message` carries the answer back as `"true"`/`"false"`.
+    ContextMenuHandleKeyIfOpen {
+        key: Option<KeyWithModifier>,
+        client_id: ClientId,
+        completion: Option<NotificationEnd>,
+    },
     WriteCharacter(
         Option<KeyWithModifier>,
         Vec<u8>,
@@ -609,6 +618,7 @@ pub enum ScreenInstruction {
         host_theme_light: Option<Styling>,
         simplified_ui: bool,
         default_shell: Option<PathBuf>,
+        default_cwd: Option<PathBuf>,
         pane_frame_style: PaneFrameStyle,
         copy_command: Option<String>,
         copy_to_clipboard: Option<Clipboard>,

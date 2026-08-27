@@ -15,6 +15,7 @@ fn reconfigure_sends_a_plugin_pane_the_updated_client_mode_info_once() {
             Styling::default(),
             true,
             None,
+            None, // default_cwd
             PaneFrameStyle::None,
             None,
             None,
