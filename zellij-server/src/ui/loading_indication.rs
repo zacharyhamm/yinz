@@ -9,8 +9,10 @@ use zellij_utils::{
 /// How long each of the loading indicator's dots stays up.
 ///
 /// The dots are a coarse "still working" signal rather than motion, so they run far slower than
-/// anything driven by a tween - they just take their frames from the same clock.
-const DOT_PERIOD: Duration = Duration::from_millis(500);
+/// anything driven by a tween - they just take their frames from the same clock, which slows down
+/// to this period when they are the only thing left animating. See
+/// `Screen::animation_clock_period`.
+pub const DOT_PERIOD: Duration = Duration::from_millis(500);
 /// One more than the most dots shown, so the count cycles `0, 1, 2, 3`.
 const DOT_STATES: u128 = 4;
 

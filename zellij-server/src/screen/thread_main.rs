@@ -2703,12 +2703,7 @@ pub(crate) fn screen_thread_main(
                         }
                     }
                 }
-                if !screen.fading_frame_panes.is_empty() {
-                    screen
-                        .bus
-                        .senders
-                        .send_to_background_jobs(BackgroundJob::StartAnimationClock)?;
-                }
+                screen.sync_animation_clock(now)?;
                 screen.render(None)?;
             },
             ScreenInstruction::ClearPaneFrameColorOverride(pane_ids) => {
@@ -3333,14 +3328,14 @@ pub(crate) fn screen_thread_main(
             // draws the right number of dots.
             ScreenInstruction::StartPluginLoadingAnimation(pid) => {
                 screen.animating_plugin_loads.insert(pid);
-                screen
-                    .bus
-                    .senders
-                    .send_to_background_jobs(BackgroundJob::StartAnimationClock)?;
+                screen.sync_animation_clock(Instant::now())?;
                 screen.render(None)?;
             },
             ScreenInstruction::StopPluginLoadingAnimation(pid) => {
                 screen.animating_plugin_loads.remove(&pid);
+                // so the clock stops on the spot when this was the last load, rather than at the
+                // next tick a dot period later
+                screen.sync_animation_clock(Instant::now())?;
                 screen.render(None)?;
             },
             ScreenInstruction::RequestStateUpdateForPlugins => {
@@ -4279,10 +4274,7 @@ pub(crate) fn screen_thread_main(
                         id,
                         screen.notification_timeout_secs,
                     ))?;
-                screen
-                    .bus
-                    .senders
-                    .send_to_background_jobs(BackgroundJob::StartAnimationClock)?;
+                screen.sync_animation_clock(now)?;
                 screen.render(None)?;
             },
             ScreenInstruction::DismissNotification(id) => {
@@ -4290,18 +4282,8 @@ pub(crate) fn screen_thread_main(
                 // `reap_settled_notifications` sees its reveal reach zero and actually removes it
                 screen.dismiss_notification(id, Instant::now())?;
             },
-            // A pure wakeup: nothing is advanced here. Every animation is sampled inside
-            // `render_to_clients` at the instant the frame is composited, so a tick that arrives
-            // late - or never - costs a frame and never a position.
             ScreenInstruction::AnimationTick => {
-                if screen.animations_are_live(Instant::now()) {
-                    screen.render(None)?;
-                } else {
-                    screen
-                        .bus
-                        .senders
-                        .send_to_background_jobs(BackgroundJob::StopAnimationClock)?;
-                }
+                screen.on_animation_tick(Instant::now())?;
             },
             ScreenInstruction::RenameSession(
                 name,
