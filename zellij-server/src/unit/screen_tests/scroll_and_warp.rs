@@ -1426,14 +1426,51 @@ fn a_warped_tab_leaves_its_overlay_behind() {
 }
 
 #[test]
-fn warping_a_tab_closes_the_overlay_it_leaves_behind() {
+fn warping_a_tab_re_homes_the_overlay_it_leaves_behind() {
     // The other half, and the one that used to strand a process. `empty_and_close_tab`
     // sweeps what was handed over and says nothing to the pty thread, because those
     // children belong to the other session now. The overlay was never handed over, so
-    // sweeping it out here would have taken it out of the tab before `close_tab_by_id`
-    // could name it - leaving a child running with nothing attached to it. Left where
-    // it is, it closes with the tab.
+    // sweeping it out here would take it out of the tab before `close_tab_by_id` could
+    // see it - and that is the one thing that knows what to do with one. Left where it
+    // is, it is re-homed into a surviving tab, which is right for a warp too: an
+    // overlay has no slot in the arrangement that travelled, so it stays in this
+    // session rather than following the tab or being killed for it.
     let mut screen = screen_with_an_overlay_over_a_tab();
+    let (to_pty, pty_receiver): ChannelWithContext<PtyInstruction> = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+
+    screen.empty_and_close_tab(0);
+
+    let closed_by_pty: Vec<PaneId> = pty_receiver
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PtyInstruction::CloseTab(pane_ids) => pane_ids,
+            PtyInstruction::ClosePane(pane_id, _) => vec![pane_id],
+            _ => vec![],
+        })
+        .collect();
+    assert!(
+        closed_by_pty.is_empty(),
+        "nothing is closed here: the tab's own pane was warped, and the overlay moved \
+         to another tab with its process intact: {closed_by_pty:?}",
+    );
+    assert!(
+        screen
+            .tabs
+            .get(&1)
+            .expect("TEST")
+            .pane_is_overlay(PaneId::Terminal(9)),
+        "and it is still an overlay in the tab it landed in",
+    );
+}
+
+#[test]
+fn warping_the_last_tab_closes_its_overlay() {
+    // The other side of the gate: an overlay is only left behind if there is a tab to leave it
+    // in. Warping away the session's only tab ends the session, so the overlay goes with it
+    // rather than being extracted into nothing.
+    let mut screen = screen_with_an_overlay_over_a_tab();
+    screen.close_tab_by_id(1).expect("TEST");
     let (to_pty, pty_receiver): ChannelWithContext<PtyInstruction> = channels::unbounded();
     screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
 
@@ -1450,8 +1487,7 @@ fn warping_a_tab_closes_the_overlay_it_leaves_behind() {
     assert_eq!(
         closed_by_pty,
         vec![PaneId::Terminal(9)],
-        "the overlay, and only the overlay: the tab's own pane was warped and must \
-         not be closed here",
+        "with no tab left to re-home it into, the overlay is torn down like everything else",
     );
 }
 

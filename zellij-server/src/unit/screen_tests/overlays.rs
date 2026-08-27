@@ -4640,3 +4640,367 @@ fn launch_or_focus_plugin_takes_the_keyboard_back_from_a_sibling_overlay() {
         "the revealed conversation takes the keyboard back from the list"
     );
 }
+
+/// Collect every pane the pty thread was told to tear down, from either instruction that does it.
+fn panes_torn_down_by_pty(
+    receiver: &channels::Receiver<(PtyInstruction, ErrorContext)>,
+) -> Vec<PaneId> {
+    std::iter::from_fn(|| receiver.try_recv().ok())
+        .flat_map(|(instruction, _)| match instruction {
+            PtyInstruction::CloseTab(pane_ids) => pane_ids,
+            PtyInstruction::ClosePane(pane_id, _) => vec![pane_id],
+            _ => vec![],
+        })
+        .collect()
+}
+
+/// Collect every pane the plugins were told had closed.
+fn panes_reported_closed_to_plugins(
+    receiver: &channels::Receiver<(PluginInstruction, ErrorContext)>,
+) -> Vec<zellij_utils::data::PaneId> {
+    std::iter::from_fn(|| receiver.try_recv().ok())
+        .flat_map(|(instruction, _)| match instruction {
+            PluginInstruction::Update(updates) => updates
+                .into_iter()
+                .filter_map(|(_, _, event)| match event {
+                    Event::PaneClosed(pane_id) => Some(pane_id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            _ => vec![],
+        })
+        .collect()
+}
+
+/// Two tabs, the overlay and the client on the second one.
+fn screen_with_an_overlay_on_the_second_tab(size: Size) -> (Screen, PaneId) {
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    let (_run_plugin, popup_id) = open_overlay_plugin(&mut screen, 7, 1, popup_coordinates());
+    (screen, popup_id)
+}
+
+/// An overlay belongs to a `Tab` but is drawn over the whole session surface, and hocus keeps a
+/// session's worth of conversation in one. Closing the tab it happens to be sitting on used to
+/// take it with the tab - `get_all_pane_ids` reports overlays, so the overlay was named in the
+/// `PtyInstruction::CloseTab` that ends in `PluginInstruction::Unload`.
+#[test]
+fn a_dismissible_overlay_survives_its_tab_closing() {
+    let size = Size { cols: 80, rows: 12 };
+    let (mut screen, popup_id) = screen_with_an_overlay_on_the_second_tab(size);
+    assert!(screen.tabs.get(&1).expect("TEST").pane_is_overlay(popup_id));
+
+    screen.close_tab(1).expect("TEST");
+
+    assert_eq!(screen.tabs.len(), 1, "the tab itself is gone");
+    assert!(
+        screen.tabs.get(&0).expect("TEST").pane_is_overlay(popup_id),
+        "the overlay must move to the surviving tab, and must still be an overlay there"
+    );
+}
+
+/// The load-bearing half of the fix. Surviving the close means more than appearing in another
+/// tab's collection: neither the pty thread nor the plugins may be told the pane closed, because
+/// the pty thread answers a plugin pane with `PluginInstruction::Unload` and there is no
+/// conversation left after that.
+#[test]
+fn an_overlay_that_outlives_its_tab_is_not_unloaded() {
+    let size = Size { cols: 80, rows: 12 };
+    let (mut screen, popup_id) = screen_with_an_overlay_on_the_second_tab(size);
+
+    let (pty_sender, pty_receiver) = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
+    let (plugin_sender, plugin_receiver) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_sender));
+
+    screen.close_tab(1).expect("TEST");
+
+    let torn_down = panes_torn_down_by_pty(&pty_receiver);
+    assert!(
+        torn_down.contains(&PaneId::Terminal(2)),
+        "the tab's own pane is still torn down: {torn_down:?}"
+    );
+    assert!(
+        !torn_down.contains(&popup_id),
+        "the overlay must never reach the pty thread, which would unload its plugin: {torn_down:?}"
+    );
+
+    let reported_closed = panes_reported_closed_to_plugins(&plugin_receiver);
+    assert!(
+        !reported_closed.contains(&popup_id.into()),
+        "a pane that moved tabs did not close, and plugins must not be told it did: {reported_closed:?}"
+    );
+}
+
+/// Where they land is where the user lands. The client's own destination is its most recently
+/// visited tab, which is not the lowest surviving tab id - the rule suppressed panes use - so the
+/// two answers can be told apart.
+#[test]
+fn an_overlay_follows_its_tab_s_client_when_the_tab_closes() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 3, 2);
+    let (_run_plugin, popup_id) = open_overlay_plugin(&mut screen, 7, 2, popup_coordinates());
+
+    screen.close_tab(1).expect("TEST");
+
+    let client_landed_on = *screen.active_tab_ids.get(&1).expect("TEST");
+    assert_eq!(
+        client_landed_on, 1,
+        "the client goes to the tab it came from, not to the lowest id"
+    );
+    assert!(
+        screen
+            .tabs
+            .get(&client_landed_on)
+            .expect("TEST")
+            .pane_is_overlay(popup_id),
+        "the overlay follows the client rather than landing on some other surviving tab"
+    );
+    assert!(
+        !screen.tabs.get(&0).expect("TEST").pane_is_overlay(popup_id),
+        "and specifically not on the lowest-id tab"
+    );
+}
+
+/// A background tab closed by `CloseTabWithIndex` or a cli action has no client to follow, so the
+/// overlay falls back to the lowest surviving tab id - what
+/// `move_suppressed_panes_from_closed_tab` does in the same situation.
+#[test]
+fn an_overlay_on_a_tab_nobody_is_on_falls_back_to_the_first_tab() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 3, 2);
+    let (_run_plugin, popup_id) = open_overlay_plugin(&mut screen, 7, 2, popup_coordinates());
+    // the client leaves the overlay behind on a tab of its own
+    screen.switch_active_tab(0, None, true, 1).expect("TEST");
+
+    screen.close_tab_by_id(2).expect("TEST");
+
+    assert!(
+        screen.tabs.get(&0).expect("TEST").pane_is_overlay(popup_id),
+        "with no client to follow, the overlay lands on the lowest surviving tab id"
+    );
+}
+
+/// hocus and its agent list are two panes drawn as one panel. They are carried between tabs
+/// together everywhere else, and a tab closing must not be the one thing that parts them.
+#[test]
+fn both_halves_of_a_panel_land_on_the_same_tab_when_their_tab_closes() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    let (_, conversation_id) = open_overlay_plugin(&mut screen, 7, 1, popup_coordinates());
+    let (_, agents_id) = open_overlay_plugin(&mut screen, 8, 1, popup_coordinates());
+
+    screen.close_tab(1).expect("TEST");
+
+    let surviving_tab = screen.tabs.get(&0).expect("TEST");
+    assert!(
+        surviving_tab.pane_is_overlay(conversation_id) && surviving_tab.pane_is_overlay(agents_id),
+        "both halves move, and to the same tab"
+    );
+}
+
+/// A modal is a dialog *about* the tab that is going away, and one re-homed unfocused is an input
+/// deadlock: `may_be_focused` refuses every other overlay the keyboard while a modal is in the
+/// stack, and a modal has no channel to learn it lost focus. So it closes with its tab while the
+/// dismissible overlay beside it does not.
+#[test]
+fn a_modal_overlay_closes_with_its_tab_while_a_dismissible_one_survives() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    let (_, popup_id) = open_overlay_plugin(&mut screen, 7, 1, popup_coordinates());
+    let modal_id = add_modal_plugin_overlay(&mut screen, 8);
+
+    let (pty_sender, pty_receiver) = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
+
+    screen.close_tab(1).expect("TEST");
+
+    let surviving_tab = screen.tabs.get(&0).expect("TEST");
+    assert!(
+        surviving_tab.pane_is_overlay(popup_id),
+        "the dismissible overlay survives"
+    );
+    assert!(
+        !surviving_tab.pane_is_overlay(modal_id),
+        "the modal must not be re-homed"
+    );
+    let torn_down = panes_torn_down_by_pty(&pty_receiver);
+    assert!(
+        torn_down.contains(&modal_id),
+        "the modal is torn down with its tab: {torn_down:?}"
+    );
+}
+
+/// An overlay the user set aside is still an overlay, and still holds its plugin. Moving it must
+/// not bring it back on screen - `OverlayCarry` is what carries "set aside" across the move, along
+/// with whether the user has stated its position.
+#[test]
+fn an_overlay_set_aside_stays_set_aside_when_its_tab_closes() {
+    let size = Size { cols: 80, rows: 12 };
+    let (mut screen, popup_id) = screen_with_an_overlay_on_the_second_tab(size);
+    assert!(screen
+        .tabs
+        .get_mut(&1)
+        .expect("TEST")
+        .hide_overlay_pane(popup_id));
+
+    screen.close_tab(1).expect("TEST");
+
+    let surviving_tab = screen.tabs.get(&0).expect("TEST");
+    assert!(surviving_tab.pane_is_overlay(popup_id));
+    assert!(
+        surviving_tab.overlay_carry_for(popup_id).hidden,
+        "a hidden overlay must arrive hidden, not revealed by the move"
+    );
+}
+
+/// The last tab closing ends the session, and an overlay is not a reason to keep it open - there
+/// is nowhere to re-home one to. The same property `global_panes_render` pins for global panes.
+#[test]
+fn an_overlay_does_not_keep_the_session_alive_when_the_last_tab_closes() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    let (_run_plugin, popup_id) = open_overlay_plugin(&mut screen, 7, 0, popup_coordinates());
+    let (server_sender, server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    let (pty_sender, pty_receiver) = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
+
+    screen.close_tab(1).expect("TEST");
+
+    assert!(screen.tabs.is_empty(), "no tab is left");
+    assert!(
+        std::iter::from_fn(|| server_receiver.try_recv().ok())
+            .any(|(instruction, _)| matches!(instruction, ServerInstruction::Render(None))),
+        "expected ServerInstruction::Render(None) to exit the session"
+    );
+    let torn_down = panes_torn_down_by_pty(&pty_receiver);
+    assert!(
+        torn_down.contains(&popup_id),
+        "with nowhere to go the overlay is torn down like everything else: {torn_down:?}"
+    );
+}
+
+/// The commonest way to hit this is not an explicit close at all: a tab with no selectable tiled
+/// panes is reaped by the render tick, so exiting the shell in a tab's last pane while hocus is
+/// open used to unload it.
+#[test]
+fn an_overlay_survives_a_tab_reaped_for_being_empty() {
+    let size = Size { cols: 80, rows: 12 };
+    let (mut screen, popup_id) = screen_with_an_overlay_on_the_second_tab(size);
+    let (server_sender, _server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+
+    // the user exits the shell in the tab's only pane
+    assert!(screen
+        .tabs
+        .get_mut(&1)
+        .expect("TEST")
+        .extract_pane(PaneId::Terminal(2), true)
+        .is_some());
+    screen.render_to_clients().expect("TEST");
+
+    assert!(
+        !screen.tabs.contains_key(&1),
+        "an overlay must not keep an emptied tab alive"
+    );
+    assert!(
+        screen.tabs.get(&0).expect("TEST").pane_is_overlay(popup_id),
+        "the overlay moves to the surviving tab rather than being reaped with the empty one"
+    );
+}
+
+/// `render_to_clients` collects every emptied tab and then closes them in a loop, so the tab an
+/// overlay is re-homed *into* can be the next one on the list. It must not survive that: the last
+/// close ends the session, and an overlay carried into it goes with everything else.
+#[test]
+fn an_overlay_is_torn_down_when_its_destination_is_reaped_too() {
+    let size = Size { cols: 80, rows: 12 };
+    let (mut screen, popup_id) = screen_with_an_overlay_on_the_second_tab(size);
+    let (server_sender, _server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    let (pty_sender, pty_receiver) = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
+
+    // both shells exit before a single render tick
+    for (tab_id, terminal_id) in [(0, 1), (1, 2)] {
+        assert!(screen
+            .tabs
+            .get_mut(&tab_id)
+            .expect("TEST")
+            .extract_pane(PaneId::Terminal(terminal_id), true)
+            .is_some());
+    }
+    screen.render_to_clients().expect("TEST");
+
+    assert!(screen.tabs.is_empty(), "no tab is left");
+    let torn_down = panes_torn_down_by_pty(&pty_receiver);
+    assert!(
+        torn_down.contains(&popup_id),
+        "the overlay is re-homed into the first tab and then torn down with it: {torn_down:?}"
+    );
+}
+
+/// A client that was on a global pane when hocus took the keyboard has its old focus parked in
+/// `suspended_global_focus`, keyed by the tab the overlay is on - and
+/// `take_global_focus_after_overlay_close` looks the entry up by the tab it *finds* the overlay
+/// in. Moving the overlay to another tab therefore has to move the key with it, or putting hocus
+/// away leaves the client on a tiled pane with its global pane never handed back.
+#[test]
+fn an_overlay_that_changed_tabs_still_hands_back_a_suspended_global_focus() {
+    use zellij_utils::data::GlobalPaneEdge;
+
+    let size = Size {
+        cols: 120,
+        rows: 20,
+    };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    insert_global_pane_on_edge(&mut screen, 99, GlobalPaneEdge::Left, 40);
+    screen.render_to_clients().expect("TEST");
+    screen
+        .focus_global_pane(PaneId::Terminal(99), 1)
+        .expect("TEST");
+
+    let (_run_plugin, popup_id) = open_overlay_plugin(&mut screen, 7, 1, popup_coordinates());
+    screen.activate_overlay(popup_id);
+    assert_eq!(screen.active_pane_id(1), Some(popup_id));
+
+    screen.close_tab(1).expect("TEST");
+
+    // the user finds hocus again on the tab it landed in, and puts it away
+    let surviving_tab_id = *screen.active_tab_ids.get(&1).expect("TEST");
+    screen
+        .tabs
+        .get_mut(&surviving_tab_id)
+        .expect("TEST")
+        .focus_pane_with_id(popup_id, false, false, 1)
+        .expect("TEST");
+    let restore = screen.take_global_focus_after_overlay_close(popup_id);
+    screen
+        .tabs
+        .get_mut(&surviving_tab_id)
+        .expect("TEST")
+        .close_pane(popup_id, false, None);
+    screen.restore_global_focus(restore);
+
+    assert_eq!(
+        screen.global_panes.focused_pane_id(1),
+        Some(PaneId::Terminal(99)),
+        "the global pane the overlay borrowed the keyboard from must be handed back, even though \
+         the overlay changed tabs in between"
+    );
+}

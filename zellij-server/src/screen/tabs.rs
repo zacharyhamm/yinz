@@ -6,7 +6,7 @@ use crate::panes::PaneId;
 use crate::plugins::PluginInstruction;
 use crate::pty::PtyInstruction;
 use crate::route::NotificationEnd;
-use crate::tab::{SuppressedPanes, Tab};
+use crate::tab::{AcceptedPane, ExtractedPanePlacement, Pane, SuppressedPanes, Tab};
 use crate::{ClientId, ServerInstruction};
 use std::collections::HashSet;
 use zellij_utils::data::{Direction, Event, ModeInfo};
@@ -182,6 +182,94 @@ impl Screen {
             .with_context(err_context)?
             .add_suppressed_panes(suppressed_panes);
         Ok(())
+    }
+
+    /// Give a closed tab's overlays to a tab that is still here.
+    ///
+    /// An overlay belongs to a `Tab` but is drawn over the whole session surface, and hocus
+    /// keeps a session's worth of conversation in one. Closing the tab it happens to be sitting
+    /// on is not a request to throw that away - so `close_tab_by_id` extracts them
+    /// ([`Tab::extract_overlay_panes`]) and they land here.
+    ///
+    /// **Where they land is where the user lands.** `client` is the lowest-numbered client of
+    /// the tab that closed, and `move_clients_from_closed_tab` has already written its
+    /// destination into `active_tab_ids` - so reading it back is how the overlays follow the
+    /// user with no visible second hop.
+    ///
+    /// Following the *client* rather than a neighbouring tab position is also the only answer
+    /// hocus cannot recover from getting wrong. `log_and_report_session_state` reports the panes
+    /// before the tabs, so hocus's `on_panes` has already set `own_tab_index` to wherever we put
+    /// it by the time `on_tabs` asks `overlay::tab_to_follow` - which then sees a pane that is
+    /// where it belongs and asks for nothing. A pane left on a tab nobody is on therefore stays
+    /// there, unseen, until somebody wanders onto that tab.
+    ///
+    /// With no client to follow - a background tab closed by `CloseTabWithIndex`, or a cli
+    /// action - the lowest surviving tab id, which is the rule
+    /// [`Screen::move_suppressed_panes_from_closed_tab`] uses for the same situation.
+    ///
+    /// They arrive **unfocused**, exactly as they do when hocus carries them across a tab switch
+    /// itself: a tab closing is not a request to type into hocus. Modals never reach here - see
+    /// [`Tab::extract_overlay_panes`] for why they close with their tab instead.
+    fn move_overlay_panes_from_closed_tab(
+        &mut self,
+        overlay_panes: Vec<(ExtractedPanePlacement, Box<dyn Pane>)>,
+        closed_tab_id: usize,
+        client: Option<ClientId>,
+    ) {
+        if overlay_panes.is_empty() {
+            return;
+        }
+        let destination_tab_id = client
+            .and_then(|client_id| self.active_tab_ids.get(&client_id).copied())
+            .filter(|tab_id| self.tabs.contains_key(tab_id))
+            .or_else(|| self.tabs.keys().next().copied());
+
+        // Collected rather than closed in place: `close_homeless_pane` needs `&mut self` and the
+        // destination tab is borrowed from `self` for the length of the loop. The same ordering
+        // `break_multiple_panes_to_tab_with_id` keeps, and for the same reason - dropping a
+        // `Box<dyn Pane>` without tearing it down first destroys the pane silently.
+        let mut homeless = vec![];
+        match destination_tab_id.and_then(|tab_id| self.get_tab_by_id_mut(tab_id)) {
+            Some(destination) => {
+                for (placement, pane) in overlay_panes {
+                    let pane_id = pane.pid();
+                    match destination.accept_extracted_pane(pane, placement) {
+                        // an overlay is not on a layer and does not tile, so `accept_extracted_pane`
+                        // has nothing to run out of and this arm is the only one it can reach for
+                        // one - `NoRoom` and `LostInAdd` are here for the contract, not because
+                        // they are expected
+                        AcceptedPane::Accepted => {},
+                        AcceptedPane::NoRoom(..) | AcceptedPane::LostInAdd => {
+                            log::error!("Tab {destination_tab_id:?} would not take overlay {pane_id:?}; closing it");
+                            homeless.push(pane_id);
+                        },
+                    }
+                }
+            },
+            // Unreachable: the caller only extracts overlays when a tab survives, and nothing
+            // between there and here removes one. Handled anyway rather than dropped, because a
+            // dropped overlay is a plugin that stops existing with nothing told about it.
+            None => {
+                log::error!("No tab left to re-home a closed tab's overlays into; closing them");
+                homeless.extend(overlay_panes.into_iter().map(|(_, pane)| pane.pid()));
+            },
+        }
+        for pane_id in homeless {
+            self.close_homeless_pane(pane_id);
+        }
+
+        // A client that was on a global pane when an overlay took the keyboard has its old focus
+        // parked in `suspended_global_focus`, keyed by *the tab the overlay is on* - which is what
+        // `take_global_focus_after_overlay_close` looks the entry up by. The overlay is on a
+        // different tab now, so without this the lookup misses and the client never gets its
+        // global pane back when hocus is finally put away.
+        if let Some(destination_tab_id) = destination_tab_id {
+            for (saved_tab, _) in self.suspended_global_focus.values_mut() {
+                if *saved_tab == closed_tab_id {
+                    *saved_tab = destination_tab_id;
+                }
+            }
+        }
     }
 
     fn move_clients_between_tabs(
@@ -503,6 +591,24 @@ impl Screen {
             pane_ids.retain(|p| p != suppressed_pane_id);
         }
 
+        // The same treatment, and for a stronger reason: an overlay is drawn over the whole
+        // session surface rather than inside this tab, and hocus keeps a session's worth of
+        // conversation in one. Taken out here so that the teardown below - `PaneClosed`, the
+        // subscriber notification, and the `CloseTab` that ends in `PluginInstruction::Unload` -
+        // never names them, and re-homed further down once it is known where the clients went.
+        //
+        // Only when a tab survives: with none left the session is ending anyway (see the
+        // `Render(None)` below), and an overlay extracted with nowhere to go would be a plugin
+        // left running with no pane and nothing told about it.
+        let overlay_panes = match self.tabs.is_empty() {
+            true => vec![],
+            false => tab_to_close.extract_overlay_panes(),
+        };
+        for (_, overlay_pane) in &overlay_panes {
+            let overlay_pane_id = overlay_pane.pid();
+            pane_ids.retain(|p| p != &overlay_pane_id);
+        }
+
         let _ = self.bus.senders.send_to_plugin(PluginInstruction::Update(
             pane_ids
                 .iter()
@@ -531,10 +637,21 @@ impl Screen {
                 .with_context(err_context)
         } else {
             let client_mode_infos_in_closed_tab = tab_to_close.drain_connected_clients(None);
+            // The client the overlays follow. Lowest id rather than first: `connected_clients` is
+            // a `HashSet`, so "first" is not a stable answer and the panes would land somewhere
+            // else from one run to the next.
+            let overlay_client = client_mode_infos_in_closed_tab
+                .iter()
+                .map(|(client_id, _)| *client_id)
+                .min();
             self.move_clients_from_closed_tab(client_mode_infos_in_closed_tab)
                 .with_context(err_context)?;
             self.move_suppressed_panes_from_closed_tab(suppressed_panes)
                 .with_context(err_context)?;
+            // After the clients, which is what wrote `overlay_client`'s destination into
+            // `active_tab_ids`, and before the resize and the state report below, so the tab they
+            // land in is measured and announced with them already in it.
+            self.move_overlay_panes_from_closed_tab(overlay_panes, tab_id, overlay_client);
             let visible_tab_indices: HashSet<usize> =
                 self.active_tab_ids.values().copied().collect();
             for t in self.tabs.values_mut() {
