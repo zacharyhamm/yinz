@@ -1,5 +1,6 @@
 use crate::{build, flags};
 use anyhow::{anyhow, Context};
+use std::ffi::OsString;
 use xshell::{cmd, Shell};
 
 /// Workspace members `x test` does not own.
@@ -54,17 +55,27 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
     let mut failed: Vec<&str> = Vec::new();
     let use_nextest = nextest_available(sh, &cargo);
 
+    // `--workspace` and `-p` are additive in cargo, so leaving `--workspace` in would undo a
+    // caller's package selection and link the whole tree anyway. When the caller narrowed to
+    // packages, theirs is the only selection - and the `EXCLUDED` sweep, which only exists to keep
+    // `--workspace` off the integration tests, has nothing left to do.
+    let selection = selection(&flags.args);
+    let narrowed_to_packages = matches!(selection, Selection::Packages(_));
+
     let mut cmd = if use_nextest {
-        cmd!(sh, "{cargo} nextest run --profile unit --workspace")
+        cmd!(sh, "{cargo} nextest run --profile unit")
     } else {
         println!(">> cargo-nextest not found, falling back to `cargo test`");
         println!(
             ">> the serial tests will run one at a time; install cargo-nextest for a parallel run"
         );
-        cmd!(sh, "{cargo} test --workspace --no-fail-fast")
+        cmd!(sh, "{cargo} test --no-fail-fast")
     };
-    for excluded in EXCLUDED {
-        cmd = cmd.args(["--exclude", excluded]);
+    if !narrowed_to_packages {
+        cmd = cmd.arg("--workspace");
+        for excluded in EXCLUDED {
+            cmd = cmd.args(["--exclude", excluded]);
+        }
     }
     if flags.no_web {
         cmd = cmd.args(["--no-default-features", "--features", NO_WEB_FEATURES]);
@@ -78,22 +89,46 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
     }
 
     // nextest runs one process per test and so cannot run doctests at all. There are few of them,
-    // but dropping them silently would be a coverage regression, so they get their own pass.
+    // but dropping them silently would be a coverage regression, so they get their own pass -
+    // narrowed the same way the nextest run was, as far as `cargo test --doc` can express it.
     if use_nextest {
-        println!();
-        let msg = ">> Testing doc examples";
-        crate::status(msg);
-        println!("{}", msg);
+        match &selection {
+            Selection::Skip => {
+                println!();
+                println!(">> skipping doctests: run narrowed by a test filter");
+            },
+            Selection::Packages(selectors) if !has_lib_target(sh, selectors) => {
+                println!();
+                println!(">> skipping doctests: no library targets in the selected packages");
+            },
+            selection => {
+                println!();
+                let msg = ">> Testing doc examples";
+                crate::status(msg);
+                println!("{}", msg);
 
-        let mut doc = cmd!(sh, "{cargo} test --doc --workspace");
-        for excluded in EXCLUDED {
-            doc = doc.args(["--exclude", excluded]);
-        }
-        if flags.no_web {
-            doc = doc.args(["--no-default-features", "--features", NO_WEB_FEATURES]);
-        }
-        if doc.run().is_err() {
-            failed.push("doctests");
+                let mut doc = cmd!(sh, "{cargo} test --doc");
+                match selection {
+                    Selection::Packages(selectors) => {
+                        doc = doc.args(selectors);
+                    },
+                    // The `EXCLUDED` sweep only means anything at workspace scope.
+                    Selection::Workspace(extra_excludes) => {
+                        doc = doc.arg("--workspace");
+                        for excluded in EXCLUDED {
+                            doc = doc.args(["--exclude", excluded]);
+                        }
+                        doc = doc.args(extra_excludes);
+                    },
+                    Selection::Skip => unreachable!("handled above"),
+                }
+                if flags.no_web {
+                    doc = doc.args(["--no-default-features", "--features", NO_WEB_FEATURES]);
+                }
+                if doc.run().is_err() {
+                    failed.push("doctests");
+                }
+            },
         }
     }
 
@@ -107,10 +142,308 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Whether any package the caller selected has a library target.
+///
+/// `cargo test --doc -p <bin-only crate>` is a hard error ("no library targets found in package"),
+/// which would turn a perfectly good narrowed run red. A glob selector (`-p 'zellij-*'`) is not
+/// resolved here - cargo is left to decide - and a metadata failure is not worth failing over
+/// either, so both answer "yes" and let the real command speak.
+fn has_lib_target(sh: &Shell, selectors: &[OsString]) -> bool {
+    let names = selected_package_names(selectors);
+    if names.is_empty() || names.iter().any(|name| name.contains(['*', '?', '['])) {
+        return true;
+    }
+    let Ok(metadata) = crate::metadata::get_cargo_metadata(sh) else {
+        return true;
+    };
+    let Some(packages) = metadata["packages"].as_array() else {
+        return true;
+    };
+    packages.iter().any(|package| {
+        package["name"]
+            .as_str()
+            .is_some_and(|name| names.iter().any(|selected| selected == name))
+            && package["targets"].as_array().is_some_and(|targets| {
+                targets.iter().any(|target| {
+                    target["kind"].as_array().is_some_and(|kinds| {
+                        kinds.iter().any(|kind| {
+                            matches!(kind.as_str(), Some("lib" | "rlib" | "proc-macro"))
+                        })
+                    })
+                })
+            })
+    })
+}
+
+/// The package names behind `-p`/`--package` selectors, in either spelling. `--exclude` names are
+/// deliberately left out: they say what not to test, not what to test.
+fn selected_package_names(selectors: &[OsString]) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut value_next = false;
+    for selector in selectors {
+        let text = selector.to_string_lossy();
+        if value_next {
+            names.push(text.into_owned());
+            value_next = false;
+            continue;
+        }
+        match text.split_once('=') {
+            Some((name, value)) if name == "-p" || name == "--package" => {
+                names.push(value.to_string())
+            },
+            Some(_) => {},
+            None => value_next = text == "-p" || text == "--package",
+        }
+    }
+    names
+}
+
+/// How far the arguments forwarded to nextest narrow the run.
+#[derive(Debug, PartialEq)]
+enum Selection {
+    /// No package was named. The run keeps its workspace scope; any `--exclude` the caller passed
+    /// rides along, so the doctest pass honours it too.
+    Workspace(Vec<OsString>),
+    /// The caller named packages - the one selection `cargo test --doc` shares with nextest. The
+    /// tokens are ready to hand to it verbatim.
+    Packages(Vec<OsString>),
+    /// The run was narrowed by a test name or filterset, which `cargo test --doc` cannot express.
+    /// Running every doctest anyway would defeat the narrowing and let an unrelated doctest
+    /// failure fail the run, so the doctest pass is skipped.
+    Skip,
+}
+
+/// Flags that take a separate value, so the token after them is not a test filter.
+///
+/// This list cannot be complete - nextest and cargo have many - so the fallback is the other way
+/// round: a bare token is only read as a filter when the token before it is not an unrecognised
+/// flag. Getting it wrong only changes whether an inner-loop run also runs doctests.
+const VALUE_FLAGS: &[&str] = &[
+    "-j",
+    "--jobs",
+    "--test-threads",
+    "-E",
+    "--filterset",
+    "--filter-expr",
+    "-P",
+    "--profile",
+    "--partition",
+    "--retries",
+    "--run-ignored",
+    "--failure-output",
+    "--success-output",
+    "--status-level",
+    "--final-status-level",
+    "--message-format",
+    "--config-file",
+    "--tool-config-file",
+    "--target",
+    "--cargo-profile",
+    "--build-jobs",
+    "-F",
+    "--features",
+];
+
+/// Flags known to take no value, so a bare token following one really is a filter.
+const BOOLEAN_FLAGS: &[&str] = &[
+    "--no-capture",
+    "--nocapture",
+    "--no-fail-fast",
+    "--fail-fast",
+    "--no-run",
+    "--all-features",
+    "--no-default-features",
+    "--release",
+    "--offline",
+    "--locked",
+    "--frozen",
+    "--workspace",
+    "--all",
+    "--all-targets",
+    "--lib",
+    "--bins",
+    "--tests",
+    "--benches",
+    "--hide-progress-bar",
+    "--cargo-quiet",
+    "-v",
+    "--verbose",
+    "-q",
+    "--quiet",
+];
+
+const PACKAGE_FLAGS: &[&str] = &["-p", "--package", "--exclude"];
+const FILTER_FLAGS: &[&str] = &["-E", "--filterset", "--filter-expr"];
+
+fn selection(args: &[OsString]) -> Selection {
+    let mut selectors: Vec<OsString> = Vec::new();
+    let mut named_a_package = false;
+    let mut previous: Option<&OsString> = None;
+    let mut skip_next = false;
+    let mut package_value_next = false;
+
+    for arg in args {
+        if skip_next || package_value_next {
+            if package_value_next {
+                selectors.push(arg.clone());
+            }
+            skip_next = false;
+            package_value_next = false;
+            previous = Some(arg);
+            continue;
+        }
+        let text = arg.to_string_lossy();
+        let (name, has_inline_value) = match text.split_once('=') {
+            Some((name, _)) => (name.to_string(), true),
+            None => (text.to_string(), false),
+        };
+
+        if FILTER_FLAGS.contains(&name.as_str()) {
+            return Selection::Skip;
+        }
+        if PACKAGE_FLAGS.contains(&name.as_str()) {
+            named_a_package |= name != "--exclude";
+            selectors.push(arg.clone());
+            if !has_inline_value {
+                // `-p foo`: the name comes next, and belongs to the doctest command too.
+                package_value_next = true;
+            }
+            previous = Some(arg);
+            continue;
+        }
+        if text.starts_with('-') {
+            skip_next = !has_inline_value && VALUE_FLAGS.contains(&name.as_str());
+            previous = Some(arg);
+            continue;
+        }
+
+        // A bare token. It is a test-name filter unless the token before it was a flag this
+        // function does not know, in which case it is more likely that flag's value.
+        let is_value_of_unknown_flag = previous.is_some_and(|prev| {
+            let prev = prev.to_string_lossy();
+            prev.starts_with('-') && !prev.contains('=') && !BOOLEAN_FLAGS.contains(&prev.as_ref())
+        });
+        if !is_value_of_unknown_flag {
+            return Selection::Skip;
+        }
+        previous = Some(arg);
+    }
+
+    if named_a_package {
+        Selection::Packages(selectors)
+    } else {
+        Selection::Workspace(selectors)
+    }
+}
+
 pub fn nextest_available(sh: &Shell, cargo: &std::path::Path) -> bool {
     cmd!(sh, "{cargo} nextest --version")
         .quiet()
         .ignore_stderr()
         .read()
         .is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Selection;
+    use std::ffi::OsString;
+
+    fn selection(args: &[&str]) -> Selection {
+        super::selection(&args.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
+    fn packages(args: &[&str]) -> Selection {
+        Selection::Packages(args.iter().map(OsString::from).collect())
+    }
+
+    fn workspace(args: &[&str]) -> Selection {
+        Selection::Workspace(args.iter().map(OsString::from).collect())
+    }
+
+    #[test]
+    fn no_arguments_means_the_whole_workspace() {
+        assert_eq!(selection(&[]), workspace(&[]));
+    }
+
+    #[test]
+    fn package_selectors_carry_over() {
+        assert_eq!(
+            selection(&["-p", "zellij-server"]),
+            packages(&["-p", "zellij-server"])
+        );
+        assert_eq!(
+            selection(&["--package=zellij-utils"]),
+            packages(&["--package=zellij-utils"])
+        );
+        assert_eq!(
+            selection(&["--exclude", "zellij-server", "-p", "zellij-utils"]),
+            packages(&["--exclude", "zellij-server", "-p", "zellij-utils"])
+        );
+    }
+
+    #[test]
+    fn an_exclude_alone_leaves_the_run_at_workspace_scope() {
+        assert_eq!(
+            selection(&["--exclude", "zellij-server"]),
+            workspace(&["--exclude", "zellij-server"])
+        );
+    }
+
+    #[test]
+    fn a_filterset_skips_the_doctest_pass() {
+        assert_eq!(selection(&["-E", "test(x)"]), Selection::Skip);
+        assert_eq!(selection(&["--filterset=test(x)"]), Selection::Skip);
+        assert_eq!(
+            selection(&["-p", "zellij-server", "-E", "test(x)"]),
+            Selection::Skip
+        );
+    }
+
+    #[test]
+    fn a_bare_filter_skips_the_doctest_pass() {
+        assert_eq!(selection(&["some_test_name"]), Selection::Skip);
+        assert_eq!(
+            selection(&["--no-capture", "some_test_name"]),
+            Selection::Skip
+        );
+        assert_eq!(selection(&["-j", "1", "some_test_name"]), Selection::Skip);
+    }
+
+    #[test]
+    fn output_and_concurrency_flags_do_not_narrow() {
+        assert_eq!(selection(&["--no-capture"]), workspace(&[]));
+        assert_eq!(selection(&["-j", "1"]), workspace(&[]));
+        assert_eq!(
+            selection(&["--no-capture", "-j", "1", "-p", "zellij-utils"]),
+            packages(&["-p", "zellij-utils"])
+        );
+    }
+
+    #[test]
+    fn package_names_are_read_out_of_the_selectors() {
+        assert_eq!(
+            super::selected_package_names(
+                &[
+                    "--exclude",
+                    "zellij-server",
+                    "-p",
+                    "zellij-utils",
+                    "--package=zellij-tile"
+                ]
+                .iter()
+                .map(OsString::from)
+                .collect::<Vec<_>>()
+            ),
+            ["zellij-utils", "zellij-tile"]
+        );
+    }
+
+    #[test]
+    fn a_value_of_an_unknown_flag_is_not_a_filter() {
+        assert_eq!(
+            selection(&["--future-nextest-flag", "value"]),
+            workspace(&[])
+        );
+    }
 }

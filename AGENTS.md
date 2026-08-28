@@ -64,9 +64,13 @@ work directly**:
   `cargo x test -E 'test(/^screen_tests::/)'` for a nextest filterset.
 - **Output and concurrency:** `cargo x test --no-capture`, `cargo x test -j 1`. Note these are
   nextest's spellings — libtest's `--nocapture` and `--test-threads` do not apply.
-- **Integration tests:** `cargo x integration-test -- -E 'test(resize)'`, or a bare name filter.
+- **Integration tests:** `cargo x integration-test -E 'test(resize)'`, or a bare name filter.
 - **Remote-pane tests:** `cargo x remote-test --test -- --exact <name>`. They are
   `#[ignore]`d and need `--build` first (docker); see CONTRIBUTING.md.
+
+`x test`'s separate doctest pass follows the narrowing: a `-p`-selected run runs only that
+package's doctests, and a run narrowed by a test name or filterset skips them (`cargo test --doc`
+cannot express either filter), which it says on stdout.
 
 Bare cargo still works for an inner loop and is worth knowing, because nextest runs every test in
 its own process and `cargo test` does not: `cargo test -p zellij-server -- some_filter`, from the
