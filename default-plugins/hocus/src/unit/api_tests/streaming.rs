@@ -50,13 +50,6 @@ fn recognises_the_done_sentinel() {
 }
 
 #[test]
-fn ignores_a_usage_only_chunk_with_no_choices() {
-    let mut parser = SseParser::default();
-    let frame = b"data: {\"choices\":[],\"usage\":{\"total_tokens\":7}}\n";
-    assert!(parser.feed(frame).is_empty());
-}
-
-#[test]
 fn ignores_the_finish_chunk_with_an_empty_delta() {
     let mut parser = SseParser::default();
     let frame = b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n";
@@ -196,4 +189,63 @@ fn reassembles_reasoning_split_across_chunks() {
 fn an_ordinary_delta_yields_no_thinking_at_all() {
     let mut parser = SseParser::default();
     assert_eq!(parser.feed(FRAME), vec![SseItem::Delta("Hello".to_owned())]);
+}
+
+// -- usage ----------------------------------------------------------------
+
+/// The chunk `stream_options.include_usage` asks for has no choices at all,
+/// which used to make it indistinguishable from noise.
+#[test]
+fn a_usage_only_chunk_yields_the_count_and_nothing_else() {
+    let mut parser = SseParser::default();
+    let frame = b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":120,\"completion_tokens\":7,\"total_tokens\":127}}\n";
+    let items = parser.feed(frame);
+    assert_eq!(items.len(), 1);
+    assert!(matches!(
+        items[0],
+        SseItem::Usage {
+            prompt: 120,
+            completion: 7
+        }
+    ));
+}
+
+/// A `usage` with no counts in it — `total_tokens` alone, or the `{}` some
+/// proxies send instead of leaving the field out — is not a number to show as
+/// exact, so it is not a `Usage` at all.
+#[test]
+fn a_usage_without_prompt_or_completion_counts_is_ignored() {
+    let mut parser = SseParser::default();
+    let frame = b"data: {\"choices\":[],\"usage\":{\"total_tokens\":7}}\n";
+    assert!(parser.feed(frame).is_empty());
+    let frame = b"data: {\"choices\":[],\"usage\":{}}\n";
+    assert!(parser.feed(frame).is_empty());
+    // One count is enough; the other reads as zero.
+    let frame = b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":9}}\n";
+    let items = parser.feed(frame);
+    assert!(matches!(
+        items[..],
+        [SseItem::Usage {
+            prompt: 9,
+            completion: 0
+        }]
+    ));
+}
+
+/// Ollama hangs the count on the last content chunk instead. Both survive,
+/// the count first; `on_chunk` holds it until `done` regardless.
+#[test]
+fn a_usage_on_a_content_chunk_keeps_both() {
+    let mut parser = SseParser::default();
+    let frame = b"data: {\"choices\":[{\"delta\":{\"content\":\"end\"}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1}}\n";
+    let items = parser.feed(frame);
+    assert_eq!(items.len(), 2);
+    assert!(matches!(
+        items[0],
+        SseItem::Usage {
+            prompt: 3,
+            completion: 1
+        }
+    ));
+    assert_eq!(deltas(items), vec!["end"]);
 }

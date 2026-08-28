@@ -498,6 +498,17 @@ impl State {
         if self.picker.is_some() {
             return self.picker_key(key);
         }
+        // So is the tab bar, once Shift+Tab has put the highlight on it.
+        if self.chat_tab_focus.is_some() {
+            return self.chat_tab_key(key);
+        }
+        // Shift+Tab reaches us as Tab with the Shift modifier (CSI Z), and the
+        // input box's Tab arm does not look at modifiers — so, like Ctrl-l
+        // above, it has to be taken before the box would complete on it.
+        if Self::is_bar_key(&key) {
+            self.chat_tab_focus = Some(self.chat_tab);
+            return true;
+        }
         // Interrupt whatever is running. This used to be Esc's job, which meant a
         // streaming reply could not be put away without also being killed - the
         // state you are most likely to want out of the way was the one state where
@@ -590,10 +601,49 @@ impl State {
     pub(crate) fn on_paste(&mut self, text: String) -> bool {
         // The states that already take every key before the input box sees it
         // refuse a paste for the same reason.
-        if self.picker.is_some() || self.is_confirming() || self.awaiting_plan() {
+        if self.picker.is_some()
+            || self.chat_tab_focus.is_some()
+            || self.is_confirming()
+            || self.awaiting_plan()
+        {
             return false;
         }
         self.input.insert_text(&text);
+        true
+    }
+
+    /// Shift+Tab: the key that hands the keyboard to the tab bar.
+    pub(crate) fn is_bar_key(key: &KeyWithModifier) -> bool {
+        key.bare_key == BareKey::Tab && key.has_modifiers(&[KeyModifier::Shift])
+    }
+
+    /// Every key while the tab bar has the highlight. Unhandled keys are
+    /// swallowed, as the picker's are: the input box is behind the bar, and a
+    /// stray letter would be typed into it unseen.
+    pub(crate) fn chat_tab_key(&mut self, key: KeyWithModifier) -> bool {
+        let Some(selected) = self.chat_tab_focus else {
+            return false;
+        };
+        // Ctrl-l is taken ahead of this, in `on_key`, and opens a new tab.
+        let last = self.chat_tab_count().saturating_sub(1);
+        match key.bare_key {
+            BareKey::Left => self.chat_tab_focus = Some(selected.saturating_sub(1)),
+            BareKey::Tab if Self::is_bar_key(&key) => {
+                self.chat_tab_focus = Some(selected.saturating_sub(1))
+            },
+            BareKey::Right | BareKey::Tab => self.chat_tab_focus = Some((selected + 1).min(last)),
+            BareKey::Enter => {
+                self.chat_tab_focus = None;
+                self.switch_to_tab(selected);
+            },
+            BareKey::Esc => self.chat_tab_focus = None,
+            BareKey::Char('x') => {
+                self.close_tab(selected);
+                let last = self.chat_tab_count().saturating_sub(1);
+                self.chat_tab_focus = Some(selected.min(last));
+            },
+            _ => {},
+        }
         true
     }
 
@@ -860,6 +910,7 @@ impl State {
         self.stream = Some(StreamState {
             id: stream_id,
             finishing: false,
+            usage: None,
         });
         self.pin_to_bottom();
         // After the pin, which clears it: everyone starts this reply following
@@ -913,6 +964,7 @@ impl State {
         self.stream = Some(StreamState {
             id: stream_id,
             finishing: true,
+            usage: None,
         });
         self.pin_to_bottom();
         true
@@ -964,10 +1016,29 @@ impl State {
                     self.stream = Some(StreamState {
                         id: stream_id.to_owned(),
                         finishing: true,
+                        usage: None,
                     });
                     break;
                 },
                 SseItem::ToolCallFragment { .. } => self.tool_calls.feed(&item),
+                // Held on the stream rather than recorded here: Ollama hangs
+                // the count on the last content chunk, ahead of the text it
+                // covers, and a tool-calling reply is still fragments in
+                // `tool_calls`. The baseline is taken at `done`, once the
+                // transcript holds what was counted.
+                SseItem::Usage { prompt, completion } => {
+                    if let Some(stream) = self.stream.as_mut() {
+                        stream.usage = Some(prompt + completion);
+                    }
+                    self.log(
+                        "api_usage",
+                        serde_json::json!({
+                            "stream_id": stream_id,
+                            "prompt_tokens": prompt,
+                            "completion_tokens": completion,
+                        }),
+                    );
+                },
                 // Informational: `done: true` below is the authoritative end.
                 SseItem::Done => {},
             }
@@ -975,6 +1046,12 @@ impl State {
 
         if done {
             let settled = self.stream.take();
+            // A cancelled or already-failed stream's count is not recorded
+            // even if one arrived: the outcome on screen is not what it cost.
+            let usage = settled
+                .as_ref()
+                .filter(|stream| !stream.finishing)
+                .and_then(|stream| stream.usage);
             match settled {
                 // Outcome already recorded; this is the terminator we were
                 // waiting to swallow. Any half-accumulated calls go with it.
@@ -1017,7 +1094,11 @@ impl State {
                         asked.content = prior_text.clone();
                         asked.reasoning = prior_reasoning;
                         self.messages.push(asked);
+                        // Both keyed on the fingerprint, which the swap above
+                        // does not move: the same count, and the same length
+                        // of prose now on the tool-calls message.
                         self.transcript_cache = None;
+                        self.context_cache = None;
                         self.saved.1 = self.mutable_len().wrapping_add(1);
                         let tool_payload: Vec<serde_json::Value> = calls
                             .iter()
@@ -1105,10 +1186,24 @@ impl State {
                             // The sidebar is very often not what is being looked
                             // at — the same reason `pump_tools` toasts its own
                             // y/n rather than trusting the pane to be on screen.
-                            notify("hocus has a plan — /execute to carry it out");
+                            notify(
+                                "hocus has a plan — /execute to carry it out, /execute --clear \
+                                 to carry it out in a fresh chat",
+                            );
                         }
                     }
                 },
+            }
+            // The transcript now holds everything the provider counted — the
+            // prose, or the tool-calls message with its arguments — so this is
+            // the baseline that "added since" is measured against. Only a tool
+            // result, or the next question, moves the count off exact.
+            if let Some(tokens) = usage {
+                self.usage = Some(ContextUsage {
+                    tokens,
+                    wire_chars: api::wire_chars(&self.messages),
+                });
+                self.context_cache = None;
             }
             // The reply is settled, so nothing is appending any more — whatever
             // a typed tool pushes from here on is its own message.

@@ -176,6 +176,11 @@ pub struct StreamState {
     /// chunk. This flag exists to swallow it without recording a second
     /// outcome.
     pub finishing: bool,
+    /// What the provider said this exchange cost, prompt and completion
+    /// together, held until `done` so the `wire_chars` baseline is taken once
+    /// the reply it covers — text, tool calls and all — has settled.
+    #[serde(default)]
+    pub usage: Option<u64>,
 }
 
 /// Lifecycle of the tool queue. What the *model* asked for and what the user
