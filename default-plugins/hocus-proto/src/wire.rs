@@ -99,15 +99,15 @@ pub const AGENT_HOOK: &str = "agent_hook";
 /// into every pane and which a hook process inherits from the agent it watches.
 pub const HOOK_PANE_ID: &str = "pane_id";
 
-/// hocus-ask → hocus: a question typed in the popup.
+/// → hocus: a question put to the running hocus, from a plugin or from
+/// `zellij pipe`.
 pub const ASK: &str = "hocus_ask";
-/// hocus → hocus-ask: what became of it.
+/// hocus → the asker: what became of it.
 ///
 /// Addressed by `destination_plugin_id`, taken from the `PipeSource::Plugin` of
 /// the ask, rather than broadcast like everything else here. It is also the only
-/// thing that tells the popup "hocus took it" apart from "there is no hocus" — a
-/// broadcast to nobody is silent, and the popup closes on this reply rather than
-/// on the keypress so that silence is visible.
+/// thing that tells a plugin caller "hocus took it" apart from "there is no
+/// hocus" — a broadcast to nobody is silent.
 pub const ASK_ACK: &str = "hocus_ask_ack";
 
 /// One agent poll: what goes out and what comes back. The activity map rides
@@ -248,7 +248,7 @@ pub struct Query {
     pub args: serde_json::Value,
 }
 
-/// One question from the ask popup.
+/// One question put over the `hocus_ask` pipe.
 ///
 /// A struct rather than a bare string so a later version can carry context —
 /// the asking pane, a project hint — without needing a second message name and
@@ -265,7 +265,7 @@ pub enum AskOutcome {
     Sent,
     /// hocus was busy; held, and will go out as soon as it is idle.
     Queued,
-    /// Not taken at all. `detail` says why, and is what the popup shows.
+    /// Not taken at all. `detail` says why.
     Refused,
 }
 
@@ -326,7 +326,7 @@ mod tests {
         assert_eq!(ack.detail, "hocus has no working API configuration");
     }
 
-    /// The accepting outcomes have nothing to explain, so the popup must not
+    /// The accepting outcomes have nothing to explain, so an asker must not
     /// need a `detail` on the wire to read them.
     #[test]
     fn an_acknowledgement_parses_without_a_detail() {

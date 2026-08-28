@@ -1759,17 +1759,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hocus-ask"
-version = "0.1.0"
-dependencies = [
- "hegeltest",
- "hocus-proto",
- "serde_json",
- "unicode-width 0.2.2",
- "zellij-tile",
-]
-
-[[package]]
 name = "hocus-new-agent"
 version = "0.1.0"
 dependencies = [

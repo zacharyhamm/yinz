@@ -1,7 +1,7 @@
 //! Laying out a one-line prompt: which slice of the text is on screen, and
 //! which column the cursor sits in.
 //!
-//! Promoted from `default-plugins/hocus-ask/src/ui.rs`. Pure: no host calls, so
+//! Pure: no host calls, so
 //! the awkward cases — a pane narrower than the prompt, a cursor sitting past
 //! the right edge, a double-width character straddling the boundary — are
 //! testable without a running Zellij.
@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(column, 8);
     }
 
-    /// The invariant the popup depends on at every pane size. Break it and the
+    /// The invariant a one-line prompt depends on at every pane size. Break it and the
     /// render bleeds outside the box instead of merely looking wrong.
     ///
     /// The text generator is deliberately unconstrained: a question is whatever

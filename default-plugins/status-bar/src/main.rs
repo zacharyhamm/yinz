@@ -797,7 +797,7 @@ pub mod tests {
             ),
             (
                 KeyWithModifier::new(BareKey::Char('k')),
-                vec![launches("hocus-ask"), TO_NORMAL],
+                vec![launches("hocus-new-agent"), TO_NORMAL],
             ),
         ];
 
@@ -810,7 +810,7 @@ pub mod tests {
             vec![KeyWithModifier::new(BareKey::Char('c'))]
         );
         assert_eq!(
-            plugin_launch_key(&keymap, "hocus-ask"),
+            plugin_launch_key(&keymap, "hocus-new-agent"),
             vec![KeyWithModifier::new(BareKey::Char('k'))]
         );
     }

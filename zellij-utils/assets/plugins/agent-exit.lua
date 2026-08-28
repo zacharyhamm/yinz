@@ -14,7 +14,7 @@
 -- Closing this pane is what brings it back, which is why both branches below end in
 -- `close_self()`.
 --
--- No `request_permission` here, deliberately, for the reason `hocus-ask` gives: a
+-- No `request_permission` here, deliberately: a
 -- builtin - one loaded from a `zellij:` location - is granted every gated call
 -- unconditionally by `check_command_permission`, and the permission dialog is drawn
 -- *in the requesting plugin's pane*, which is this one. A copy of this file loaded
