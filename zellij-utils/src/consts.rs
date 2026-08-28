@@ -122,7 +122,6 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "hocus",
     "hocus-agentd",
     "hocus-agents",
-    "hocus-ask",
     "hocus-new-agent",
     "hocus-store",
 ];

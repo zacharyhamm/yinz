@@ -1515,7 +1515,7 @@ fn guest_announce_message() -> zellij_utils::nested_session::NestedSessionMessag
 }
 
 /// Open a floating pane in `tab_index` and give it something to say. `overlay` places it
-/// against the whole surface, as the ask-hocus popup places itself.
+/// against the whole surface, as an overlay plugin places itself.
 fn open_floating_pane(
     screen: &mut Screen,
     tab_index: usize,

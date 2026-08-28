@@ -59,8 +59,8 @@ fn queued_questions_go_out_in_the_order_they_were_asked() {
     assert_eq!(user_messages(&state), vec!["first", "second"]);
 }
 
-/// Someone is sitting in front of the popup waiting on this; a job that
-/// comes due on the same tick is not.
+/// Someone is waiting on this question; a job that comes due on the same
+/// tick is not.
 #[test]
 fn a_waiting_question_goes_ahead_of_a_job_that_is_also_due() {
     let mut state = idle_state();

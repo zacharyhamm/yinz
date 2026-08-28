@@ -212,7 +212,7 @@ pub enum Status {
 /// Its own field rather than two more `Status` variants, because `Status` is the
 /// lifecycle of the *tool queue* and `tools_busy()` is `status != Idle`. A
 /// planning state spelled there would make `is_in_flight()` true, which queues
-/// every typed message and every `hocus-ask` question behind the plan — and
+/// every typed message and every `hocus_ask` question behind the plan — and
 /// typing at a plan is exactly how you correct one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum Plan {

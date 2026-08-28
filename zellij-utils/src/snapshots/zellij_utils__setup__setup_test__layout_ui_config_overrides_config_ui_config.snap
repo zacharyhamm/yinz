@@ -6916,38 +6916,6 @@ Config {
                 bare_key: Char(
                     'k',
                 ),
-                key_modifiers: {},
-            }: [
-                LaunchOrFocusPlugin {
-                    plugin: Alias(
-                        PluginAlias {
-                            name: "hocus-ask",
-                            configuration: Some(
-                                PluginUserConfiguration(
-                                    {
-                                        "overlay": "true",
-                                    },
-                                ),
-                            ),
-                            initial_cwd: None,
-                            run_plugin: None,
-                        },
-                    ),
-                    should_float: true,
-                    move_to_focused_tab: true,
-                    should_open_in_place: false,
-                    close_replaced_pane: false,
-                    skip_cache: false,
-                    tab_id: None,
-                },
-                SwitchToMode {
-                    input_mode: Normal,
-                },
-            ],
-            KeyWithModifier {
-                bare_key: Char(
-                    'k',
-                ),
                 key_modifiers: {
                     Alt,
                 },
@@ -7312,19 +7280,6 @@ Config {
                     {
                         "shared": "true",
                     },
-                ),
-                initial_cwd: None,
-                relative_path: None,
-            },
-            "hocus-ask": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Zellij(
-                    PluginTag(
-                        "hocus-ask",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {},
                 ),
                 initial_cwd: None,
                 relative_path: None,

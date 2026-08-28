@@ -6,7 +6,7 @@ fn launch_or_focus_plugin_preserves_overlay_and_modal_configuration() {
         keybinds {
             normal {
                 bind "Ctrl o" {
-                    LaunchOrFocusPlugin "hocus-ask" {
+                    LaunchOrFocusPlugin "file-finder" {
                         floating true
                         overlay true
                         modal true

@@ -603,10 +603,10 @@ fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
 }
 
 // -----------------------------------------------------------------------
-// Questions from the ask popup
+// Questions over the `hocus_ask` pipe
 // -----------------------------------------------------------------------
 
-/// As the popup sends one: a plugin-sourced pipe carrying a `wire::Ask`.
+/// As a plugin asker sends one: a plugin-sourced pipe carrying a `wire::Ask`.
 fn ask(text: &str) -> PipeMessage {
     PipeMessage {
         source: PipeSource::Plugin(7),
