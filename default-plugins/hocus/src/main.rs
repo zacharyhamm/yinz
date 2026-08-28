@@ -360,6 +360,9 @@ pub struct State {
     /// What the daemon's model last made of each idle agent's pane. Read-only here: the
     /// daemon is the only writer, the same way it is for `activity`.
     summaries: agents::Summaries,
+    /// What each Claude Code pane has reported about itself, over its own hooks.
+    /// Read-only here for the same reason and from the same writer.
+    hooks: agents::HookFeeds,
     /// Highest `seq` merged from hocus-agentd. A daemon reload restarts its
     /// counter, so re-subscribing resets this watermark.
     agent_seq: u64,
@@ -598,6 +601,7 @@ impl Default for State {
             pending_agent_panes: BTreeSet::new(),
             activity: BTreeMap::new(),
             summaries: agents::Summaries::new(),
+            hooks: agents::HookFeeds::new(),
             agent_seq: 0,
             mono_ms: 0,
             log_seq: 0,
@@ -828,7 +832,13 @@ impl ZellijPlugin for State {
         // to the agents pane whether or not there were panes in this reply.
         self.focused_plugin = reply.focused_plugin;
         if let Some(panes) = reply.panes {
-            self.apply_poll(panes, reply.activity, reply.summaries, reply.focused);
+            self.apply_poll(
+                panes,
+                reply.activity,
+                reply.summaries,
+                reply.hooks,
+                reply.focused,
+            );
         }
         // This also answers the branch refresh the agents pane asks for, and carries the
         // summaries the box under its list is drawn from.

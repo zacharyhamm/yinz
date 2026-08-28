@@ -184,6 +184,13 @@ Read `docs/ARCHITECTURE.md` before changing server internals, and
 - Changing anything under `zellij-utils/assets/` (plugins, protobufs): regenerate with
   `cargo x proto` / `cargo x assets`, and CI's `assets --check` must pass.
 
+## Agent state from Claude Code hooks
+
+A `claude` running in a pane can report its own busy/waiting/idle state instead of being
+guessed at from its screen — `zellij hocus hooks install` wires Claude Code's hooks to
+`hocus-agentd`. See `docs/AGENT_HOOKS.md`. Unrelated to the `hooks { … }` config block
+(`zellij-utils/src/input/hooks.rs`), which binds a plugin to a moment in the session.
+
 ## Lua plugins
 
 Plugins come in two kinds: wasm modules (every builtin) and Lua scripts. See

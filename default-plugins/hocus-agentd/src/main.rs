@@ -112,6 +112,12 @@ const GEOMETRY_GRACE_TICKS: u32 = SUMMARY_SETTLE_POLLS + 2;
 const SUMMARY_PANE: &str = "summary_pane";
 const SUMMARY_ID: &str = "summary_id";
 
+/// The kind a hook event proves its pane is running.
+///
+/// Claude Code is the only agent that reports for itself, so this is a constant
+/// rather than something read off the event: nothing else sends `agent_hook`.
+const CLAUDE: &str = "claude";
+
 #[derive(Default)]
 struct State {
     /// Overrides from hocus's `agent_register`, refreshed by every subscribe.
@@ -191,6 +197,13 @@ struct State {
     env: BTreeMap<String, String>,
     /// What the model last said about each agent's pane.
     summaries: agents::Summaries,
+    /// What each Claude Code pane has said about *itself*, over its own hooks.
+    ///
+    /// The one thing in this daemon that is reported rather than inferred. Where a
+    /// pane has an entry here it is the truth about that pane's state, and the
+    /// screen-diff heuristic beside it is only still running because the summaries
+    /// hang off it — see `agents::HookFeed`.
+    hooks: agents::HookFeeds,
     /// The pane tail each successful summary described. Small changes accumulate against
     /// this baseline until at least a fifth of its lines have turned over.
     summary_baselines: BTreeMap<u32, String>,
@@ -374,6 +387,25 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        if pipe_message.name == wire::AGENT_HOOK {
+            // The one message here a shell sends. Both halves are dropped in
+            // silence when they do not parse: this arrives from outside the
+            // session, on a `PipeSource::Cli` there is nothing to answer, and a
+            // Claude Code that grows a field we have never seen must cost us
+            // nothing.
+            let pane_id = pipe_message
+                .args
+                .get(wire::HOOK_PANE_ID)
+                .and_then(|id| id.parse::<u32>().ok());
+            let event = pipe_message
+                .payload
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<wire::HookEvent>(json).ok());
+            if let (Some(pane_id), Some(event)) = (pane_id, event) {
+                self.on_hook(pane_id, &event);
+            }
+            return false;
+        }
         if pipe_message.name == wire::AGENT_REFRESH {
             // No reply of its own: each probe that finishes publishes, so the
             // asker gets the answer the same way it gets everything else.
@@ -515,6 +547,67 @@ impl State {
         self.resolve_repositories();
     }
 
+    /// One Claude Code hook, from the pane it fired in.
+    ///
+    /// Publishes on every event it acts on, and that is the whole point of the feed:
+    /// a state change reaches the strip in the milliseconds it took the pipe to
+    /// arrive, rather than on a heartbeat up to five seconds away and then only
+    /// after three more polls of stillness have agreed with it.
+    ///
+    /// The summary machinery is deliberately left alone. It still hangs off the
+    /// screen heuristic, because what it produces is a *description* — the toast, the
+    /// box, the pane's new name — and a description of a screen is fairly made by
+    /// reading the screen. What it may no longer decide is whether the agent is
+    /// blocked on the user; see `finish_summary_with`.
+    fn on_hook(&mut self, pane_id: u32, event: &wire::HookEvent) {
+        if event.hook_event_name == agents::HOOK_SESSION_END {
+            // The session is over, so there is nothing left reporting for this pane
+            // and the heuristic takes it back. The pane itself may well live on - a
+            // shell prompt where an agent was - and that is the latch's business,
+            // not ours.
+            if self.hooks.remove(&pane_id).is_some() {
+                self.publish();
+            }
+            return;
+        }
+        let Some(phase) = agents::hook_phase(event) else {
+            return;
+        };
+        // A hook fired in this pane is that pane demonstrably running Claude Code:
+        // better evidence than the foreground command, which stops naming the agent
+        // the moment it shells out. Latched through the same map the command sniff
+        // uses, so it is released by the same confirmed verdict and cannot become a
+        // second thing to keep in step.
+        self.latched.insert(pane_id, CLAUDE.to_owned());
+        self.pending_release.remove(&pane_id);
+        let cwd_moved = match &event.cwd {
+            Some(cwd) => {
+                let known = self.cwds.get(&pane_id).cloned();
+                self.record_cwd(pane_id, cwd);
+                self.cwds.get(&pane_id) != known.as_ref()
+            },
+            None => false,
+        };
+        self.hooks.insert(
+            pane_id,
+            agents::HookFeed {
+                phase,
+                detail: agents::hook_detail(event),
+                session_id: event.session_id.clone(),
+                cwd: event.cwd.clone(),
+            },
+        );
+        self.settle_latches();
+        if cwd_moved {
+            // The agent's folder, which is not always the pane's: an agent told to
+            // work in a worktree moved without the shell under it hearing. This is
+            // the only thing that ever says so.
+            self.rejoin_cwds();
+            self.resolve_repositories();
+        }
+        self.publish();
+    }
+
     /// Note every pane that is running an agent right now, and write what we
     /// hold onto the panes.
     ///
@@ -628,6 +721,12 @@ impl State {
         // the latch from being one more thing that can go stale.
         self.latched.retain(|id, _| live.contains(id));
         self.pending_release.retain(|id| live.contains(id));
+        // Pruned with the latch rather than on a clock of its own. Nothing about a
+        // feed expires with time - a permission prompt can sit unanswered all day,
+        // and a ten-minute build is one `PreToolUse` and a long silence - so the only
+        // honest ends are the ones that are observed: the session saying so, the pane
+        // closing, and the latch being released. This is the second.
+        self.hooks.retain(|id, _| live.contains(id));
         // A pane that has come back to life is running a new process, and has to
         // earn its latch again rather than inherit the dead one's. `settle_latches`
         // below re-earns it in the same breath if it really is running an agent.
@@ -1445,9 +1544,18 @@ impl State {
         if !(200..300).contains(&status) {
             return;
         }
-        let Some(summary) = agents::parse_summary(body, hash) else {
+        let Some(mut summary) = agents::parse_summary(body, hash) else {
             return;
         };
+        // The model was asked whether the agent is blocked on the user, and where the
+        // agent says so itself the model's guess is not wanted. It is still a good
+        // guess - it is the only answer there is for every other agent - but a pane
+        // with a feed has the fact, and two sources for one flag is a disagreement
+        // waiting to be drawn. `waiting_marker` prefers the feed for the same reason;
+        // overwriting here keeps the stored summary from ever contradicting the row.
+        if let Some(feed) = self.hooks.get(&pane_id) {
+            summary.awaiting = feed.phase == agents::HookPhase::Waiting;
+        }
         if let Some(title) = agents::rename_title(&summary) {
             if self.title_is_ours_to_take(pane_id) {
                 rename(pane_id, title);
@@ -1483,6 +1591,7 @@ impl State {
     /// Not for a pane that has merely gone `Held` or `Exited`: that is an agent that finished
     /// its work, and its last summary is the most useful thing on the row.
     fn forget_agent(&mut self, pane_id: u32) {
+        self.hooks.remove(&pane_id);
         self.activity.remove(&pane_id);
         self.phase.remove(&pane_id);
         self.summaries.remove(&pane_id);
@@ -1694,6 +1803,7 @@ impl State {
             focused: self.focused,
             focused_plugin: self.focused_plugin,
             summaries: self.summaries.clone(),
+            hooks: self.hooks.clone(),
         };
         let Ok(payload) = serde_json::to_string(&reply) else {
             return;
@@ -3092,6 +3202,239 @@ mod tests {
         ])
     }
 
+    // -----------------------------------------------------------------------
+    // What an agent says about itself
+    // -----------------------------------------------------------------------
+
+    /// One hook payload, as the generated script forwards it.
+    fn hook(name: &str) -> wire::HookEvent {
+        wire::HookEvent {
+            hook_event_name: name.to_owned(),
+            session_id: "cc-session-1".to_owned(),
+            ..Default::default()
+        }
+    }
+
+    /// The label the agent strip would draw for a pane, which is what all of this is
+    /// ultimately for.
+    fn cell(state: &State, pane_id: u32) -> String {
+        let pane = state
+            .panes
+            .iter()
+            .flatten()
+            .find(|pane| pane.pane_id == pane_id)
+            .expect("the pane is in the snapshot");
+        agents::status_cell(
+            pane.status,
+            state.activity.get(&pane_id),
+            state.hooks.get(&pane_id),
+        )
+    }
+
+    /// The point of the whole feed: a `Stop` names the pane idle on the message that
+    /// carries it. The heuristic beside it has just watched the screen move and would
+    /// have called the same moment `busy`, then spent three more polls agreeing.
+    #[test]
+    fn a_stop_hook_lands_the_idle_label_without_waiting_for_the_screen_to_settle() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        let mut sent: Vec<(u32, Vec<u8>)> = Vec::new();
+        poll_showing(&mut state, EARLIER_PANE, &mut sent);
+        poll_showing(&mut state, BUSY_PANE, &mut sent);
+        assert_eq!(cell(&state, 7), "busy", "the screen is moving");
+
+        state.on_hook(7, &hook("Stop"));
+
+        assert_eq!(cell(&state, 7), "idle");
+        assert!(
+            sent.is_empty(),
+            "and nothing has been asked of a model to get there"
+        );
+    }
+
+    /// The other half: blocked on the user, said outright rather than guessed at from a
+    /// screenful of text. `PermissionRequest` fires as the prompt goes up, where the
+    /// notification that used to be the only signal waits six seconds for silence.
+    #[test]
+    fn a_permission_request_marks_the_pane_waiting_at_once() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        state.on_hook(7, &hook("UserPromptSubmit"));
+        assert_eq!(cell(&state, 7), "busy");
+
+        state.on_hook(7, &hook("PermissionRequest"));
+        assert_eq!(cell(&state, 7), "waiting");
+
+        // Approved, and back to work.
+        state.on_hook(7, &hook("PostToolUse"));
+        assert_eq!(cell(&state, 7), "busy");
+    }
+
+    /// Which tool, in the row itself. A pane that says only `busy` for ten minutes of
+    /// `cargo build` is telling the truth and saying nothing.
+    #[test]
+    fn a_tool_starting_names_itself_in_the_row() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        state.on_hook(
+            7,
+            &wire::HookEvent {
+                hook_event_name: "PreToolUse".to_owned(),
+                tool_name: Some("Bash".to_owned()),
+                tool_input: Some(serde_json::json!({"command": "cargo x test"})),
+                ..Default::default()
+            },
+        );
+        assert_eq!(cell(&state, 7), "busy · Bash cargo");
+
+        state.on_hook(7, &hook("PostToolUse"));
+        assert_eq!(cell(&state, 7), "busy", "the tool finished, the hint goes");
+    }
+
+    /// A hook fired in a pane is that pane demonstrably running Claude Code. That is
+    /// better evidence than the foreground command, which names `git` the moment the
+    /// agent shells out - and used to drop the pane out of every list while it did.
+    #[test]
+    fn a_hook_keeps_a_pane_classified_while_its_agent_shells_out() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        state.on_hook(7, &hook("UserPromptSubmit"));
+
+        // The agent runs git, so the foreground command stops naming an agent.
+        state.on_command(7, vec!["git".to_owned(), "status".to_owned()], true);
+
+        let pane = state.panes.iter().flatten().next().expect("the pane");
+        assert_eq!(pane.detected.as_deref(), Some("claude"));
+        assert!(
+            agents::classify(pane, &BTreeMap::new()).is_some(),
+            "still an agent: {pane:?}"
+        );
+    }
+
+    /// The session ending is the feed ending. The pane may well live on as a shell
+    /// prompt, and from there it is the heuristic's again.
+    #[test]
+    fn a_session_ending_hands_the_pane_back_to_the_heuristic() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        state.on_hook(7, &hook("Stop"));
+        assert!(state.hooks.contains_key(&7));
+
+        state.on_hook(7, &hook(agents::HOOK_SESSION_END));
+        assert!(state.hooks.is_empty());
+        assert_eq!(
+            cell(&state, 7),
+            "running",
+            "no feed and nothing observed yet"
+        );
+    }
+
+    /// An agent told to work somewhere else moved without the shell under it hearing,
+    /// so the hook is the only thing that ever says where the agent actually is.
+    #[test]
+    fn a_hook_reports_the_folder_the_agent_moved_to() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        state.on_hook(
+            7,
+            &wire::HookEvent {
+                cwd: Some("/work/.worktrees/topic".to_owned()),
+                ..hook("SessionStart")
+            },
+        );
+        assert_eq!(
+            state.cwds.get(&7).map(String::as_str),
+            Some("/work/.worktrees/topic")
+        );
+    }
+
+    /// The model is still asked what the screen says - that is what the toast and the
+    /// pane's new name are made of - but it is no longer asked whether the user is being
+    /// waited on. Two answers to one question is a disagreement waiting to be drawn.
+    #[test]
+    fn the_feed_overrules_what_the_model_made_of_the_screen() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+        state.on_hook(7, &hook("Stop"));
+
+        finish(
+            &mut state,
+            200,
+            &reply("Waiting on you.", true),
+            &context(7, 1),
+        );
+
+        let summary = state.summaries.get(&7).expect("a summary was stored");
+        assert_eq!(summary.text, "Waiting on you.");
+        assert!(
+            !summary.awaiting,
+            "the agent said it finished; the model only thought otherwise"
+        );
+    }
+
+    /// And the other way round, which is the case that matters: a permission prompt the
+    /// model read as a completed task.
+    #[test]
+    fn the_feed_marks_a_pane_waiting_that_the_model_called_finished() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+        state.on_hook(7, &hook("PermissionRequest"));
+
+        finish(&mut state, 200, &reply("All done.", false), &context(7, 1));
+
+        assert!(state.summaries.get(&7).expect("stored").awaiting);
+    }
+
+    /// Neither half of a malformed message may reach the state. This arrives from
+    /// outside the session, on a pipe with nobody to answer.
+    #[test]
+    fn a_hook_message_that_does_not_parse_changes_nothing() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        let message = |args: BTreeMap<String, String>, payload: Option<&str>| PipeMessage {
+            source: PipeSource::Cli("pipe-1".to_owned()),
+            name: wire::AGENT_HOOK.to_owned(),
+            payload: payload.map(str::to_owned),
+            args,
+            is_private: false,
+        };
+        let good_args = BTreeMap::from([(wire::HOOK_PANE_ID.to_owned(), "7".to_owned())]);
+
+        // No pane id, a pane id that is not a number, no payload, and a payload that is
+        // not one of ours.
+        state.pipe(message(
+            BTreeMap::new(),
+            Some(r#"{"hook_event_name":"Stop"}"#),
+        ));
+        state.pipe(message(
+            BTreeMap::from([(wire::HOOK_PANE_ID.to_owned(), "terminal_7".to_owned())]),
+            Some(r#"{"hook_event_name":"Stop"}"#),
+        ));
+        state.pipe(message(good_args.clone(), None));
+        state.pipe(message(good_args.clone(), Some("not json at all")));
+        assert!(state.hooks.is_empty());
+
+        // A field we have never heard of is not a reason to drop the event: Claude Code
+        // grows them between versions.
+        state.pipe(message(
+            good_args,
+            Some(r#"{"hook_event_name":"Stop","some_future_field":{"a":1}}"#),
+        ));
+        assert!(state.hooks.contains_key(&7));
+    }
+
     #[test]
     fn an_agent_going_idle_is_asked_about_once() {
         let (mut state, sent) = idle_agent(BUSY_PANE);
@@ -3355,6 +3698,7 @@ mod tests {
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 &state.summaries,
+                &state.hooks,
             )
             .iter()
             .any(|row| matches!(row, agents::StripRow::Agent { text, .. } if text.starts_with('!')))

@@ -589,9 +589,13 @@ impl State {
         // Mentions resolve at fire time, so "check @codex every minute" reads the
         // agent as it is now, not as it was when the job was armed.
         let mut fired = format!("[scheduled] {prompt}");
-        if let Some(context) =
-            agents::mention_context(&fired, &self.panes, &self.manual_kinds, &self.activity)
-        {
+        if let Some(context) = agents::mention_context(
+            &fired,
+            &self.panes,
+            &self.manual_kinds,
+            &self.activity,
+            &self.hooks,
+        ) {
             fired.push_str("\n\n");
             fired.push_str(&context);
         }
@@ -731,9 +735,13 @@ impl State {
         // same as a scheduled job's do: "@codex is stuck" should read the agent
         // as it is when the question goes out. The popup holds no snapshot of
         // its own to resolve them against anyway.
-        if let Some(context) =
-            agents::mention_context(&text, &self.panes, &self.manual_kinds, &self.activity)
-        {
+        if let Some(context) = agents::mention_context(
+            &text,
+            &self.panes,
+            &self.manual_kinds,
+            &self.activity,
+            &self.hooks,
+        ) {
             text.push_str("\n\n");
             text.push_str(&context);
         }

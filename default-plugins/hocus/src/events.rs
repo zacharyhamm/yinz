@@ -748,9 +748,13 @@ impl State {
         }
         // An @-mention earns the model a context line naming the agent pane, so
         // "ask @codex to run the tests" needs no agent_list round first.
-        if let Some(context) =
-            agents::mention_context(&text, &self.panes, &self.manual_kinds, &self.activity)
-        {
+        if let Some(context) = agents::mention_context(
+            &text,
+            &self.panes,
+            &self.manual_kinds,
+            &self.activity,
+            &self.hooks,
+        ) {
             text.push_str("\n\n");
             text.push_str(&context);
         }
