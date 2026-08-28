@@ -161,7 +161,18 @@ struct Chat {
     /// What was typed but not sent, and where the cursor was. The draft rather
     /// than the whole `TextInput`: the box also owns the prompt history, which
     /// is one list for every chat.
+    ///
+    /// Only the user-facing switches — `swap_foreground` — move it. The
+    /// engine swap that services a parked chat (`with_parked`) leaves the input
+    /// box alone: touching it would throw away the undo stack and the Up/Down
+    /// draft of whoever is typing, on every tick.
     pub(crate) draft: (String, usize),
+    /// The render memos, travelling with the chat they were computed for. Their
+    /// keys are derived from the transcript, so a cache that leaves with its
+    /// chat comes back valid, and the foreground's is not thrown away every
+    /// time a parked chat is serviced.
+    pub(crate) transcript_cache: Option<(ui::TranscriptKey, ui::Transcript)>,
+    pub(crate) plan_cache: Option<(ui::PlanKey, Vec<ui::VLine>)>,
     /// Scheduled prompts. They fire into the chat that armed them, on screen or
     /// not, so they travel with it.
     pub(crate) jobs: Vec<Job>,
@@ -170,29 +181,20 @@ struct Chat {
 }
 
 impl Chat {
-    /// `State::fingerprint`, for a chat that is parked.
-    pub(crate) fn fingerprint(&self) -> (usize, usize) {
-        let at = self
-            .reply_at
-            .unwrap_or(self.messages.len().saturating_sub(1));
-        (
-            self.messages.len(),
-            self.messages.get(at).map_or(0, |m| m.content.len()),
-        )
-    }
-
-    /// Whether this chat is still owed something — the only reason to hold it
-    /// rather than let the archive have it back.
+    /// Whether this chat is still working off-screen: a reply arriving, a tool
+    /// waiting on an answer, a plan mid-mode, or a job counting down. This is
+    /// what earns a tab its `●`, the `+n` in the title and the dot in
+    /// `/history`; a settled tab shows none of them.
     pub(crate) fn is_live(&self) -> bool {
         // A plan waiting on a `y`/`n` is owed an answer as surely as a stream is
         // owed its last chunk, and a chat merely `Planning` (no reply back yet)
-        // is still mid-mode: plan state isn't persisted, so losing either from
-        // `parked` and reloading from disk would silently reset it to `Off`,
-        // handing the next prompt full mutating tools instead of staying
-        // read-only.
+        // is still mid-mode. A job is a watcher that will fire — and bill —
+        // whether or not anyone is looking, so a chat holding one is working
+        // in every sense that matters to the person deciding where to look.
         self.stream.is_some()
             || !matches!(self.status, Status::Idle)
             || !matches!(self.plan, Plan::Off)
+            || !self.jobs.is_empty()
     }
 }
 
@@ -347,7 +349,8 @@ pub struct State {
     saved: (usize, usize),
     /// Every open conversation other than the one on screen, in the order the
     /// tab bar shows them, with the foreground one spliced in at `chat_tab`.
-    /// A parked chat keeps receiving its reply and running its tools; it stays
+    /// A parked chat keeps receiving its reply, running its tools and firing
+    /// its jobs, all through `with_parked`; it stays
     /// here, settled or not, until it is closed from the bar.
     parked: Vec<Chat>,
     /// The foreground chat's position in the tab bar: the bar reads
@@ -977,15 +980,9 @@ impl State {
                 // vanish. As a notice it survives into the archive and shows up
                 // in /history, and — being a notice — it never reaches the
                 // model, so reopening the chat does not answer it by surprise.
-                for text in std::mem::take(&mut self.asks) {
-                    self.messages
-                        .push(Message::notice(format!("unsent question: {text}")));
-                }
+                archive::unsent_asks_to_notices(&mut self.messages, &mut self.asks);
                 for chat in &mut self.parked {
-                    for text in std::mem::take(&mut chat.asks) {
-                        chat.messages
-                            .push(Message::notice(format!("unsent question: {text}")));
-                    }
+                    archive::unsent_asks_to_notices(&mut chat.messages, &mut chat.asks);
                 }
                 // Nothing left to flush but the transcripts. Projects and todos
                 // are written as each change lands, and so is every prompt.

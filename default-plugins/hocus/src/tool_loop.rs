@@ -1672,20 +1672,29 @@ impl State {
         format!("scheduled job {id} — runs every {every:.0}s until unscheduled")
     }
 
+    /// Cancel one job by id, or every job. Across every open chat, not only
+    /// the one this runs in: jobs live with the chat that armed them, but the
+    /// person asking — or the model, on their behalf — is wherever they are,
+    /// and a job that can only be stopped from the tab it was set in is a job
+    /// that keeps firing until that tab is found.
     pub(crate) fn unschedule(&mut self, id: Option<u64>) -> String {
         let result = match id {
             Some(id) => {
-                let before = self.jobs.len();
-                self.jobs.retain(|job| job.id != id);
-                if self.jobs.len() == before {
+                let before = self.job_count();
+                for jobs in self.all_jobs_mut() {
+                    jobs.retain(|job| job.id != id);
+                }
+                if self.job_count() == before {
                     format!("no job {id}")
                 } else {
                     format!("cancelled job {id}")
                 }
             },
             None => {
-                let count = self.jobs.len();
-                self.jobs.clear();
+                let count = self.job_count();
+                for jobs in self.all_jobs_mut() {
+                    jobs.clear();
+                }
                 format!("cancelled {count} scheduled job(s)")
             },
         };
@@ -1699,9 +1708,10 @@ impl State {
         result
     }
 
-    /// The kill switch that doesn't need the model to cooperate.
+    /// The kill switch that doesn't need the model to cooperate. Every job in
+    /// every tab, from whichever tab it is typed in.
     pub(crate) fn stop_jobs(&mut self) -> bool {
-        if self.jobs.is_empty() {
+        if self.job_count() == 0 {
             return false;
         }
         let notice = self.unschedule(None);

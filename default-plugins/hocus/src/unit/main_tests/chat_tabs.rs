@@ -165,8 +165,36 @@ fn opening_an_archived_chat_adds_a_tab_on_the_end() {
 
     state.switch_to_chat(saved);
     assert_eq!(state.chat_id, Some(saved));
-    assert_eq!(state.chat_tab, 3, "on the end");
     assert_eq!(state.messages.len(), 2, "read back whole");
+    // The empty tab it was picked from is not worth keeping, so the loaded
+    // chat takes its place on the end rather than leaving a blank one behind.
+    assert_eq!(state.chat_tab_count(), 3, "no lingering empty tab");
+    assert_eq!(state.chat_tab, 2, "on the end");
+}
+
+/// `/history` from a tab with something in it keeps that tab.
+#[test]
+fn opening_an_archived_chat_from_a_used_tab_keeps_the_tab() {
+    let mut state = three_tabs();
+    state.messages = vec![Message::user("was here"), Message::assistant("yes")];
+    state.flush_save();
+    let saved = state.chat_id.expect("the flush allocated an id");
+    let index = state
+        .parked
+        .iter()
+        .position(|chat| chat.chat_id == Some(saved));
+    assert!(index.is_none(), "the saved one is the foreground");
+    state.new_chat();
+    state.parked.retain(|chat| chat.chat_id != Some(saved));
+    state.chat_tab -= 1;
+    state.input.set_text("half a thought".to_owned());
+    state.messages = vec![Message::user("typed")];
+
+    state.switch_to_chat(saved);
+    assert_eq!(state.chat_tab_count(), 4, "the used tab is parked");
+    assert_eq!(state.chat_tab, 3, "and the loaded one is on the end");
+    assert_eq!(state.parked[2].draft.0, "half a thought", "with its draft");
+    assert_eq!(state.input.get_text(), "", "the loaded chat has none");
 }
 
 // -- new chat ---------------------------------------------------------------
@@ -366,7 +394,7 @@ fn save_parked_skips_empty_and_unchanged_chats() {
     assert_eq!(ids[2], None, "an empty tab leaves no row");
     assert_eq!(
         state.parked[0].saved,
-        state.parked[0].fingerprint(),
+        archive::fingerprint(&state.parked[0].messages, state.parked[0].reply_at),
         "a written one is recorded as such"
     );
 
@@ -377,4 +405,217 @@ fn save_parked_skips_empty_and_unchanged_chats() {
         listed,
         "and writing again changes nothing"
     );
+}
+
+// -- servicing another tab costs the foreground nothing ---------------------
+
+/// A parked chat with a job is ticked on every timer, through the same swap
+/// that services its stream. The person typing in the foreground must not
+/// notice: the undo stack and the Up/Down history draft are the input box's,
+/// and the box is not part of the swap.
+#[test]
+fn a_tick_for_another_tab_leaves_the_input_undo_and_history_alone() {
+    let mut state = three_tabs();
+    state.parked[0].jobs.push(Job {
+        id: 1,
+        every: 60.0,
+        due_in: 60.0,
+        prompt: "check".into(),
+        show: false,
+        auto_confirm: false,
+    });
+    state.input.set_history(vec!["earlier".to_owned()]);
+    for ch in "draft".chars() {
+        state.on_key(key(BareKey::Char(ch)));
+    }
+    assert!(state.input.can_undo());
+
+    state.on_key(key(BareKey::Up));
+    assert_eq!(state.input.get_text(), "earlier", "recalled");
+    state.on_timer(1.0);
+    state.on_key(key(BareKey::Down));
+    assert_eq!(
+        state.input.get_text(),
+        "draft",
+        "the draft survived the tick"
+    );
+
+    state.on_timer(1.0);
+    assert!(state.input.can_undo(), "and so did the undo stack");
+    state.on_key(KeyWithModifier::new(BareKey::Char('z')).with_ctrl_modifier());
+    assert_ne!(state.input.get_text(), "draft", "Ctrl-z still undoes");
+}
+
+/// The render memo travels with its chat rather than being dropped, so a
+/// frame with nothing new on screen re-wraps nothing.
+#[test]
+fn a_tick_for_another_tab_keeps_the_foreground_transcript_cache() {
+    let mut state = three_tabs();
+    state.parked[0].asks.push_back("later".to_owned());
+    let key = (80, state.messages.len(), state.mutable_len());
+    state.transcript_cache = Some((key, ui::transcript(&state.messages, 80)));
+
+    state.on_timer(FRAME_SECONDS);
+    assert_eq!(
+        state.transcript_cache.as_ref().map(|(k, _)| *k),
+        Some(key),
+        "still cached"
+    );
+    assert!(state.parked[0].asks.is_empty(), "and the ask went out");
+}
+
+/// A chat with nothing but a queued question is still worth a tab: the asker
+/// was told it had been taken.
+#[test]
+fn a_new_chat_keeps_a_tab_that_only_has_a_queued_question() {
+    let mut state = idle_state();
+    state.asks.push_back("later".to_owned());
+    state.new_chat();
+    assert_eq!(state.chat_tab_count(), 2);
+    assert_eq!(state.parked[0].asks.len(), 1);
+}
+
+// -- what closing writes ----------------------------------------------------
+
+/// Closing a tab whose reply grew after its last save archives the reply as
+/// it stands: the rewrite starts at the placeholder, not at the end.
+#[test]
+fn closing_a_parked_tab_mid_reply_archives_the_grown_reply() {
+    let mut state = three_tabs();
+    state.parked[1].stream = Some(StreamState {
+        id: "hocus-9".into(),
+        finishing: false,
+    });
+    state.parked[1].messages.push(Message::assistant(""));
+    state.parked[1].reply_at = Some(1);
+    state.save_parked();
+    state.parked[1].messages[1].content = "the whole reply".to_owned();
+
+    state.close_tab(2);
+    let archived = history::load(&state.private_store(), 3).expect("archived");
+    assert_eq!(archived.len(), 2);
+    assert_eq!(archived[1].content, "the whole reply");
+}
+
+/// A tab closed before its first token arrived archives no empty reply.
+#[test]
+fn closing_a_parked_tab_before_its_first_token_archives_no_empty_reply() {
+    let mut state = three_tabs();
+    state.parked[1].stream = Some(StreamState {
+        id: "hocus-9".into(),
+        finishing: false,
+    });
+    state.parked[1].messages.push(Message::assistant(""));
+    state.parked[1].reply_at = Some(1);
+
+    state.close_tab(2);
+    let archived = history::load(&state.private_store(), 3).expect("archived");
+    assert_eq!(archived.len(), 1, "only the question");
+}
+
+/// Queued questions do not vanish with the tab they were queued at: they are
+/// archived as notices, from either close path.
+#[test]
+fn closing_a_tab_archives_its_queued_questions_as_notices() {
+    // A parked tab.
+    let mut state = three_tabs();
+    state.parked[1].asks.push_back("one more thing".to_owned());
+    state.close_tab(2);
+    let archived = history::load(&state.private_store(), 3).expect("archived");
+    assert_eq!(
+        archived.last().map(|m| m.content.as_str()),
+        Some("unsent question: one more thing")
+    );
+
+    // The only tab, mid-reply.
+    let mut state = ready_state();
+    state.chat_id = Some(7);
+    state.asks.push_back("and another".to_owned());
+    state.close_tab(0);
+    assert!(state.messages.is_empty(), "reset in place");
+    let archived = history::load(&state.private_store(), 7).expect("archived");
+    let contents: Vec<&str> = archived.iter().map(|m| m.content.as_str()).collect();
+    assert_eq!(contents, ["hi", "unsent question: and another"]);
+}
+
+// -- jobs across tabs -------------------------------------------------------
+
+fn job_in_a_parked_tab(arguments: &str) -> State {
+    let mut state = idle_state();
+    state.run_local(&schedule_call(arguments));
+    state.new_chat();
+    assert!(state.jobs.is_empty());
+    assert_eq!(state.parked[0].jobs.len(), 1);
+    state
+}
+
+/// `/stop_jobs` stops every job in every tab, from whichever tab it is typed in.
+#[test]
+fn stop_jobs_reaches_a_job_in_another_tab() {
+    let mut state = job_in_a_parked_tab(r#"{"seconds":60,"prompt":"check pane 3"}"#);
+    assert!(state.stop_jobs());
+    assert!(state.parked[0].jobs.is_empty());
+    assert!(!state.any_jobs());
+    assert_eq!(
+        state.messages.last().map(|m| m.content.as_str()),
+        Some("cancelled 1 scheduled job(s)")
+    );
+}
+
+/// The model's `unschedule` finds a job by id wherever it lives.
+#[test]
+fn unschedule_by_id_reaches_a_job_in_another_tab() {
+    let mut state = job_in_a_parked_tab(r#"{"seconds":60,"prompt":"check pane 3"}"#);
+    assert_eq!(state.unschedule(Some(1)), "cancelled job 1");
+    assert!(state.parked[0].jobs.is_empty());
+    assert_eq!(state.unschedule(Some(1)), "no job 1");
+}
+
+/// A settled tab holding a job is working, as far as the bar is concerned.
+#[test]
+fn a_tab_with_a_job_counting_down_is_live() {
+    let state = job_in_a_parked_tab(r#"{"seconds":60,"prompt":"check pane 3"}"#);
+    assert!(state.parked[0].is_live());
+    assert_eq!(state.parked_count(), 1);
+}
+
+/// A job that asked to be seen and fires off-screen brings its tab to the
+/// front first, so the prompt — and any confirmation the run raises — is
+/// where the keyboard is.
+#[test]
+fn a_showing_job_that_fires_in_a_parked_tab_switches_to_it() {
+    let mut state = job_in_a_parked_tab(r#"{"seconds":60,"prompt":"check pane 3","show":true}"#);
+    assert!(state.on_timer(60.0));
+    assert_eq!(state.chat_tab, 0, "the job's tab is on screen");
+    assert!(state
+        .messages
+        .iter()
+        .any(|m| m.content == "[scheduled] check pane 3"));
+    assert!(state.is_streaming(), "and its run is the foreground's");
+    assert!(
+        state.parked[0].messages.is_empty(),
+        "the new chat was parked"
+    );
+}
+
+/// One that did not ask stays where it was.
+#[test]
+fn a_quiet_job_that_fires_in_a_parked_tab_stays_there() {
+    let mut state = job_in_a_parked_tab(r#"{"seconds":60,"prompt":"check pane 3"}"#);
+    assert!(state.on_timer(60.0));
+    assert_eq!(state.chat_tab, 1, "still on the new chat");
+    assert!(state.messages.is_empty());
+    assert!(state.parked[0].stream.is_some());
+}
+
+// -- hiding -----------------------------------------------------------------
+
+/// The bar's highlight would otherwise swallow every key on the next reveal.
+#[test]
+fn hiding_the_pane_gives_the_keyboard_back_from_the_bar() {
+    let mut state = three_tabs();
+    state.on_key(shift_tab());
+    assert!(state.chat_tab_focus.is_some());
+    state.hide_self_only();
+    assert_eq!(state.chat_tab_focus, None);
 }
