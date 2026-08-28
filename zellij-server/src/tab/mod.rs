@@ -5522,6 +5522,7 @@ impl Tab {
                         cursor_position_x,
                         cursor_position_y,
                         active_pane_z_index,
+                        client_id,
                     );
                     let active_terminal_is_mid_frame = self
                         .active_terminal_is_mid_frame(client_id)

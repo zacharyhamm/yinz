@@ -1658,8 +1658,12 @@ fn request_context_menu(
     );
     // A non-shared hook has one instance per client, so an instance existing for some other
     // client says nothing about this one - only an instance this client owns (or a shared
-    // instance, which every client can reach) counts.
-    let has_own_instance = is_shared || plugin_ids.iter().any(|(_, cid)| *cid == Some(client_id));
+    // instance, which every client can reach) counts. A shared hook still has to have been loaded
+    // once: "every client can reach it" says nothing when there is nothing to reach, and taking
+    // `is_shared` alone as proof of an instance would skip the load below and then dispatch to an
+    // empty list, leaving every right-click to the timeout.
+    let has_own_instance = !plugin_ids.is_empty()
+        && (is_shared || plugin_ids.iter().any(|(_, cid)| *cid == Some(client_id)));
     if !has_own_instance {
         // First right-click of the session (or first for this client): load the hook headless,
         // then deliver this request to that new instance. The timeout still provides the

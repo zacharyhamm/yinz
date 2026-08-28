@@ -918,6 +918,43 @@ fn test_cursor_is_visible_with_floating_panes() {
     );
 }
 
+/// A context menu is drawn above every pane and every toast, so nothing may put a cursor - the
+/// client's own or the fake one standing in for someone else - on a cell it covers. Unlike the
+/// toasts, a menu belongs to one client: another client is looking at the same cells with nothing
+/// drawn over them.
+#[test]
+fn test_cursor_is_not_visible_under_a_context_menu() {
+    use crate::ui::damage::CellRect;
+
+    let mut output = create_test_output();
+    output.set_context_menu_rects(HashMap::from([(
+        1,
+        vec![CellRect {
+            x: 5,
+            y: 5,
+            cols: 10,
+            rows: 4,
+        }],
+    )]));
+
+    assert!(
+        !output.cursor_is_visible(7, 6, None, 1),
+        "the menu's own client cannot be shown a cursor under it"
+    );
+    assert!(
+        output.cursor_is_visible(7, 9, None, 1),
+        "one row below the menu is not covered"
+    );
+    assert!(
+        output.cursor_is_visible(15, 6, None, 1),
+        "one column past the menu is not covered"
+    );
+    assert!(
+        output.cursor_is_visible(7, 6, None, 2),
+        "a client without this menu sees those cells uncovered"
+    );
+}
+
 #[test]
 fn test_cursor_visibility_with_z_index_bottom_layer() {
     // Two overlapping panes: bottom at (5,5) and top at (5,5)

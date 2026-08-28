@@ -186,6 +186,50 @@ fn a_wide_label_is_truncated_by_display_width_not_byte_count() {
     );
 }
 
+/// A combining mark is zero columns to `UnicodeWidthStr`, which is what the layout measures the
+/// menu's width with, and zero to `TerminalCharacter`, which is what actually advances the
+/// terminal's cursor. Counting it as one while drawing left the row a column short of its border.
+#[test]
+fn a_combining_mark_costs_the_row_no_width() {
+    let items = items(&["Cafe\u{0301} au lait"]);
+    let layout = context_menu_layout(&items, Position::new(2, 2), viewport(80, 24), None);
+    let row = &layout.rows[0];
+    assert_eq!(
+        row.label, "Cafe\u{0301} au lait",
+        "the mark rides along with the character it belongs to"
+    );
+    assert_eq!(
+        row.label.width(),
+        layout.width - CHROME_COLS,
+        "the label fills the text area exactly"
+    );
+    let chunks = context_menu_chunks(&layout, None, &Style::default());
+    for chunk in &chunks {
+        let width: usize = chunk.terminal_characters.iter().map(|c| c.width()).sum();
+        assert_eq!(
+            width, layout.width,
+            "a mark counted as a column tears the border"
+        );
+    }
+}
+
+/// The truncation and the width the menu was laid out to have to agree about what a zero-width
+/// character costs, or a label that fits is cut anyway - losing the accent off its last character
+/// while keeping the character.
+#[test]
+fn truncation_measures_a_combining_mark_as_zero_columns() {
+    assert_eq!(
+        truncate_to_width("Cafe\u{0301}", 4),
+        "Cafe\u{0301}",
+        "four columns of text, and the mark is not a fifth"
+    );
+    assert_eq!(
+        truncate_to_width("Cafe\u{0301}s", 4),
+        "Cafe\u{0301}",
+        "the mark stays with its base character when the next one is cut"
+    );
+}
+
 #[test]
 fn every_drawn_row_is_exactly_the_menus_width() {
     let mut items = items(&["Copy", "-", "Paste"]);

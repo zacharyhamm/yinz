@@ -468,6 +468,87 @@ fn a_release_on_a_separator_does_nothing() {
     assert!(screen.context_menu_is_open(client_id));
 }
 
+/// A menu is drawn above every pane and above the toasts, so it occludes the cursor exactly as a
+/// floating pane does. Without this the cursor is put back on its own cell - correctly - and then
+/// blinks through the box painted over it.
+#[test]
+fn a_menu_covering_the_cursor_hides_it_until_it_closes() {
+    let client_id = 1;
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = screen_with_menu_configured();
+    let server_receiver = screen_wired_to_server(&mut screen);
+
+    // park the pane's cursor where the menu is about to be, rather than aiming the menu at the
+    // cursor: where a menu goes is the anchor's business, and this is about the two coinciding
+    screen
+        .get_active_tab_mut(client_id)
+        .expect("TEST")
+        .handle_pty_bytes(1, b"\x1b[10;20H".to_vec())
+        .expect("TEST");
+    let expected = pane_cursor(&mut screen, client_id);
+    assert_eq!(expected, (19, 9), "the escape put the cursor here");
+
+    let request_id =
+        screen.open_context_menu(click_context(PaneId::Terminal(1), (18, 5)), client_id);
+    screen.set_context_menu_items(request_id, menu_items(), Some(HOOK_PLUGIN_ID), client_id);
+    let layout = screen
+        .context_menu_layout_for(client_id, viewport(&screen))
+        .expect("the menu is drawn");
+    assert!(
+        (layout.x..layout.x + layout.width).contains(&expected.0)
+            && (layout.y..layout.y + layout.height()).contains(&expected.1),
+        "the menu has to cover the cursor or this asserts nothing: {layout:?} vs {expected:?}"
+    );
+
+    let mut grid = grid_for_render_snapshot(size);
+    let (cursor, snapshot) =
+        render_frame_and_cursor_into(&mut screen, &server_receiver, client_id, &mut grid);
+    assert_eq!(
+        cursor, None,
+        "a menu painted over the cursor's cell must hide it:\n{snapshot}"
+    );
+
+    // ...and it comes back the moment the menu is gone
+    screen.close_context_menu(client_id);
+    let (cursor, snapshot) =
+        render_frame_and_cursor_into(&mut screen, &server_receiver, client_id, &mut grid);
+    assert_eq!(
+        cursor,
+        Some(expected),
+        "the cursor must come back once the menu uncovers it:\n{snapshot}"
+    );
+}
+
+/// The other client is looking at the same cells with nothing drawn over them, so one client's
+/// menu must not blank their cursor - which is what a session-wide rect list would have done.
+#[test]
+fn one_clients_menu_does_not_hide_another_clients_cursor() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = screen_with_menu_configured();
+    screen.add_client(2, false).expect("TEST");
+    let server_receiver = screen_wired_to_server(&mut screen);
+
+    screen
+        .get_active_tab_mut(1)
+        .expect("TEST")
+        .handle_pty_bytes(1, b"\x1b[10;20H".to_vec())
+        .expect("TEST");
+    let expected = pane_cursor(&mut screen, 2);
+
+    // client 1's menu, over the cell both clients' cursors sit on
+    let request_id = screen.open_context_menu(click_context(PaneId::Terminal(1), (18, 5)), 1);
+    screen.set_context_menu_items(request_id, menu_items(), Some(HOOK_PLUGIN_ID), 1);
+
+    let mut grid = grid_for_render_snapshot(size);
+    let (cursor, snapshot) =
+        render_frame_and_cursor_into(&mut screen, &server_receiver, 2, &mut grid);
+    assert_eq!(
+        cursor,
+        Some(expected),
+        "client 2 sees no menu, so nothing hides their cursor:\n{snapshot}"
+    );
+}
+
 /// Nothing under a menu is dirty when it goes, so its cells would keep its glyphs.
 #[test]
 fn closing_a_menu_forces_what_was_under_it_to_repaint() {
@@ -698,6 +779,69 @@ fn an_item_runs_against_the_clicked_pane_even_if_focus_moved_meanwhile() {
         matches!(copy.0, ScreenInstruction::Copy(..)),
         "got {:?}",
         copy.0
+    );
+}
+
+/// An item's action is something the user performed, so a plugin holding `InterceptInput` and
+/// watching `Event::UserAction` has to see it - the key and CLI paths both announce it before
+/// routing, and a menu is only a third way of asking for the same action.
+#[test]
+fn a_menu_item_announces_its_actions_as_user_input() {
+    let client_id = 1;
+    let (to_screen, _screen_receiver) = channels::unbounded::<(ScreenInstruction, ErrorContext)>();
+    let (to_plugin, plugin_receiver) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+    let (mut screen, _, _) = screen_with_open_menu((10, 5));
+    screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+
+    screen.dispatch_context_menu_actions(PaneId::Terminal(1), vec![Action::Copy], client_id);
+
+    let announced = std::iter::from_fn(|| {
+        plugin_receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .ok()
+            .map(|(instruction, _)| instruction)
+    })
+    .find_map(|instruction| match instruction {
+        PluginInstruction::UserInput {
+            client_id,
+            action,
+            terminal_id,
+            cli_client_id,
+        } => Some((client_id, action, terminal_id, cli_client_id)),
+        _ => None,
+    })
+    .expect("the action reaches the plugin thread as user input");
+    assert_eq!(announced.0, client_id);
+    assert_eq!(announced.1, Action::Copy);
+    assert_eq!(
+        announced.2,
+        Some(1),
+        "the terminal the menu was opened over"
+    );
+    assert_eq!(announced.3, None, "nothing about this came from the CLI");
+}
+
+/// The other half of `a_vanished_pane_drops_its_items_actions`: an item that does nothing must not
+/// tell the plugins it did something either.
+#[test]
+fn a_vanished_pane_announces_nothing() {
+    let client_id = 1;
+    let (to_plugin, plugin_receiver) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+    let (mut screen, _, _) = screen_with_open_menu((10, 5));
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+
+    screen.dispatch_context_menu_actions(
+        PaneId::Terminal(999),
+        vec![Action::CloseFocus],
+        client_id,
+    );
+
+    assert!(
+        plugin_receiver
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_err(),
+        "an item that acted on nothing announces nothing"
     );
 }
 
