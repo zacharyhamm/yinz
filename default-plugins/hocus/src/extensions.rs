@@ -16,6 +16,7 @@ pub const SCAN_CONTEXT: &str = "hocus_extension_scan";
 pub const VERSION: u32 = 1;
 
 const MAX_REGISTRATION_BYTES: usize = 64_000;
+pub(crate) const MAX_RESULT_BYTES: usize = 64_000;
 const MAX_TOOLS_PER_EXTENSION: usize = 32;
 const MAX_DESCRIPTION_BYTES: usize = 2_000;
 const MAX_SCHEMA_BYTES: usize = 16_000;
@@ -118,6 +119,7 @@ impl Registry {
         owner: u32,
         payload: &str,
         discovered: &BTreeMap<String, String>,
+        instances: &BTreeMap<u32, (String, String)>,
         reserved: &BTreeSet<String>,
     ) -> Result<Vec<String>, String> {
         if payload.len() > MAX_REGISTRATION_BYTES {
@@ -137,6 +139,14 @@ impl Registry {
         if discovered.get(&registration.namespace) != Some(&registration.path) {
             return Err(format!(
                 "extension {:?} is not a discovered hocus/*.lua file",
+                registration.namespace
+            ));
+        }
+        if !instances.get(&owner).is_some_and(|(namespace, path)| {
+            namespace == &registration.namespace && path == &registration.path
+        }) {
+            return Err(format!(
+                "plugin {owner} does not own extension {:?}",
                 registration.namespace
             ));
         }

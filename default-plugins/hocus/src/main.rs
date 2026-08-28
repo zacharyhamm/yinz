@@ -234,6 +234,8 @@ pub struct State {
     extensions: extensions::Registry,
     /// Valid `hocus/*.lua` files from the latest scan, keyed by their namespace.
     extension_files: BTreeMap<String, String>,
+    /// Running plugin ids whose resolved file location agrees with their Hocus launch config.
+    extension_instances: BTreeMap<u32, (String, String)>,
     /// When to load scanned files that did not answer the discovery broadcast. The grace period
     /// lets extensions survive a Hocus reload without being duplicated.
     extension_scan_due_ms: Option<u64>,
@@ -557,6 +559,7 @@ impl Default for State {
             plugin_load: None,
             extensions: extensions::Registry::default(),
             extension_files: BTreeMap::new(),
+            extension_instances: BTreeMap::new(),
             extension_scan_due_ms: None,
             messages: Vec::new(),
             input: TextInput::empty(),
@@ -669,6 +672,7 @@ impl ZellijPlugin for State {
             // even an explicit reload replays the configuration captured then,
             // so without this a config fix needs a whole Zellij restart.
             EventType::PluginConfigurationChanged,
+            EventType::SessionUpdate,
             // Worker replies. Not subscribing means they are silently dropped.
             EventType::TabUpdate,
             // How hocus learns it was revealed from outside - the `c` keybinding, or `show_self`.
@@ -907,6 +911,7 @@ impl State {
             },
             Event::TabUpdate(tabs) => self.on_tabs(tabs),
             Event::PaneUpdate(manifest) => self.on_panes(manifest),
+            Event::SessionUpdate(sessions, _) => self.on_sessions(sessions),
             Event::BeforeClose => {
                 self.cancel_in_flight();
                 // Nobody is left to press `y`, and the mark outlives the plugin:

@@ -187,18 +187,19 @@ impl State {
         let Some(tool) = self.extensions.tool(&call.name).cloned() else {
             return true;
         };
-        let arguments = match serde_json::from_str(&call.arguments) {
-            Ok(arguments) => arguments,
-            Err(error) => {
-                self.finish_head(format!("invalid arguments for {}: {error}", call.name));
-                return true;
-            },
-        };
+        let arguments: serde_json::Map<String, serde_json::Value> =
+            match serde_json::from_str(&call.arguments) {
+                Ok(arguments) => arguments,
+                Err(error) => {
+                    self.finish_head(format!("invalid arguments for {}: {error}", call.name));
+                    return true;
+                },
+            };
         let payload = serde_json::to_string(&extensions::Call {
             version: extensions::VERSION,
             call_id: &call.id,
             tool: &tool.local_name,
-            arguments,
+            arguments: arguments.into(),
             reply_to: self.own_plugin_id,
         })
         .expect("serializing an extension call cannot fail");

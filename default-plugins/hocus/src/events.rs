@@ -209,6 +209,38 @@ impl State {
         false
     }
 
+    pub(crate) fn on_sessions(&mut self, sessions: Vec<SessionInfo>) -> bool {
+        let instances = sessions
+            .into_iter()
+            .find(|session| session.is_current_session)
+            .into_iter()
+            .flat_map(|session| session.plugins)
+            .filter_map(|(id, plugin)| {
+                let namespace = plugin.configuration.get("hocus_extension_name")?;
+                let path = plugin.configuration.get("hocus_extension_path")?;
+                (plugin.location == format!("file:{path}"))
+                    .then(|| (id, (namespace.clone(), path.clone())))
+            })
+            .collect();
+        if self.extension_instances == instances {
+            return false;
+        }
+        for owner in self
+            .extension_instances
+            .iter()
+            .filter(|(owner, identity)| instances.get(owner) != Some(identity))
+            .map(|(owner, _)| *owner)
+            .collect::<Vec<_>>()
+        {
+            self.extensions.remove_owner(owner);
+        }
+        self.extension_instances = instances;
+        if !self.extension_files.is_empty() {
+            extensions::discover();
+        }
+        false
+    }
+
     pub(crate) fn on_extension_registration(&mut self, owner: u32, payload: Option<&str>) -> bool {
         let Some(payload) = payload else {
             return false;
@@ -217,10 +249,13 @@ impl State {
             .into_iter()
             .chain(LOCAL_COMMANDS.iter().map(|name| (*name).to_owned()))
             .collect();
-        let names = match self
-            .extensions
-            .register(owner, payload, &self.extension_files, &reserved)
-        {
+        let names = match self.extensions.register(
+            owner,
+            payload,
+            &self.extension_files,
+            &self.extension_instances,
+            &reserved,
+        ) {
             Ok(names) => names,
             Err(error) => {
                 self.log(
@@ -280,6 +315,9 @@ impl State {
         let Some(payload) = payload else {
             return false;
         };
+        if payload.len() > extensions::MAX_RESULT_BYTES {
+            return false;
+        }
         let result = match serde_json::from_str::<extensions::ToolResult>(payload) {
             Ok(result) if result.version == extensions::VERSION => result,
             _ => return false,
