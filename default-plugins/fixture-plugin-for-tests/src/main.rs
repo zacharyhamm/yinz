@@ -87,6 +87,10 @@ impl ZellijPlugin for State {
             .get("subscribe_mode_update")
             .map(|v| v == "true")
             .unwrap_or(false);
+        let should_subscribe_host_terminal_theme = configuration
+            .get("subscribe_host_terminal_theme")
+            .map(|v| v == "true")
+            .unwrap_or(false);
         self.configuration = configuration;
         subscribe(&[
             EventType::InputReceived,
@@ -107,6 +111,9 @@ impl ZellijPlugin for State {
         }
         if should_subscribe_mode_update {
             subscribe(&[EventType::ModeUpdate]);
+        }
+        if should_subscribe_host_terminal_theme {
+            subscribe(&[EventType::HostTerminalThemeChanged]);
         }
         watch_filesystem();
     }
