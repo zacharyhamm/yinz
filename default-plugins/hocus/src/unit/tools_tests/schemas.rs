@@ -82,6 +82,14 @@ fn hocus_prompt_contract_keeps_tool_specific_routing_cues() {
         ("git_show", &["Active project", "git_log"][..]),
         ("github_read", &["Active project", "GET only"][..]),
         ("close_pane", &["process"][..]),
+        // The routing that was got wrong: a plugin is authored here, not handed to a spawned
+        // coding agent, and each step of the loop names the next.
+        (
+            "plugin_write",
+            &["yourself", "never", "plugin_docs", "plugin_reload"][..],
+        ),
+        ("plugin_reload", &["plugin_log"][..]),
+        ("agent_spawn", &["plugin_write"][..]),
     ] {
         let description = specs
             .as_array()

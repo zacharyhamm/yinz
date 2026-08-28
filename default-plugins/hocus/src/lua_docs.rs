@@ -38,7 +38,7 @@ fn prelude_part(index: usize) -> &'static str {
 ///
 /// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
 /// editing the guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 24] = [
+pub const SECTIONS: [&str; 23] = [
     "index",
     "quickstart",
     "contract",
@@ -52,7 +52,6 @@ pub const SECTIONS: [&str; 24] = [
     "hooks",
     "files",
     "errors",
-    "files",
     "restrictions",
     "limits",
     "example_clock",
@@ -102,7 +101,11 @@ fn guide_section(heading: &str) -> Option<String> {
 /// piece of the guide worth having without asking.
 fn index() -> String {
     let mut out = String::from(
-        "Zellij Lua plugin reference. Call plugin_docs with a `section` for the rest:\n\n",
+        "Zellij Lua plugin reference. You write these yourself: `plugin_write` puts the complete \
+         file in the user's plugin folder, and approving that write grants the permissions the \
+         source asks for; `plugin_reload` loads it and answers with its first render or the load \
+         error; `plugin_log` has what it logged. Never ask another agent to write a plugin. Call \
+         plugin_docs with a `section` for the rest:\n\n",
     );
     for section in SECTIONS {
         let description = match section {
@@ -231,6 +234,31 @@ mod tests {
         // The `###` subsections belong to the `##` they sit under and travel with it.
         let commands = section("commands").unwrap();
         assert!(commands.contains("### Commands that answer"), "{commands}");
+    }
+
+    /// The index is the one thing a plugin request always sees, and the loop it names is the
+    /// whole of how a plugin comes to exist here. A model that reaches the index without meeting
+    /// `plugin_write` goes looking for some other way to put the file on disk.
+    #[test]
+    fn the_index_states_the_authoring_loop() {
+        let index = docs(None);
+        for tool in ["plugin_write", "plugin_reload", "plugin_log"] {
+            assert!(index.contains(tool), "the index does not name '{tool}'");
+        }
+        assert!(
+            index.contains("Never ask another agent to write a plugin"),
+            "the index does not rule out delegating the write"
+        );
+    }
+
+    /// A name listed twice is a line printed twice in the index and a duplicate in the schema's
+    /// `enum`, which is how `files` sat there unnoticed.
+    #[test]
+    fn no_section_is_listed_twice() {
+        let mut seen = std::collections::BTreeSet::new();
+        for name in SECTIONS {
+            assert!(seen.insert(name), "'{name}' is listed twice");
+        }
     }
 
     #[test]

@@ -44,4 +44,6 @@ to its model verbatim by `hocus/src/lua_docs.rs`, cut into sections that each st
 A new `##` heading in the guide needs a section name there, or a test fails. When hocus's
 confirmation of a `plugin_write` is approved, the permissions the source asks for are granted
 through the builtin-only `PluginCommand::GrantPluginPermissions`, so an authored plugin never
-prompts in a pane the loop cannot see.
+prompts in a pane the loop cannot see. Authoring is hocus's own job and is never delegated to a
+spawned coding agent: an authored plugin goes in the user's plugin folder (`get_user_plugin_dir`),
+not into this repo, and `example-plugins/` is reference to read rather than somewhere to write.

@@ -1,5 +1,9 @@
 -- A dashboard drawn with zellij's own UI components, so it looks like part of zellij.
 --
+--   plugin_write name=dashboard, then plugin_reload name=dashboard
+--
+-- or, from a checkout, directly:
+--
 --   zellij plugin --floating -- file:$PWD/example-plugins/dashboard.lua
 --
 -- It shows the session's tabs as ribbons, the focused tab's panes as a table, the output of a
