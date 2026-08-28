@@ -92,8 +92,6 @@ xflags::xflags! {
             optional --quick-run
             /// Take plugins from here, skip building plugins. Passed to zellij verbatim
             optional --data-dir path: PathBuf
-            /// Disable optimizing dependencies
-            optional --disable-deps-optimize
             /// Compile without web server support
             optional --no-web
             /// Arguments to pass after `cargo run --`
@@ -126,9 +124,6 @@ xflags::xflags! {
 
         /// Run the in-process whole-app integration tests
         cmd integration-test {
-            /// Build with the default dev profile instead of dev-opt
-            /// (skips the one-time optimized dependency build, tests run ~7x slower)
-            optional --no-opt
             /// Run the tests one at a time instead of in parallel
             optional --serial
             /// Arguments to pass to the test runner
@@ -278,7 +273,6 @@ pub struct Run {
 
     pub quick_run: bool,
     pub data_dir: Option<PathBuf>,
-    pub disable_deps_optimize: bool,
     pub no_web: bool,
 }
 
@@ -306,7 +300,6 @@ pub struct Test {
 pub struct IntegrationTest {
     pub args: Vec<OsString>,
 
-    pub no_opt: bool,
     pub serial: bool,
 }
 

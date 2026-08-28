@@ -5,3 +5,23 @@ fail-fast = false
 [[profile.default.overrides]]
 filter = 'binary(nested_fullscreen) + binary(nested_sessions) + binary(nested_hardening) + binary(nested_guest_modal) + binary(nested_status_hints) + binary(startup_host_query)'
 threads-required = 4
+
+# `cargo x test` - the unit and plugin suites, not the whole-app integration tests.
+#
+# Kept separate from `default` on purpose: the integration overrides above are keyed on binary
+# names that mean nothing here, and the unit suites want a different timeout. `terminate-after`
+# leaves room for the three 5s sleepers in `plugin_tests` on a loaded machine, while still
+# killing a genuinely hung test well inside the 60s `default_timeout()` those tests wait on.
+[profile.unit]
+fail-fast = false
+slow-timeout = { period = "15s", terminate-after = 4 }
+
+# `PARTIAL_BUFFER_CAP_BYTES` is 100 MB (`zellij-client/src/stdin_ansi_parser/seq_scan.rs`), so the
+# test that proves the cap flushes to residue has to push 110 MB through the parser - at
+# opt-level 0, since workspace crates are not optimized. It takes ~40s on an idle machine, which
+# is close enough to the profile's 60s kill that a loaded one would fail it. Give it room rather
+# than let it become a flake; the real fix is to make the cap injectable so the test can use a
+# small one.
+[[profile.unit.overrides]]
+filter = 'test(=stdin_ansi_parser::tests::partial_osc_overflow_falls_back_to_residue)'
+slow-timeout = { period = "60s", terminate-after = 5 }

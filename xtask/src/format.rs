@@ -1,7 +1,7 @@
 //! Handle running `cargo fmt` on the sources.
-use crate::{flags, WorkspaceMember};
-use anyhow::Context;
-use std::path::{Path, PathBuf};
+use crate::flags;
+use anyhow::{anyhow, Context};
+use std::path::PathBuf;
 use xshell::{cmd, Shell};
 
 pub fn format(sh: &Shell, flags: flags::Format) -> anyhow::Result<()> {
@@ -11,21 +11,21 @@ pub fn format(sh: &Shell, flags: flags::Format) -> anyhow::Result<()> {
         .and_then(|_| crate::cargo())
         .context("failed to run task 'format'")?;
 
-    for WorkspaceMember { crate_name, .. } in crate::workspace_members().iter() {
-        let _pd = sh.push_dir(Path::new(crate_name));
-        // Tell the user where we are now
-        println!();
-        let msg = format!(">> Formatting '{crate_name}'");
-        crate::status(&msg);
-        println!("{}", msg);
+    println!();
+    let msg = ">> Formatting the workspace";
+    crate::status(msg);
+    println!("{}", msg);
 
-        let mut cmd = cmd!(sh, "{cargo} fmt");
-        if flags.check {
-            cmd = cmd.arg("--check");
-        }
-        cmd.run()
-            .with_context(|| format!("Failed to format '{crate_name}'"))?;
+    // `--all` covers every workspace member in one process. There is a single `.rustfmt.toml`, at
+    // the repo root, so visiting each crate in turn bought nothing but 30 process spawns - and it
+    // stopped at the first offender, hiding the rest.
+    let mut cmd = cmd!(sh, "{cargo} fmt --all");
+    if flags.check {
+        cmd = cmd.arg("--check");
     }
+    cmd.run()
+        .map_err(|_| anyhow!("formatting check failed"))
+        .context("failed to run task 'format'")?;
     Ok(())
 }
 
