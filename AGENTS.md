@@ -125,12 +125,16 @@ Neither suite is reliable enough for a single red run to be evidence. Before bel
 - **Known pre-existing failures**, confirmed against a stashed tree: `misc::quit_with_keybinding`
   (it waits for "Bye from Zellij!" but this fork puts a quit-confirmation modal in the way), the
   `nested_guest_modal` / `nested_hardening` / `nested_sessions` / `nested_session_handling_config`
-  group, and `stacked_pane_list::a_stack_list_survives_session_resurrection`.
+  group, and `stacked_pane_list::a_stack_list_survives_session_resurrection`. Two more, confirmed
+  on `main` at `c47f3a1d1`, the 10-second timeouts
+  `floating_pane_overlay::an_overlay_floating_pane_moves_to_another_tab_when_its_own_tab_closes`
+  and `hocus_tab_projects::a_tab_is_named_after_the_project_its_agent_is_in`.
 - **The two known-flaky `zellij-server` lib tests are fixed** and each now passes 20/20 in a
   loop: `screen_tests::cli_actions::send_cli_scroll_up_action` and
   `plugins::plugin_tests::keybinds::mode_update_payload_is_lightweight_for_opted_in_plugins`.
   Both were fixed in the test. A third, in the since-removed global panes suite, needed a
-  **production** fix for real nondeterminism — see `docs/TECH_DEBT.md`.
+  **production** fix for real nondeterminism: two equally sized panes were ranked by `HashMap`
+  order, so the same layout could grow a new pane in two different places on two runs.
 - **A further flake, `pty_host_remote_reader_tests::a_resize_made_during_an_outage_is_sent_again_on_reconnect`,
   was found by the new gate** and fixed the same way. Its helper thread allowed 10s for the
   reconnect while the main flow gave up after ~5 and then read the slot, so a reconnect landing in

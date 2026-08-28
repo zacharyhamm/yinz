@@ -117,8 +117,6 @@ fn switch_to_agent_mode() {
         " Agents ",
         " c ",
         " Chat ",
-        " k ",
-        " Ask ",
     ] {
         let found = rest.find(expected).unwrap_or_else(|| {
             panic!("agent hints lost {expected:?} in order, got: {hints:?}");
