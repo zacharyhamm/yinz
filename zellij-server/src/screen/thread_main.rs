@@ -1934,7 +1934,11 @@ pub(crate) fn screen_thread_main(
                 }
             },
             ScreenInstruction::TerminalPixelDimensions(client_id, pixel_dimensions) => {
-                screen.update_pixel_dimensions(client_id, pixel_dimensions);
+                let character_cell_size_changed =
+                    screen.update_pixel_dimensions(client_id, pixel_dimensions);
+                if character_cell_size_changed {
+                    screen.resize_pty_all_panes()?;
+                }
             },
             ScreenInstruction::TerminalBackgroundColor(background_color_instruction) => {
                 screen.update_terminal_background_color(background_color_instruction);

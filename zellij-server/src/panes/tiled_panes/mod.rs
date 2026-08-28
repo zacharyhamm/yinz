@@ -627,12 +627,28 @@ impl TiledPanes {
     pub fn pane_ids(&self) -> impl Iterator<Item = &PaneId> {
         self.panes.keys()
     }
+    /// The panes whose content is on screen: hidden ones are out, and so are collapsed
+    /// stack members, which show only their one-row title. Image placements belonging
+    /// to a pane that is not in here are deleted from the host.
     pub fn rendered_pane_ids(&self) -> Vec<PaneId> {
         self.panes
-            .keys()
-            .filter(|pane_id| !self.panes_to_hide.contains(pane_id))
-            .copied()
+            .iter()
+            .filter(|(pane_id, pane)| {
+                if self.panes_to_hide.contains(pane_id) {
+                    return false;
+                }
+                let geom = pane.current_geom();
+                !(geom.is_stacked() && geom.rows.is_fixed())
+            })
+            .map(|(pane_id, _pane)| *pane_id)
             .collect()
+    }
+    pub fn resize_pty_all_panes(&mut self) -> Result<()> {
+        for pane in self.panes.values_mut() {
+            resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
+                .with_context(|| format!("failed to resize PTY in pane {:?}", pane.pid()))?;
+        }
+        Ok(())
     }
     pub fn relayout(&mut self, direction: SplitDirection) {
         let mut pane_grid = TiledPaneGrid::new(
