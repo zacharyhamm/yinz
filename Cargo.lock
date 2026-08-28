@@ -3852,6 +3852,7 @@ version = "0.1.0"
 dependencies = [
  "ansi_term",
  "hegeltest",
+ "insta",
  "lazy_static",
  "rand 0.10.2",
  "regex",

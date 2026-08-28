@@ -6922,7 +6922,9 @@ pub(crate) fn check_command_permission(
         // there's no use to deny them anything
         return (PermissionStatus::Granted, None);
     }
-    let Some(permission) = command_permission(command) else {
+    // `None` is an explicit verdict from an exhaustive match — the command needs no permission —
+    // never "not yet classified": a new variant fails to compile in `command_permission`.
+    let Some(permission) = command_permission(CommandType::from(command)) else {
         return (PermissionStatus::Granted, None);
     };
 
@@ -6935,255 +6937,274 @@ pub(crate) fn check_command_permission(
     (PermissionStatus::Denied, Some(permission))
 }
 
-fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
-    Some(match command {
-        PluginCommand::OpenFile(..)
-        | PluginCommand::OpenFileFloating(..)
-        | PluginCommand::OpenFileNearPlugin(..)
-        | PluginCommand::OpenFileFloatingNearPlugin(..)
-        | PluginCommand::OpenFileInPlaceOfPlugin(..)
-        | PluginCommand::OpenFileInPlace(..)
-        | PluginCommand::OpenEditPaneInPlaceOfPaneId(..) => PermissionType::OpenFiles,
-        PluginCommand::OpenTerminal(..)
-        | PluginCommand::OpenTerminalNearPlugin(..)
-        | PluginCommand::StartOrReloadPlugin(..)
-        | PluginCommand::OpenTerminalFloating(..)
-        | PluginCommand::OpenTerminalFloatingNearPlugin(..)
-        | PluginCommand::OpenTerminalInPlace(..)
-        | PluginCommand::OpenTerminalInPlaceOfPlugin(..)
-        | PluginCommand::OpenPluginPaneInNewTab { .. }
-        | PluginCommand::OpenPluginPaneFloating { .. }
-        | PluginCommand::NewTiledPaneInTab { .. }
-        | PluginCommand::OpenTerminalPaneInPlaceOfPaneId(..) => {
-            PermissionType::OpenTerminalsOrPlugins
-        },
-        PluginCommand::OpenCommandPane(..)
-        | PluginCommand::OpenCommandPaneNearPlugin(..)
-        | PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(..)
-        | PluginCommand::OpenCommandPaneFloating(..)
-        | PluginCommand::OpenCommandPaneOverlay(..)
-        | PluginCommand::OpenCommandPaneFloatingNearPlugin(..)
-        | PluginCommand::OpenCommandPaneInPlace(..)
-        | PluginCommand::OpenCommandPaneInPlaceOfPlugin(..)
-        | PluginCommand::OpenCommandPaneBackground(..)
-        | PluginCommand::OpenCommandPaneInPlaceOfPaneId(..)
-        | PluginCommand::RunCommand(..)
-        | PluginCommand::ExecCmd(..) => PermissionType::RunCommands,
-        PluginCommand::WebRequest(..) | PluginCommand::CancelWebRequest(..) => {
-            PermissionType::WebAccess
-        },
-        PluginCommand::Write(..)
-        | PluginCommand::WriteChars(..)
-        | PluginCommand::WriteToPaneId(..)
-        | PluginCommand::WriteCharsToPaneId(..) => PermissionType::WriteToStdin,
-        PluginCommand::CopyToClipboard(..) => PermissionType::WriteToClipboard,
-        PluginCommand::SwitchTabTo(..)
-        | PluginCommand::SwitchToMode(..)
-        | PluginCommand::NewTabsWithLayout(..)
-        | PluginCommand::NewTabsWithLayoutInfo(..)
-        | PluginCommand::NewTab { .. }
-        | PluginCommand::NewTabUnfocused { .. }
-        | PluginCommand::GoToNextTab
-        | PluginCommand::GoToPreviousTab
-        | PluginCommand::Resize(..)
-        | PluginCommand::ResizeWithDirection(..)
-        | PluginCommand::FocusNextPane
-        | PluginCommand::MoveFocus(..)
-        | PluginCommand::MoveFocusOrTab(..)
-        | PluginCommand::Detach
-        | PluginCommand::EditScrollback
-        | PluginCommand::EditScrollbackForPaneWithId(..)
-        | PluginCommand::ToggleTab
-        | PluginCommand::MovePane
-        | PluginCommand::MovePaneWithDirection(..)
-        | PluginCommand::MovePaneWithPaneId(..)
-        | PluginCommand::MovePaneWithPaneIdInDirection(..)
-        | PluginCommand::ClearScreen
-        | PluginCommand::ClearScreenForPaneId(..)
-        | PluginCommand::ScrollUp
-        | PluginCommand::ScrollUpInPaneId(..)
-        | PluginCommand::ScrollDown
-        | PluginCommand::ScrollDownInPaneId(..)
-        | PluginCommand::ScrollToTop
-        | PluginCommand::ScrollToTopInPaneId(..)
-        | PluginCommand::ScrollToBottom
-        | PluginCommand::ScrollToBottomInPaneId(..)
-        | PluginCommand::PageScrollUp
-        | PluginCommand::PageScrollUpInPaneId(..)
-        | PluginCommand::PageScrollDown
-        | PluginCommand::PageScrollDownInPaneId(..)
-        | PluginCommand::ToggleFocusFullscreen
-        | PluginCommand::ToggleFocusNoUiFullscreen
-        | PluginCommand::FocusHostSession
-        | PluginCommand::TogglePaneIdFullscreen(..)
-        | PluginCommand::TogglePaneFrames
-        | PluginCommand::SetPaneFrameStyle(..)
-        | PluginCommand::ToggleFloatingPanes { .. }
-        | PluginCommand::NewPane
-        | PluginCommand::TogglePaneEmbedOrEject
-        | PluginCommand::TogglePaneEmbedOrEjectForPaneId(..)
-        | PluginCommand::UndoRenamePane
-        | PluginCommand::CloseFocus
-        | PluginCommand::ToggleActiveTabSync
-        | PluginCommand::CloseFocusedTab
-        | PluginCommand::UndoRenameTab
-        | PluginCommand::QuitZellij
-        | PluginCommand::PreviousSwapLayout
-        | PluginCommand::NextSwapLayout
-        | PluginCommand::GoToTabName(..)
-        | PluginCommand::FocusOrCreateTab(..)
-        | PluginCommand::GoToTab(..)
-        | PluginCommand::CloseTerminalPane(..)
-        | PluginCommand::ClosePluginPane(..)
-        | PluginCommand::FocusTerminalPane(..)
-        | PluginCommand::FocusPluginPane(..)
-        | PluginCommand::RenameTerminalPane(..)
-        | PluginCommand::RenamePluginPane(..)
-        | PluginCommand::SetPaneTitlePrefix { .. }
-        | PluginCommand::SwitchSession(..)
-        | PluginCommand::DeleteDeadSession(..)
-        | PluginCommand::DeleteAllDeadSessions
-        | PluginCommand::RenameSession(..)
-        | PluginCommand::Notify(..)
-        | PluginCommand::RenameTab(..)
-        | PluginCommand::DisconnectOtherClients
-        | PluginCommand::ShowPaneWithId(..)
-        | PluginCommand::HidePaneWithId(..)
-        | PluginCommand::RerunCommandPane(..)
-        | PluginCommand::ResizePaneIdWithDirection(..)
-        | PluginCommand::CloseTabWithIndex(..)
-        | PluginCommand::BreakPanesToNewTab(..)
-        | PluginCommand::BreakPanesToTabWithIndex(..)
-        | PluginCommand::SwitchTabToId(..)
-        | PluginCommand::GoToTabWithId(..)
-        | PluginCommand::CloseTabWithId(..)
-        | PluginCommand::RenameTabWithId(..)
-        | PluginCommand::SetTabProjects(..)
-        | PluginCommand::BreakPanesToTabWithId(..)
-        | PluginCommand::ReloadPlugin(..)
-        | PluginCommand::LoadNewPlugin { .. }
-        | PluginCommand::SetFloatingPanePinned(..)
-        | PluginCommand::StackPanes(..)
-        | PluginCommand::ChangeFloatingPanesCoordinates(..)
-        | PluginCommand::ChangeOverlayCoordinates(..)
-        | PluginCommand::TogglePaneBorderless(..)
-        | PluginCommand::SetPaneBorderless(..)
-        | PluginCommand::SetPaneColor(..)
-        | PluginCommand::GroupAndUngroupPanes(..)
-        | PluginCommand::HighlightAndUnhighlightPanes(..)
-        | PluginCommand::RevealPaneWithId(..)
-        | PluginCommand::CloseMultiplePanes(..)
-        | PluginCommand::FloatMultiplePanes(..)
-        | PluginCommand::EmbedMultiplePanes(..)
-        | PluginCommand::ReplacePaneWithExistingPane(..)
-        | PluginCommand::KillSessions(..)
-        | PluginCommand::KillSessionsAndReply(..)
-        | PluginCommand::DeleteDeadSessionAndReply(..)
-        | PluginCommand::DeleteAllDeadSessionsAndReply
-        | PluginCommand::SendSigintToPaneId(..)
-        | PluginCommand::SendSigkillToPaneId(..)
-        | PluginCommand::OverrideLayout(..)
-        | PluginCommand::SaveLayout { .. }
-        | PluginCommand::DeleteLayout { .. }
-        | PluginCommand::RenameLayout { .. }
-        | PluginCommand::EditLayout { .. }
-        | PluginCommand::ShowFloatingPanes { .. }
-        | PluginCommand::HideFloatingPanes { .. }
-        | PluginCommand::SetPaneRegexHighlights(..)
-        | PluginCommand::ClearPaneHighlights(..)
-        | PluginCommand::SetSoftKeyboard(..)
-        | PluginCommand::WarpPaneToSession { .. }
-        | PluginCommand::WarpPaneFromSession { .. }
-        | PluginCommand::WarpTabToSession { .. }
-        | PluginCommand::WarpTabFromSession { .. }
-        | PluginCommand::AdoptOrphanedPane { .. } => PermissionType::ChangeApplicationState,
-        PluginCommand::UnblockCliPipeInput(..)
-        | PluginCommand::BlockCliPipeInput(..)
-        | PluginCommand::CliPipeOutput(..) => PermissionType::ReadCliPipes,
-        PluginCommand::MessageToPlugin(..) => PermissionType::MessageAndLaunchOtherPlugins,
-        PluginCommand::ListClients
-        | PluginCommand::DumpSessionLayout { .. }
-        | PluginCommand::GetPanePid { .. }
-        | PluginCommand::GetPaneRunningCommand { .. }
-        | PluginCommand::GetPaneCwd { .. }
-        | PluginCommand::GetPaneGitProbe { .. }
-        | PluginCommand::GenerateRandomName
-        | PluginCommand::GetLayoutDir
-        | PluginCommand::GetUserPluginDir
-        | PluginCommand::GetFocusedPaneInfo
-        | PluginCommand::DumpLayout(..)
-        | PluginCommand::ParseLayout(..)
-        | PluginCommand::SaveSession
-        | PluginCommand::CurrentSessionLastSavedTime
-        | PluginCommand::GetPaneInfo(..)
-        | PluginCommand::GetTabInfo(..)
-        | PluginCommand::GetSessionList
-        | PluginCommand::ListNotifications
-        | PluginCommand::ListOrphanedPanes => PermissionType::ReadApplicationState,
+/// The permission a command needs, or `None` when it needs none.
+///
+/// The match is exhaustive on purpose: `check_command_permission` grants a `None`, so a catch-all
+/// arm would make every variant added later fail open. Each `None` says why below.
+fn command_permission(kind: CommandType) -> Option<PermissionType> {
+    Some(match kind {
+        // Bootstrap and the plugin's own pane: nothing here reaches outside the plugin.
+        CommandType::RequestPluginPermissions
+        | CommandType::Subscribe
+        | CommandType::Unsubscribe
+        | CommandType::SetSelectable
+        | CommandType::SetSelfMouseSelectionSupport
+        | CommandType::ShowCursor
+        | CommandType::HideSelf
+        | CommandType::ShowSelf
+        | CommandType::CloseSelf
+        | CommandType::SetTimeout
+        | CommandType::ReportPanic
+        | CommandType::GetPluginIds
+        | CommandType::GetZellijVersion => return None,
+        // A message to the plugin's own worker, and the worker's reply to the plugin: both stay
+        // inside the plugin (`post_message_to_plugin` always addresses `env.plugin_id`).
+        CommandType::PostMessageTo | CommandType::PostMessageToPlugin => return None,
+        // The host folder is preopened to the plugin as `/host` at load, so listing or watching
+        // it grants nothing the WASI mount does not. Moving it is `ChangeHostFolder`, below.
+        CommandType::ScanHostFolder | CommandType::WatchFilesystem => return None,
+        CommandType::OpenFile
+        | CommandType::OpenFileFloating
+        | CommandType::OpenFileNearPlugin
+        | CommandType::OpenFileFloatingNearPlugin
+        | CommandType::OpenFileInPlaceOfPlugin
+        | CommandType::OpenFileInPlace
+        | CommandType::OpenEditPaneInPlaceOfPaneId => PermissionType::OpenFiles,
+        CommandType::OpenTerminal
+        | CommandType::OpenTerminalNearPlugin
+        | CommandType::StartOrReloadPlugin
+        | CommandType::OpenTerminalFloating
+        | CommandType::OpenTerminalFloatingNearPlugin
+        | CommandType::OpenTerminalInPlace
+        | CommandType::OpenTerminalInPlaceOfPlugin
+        | CommandType::OpenPluginPaneInNewTab
+        | CommandType::OpenPluginPaneFloating
+        | CommandType::NewTiledPaneInTab
+        | CommandType::OpenTerminalPaneInPlaceOfPaneId => PermissionType::OpenTerminalsOrPlugins,
+        CommandType::OpenCommandPane
+        | CommandType::OpenCommandPaneNearPlugin
+        | CommandType::OpenCommandPaneInGitCheckoutNearPlugin
+        | CommandType::OpenCommandPaneFloating
+        | CommandType::OpenCommandPaneOverlay
+        | CommandType::OpenCommandPaneFloatingNearPlugin
+        | CommandType::OpenCommandPaneInPlace
+        | CommandType::OpenCommandPaneInPlaceOfPlugin
+        | CommandType::OpenCommandPaneBackground
+        | CommandType::OpenCommandPaneInPlaceOfPaneId
+        | CommandType::RunCommand
+        | CommandType::ExecCmd => PermissionType::RunCommands,
+        CommandType::WebRequest | CommandType::CancelWebRequest => PermissionType::WebAccess,
+        CommandType::Write
+        | CommandType::WriteChars
+        | CommandType::WriteToPaneId
+        | CommandType::WriteCharsToPaneId => PermissionType::WriteToStdin,
+        CommandType::CopyToClipboard => PermissionType::WriteToClipboard,
+        CommandType::SwitchTabTo
+        | CommandType::SwitchToMode
+        | CommandType::NewTabsWithLayout
+        | CommandType::NewTabsWithLayoutInfo
+        | CommandType::NewTab
+        | CommandType::NewTabUnfocused
+        | CommandType::GoToNextTab
+        | CommandType::GoToPreviousTab
+        | CommandType::Resize
+        | CommandType::ResizeWithDirection
+        | CommandType::FocusNextPane
+        | CommandType::FocusPreviousPane
+        | CommandType::FocusLastPane
+        | CommandType::MoveFocus
+        | CommandType::MoveFocusOrTab
+        | CommandType::Detach
+        | CommandType::EditScrollback
+        | CommandType::EditScrollbackForPaneWithId
+        | CommandType::ToggleTab
+        | CommandType::MovePane
+        | CommandType::MovePaneWithDirection
+        | CommandType::MovePaneWithPaneId
+        | CommandType::MovePaneWithPaneIdInDirection
+        | CommandType::ClearScreen
+        | CommandType::ClearScreenForPaneId
+        | CommandType::ScrollUp
+        | CommandType::ScrollUpInPaneId
+        | CommandType::ScrollDown
+        | CommandType::ScrollDownInPaneId
+        | CommandType::ScrollToTop
+        | CommandType::ScrollToTopInPaneId
+        | CommandType::ScrollToBottom
+        | CommandType::ScrollToBottomInPaneId
+        | CommandType::PageScrollUp
+        | CommandType::PageScrollUpInPaneId
+        | CommandType::PageScrollDown
+        | CommandType::PageScrollDownInPaneId
+        | CommandType::ToggleFocusFullscreen
+        | CommandType::ToggleFocusNoUiFullscreen
+        | CommandType::FocusHostSession
+        | CommandType::TogglePaneIdFullscreen
+        | CommandType::TogglePaneFrames
+        | CommandType::SetPaneFrameStyle
+        | CommandType::ToggleFloatingPanes
+        | CommandType::NewPane
+        | CommandType::TogglePaneEmbedOrEject
+        | CommandType::TogglePaneEmbedOrEjectForPaneId
+        | CommandType::UndoRenamePane
+        | CommandType::CloseFocus
+        | CommandType::ToggleActiveTabSync
+        | CommandType::CloseFocusedTab
+        | CommandType::UndoRenameTab
+        | CommandType::QuitZellij
+        | CommandType::PreviousSwapLayout
+        | CommandType::NextSwapLayout
+        | CommandType::GoToTabName
+        | CommandType::FocusOrCreateTab
+        | CommandType::GoToTab
+        | CommandType::CloseTerminalPane
+        | CommandType::ClosePluginPane
+        | CommandType::FocusTerminalPane
+        | CommandType::FocusPluginPane
+        | CommandType::RenameTerminalPane
+        | CommandType::RenamePluginPane
+        | CommandType::SetPaneTitlePrefix
+        | CommandType::SwitchSession
+        | CommandType::DeleteDeadSession
+        | CommandType::DeleteAllDeadSessions
+        | CommandType::RenameSession
+        | CommandType::Notify
+        | CommandType::RenameTab
+        | CommandType::DisconnectOtherClients
+        | CommandType::ShowPaneWithId
+        | CommandType::HidePaneWithId
+        | CommandType::RerunCommandPane
+        | CommandType::ResizePaneIdWithDirection
+        | CommandType::CloseTabWithIndex
+        | CommandType::BreakPanesToNewTab
+        | CommandType::BreakPanesToTabWithIndex
+        | CommandType::SwitchTabToId
+        | CommandType::GoToTabWithId
+        | CommandType::CloseTabWithId
+        | CommandType::RenameTabWithId
+        | CommandType::SetTabProjects
+        | CommandType::BreakPanesToTabWithId
+        | CommandType::ReloadPlugin
+        | CommandType::LoadNewPlugin
+        | CommandType::SetFloatingPanePinned
+        | CommandType::StackPanes
+        | CommandType::ChangeFloatingPanesCoordinates
+        | CommandType::ChangeOverlayCoordinates
+        | CommandType::TogglePaneBorderless
+        | CommandType::SetPaneBorderless
+        | CommandType::SetPaneColor
+        | CommandType::GroupAndUngroupPanes
+        | CommandType::HighlightAndUnhighlightPanes
+        | CommandType::RevealPaneWithId
+        | CommandType::CloseMultiplePanes
+        | CommandType::FloatMultiplePanes
+        | CommandType::EmbedMultiplePanes
+        | CommandType::ReplacePaneWithExistingPane
+        | CommandType::KillSessions
+        | CommandType::KillSessionsAndReply
+        | CommandType::DeleteDeadSessionAndReply
+        | CommandType::DeleteAllDeadSessionsAndReply
+        | CommandType::SendSigintToPaneId
+        | CommandType::SendSigkillToPaneId
+        | CommandType::OverrideLayout
+        | CommandType::SaveLayout
+        | CommandType::DeleteLayout
+        | CommandType::RenameLayout
+        | CommandType::EditLayout
+        | CommandType::ShowFloatingPanes
+        | CommandType::HideFloatingPanes
+        | CommandType::SetPaneRegexHighlights
+        | CommandType::ClearPaneHighlights
+        | CommandType::SetSoftKeyboard
+        | CommandType::WarpPaneToSession
+        | CommandType::WarpPaneFromSession
+        | CommandType::WarpTabToSession
+        | CommandType::WarpTabFromSession
+        | CommandType::AdoptOrphanedPane => PermissionType::ChangeApplicationState,
+        CommandType::UnblockCliPipeInput
+        | CommandType::BlockCliPipeInput
+        | CommandType::CliPipeOutput => PermissionType::ReadCliPipes,
+        CommandType::MessageToPlugin => PermissionType::MessageAndLaunchOtherPlugins,
+        CommandType::ListClients
+        | CommandType::DumpSessionLayout
+        | CommandType::GetPanePid
+        | CommandType::GetPaneRunningCommand
+        | CommandType::GetPaneCwd
+        | CommandType::GetPaneGitProbe
+        | CommandType::GenerateRandomName
+        | CommandType::GetLayoutDir
+        | CommandType::GetUserPluginDir
+        | CommandType::GetFocusedPaneInfo
+        | CommandType::DumpLayout
+        | CommandType::ParseLayout
+        | CommandType::SaveSession
+        | CommandType::CurrentSessionLastSavedTime
+        | CommandType::GetPaneInfo
+        | CommandType::GetTabInfo
+        | CommandType::GetSessionList
+        | CommandType::ListNotifications
+        | CommandType::ListOrphanedPanes => PermissionType::ReadApplicationState,
         // One permission covers reading and writing the plugin's *own* namespace. Reaching a
         // `shared:` namespace additionally needs `SharedPluginData`, which is checked in the
         // handlers — this match sees only the command, not the namespace it names.
-        PluginCommand::DataDefineEntity { .. }
-        | PluginCommand::DataApply { .. }
-        | PluginCommand::DataFetch { .. }
-        | PluginCommand::DataCount { .. }
-        | PluginCommand::DataWatch { .. }
-        | PluginCommand::DataUnwatch { .. } => PermissionType::PluginData,
-        PluginCommand::RebindKeys { .. }
-        | PluginCommand::RegisterDefaultKeybindings(..)
-        | PluginCommand::Reconfigure(..) => PermissionType::Reconfigure,
-        PluginCommand::ChangeHostFolder(..) => PermissionType::FullHdAccess,
+        CommandType::DataDefineEntity
+        | CommandType::DataApply
+        | CommandType::DataFetch
+        | CommandType::DataCount
+        | CommandType::DataWatch
+        | CommandType::DataUnwatch => PermissionType::PluginData,
+        CommandType::RebindKeys
+        | CommandType::RegisterDefaultKeybindings
+        | CommandType::Reconfigure => PermissionType::Reconfigure,
+        CommandType::ChangeHostFolder => PermissionType::FullHdAccess,
         // Nominal: the handler refuses anything that is not a builtin, and a builtin is never
         // asked. Listed so that the command is not permissionless on paper.
-        PluginCommand::GrantPluginPermissions { .. } => PermissionType::ChangeApplicationState,
-        PluginCommand::FsRead { .. }
-        | PluginCommand::FsList { .. }
-        | PluginCommand::FsMetadata { .. } => PermissionType::ReadFiles,
-        PluginCommand::FsWrite { .. }
-        | PluginCommand::FsRemove { .. }
-        | PluginCommand::FsCreateDir { .. }
-        | PluginCommand::FsRename { .. } => PermissionType::WriteFiles,
-        PluginCommand::ShareCurrentSession
-        | PluginCommand::StopSharingCurrentSession
-        | PluginCommand::StopWebServer
-        | PluginCommand::QueryWebServerStatus
-        | PluginCommand::GenerateWebLoginToken(..)
-        | PluginCommand::RevokeWebLoginToken(..)
-        | PluginCommand::RevokeAllWebLoginTokens
-        | PluginCommand::RenameWebLoginToken(..)
-        | PluginCommand::ListWebLoginTokens
-        | PluginCommand::StartWebServer => PermissionType::StartWebServer,
-        PluginCommand::InterceptKeyPresses | PluginCommand::ClearKeyPressesIntercepts => {
+        CommandType::GrantPluginPermissions => PermissionType::ChangeApplicationState,
+        CommandType::FsRead | CommandType::FsList | CommandType::FsMetadata => {
+            PermissionType::ReadFiles
+        },
+        CommandType::FsWrite
+        | CommandType::FsRemove
+        | CommandType::FsCreateDir
+        | CommandType::FsRename => PermissionType::WriteFiles,
+        CommandType::ShareCurrentSession
+        | CommandType::StopSharingCurrentSession
+        | CommandType::StopWebServer
+        | CommandType::QueryWebServerStatus
+        | CommandType::GenerateWebLoginToken
+        | CommandType::RevokeWebLoginToken
+        | CommandType::RevokeAllWebLoginTokens
+        | CommandType::RenameWebLoginToken
+        | CommandType::ListWebLoginTokens
+        | CommandType::StartWebServer => PermissionType::StartWebServer,
+        CommandType::InterceptKeyPresses | CommandType::ClearKeyPressesIntercepts => {
             PermissionType::InterceptInput
         },
-        PluginCommand::GetPaneScrollback { .. }
-        | PluginCommand::ListRecordings
-        | PluginCommand::SearchRecordings { .. } => PermissionType::ReadPaneContents,
+        CommandType::GetPaneScrollback
+        | CommandType::ListRecordings
+        | CommandType::SearchRecordings => PermissionType::ReadPaneContents,
         // The same gate `RunAction` sits behind, and for the same reason: a menu item is a list
         // of actions the server will run as the user, whichever way round it was assembled.
-        PluginCommand::RunAction(..) | PluginCommand::SetContextMenu { .. } => {
-            PermissionType::RunActionsAsUser
-        },
-        PluginCommand::GetSessionEnvironmentVariables => {
+        CommandType::RunAction | CommandType::SetContextMenu => PermissionType::RunActionsAsUser,
+        CommandType::GetSessionEnvironmentVariables => {
             PermissionType::ReadSessionEnvironmentVariables
         },
         // Another plugin's configuration is session state, and is read the same way the
         // session list and the pane manifest are.
-        PluginCommand::GetPluginAliasConfiguration(..) => PermissionType::ReadApplicationState,
-        PluginCommand::OpenCommandPaneInNewTab(..) => PermissionType::RunCommands,
-        PluginCommand::OpenEditorPaneInNewTab(..) => PermissionType::OpenFiles,
+        CommandType::GetPluginAliasConfiguration => PermissionType::ReadApplicationState,
+        CommandType::OpenCommandPaneInNewTab => PermissionType::RunCommands,
+        CommandType::OpenEditorPaneInNewTab => PermissionType::OpenFiles,
         // Enqueueing is launching another plugin, just later.
-        PluginCommand::EnqueueQueueJob { .. } => PermissionType::MessageAndLaunchOtherPlugins,
+        CommandType::EnqueueQueueJob => PermissionType::MessageAndLaunchOtherPlugins,
         // Raising a queue's parallelism or killing someone else's job reaches past the caller's
         // own work, which is more than "may launch plugins" should grant.
-        PluginCommand::ConfigureQueue { .. } | PluginCommand::CancelQueueJob { .. } => {
+        CommandType::ConfigureQueue | CommandType::CancelQueueJob => {
             PermissionType::ChangeApplicationState
         },
-        PluginCommand::QueueStatus { .. } => PermissionType::ReadApplicationState,
+        CommandType::QueueStatus => PermissionType::ReadApplicationState,
         // A job reporting on itself needs nothing, like `CloseSelf`: it runs headless, and a
         // permission prompt it raised would have no pane for anyone to answer it in.
-        PluginCommand::CloseSelf | PluginCommand::FinishQueueJob { .. } => return None,
-        _ => return None,
+        CommandType::FinishQueueJob => return None,
     })
 }
 
@@ -7208,6 +7229,67 @@ mod permission_tests {
                 .success());
         }
         temp
+    }
+
+    /// Every command that runs without a permission, pinned so a reviewer sees the list change —
+    /// in either direction: a command gated here must not be ungated in `command_permission`,
+    /// and every command not listed here must need something.
+    #[test]
+    fn the_commands_that_need_no_permission_are_exactly_these() {
+        use strum::IntoEnumIterator;
+        let ungated = [
+            CommandType::RequestPluginPermissions,
+            CommandType::Subscribe,
+            CommandType::Unsubscribe,
+            CommandType::SetSelectable,
+            CommandType::SetSelfMouseSelectionSupport,
+            CommandType::ShowCursor,
+            CommandType::HideSelf,
+            CommandType::ShowSelf,
+            CommandType::CloseSelf,
+            CommandType::SetTimeout,
+            CommandType::ReportPanic,
+            CommandType::GetPluginIds,
+            CommandType::GetZellijVersion,
+            CommandType::PostMessageTo,
+            CommandType::PostMessageToPlugin,
+            CommandType::ScanHostFolder,
+            CommandType::WatchFilesystem,
+            CommandType::FinishQueueJob,
+        ];
+        for kind in CommandType::iter() {
+            assert_eq!(
+                command_permission(kind).is_none(),
+                ungated.contains(&kind),
+                "{kind}"
+            );
+        }
+    }
+
+    /// `MessageToPlugin` reaches another plugin; `PostMessageToPlugin` only ever reaches the
+    /// sender itself, so a plugin's workers can answer it without a permission.
+    #[test]
+    fn a_message_to_another_plugin_needs_a_permission_but_a_message_to_self_does_not() {
+        assert_eq!(
+            command_permission(CommandType::MessageToPlugin),
+            Some(PermissionType::MessageAndLaunchOtherPlugins)
+        );
+        assert_eq!(command_permission(CommandType::PostMessageToPlugin), None);
+    }
+
+    #[test]
+    fn moving_focus_needs_the_same_permission_in_every_direction() {
+        for kind in [
+            CommandType::FocusNextPane,
+            CommandType::FocusPreviousPane,
+            CommandType::FocusLastPane,
+        ] {
+            assert_eq!(
+                command_permission(kind),
+                Some(PermissionType::ChangeApplicationState),
+                "{kind}"
+            );
+        }
     }
 
     #[test]

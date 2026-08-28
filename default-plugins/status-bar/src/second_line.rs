@@ -8,9 +8,11 @@ use zellij_tile::prelude::*;
 use zellij_tile_utils::palette_match;
 
 use crate::{
-    action_key, action_key_group, plugin_launch_key, style_key_with_modifier,
-    tip::{data::TIPS, TipFn},
-    LinePart, MORE_MSG, TO_NORMAL,
+    action_key,
+    keybind_hints::render_hints,
+    style_key_with_modifier,
+    tip::{data::TIPS, TipBody},
+    LinePart, TO_NORMAL,
 };
 
 fn full_length_shortcut(
@@ -53,330 +55,36 @@ fn locked_interface_indication(palette: Styling) -> LinePart {
     }
 }
 
-fn add_shortcut(
-    help: &ModeInfo,
-    linepart: &LinePart,
-    text: &str,
-    keys: Vec<KeyWithModifier>,
-) -> LinePart {
-    let shortcut = if linepart.len == 0 {
-        full_length_shortcut(true, keys, text, help.style.colors)
-    } else {
-        full_length_shortcut(false, keys, text, help.style.colors)
-    };
-
-    let mut new_linepart = LinePart::default();
-    new_linepart.len += linepart.len + shortcut.len;
-    new_linepart.part = format!("{}{}", linepart.part, shortcut);
-    new_linepart
-}
-
-fn full_shortcut_list_nonstandard_mode(help: &ModeInfo) -> LinePart {
-    let mut line_part = LinePart::default();
-    let keys_and_hints = get_keys_and_hints(help);
-
-    for (long, _short, keys) in keys_and_hints.into_iter() {
-        line_part = add_shortcut(help, &line_part, &long, keys.to_vec());
-    }
-    line_part
-}
-
-/// Collect all relevant keybindings and hints to display.
-///
-/// Creates a vector with tuples containing the following entries:
-///
-/// - A String to display for this keybinding when there are no size restrictions,
-/// - A shortened String (where sensible) to display if the whole second line becomes too long,
-/// - A `Vec<Key>` of the keys that map to this keyhint
-///
-/// This vector is created by iterating over the keybindings for the current [`InputMode`] and
-/// storing all Keybindings that match pre-defined patterns of `Action`s. For example, the
-/// `InputMode::Pane` input mode determines which keys to display for the "Move focus" hint by
-/// searching the keybindings for anything that matches the `Action::MoveFocus(_)` action. Since by
-/// default multiple keybindings map to some action patterns (e.g. `Action::MoveFocus(_)` is bound
-/// to "hjkl", the arrow keys and "Alt + <hjkl>"), we deduplicate the vector of all keybindings
-/// before processing it.
-///
-/// Therefore we sort it by the [`Key`]s of the current keymap and deduplicate the resulting sorted
-/// vector by the `Vec<Action>` action vectors bound to the keys. As such, when multiple keys map
-/// to the same sequence of actions, the keys that appear first in the [`Key`] structure will be
-/// displayed.
-// Please don't let rustfmt play with the formatting. It will stretch out the function to about
-// three times the length and all the keybinding vectors we generate become virtually unreadable
-// for humans.
-#[rustfmt::skip]
-fn get_keys_and_hints(mi: &ModeInfo) -> Vec<(String, String, Vec<KeyWithModifier>)> {
-    use Action as A;
-    use InputMode as IM;
-    use Direction as Dir;
-    use actions::SearchDirection as SDir;
-    use actions::SearchOption as SOpt;
-
-    let mut old_keymap = mi.get_mode_keybinds();
-    let s = |string: &str| string.to_string();
-
-    // Find a keybinding to get back to "Normal" input mode. In this case we prefer '\n' over other
-    // choices. Do it here before we dedupe the keymap below!
-    let to_normal_keys = action_key(&old_keymap, &[TO_NORMAL]);
-    let to_normal_key = if to_normal_keys.contains(&KeyWithModifier::new(BareKey::Enter)) {
-        vec![KeyWithModifier::new(BareKey::Enter)]
-    } else {
-        // Yield `vec![key]` if `to_normal_keys` has at least one key, or an empty vec otherwise.
-        to_normal_keys.into_iter().take(1).collect()
-    };
-
-    // Sort and deduplicate the keybindings first. We sort after the `Key`s, and deduplicate by
-    // their `Action` vectors. An unstable sort is fine here because if the user maps anything to
-    // the same key again, anything will happen...
-    old_keymap.sort_unstable_by(|(keya, _), (keyb, _)| keya.partial_cmp(keyb).unwrap());
-
-    let mut known_actions: Vec<Vec<Action>> = vec![];
-    let mut km = vec![];
-    for (key, acvec) in old_keymap {
-        if known_actions.contains(&acvec) {
-            // This action is known already
-            continue;
-        } else {
-            known_actions.push(acvec.to_vec());
-            km.push((key, acvec));
-        }
-    }
-
-    if mi.mode == IM::Pane { vec![
-        (s("New"), s("New"), action_key(&km, &[A::NewPane{direction: None, pane_name: None, start_suppressed: false}, TO_NORMAL])),
-        (s("Change Focus"), s("Move"),
-            action_key_group(&km, &[&[A::MoveFocus{direction: Dir::Left}], &[A::MoveFocus{direction: Dir::Down}],
-                &[A::MoveFocus{direction: Dir::Up}], &[A::MoveFocus{direction: Dir::Right}]])),
-        (s("Close"), s("Close"), action_key(&km, &[A::CloseFocus, TO_NORMAL])),
-        (s("Rename"), s("Rename"),
-            action_key(&km, &[A::SwitchToMode{input_mode: IM::RenamePane}, A::PaneNameInput{input: vec![0]}])),
-        (s("Toggle Fullscreen"), s("Fullscreen"), action_key(&km, &[A::ToggleFocusFullscreen, TO_NORMAL])),
-        (s("Toggle Floating"), s("Floating"),
-            action_key(&km, &[A::ToggleFloatingPanes, TO_NORMAL])),
-        (s("Toggle Embed"), s("Embed"), action_key(&km, &[A::TogglePaneEmbedOrFloating, TO_NORMAL])),
-        (s("Select pane"), s("Select"), to_normal_key),
-    ]} else if mi.mode == IM::Tab {
-        // With the default bindings, "Move focus" for tabs is tricky: It binds all the arrow keys
-        // to moving tabs focus (left/up go left, right/down go right). Since we sort the keys
-        // above and then dedpulicate based on the actions, we will end up with LeftArrow for
-        // "left" and DownArrow for "right". What we really expect is to see LeftArrow and
-        // RightArrow.
-        // FIXME: So for lack of a better idea we just check this case manually here.
-        let old_keymap = mi.get_mode_keybinds();
-        let focus_keys_full: Vec<KeyWithModifier> = action_key_group(&old_keymap,
-            &[&[A::GoToPreviousTab], &[A::GoToNextTab]]);
-        let focus_keys = if focus_keys_full.contains(&KeyWithModifier::new(BareKey::Left))
-            && focus_keys_full.contains(&KeyWithModifier::new(BareKey::Right)) {
-            vec![KeyWithModifier::new(BareKey::Left), KeyWithModifier::new(BareKey::Right)]
-        } else {
-            action_key_group(&km, &[&[A::GoToPreviousTab], &[A::GoToNextTab]])
-        };
-
-        vec![
-        (s("New"), s("New"), action_key(&km, &[A::NewTab{
-            tiled_layout: None,
-            floating_layouts: vec![],
-            swap_tiled_layouts: None,
-            swap_floating_layouts: None,
-            tab_name: None,
-            should_change_focus_to_new_tab: true,
-            cwd: None,
-            initial_panes: None,
-            first_pane_unblock_condition: None,
-        }, TO_NORMAL])),
-        (s("Change focus"), s("Move"), focus_keys),
-        (s("Close"), s("Close"), action_key(&km, &[A::CloseTab, TO_NORMAL])),
-        (s("Rename"), s("Rename"),
-            action_key(&km, &[A::SwitchToMode{input_mode: IM::RenameTab}, A::TabNameInput{input: vec![0]}])),
-        (s("Sync"), s("Sync"), action_key(&km, &[A::ToggleActiveSyncTab, TO_NORMAL])),
-        (s("Break pane to new tab"), s("Break out"), action_key(&km, &[A::BreakPane, TO_NORMAL])),
-        (s("Break pane left/right"), s("Break"), action_key_group(&km, &[
-            &[Action::BreakPaneLeft, TO_NORMAL],
-            &[Action::BreakPaneRight, TO_NORMAL],
-        ])),
-        (s("Toggle"), s("Toggle"), action_key(&km, &[A::ToggleTab])),
-        (s("Select pane"), s("Select"), to_normal_key),
-    ]} else if mi.mode == IM::Resize { vec![
-        (s("Increase/Decrease size"), s("Increase/Decrease"),
-            action_key_group(&km, &[
-                &[A::Resize{resize: Resize::Increase, direction: None}],
-                &[A::Resize{resize: Resize::Decrease, direction: None}]
-            ])),
-        (s("Increase to"), s("Increase"), action_key_group(&km, &[
-            &[A::Resize{resize: Resize::Increase, direction: Some(Dir::Left)}],
-            &[A::Resize{resize: Resize::Increase, direction: Some(Dir::Down)}],
-            &[A::Resize{resize: Resize::Increase, direction: Some(Dir::Up)}],
-            &[A::Resize{resize: Resize::Increase, direction: Some(Dir::Right)}]
-            ])),
-        (s("Decrease from"), s("Decrease"), action_key_group(&km, &[
-            &[A::Resize{resize: Resize::Decrease, direction: Some(Dir::Left)}],
-            &[A::Resize{resize: Resize::Decrease, direction: Some(Dir::Down)}],
-            &[A::Resize{resize: Resize::Decrease, direction: Some(Dir::Up)}],
-            &[A::Resize{resize: Resize::Decrease, direction: Some(Dir::Right)}]
-            ])),
-        (s("Select pane"), s("Select"), to_normal_key),
-    ]} else if mi.mode == IM::Move { vec![
-        (s("Switch Location"), s("Move"), action_key_group(&km, &[
-            &[Action::MovePane{direction: Some(Dir::Left)}], &[Action::MovePane{direction: Some(Dir::Down)}],
-            &[Action::MovePane{direction: Some(Dir::Up)}], &[Action::MovePane{direction: Some(Dir::Right)}]])),
-    ]} else if mi.mode == IM::Scroll { vec![
-        (s("Enter search term"), s("Search"),
-            action_key(&km, &[A::SwitchToMode{input_mode: IM::EnterSearch}, A::SearchInput{input: vec![0]}])),
-        (s("Scroll"), s("Scroll"),
-            action_key_group(&km, &[&[Action::ScrollDown], &[Action::ScrollUp]])),
-        (s("Scroll page"), s("Scroll"),
-            action_key_group(&km, &[&[Action::PageScrollDown], &[Action::PageScrollUp]])),
-        (s("Scroll half page"), s("Scroll"),
-            action_key_group(&km, &[&[Action::HalfPageScrollDown], &[Action::HalfPageScrollUp]])),
-        (s("Edit scrollback in default editor"), s("Edit"),
-            action_key(&km, &[Action::EditScrollback { ansi: false }, TO_NORMAL])),
-        (s("Select pane"), s("Select"), to_normal_key),
-    ]} else if mi.mode == IM::EnterSearch { vec![
-        (s("When done"), s("Done"), action_key(&km, &[A::SwitchToMode{input_mode: IM::Search}])),
-        (s("Cancel"), s("Cancel"),
-            action_key(&km, &[A::SearchInput{input: vec![27]}, A::SwitchToMode{input_mode: IM::Scroll}])),
-    ]} else if mi.mode == IM::Search { vec![
-        (s("Enter Search term"), s("Search"),
-            action_key(&km, &[A::SwitchToMode{input_mode: IM::EnterSearch}, A::SearchInput{input: vec![0]}])),
-        (s("Scroll"), s("Scroll"),
-            action_key_group(&km, &[&[Action::ScrollDown], &[Action::ScrollUp]])),
-        (s("Scroll page"), s("Scroll"),
-            action_key_group(&km, &[&[Action::PageScrollDown], &[Action::PageScrollUp]])),
-        (s("Scroll half page"), s("Scroll"),
-            action_key_group(&km, &[&[Action::HalfPageScrollDown], &[Action::HalfPageScrollUp]])),
-        (s("Search down"), s("Down"), action_key(&km, &[A::Search{direction: SDir::Down}])),
-        (s("Search up"), s("Up"), action_key(&km, &[A::Search{direction: SDir::Up}])),
-        (s("Case sensitive"), s("Case"),
-            action_key(&km, &[A::SearchToggleOption{option: SOpt::CaseSensitivity}])),
-        (s("Wrap"), s("Wrap"),
-            action_key(&km, &[A::SearchToggleOption{option: SOpt::Wrap}])),
-        (s("Whole words"), s("Whole"),
-            action_key(&km, &[A::SearchToggleOption{option: SOpt::WholeWord}])),
-    ]} else if mi.mode == IM::Session { vec![
-        (s("Detach"), s("Detach"), action_key(&km, &[Action::Detach])),
-        (s("Session Manager"), s("Manager"), action_key(&km, &[A::LaunchOrFocusPlugin{plugin: Default::default(), should_float: true, move_to_focused_tab: true, should_open_in_place: false, close_replaced_pane: false, skip_cache: false, tab_id: None}, TO_NORMAL])), // not entirely accurate
-        (s("Select pane"), s("Select"), to_normal_key),
-    ]} else if mi.mode == IM::Agent { vec![
-        (s("New agent"), s("New"), plugin_launch_key(&km, "hocus-new-agent")),
-        (s("Duplicate agent"), s("Duplicate"), plugin_launch_key(&km, "hocus-duplicate-agent")),
-        (s("Agents"), s("Agents"), plugin_launch_key(&km, "hocus-agents")),
-        (s("Chat"), s("Chat"), plugin_launch_key(&km, "hocus")),
-        (s("Select pane"), s("Select"), to_normal_key),
-    ]} else if mi.mode == IM::Tmux { vec![
-        (s("Move focus"), s("Move"), action_key_group(&km, &[
-            &[A::MoveFocus{direction: Dir::Left}], &[A::MoveFocus{direction: Dir::Down}],
-            &[A::MoveFocus{direction: Dir::Up}], &[A::MoveFocus{direction: Dir::Right}]])),
-        (s("Split down"), s("Down"), action_key(&km, &[A::NewPane{direction: Some(Dir::Down), pane_name: None, start_suppressed: false}, TO_NORMAL])),
-        (s("Split right"), s("Right"), action_key(&km, &[A::NewPane{direction: Some(Dir::Right), pane_name: None, start_suppressed: false}, TO_NORMAL])),
-        (s("Fullscreen"), s("Fullscreen"), action_key(&km, &[A::ToggleFocusFullscreen, TO_NORMAL])),
-        (s("New tab"), s("New"), action_key(&km, &[A::NewTab{
-            tiled_layout: None,
-            floating_layouts: vec![],
-            swap_tiled_layouts: None,
-            swap_floating_layouts: None,
-            tab_name: None,
-            should_change_focus_to_new_tab: true,
-            cwd: None,
-            initial_panes: None,
-            first_pane_unblock_condition: None,
-        }, TO_NORMAL])),
-        (s("Rename tab"), s("Rename"),
-            action_key(&km, &[A::SwitchToMode{input_mode: IM::RenameTab}, A::TabNameInput{input: vec![0]}])),
-        (s("Previous Tab"), s("Previous"), action_key(&km, &[A::GoToPreviousTab, TO_NORMAL])),
-        (s("Next Tab"), s("Next"), action_key(&km, &[A::GoToNextTab, TO_NORMAL])),
-        (s("Select pane"), s("Select"), to_normal_key),
-    ]} else if matches!(mi.mode, IM::RenamePane | IM::RenameTab) { vec![
-        (s("When done"), s("Done"), to_normal_key),
-        (s("Select pane"), s("Select"), action_key_group(&km, &[
-            &[A::MoveFocus{direction: Dir::Left}], &[A::MoveFocus{direction: Dir::Down}],
-            &[A::MoveFocus{direction: Dir::Up}], &[A::MoveFocus{direction: Dir::Right}]])),
-    ]} else { vec![] }
-}
-
-fn full_shortcut_list(help: &ModeInfo, tip: TipFn) -> LinePart {
-    match help.mode {
-        InputMode::Normal => tip(help),
-        InputMode::Locked => locked_interface_indication(help.style.colors),
-        _ => full_shortcut_list_nonstandard_mode(help),
-    }
-}
-
-fn shortened_shortcut_list_nonstandard_mode(help: &ModeInfo) -> LinePart {
-    let mut line_part = LinePart::default();
-    let keys_and_hints = get_keys_and_hints(help);
-
-    for (_, short, keys) in keys_and_hints.into_iter() {
-        line_part = add_shortcut(help, &line_part, &short, keys.to_vec());
-    }
-    line_part
-}
-
-fn shortened_shortcut_list(help: &ModeInfo, tip: TipFn) -> LinePart {
-    match help.mode {
-        InputMode::Normal => tip(help),
-        InputMode::Locked => locked_interface_indication(help.style.colors),
-        _ => shortened_shortcut_list_nonstandard_mode(help),
-    }
-}
-
-fn best_effort_shortcut_list_nonstandard_mode(help: &ModeInfo, max_len: usize) -> LinePart {
-    let mut line_part = LinePart::default();
-    let keys_and_hints = get_keys_and_hints(help);
-
-    for (_, short, keys) in keys_and_hints.into_iter() {
-        let new_line_part = add_shortcut(help, &line_part, &short, keys.to_vec());
-        if new_line_part.len + MORE_MSG.chars().count() > max_len {
-            // Only append MORE_MSG if it fits within the budget; otherwise
-            // return what we have (which may be empty) to uphold the
-            // keybinds_never_claims_more_columns_than_it_was_given property.
-            if line_part.len + MORE_MSG.chars().count() <= max_len {
-                line_part.part = format!("{}{}", line_part.part, MORE_MSG);
-                line_part.len += MORE_MSG.chars().count();
-            }
-            break;
-        }
-        line_part = new_line_part;
-    }
-    line_part
-}
-
-fn best_effort_shortcut_list(help: &ModeInfo, tip: TipFn, max_len: usize) -> LinePart {
-    match help.mode {
-        InputMode::Normal => {
-            let line_part = tip(help);
-            if line_part.len <= max_len {
-                line_part
-            } else {
-                LinePart::default()
-            }
-        },
-        InputMode::Locked => {
-            let line_part = locked_interface_indication(help.style.colors);
-            if line_part.len <= max_len {
-                line_part
-            } else {
-                LinePart::default()
-            }
-        },
-        _ => best_effort_shortcut_list_nonstandard_mode(help, max_len),
-    }
+/// The tip in the longest of its three forms that fits `max_width`, or nothing.
+fn tip_that_fits(help: &ModeInfo, tip: &TipBody, max_width: usize) -> LinePart {
+    [tip.full, tip.medium, tip.short]
+        .into_iter()
+        .map(|render| render(help))
+        .find(|line_part| line_part.len <= max_width)
+        .unwrap_or_default()
 }
 
 pub fn keybinds(help: &ModeInfo, tip_name: &str, max_width: usize) -> LinePart {
-    // It is assumed that there is at least one TIP data in the TIPS HasMap.
-    let tip_body = TIPS
-        .get(tip_name)
-        .unwrap_or_else(|| TIPS.get("quicknav").unwrap());
-
-    let full_shortcut_list = full_shortcut_list(help, tip_body.full);
-    if full_shortcut_list.len <= max_width {
-        return full_shortcut_list;
+    match help.mode {
+        InputMode::Normal => {
+            // It is assumed that there is at least one TIP data in the TIPS HasMap.
+            let tip_body = TIPS
+                .get(tip_name)
+                .unwrap_or_else(|| TIPS.get("quicknav").unwrap());
+            tip_that_fits(help, tip_body, max_width)
+        },
+        InputMode::Locked => {
+            let line_part = locked_interface_indication(help.style.colors);
+            if line_part.len <= max_width {
+                line_part
+            } else {
+                LinePart::default()
+            }
+        },
+        _ => render_hints(help, max_width, &|is_first, text, keys| {
+            full_length_shortcut(is_first, keys.to_vec(), text, help.style.colors)
+        }),
     }
-    let shortened_shortcut_list = shortened_shortcut_list(help, tip_body.medium);
-    if shortened_shortcut_list.len <= max_width {
-        return shortened_shortcut_list;
-    }
-    best_effort_shortcut_list(help, tip_body.short, max_width)
 }
 
 pub fn descended_into_nested_session_hint(help: &ModeInfo, max_len: usize) -> LinePart {

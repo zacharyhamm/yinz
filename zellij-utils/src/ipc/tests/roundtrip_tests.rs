@@ -4454,3 +4454,33 @@ fn an_oversized_frame_is_refused_without_allocating() {
         "a frame claiming {claimed} bytes should have been refused"
     );
 }
+
+/// Every variant, every case: the kinds are walked rather than sampled, so a variant the wire
+/// mishandles cannot hide behind an unlucky draw. The generator has no wildcard arm, so a new
+/// variant does not compile until it is covered here.
+#[hegel::test]
+fn every_action_survives_the_client_server_round_trip(tc: hegel::TestCase) {
+    use crate::client_server_contract::client_server_contract::Action as ProtoAction;
+    use crate::input::actions::ActionKind;
+    use crate::plugin_api::test_generators::action_of_kind;
+    use prost::Message;
+    use strum::IntoEnumIterator;
+
+    for kind in ActionKind::iter() {
+        let action = action_of_kind(&tc, kind);
+        let protobuf: ProtoAction = action
+            .clone()
+            .try_into()
+            .unwrap_or_else(|e| panic!("{action:?} failed to encode: {e:?}"));
+        let bytes = protobuf.encode_to_vec();
+        let decoded: ProtoAction = Message::decode(bytes.as_slice())
+            .unwrap_or_else(|e| panic!("{action:?} failed to decode: {e}"));
+        let round_tripped: Action = decoded
+            .try_into()
+            .unwrap_or_else(|e| panic!("{action:?} failed to convert back: {e:?}"));
+        assert_eq!(
+            round_tripped, action,
+            "the client-server wire changed the action"
+        );
+    }
+}

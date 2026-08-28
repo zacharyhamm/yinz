@@ -963,7 +963,7 @@ pub struct StyledText {
 // every plugin built against it, in and out of this repo.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, EnumDiscriminants, Display, Serialize, Deserialize)]
-#[strum_discriminants(derive(EnumString, Hash, Serialize, Deserialize))]
+#[strum_discriminants(derive(EnumString, EnumIter, Hash, Serialize, Deserialize))]
 #[strum_discriminants(name(EventType))]
 #[non_exhaustive]
 pub enum Event {
@@ -3196,7 +3196,7 @@ impl FileToOpen {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CommandToRun {
     pub path: PathBuf,
@@ -3253,7 +3253,7 @@ impl CommandToRun {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MessageToPlugin {
     pub plugin_url: Option<String>,
@@ -3268,7 +3268,7 @@ pub struct MessageToPlugin {
     pub floating_pane_coordinates: Option<FloatingPaneCoordinates>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NewPluginArgs {
     pub should_float: Option<bool>,
@@ -3424,7 +3424,7 @@ impl ConnectToSession {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PluginMessage {
     pub name: String,
@@ -4049,7 +4049,7 @@ mod bytes_or_string {
     }
 }
 
-#[derive(Debug, Clone, EnumDiscriminants, Display, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, EnumDiscriminants, Display, Serialize, Deserialize)]
 #[strum_discriminants(derive(EnumString, EnumIter, Display, Hash, Serialize, Deserialize))]
 #[strum_discriminants(name(CommandType))]
 #[allow(clippy::large_enum_variant)]
