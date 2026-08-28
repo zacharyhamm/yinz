@@ -5657,6 +5657,26 @@ impl Tab {
         let selectable_tiled_panes = self.tiled_panes.get_panes().filter(|(_, p)| p.selectable());
         selectable_tiled_panes.count() > 0
     }
+    /// Re-send every pane's pty size - tiled, floating, overlay and suppressed alike -
+    /// without changing any geometry. Used when the character cell size becomes known
+    /// after the ptys were created, so they get their pixel dimensions too.
+    pub fn resize_pty_all_panes(&mut self) -> Result<()> {
+        let err_context = || format!("failed to resize PTYs of all panes in tab {}", self.id);
+        self.tiled_panes
+            .resize_pty_all_panes()
+            .with_context(err_context)?;
+        self.floating_panes
+            .resize_pty_all_panes(&mut self.os_api)
+            .with_context(err_context)?;
+        self.overlay_panes
+            .resize_pty_all_panes()
+            .with_context(err_context)?;
+        for pane in self.suppressed_panes.values_mut().map(|s| &mut s.pane) {
+            resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
+                .with_context(err_context)?;
+        }
+        Ok(())
+    }
     pub fn resize_whole_tab(&mut self, new_screen_size: Size) -> Result<()> {
         self.resize_whole_tab_to(new_screen_size)
     }
