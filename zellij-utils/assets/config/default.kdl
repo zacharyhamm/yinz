@@ -347,6 +347,13 @@ plugins {
     //                   emits thinking and then rejects it on input - DeepSeek's
     //                   own older `deepseek-reasoner` being the one known case.
     //
+    //   stream_usage    "false" stops hocus asking the endpoint for a final
+    //                   `usage` chunk (`stream_options.include_usage`), which is
+    //                   what makes the context size in the tab title exact. On
+    //                   otherwise. Only for an endpoint or proxy that rejects
+    //                   the `stream_options` field outright; without it the
+    //                   count is estimated from the transcript's length.
+    //
     // Typing `/plan` in the chat turns on planning mode: only the tools that read
     // anything are advertised to the model, so it researches and writes a plan
     // instead of acting. When the plan lands it asks to carry it out - `y` leaves

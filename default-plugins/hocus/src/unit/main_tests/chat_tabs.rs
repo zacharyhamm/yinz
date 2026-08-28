@@ -293,6 +293,7 @@ fn closing_a_working_chat_stops_it() {
     state.parked[1].stream = Some(StreamState {
         id: "hocus-9".into(),
         finishing: false,
+        usage: None,
     });
     state.parked[1].messages.push(Message::assistant(""));
     state.parked[1].reply_at = Some(1);
@@ -485,6 +486,7 @@ fn closing_a_parked_tab_mid_reply_archives_the_grown_reply() {
     state.parked[1].stream = Some(StreamState {
         id: "hocus-9".into(),
         finishing: false,
+        usage: None,
     });
     state.parked[1].messages.push(Message::assistant(""));
     state.parked[1].reply_at = Some(1);
@@ -504,6 +506,7 @@ fn closing_a_parked_tab_before_its_first_token_archives_no_empty_reply() {
     state.parked[1].stream = Some(StreamState {
         id: "hocus-9".into(),
         finishing: false,
+        usage: None,
     });
     state.parked[1].messages.push(Message::assistant(""));
     state.parked[1].reply_at = Some(1);

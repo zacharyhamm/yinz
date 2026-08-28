@@ -243,6 +243,12 @@ impl State {
         if line == "/stop_jobs" {
             return self.stop_jobs();
         }
+        // The same as Ctrl-l, for whoever reaches for the word instead of the
+        // chord: the chat is parked in its tab and an empty one takes the
+        // foreground. Legal mid-tool for the same reason the chord is.
+        if line == "/clear" {
+            return self.new_chat();
+        }
         if line == "/keys" {
             self.messages.push(Message::notice(KEYS_HELP));
             self.log(
@@ -269,10 +275,17 @@ impl State {
             return self.start_plan(prompt);
         }
         // The answer to a waiting plan. Trailing text amends the approval rather
-        // than going out as a turn of its own.
+        // than going out as a turn of its own; `--clear` first carries the
+        // plan into a chat of its own.
         if line == "/execute" || line.starts_with("/execute ") {
-            let note = line["/execute".len()..].trim().to_owned();
-            return self.approve_plan(&note);
+            let tail = line["/execute".len()..].trim();
+            let (fresh, note) = match tail.strip_prefix("--clear") {
+                Some(rest) if rest.is_empty() || rest.starts_with(char::is_whitespace) => {
+                    (true, rest.trim())
+                },
+                _ => (false, tail),
+            };
+            return self.approve_plan(note, fresh);
         }
         // A reply arriving is no reason to wait, but another *tool* is: the
         // queue runs one call at a time, and its head owns the deferred result
@@ -1800,8 +1813,14 @@ impl State {
     /// because a notice is dropped on the way out (`api::request_body_with_project`
     /// skips `Role::Notice`), so the model would be handed two assistant turns
     /// in a row and nothing that asked for the second.
-    pub(crate) fn approve_plan(&mut self, note: &str) -> bool {
+    ///
+    /// With `fresh`, the plan is carried out in a new chat instead: the planning
+    /// chat is parked in its tab, plan and research and all, and the new one
+    /// starts from a single user turn that quotes the plan. What the executor
+    /// sees is the plan and nothing that was read to write it.
+    pub(crate) fn approve_plan(&mut self, note: &str, fresh: bool) -> bool {
         const APPROVAL: &str = "Approved. Carry out the plan you just wrote.";
+        const FRESH_APPROVAL: &str = "Approved. Carry out this plan:";
         self.pin_to_bottom();
         if !self.awaiting_plan() {
             // The two states mean different things to whoever typed it: one has
@@ -1815,16 +1834,35 @@ impl State {
             self.log("error", serde_json::json!({"error": error}));
             return true;
         }
+        // Unwrap-free: a plan is awaiting, so the prose that is the plan is in
+        // the transcript. Were it somehow not, in place is the honest fallback.
+        let plan = fresh
+            .then(|| self.plan_index())
+            .flatten()
+            .map(|at| self.messages[at].content.clone());
         self.plan = Plan::Off;
-        self.log("plan_decision", serde_json::json!({"decision": "approve"}));
-        let notice = "planning mode off — carrying out the plan";
+        self.log(
+            "plan_decision",
+            serde_json::json!({"decision": "approve", "fresh": plan.is_some()}),
+        );
+        let notice = if plan.is_some() {
+            "planning mode off — carrying out the plan in a new chat"
+        } else {
+            "planning mode off — carrying out the plan"
+        };
         self.messages.push(Message::notice(notice));
         self.log("notice", serde_json::json!({"content": notice}));
-        let content = if note.is_empty() {
-            APPROVAL.to_owned()
-        } else {
-            format!("{APPROVAL} {note}")
+        let content = match &plan {
+            Some(plan) if note.is_empty() => format!("{FRESH_APPROVAL}\n\n{plan}"),
+            Some(plan) => format!("{FRESH_APPROVAL}\n\n{plan}\n\n{note}"),
+            None if note.is_empty() => APPROVAL.to_owned(),
+            None => format!("{APPROVAL} {note}"),
         };
+        if plan.is_some() {
+            // The planning chat has messages, so this always parks it rather
+            // than resetting in place; the foreground is empty from here on.
+            self.new_chat();
+        }
         self.messages.push(Message::user(content.clone()));
         self.log(
             "user_input",

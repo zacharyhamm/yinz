@@ -7,6 +7,27 @@ fn request_body_always_streams() {
     assert_eq!(body["model"], json!("gpt-4o-mini"));
 }
 
+/// Without this the stream never says what it cost, and the context size in
+/// the title stays a guess for the life of the chat.
+#[test]
+fn request_body_asks_for_usage() {
+    let body = body_value(&test_config(), &[]);
+    assert_eq!(body["stream_options"]["include_usage"], json!(true));
+}
+
+/// The off switch for an endpoint that 400s on the field: the whole key goes,
+/// not just its value.
+#[test]
+fn stream_usage_off_drops_stream_options() {
+    let mut cfg = test_config();
+    cfg.stream_usage = false;
+    let body = body_value(&cfg, &[]);
+    assert!(
+        body.get("stream_options").is_none(),
+        "stream_options must be absent, not false: {body}"
+    );
+}
+
 #[test]
 fn request_body_prepends_the_system_prompt_when_set() {
     let mut cfg = test_config();

@@ -84,13 +84,21 @@ const MAX_QUEUED_ASKS: usize = 8;
 
 /// Slash commands that drive the plugin itself rather than a tool. Typed and
 /// completed like tools, but never offered to the model.
-const LOCAL_COMMANDS: [&str; 6] = ["history", "models", "stop_jobs", "keys", "plan", "execute"];
+const LOCAL_COMMANDS: [&str; 7] = [
+    "history",
+    "models",
+    "stop_jobs",
+    "keys",
+    "plan",
+    "execute",
+    "clear",
+];
 
 /// Full keybinding reference for `/keys`. The chat view has no persistent
 /// help line, so this is the one place all of these are written down.
 const KEYS_HELP: &str = "\
 Ctrl+`        toggle hocus
-Ctrl+l        new chat, in a new tab
+Ctrl+l        new chat, in a new tab (also /clear)
 Shift+Tab     open chats: focus the tab bar
 Up / Down     previous / next message in history
 Tab           complete a /command or @agent
@@ -126,6 +134,17 @@ Esc           return to chat";
 /// so the response can be matched to the chat that asked.
 const STREAM_CONTEXT: &str = "stream";
 
+/// What the provider last said the context cost, and how much of the
+/// transcript was on the wire when it said so. The difference between that
+/// and the transcript now is what the title's `~` estimate is made of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ContextUsage {
+    /// Prompt and completion together: what the *next* request will carry.
+    pub(crate) tokens: u64,
+    /// `api::wire_chars` at the moment the count arrived.
+    pub(crate) wire_chars: usize,
+}
+
 /// One conversation's worth of `State`, lifted out so a chat can be set aside
 /// while another is on screen and still receive its reply.
 ///
@@ -154,6 +173,8 @@ struct Chat {
     pub(crate) view: View,
     pub(crate) job_auto_confirm: bool,
     pub(crate) plan: Plan,
+    pub(crate) usage: Option<ContextUsage>,
+    pub(crate) context_cache: Option<((usize, usize), usize)>,
     /// Travels with the chat for the same reason `spotlight` does: the reload was asked for by
     /// *this* conversation, and it is the one owed the report. A watch left on `State` alone
     /// would be overwritten by another chat's reload and stranded when this one is parked.
@@ -341,6 +362,12 @@ pub struct State {
     /// The awaiting plan is rendered narrower inside its frame, so it has its
     /// own cache rather than making every keystroke parse the markdown again.
     pub plan_cache: Option<(ui::PlanKey, Vec<ui::VLine>)>,
+    /// The provider's last token count for this chat, `None` until a reply
+    /// has carried one. See `context_tokens`.
+    pub(crate) usage: Option<ContextUsage>,
+    /// Memoised `api::wire_chars` under the `fingerprint` it was taken at, so
+    /// the title's estimate does not re-walk the transcript on every keystroke.
+    pub(crate) context_cache: Option<((usize, usize), usize)>,
     /// Which archived chat this conversation is being written back to. `None`
     /// until the first save, which is what makes an untouched pane leave no file.
     chat_id: Option<u64>,
@@ -632,6 +659,8 @@ impl Default for State {
             transcript_rows: 0,
             transcript_cache: None,
             plan_cache: None,
+            usage: None,
+            context_cache: None,
             chat_id: None,
             saved: (0, 0),
             parked: Vec::new(),
