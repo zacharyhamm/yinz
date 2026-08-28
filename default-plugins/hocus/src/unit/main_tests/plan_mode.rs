@@ -291,6 +291,19 @@ fn a_waiting_plan_asks_through_a_plan_box() {
     assert_eq!(keys, vec!["/execute", "n", "Esc"]);
 }
 
+#[test]
+fn help_does_not_displace_a_waiting_plan() {
+    let mut state = planning_state();
+    reply_and_settle(&mut state, "the plan");
+    state.input.set_text("/help".to_owned());
+
+    state.submit();
+
+    assert!(state.awaiting_plan());
+    assert_eq!(state.messages.last().unwrap().role, Role::Notice);
+    assert!(state.messages.last().unwrap().content.contains("/execute"));
+}
+
 /// A turn that ended in tool calls is still researching.
 #[test]
 fn a_turn_that_ended_in_tool_calls_keeps_planning() {

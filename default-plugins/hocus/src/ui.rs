@@ -654,6 +654,30 @@ fn line_from_runs(runs: &[Run], role: Role) -> VLine {
     VLine { text, role, styles }
 }
 
+/// Wrap styled runs without losing the key colours between rows.
+fn lines_from_runs(runs: &[Run], width: usize, role: Role) -> Vec<VLine> {
+    let chars: Vec<StyledChar> = runs
+        .iter()
+        .flat_map(|run| {
+            run.text
+                .chars()
+                .map(|ch| StyledChar {
+                    ch,
+                    style: run.style,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    word_wrap_styled(&chars, width.max(1))
+        .into_iter()
+        .map(|line| VLine {
+            text: line.iter().map(|styled| styled.ch).collect(),
+            role,
+            styles: line.into_iter().map(|styled| styled.style).collect(),
+        })
+        .collect()
+}
+
 fn runs_width(runs: &[Run]) -> usize {
     runs.iter().map(|run| run.text.width()).sum()
 }
@@ -685,7 +709,7 @@ fn frame(title: &str, footer: &[Run], inner: Vec<VLine>, cols: usize) -> Vec<VLi
     if cols < MIN_FRAME_COLS {
         let mut lines = inner;
         if !footer.is_empty() {
-            lines.push(line_from_runs(footer, Role::Assistant));
+            lines.extend(lines_from_runs(footer, cols, Role::Assistant));
         }
         return lines;
     }
@@ -755,9 +779,7 @@ fn frame(title: &str, footer: &[Run], inner: Vec<VLine>, cols: usize) -> Vec<VLi
             Role::Assistant,
         ));
         if !footer.is_empty() {
-            let mut hints = vec![Run::new("  ", border_style())];
-            hints.extend(footer.iter().map(|run| Run::new(&*run.text, run.style)));
-            lines.push(line_from_runs(&hints, Role::Assistant));
+            lines.extend(lines_from_runs(footer, cols, Role::Assistant));
         }
         return lines;
     }
@@ -858,6 +880,10 @@ pub fn transcript(messages: &[crate::Message], cols: usize) -> Transcript {
 /// placeholder never carries one.
 pub type TranscriptKey = (usize, usize, usize);
 
+/// Pane width, selected plan message, and the only message length that can
+/// change without moving the transcript count.
+pub type PlanKey = (usize, usize, usize);
+
 /// `transcript`, memoised on the state. Wrapping the whole transcript is the
 /// single most expensive thing a render does, and typing does not change any of
 /// it.
@@ -867,6 +893,25 @@ fn cached_transcript(state: &mut State, cols: usize) -> &Transcript {
         state.transcript_cache = Some((key, transcript(&state.messages, cols)));
     }
     &state.transcript_cache.as_ref().expect("just populated").1
+}
+
+fn frame_content_width(cols: usize) -> usize {
+    if cols < MIN_FRAME_COLS {
+        cols.max(1)
+    } else {
+        cols.saturating_sub(FRAME_PAD).max(1)
+    }
+}
+
+fn cached_plan(state: &mut State, cols: usize, plan_at: usize) -> &[VLine] {
+    let key: PlanKey = (cols, plan_at, state.mutable_len());
+    if state.plan_cache.as_ref().map(|(key, _)| *key) != Some(key) {
+        state.plan_cache = Some((
+            key,
+            markdown_lines(&state.messages[plan_at].content, frame_content_width(cols)),
+        ));
+    }
+    &state.plan_cache.as_ref().expect("just populated").1
 }
 
 /// Whether the transcript ends with the streaming placeholder — an assistant
@@ -994,6 +1039,13 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
     state.transcript_rows = layout.transcript_rows;
 
     render_chat(state, body_y, cols, &layout);
+    print_text_with_coordinates(
+        Text::new(help_line(state)).dim_range(..),
+        0,
+        rows - 1,
+        Some(cols),
+        None,
+    );
 }
 
 /// How the conversation lays out in the rows below the title: the transcript on
@@ -1155,7 +1207,7 @@ fn transcript_window(
 /// confirmation — a tool describes itself in `Confirmation::detail`, while a
 /// plan's body is the assistant message the caller lifted out of the transcript.
 fn prompt_box(prompt: &Confirmation, plan_inner: Vec<VLine>, cols: usize) -> Vec<VLine> {
-    let inner_cols = cols.saturating_sub(FRAME_PAD).max(1);
+    let inner_cols = frame_content_width(cols);
     let inner = match prompt.kind {
         PromptKind::Plan => plan_inner,
         PromptKind::Tool => prompt
@@ -1185,6 +1237,16 @@ fn prompt_box(prompt: &Confirmation, plan_inner: Vec<VLine>, cols: usize) -> Vec
     frame(&prompt.title, &key_runs(&prompt.keys), inner, cols)
 }
 
+fn plan_at(state: &State, prompt: Option<&Confirmation>) -> Option<usize> {
+    prompt
+        .filter(|prompt| prompt.kind == PromptKind::Plan)
+        .and_then(|_| {
+            state.messages.iter().rposition(|message| {
+                message.role == Role::Assistant && message.tool_calls.is_empty()
+            })
+        })
+}
+
 fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
     if height == 0 {
         return;
@@ -1201,28 +1263,15 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
     // and an anchor holding an older line on the top row would leave it off the
     // bottom of the pane, unanswerable and unexplained.
     let anchor = state.anchor().filter(|_| prompt.is_none());
-    // A plan is boxed, and the box wraps its content two columns narrower than
-    // the cached transcript did — so it is rendered again, here, while `state`
-    // is still free of the cache's borrow.
-    //
-    // Which message is the plan: the last one, and only if it is prose rather
-    // than a round of tool calls — which is exactly the shape `events` reads to
-    // decide a planning turn produced a plan at all. Anything else leaves the
-    // transcript alone and the box empty, rather than lifting the wrong message
-    // out of it.
-    let plan_at = prompt
-        .as_ref()
-        .filter(|prompt| prompt.kind == PromptKind::Plan)
-        .and_then(|_| {
-            let at = state.messages.len().checked_sub(1)?;
-            let message = &state.messages[at];
-            (message.role == Role::Assistant && message.tool_calls.is_empty()).then_some(at)
-        });
-    let plan_inner = plan_at.map(|at| {
-        markdown_lines(
-            &state.messages[at].content,
-            cols.saturating_sub(FRAME_PAD).max(1),
-        )
+    // The plan may have notices or manual command output after it. Find the
+    // most recent assistant prose rather than requiring it to stay last.
+    let plan_at = plan_at(state, prompt.as_ref());
+    // Finish the plan-cache borrow before borrowing the transcript cache.
+    let prompt_box = prompt.as_ref().map(|prompt| match plan_at {
+        Some(at) if prompt.kind == PromptKind::Plan => {
+            prompt_box(prompt, cached_plan(state, cols, at).to_vec(), cols)
+        },
+        _ => prompt_box(prompt, Vec::new(), cols),
     });
 
     let transcript = cached_transcript(state, cols);
@@ -1286,19 +1335,32 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
     // a re-render of that one message and `plan_body` says where to cut the
     // cached lines short. Once the plan is answered it falls back into the body
     // and renders like any other reply.
-    let mut plan_body = None;
-    if let Some(prompt) = &prompt {
-        if prompt.kind == PromptKind::Plan {
-            plan_body = plan_at.and_then(|at| transcript.starts.get(at).copied());
+    let plan_body = plan_at.and_then(|at| {
+        let start = transcript.starts.get(at).copied()?;
+        let end = transcript
+            .starts
+            .get(at + 1)
+            .map(|next| next.saturating_sub(1))
+            .unwrap_or(lines.len());
+        Some((start.saturating_sub(1), end))
+    });
+    if let Some(prompt_box) = prompt_box {
+        if let Some((_, plan_end)) = plan_body {
+            // Keep messages appended after the plan, then put the still-pending
+            // plan box back at the tail where its answer remains visible.
+            let suffix_end = lines.len() - usize::from(replaced_last);
+            let mut suffix = lines[plan_end..suffix_end].to_vec();
+            suffix.append(&mut tail);
+            tail = suffix;
         }
         tail.push(VLine::blank());
-        tail.extend(prompt_box(prompt, plan_inner.unwrap_or_default(), cols));
+        tail.extend(prompt_box);
     }
 
     // The plan moved into the tail, so the blank separator that preceded it goes
     // too — the tail pushes its own.
     let body_end = match plan_body {
-        Some(start) => start.saturating_sub(1),
+        Some((start, _)) => start,
         None => lines.len() - usize::from(replaced_last),
     };
     let body = &lines[..body_end];
@@ -1426,16 +1488,13 @@ fn help_line(state: &State) -> &'static str {
     }
     // Ahead of the `Status` match: a plan waits on the user rather than on the
     // tool queue, so the two are orthogonal and this is the nearer question.
-    // The box in the transcript already names /execute and n on its bottom
-    // border, so this only adds the key that box has no room for.
     if state.awaiting_plan() {
-        return "plan ready  <Esc> hide";
+        return "</execute> run  <n> refine  plan ready  <Esc> hide";
     }
     // Esc hides from every one of these; Ctrl-c is what interrupts, and when a tool
     // and a stream are both outstanding it takes the tool first.
     match state.status {
-        // Likewise: y and n are on the box's bottom border.
-        Status::ConfirmingTool => "run this?  <Ctrl c> abort  <Esc> hide",
+        Status::ConfirmingTool => "<y> yes  <n> no  run this?  <Ctrl c> abort  <Esc> hide",
         Status::AwaitingCommand => "running…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::AwaitingSearch => "searching…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::AwaitingLinear => "reading linear…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
@@ -1505,7 +1564,7 @@ mod tests {
             kind: PromptKind::Plan,
             title: "PLAN".to_owned(),
             detail: Vec::new(),
-            keys: vec![("/execute", "run"), ("n", "refine")],
+            keys: vec![("/execute", "run"), ("n", "refine"), ("Esc", "hide")],
         }
     }
 
@@ -1567,41 +1626,62 @@ mod tests {
     /// press.
     #[test]
     fn a_frame_gives_up_rather_than_clip_a_narrow_pane() {
-        let cols = MIN_FRAME_COLS - 1;
-        let lines = prompt_box(&plan_prompt(), markdown_lines("do the thing", cols), cols);
+        for cols in MIN_COLS..MIN_FRAME_COLS {
+            let lines = prompt_box(&plan_prompt(), markdown_lines("do the thing", cols), cols);
+            let text = lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
 
-        assert!(
-            lines.iter().all(|line| !line.text.contains('┌')),
-            "no border was drawn"
-        );
-        assert!(lines[0].text.contains("do the thing"));
-        assert!(lines.last().expect("the keys").text.contains("/execute"));
+            assert!(lines.iter().all(|line| !line.text.contains('┌')));
+            assert!(lines.iter().all(|line| line.text.width() <= cols));
+            assert!(text.contains("do the thing"));
+            for key in ["/execute", "n", "Esc"] {
+                assert!(text.contains(key), "{key:?} was clipped at {cols} columns");
+            }
+        }
     }
 
     /// Keys wider than the border they would sit on move to their own line
     /// instead of being cut in half by it.
     #[test]
     fn keys_too_wide_for_the_border_move_under_the_box() {
-        let cols = MIN_FRAME_COLS;
-        let wordy = Confirmation {
-            keys: vec![
-                ("/execute", "carry the whole plan out"),
-                ("n", "keep planning"),
-            ],
-            ..plan_prompt()
-        };
-        let lines = prompt_box(
-            &wordy,
-            markdown_lines("do the thing", cols - FRAME_PAD),
-            cols,
-        );
+        for cols in MIN_FRAME_COLS..=35 {
+            let lines = prompt_box(
+                &plan_prompt(),
+                markdown_lines("do the thing", cols - FRAME_PAD),
+                cols,
+            );
+            let text = lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
 
-        let border = &lines[lines.len() - 2].text;
-        assert!(
-            border.starts_with('└') && border.ends_with('┘'),
-            "{border:?}"
-        );
-        assert!(lines.last().expect("the keys").text.contains("/execute"));
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.text.starts_with('└') && line.text.ends_with('┘')),
+                "the bottom border is missing at {cols} columns"
+            );
+            assert!(lines.iter().all(|line| line.text.width() <= cols));
+            for key in ["/execute", "n", "Esc"] {
+                assert!(text.contains(key), "{key:?} was clipped at {cols} columns");
+            }
+        }
+    }
+
+    #[test]
+    fn an_unframed_tool_uses_the_whole_pane_width() {
+        let cols = MIN_FRAME_COLS - 1;
+        let prompt = Confirmation {
+            detail: vec![("1234567890123456789012345678901".to_owned(), false)],
+            ..tool_prompt()
+        };
+        let lines = prompt_box(&prompt, Vec::new(), cols);
+
+        assert!(lines.iter().any(|line| line.text.len() == cols));
     }
 
     /// The point of the whole change: a confirmation is no longer a block of
@@ -2018,6 +2098,64 @@ mod tests {
     }
 
     #[test]
+    fn the_plan_cache_reuses_only_the_same_render_key() {
+        let mut state = State::default();
+        state.messages.push(Message::assistant("the original plan"));
+        cached_plan(&mut state, 40, 0);
+        state.plan_cache.as_mut().unwrap().1[0].text = "cached".to_owned();
+
+        assert_eq!(cached_plan(&mut state, 40, 0)[0].text, "cached");
+        assert_ne!(cached_plan(&mut state, 30, 0)[0].text, "cached");
+
+        state.plan_cache.as_mut().unwrap().1[0].text = "cached".to_owned();
+        state.messages.push(Message::notice("x"));
+        assert_ne!(cached_plan(&mut state, 30, 0)[0].text, "cached");
+
+        state
+            .messages
+            .push(Message::assistant("a replacement plan"));
+        assert_eq!(cached_plan(&mut state, 30, 2)[0].text, "a replacement plan");
+    }
+
+    #[test]
+    fn a_notice_after_a_plan_does_not_empty_the_plan_box() {
+        let state = State {
+            plan: crate::Plan::AwaitingApproval,
+            messages: vec![
+                Message::assistant("the plan body"),
+                Message::notice("the help notice"),
+            ],
+            ..Default::default()
+        };
+        let prompt = state.confirmation_prompt().expect("the prompt is up");
+        let at = plan_at(&state, Some(&prompt)).expect("the plan is still selected");
+        let transcript = transcript(&state.messages, 40);
+
+        assert_eq!(at, 0);
+        assert_eq!(
+            transcript.lines[transcript.starts[at]].text,
+            "the plan body"
+        );
+        assert!(transcript.lines[transcript.starts[at + 1]..]
+            .iter()
+            .any(|line| line.text.contains("the help notice")));
+    }
+
+    #[test]
+    fn confirmation_help_carries_the_answers_without_the_box() {
+        let mut state = State {
+            status: Status::ConfirmingTool,
+            ..Default::default()
+        };
+        let help = help_line(&state);
+        assert!(help.starts_with("<y> yes  <n> no"));
+
+        state.plan = crate::Plan::AwaitingApproval;
+        let help = help_line(&state);
+        assert!(help.starts_with("</execute> run  <n> refine"));
+    }
+
+    #[test]
     fn transcript_keeps_the_role_on_continuation_lines() {
         let lines = transcript_lines(&[Message::error("aaaa bbbb")], 9);
         assert!(lines.iter().all(|l| l.role == Role::Error));
@@ -2283,6 +2421,22 @@ mod tests {
         render(&mut state);
 
         assert_eq!(state.scroll_offset(), 0, "pinned to the bottom instead");
+
+        state.on_key(KeyWithModifier::new(BareKey::PageUp));
+        render(&mut state);
+        assert!(
+            state.scroll_offset() > 0,
+            "the client may read older output"
+        );
+        assert!(help_line(&state).contains("<y> yes  <n> no"));
+
+        state.on_mouse(Mouse::ScrollUp(1));
+        render(&mut state);
+        assert!(
+            state.scroll_offset() > 0,
+            "mouse scrolling behaves the same way"
+        );
+        assert!(help_line(&state).contains("<y> yes  <n> no"));
     }
 
     /// Every other client goes on being held by it.
