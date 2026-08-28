@@ -15,6 +15,9 @@ fn extension_state(safety: &str, consequence: Option<&str>) -> State {
     state
         .extension_files
         .insert("weather".to_owned(), path.to_owned());
+    state
+        .extension_instances
+        .insert(7, ("weather".to_owned(), path.to_owned()));
     let mut tool = serde_json::json!({
         "name": "forecast",
         "description": "Read the forecast.",
@@ -59,6 +62,69 @@ fn an_extension_call_waits_for_its_registered_owner_and_finishes_normally() {
     assert!(state.on_extension_result(7, Some(&payload)));
     assert!(matches!(state.status, Status::Idle));
     assert_eq!(tool_results(&state)[0].content, "sunny");
+}
+
+#[test]
+fn extension_registration_is_bound_to_the_running_plugin_instance() {
+    let path = "/plugins/hocus/weather.lua";
+    let mut state = State::default();
+    state
+        .extension_files
+        .insert("weather".to_owned(), path.to_owned());
+    state.on_sessions(vec![SessionInfo {
+        is_current_session: true,
+        plugins: BTreeMap::from([(
+            7,
+            PluginInfo {
+                location: format!("file:{path}"),
+                configuration: BTreeMap::from([
+                    ("hocus_extension_name".to_owned(), "weather".to_owned()),
+                    ("hocus_extension_path".to_owned(), path.to_owned()),
+                ]),
+            },
+        )]),
+        ..SessionInfo::default()
+    }]);
+
+    assert_eq!(
+        state.extension_instances.get(&7),
+        Some(&("weather".to_owned(), path.to_owned()))
+    );
+    assert!(!state.extension_instances.contains_key(&8));
+}
+
+#[test]
+fn extension_results_are_bounded_before_deserialization() {
+    let mut state = extension_state("automatic", None);
+    let call = call("call_1", "weather_forecast", "{}");
+    state.pending.push_back(call.clone());
+    assert!(!state.run_head(&call));
+
+    let payload = serde_json::json!({
+        "version": crate::extensions::VERSION,
+        "call_id": "call_1",
+        "result": "x".repeat(crate::extensions::MAX_RESULT_BYTES),
+    })
+    .to_string();
+    assert!(payload.len() > crate::extensions::MAX_RESULT_BYTES);
+    assert!(!state.on_extension_result(7, Some(&payload)));
+    assert!(matches!(state.status, Status::AwaitingExtension));
+    assert!(tool_results(&state).is_empty());
+}
+
+#[test]
+fn extension_arguments_must_be_json_objects() {
+    for arguments in ["null", "[]", r#""Chicago""#] {
+        let mut state = extension_state("automatic", None);
+        let call = call("call_1", "weather_forecast", arguments);
+        state.pending.push_back(call.clone());
+
+        assert!(state.run_head(&call));
+        assert!(matches!(state.status, Status::Idle));
+        assert!(tool_results(&state)[0]
+            .content
+            .contains("invalid arguments"));
+    }
 }
 
 #[test]

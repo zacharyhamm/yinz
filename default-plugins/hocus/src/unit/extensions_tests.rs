@@ -7,6 +7,16 @@ fn discovered() -> BTreeMap<String, String> {
     )])
 }
 
+fn instances() -> BTreeMap<u32, (String, String)> {
+    BTreeMap::from([(
+        7,
+        (
+            "weather".to_owned(),
+            "/plugins/hocus/weather.lua".to_owned(),
+        ),
+    )])
+}
+
 fn registration(safety: &str, consequence: Option<&str>) -> String {
     let mut tool = json!({
         "name": "forecast",
@@ -48,6 +58,7 @@ fn registration_namespaces_the_tool_and_builds_its_api_spec() {
             7,
             &registration("read_only", None),
             &discovered(),
+            &instances(),
             &BTreeSet::new(),
         )
         .unwrap();
@@ -64,7 +75,7 @@ fn safety_is_explicit_and_confirming_tools_explain_their_effect() {
     let mut registry = Registry::default();
     let missing = registration("confirm", None);
     assert!(registry
-        .register(7, &missing, &discovered(), &BTreeSet::new())
+        .register(7, &missing, &discovered(), &instances(), &BTreeSet::new())
         .unwrap_err()
         .contains("needs a consequence"));
 
@@ -73,6 +84,7 @@ fn safety_is_explicit_and_confirming_tools_explain_their_effect() {
             7,
             &registration("confirm", Some("posts to the shared channel")),
             &discovered(),
+            &instances(),
             &BTreeSet::new(),
         )
         .unwrap();
@@ -95,6 +107,7 @@ fn a_registration_cannot_shadow_hocus_or_another_extension() {
             7,
             &registration("automatic", None),
             &discovered(),
+            &instances(),
             &reserved
         )
         .unwrap_err()
@@ -105,6 +118,7 @@ fn a_registration_cannot_shadow_hocus_or_another_extension() {
             7,
             &registration("automatic", None),
             &discovered(),
+            &instances(),
             &BTreeSet::new(),
         )
         .unwrap();
@@ -113,10 +127,11 @@ fn a_registration_cannot_shadow_hocus_or_another_extension() {
             8,
             &registration("automatic", None),
             &discovered(),
+            &instances(),
             &BTreeSet::new(),
         )
         .unwrap_err()
-        .contains("already registered"));
+        .contains("does not own"));
 }
 
 #[test]
@@ -127,6 +142,7 @@ fn reregistering_replaces_an_owners_complete_tool_set() {
             7,
             &registration("automatic", None),
             &discovered(),
+            &instances(),
             &BTreeSet::new(),
         )
         .unwrap();
@@ -138,7 +154,7 @@ fn reregistering_replaces_an_owners_complete_tool_set() {
     })
     .to_string();
     registry
-        .register(7, &empty, &discovered(), &BTreeSet::new())
+        .register(7, &empty, &discovered(), &instances(), &BTreeSet::new())
         .unwrap();
     assert!(registry.names().is_empty());
     assert_eq!(
