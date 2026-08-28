@@ -1,14 +1,26 @@
 -- An `agent_exit` hook that offers to commit what the agent left behind.
 --
+-- A hook is an ordinary plugin, so it is written into the plugin folder like any other and then
+-- bound in the config:
+--
+--   plugin_write name=agent-commit
+--
 --   hooks {
---       agent_exit "file:$PWD/example-plugins/agent-commit.lua"
+--       agent_exit "file:agent-commit.lua"
 --   }
+--
+-- Zellij does not rewrite the config, so that `hooks` line is the user's to add.
 --
 -- The shipped hook offers two answers - restart, or close. This one adds a third, which is the
 -- point of hooks existing: the choices at agent exit are a script, not a branch in the terminal
 -- emulator.
 --
 -- Read `zellij-utils/assets/plugins/agent-exit.lua` first; this is that file with one more key.
+-- Read it rather than copy it: your own hook is a file you write.
+--
+-- Opened by hand - `plugin_reload`, say - a hook gets no payload, so `agent_pane_id` is nil and
+-- the keys below simply do nothing to the pane. That is how you see it render without exiting an
+-- agent to trigger it.
 --
 -- Lua has no `io` or `os`, so git is run through the host with `zellij.run_command`, which
 -- answers with a `run_command_result` event. The `context` you pass is handed back on that

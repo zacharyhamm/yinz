@@ -64,6 +64,12 @@ put something in it. `zellij setup --check` prints the path it resolved either w
 A bare `keys` with no `file:` is *not* looked for there: an unprefixed name is a plugin alias,
 and letting a file shadow one would make a single spelling mean two things.
 
+Hocus writes plugins into that folder itself, and that is the whole authoring loop: `plugin_write
+name=keys` puts the complete file there - approving the write grants whatever permissions the
+source asks for - then `plugin_reload name=keys` loads it and answers with its first render or
+the load error, and `plugin_log name=keys` has anything it logged. `plugin_docs` is this guide,
+`plugin_list` and `plugin_read` are the folder as it stands.
+
 The runtime is chosen by the file extension, so there is no new URL scheme: a `.lua` path is a Lua
 plugin and anything else is wasm.
 
@@ -161,9 +167,15 @@ Arguments follow the shape of the command, and there are four:
 | several values | `zellij.rename_tab(0, "logs")` |
 | named fields | `zellij.new_tab { name = "logs", cwd = "/tmp" }` |
 
-A command taking several values also accepts them by name where that reads better -
-`zellij.rename_tab { tab_index = 0, name = "logs" }`. Fields you leave out are absent, not empty:
-a command with no required arguments can be called with none.
+The positional form always works. A command taking several values *also* accepts them by name
+where that reads better - `zellij.rename_tab { tab_index = 0, name = "logs" }` - for the commands
+the prelude names in its `tuple_fields` table, which is the ones whose arguments are hard to tell
+apart by position. Any other tuple command takes the positional form only, and a table of names it
+does not know is read as the wrong shape. Fields you leave out are absent, not empty: a command
+with no required arguments can be called with none.
+
+A tuple command's arguments are counted, though, so an argument that is optional in Rust is
+*nullable* rather than absent: all of them have to be there.
 
 ### Default keybindings
 
@@ -235,6 +247,50 @@ Not every reply is decoded yet - see *Current limits*. And a few commands do not
 but send an **event** instead: `zellij.list_clients()` returns nothing, and the answer arrives as
 a `list_clients` event, so subscribe to it.
 
+### Agents and git checkouts
+
+`zellij.open_command_pane_in_git_checkout_near_plugin` puts the repository into a state and then
+opens a command pane in it - one call for "start this agent on a new branch, in a worktree of its
+own". It takes three arguments, so it also takes them by name:
+
+```lua
+local pane = zellij.open_command_pane_in_git_checkout_near_plugin {
+  command = { path = "claude", args = { "--model", "opus" } },
+  source_directory = agent_cwd,
+  checkout = { NewWorktree = { branch = "fix-42", base = "main", path = ".worktrees/fix-42" } },
+}
+```
+
+The checkout is a Rust enum, so it travels in that spelling - a bare string for the one that
+takes nothing, a single-key table for the others:
+
+| You write | What happens |
+|---|---|
+| `"Current"` | the repository as it stands |
+| `{ NewBranch = { branch = ..., base = ... } }` | that branch, in this checkout |
+| `{ NewWorktree = { branch = ..., base = ..., path = ... } }` | that branch, in a worktree of its own |
+
+**"New" means the one you named, made if it is not there yet.** A branch or worktree that already
+exists is what you were pointing at, so it is reused rather than refused - and `base` then has
+nothing to say, an existing branch having its own history. A branch checked out somewhere else
+runs in *that* worktree, because git allows one checkout of a branch at a time. Only a `path` that
+exists without being a worktree of this repository is an error. `branch` and `base` are both
+required; a relative `path` is resolved against the repository's **primary** checkout, never the
+caller's, so asking from inside a worktree does not nest one inside another.
+
+`source_directory` says which repository, and is a path in your plugin's own space: `/host` is
+the folder the plugin was started in, a relative path hangs off that, and an absolute path
+anywhere else means itself - which is why a hook can hand over the `agent_cwd` it was given. The
+command's own `cwd` is ignored; the checkout decides where it runs.
+
+It answers with the new pane's id and **raises** on failure - every git error arrives that way -
+so `pcall` it if a failure is an outcome rather than a bug. It needs
+`zellij.request_permission { "run_commands" }`.
+
+One consequence worth knowing: a pane opened this way is an *agent* pane, so when its command
+exits it fires the `agent_exit` hook. A hook that spawns with this command is arranging its own
+next appearance.
+
 ### Permissions
 
 Privileged commands need permission, which the user is prompted for once:
@@ -256,17 +312,18 @@ local ok, err = pcall(function() zellij.copy_to_clipboard("hi") end)
 -- err: 'copy_to_clipboard' needs the 'WriteToClipboard' permission, ...
 ```
 
-There are two worked examples in `example-plugins/`. `clock.lua` is the small one:
+There are four worked examples in `example-plugins/`, all of them reference sources to read
+rather than a place to keep a plugin of your own - hocus serves each as a `plugin_docs` section.
+`clock.lua` (`section=example_clock`) is the small one, `playground.lua`
+(`section=example_playground`) is a keymap where each key calls a different shape of command and
+shows what came back, `dashboard.lua` (`section=example_dashboard`) is the one to read for how a
+plugin draws, and `agent-commit.lua` (`section=example_agent_commit`) is an `agent_exit` hook.
+
+A plugin of your own goes in the plugin folder, written there with `plugin_write`. To run one of
+these from a checkout instead:
 
 ```sh
 zellij plugin --floating -- file:$PWD/example-plugins/clock.lua
-```
-
-and `playground.lua` is a keymap where each key calls a different shape of command and shows what
-came back - the one to read when you want to see the surface in use:
-
-```sh
-zellij plugin --floating -- file:$PWD/example-plugins/playground.lua
 ```
 
 ## Rendering
@@ -537,9 +594,13 @@ A **hook point** is a moment in the session's life that a plugin can own. Bind o
 
 ```kdl
 hooks {
-    agent_exit "file:~/.config/zellij/hooks/agent-exit.lua"
+    agent_exit "file:my-agent-exit.lua"
 }
 ```
+
+A `file:` path that is not there is looked for in the plugin folder, so a bare name is a hook
+written with `plugin_write name=my-agent-exit`. An absolute path works too, and means exactly
+what it says.
 
 The hook points so far:
 
@@ -573,7 +634,7 @@ panes and hit-tests itself, so the plugin's whole job is to say what is on it. I
 context_menu_on_right_click true   // in the options; the menu is opt-in
 
 hooks {
-    context_menu "file:~/.config/zellij/hooks/menu.lua"
+    context_menu "file:menu.lua"
 }
 ```
 
@@ -638,21 +699,37 @@ hooks {
 which leaves the pane simply holding, as any other command pane does.
 
 The shipped `agent_exit` hook is itself a Lua plugin - `zellij-utils/assets/plugins/agent-exit.lua`
-in the source tree. Copy it, point the config at your copy, and add
-`zellij.request_permission { "change_application_state" }` to its `load`: the shipped one is a
-builtin and so is granted privileged commands unconditionally, and yours will not be.
+in the source tree, and `example-plugins/agent-commit.lua` is that file with one more key
+(`plugin_docs section=example_agent_commit`). Read them; do not copy them. Your own hook is a
+plugin you write: `plugin_write name=my-agent-exit`, then bind it. Add
+`zellij.request_permission { "change_application_state" }` to its `load` - the shipped one is a
+builtin and so is granted privileged commands unconditionally, and yours will not be. Written
+through hocus, that request is granted when the write is approved, so the hook never stops on a
+permission prompt.
 
-Two notes on writing one:
+Zellij does not rewrite your config, so the `hooks { ... }` line above is yours to add; hocus can
+write the plugin but not bind it.
 
+Three notes on writing one:
+
+- **A reload gives it no payload.** `plugin_reload` - and any other way of opening the plugin by
+  hand - starts it outside the hook, so `load` gets no `agent_pane_id` at all. Write the hook so
+  that it still renders, with whatever it does to the pane simply skipped: that is why the shipped
+  one reads its pane id through a function that answers nil. It is also the only way to see the
+  hook render without exiting an agent to trigger it.
 - **Restarting does not need the command.** `zellij.rerun_command_pane(pane_id)` makes the pane
   replay what it already holds, which reaches it even while it is suppressed.
 - **Closing has an order.** Close the agent pane *first*, then yourself - closing yourself first
   restores it instead.
 
-Because a hook is an ordinary plugin, anything a plugin can do is now reachable at agent exit.
-`example-plugins/agent-commit.lua` is a worked example that offers to stage and commit whatever
-the agent left behind, using `zellij.run_command` (a plugin can read and write files, but running git is
-a command, and commands go through the host).
+Because a hook is an ordinary plugin, anything a plugin can do is now reachable at agent exit -
+including starting the next agent. `open_command_pane_in_git_checkout_near_plugin` (see *Agents
+and git checkouts*) opens one on a branch or in a worktree of its own, in a single call; the pane
+it opens is itself an agent pane, so this hook runs again when *that* command exits.
+
+`agent-commit.lua` above offers to stage and commit whatever the agent left behind, using
+`zellij.run_command` (a plugin can read and write files, but running git is a command, and
+commands go through the host).
 
 ## Errors
 
