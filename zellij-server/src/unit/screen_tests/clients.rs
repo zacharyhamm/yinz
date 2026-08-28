@@ -130,3 +130,35 @@ fn attaching_web_watcher_follows_the_host_tab() {
         "watcher client mirrors the host tab"
     );
 }
+
+#[test]
+fn reattaching_the_only_client_tells_the_tab_plugins_they_are_visible_again() {
+    // A tab whose last client leaves tells its plugins nobody is looking; a client
+    // arriving in that tab has to tell them the opposite, otherwise a plugin that
+    // went quiet on `Visible(false)` never wakes up again after a reattach.
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let (mut screen, capture) = create_new_screen_with_theme_capture(size);
+    new_tab(&mut screen, 1, 0);
+    add_pane_to_tab(&mut screen, 0, PaneId::Plugin(2), false);
+    let _ = capture.drain_plugin_updates();
+
+    screen.remove_client(1).expect("TEST");
+    screen.add_client(1, false).expect("TEST");
+
+    let visibility_events: Vec<bool> = capture
+        .drain_plugin_updates()
+        .into_iter()
+        .filter_map(|(pid, _cid, event)| match (pid, event) {
+            (Some(2), Event::Visible(is_visible)) => Some(is_visible),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        visibility_events,
+        vec![false, true],
+        "the plugin should be told the tab went off screen and then came back"
+    );
+}
