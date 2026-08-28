@@ -84,13 +84,22 @@ const MAX_QUEUED_ASKS: usize = 8;
 
 /// Slash commands that drive the plugin itself rather than a tool. Typed and
 /// completed like tools, but never offered to the model.
-const LOCAL_COMMANDS: [&str; 6] = ["history", "models", "stop_jobs", "keys", "plan", "execute"];
+const LOCAL_COMMANDS: [&str; 7] = [
+    "history",
+    "models",
+    "stop_jobs",
+    "keys",
+    "plan",
+    "execute",
+    "clear",
+];
 
 /// Full keybinding reference for `/keys`. The chat view has no persistent
 /// help line, so this is the one place all of these are written down.
 const KEYS_HELP: &str = "\
 Ctrl+`        toggle hocus
-Ctrl+l        new chat
+Ctrl+l        new chat, in a new tab (also /clear)
+Shift+Tab     open chats: focus the tab bar
 Up / Down     previous / next message in history
 Tab           complete a /command or @agent
 Alt+Enter, Shift+Enter   insert a newline
@@ -109,6 +118,13 @@ Up / Down     choose
 Enter         select
 Esc           back
 
+With the tab bar focused:
+Left / Right  choose (Tab / Shift+Tab too)
+Enter         switch to that chat
+x             close it
+Ctrl+l        new chat
+Esc           back to the prompt
+
 With agents focused:
 Up / Down     choose
 Enter         focus pane
@@ -117,6 +133,17 @@ Esc           return to chat";
 /// Context key carrying a chat request's stream id back on its `WebRequestResult`,
 /// so the response can be matched to the chat that asked.
 const STREAM_CONTEXT: &str = "stream";
+
+/// What the provider last said the context cost, and how much of the
+/// transcript was on the wire when it said so. The difference between that
+/// and the transcript now is what the title's `~` estimate is made of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ContextUsage {
+    /// Prompt and completion together: what the *next* request will carry.
+    pub(crate) tokens: u64,
+    /// `api::wire_chars` at the moment the count arrived.
+    pub(crate) wire_chars: usize,
+}
 
 /// One conversation's worth of `State`, lifted out so a chat can be set aside
 /// while another is on screen and still receive its reply.
@@ -146,25 +173,49 @@ struct Chat {
     pub(crate) view: View,
     pub(crate) job_auto_confirm: bool,
     pub(crate) plan: Plan,
+    pub(crate) usage: Option<ContextUsage>,
+    pub(crate) context_cache: Option<((usize, usize), usize)>,
     /// Travels with the chat for the same reason `spotlight` does: the reload was asked for by
     /// *this* conversation, and it is the one owed the report. A watch left on `State` alone
     /// would be overwritten by another chat's reload and stranded when this one is parked.
     pub(crate) plugin_load: Option<PluginLoadWatch>,
+    /// What was typed but not sent, and where the cursor was. The draft rather
+    /// than the whole `TextInput`: the box also owns the prompt history, which
+    /// is one list for every chat.
+    ///
+    /// Only the user-facing switches — `swap_foreground` — move it. The
+    /// engine swap that services a parked chat (`with_parked`) leaves the input
+    /// box alone: touching it would throw away the undo stack and the Up/Down
+    /// draft of whoever is typing, on every tick.
+    pub(crate) draft: (String, usize),
+    /// The render memos, travelling with the chat they were computed for. Their
+    /// keys are derived from the transcript, so a cache that leaves with its
+    /// chat comes back valid, and the foreground's is not thrown away every
+    /// time a parked chat is serviced.
+    pub(crate) transcript_cache: Option<(ui::TranscriptKey, ui::Transcript)>,
+    pub(crate) plan_cache: Option<(ui::PlanKey, Vec<ui::VLine>)>,
+    /// Scheduled prompts. They fire into the chat that armed them, on screen or
+    /// not, so they travel with it.
+    pub(crate) jobs: Vec<Job>,
+    /// Questions waiting behind this chat's reply. See `State::asks`.
+    pub(crate) asks: VecDeque<String>,
 }
 
 impl Chat {
-    /// Whether this chat is still owed something — the only reason to hold it
-    /// rather than let the archive have it back.
+    /// Whether this chat is still working off-screen: a reply arriving, a tool
+    /// waiting on an answer, a plan mid-mode, or a job counting down. This is
+    /// what earns a tab its `●`, the `+n` in the title and the dot in
+    /// `/history`; a settled tab shows none of them.
     pub(crate) fn is_live(&self) -> bool {
         // A plan waiting on a `y`/`n` is owed an answer as surely as a stream is
         // owed its last chunk, and a chat merely `Planning` (no reply back yet)
-        // is still mid-mode: plan state isn't persisted, so losing either from
-        // `parked` and reloading from disk would silently reset it to `Off`,
-        // handing the next prompt full mutating tools instead of staying
-        // read-only.
+        // is still mid-mode. A job is a watcher that will fire — and bill —
+        // whether or not anyone is looking, so a chat holding one is working
+        // in every sense that matters to the person deciding where to look.
         self.stream.is_some()
             || !matches!(self.status, Status::Idle)
             || !matches!(self.plan, Plan::Off)
+            || !self.jobs.is_empty()
     }
 }
 
@@ -311,16 +362,30 @@ pub struct State {
     /// The awaiting plan is rendered narrower inside its frame, so it has its
     /// own cache rather than making every keystroke parse the markdown again.
     pub plan_cache: Option<(ui::PlanKey, Vec<ui::VLine>)>,
+    /// The provider's last token count for this chat, `None` until a reply
+    /// has carried one. See `context_tokens`.
+    pub(crate) usage: Option<ContextUsage>,
+    /// Memoised `api::wire_chars` under the `fingerprint` it was taken at, so
+    /// the title's estimate does not re-walk the transcript on every keystroke.
+    pub(crate) context_cache: Option<((usize, usize), usize)>,
     /// Which archived chat this conversation is being written back to. `None`
     /// until the first save, which is what makes an untouched pane leave no file.
     chat_id: Option<u64>,
     /// `fingerprint()` as of the last save, so an event that changed nothing
     /// doesn't rewrite the file.
     saved: (usize, usize),
-    /// Conversations set aside but still live: a reply arriving, or a tool
-    /// still running. A chat that settles is archived and dropped from here —
-    /// `/history` loads it back from the file if you want it again.
+    /// Every open conversation other than the one on screen, in the order the
+    /// tab bar shows them, with the foreground one spliced in at `chat_tab`.
+    /// A parked chat keeps receiving its reply, running its tools and firing
+    /// its jobs, all through `with_parked`; it stays
+    /// here, settled or not, until it is closed from the bar.
     parked: Vec<Chat>,
+    /// The foreground chat's position in the tab bar: the bar reads
+    /// `parked[..chat_tab]`, then the foreground, then `parked[chat_tab..]`.
+    chat_tab: usize,
+    /// The bar position under the highlight while Shift+Tab has the bar
+    /// focused. Modal while `Some`, the way `picker` is.
+    chat_tab_focus: Option<usize>,
     /// The archive or model browser, when it is open.
     pub picker: Option<Picker>,
     /// The agent strip as last pushed to the hocus-agents pane, so a snapshot
@@ -328,10 +393,13 @@ pub struct State {
     /// snapshot, the project registry, the branch probes); the strip itself is
     /// a separate pane - the overlay above this one - and it only draws.
     last_strip: agents::Strip,
-    /// Scheduled prompts, counted down by the timer chain.
+    /// The foreground chat's scheduled prompts, counted down by the timer
+    /// chain. A parked chat's are in `Chat::jobs` and tick through `with_parked`.
     pub jobs: Vec<Job>,
-    /// Questions from the `hocus_ask` pipe that arrived while hocus was busy,
-    /// oldest first. Drained one per tick by `drain_asks`.
+    /// Questions that arrived for the foreground chat while it was busy —
+    /// from the `hocus_ask` pipe or typed mid-reply — oldest first. Drained
+    /// one per tick by `drain_asks`. Per chat, so a question queued at one
+    /// conversation is never sent as part of another's exchange.
     ///
     /// A queue rather than a single slot because a plugin caller is *told*
     /// their question was taken: last-wins would silently drop something
@@ -591,9 +659,13 @@ impl Default for State {
             transcript_rows: 0,
             transcript_cache: None,
             plan_cache: None,
+            usage: None,
+            context_cache: None,
             chat_id: None,
             saved: (0, 0),
             parked: Vec::new(),
+            chat_tab: 0,
+            chat_tab_focus: None,
             picker: None,
             last_strip: agents::Strip::default(),
             jobs: Vec::new(),
@@ -937,9 +1009,9 @@ impl State {
                 // vanish. As a notice it survives into the archive and shows up
                 // in /history, and — being a notice — it never reaches the
                 // model, so reopening the chat does not answer it by surprise.
-                for text in std::mem::take(&mut self.asks) {
-                    self.messages
-                        .push(Message::notice(format!("unsent question: {text}")));
+                archive::unsent_asks_to_notices(&mut self.messages, &mut self.asks);
+                for chat in &mut self.parked {
+                    archive::unsent_asks_to_notices(&mut chat.messages, &mut chat.asks);
                 }
                 // Nothing left to flush but the transcripts. Projects and todos
                 // are written as each change lands, and so is every prompt.

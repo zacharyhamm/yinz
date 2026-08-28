@@ -138,6 +138,28 @@ fn resolve_leaves_reasoning_echo_on_unless_kdl_explicitly_says_false() {
 }
 
 #[test]
+fn resolve_leaves_stream_usage_on_unless_kdl_explicitly_says_false() {
+    let env = map(&[("OPENAI_API_KEY", "sk-1")]);
+    assert!(Config::resolve(&map(&[]), &env).unwrap().stream_usage);
+    assert!(
+        !Config::resolve(&map(&[("stream_usage", "false")]), &env)
+            .unwrap()
+            .stream_usage
+    );
+    assert!(
+        !Config::resolve(&map(&[("stream_usage", "FALSE")]), &env)
+            .unwrap()
+            .stream_usage
+    );
+    // A typo costs an exact count, never a 400 on every request.
+    assert!(
+        Config::resolve(&map(&[("stream_usage", "flase")]), &env)
+            .unwrap()
+            .stream_usage
+    );
+}
+
+#[test]
 fn resolve_reads_the_tool_budget_from_kdl_only() {
     let env = map(&[("OPENAI_API_KEY", "sk-1")]);
     assert_eq!(

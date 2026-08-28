@@ -297,6 +297,10 @@ impl State {
         hide_self();
         self.hidden = true;
         self.hide_pending = true;
+        // The bar's highlight swallows every key it does not use, with nothing
+        // on screen to say so once the pane is hidden. Shift+Tab is easy to hit
+        // on the way to the toggle key; the next reveal should type again.
+        self.chat_tab_focus = None;
         self.apply_overlay_geometry();
     }
 
