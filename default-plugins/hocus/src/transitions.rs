@@ -478,8 +478,8 @@ impl State {
     pub(crate) fn on_timer(&mut self, elapsed: f64) -> bool {
         self.timer_armed = false;
         self.mono_ms = self.mono_ms.saturating_add((elapsed * 1000.0) as u64);
-        // Asks ahead of jobs: someone is sitting in front of the popup waiting
-        // on this, and a job that comes due on the same tick loses nothing by
+        // Asks ahead of jobs: someone is waiting on this one, and a job that
+        // comes due on the same tick loses nothing by
         // going a second later. Once an ask starts, `is_in_flight` holds the
         // job back anyway — `tick_jobs` still runs, for its countdown.
         let asked = self.drain_asks();
@@ -660,13 +660,12 @@ impl State {
         true
     }
 
-    /// Take a question from the `hocus-ask` popup.
+    /// Take a question from the `hocus_ask` pipe.
     ///
-    /// Every path answers the popup, including the ones that turn the question
-    /// away. The popup is a floating pane the user is looking at while this
-    /// runs, and it cannot tell a hocus that heard and said nothing from a
-    /// session with no hocus in it at all — silence is the one reply that means
-    /// something else.
+    /// Every path answers a plugin caller, including the ones that turn the
+    /// question away. Such a caller cannot tell a hocus that heard and said
+    /// nothing from a session with no hocus in it at all — silence is the one
+    /// reply that means something else.
     pub(crate) fn on_ask(&mut self, message: &PipeMessage) -> bool {
         let reply_to = match message.source {
             PipeSource::Plugin(id) => Some(id),
@@ -727,11 +726,11 @@ impl State {
         started
     }
 
-    /// Tell the popup what became of its question.
+    /// Tell the asking plugin what became of its question.
     ///
     /// Addressed by plugin id rather than broadcast, unlike everything else
-    /// hocus sends: the popup is one of possibly several, and an acknowledgement
-    /// delivered to the wrong one would close a box the user is still typing in.
+    /// hocus sends: the asker is one of possibly several, and an acknowledgement
+    /// delivered to the wrong one would answer a question it never put.
     fn ack_ask(&self, reply_to: Option<u32>, outcome: wire::AskOutcome, detail: &str) {
         let Some(id) = reply_to else {
             return;

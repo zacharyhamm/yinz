@@ -177,14 +177,6 @@ keybinds clear-defaults=true {
             SwitchToMode "normal"
         }
         bind "Ctrl e" { SwitchToMode "normal"; }
-        bind "k" {
-            LaunchOrFocusPlugin "hocus-ask" {
-                floating true
-                move_to_focused_tab true
-                overlay true
-            }
-            SwitchToMode "normal"
-        }
         bind "n" {
             LaunchOrFocusPlugin "hocus-new-agent" {
                 floating true
@@ -332,7 +324,6 @@ plugins {
     hocus-agents location="zellij:hocus-agents" {
         shared true
     }
-    hocus-ask location="zellij:hocus-ask"
     hocus-duplicate-agent location="zellij:hocus-new-agent" {
         duplicate_focused true
     }

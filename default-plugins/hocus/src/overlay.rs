@@ -57,8 +57,7 @@ const MIN_ROWS: usize = 3;
 
 /// A configured size, resolved against `whole`. Accepts `"40%"` and `"12"`, and falls back to
 /// `default_percent` of `whole` for anything missing or unparseable - a typo in the KDL costs a
-/// default-sized column rather than a crash, which is the rule `hocus-ask` follows for the same
-/// kind of key.
+/// default-sized column rather than a crash.
 fn resolve(value: Option<&String>, whole: usize, default_percent: usize) -> usize {
     let fallback = whole * default_percent / 100;
     let Some(value) = value.map(|value| value.trim()).filter(|v| !v.is_empty()) else {
