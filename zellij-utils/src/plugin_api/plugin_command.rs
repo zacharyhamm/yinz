@@ -7049,4 +7049,352 @@ mod tests {
             );
         }
     }
+
+    mod props {
+        use super::*;
+        use crate::data::{CommandType, ContextMenuItem, ResizeStrategy};
+        use crate::plugin_api::action::tests::props::as_the_plugin_wire_carries_it as action_as_the_plugin_wire_carries_it;
+        use crate::plugin_api::test_generators::plugin_command_of_kind;
+        use strum::IntoEnumIterator;
+
+        /// `message Resize` has `resize_action` and `direction`, and no room for
+        /// `invert_on_boundaries`; the decoder fills in `false`.
+        fn resize_strategy(strategy: ResizeStrategy) -> ResizeStrategy {
+            ResizeStrategy {
+                invert_on_boundaries: false,
+                ..strategy
+            }
+        }
+
+        /// `message ContextMenuItem` carries no actions by design: the server re-attaches a
+        /// configured item's actions by `id` (see `data::ContextMenuItem`).
+        fn context_menu_item(item: ContextMenuItem) -> ContextMenuItem {
+            ContextMenuItem {
+                actions: vec![],
+                ..item
+            }
+        }
+
+        /// What the plugin wire hands back for `command`, or `None` where the encoder refuses
+        /// it.
+        ///
+        /// Written against `plugin_command.proto`, not against the conversion: every field
+        /// changed here is one its payload has no room for, so the round trip is exact
+        /// everywhere else, and a field the payload *does* carry going missing still fails.
+        fn as_the_plugin_wire_carries_it(command: PluginCommand) -> Option<PluginCommand> {
+            Some(match command {
+                carried @ (PluginCommand::Subscribe(_)
+                | PluginCommand::Unsubscribe(_)
+                | PluginCommand::SetSelectable(_)
+                | PluginCommand::GetPluginIds
+                | PluginCommand::GetZellijVersion
+                | PluginCommand::OpenFile(..)
+                | PluginCommand::OpenFileFloating(..)
+                | PluginCommand::OpenTerminal(_)
+                | PluginCommand::OpenTerminalFloating(..)
+                | PluginCommand::OpenCommandPane(..)
+                | PluginCommand::OpenCommandPaneFloating(..)
+                | PluginCommand::OpenCommandPaneOverlay(..)
+                | PluginCommand::SwitchTabTo(_)
+                | PluginCommand::SetTimeout(_)
+                | PluginCommand::ExecCmd(_)
+                | PluginCommand::PostMessageTo(_)
+                | PluginCommand::PostMessageToPlugin(_)
+                | PluginCommand::HideSelf
+                | PluginCommand::ShowSelf(_)
+                | PluginCommand::SwitchToMode(_)
+                | PluginCommand::NewTabsWithLayout(_)
+                | PluginCommand::NewTab { .. }
+                | PluginCommand::NewTabUnfocused { .. }
+                | PluginCommand::NewTiledPaneInTab { .. }
+                | PluginCommand::ToggleFloatingPanes { .. }
+                | PluginCommand::NewPane
+                | PluginCommand::GoToNextTab
+                | PluginCommand::GoToPreviousTab
+                | PluginCommand::Resize(_)
+                | PluginCommand::FocusNextPane
+                | PluginCommand::FocusPreviousPane
+                | PluginCommand::FocusLastPane
+                | PluginCommand::MoveFocus(_)
+                | PluginCommand::MoveFocusOrTab(_)
+                | PluginCommand::Detach
+                | PluginCommand::EditScrollback
+                | PluginCommand::Write(_)
+                | PluginCommand::WriteChars(_)
+                | PluginCommand::ToggleTab
+                | PluginCommand::MovePane
+                | PluginCommand::MovePaneWithDirection(_)
+                | PluginCommand::ClearScreen
+                | PluginCommand::ScrollUp
+                | PluginCommand::ScrollDown
+                | PluginCommand::ScrollToTop
+                | PluginCommand::ScrollToBottom
+                | PluginCommand::PageScrollUp
+                | PluginCommand::PageScrollDown
+                | PluginCommand::ToggleFocusFullscreen
+                | PluginCommand::ToggleFocusNoUiFullscreen
+                | PluginCommand::TogglePaneFrames
+                | PluginCommand::SetPaneFrameStyle(_)
+                | PluginCommand::TogglePaneEmbedOrEject
+                | PluginCommand::UndoRenamePane
+                | PluginCommand::CloseFocus
+                | PluginCommand::ToggleActiveTabSync
+                | PluginCommand::CloseFocusedTab
+                | PluginCommand::UndoRenameTab
+                | PluginCommand::QuitZellij
+                | PluginCommand::PreviousSwapLayout
+                | PluginCommand::NextSwapLayout
+                | PluginCommand::GoToTabName(_)
+                | PluginCommand::FocusOrCreateTab(_)
+                | PluginCommand::GoToTab(_)
+                | PluginCommand::StartOrReloadPlugin(_)
+                | PluginCommand::CloseTerminalPane(_)
+                | PluginCommand::ClosePluginPane(_)
+                | PluginCommand::FocusTerminalPane(..)
+                | PluginCommand::FocusPluginPane(..)
+                | PluginCommand::RenameTerminalPane(..)
+                | PluginCommand::RenamePluginPane(..)
+                | PluginCommand::RenameTab(..)
+                | PluginCommand::ReportPanic(_)
+                | PluginCommand::RequestPluginPermissions(_)
+                | PluginCommand::SwitchSession(_)
+                | PluginCommand::DeleteDeadSession(_)
+                | PluginCommand::DeleteAllDeadSessions
+                | PluginCommand::OpenTerminalInPlace(_)
+                | PluginCommand::OpenFileInPlace(..)
+                | PluginCommand::OpenCommandPaneInPlace(..)
+                | PluginCommand::RunCommand(..)
+                | PluginCommand::WebRequest(..)
+                | PluginCommand::CancelWebRequest(_)
+                | PluginCommand::RenameSession(_)
+                | PluginCommand::Notify(..)
+                | PluginCommand::UnblockCliPipeInput(_)
+                | PluginCommand::BlockCliPipeInput(_)
+                | PluginCommand::CliPipeOutput(..)
+                | PluginCommand::MessageToPlugin(_)
+                | PluginCommand::DisconnectOtherClients
+                | PluginCommand::KillSessions(_)
+                | PluginCommand::ScanHostFolder(_)
+                | PluginCommand::WatchFilesystem
+                | PluginCommand::FsRead { .. }
+                | PluginCommand::FsList { .. }
+                | PluginCommand::FsMetadata { .. }
+                | PluginCommand::FsWrite { .. }
+                | PluginCommand::FsRemove { .. }
+                | PluginCommand::FsCreateDir { .. }
+                | PluginCommand::FsRename { .. }
+                | PluginCommand::GrantPluginPermissions { .. }
+                | PluginCommand::DumpSessionLayout { .. }
+                | PluginCommand::CloseSelf
+                | PluginCommand::NewTabsWithLayoutInfo(_)
+                | PluginCommand::Reconfigure(..)
+                | PluginCommand::HidePaneWithId(_)
+                | PluginCommand::ShowPaneWithId(..)
+                | PluginCommand::OpenCommandPaneBackground(..)
+                | PluginCommand::RerunCommandPane(_)
+                | PluginCommand::EditScrollbackForPaneWithId(_)
+                | PluginCommand::GetPaneScrollback { .. }
+                | PluginCommand::WriteToPaneId(..)
+                | PluginCommand::WriteCharsToPaneId(..)
+                | PluginCommand::SendSigintToPaneId(_)
+                | PluginCommand::SendSigkillToPaneId(_)
+                | PluginCommand::GetPanePid { .. }
+                | PluginCommand::GetPaneRunningCommand { .. }
+                | PluginCommand::GetPaneCwd { .. }
+                | PluginCommand::GetPaneGitProbe { .. }
+                | PluginCommand::MovePaneWithPaneId(_)
+                | PluginCommand::MovePaneWithPaneIdInDirection(..)
+                | PluginCommand::ClearScreenForPaneId(_)
+                | PluginCommand::ScrollUpInPaneId(_)
+                | PluginCommand::ScrollDownInPaneId(_)
+                | PluginCommand::ScrollToTopInPaneId(_)
+                | PluginCommand::ScrollToBottomInPaneId(_)
+                | PluginCommand::PageScrollUpInPaneId(_)
+                | PluginCommand::PageScrollDownInPaneId(_)
+                | PluginCommand::TogglePaneIdFullscreen(_)
+                | PluginCommand::TogglePaneEmbedOrEjectForPaneId(_)
+                | PluginCommand::CloseTabWithIndex(_)
+                | PluginCommand::BreakPanesToNewTab(..)
+                | PluginCommand::BreakPanesToTabWithIndex(..)
+                | PluginCommand::SwitchTabToId(_)
+                | PluginCommand::GoToTabWithId(_)
+                | PluginCommand::CloseTabWithId(_)
+                | PluginCommand::RenameTabWithId(..)
+                | PluginCommand::SetTabProjects(_)
+                | PluginCommand::BreakPanesToTabWithId(..)
+                | PluginCommand::ReloadPlugin(_)
+                | PluginCommand::LoadNewPlugin { .. }
+                | PluginCommand::RegisterDefaultKeybindings(_)
+                | PluginCommand::ListClients
+                | PluginCommand::ChangeHostFolder(_)
+                | PluginCommand::SetFloatingPanePinned(..)
+                | PluginCommand::StackPanes(_)
+                | PluginCommand::ChangeFloatingPanesCoordinates(_)
+                | PluginCommand::ChangeOverlayCoordinates(_)
+                | PluginCommand::TogglePaneBorderless(_)
+                | PluginCommand::SetPaneBorderless(..)
+                | PluginCommand::OpenCommandPaneNearPlugin(..)
+                | PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(..)
+                | PluginCommand::OpenTerminalNearPlugin(_)
+                | PluginCommand::OpenTerminalFloatingNearPlugin(..)
+                | PluginCommand::OpenTerminalInPlaceOfPlugin(..)
+                | PluginCommand::OpenCommandPaneFloatingNearPlugin(..)
+                | PluginCommand::OpenCommandPaneInPlaceOfPlugin(..)
+                | PluginCommand::OpenFileNearPlugin(..)
+                | PluginCommand::OpenFileFloatingNearPlugin(..)
+                | PluginCommand::StartWebServer
+                | PluginCommand::StopWebServer
+                | PluginCommand::ShareCurrentSession
+                | PluginCommand::StopSharingCurrentSession
+                | PluginCommand::OpenFileInPlaceOfPlugin(..)
+                | PluginCommand::GroupAndUngroupPanes(..)
+                | PluginCommand::HighlightAndUnhighlightPanes(..)
+                | PluginCommand::RevealPaneWithId(..)
+                | PluginCommand::CloseMultiplePanes(_)
+                | PluginCommand::FloatMultiplePanes(_)
+                | PluginCommand::EmbedMultiplePanes(_)
+                | PluginCommand::QueryWebServerStatus
+                | PluginCommand::SetSelfMouseSelectionSupport(_)
+                | PluginCommand::GenerateWebLoginToken(..)
+                | PluginCommand::RevokeWebLoginToken(_)
+                | PluginCommand::ListWebLoginTokens
+                | PluginCommand::RevokeAllWebLoginTokens
+                | PluginCommand::RenameWebLoginToken(..)
+                | PluginCommand::InterceptKeyPresses
+                | PluginCommand::ClearKeyPressesIntercepts
+                | PluginCommand::ReplacePaneWithExistingPane(..)
+                | PluginCommand::CopyToClipboard(_)
+                | PluginCommand::OverrideLayout(..)
+                | PluginCommand::SaveLayout { .. }
+                | PluginCommand::DeleteLayout { .. }
+                | PluginCommand::RenameLayout { .. }
+                | PluginCommand::EditLayout { .. }
+                | PluginCommand::GenerateRandomName
+                | PluginCommand::DumpLayout(_)
+                | PluginCommand::ParseLayout(_)
+                | PluginCommand::GetLayoutDir
+                | PluginCommand::GetUserPluginDir
+                | PluginCommand::GetFocusedPaneInfo
+                | PluginCommand::SaveSession
+                | PluginCommand::CurrentSessionLastSavedTime
+                | PluginCommand::GetPaneInfo(_)
+                | PluginCommand::GetTabInfo(_)
+                | PluginCommand::GetSessionEnvironmentVariables
+                | PluginCommand::GetPluginAliasConfiguration(_)
+                | PluginCommand::OpenCommandPaneInNewTab(..)
+                | PluginCommand::OpenPluginPaneInNewTab { .. }
+                | PluginCommand::OpenEditorPaneInNewTab(..)
+                | PluginCommand::OpenCommandPaneInPlaceOfPaneId(..)
+                | PluginCommand::OpenTerminalPaneInPlaceOfPaneId(..)
+                | PluginCommand::OpenEditPaneInPlaceOfPaneId(..)
+                | PluginCommand::HideFloatingPanes { .. }
+                | PluginCommand::ShowFloatingPanes { .. }
+                | PluginCommand::SetPaneColor(..)
+                | PluginCommand::SetPaneRegexHighlights(..)
+                | PluginCommand::ClearPaneHighlights(_)
+                | PluginCommand::OpenPluginPaneFloating { .. }
+                | PluginCommand::GetSessionList
+                | PluginCommand::KillSessionsAndReply(_)
+                | PluginCommand::DeleteDeadSessionAndReply(_)
+                | PluginCommand::DeleteAllDeadSessionsAndReply
+                | PluginCommand::SetSoftKeyboard(_)
+                | PluginCommand::FocusHostSession
+                | PluginCommand::ListRecordings
+                | PluginCommand::ListNotifications
+                | PluginCommand::SearchRecordings { .. }
+                | PluginCommand::WarpPaneToSession { .. }
+                | PluginCommand::WarpPaneFromSession { .. }
+                | PluginCommand::WarpTabToSession { .. }
+                | PluginCommand::WarpTabFromSession { .. }
+                | PluginCommand::ListOrphanedPanes
+                | PluginCommand::AdoptOrphanedPane { .. }
+                | PluginCommand::DataDefineEntity { .. }
+                | PluginCommand::DataApply { .. }
+                | PluginCommand::DataFetch { .. }
+                | PluginCommand::DataCount { .. }
+                | PluginCommand::DataWatch { .. }
+                | PluginCommand::DataUnwatch { .. }
+                | PluginCommand::SetPaneTitlePrefix { .. }
+                | PluginCommand::EnqueueQueueJob { .. }
+                | PluginCommand::ConfigureQueue { .. }
+                | PluginCommand::CancelQueueJob { .. }
+                | PluginCommand::QueueStatus { .. }
+                | PluginCommand::FinishQueueJob { .. }) => carried,
+                // `CursorPosition` is a pair of `uint32`, so both coordinates are cut to 32 bits.
+                PluginCommand::ShowCursor(position) => PluginCommand::ShowCursor(
+                    position.map(|(x, y)| (x as u32 as usize, y as u32 as usize)),
+                ),
+                PluginCommand::ResizeWithDirection(strategy) => {
+                    PluginCommand::ResizeWithDirection(resize_strategy(strategy))
+                },
+                PluginCommand::ResizePaneIdWithDirection(strategy, pane_id) => {
+                    PluginCommand::ResizePaneIdWithDirection(resize_strategy(strategy), pane_id)
+                },
+                // `KeyToRebind.actions` is `repeated Action`: an action `action.proto` cannot
+                // carry is dropped, and the rest cross as the `Action` property says they do.
+                PluginCommand::RebindKeys {
+                    keys_to_rebind,
+                    keys_to_unbind,
+                    write_config_to_disk,
+                } => PluginCommand::RebindKeys {
+                    keys_to_rebind: keys_to_rebind
+                        .into_iter()
+                        .map(|(mode, key, actions)| {
+                            (
+                                mode,
+                                key,
+                                actions
+                                    .into_iter()
+                                    .filter_map(action_as_the_plugin_wire_carries_it)
+                                    .collect(),
+                            )
+                        })
+                        .collect(),
+                    keys_to_unbind,
+                    write_config_to_disk,
+                },
+                // `RunActionPayload.action` is one `Action`, and the encoder refuses the
+                // command when `action.proto` cannot carry it.
+                PluginCommand::RunAction(action, context) => {
+                    PluginCommand::RunAction(action_as_the_plugin_wire_carries_it(action)?, context)
+                },
+                PluginCommand::SetContextMenu { request_id, items } => {
+                    PluginCommand::SetContextMenu {
+                        request_id,
+                        items: items.into_iter().map(context_menu_item).collect(),
+                    }
+                },
+            })
+        }
+
+        /// Every variant, every case: the kinds are walked rather than sampled, so a variant
+        /// the wire mishandles cannot hide behind an unlucky draw.
+        #[hegel::test]
+        fn every_plugin_command_survives_a_protobuf_round_trip(tc: hegel::TestCase) {
+            use prost::Message;
+            for kind in CommandType::iter() {
+                let command = plugin_command_of_kind(&tc, kind);
+                let expected = as_the_plugin_wire_carries_it(command.clone());
+                let (protobuf, expected) =
+                    match (ProtobufPluginCommand::try_from(command.clone()), expected) {
+                        (Err(_), None) => continue,
+                        (Err(e), Some(_)) => panic!("{command:?} failed to encode: {e}"),
+                        (Ok(_), None) => panic!(
+                            "{command:?} encoded, but this test says plugin_command.proto cannot carry it"
+                        ),
+                        (Ok(protobuf), Some(expected)) => (protobuf, expected),
+                    };
+                let bytes = protobuf.encode_to_vec();
+                let decoded: ProtobufPluginCommand = Message::decode(bytes.as_slice())
+                    .unwrap_or_else(|e| panic!("{command:?} failed to decode: {e}"));
+                let round_tripped: PluginCommand = decoded
+                    .try_into()
+                    .unwrap_or_else(|e| panic!("{command:?} failed to convert back: {e}"));
+                assert_eq!(
+                    round_tripped, expected,
+                    "the plugin wire changed {command:?}"
+                );
+            }
+        }
+    }
 }

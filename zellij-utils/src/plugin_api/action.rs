@@ -3418,7 +3418,7 @@ impl TryFrom<SwapFloatingLayout> for ProtobufSwapFloatingLayout {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::input::options::PaneFrameStyle;
 
@@ -3451,7 +3451,7 @@ mod tests {
         }
     }
 
-    mod props {
+    pub(crate) mod props {
         use super::*;
         use crate::input::actions::ActionKind;
         use crate::input::command::RunCommand;
@@ -3562,7 +3562,7 @@ mod tests {
         /// Written against the payload messages, not against the conversion: every field
         /// zeroed here is one its payload has no room for, so the round trip is exact
         /// everywhere else, and a field the payload *does* carry going missing still fails.
-        fn as_the_plugin_wire_carries_it(action: Action) -> Option<Action> {
+        pub(crate) fn as_the_plugin_wire_carries_it(action: Action) -> Option<Action> {
             Some(match action {
                 carried @ (Action::Quit
                 | Action::Write { .. }
