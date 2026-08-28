@@ -14,8 +14,6 @@ pub fn integration_test(sh: &Shell, flags: flags::IntegrationTest) -> anyhow::Re
 
     crate::build::ensure_plugin_assets(sh).context(err_context)?;
 
-    let profile = if flags.no_opt { "dev" } else { "dev-opt" };
-
     let nextest_available = cmd!(sh, "{cargo} nextest --version")
         .quiet()
         .ignore_stderr()
@@ -27,14 +25,11 @@ pub fn integration_test(sh: &Shell, flags: flags::IntegrationTest) -> anyhow::Re
         } else {
             &[]
         };
-        cmd!(
-            sh,
-            "{cargo} nextest run --cargo-profile {profile} -p zellij-integration-tests"
-        )
-        .args(serial_args)
-        .args(&flags.args)
-        .run()
-        .context(err_context)?;
+        cmd!(sh, "{cargo} nextest run -p zellij-integration-tests")
+            .args(serial_args)
+            .args(&flags.args)
+            .run()
+            .context(err_context)?;
     } else {
         println!(">> cargo-nextest not found, falling back to `cargo test -- --test-threads=1`");
         // The fallback shares one process per test binary, and session names come from a
@@ -44,7 +39,7 @@ pub fn integration_test(sh: &Shell, flags: flags::IntegrationTest) -> anyhow::Re
         println!(">> expect false failures in snapshot tests that record session names; install cargo-nextest for a run that means something");
         cmd!(
             sh,
-            "{cargo} test --profile {profile} -p zellij-integration-tests -- --test-threads=1"
+            "{cargo} test -p zellij-integration-tests -- --test-threads=1"
         )
         .args(&flags.args)
         .run()

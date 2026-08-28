@@ -120,12 +120,6 @@ pub fn run(sh: &Shell, mut flags: flags::Run) -> anyhow::Result<()> {
         flags.data_dir.replace(crate::asset_dir());
     }
 
-    let profile = if flags.disable_deps_optimize {
-        "dev"
-    } else {
-        "dev-opt"
-    };
-
     if let Some(ref data_dir) = flags.data_dir {
         let data_dir = sh.current_dir().join(data_dir);
         let features = if flags.no_web {
@@ -142,7 +136,6 @@ pub fn run(sh: &Shell, mut flags: flags::Run) -> anyhow::Result<()> {
                     .args(["--package", "zellij"])
                     .arg("--no-default-features")
                     .args(["--features", features])
-                    .args(["--profile", profile])
                     .args(["--", "--data-dir", &format!("{}", data_dir.display())])
                     .args(&flags.args)
                     .run()
@@ -174,8 +167,7 @@ pub fn run(sh: &Shell, mut flags: flags::Run) -> anyhow::Result<()> {
                             cmd = cmd.args(["--features", &features]);
                         }
 
-                        cmd.args(["--profile", profile])
-                            .args(["--"])
+                        cmd.args(["--"])
                             .args(&flags.args)
                             .run()
                             .map_err(anyhow::Error::new)
@@ -183,7 +175,6 @@ pub fn run(sh: &Shell, mut flags: flags::Run) -> anyhow::Result<()> {
                     None => {
                         // Main crate doesn't have web_server_capability, run normally
                         cmd!(sh, "{cargo} run")
-                            .args(["--profile", profile])
                             .args(["--"])
                             .args(&flags.args)
                             .run()
@@ -192,7 +183,6 @@ pub fn run(sh: &Shell, mut flags: flags::Run) -> anyhow::Result<()> {
                 }
             } else {
                 cmd!(sh, "{cargo} run")
-                    .args(["--profile", profile])
                     .args(["--"])
                     .args(&flags.args)
                     .run()

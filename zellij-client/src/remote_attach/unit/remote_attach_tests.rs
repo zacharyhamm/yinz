@@ -364,11 +364,39 @@ mod tls_mock_server {
 }
 
 // Database test helpers
+//
+// Without the override below these tests write real session tokens into the developer's own data
+// directory, and every test process shares that one sqlite file. `#[serial]` plus Cargo running
+// one test binary at a time hid that; a per-test-process runner does not. Each process gets its
+// own database instead, exactly as `web_client_tests` does for the auth-token database.
+lazy_static::lazy_static! {
+    static ref TEST_TMP_DIR: tempfile::TempDir = {
+        let dir = tempfile::Builder::new()
+            .prefix("zellij-remote-attach-tests-")
+            .tempdir()
+            .expect("failed to create temp dir for tests");
+        std::env::set_var(
+            remote_session_tokens::DB_PATH_ENV_VAR,
+            dir.path().join("remote_sessions.db"),
+        );
+        dir
+    };
+}
+
+/// Ensures the DB path override is set before anything - test or production code - touches the
+/// database. Every test that reaches the database calls `setup_test_db` first, so routing the
+/// initialization through there covers the production paths the tests exercise too.
+fn ensure_isolated_db() {
+    lazy_static::initialize(&TEST_TMP_DIR);
+}
+
 fn setup_test_db(server_url: &str) {
+    ensure_isolated_db();
     let _ = remote_session_tokens::delete_session_token(server_url);
 }
 
 fn cleanup_test_db(server_url: &str) {
+    ensure_isolated_db();
     let _ = remote_session_tokens::delete_session_token(server_url);
 }
 
