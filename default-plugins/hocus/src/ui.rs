@@ -1158,7 +1158,8 @@ fn render_title(state: &mut State, cols: usize) {
 
 /// One slot at the right edge: what is happening now beats what is pending.
 /// A count rides along when other chats are working too, so a background
-/// reply is visible without looking for its `●` in the bar.
+/// reply is visible without looking for its `●` in the bar. The job count is
+/// every tab's: a job fires and bills whichever tab is on screen.
 fn title_note(state: &State) -> Option<String> {
     let elsewhere = match state.parked_count() {
         0 => String::new(),
@@ -1168,8 +1169,8 @@ fn title_note(state: &State) -> Option<String> {
         Some(format!("streaming…{elsewhere}"))
     } else if !elsewhere.is_empty() {
         Some(format!("working{elsewhere}"))
-    } else if !state.jobs.is_empty() {
-        Some(format!("⏲ {}", state.jobs.len()))
+    } else if state.any_jobs() {
+        Some(format!("⏲ {}", state.job_count()))
     } else {
         None
     }
@@ -1204,16 +1205,9 @@ fn tab_label(messages: &[crate::Message], live: bool, confirming: bool) -> Strin
         true => "new chat".to_owned(),
         false => history::title(messages),
     };
-    let mut clipped = String::new();
-    let mut used = 0;
-    for ch in title.chars() {
-        let w = ch.width().unwrap_or(0);
-        if used + w > TAB_TITLE_COLS {
-            clipped.push('…');
-            break;
-        }
-        clipped.push(ch);
-        used += w;
+    let mut clipped = truncate_to_width(&title, TAB_TITLE_COLS);
+    if clipped.len() < title.len() {
+        clipped.push('…');
     }
     format!(" {glyph}{clipped} ")
 }
@@ -1670,7 +1664,6 @@ fn help_line(state: &State) -> &'static str {
             "streaming…  <Ctrl c> cancel  <Esc> hide  <↑↓> scroll"
         },
         Status::Idle if state.is_planning() => "planning  read-only tools  <Esc> hide",
-        Status::Idle if !state.jobs.is_empty() => "<Ctrl l> new chat  <Esc> hide",
         Status::Idle => "<Ctrl l> new chat  <Esc> hide",
     }
 }
@@ -2762,6 +2755,36 @@ mod tests {
 
     fn texts(cells: &[TabCell]) -> Vec<&str> {
         cells.iter().map(|cell| cell.text.as_str()).collect()
+    }
+
+    fn job(id: u64) -> crate::message::Job {
+        crate::message::Job {
+            id,
+            every: 60.0,
+            due_in: 60.0,
+            prompt: "check".to_owned(),
+            show: false,
+            auto_confirm: false,
+        }
+    }
+
+    /// A job in another tab is work happening off-screen, and the note says so
+    /// rather than counting only what the foreground armed.
+    #[test]
+    fn the_title_note_sees_jobs_in_every_tab() {
+        let mut state = tabs_state(2);
+        assert_eq!(title_note(&state), None, "nothing anywhere");
+
+        state.jobs.push(job(1));
+        assert_eq!(title_note(&state).as_deref(), Some("⏲ 1"));
+
+        state.parked[0].jobs.push(job(2));
+        assert_eq!(
+            title_note(&state).as_deref(),
+            Some("working +1"),
+            "the other tab is live, and counted"
+        );
+        assert!(chat_tabs(&state, 80)[1].text.starts_with(" ● "));
     }
 
     #[test]

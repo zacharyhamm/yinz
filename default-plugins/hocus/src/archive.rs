@@ -7,37 +7,52 @@ use zellij_tile::prelude::*;
 // The archive
 // ---------------------------------------------------------------------------
 
+/// What autosave and the render cache watch. Only one message is ever mutated
+/// in place, so a count and that message's length between them catch every
+/// change to a transcript.
+///
+/// The one that can change without the count changing is the streaming
+/// placeholder at `reply_at`, which `append_to_reply` grows in place. The last
+/// message is the fallback — it is the placeholder whenever there is one and
+/// nothing has been pushed behind it, and when there is no stream nothing is
+/// mutated in place at all.
+///
+/// A typed tool mid-reply is what makes the two differ: its call and result
+/// sit *after* the placeholder, so watching the last message would leave the
+/// arriving reply invisible to the cache, the archive and every other client.
+///
+/// A free function because a parked `Chat` and the flat foreground fields both
+/// need it, and the rule must not be able to drift between the two.
+pub(crate) fn fingerprint(messages: &[Message], reply_at: Option<usize>) -> (usize, usize) {
+    (messages.len(), mutable_len(messages, reply_at))
+}
+
+/// The length of the message `fingerprint` watches. See there.
+pub(crate) fn mutable_len(messages: &[Message], reply_at: Option<usize>) -> usize {
+    let at = reply_at.unwrap_or(messages.len().saturating_sub(1));
+    messages.get(at).map_or(0, |m| m.content.len())
+}
+
 impl State {
-    /// What autosave watches. The same trick `ui::TranscriptKey` relies on: only
-    /// the last message is ever mutated in place, so a count and that message's
-    /// length between them catch every change to the transcript.
+    /// `fingerprint` for the foreground chat.
     pub(crate) fn fingerprint(&self) -> (usize, usize) {
-        (self.messages.len(), self.mutable_len())
+        fingerprint(&self.messages, self.reply_at)
     }
 
-    /// The length of the one message that can change without the count changing:
-    /// the streaming placeholder, which `append_to_reply` grows in place. The
-    /// last message is the fallback — it is the placeholder whenever there is
-    /// one and nothing has been pushed behind it, and when there is no stream
-    /// nothing is mutated in place at all.
-    ///
-    /// A typed tool mid-reply is what makes the two differ: its call and result
-    /// sit *after* the placeholder, so watching the last message would leave the
-    /// arriving reply invisible to the cache, the archive and every other client.
+    /// `mutable_len` for the foreground chat.
     pub fn mutable_len(&self) -> usize {
-        let at = self
-            .reply_at
-            .unwrap_or(self.messages.len().saturating_sub(1));
-        self.messages.get(at).map_or(0, |m| m.content.len())
+        mutable_len(&self.messages, self.reply_at)
     }
 
-    /// Write the transcript out.
+    /// Write the transcript out, if it changed since the last write.
     ///
     /// `force` writes mid-reply. Without it a stream saves once at the end
-    /// rather than on every socket read; with it, the two places a later write
-    /// is no use — `show_chats`, which reads the archive straight back, and
-    /// `BeforeClose`, which has no later. A partial reply archived beats one
-    /// lost.
+    /// rather than on every socket read; with it, the places a later write is
+    /// no use — `show_chats`, which reads the archive straight back, a tab
+    /// being closed, and `BeforeClose`, which has no later. A partial reply
+    /// archived beats one lost. Forced or not, a transcript whose fingerprint
+    /// has not moved is not rewritten: every row written is a function of
+    /// `messages`, so there is nothing new to say.
     ///
     /// An empty transcript is never written, so a pane you only opened leaves
     /// nothing behind.
@@ -52,7 +67,7 @@ impl State {
             return;
         }
         let key = self.fingerprint();
-        if !force && self.saved == key {
+        if self.saved == key {
             return;
         }
         let saved_len = self.saved.0;
@@ -74,33 +89,14 @@ impl State {
         }
     }
 
-    /// Write every parked chat out.
-    ///
-    /// Taken out of `self` and put back rather than borrowed in place: the write
-    /// needs the store, which is borrowed from `self` too.
+    /// Write every parked chat out, mid-reply and all. Each goes through
+    /// `flush_save` in turn, so the gates — a tab that was only opened leaves
+    /// no row, an idle one that has not changed is not rewritten every time
+    /// the list opens — are `save_now`'s and not a second copy of them.
     pub(crate) fn save_parked(&mut self) {
-        let mut parked = std::mem::take(&mut self.parked);
-        for chat in &mut parked {
-            // The same two gates as `save_now`: a tab that was only opened
-            // leaves no row, and an idle one that has not changed since its
-            // last save is not rewritten every time the list opens.
-            if chat.messages.is_empty() || chat.saved == chat.fingerprint() {
-                continue;
-            }
-            let mut id = chat.chat_id.take();
-            let written = history::save(
-                &self.private_store(),
-                &mut id,
-                &chat.messages,
-                chat.saved.0,
-                chat.reply_at,
-            );
-            chat.chat_id = id;
-            if written.is_ok() {
-                chat.saved = chat.fingerprint();
-            }
+        for index in 0..self.parked.len() {
+            self.with_parked(index, |state| state.flush_save());
         }
-        self.parked = parked;
     }
 
     /// Write the transcript out once it has settled.
@@ -146,7 +142,8 @@ impl State {
         });
     }
 
-    /// How many other conversations are working off-screen. Open tabs that
+    /// How many other conversations are working off-screen — receiving a
+    /// reply, waiting on an answer, or counting a job down. Open tabs that
     /// have settled are not counted: the note this feeds says what is
     /// happening, and the bar already says what is open.
     pub fn parked_count(&self) -> usize {
@@ -366,20 +363,41 @@ impl State {
         let Some(messages) = history::load(&self.private_store(), id) else {
             return;
         };
-        let outgoing = self.take_chat();
-        self.parked.insert(self.chat_tab, outgoing);
-        self.chat_tab = self.parked.len();
-        self.put_chat(Chat {
+        self.open_tab(Chat {
             messages,
             chat_id: Some(id),
             ..Chat::default()
         });
-        // Loaded, not resumed: nothing has changed yet, so this must not
-        // immediately rewrite the row it came from. A parked chat brings its
-        // own `saved`, which may well be behind its transcript.
-        self.saved = self.fingerprint();
-        self.pin_to_bottom();
         self.log_global("open_chat", serde_json::json!({"chat_id": id}));
+    }
+
+    /// Put `incoming` on screen in a tab of its own, on the end of the bar.
+    /// The chat being left stays open where it was — parked, still owed its
+    /// reply — unless there is nothing to it, in which case it is simply let
+    /// go rather than left as a blank tab nothing will ever reap.
+    pub(crate) fn open_tab(&mut self, incoming: Chat) {
+        let worth_a_tab = self.worth_a_tab();
+        let outgoing = self.swap_foreground(incoming);
+        if worth_a_tab {
+            self.parked.insert(self.chat_tab, outgoing);
+            self.chat_tab = self.parked.len();
+        }
+        // Opened, not resumed: nothing has changed yet, so this must not
+        // immediately rewrite the row it came from. A chat brings its own
+        // `saved`, which may well be behind its transcript, and a fresh one has
+        // nothing to write.
+        self.saved = self.fingerprint();
+    }
+
+    /// Whether the foreground chat would be missed: anything said, anything
+    /// saved, a question waiting its turn, a watcher armed, or a reply on its
+    /// way. A chat that only looks empty is kept; one that is empty is not.
+    fn worth_a_tab(&self) -> bool {
+        !self.messages.is_empty()
+            || self.chat_id.is_some()
+            || !self.jobs.is_empty()
+            || !self.asks.is_empty()
+            || self.is_in_flight()
     }
 
     /// Put the chat at bar position `tab` on screen. The one being left goes
@@ -393,7 +411,7 @@ impl State {
             return;
         }
         let incoming = self.parked.remove(index);
-        let outgoing = self.take_chat();
+        let outgoing = self.swap_foreground(incoming);
         // Once the incoming chat is out, the outgoing one's slot is where it
         // was in the bar, less one if the incoming chat sat before it.
         let insert_at = if self.chat_tab < tab {
@@ -403,8 +421,6 @@ impl State {
         };
         self.parked.insert(insert_at, outgoing);
         self.chat_tab = tab;
-        self.put_chat(incoming);
-        self.pin_to_bottom();
         self.log_global("open_chat", serde_json::json!({"chat_id": self.chat_id}));
     }
 
@@ -424,12 +440,9 @@ impl State {
         self.log_global("close_chat", serde_json::json!({"chat_id": closing_id}));
         if self.parked_at_tab(tab).is_none() {
             if self.parked.is_empty() {
-                // The only tab: written out, then reset in place. Not
-                // `new_chat`, which would park a chat still mid-reply.
-                if self.tools_busy() {
-                    self.abort_tools();
-                }
-                self.flush_save();
+                // The only tab: stopped and written out, then reset in place.
+                // Not `new_chat`, which would park a chat still mid-reply.
+                self.stop_chat();
                 self.reset_chat();
                 return;
             }
@@ -444,20 +457,53 @@ impl State {
         let Some(index) = self.parked_at_tab(tab) else {
             return;
         };
-        self.with_parked(index, |state| {
-            if state.tools_busy() {
-                state.abort_tools();
-            }
-            state.cancel_in_flight();
-            state.stream = None;
-            state.reply_at = None;
-            state.drop_spotlight();
-            state.flush_save();
-        });
+        self.with_parked(index, |state| state.stop_chat());
         self.parked.remove(index);
         if index < self.chat_tab {
             self.chat_tab -= 1;
         }
+    }
+
+    /// Stop whatever the foreground chat is doing and write it out, ahead of
+    /// it being thrown away. Every way a chat is closed goes through here, so
+    /// the order below is decided once:
+    ///
+    /// 1. the tool run and the stream are stopped;
+    /// 2. questions still queued become notices — their askers were told they
+    ///    had been taken, and a notice survives into the archive without ever
+    ///    reaching the model;
+    /// 3. a placeholder nothing arrived into is dropped, so a tab closed before
+    ///    its first token archives no empty reply;
+    /// 4. the transcript is written *with `reply_at` still set*, which is what
+    ///    lets `history::save` rewrite a reply that grew in place behind a
+    ///    typed tool's rows.
+    pub(crate) fn stop_chat(&mut self) {
+        if self.tools_busy() {
+            self.abort_tools();
+        }
+        self.cancel_in_flight();
+        self.stream = None;
+        self.drop_spotlight();
+        unsent_asks_to_notices(&mut self.messages, &mut self.asks);
+        if self.reply_is_empty() {
+            self.pop_empty_placeholder();
+        }
+        self.flush_save();
+        self.reply_at = None;
+    }
+}
+
+/// Turn every queued question into an `unsent question` notice. Written as a
+/// notice rather than dropped because the asker was told the question had been
+/// queued; written as a notice rather than a user message so that reopening
+/// the chat does not answer it by surprise. Over the flat foreground fields or
+/// a parked `Chat`'s alike, which is why it is not a method.
+pub(crate) fn unsent_asks_to_notices(
+    messages: &mut Vec<Message>,
+    asks: &mut std::collections::VecDeque<String>,
+) {
+    for text in std::mem::take(asks) {
+        messages.push(Message::notice(format!("unsent question: {text}")));
     }
 }
 

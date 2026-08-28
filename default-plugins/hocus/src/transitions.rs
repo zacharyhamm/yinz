@@ -34,6 +34,12 @@ pub struct Confirmation {
     pub keys: Vec<(&'static str, &'static str)>,
 }
 
+/// What `tick_jobs` says when a job fires: whether it asked to be seen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Fired {
+    pub(crate) show: bool,
+}
+
 impl State {
     /// The data store.
     ///
@@ -92,10 +98,15 @@ impl State {
     }
 
     /// Lift the foreground conversation out, leaving an empty one behind.
+    ///
+    /// The engine's state only: the input box is not touched, and the render
+    /// caches go with the chat rather than being dropped. `Chat::draft` comes
+    /// back empty — `swap_foreground` is what fills it, for the switches a
+    /// person can see.
     pub(crate) fn take_chat(&mut self) -> Chat {
-        self.transcript_cache = None;
-        self.plan_cache = None;
         Chat {
+            transcript_cache: self.transcript_cache.take(),
+            plan_cache: self.plan_cache.take(),
             messages: std::mem::take(&mut self.messages),
             status: std::mem::take(&mut self.status),
             stream: self.stream.take(),
@@ -113,24 +124,18 @@ impl State {
             job_auto_confirm: std::mem::take(&mut self.job_auto_confirm),
             plan: std::mem::take(&mut self.plan),
             plugin_load: self.plugin_load.take(),
-            draft: {
-                let draft = (
-                    self.input.get_text().to_owned(),
-                    self.input.get_cursor_position(),
-                );
-                self.input.replace_text(String::new(), 0);
-                draft
-            },
+            draft: (String::new(), 0),
             jobs: std::mem::take(&mut self.jobs),
             asks: std::mem::take(&mut self.asks),
         }
     }
 
     /// Put one in the foreground. Whatever was there is overwritten, so this is
-    /// always paired with a `take_chat`.
+    /// always paired with a `take_chat`. The chat's `draft` is ignored here for
+    /// the reason `take_chat` leaves it empty.
     pub(crate) fn put_chat(&mut self, chat: Chat) {
-        self.transcript_cache = None;
-        self.plan_cache = None;
+        self.transcript_cache = chat.transcript_cache;
+        self.plan_cache = chat.plan_cache;
         self.messages = chat.messages;
         self.status = chat.status;
         self.stream = chat.stream;
@@ -148,10 +153,28 @@ impl State {
         self.job_auto_confirm = chat.job_auto_confirm;
         self.plan = chat.plan;
         self.plugin_load = chat.plugin_load;
-        let (text, cursor) = chat.draft;
-        self.input.replace_text(text, cursor);
         self.jobs = chat.jobs;
         self.asks = chat.asks;
+    }
+
+    /// Put `incoming` on screen and hand back what was there, drafts included:
+    /// the outgoing chat keeps what was typed at it, and the incoming one's
+    /// draft goes back into the box. The viewport is pinned to the tail, since
+    /// the conversation changed for everyone looking.
+    ///
+    /// This is the swap for a switch a person asked for; `with_parked` is the
+    /// one for servicing a chat off-screen, and it leaves the box alone.
+    pub(crate) fn swap_foreground(&mut self, mut incoming: Chat) -> Chat {
+        let mut outgoing = self.take_chat();
+        outgoing.draft = (
+            self.input.get_text().to_owned(),
+            self.input.get_cursor_position(),
+        );
+        let (text, cursor) = std::mem::take(&mut incoming.draft);
+        self.put_chat(incoming);
+        self.input.replace_text(text, cursor);
+        self.pin_to_bottom();
+        outgoing
     }
 
     /// Run `f` against a parked chat by swapping it into the foreground for the
@@ -162,6 +185,10 @@ impl State {
     /// the one place they know to look for it. The chat goes back to the same
     /// index whatever happened to it, which is what keeps the tab bar's order
     /// — `parked` with the foreground spliced in at `chat_tab` — standing.
+    ///
+    /// Nothing a person is looking at moves: the input box, its undo stack and
+    /// the foreground's render caches all come through untouched, so a tick
+    /// that services another tab costs the one on screen nothing.
     pub(crate) fn with_parked<R>(&mut self, index: usize, f: impl FnOnce(&mut Self) -> R) -> R {
         let foreground = self.take_chat();
         let parked = self.parked.remove(index);
@@ -202,7 +229,23 @@ impl State {
 
     /// Whether any chat, on screen or parked, has a job counting down.
     pub(crate) fn any_jobs(&self) -> bool {
-        !self.jobs.is_empty() || self.parked.iter().any(|chat| !chat.jobs.is_empty())
+        self.job_count() > 0
+    }
+
+    /// Jobs across every open chat, the foreground's first.
+    pub(crate) fn job_count(&self) -> usize {
+        self.jobs.len()
+            + self
+                .parked
+                .iter()
+                .map(|chat| chat.jobs.len())
+                .sum::<usize>()
+    }
+
+    /// Every chat's job list, the foreground's first, for the operations that
+    /// reach across tabs: `unschedule` and `/stop_jobs`.
+    pub(crate) fn all_jobs_mut(&mut self) -> impl Iterator<Item = &mut Vec<Job>> {
+        std::iter::once(&mut self.jobs).chain(self.parked.iter_mut().map(|chat| &mut chat.jobs))
     }
 
     /// Whether any chat has a question waiting for its turn.
@@ -529,16 +572,47 @@ impl State {
         // going a second later. Once an ask starts, `is_in_flight` holds the
         // job back anyway — `tick_jobs` still runs, for its countdown.
         let asked = self.drain_asks();
-        let fired = self.tick_jobs(elapsed);
-        // The same pass for every parked chat: its queue and its jobs are its
-        // own, and it is as able to start a request off-screen as it is to
-        // receive one.
-        let mut fired = fired;
-        for index in 0..self.parked.len() {
-            fired = self.with_parked(index, |state| {
+        let mut fired = match self.tick_jobs(elapsed) {
+            Some(Fired { show }) => {
+                if show {
+                    show_self(true);
+                }
+                true
+            },
+            None => false,
+        };
+        // The same pass for every parked chat with something to tick: its
+        // queue and its jobs are its own, and it is as able to start a request
+        // off-screen as it is to receive one. The others are left alone — a
+        // settled tab has nothing to do, and swapping it in costs.
+        let ticking: Vec<usize> = self
+            .parked
+            .iter()
+            .enumerate()
+            .filter(|(_, chat)| !chat.jobs.is_empty() || !chat.asks.is_empty())
+            .map(|(index, _)| index)
+            .collect();
+        // The bar position of the first chat whose job asked to be seen. A bar
+        // position rather than a parked index: the switch below reorders
+        // `parked`, and bar order is the one thing that never moves.
+        let mut show_tab = None;
+        for index in ticking {
+            let (job, asked) = self.with_parked(index, |state| {
                 let asked = state.drain_asks();
-                state.tick_jobs(elapsed) || asked
-            }) || fired;
+                (state.tick_jobs(elapsed), asked)
+            });
+            if matches!(job, Some(Fired { show: true })) && show_tab.is_none() {
+                show_tab = Some(self.tab_of_parked(index));
+            }
+            fired = fired || asked || job.is_some();
+        }
+        // A job that asked to be seen fired into a tab nobody is looking at.
+        // Popping the pane open would show the wrong chat, and any confirmation
+        // that run raises would wait where no `y` can reach it — so the tab is
+        // switched to first, and then the pane shown.
+        if let Some(tab) = show_tab {
+            self.switch_to_tab(tab);
+            show_self(true);
         }
         let fired = self.poll_plugin_loads() || fired;
         let fired = self.poll_extension_scan() || fired;
@@ -593,7 +667,7 @@ impl State {
     ///
     /// Parked chats are swapped in one at a time through `with_parked`, which is how a parked
     /// chat's stream is serviced too: `poll_plugin_load` and everything it calls only ever see
-    /// the chat they are for.
+    /// the chat they are for. Indices are stable under the swap, so the order is immaterial.
     fn poll_plugin_loads(&mut self) -> bool {
         let mut fired = self.poll_plugin_load();
         let parked: Vec<usize> = self
@@ -603,7 +677,7 @@ impl State {
             .filter(|(_, chat)| matches!(chat.status, Status::AwaitingPluginLoad))
             .map(|(index, _)| index)
             .collect();
-        for index in parked.into_iter().rev() {
+        for index in parked {
             fired = self.with_parked(index, |state| state.poll_plugin_load()) || fired;
         }
         fired
@@ -648,38 +722,36 @@ impl State {
         true
     }
 
-    /// Count the jobs down and start at most one due run. Returns whether the
-    /// transcript changed.
+    /// Count the jobs down and start at most one due run. Says which, if one
+    /// fired — the transcript changed exactly then.
     ///
     /// Only fires when `Idle`: there is exactly one stream slot, and a job that
     /// comes due mid-reply waits for a later tick rather than stacking runs.
     ///
+    /// Showing the pane is the caller's job, not this one's: a job in a parked
+    /// chat has to be switched to before it is shown, and only `on_timer`
+    /// knows which chat this is running against.
+    ///
     /// ponytail: a scheduled run that calls a destructive tool parks on its y/n
     /// prompt and holds every other job with it. Auto-declining confirmations
     /// on scheduled runs is the fix if that ever bites.
-    pub(crate) fn tick_jobs(&mut self, elapsed: f64) -> bool {
+    pub(crate) fn tick_jobs(&mut self, elapsed: f64) -> Option<Fired> {
         for job in &mut self.jobs {
             job.due_in -= elapsed;
         }
         if self.is_in_flight() || self.picker.is_some() {
-            return false;
+            return None;
         }
         let Ok(cfg) = self.cfg.clone() else {
-            return false;
+            return None;
         };
-        let Some(job) = self.jobs.iter_mut().find(|job| job.due_in <= 0.0) else {
-            return false;
-        };
+        let job = self.jobs.iter_mut().find(|job| job.due_in <= 0.0)?;
 
         job.due_in = job.every;
         let prompt = job.prompt.clone();
         let job_id = job.id;
+        let show = job.show;
         self.job_auto_confirm = job.auto_confirm;
-        // Popping the pane open is also what makes a confirmation prompt
-        // reachable, so the show flag covers both meanings of "tell me".
-        if job.show {
-            show_self(true);
-        }
         // Mentions resolve at fire time, so "check @codex every minute" reads the
         // agent as it is now, not as it was when the job was armed.
         let mut fired = format!("[scheduled] {prompt}");
@@ -712,7 +784,7 @@ impl State {
         // A fresh tool budget, same as a typed question.
         self.tool_rounds = 0;
         self.start_request(&cfg);
-        true
+        Some(Fired { show })
     }
 
     /// Take a question from the `hocus_ask` pipe.
@@ -970,22 +1042,7 @@ impl State {
         self.log_global("new_chat", serde_json::json!({"old_chat_id": old_id}));
         self.picker = None;
         self.chat_tab_focus = None;
-        // Worth keeping: anything said, anything saved, or a watcher armed that
-        // would otherwise be thrown away with a chat that only looks empty.
-        let worth_a_tab = !self.messages.is_empty()
-            || self.chat_id.is_some()
-            || !self.jobs.is_empty()
-            || self.is_in_flight();
-        if worth_a_tab {
-            let outgoing = self.take_chat();
-            self.parked.insert(self.chat_tab, outgoing);
-            self.chat_tab = self.parked.len();
-            self.input.clear();
-            self.saved = self.fingerprint();
-            self.pin_to_bottom();
-            return true;
-        }
-        self.reset_chat();
+        self.open_tab(Chat::default());
         true
     }
 
