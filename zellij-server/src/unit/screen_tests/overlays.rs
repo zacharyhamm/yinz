@@ -199,7 +199,7 @@ fn an_overlay_that_awaits_placement_is_not_painted_until_it_is_placed() {
         "nothing is painted for it until somebody places it"
     );
 
-    tab.change_overlay_coordinates(&pane_id, popup_coordinates())
+    tab.change_overlay_coordinates(&pane_id, popup_coordinates(), false)
         .expect("TEST");
     assert!(
         !tab.overlay_carry_for(pane_id).awaiting_placement
@@ -638,7 +638,7 @@ fn an_overlay_terminal_is_not_told_it_lost_focus_when_the_layer_goes_down() {
     tab.handle_pty_bytes(2, b"\x1b[?1004h".to_vec())
         .expect("TEST");
 
-    tab.change_overlay_coordinates(&PaneId::Terminal(2), overlay_coordinates())
+    tab.change_overlay_coordinates(&PaneId::Terminal(2), overlay_coordinates(), false)
         .expect("TEST");
 
     assert!(!tab.are_floating_panes_visible());
@@ -3464,7 +3464,7 @@ fn a_dragged_overlay_stays_where_it_was_dropped_across_a_tab_move() {
         .expect("TEST");
     // the plugin restating its placement on the far side, which is what `follow_tab` does the
     // instant the move lands
-    screen.change_overlay_coordinates(vec![(PaneId::Terminal(3), opened_with)]);
+    screen.change_overlay_coordinates(vec![(PaneId::Terminal(3), opened_with)], false);
 
     let after = screen.tabs[&1]
         .get_pane_with_id(PaneId::Terminal(3))
@@ -3475,6 +3475,43 @@ fn a_dragged_overlay_stays_where_it_was_dropped_across_a_tab_move() {
         (dropped_at.x, dropped_at.y),
         "the overlay arrives where the user dropped it, and the plugin's restated placement takes \
          only its size"
+    );
+}
+
+/// The one placement that does outrank a drag: the plugin relaying a key the user pressed. The
+/// overlay goes where the key said, and the size comes along - both claims are the user's to
+/// release as well as to make.
+#[test]
+fn a_dragged_overlay_is_re_placed_when_the_plugin_says_the_user_asked() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_with(&mut screen, 3, overlay_coordinates());
+    drag_overlay_by(&mut screen, 3, 20, 4);
+    let dropped_at = floating_geom(&screen, 3);
+
+    let asked_for = FloatingPaneCoordinates::new(
+        Some("10".to_owned()),
+        Some("2".to_owned()),
+        Some("30".to_owned()),
+        Some("8".to_owned()),
+        None,
+        None,
+    )
+    .expect("TEST");
+    screen.change_overlay_coordinates(vec![(PaneId::Terminal(3), asked_for)], true);
+
+    let after = floating_geom(&screen, 3);
+    assert_ne!((after.x, after.y), (dropped_at.x, dropped_at.y));
+    assert_eq!(
+        (
+            after.x,
+            after.y,
+            after.cols.as_usize(),
+            after.rows.as_usize()
+        ),
+        (10, 2, 30, 8),
+        "exactly the placement the key asked for"
     );
 }
 
@@ -3525,7 +3562,7 @@ fn a_dragged_overlay_revealed_onto_another_tab_arrives_shown_and_still_dragged()
         "the reveal half of the move still happens - a pane asked for by name comes back shown"
     );
     // the plugin restating its placement, as hocus does the instant it hears where it landed
-    screen.change_overlay_coordinates(vec![(popup_id, coordinates)]);
+    screen.change_overlay_coordinates(vec![(popup_id, coordinates)], false);
     let after = screen.tabs[&1]
         .get_pane_with_id(popup_id)
         .expect("TEST")

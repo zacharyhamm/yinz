@@ -35,7 +35,16 @@
 //! also why the server routes events to overlays in *every* tab and not only the active one -
 //! without that, an overlay left behind on another tab would never hear the `TabUpdate` it moves
 //! on.
+//!
+//! **The corner is the default, not the only place.** Ctrl-o (`State::reposition`) jumps the
+//! conversation over a different tiled pane - the largest one the user is not working in, by
+//! `pick_anchor` - and remembers the pane as `State::anchor`. From then on the conversation is
+//! placed *inside* that pane (`anchored_geometry`) rather than in the corner, and it stays with
+//! the pane: `track_anchor` reads each `PaneUpdate` and follows a re-tile or, once the pane is
+//! gone, releases the conversation back to the corner. The list is not part of this; it keeps
+//! its corner arithmetic as if the conversation were still there.
 
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
 
 use zellij_tile::prelude::*;
@@ -92,19 +101,8 @@ pub(crate) fn overlay_geometry(
     if rows == 0 || cols == 0 {
         return None;
     }
-    // Capped at a quarter of the screen on *both* axes, so a fat `pad` on a small terminal cannot
-    // eat the panes it is supposed to be insetting. Capping against the rows alone was not enough:
-    // `pad` is the rectangles' `x` as well as their inset off the top and bottom, so on a tall,
-    // narrow display a rows-only cap let it exceed the column count outright and put the panes off
-    // the right-hand edge of the screen.
-    let pad = config
-        .get("pad")
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_PAD)
-        .min(rows / 4)
-        .min(cols / 4);
+    let pad = pad_of(config, rows, cols);
+    let (configured_width, configured_height) = configured_size(config, rows, cols);
     // What is between the paddings, and how much of it one pane may take. With the conversation
     // on screen the two panes and the gap between them are laid end to end, so neither may exceed
     // half of what is left once the gap is taken off - a `width` wide enough for one is not wide
@@ -115,7 +113,7 @@ pub(crate) fn overlay_geometry(
         true => across.saturating_sub(pad) / 2,
         false => across,
     };
-    let width = resolve(config.get("width"), cols, DEFAULT_WIDTH_PERCENT)
+    let width = configured_width
         // an overlay is framed, so the plugin is rendered two cells narrower than the pane
         .max(ui::MIN_COLS + 2)
         .min(each.max(1));
@@ -124,8 +122,7 @@ pub(crate) fn overlay_geometry(
     // share of it a pane actually takes. A pane is anchored to the *bottom*, so a height short of
     // the whole leaves the top of the screen alone rather than the bottom.
     let available = rows.saturating_sub(pad * 2);
-    let height = resolve(config.get("height"), rows, DEFAULT_HEIGHT_PERCENT)
-        .clamp(MIN_ROWS.min(available).max(1), available.max(1));
+    let height = configured_height.clamp(MIN_ROWS.min(available).max(1), available.max(1));
     let y = rows.saturating_sub(height + pad);
 
     // Fixed rather than percentages throughout: these are already resolved against the surface we
@@ -133,17 +130,6 @@ pub(crate) fn overlay_geometry(
     // denominators would agree now that `surface_of` reads the session surface, but stating the
     // arithmetic once is still the point - the panes are anchored to the *bottom*, which no
     // percentage can say.
-    let rect = |x: usize, y: usize, w: usize, h: usize| {
-        FloatingPaneCoordinates::new(
-            Some(x.to_string()),
-            Some(y.to_string()),
-            Some(w.to_string()),
-            Some(h.to_string()),
-            None,
-            None,
-        )
-        .unwrap_or_default()
-    };
     let agents_x = match chat_visible {
         // One padding of clear screen between the two, the same padding that insets the pair from
         // the edges of the screen. They used to meet frame to frame; two framed panels touching
@@ -154,9 +140,162 @@ pub(crate) fn overlay_geometry(
         false => pad,
     };
     Some((
-        rect(pad, y, width, height),
-        rect(agents_x, y, width, height),
+        fixed_rect(pad, y, width, height),
+        fixed_rect(agents_x, y, width, height),
     ))
+}
+
+/// The padding, resolved against a surface of `rows` by `cols`.
+///
+/// Capped at a quarter of the surface on *both* axes, so a fat `pad` on a small terminal cannot
+/// eat the panes it is supposed to be insetting. Capping against the rows alone was not enough:
+/// `pad` is the rectangles' `x` as well as their inset off the top and bottom, so on a tall,
+/// narrow display a rows-only cap let it exceed the column count outright and put the panes off
+/// the right-hand edge of the screen.
+fn pad_of(config: &BTreeMap<String, String>, rows: usize, cols: usize) -> usize {
+    config
+        .get("pad")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_PAD)
+        .min(rows / 4)
+        .min(cols / 4)
+}
+
+/// `(width, height)` as configured, resolved against the surface and not yet clamped to anything.
+fn configured_size(config: &BTreeMap<String, String>, rows: usize, cols: usize) -> (usize, usize) {
+    (
+        resolve(config.get("width"), cols, DEFAULT_WIDTH_PERCENT),
+        resolve(config.get("height"), rows, DEFAULT_HEIGHT_PERCENT),
+    )
+}
+
+/// Coordinates stated as fixed cells - see the note in `overlay_geometry` on why never
+/// percentages.
+fn fixed_rect(x: usize, y: usize, w: usize, h: usize) -> FloatingPaneCoordinates {
+    FloatingPaneCoordinates::new(
+        Some(x.to_string()),
+        Some(y.to_string()),
+        Some(w.to_string()),
+        Some(h.to_string()),
+        None,
+        None,
+    )
+    .unwrap_or_default()
+}
+
+/// An absolute rectangle on the screen, as a `PaneInfo` reports one.
+///
+/// Tiled panes and overlays are reported in the same coordinates - every rect comes off the
+/// pane's own geometry, and an overlay's surface is the display area at the screen origin - so
+/// the conversation's own manifest entry can be compared against the tiled panes beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Rect {
+    pub x: usize,
+    pub y: usize,
+    pub cols: usize,
+    pub rows: usize,
+}
+
+impl Rect {
+    pub(crate) fn of(pane: &PaneInfo) -> Rect {
+        Rect {
+            x: pane.pane_x,
+            y: pane.pane_y,
+            cols: pane.pane_columns,
+            rows: pane.pane_rows,
+        }
+    }
+
+    fn area(&self) -> usize {
+        self.cols * self.rows
+    }
+
+    /// Cells the two rectangles share.
+    fn overlap(&self, other: &Rect) -> usize {
+        let across = (self.x + self.cols)
+            .min(other.x + other.cols)
+            .saturating_sub(self.x.max(other.x));
+        let down = (self.y + self.rows)
+            .min(other.y + other.rows)
+            .saturating_sub(self.y.max(other.y));
+        across * down
+    }
+}
+
+/// The id a manifest entry names.
+pub(crate) fn pane_id_of(pane: &PaneInfo) -> PaneId {
+    match pane.is_plugin {
+        true => PaneId::Plugin(pane.id),
+        false => PaneId::Terminal(pane.id),
+    }
+}
+
+/// The tiled pane the conversation should jump over, given every pane on its tab.
+///
+/// The pane the user is working in is out: it is the one they want the conversation *off*. Of
+/// the rest, a pane the conversation is not already sitting on is preferred to one it is - least
+/// overlap first - and the larger pane wins among equals, because a panel inside a bigger pane
+/// keeps more of its size. The sort is stable, so a tie beyond that goes to manifest order.
+///
+/// Floating, suppressed and unselectable panes are not places to sit: a floating pane is not the
+/// layout, a suppressed one is not on screen, and an unselectable one is chrome such as the
+/// status bar. `None` when there is nothing to go to, or when the best pane is the one the
+/// conversation is already anchored to - a press that would move it nowhere does nothing.
+pub(crate) fn pick_anchor(
+    own_rect: Rect,
+    panes: &[PaneInfo],
+    current: Option<PaneId>,
+) -> Option<PaneId> {
+    let mut candidates: Vec<&PaneInfo> = panes
+        .iter()
+        .filter(|pane| {
+            !pane.is_floating && !pane.is_suppressed && pane.is_selectable && !pane.is_focused
+        })
+        .collect();
+    candidates.sort_by_key(|pane| {
+        let rect = Rect::of(pane);
+        (own_rect.overlap(&rect), Reverse(rect.area()))
+    });
+    let best = pane_id_of(candidates.first()?);
+    (current != Some(best)).then_some(best)
+}
+
+/// The conversation's rectangle inside `anchor`: its bottom-left corner, inset by the padding,
+/// at the configured size or as much of it as fits.
+///
+/// The same arithmetic as the corner placement with the anchor standing in for the screen, so a
+/// `width`, `height` or `pad` the user set means the same thing in both. The one addition is the
+/// cap: a pane can be far smaller than the screen, and the padding is capped against it too, or a
+/// pad of three would eat a pane six rows tall.
+///
+/// The minimums win over the pane, where the corner placement lets the screen win over them: a
+/// pane can be smaller than anything hocus can draw in, and a conversation that overflows a tiny
+/// pane is still a conversation, where one squeezed to its width is not. The server clamps the
+/// result to the screen as it does every overlay.
+///
+/// `None` when there is nothing to compute against - a surface or an anchor with no size.
+pub(crate) fn anchored_geometry(
+    config: &BTreeMap<String, String>,
+    surface_rows: usize,
+    surface_cols: usize,
+    anchor: Rect,
+) -> Option<FloatingPaneCoordinates> {
+    if surface_rows == 0 || surface_cols == 0 || anchor.rows == 0 || anchor.cols == 0 {
+        return None;
+    }
+    let pad = pad_of(config, surface_rows, surface_cols)
+        .min(anchor.rows / 4)
+        .min(anchor.cols / 4);
+    let (configured_width, configured_height) = configured_size(config, surface_rows, surface_cols);
+    let inner_cols = anchor.cols.saturating_sub(pad * 2).max(1);
+    let inner_rows = anchor.rows.saturating_sub(pad * 2).max(1);
+    let width = configured_width.min(inner_cols).max(ui::MIN_COLS + 2);
+    let height = configured_height.min(inner_rows).max(MIN_ROWS);
+    let x = anchor.x + pad;
+    let y = (anchor.y + anchor.rows).saturating_sub(pad + height);
+    Some(fixed_rect(x, y, width, height))
 }
 
 /// The surface the panes are placed against, off the active tab's `TabInfo`.
@@ -264,7 +403,19 @@ impl State {
     /// Both halves are tracked, and separately: see [`State::agents_placed`] for why one flag was
     /// not enough.
     pub(crate) fn apply_overlay_geometry(&mut self) {
-        let Some((chat, agents)) = overlay_geometry(
+        self.place(false);
+    }
+
+    /// The placement itself. `override_user_placement` is the one thing Ctrl-o adds: the server
+    /// keeps a position the user dragged and a size they resized over anything a plugin asks
+    /// for, and a key the user pressed is theirs to override that with.
+    ///
+    /// **An anchored conversation is placed inside its pane; the list is placed as if it were
+    /// not.** The list's slot is a function of whether the conversation is on screen, not of
+    /// where it is, so the corner arithmetic answers for it unchanged - the user moved the
+    /// conversation, and the list is a separate pane they did not ask to move.
+    fn place(&mut self, override_user_placement: bool) {
+        let Some((mut chat, agents)) = overlay_geometry(
             &self.kdl,
             self.surface_rows,
             self.surface_cols,
@@ -272,11 +423,25 @@ impl State {
         ) else {
             return;
         };
+        if let (Some(_), Some(anchor_rect)) = (self.anchor, self.anchor_rect) {
+            if let Some(inside) =
+                anchored_geometry(&self.kdl, self.surface_rows, self.surface_cols, anchor_rect)
+            {
+                chat = inside;
+            }
+        }
         let mut placements = vec![(PaneId::Plugin(self.own_plugin_id), chat)];
         if let Some(agents_id) = self.agents_plugin {
             placements.push((PaneId::Plugin(agents_id), agents));
         }
-        change_overlay_coordinates(placements);
+        #[cfg(test)]
+        {
+            self.last_placement = Some((placements.clone(), override_user_placement));
+        }
+        match override_user_placement {
+            true => change_overlay_coordinates_overriding_user_placement(placements),
+            false => change_overlay_coordinates(placements),
+        }
         self.placed = self.own_tab_index.is_some();
         // The same test, pane for pane: the manifest naming a tab is the only evidence the call
         // could have landed. A list nobody has opened is nothing to place and so counts as placed,
@@ -285,6 +450,66 @@ impl State {
         #[cfg(test)]
         {
             self.placed_against = (self.surface_rows, self.surface_cols);
+        }
+    }
+
+    /// Ctrl-o: jump the conversation over a different tiled pane.
+    ///
+    /// The pane is chosen by [`pick_anchor`] from the last manifest, and remembered: from here on
+    /// the conversation is placed inside it rather than in the corner, until the pane goes away.
+    /// Sent as the user's own placement, so it lands even on a conversation they dragged.
+    ///
+    /// Nothing happens before the first `PaneUpdate` - there is no manifest to rank - and nothing
+    /// happens when there is nowhere better to go.
+    pub(crate) fn reposition(&mut self) {
+        let own_id = PaneId::Plugin(self.own_plugin_id);
+        let Some(own) = self
+            .tab_panes
+            .iter()
+            .find(|pane| pane_id_of(pane) == own_id)
+        else {
+            return;
+        };
+        let Some(next) = pick_anchor(Rect::of(own), &self.tab_panes, self.anchor) else {
+            return;
+        };
+        self.anchor_rect = self
+            .tab_panes
+            .iter()
+            .find(|pane| pane_id_of(pane) == next)
+            .map(Rect::of);
+        self.anchor = Some(next);
+        self.place(true);
+    }
+
+    /// Read the anchor off a fresh manifest of our tab: gone, moved, or as it was.
+    ///
+    /// The anchor is a pane, and a `PaneUpdate` is the only word about where panes are. A pane
+    /// that is no longer a tiled pane on our tab - closed, floated, or left behind on the tab we
+    /// moved from - releases the conversation to the corner; one that was re-tiled takes the
+    /// conversation with it. Either way the placement is restated, and only then: an anchor
+    /// exactly where it was asks for nothing, which is what keeps this from placing on every
+    /// event. No loop is possible either way - the trigger is a *tiled* rect, and nothing the
+    /// conversation does to itself moves a tiled pane.
+    pub(crate) fn track_anchor(&mut self, panes: &[PaneInfo]) {
+        let Some(anchor) = self.anchor else {
+            return;
+        };
+        let now = panes
+            .iter()
+            .find(|pane| pane_id_of(pane) == anchor && !pane.is_floating && !pane.is_suppressed)
+            .map(Rect::of);
+        match now {
+            None => {
+                self.anchor = None;
+                self.anchor_rect = None;
+                self.apply_overlay_geometry();
+            },
+            Some(rect) if self.anchor_rect != Some(rect) => {
+                self.anchor_rect = Some(rect);
+                self.apply_overlay_geometry();
+            },
+            Some(_) => {},
         }
     }
 
@@ -352,6 +577,11 @@ impl State {
         }
         break_panes_to_tab_with_index(&pane_ids, tab_index, false);
         self.own_tab_index = Some(tab_index);
+        // The anchor is a pane on the tab being left. Released here rather than waited for: the
+        // placement below runs before any manifest of the new tab, and would otherwise be
+        // computed inside a pane that is not there.
+        self.anchor = None;
+        self.anchor_rect = None;
         if self.agents_plugin.is_some() {
             // Both ids went in one call, so the list is wherever we are. Recorded here rather than
             // waited for, so the next `PaneUpdate` - taken before the move, possibly - does not
