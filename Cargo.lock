@@ -5587,6 +5587,7 @@ dependencies = [
  "log",
  "log4rs",
  "miette 7.6.0",
+ "mlua",
  "names",
  "nix",
  "notify",

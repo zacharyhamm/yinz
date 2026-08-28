@@ -165,6 +165,45 @@ A command taking several values also accepts them by name where that reads bette
 `zellij.rename_tab { tab_index = 0, name = "logs" }`. Fields you leave out are absent, not empty:
 a command with no required arguments can be called with none.
 
+### Default keybindings
+
+A Lua plugin can register fallback keybindings at startup. User configuration always wins; a
+default becomes active only while its mode/key is otherwise unbound. Registrations are owned by
+the plugin, replaced by its next call, and removed when it unloads. If plugins collide, the lower
+plugin id wins until it unloads. Permission requests are asynchronous, so registration must wait
+for the grant:
+
+```lua
+function M.load()
+  zellij.subscribe { "permission_request_result" }
+  zellij.request_permission { "reconfigure" }
+end
+
+zellij.on("permission_request_result", function(event)
+  if event.value ~= "Granted" then return false end
+  zellij.register_default_keybindings {
+    {
+      mode = "normal",
+      key = "Ctrl g",
+      handler = function(message)
+        M.open = not M.open
+        return true -- re-render
+      end,
+    },
+    {
+      mode = "normal",
+      key = "Ctrl n",
+      actions = { zellij.action("NewPane") },
+    },
+  }
+  return false
+end)
+```
+
+Each entry has exactly one of `handler` or `actions`. Handlers receive the keybinding pipe message
+and can call any normal plugin command. Actions are ordinary Zellij keybinding actions; positional,
+property, and child arguments use the same `zellij.action` forms documented for Lua config.
+
 `zellij.set_timeout(seconds)` sends one `timer` event; `zellij.set_interval(seconds)` keeps
 sending them until `zellij.clear_interval()`. There is one interval per plugin: calling
 `set_interval` again changes the period rather than starting a second clock.

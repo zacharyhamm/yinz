@@ -4309,6 +4309,7 @@ pub enum PluginCommand {
         keys_to_unbind: Vec<(InputMode, KeyWithModifier)>,
         write_config_to_disk: bool,
     },
+    RegisterDefaultKeybindings(String),
     ListClients,
     ChangeHostFolder(PathBuf),
     SetFloatingPanePinned(PaneId, bool), // bool -> should be pinned

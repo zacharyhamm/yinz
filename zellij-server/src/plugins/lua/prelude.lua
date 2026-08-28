@@ -333,6 +333,81 @@ function zellij.command(name, args)
   return dispatch(name, args)
 end
 
+local default_keybinding_handlers = {}
+
+local function kdl_quote(value)
+  if type(value) == "boolean" or type(value) == "number" then return tostring(value) end
+  value = tostring(value):gsub("\\", "\\\\"):gsub('"', '\\"')
+    :gsub("\n", "\\n"):gsub("\r", "\\r"):gsub("\t", "\\t")
+  return '"' .. value .. '"'
+end
+
+local function kdl_name(value)
+  value = tostring(value)
+  if value:match("^[%a_][%w_%-]*$") then return value end
+  return kdl_quote(value)
+end
+
+--- Describe a Zellij keybinding action. Positional arguments follow the name; a single table is
+--- read as KDL properties. Use `{ args = {...}, props = {...}, children = {...} }` for both.
+function zellij.action(name, ...)
+  local args = { ... }
+  if #args == 1 and type(args[1]) == "table" then
+    local value = args[1]
+    if value.args or value.props or value.children then
+      return { name = name, args = value.args or {}, props = value.props or {}, children = value.children }
+    end
+    return { name = name, args = {}, props = value }
+  end
+  return { name = name, args = args, props = {} }
+end
+
+local function kdl_children(values)
+  local keys, out = {}, {}
+  for key in pairs(values or {}) do keys[#keys + 1] = key end
+  table.sort(keys)
+  for _, key in ipairs(keys) do out[#out + 1] = kdl_name(key) .. " " .. kdl_quote(values[key]) end
+  return table.concat(out, "; ")
+end
+
+local function action_kdl(action)
+  if type(action) == "string" then return kdl_name(action) end
+  local out = { kdl_name(assert(action.name, "an action needs a name")) }
+  for _, arg in ipairs(action.args or {}) do out[#out + 1] = kdl_quote(arg) end
+  local keys = {}
+  for key in pairs(action.props or {}) do keys[#keys + 1] = key end
+  table.sort(keys)
+  for _, key in ipairs(keys) do out[#out + 1] = kdl_name(key) .. "=" .. kdl_quote(action.props[key]) end
+  if action.children then out[#out + 1] = "{ " .. kdl_children(action.children) .. "; }" end
+  return table.concat(out, " ")
+end
+
+--- Register fallback bindings owned by this plugin. Each entry has `mode`, `key`, and exactly
+--- one of `actions` or `handler`. Calling again replaces the plugin's previous defaults.
+function zellij.register_default_keybindings(bindings)
+  local modes = {}
+  default_keybinding_handlers = {}
+  for index, binding in ipairs(bindings or {}) do
+    local has_actions, has_handler = binding.actions ~= nil, type(binding.handler) == "function"
+    if has_actions == has_handler then
+      error("default keybinding " .. index .. " needs exactly one of actions or handler", 2)
+    end
+    local action_list = {}
+    if has_handler then
+      local handler_name = "__zellij_default_keybinding:" .. index
+      default_keybinding_handlers[handler_name] = binding.handler
+      action_list[1] = "MessagePlugin { name " .. kdl_quote(handler_name) .. "; }"
+    else
+      for _, action in ipairs(binding.actions) do action_list[#action_list + 1] = action_kdl(action) end
+    end
+    modes[#modes + 1] = kdl_name(assert(binding.mode, "a default keybinding needs a mode"))
+      .. " { bind " .. kdl_quote(assert(binding.key, "a default keybinding needs a key"))
+      .. " { " .. table.concat(action_list, "; ") .. "; }; }"
+  end
+  return dispatch("register_default_keybindings", "keybinds clear-defaults=true { "
+    .. table.concat(modes, "; ") .. (#modes > 0 and "; " or "") .. "}")
+end
+
 --- A pane's identity. `PaneId` is a Rust enum, so it travels as `{ Terminal = 3 }` rather than a
 --- bare number, and commands that take one want it in that shape.
 function zellij.terminal_pane(id)
@@ -1002,6 +1077,10 @@ end
 function zellij.__pipe(plugin, message)
   zellij.__should_render = false
   local should_render = false
+  local keybinding_handler = default_keybinding_handlers[message.name]
+  if keybinding_handler and keybinding_handler(message) then
+    should_render = true
+  end
   if plugin.pipe and plugin.pipe(message) then
     should_render = true
   end

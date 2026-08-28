@@ -373,6 +373,40 @@ fn handlers_registered_with_on_run_alongside_update() {
 }
 
 #[test]
+fn a_default_keybinding_callback_is_dispatched_from_its_reserved_pipe() {
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = { count = 0 }
+        function M.load()
+          zellij.register_default_keybindings {
+            { mode = "normal", key = "Ctrl g", handler = function()
+                M.count = M.count + 1
+                return true
+              end },
+            { mode = "normal", key = "Ctrl n", actions = {
+                zellij.action("NewPane")
+              } },
+          }
+        end
+        function M.render() return tostring(M.count) end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    let message = zellij_utils::data::PipeMessage::new(
+        zellij_utils::data::PipeSource::Keybind,
+        "__zellij_default_keybinding:1",
+        &None,
+        &None,
+        true,
+    );
+    assert!(plugin.pipe(&message).unwrap());
+    assert_eq!(plugin.render(1, 10).unwrap(), b"1");
+}
+
+#[test]
 fn load_merges_user_configuration_over_the_plugins_defaults() {
     let mut plugin = load(
         r#"

@@ -258,6 +258,7 @@ enum CommandName {
   FsRename = 268;
   GrantPluginPermissions = 269;
   SetContextMenu = 270;
+  RegisterDefaultKeybindings = 271;
 }
 
 message PluginCommand {
@@ -456,6 +457,7 @@ message PluginCommand {
     FsRenamePayload fs_rename_payload = 209;
     GrantPluginPermissionsPayload grant_plugin_permissions_payload = 210;
     SetContextMenuPayload set_context_menu_payload = 211;
+    string register_default_keybindings_payload = 212;
   }
 }
 
