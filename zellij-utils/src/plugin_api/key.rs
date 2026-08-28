@@ -14,7 +14,7 @@ impl TryFrom<ProtobufMainKey> for BareKey {
     type Error = &'static str;
     fn try_from(protobuf_main_key: ProtobufMainKey) -> Result<Self, &'static str> {
         match protobuf_main_key {
-            ProtobufMainKey::Char(character) => Ok(BareKey::Char(char_index_to_char(character))),
+            ProtobufMainKey::Char(character) => Ok(BareKey::Char(char_index_to_char(character)?)),
             ProtobufMainKey::Key(key_index) => {
                 let key = ProtobufNamedKey::try_from(key_index).map_err(|_| "invalid_key")?;
                 Ok(named_key_to_bare_key(key))
@@ -142,8 +142,14 @@ fn fn_index_to_main_key(index: u8) -> Result<ProtobufMainKey, &'static str> {
     }
 }
 
-fn char_index_to_char(char_index: i32) -> char {
-    char_index as u8 as char
+/// The encoder sends the whole scalar value (`character as i32`), and the field is an `int32`, so
+/// anything a `char` can be fits; cutting it to a byte here used to turn every key above U+00FF
+/// into the wrong character.
+fn char_index_to_char(char_index: i32) -> Result<char, &'static str> {
+    u32::try_from(char_index)
+        .ok()
+        .and_then(char::from_u32)
+        .ok_or("invalid character key")
 }
 
 fn named_key_to_bare_key(named_key: ProtobufNamedKey) -> BareKey {

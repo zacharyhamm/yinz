@@ -559,7 +559,7 @@ impl From<ProtobufWatchHandle> for DataWatchHandle {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::data::AttrDef as NativeAttrDef;
     use hegel::generators::{self};
@@ -614,7 +614,7 @@ mod tests {
     }
 
     #[hegel::composite]
-    fn any_entity_def(tc: &hegel::TestCase) -> EntityDef {
+    pub(crate) fn any_entity_def(tc: &hegel::TestCase) -> EntityDef {
         EntityDef {
             name: tc.draw(generators::text()),
             version: tc.draw(generators::integers::<u32>()),
@@ -658,7 +658,7 @@ mod tests {
     }
 
     #[hegel::composite]
-    fn any_fetch_request(tc: &hegel::TestCase) -> FetchRequest {
+    pub(crate) fn any_fetch_request(tc: &hegel::TestCase) -> FetchRequest {
         FetchRequest {
             namespace: tc.draw(generators::optional(generators::text())),
             entity: tc.draw(generators::text()),
@@ -679,7 +679,7 @@ mod tests {
     }
 
     #[hegel::composite]
-    fn any_mutation(tc: &hegel::TestCase) -> Mutation {
+    pub(crate) fn any_mutation(tc: &hegel::TestCase) -> Mutation {
         let values = generators::vecs(generators::tuples!(generators::text(), any_data_value(),))
             .max_size(4);
         match tc.draw(generators::integers::<u8>().max_value(2)) {
