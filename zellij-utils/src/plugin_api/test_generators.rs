@@ -153,23 +153,9 @@ pub(crate) fn optional_directions(tc: &hegel::TestCase) -> Option<Direction> {
 }
 
 pub(crate) fn input_modes(tc: &hegel::TestCase) -> InputMode {
-    tc.draw(generators::sampled_from(vec![
-        InputMode::Normal,
-        InputMode::Locked,
-        InputMode::Resize,
-        InputMode::Pane,
-        InputMode::Tab,
-        InputMode::Scroll,
-        InputMode::EnterSearch,
-        InputMode::Search,
-        InputMode::RenameTab,
-        InputMode::RenamePane,
-        InputMode::Session,
-        InputMode::Move,
-        InputMode::Prompt,
-        InputMode::Tmux,
-        InputMode::Agent,
-    ]))
+    tc.draw(generators::sampled_from(
+        InputMode::iter().collect::<Vec<_>>(),
+    ))
 }
 
 pub(crate) fn resizes(tc: &hegel::TestCase) -> Resize {

@@ -312,6 +312,7 @@ pub fn hints_for_mode(mi: &ModeInfo) -> Vec<Hint> {
         hint("Select pane", "Select", to_base_mode),
     ]} else if matches!(mi.mode, IM::RenamePane | IM::RenameTab) { vec![
         hint("When done", "Done", to_base_mode),
+        hint("Select pane", "Select", keys_doing_each(&km, &move_focus)),
     ]} else { vec![] }
 }
 

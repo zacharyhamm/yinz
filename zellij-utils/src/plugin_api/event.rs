@@ -3802,13 +3802,8 @@ mod tests {
         /// thing. What has to survive is identity - `id` - and everything the plugin draws with.
         fn any_context_menu_item(tc: &hegel::TestCase) -> ContextMenuItem {
             ContextMenuItem {
-                id: tc.draw(generators::optional(generators::integers::<u64>())),
-                label: strings(tc),
-                shortcut: tc.draw(generators::optional(generators::text())),
                 actions: vec![],
-                context: context(tc),
-                disabled: tc.draw(generators::booleans()),
-                separator: tc.draw(generators::booleans()),
+                ..crate::plugin_api::test_generators::context_menu_items(tc)
             }
         }
 
