@@ -7293,12 +7293,24 @@ impl Tab {
         }
     }
 
+    #[cfg(test)]
     pub fn handle_mouse_event(
         &mut self,
         event: &MouseEvent,
         client_id: ClientId,
     ) -> Result<MouseEffect> {
-        MouseHandler::handle_mouse_event(self, event, client_id)
+        MouseHandler::handle_mouse_event(self, event, client_id, None)
+    }
+
+    /// `passthrough_pane_id` is the pane the client is descended into, if any: alt+mouse over
+    /// it is written to the pane when it tracks the mouse, instead of grouping host panes.
+    pub fn handle_mouse_event_with_passthrough(
+        &mut self,
+        event: &MouseEvent,
+        client_id: ClientId,
+        passthrough_pane_id: Option<PaneId>,
+    ) -> Result<MouseEffect> {
+        MouseHandler::handle_mouse_event(self, event, client_id, passthrough_pane_id)
     }
 
     pub fn copy_selection(&self, client_id: ClientId) -> Result<()> {

@@ -432,7 +432,7 @@ impl Screen {
         }
     }
 
-    fn should_route_keys_to_pane(&self, client_id: ClientId, pane_id: PaneId) -> bool {
+    pub(super) fn should_route_keys_to_pane(&self, client_id: ClientId, pane_id: PaneId) -> bool {
         let Some(tab) = self.tab_containing_pane(pane_id) else {
             return false;
         };

@@ -68,10 +68,13 @@ impl Screen {
             self.notification_mouse_captures.insert(client_id);
             return;
         }
-        match self
-            .get_active_tab_mut(client_id)
-            .and_then(|tab| tab.handle_mouse_event(&event, client_id))
-        {
+        // A client descended into a nested guest has handed that pane its keys; alt+mouse
+        // belongs to the guest too, rather than to the host's pane-grouping gestures.
+        let passthrough_pane_id = active_pane_id_before
+            .filter(|pane_id| self.should_route_keys_to_pane(client_id, *pane_id));
+        match self.get_active_tab_mut(client_id).and_then(|tab| {
+            tab.handle_mouse_event_with_passthrough(&event, client_id, passthrough_pane_id)
+        }) {
             Ok(mouse_effect) => {
                 let mut should_render = false;
                 if let Some(context) = mouse_effect.open_context_menu.clone() {
