@@ -123,6 +123,29 @@ impl Screen {
                 self.notification_cell_rects(session_surface, now)
             });
 
+            // Wanted twice below - once for the menu geometry, once when the overlays paint - and
+            // on almost every frame there is neither a toast nor a menu, so it is not worth
+            // walking the client list to find out.
+            let has_overlays = !self.notifications.is_empty() || !self.context_menus.is_empty();
+            let regular_client_ids: Vec<ClientId> = if has_overlays {
+                self.connected_clients
+                    .borrow()
+                    .keys()
+                    .filter(|client_id| !self.watcher_clients.contains_key(client_id))
+                    .copied()
+                    .collect()
+            } else {
+                vec![]
+            };
+
+            // ...and the same for the menus, which are drawn above even the toasts. Per client,
+            // because a menu belongs to the client that opened it.
+            output.set_context_menu_rects(if self.context_menus.is_empty() {
+                HashMap::new()
+            } else {
+                self.context_menu_cell_rects(&regular_client_ids, session_surface)
+            });
+
             // Only the panes here: the cursor is placed further down, once the toasts have painted
             // too.
             let mut tabs_that_rendered: Vec<usize> = vec![];
@@ -137,15 +160,13 @@ impl Screen {
             }
 
             // notifications paint over the panes, so they're emitted once every tab has rendered
-            if !self.notifications.is_empty() {
-                let regular_client_ids: Vec<ClientId> = self
-                    .connected_clients
-                    .borrow()
-                    .keys()
-                    .filter(|client_id| !self.watcher_clients.contains_key(client_id))
-                    .copied()
-                    .collect();
+            if has_overlays {
                 self.render_notifications(&mut output, session_surface, &regular_client_ids, now)
+                    .context(err_context)?;
+                // Above the toasts: a menu is something the user opened and is looking at right
+                // now, and a toast arriving underneath it must not cover the row they are about
+                // to click.
+                self.render_context_menus(&mut output, session_surface, &regular_client_ids)
                     .context(err_context)?;
             }
 
@@ -294,6 +315,19 @@ impl Screen {
                     || any_watcher_needs_force_render
                     || !has_regular_clients;
 
+                // A watcher is watching a particular client's screen, so it sees that client's
+                // menu too - otherwise the watcher would see a pane the followed user is plainly
+                // interacting with and no sign of what they are interacting with it through.
+                let watcher_surface =
+                    self.session_surface_for_tab(focused_tab_index_of_followed_client_id);
+                // Before the tab renders, for the reason the regular path gives: the cursor this
+                // output places is the followed client's, and it must not be placed on a cell that
+                // client's own menu is about to cover.
+                if let Some(watcher_surface) = watcher_surface {
+                    watcher_output.set_context_menu_rects(
+                        self.context_menu_cell_rects(&[followed_client_id], watcher_surface),
+                    );
+                }
                 if let Some(tab) = self
                     .tabs
                     .get_mut(&focused_tab_index_of_followed_client_id)
@@ -304,6 +338,14 @@ impl Screen {
                     }
                     tab.render(&mut watcher_output, Some(followed_client_id))
                         .context(err_context)?;
+                }
+                if let Some(watcher_surface) = watcher_surface {
+                    self.render_context_menus(
+                        &mut watcher_output,
+                        watcher_surface,
+                        &[followed_client_id],
+                    )
+                    .context(err_context)?;
                 }
                 if let Some(tab) = self.tabs.get(&focused_tab_index_of_followed_client_id) {
                     watcher_output

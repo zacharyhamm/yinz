@@ -257,6 +257,7 @@ enum CommandName {
   FsCreateDir = 267;
   FsRename = 268;
   GrantPluginPermissions = 269;
+  SetContextMenu = 270;
 }
 
 message PluginCommand {
@@ -454,6 +455,7 @@ message PluginCommand {
     FsCreateDirPayload fs_create_dir_payload = 208;
     FsRenamePayload fs_rename_payload = 209;
     GrantPluginPermissionsPayload grant_plugin_permissions_payload = 210;
+    SetContextMenuPayload set_context_menu_payload = 211;
   }
 }
 
@@ -1839,6 +1841,13 @@ message RegexHighlight {
   bool underline = 7;
   optional string tooltip_text = 8;
   HighlightLayer layer = 9;
+}
+
+// The answer to `Event::ContextMenuRequested`. `request_id` is echoed from the request: an answer
+// naming a menu that has since closed is dropped rather than drawn.
+message SetContextMenuPayload {
+  uint64 request_id = 1;
+  repeated event.ContextMenuItem items = 2;
 }
 
 message SetPaneRegexHighlightsPayload {

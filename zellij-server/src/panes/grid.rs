@@ -3304,9 +3304,20 @@ impl Grid {
         if self.selection.is_empty() {
             return None;
         }
-        let mut selection: Vec<String> = vec![];
+        self.text_for_selection(&self.selection)
+    }
+    /// The text a `Selection` covers, whether or not it is the selection the user is making.
+    ///
+    /// Split out of `get_selected_text` so that anything with a pair of positions - the word under
+    /// the cursor, the logical line under it - can be turned into text without going through the
+    /// grid's own selection state. Two things it carries that a naive row-slice would not: the
+    /// lookup spans `lines_above` and `lines_below`, so a selection reaching into scrollback
+    /// resolves; and a non-canonical row is joined onto the previous one, so a wrapped logical
+    /// line comes back as the single line it is on screen.
+    pub fn text_for_selection(&self, selection: &Selection) -> Option<String> {
+        let mut lines: Vec<String> = vec![];
 
-        let sorted_selection = self.selection.sorted();
+        let sorted_selection = selection.sorted();
         let (start, end) = (sorted_selection.start, sorted_selection.end);
 
         for l in sorted_selection.line_indices() {
@@ -3360,12 +3371,12 @@ impl Grid {
             }
 
             if row.is_canonical {
-                selection.push(line_selection);
+                lines.push(line_selection);
             } else {
                 // rejoin wrapped lines if possible
-                match selection.last_mut() {
+                match lines.last_mut() {
                     Some(previous_line) => previous_line.push_str(&line_selection),
-                    None => selection.push(line_selection),
+                    None => lines.push(line_selection),
                 }
             }
         }
@@ -3373,12 +3384,12 @@ impl Grid {
         // TODO: distinguish whitespace that was output explicitly vs implicitly (e.g add_newline)
         // for example: echo "     " vs empty lines
         // for now trim after building the selection to handle whitespace in wrapped lines
-        let selection: Vec<_> = selection.iter().map(|l| l.trim_end()).collect();
+        let lines: Vec<_> = lines.iter().map(|l| l.trim_end()).collect();
 
-        if selection.is_empty() {
+        if lines.is_empty() {
             None
         } else {
-            Some(selection.join("\n"))
+            Some(lines.join("\n"))
         }
     }
     pub fn absolute_position_in_scrollback(&self) -> usize {

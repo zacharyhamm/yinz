@@ -1,7 +1,8 @@
 #![allow(clippy::collapsible_if)]
 use std::time::Instant;
-use zellij_utils::data::{Direction, Resize, ResizeStrategy};
+use zellij_utils::data::{ContextMenuContext, ContextMenuLink, Direction, Resize, ResizeStrategy};
 use zellij_utils::errors::prelude::*;
+use zellij_utils::input::layout::Run;
 use zellij_utils::input::mouse::{MouseEvent, MouseEventType};
 use zellij_utils::pane_size::PaneGeom;
 use zellij_utils::position::Position;
@@ -34,13 +35,21 @@ fn clear_hover_for_client(tab: &mut Tab, client_id: ClientId) -> bool {
     cleared
 }
 
-#[derive(Debug, Default, Copy, Clone)]
+/// What the tab did with a mouse event that the screen has to finish.
+///
+/// No longer `Copy`: `open_context_menu` carries a whole click context, and boxing it keeps the
+/// common case - every other effect, where it is `None` - one pointer wide.
+#[derive(Debug, Default, Clone)]
 pub struct MouseEffect {
     pub state_changed: bool,
     pub leave_clipboard_message: bool,
     pub group_toggle: Option<PaneId>,
     pub group_add: Option<PaneId>,
     pub ungroup: bool,
+    /// A right-click asked for a context menu. Only `Screen` can open one - a menu outlives the
+    /// tab's view of the event and is drawn above every tab - so the tab gathers the context and
+    /// hands it up.
+    pub open_context_menu: Option<Box<ContextMenuContext>>,
 }
 
 impl MouseEffect {
@@ -51,6 +60,7 @@ impl MouseEffect {
             group_toggle: None,
             group_add: None,
             ungroup: false,
+            open_context_menu: None,
         }
     }
     pub fn leave_clipboard_message() -> Self {
@@ -60,6 +70,7 @@ impl MouseEffect {
             group_toggle: None,
             group_add: None,
             ungroup: false,
+            open_context_menu: None,
         }
     }
     pub fn state_changed_and_leave_clipboard_message() -> Self {
@@ -69,6 +80,7 @@ impl MouseEffect {
             group_toggle: None,
             group_add: None,
             ungroup: false,
+            open_context_menu: None,
         }
     }
     pub fn group_toggle(pane_id: PaneId) -> Self {
@@ -78,6 +90,7 @@ impl MouseEffect {
             group_toggle: Some(pane_id),
             group_add: None,
             ungroup: false,
+            open_context_menu: None,
         }
     }
     pub fn group_add(pane_id: PaneId) -> Self {
@@ -87,6 +100,21 @@ impl MouseEffect {
             group_toggle: None,
             group_add: Some(pane_id),
             ungroup: false,
+            open_context_menu: None,
+        }
+    }
+    /// A right-click that asked for a context menu.
+    ///
+    /// `state_changed` because the click focused the pane it landed in - the focus move the menu
+    /// depends on, and the reason its items act on the right pane.
+    pub fn open_context_menu(context: ContextMenuContext) -> Self {
+        MouseEffect {
+            state_changed: true,
+            leave_clipboard_message: false,
+            group_toggle: None,
+            group_add: None,
+            ungroup: false,
+            open_context_menu: Some(Box::new(context)),
         }
     }
     pub fn ungroup() -> Self {
@@ -96,6 +124,7 @@ impl MouseEffect {
             group_toggle: None,
             group_add: None,
             ungroup: true,
+            open_context_menu: None,
         }
     }
 }
@@ -103,6 +132,16 @@ impl MouseEffect {
 #[derive(Debug, Clone, PartialEq)]
 enum MouseAction {
     GroupToggle(PaneId),
+    /// A right-press that should open a context menu over `pane_id`.
+    ///
+    /// `position` is the **absolute** click cell, not the pane-relative one. The variant carries
+    /// it rather than recomputing it in the executor precisely so the conversion to pane-relative
+    /// coordinates - which the executor also needs - cannot lose the anchor the menu is placed at.
+    OpenContextMenu {
+        pane_id: PaneId,
+        position: Position,
+        on_frame: bool,
+    },
     GroupAdd(PaneId),
     Ungroup,
     StartResize {
@@ -256,6 +295,12 @@ struct ClickedPaneDetails {
     /// non-modal one is resizable.
     overlay_is_resizable: bool,
     terminal_wants_mouse: bool,
+    /// The pane's terminal emulator has mouse tracking on, so right-click is its own.
+    ///
+    /// Not `terminal_wants_mouse` above: that one probes with a *left* click and is only computed
+    /// for the active pane, because that is all its two callers need. A background TUI still owns
+    /// its own right-click, so this asks the pane directly and asks it for every pane.
+    terminal_emulator_wants_mouse: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,6 +317,7 @@ struct MouseEventContext {
     focus_follows_mouse: bool,
     mouse_click_through: bool,
     mouse_scroll_resize: bool,
+    context_menu_enabled: bool,
 }
 
 fn edge_and_delta_to_strategies(
@@ -538,6 +584,7 @@ impl MouseHandler {
             focus_follows_mouse: tab.focus_follows_mouse,
             mouse_click_through: tab.mouse_click_through,
             mouse_scroll_resize: tab.mouse_scroll_resize,
+            context_menu_enabled: tab.context_menu_on_right_click,
         })
     }
 
@@ -568,6 +615,7 @@ impl MouseHandler {
         } else {
             false
         };
+        let terminal_emulator_wants_mouse = pane.terminal_emulator_wants_mouse();
 
         Some(ClickedPaneDetails {
             pane_id,
@@ -578,6 +626,7 @@ impl MouseHandler {
             is_overlay,
             overlay_is_resizable,
             terminal_wants_mouse,
+            terminal_emulator_wants_mouse,
         })
     }
 
@@ -845,6 +894,11 @@ impl MouseHandler {
                 }
                 Ok(MouseEffect::group_toggle(pane_id))
             },
+            MouseAction::OpenContextMenu {
+                pane_id,
+                position,
+                on_frame,
+            } => Self::execute_open_context_menu(tab, pane_id, position, on_frame, client_id),
             MouseAction::GroupAdd(pane_id) => Ok(MouseEffect::group_add(pane_id)),
             MouseAction::Ungroup => Ok(MouseEffect::ungroup()),
             MouseAction::StartResize {
@@ -1018,6 +1072,86 @@ impl MouseHandler {
         Ok(MouseEffect::state_changed())
     }
 
+    /// Focus the clicked pane and gather everything the menu's hook plugin will be told.
+    ///
+    /// Focusing first, and with `focus_pane_at` rather than `execute_focus_pane`, is the whole
+    /// trick of this feature:
+    ///
+    /// - **Focus first** so that every focus-relative action a menu item runs - `Copy`,
+    ///   `CloseFocus`, `TogglePaneFrames` - means the pane the user right-clicked. Because a menu
+    ///   is not a pane and takes no focus, nothing has to hand it back afterwards.
+    /// - **`focus_pane_at`, not `execute_focus_pane`**, because the latter ends by starting a
+    ///   selection, which would wipe the selection this is about to record. A menu that offers
+    ///   "Copy" and then copies nothing is worse than no menu.
+    fn execute_open_context_menu(
+        tab: &mut Tab,
+        pane_id: PaneId,
+        position: Position,
+        on_frame: bool,
+        client_id: ClientId,
+    ) -> Result<MouseEffect> {
+        let err_context = || "failed to open context menu";
+        clear_hover_for_client(tab, client_id);
+        Self::focus_pane_at(tab, &position, client_id).with_context(err_context)?;
+
+        if tab.get_active_pane_id(client_id) != Some(pane_id) {
+            return Ok(MouseEffect::state_changed());
+        }
+
+        let tab_position = tab.position;
+        let is_floating = tab.floating_panes.panes_contain(&pane_id);
+        let Some(pane) = tab.get_pane_with_id(pane_id) else {
+            return Ok(MouseEffect::state_changed());
+        };
+        // Both coordinate systems are kept: the absolute one anchors the menu, the pane-relative
+        // one is what a plugin reasoning about pane content wants. Neither derives from the other
+        // once the context has left here.
+        let relative_position = pane.relative_position(&position);
+        let text_around = pane
+            .text_around_position(&relative_position)
+            .unwrap_or_default();
+        let link = pane.plugin_highlight_at(&relative_position).map(
+            |(plugin_id, pattern, matched, context)| ContextMenuLink {
+                plugin_id,
+                pattern,
+                matched,
+                context,
+            },
+        );
+        let pane_command = match pane.invoked_with() {
+            Some(Run::Command(command)) => Some(command.to_string()),
+            _ => None,
+        };
+        let context = ContextMenuContext {
+            // Filled in by `Screen::open_context_menu`, which owns the counter.
+            request_id: 0,
+            client_id,
+            pane_id: pane_id.into(),
+            tab_position,
+            click: (position.column(), position.line().max(0) as usize),
+            click_in_pane: (
+                relative_position.column(),
+                relative_position.line().max(0) as usize,
+            ),
+            on_frame,
+            pane_title: pane.current_title(),
+            pane_command,
+            pane_exited: pane.exited(),
+            pane_exit_status: pane.exit_status(),
+            pane_is_held: pane.is_held(),
+            pane_is_floating: is_floating,
+            selected_text: pane
+                .get_selected_text(client_id)
+                .filter(|text| !text.is_empty()),
+            word_under_cursor: text_around.word,
+            line_under_cursor: text_around.line,
+            link,
+            // The configured items are attached by the plugin thread, which is where the
+            // configuration lives. The tab knows the pane; it does not know the menu.
+            items: vec![],
+        };
+        Ok(MouseEffect::open_context_menu(context))
+    }
     fn execute_focus_pane(
         tab: &mut Tab,
         position: Position,
@@ -1682,6 +1816,31 @@ impl MouseHandler {
             let Some(pane_id) = ctx.pane_id_at_position else {
                 return Ok(MouseAction::NoAction);
             };
+            // Each guard here earns its place:
+            //
+            // - **press only**, because the release that follows would otherwise open a second
+            //   menu on top of the first;
+            // - **not `frame_intercepted`**, so a pane already claiming its own frame's mouse
+            //   events keeps them, matching the ctrl-left and plain-left branches above;
+            // - **not tracking the mouse**, which is the rule the option is documented under - and
+            //   it is deliberately not conditioned on the pane being active, because a TUI in a
+            //   background pane still owns its own right-click.
+            //
+            // Not gated on being the active pane either: right-clicking an unfocused pane should
+            // open a menu there, and the executor focuses it first so the items act on it.
+            if ctx.context_menu_enabled && event.event_type == MouseEventType::Press {
+                if let Some(details) = ctx.clicked_pane.as_ref().filter(|details| {
+                    details.pane_id == pane_id
+                        && !details.frame_intercepted
+                        && (!details.terminal_emulator_wants_mouse || details.on_frame)
+                }) {
+                    return Ok(MouseAction::OpenContextMenu {
+                        pane_id,
+                        position: event.position,
+                        on_frame: details.on_frame,
+                    });
+                }
+            }
             let is_active_pane = Some(pane_id) == ctx.active_pane_id;
             if is_active_pane {
                 return Ok(MouseAction::SendToTerminal {
@@ -2100,6 +2259,7 @@ mod tests {
             focus_follows_mouse: false,
             mouse_click_through: false,
             mouse_scroll_resize,
+            context_menu_enabled: false,
         }
     }
 
@@ -2114,6 +2274,7 @@ mod tests {
             is_overlay,
             overlay_is_resizable: is_overlay,
             terminal_wants_mouse: false,
+            terminal_emulator_wants_mouse: false,
         }
     }
 
@@ -2342,5 +2503,193 @@ mod tests {
                 MouseAction::NoAction
             );
         }
+    }
+
+    /// A content click - not on the frame, nothing intercepted, no mouse tracking. The shape every
+    /// context-menu case below varies one field of.
+    fn content_click_on(pane_id: PaneId) -> ClickedPaneDetails {
+        ClickedPaneDetails {
+            pane_id,
+            on_frame: false,
+            frame_intercepted: false,
+            edge: None,
+            is_floating: false,
+            is_overlay: false,
+            overlay_is_resizable: false,
+            terminal_wants_mouse: false,
+            terminal_emulator_wants_mouse: false,
+        }
+    }
+
+    fn right_press_context(pane_id: PaneId, enabled: bool) -> MouseEventContext {
+        let mut context = mouse_event_context(false);
+        context.context_menu_enabled = enabled;
+        context.pane_id_at_position = Some(pane_id);
+        context.clicked_pane = Some(content_click_on(pane_id));
+        context
+    }
+
+    #[test]
+    fn a_right_press_opens_the_context_menu_when_it_is_enabled() {
+        let pane_id = PaneId::Terminal(1);
+        let context = right_press_context(pane_id, true);
+        let event = MouseEvent::new_right_press_event(Position::new(4, 7));
+        assert_eq!(
+            MouseHandler::determine_mouse_action(&event, &context).unwrap(),
+            MouseAction::OpenContextMenu {
+                pane_id,
+                position: Position::new(4, 7),
+                on_frame: false,
+            },
+            "and the position is the absolute click, which is what anchors the menu"
+        );
+    }
+
+    /// The regression guard for every existing right-click test: with the option off nothing at
+    /// all about right-click changes.
+    #[test]
+    fn a_right_press_with_the_option_off_still_reaches_the_terminal() {
+        let pane_id = PaneId::Terminal(1);
+        let context = right_press_context(pane_id, false);
+        let event = MouseEvent::new_right_press_event(Position::new(4, 7));
+        assert!(matches!(
+            MouseHandler::determine_mouse_action(&event, &context).unwrap(),
+            MouseAction::SendToTerminal { .. }
+        ));
+    }
+
+    #[test]
+    fn a_right_press_in_a_pane_tracking_the_mouse_belongs_to_the_program() {
+        let pane_id = PaneId::Terminal(1);
+        let mut context = right_press_context(pane_id, true);
+        context.clicked_pane = Some(ClickedPaneDetails {
+            terminal_emulator_wants_mouse: true,
+            ..content_click_on(pane_id)
+        });
+        let event = MouseEvent::new_right_press_event(Position::new(4, 7));
+        assert!(
+            matches!(
+                MouseHandler::determine_mouse_action(&event, &context).unwrap(),
+                MouseAction::SendToTerminal { .. }
+            ),
+            "an editor that asked for right-click keeps it"
+        );
+    }
+
+    /// A background TUI still owns its own right-click, so this must not be conditioned on the
+    /// pane being active the way `terminal_wants_mouse` is.
+    #[test]
+    fn mouse_tracking_wins_even_in_a_pane_that_is_not_focused() {
+        let clicked = PaneId::Terminal(2);
+        let mut context = right_press_context(clicked, true);
+        context.active_pane_id = Some(PaneId::Terminal(1));
+        context.clicked_pane = Some(ClickedPaneDetails {
+            terminal_emulator_wants_mouse: true,
+            ..content_click_on(clicked)
+        });
+        let event = MouseEvent::new_right_press_event(Position::new(4, 7));
+        assert_eq!(
+            MouseHandler::determine_mouse_action(&event, &context).unwrap(),
+            MouseAction::NoAction,
+            "not the menu, and not another pane's terminal either"
+        );
+    }
+
+    #[test]
+    fn mouse_tracking_does_not_block_a_frame_menu() {
+        let pane_id = PaneId::Terminal(1);
+        let mut context = right_press_context(pane_id, true);
+        context.clicked_pane = Some(ClickedPaneDetails {
+            on_frame: true,
+            terminal_emulator_wants_mouse: true,
+            ..content_click_on(pane_id)
+        });
+        let event = MouseEvent::new_right_press_event(Position::new(0, 3));
+        assert!(matches!(
+            MouseHandler::determine_mouse_action(&event, &context).unwrap(),
+            MouseAction::OpenContextMenu { on_frame: true, .. }
+        ));
+    }
+
+    #[test]
+    fn a_right_press_on_an_unfocused_pane_still_opens_a_menu() {
+        let clicked = PaneId::Terminal(2);
+        let mut context = right_press_context(clicked, true);
+        context.active_pane_id = Some(PaneId::Terminal(1));
+        assert!(matches!(
+            MouseHandler::determine_mouse_action(
+                &MouseEvent::new_right_press_event(Position::new(4, 7)),
+                &context
+            )
+            .unwrap(),
+            MouseAction::OpenContextMenu { .. }
+        ));
+    }
+
+    /// The release that follows the opening press must not open a second menu.
+    #[test]
+    fn only_the_press_opens_a_menu_not_the_release() {
+        let pane_id = PaneId::Terminal(1);
+        let context = right_press_context(pane_id, true);
+        let release = MouseEvent::new_right_release_event(Position::new(4, 7));
+        assert!(!matches!(
+            MouseHandler::determine_mouse_action(&release, &context).unwrap(),
+            MouseAction::OpenContextMenu { .. }
+        ));
+    }
+
+    #[test]
+    fn a_right_press_on_a_frame_opens_a_menu_and_says_it_was_the_frame() {
+        let pane_id = PaneId::Terminal(1);
+        let mut context = right_press_context(pane_id, true);
+        context.clicked_pane = Some(ClickedPaneDetails {
+            on_frame: true,
+            ..content_click_on(pane_id)
+        });
+        assert_eq!(
+            MouseHandler::determine_mouse_action(
+                &MouseEvent::new_right_press_event(Position::new(0, 3)),
+                &context
+            )
+            .unwrap(),
+            MouseAction::OpenContextMenu {
+                pane_id,
+                position: Position::new(0, 3),
+                on_frame: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_frame_that_claims_its_own_mouse_events_keeps_the_right_click() {
+        let pane_id = PaneId::Terminal(1);
+        let mut context = right_press_context(pane_id, true);
+        context.clicked_pane = Some(ClickedPaneDetails {
+            on_frame: true,
+            frame_intercepted: true,
+            ..content_click_on(pane_id)
+        });
+        assert!(!matches!(
+            MouseHandler::determine_mouse_action(
+                &MouseEvent::new_right_press_event(Position::new(0, 3)),
+                &context
+            )
+            .unwrap(),
+            MouseAction::OpenContextMenu { .. }
+        ));
+    }
+
+    /// Alt+right is `Ungroup`, and was before menus existed. The menu branch sits after the alt
+    /// branch precisely so this keeps working.
+    #[test]
+    fn alt_right_still_ungroups_rather_than_opening_a_menu() {
+        let pane_id = PaneId::Terminal(1);
+        let context = right_press_context(pane_id, true);
+        let mut event = MouseEvent::new_right_press_event(Position::new(4, 7));
+        event.alt = true;
+        assert_eq!(
+            MouseHandler::determine_mouse_action(&event, &context).unwrap(),
+            MouseAction::Ungroup
+        );
     }
 }

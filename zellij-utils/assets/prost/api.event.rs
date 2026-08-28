@@ -10,7 +10,7 @@ pub struct EventNameList {
 pub struct Event {
     #[prost(enumeration="EventType", tag="1")]
     pub name: i32,
-    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48")]
+    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50")]
     pub payload: ::core::option::Option<event::Payload>,
 }
 /// Nested message and enum types in `Event`.
@@ -110,6 +110,10 @@ pub mod event {
         QueueJobFinishedPayload(super::QueueJobFinishedPayload),
         #[prost(message, tag="48")]
         QueueChangedPayload(super::QueueChangedPayload),
+        #[prost(message, tag="49")]
+        ContextMenuRequestedPayload(super::ContextMenuRequestedPayload),
+        #[prost(message, tag="50")]
+        ContextMenuItemSelectedPayload(super::ContextMenuItemSelectedPayload),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -935,6 +939,95 @@ pub struct HighlightClickedPayload {
     #[prost(message, repeated, tag="4")]
     pub context: ::prost::alloc::vec::Vec<ContextItem>,
 }
+/// Note the absence of actions: they stay on the server. See `data::ContextMenuItem`.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ContextMenuItem {
+    #[prost(string, tag="1")]
+    pub label: ::prost::alloc::string::String,
+    #[prost(string, optional, tag="2")]
+    pub shortcut: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint64, optional, tag="3")]
+    pub id: ::core::option::Option<u64>,
+    #[prost(message, repeated, tag="4")]
+    pub context: ::prost::alloc::vec::Vec<ContextItem>,
+    #[prost(bool, tag="5")]
+    pub disabled: bool,
+    #[prost(bool, tag="6")]
+    pub separator: bool,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ContextMenuLink {
+    #[prost(uint32, tag="1")]
+    pub plugin_id: u32,
+    #[prost(string, tag="2")]
+    pub pattern: ::prost::alloc::string::String,
+    #[prost(string, tag="3")]
+    pub matched: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag="4")]
+    pub context: ::prost::alloc::vec::Vec<ContextItem>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ContextMenuContext {
+    #[prost(uint64, tag="1")]
+    pub request_id: u64,
+    #[prost(uint32, tag="2")]
+    pub client_id: u32,
+    #[prost(message, optional, tag="3")]
+    pub pane_id: ::core::option::Option<PaneId>,
+    #[prost(uint32, tag="4")]
+    pub tab_position: u32,
+    #[prost(uint32, tag="5")]
+    pub click_x: u32,
+    #[prost(uint32, tag="6")]
+    pub click_y: u32,
+    #[prost(uint32, tag="7")]
+    pub click_in_pane_x: u32,
+    #[prost(uint32, tag="8")]
+    pub click_in_pane_y: u32,
+    #[prost(bool, tag="9")]
+    pub on_frame: bool,
+    #[prost(string, tag="10")]
+    pub pane_title: ::prost::alloc::string::String,
+    #[prost(string, optional, tag="11")]
+    pub pane_command: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, tag="12")]
+    pub pane_exited: bool,
+    #[prost(int32, optional, tag="13")]
+    pub pane_exit_status: ::core::option::Option<i32>,
+    #[prost(bool, tag="14")]
+    pub pane_is_held: bool,
+    #[prost(bool, tag="15")]
+    pub pane_is_floating: bool,
+    #[prost(string, optional, tag="16")]
+    pub selected_text: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="17")]
+    pub word_under_cursor: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="18")]
+    pub line_under_cursor: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag="19")]
+    pub link: ::core::option::Option<ContextMenuLink>,
+    #[prost(message, repeated, tag="20")]
+    pub items: ::prost::alloc::vec::Vec<ContextMenuItem>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ContextMenuRequestedPayload {
+    #[prost(message, optional, tag="1")]
+    pub context: ::core::option::Option<ContextMenuContext>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ContextMenuItemSelectedPayload {
+    #[prost(string, tag="1")]
+    pub label: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag="2")]
+    pub item_context: ::prost::alloc::vec::Vec<ContextItem>,
+    #[prost(message, optional, tag="3")]
+    pub context: ::core::option::Option<ContextMenuContext>,
+}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct InitialKeybindsPayload {
@@ -1016,6 +1109,10 @@ pub enum EventType {
     QueueJobFinished = 53,
     /// / A work queue's contents or concurrency changed
     QueueChanged = 54,
+    /// / A right-click asked for a context menu
+    ContextMenuRequested = 55,
+    /// / A plugin-supplied context menu item was chosen
+    ContextMenuItemSelected = 56,
 }
 impl EventType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1077,6 +1174,8 @@ impl EventType {
             EventType::QueueJobStarted => "QueueJobStarted",
             EventType::QueueJobFinished => "QueueJobFinished",
             EventType::QueueChanged => "QueueChanged",
+            EventType::ContextMenuRequested => "ContextMenuRequested",
+            EventType::ContextMenuItemSelected => "ContextMenuItemSelected",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1135,6 +1234,8 @@ impl EventType {
             "QueueJobStarted" => Some(Self::QueueJobStarted),
             "QueueJobFinished" => Some(Self::QueueJobFinished),
             "QueueChanged" => Some(Self::QueueChanged),
+            "ContextMenuRequested" => Some(Self::ContextMenuRequested),
+            "ContextMenuItemSelected" => Some(Self::ContextMenuItemSelected),
             _ => None,
         }
     }

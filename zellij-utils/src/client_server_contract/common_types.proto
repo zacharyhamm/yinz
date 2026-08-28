@@ -1351,6 +1351,7 @@ message Options {
   optional bool osc133_command_selection = 61;
   optional string word_separators = 62;
   optional bool dangerously_enable_paste_buffer_read = 63;
+  optional bool context_menu_on_right_click = 65;
 }
 
 enum OnForceClose {

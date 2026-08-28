@@ -212,6 +212,18 @@ impl Drop for NotificationEnd {
 // otherwise blocking-CLI actions
 // (`wait_forever=true`) park this function while still holding the guard,
 // deadlocking concurrent `session_data.write()`s.
+/// Whether a key's resolved actions take an open context menu with them.
+///
+/// A key that writes to the pane is handled in `ScreenInstruction::WriteCharacter`, which gives the
+/// menu first refusal on the keys it uses and dismisses it for the rest. Anything else was resolved
+/// to its own instructions here and never passes that point, so a menu would survive the tab
+/// switch, focus move or layout change it is now describing wrongly.
+fn actions_dismiss_context_menu(actions: &[Action]) -> bool {
+    actions
+        .iter()
+        .any(|action| !matches!(action, Action::Write { .. } | Action::WriteChars { .. }))
+}
+
 fn new_pane_routing(
     no_focus: bool,
     near_current_pane: bool,
@@ -2445,6 +2457,12 @@ pub(crate) fn route_thread_main(
                                 .unwrap()
                                 .set_last_active_client(client_id);
 
+                            // Cloned before `key` is moved into the passthrough branch below, so
+                            // it survives to ask an open menu about a key that resolves to
+                            // something other than a write - see the `actions_dismiss_context_menu`
+                            // use further down for why only that case needs it.
+                            let key_for_menu_check = key.clone();
+
                             // The read guard ends as a temporary in this expression so
                             // `route_action` runs without holding `session_data.read()` —
                             // see the doc comment on `route_action` for why this matters.
@@ -2486,34 +2504,70 @@ pub(crate) fn route_thread_main(
                             if let Some((senders, default_shell, client_input_mode, actions)) =
                                 dispatch_inputs
                             {
-                                for action in actions {
-                                    // Send user input to plugin thread for logging
-                                    let _ = senders.send_to_plugin(PluginInstruction::UserInput {
-                                        client_id,
-                                        action: action.clone(),
-                                        terminal_id: None,
-                                        cli_client_id: None,
-                                    });
+                                // A key that resolves to a write is handled by
+                                // `ScreenInstruction::WriteCharacter`, which already gives an open
+                                // menu first refusal on the keys it uses. Anything else - a key
+                                // bound to its own action by the current mode, e.g. Down/Enter/Esc
+                                // in Pane or Resize mode - never reaches that path, so the menu
+                                // would never get a say. Ask it here, before the mode's own
+                                // binding fires, rather than only dismissing it after the fact.
+                                let mut menu_handled_key = false;
+                                if actions_dismiss_context_menu(&actions) {
+                                    let (completion_tx, completion_rx) = oneshot::channel();
+                                    let sent = senders.send_to_screen(
+                                        ScreenInstruction::ContextMenuHandleKeyIfOpen {
+                                            key: Some(key_for_menu_check),
+                                            client_id,
+                                            completion: Some(NotificationEnd::new(completion_tx)),
+                                        },
+                                    );
+                                    if sent.is_ok() {
+                                        menu_handled_key = wait_for_action_completion(
+                                            completion_rx,
+                                            "ContextMenuHandleKeyIfOpen",
+                                            false,
+                                        )
+                                        .stdout_message
+                                        .as_deref()
+                                            == Some("true");
+                                    }
+                                    if !menu_handled_key {
+                                        let _ = senders.send_to_screen(
+                                            ScreenInstruction::CloseContextMenu(client_id),
+                                        );
+                                    }
+                                }
+                                if !menu_handled_key {
+                                    for action in actions {
+                                        // Send user input to plugin thread for logging
+                                        let _ =
+                                            senders.send_to_plugin(PluginInstruction::UserInput {
+                                                client_id,
+                                                action: action.clone(),
+                                                terminal_id: None,
+                                                cli_client_id: None,
+                                            });
 
-                                    match route_action(
-                                        action,
-                                        client_id,
-                                        None,
-                                        None,
-                                        senders.clone(),
-                                        default_shell.clone(),
-                                        Some(&mut seen_cli_pipes),
-                                        client_input_mode,
-                                        Some(os_input.clone()),
-                                    ) {
-                                        Ok(route_action_should_break) => {
-                                            if route_action_should_break.0 {
-                                                should_break = true;
-                                            }
-                                        },
-                                        Err(e) => {
-                                            log::error!("{}", e);
-                                        },
+                                        match route_action(
+                                            action,
+                                            client_id,
+                                            None,
+                                            None,
+                                            senders.clone(),
+                                            default_shell.clone(),
+                                            Some(&mut seen_cli_pipes),
+                                            client_input_mode,
+                                            Some(os_input.clone()),
+                                        ) {
+                                            Ok(route_action_should_break) => {
+                                                if route_action_should_break.0 {
+                                                    should_break = true;
+                                                }
+                                            },
+                                            Err(e) => {
+                                                log::error!("{}", e);
+                                            },
+                                        }
                                     }
                                 }
                             }
@@ -3504,6 +3558,27 @@ fn send_output_to_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bug this guards: bound keys become their own screen instructions and never reach
+    /// `WriteCharacter`, so without a dismissal here a tab switch leaves a stale menu on screen,
+    /// still offering to act on the pane it was opened over.
+    #[test]
+    fn only_keys_bound_to_something_other_than_writing_dismiss_a_context_menu() {
+        let write = Action::Write {
+            key_with_modifier: None,
+            bytes: vec![b'a'],
+            is_kitty_keyboard_protocol: false,
+        };
+        assert!(!actions_dismiss_context_menu(std::slice::from_ref(&write)));
+        assert!(!actions_dismiss_context_menu(&[Action::WriteChars {
+            chars: "a".to_owned()
+        }]));
+        assert!(actions_dismiss_context_menu(&[Action::GoToNextTab]));
+        assert!(
+            actions_dismiss_context_menu(&[write, Action::GoToNextTab]),
+            "one non-writing action in the sequence is enough"
+        );
+    }
 
     #[test]
     fn test_notification_end_sets_affected_tab_id() {

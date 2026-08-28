@@ -363,6 +363,29 @@ load_plugins {
 }
 hooks {
     agent_exit "zellij:agent-exit"
+    context_menu "zellij:context-menu"
+}
+context_menu {
+    Copy {
+        Copy
+    }
+    separator
+    "Split right" {
+        NewPane "right"
+    }
+    "Split down" {
+        NewPane "down"
+    }
+    Fullscreen {
+        ToggleFocusFullscreen
+    }
+    separator
+    "Move to new tab" {
+        BreakPane
+    }
+    "Close pane" {
+        CloseFocus
+    }
 }
 web_client {
     font "monospace"
@@ -711,6 +734,11 @@ web_client {
 // Whether clicking a pane to focus it also sends the click into the pane
 // default is false
 // mouse_click_through false
+ 
+// Whether right-clicking a pane opens a context menu. A program that is tracking the
+// mouse itself keeps its own right-click either way.
+// default is false
+// context_menu_on_right_click false
  
 // Whether triple-clicking inside command output marked by the shell (OSC 133) selects
 // the command and its output instead of the logical line

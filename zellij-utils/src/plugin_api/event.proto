@@ -82,6 +82,10 @@ enum EventType {
     QueueJobFinished = 53;
     /// A work queue's contents or concurrency changed
     QueueChanged = 54;
+    /// A right-click asked for a context menu
+    ContextMenuRequested = 55;
+    /// A plugin-supplied context menu item was chosen
+    ContextMenuItemSelected = 56;
 }
 
 message EventNameList {
@@ -138,6 +142,8 @@ message Event {
     QueueJobStartedPayload queue_job_started_payload = 46;
     QueueJobFinishedPayload queue_job_finished_payload = 47;
     QueueChangedPayload queue_changed_payload = 48;
+    ContextMenuRequestedPayload context_menu_requested_payload = 49;
+    ContextMenuItemSelectedPayload context_menu_item_selected_payload = 50;
   }
 }
 
@@ -681,6 +687,56 @@ message HighlightClickedPayload {
   string pattern = 2;
   string matched_string = 3;
   repeated ContextItem context = 4;
+}
+
+// Note the absence of actions: they stay on the server. See `data::ContextMenuItem`.
+message ContextMenuItem {
+  string label = 1;
+  optional string shortcut = 2;
+  optional uint64 id = 3;
+  repeated ContextItem context = 4;
+  bool disabled = 5;
+  bool separator = 6;
+}
+
+message ContextMenuLink {
+  uint32 plugin_id = 1;
+  string pattern = 2;
+  string matched = 3;
+  repeated ContextItem context = 4;
+}
+
+message ContextMenuContext {
+  uint64 request_id = 1;
+  uint32 client_id = 2;
+  PaneId pane_id = 3;
+  uint32 tab_position = 4;
+  uint32 click_x = 5;
+  uint32 click_y = 6;
+  uint32 click_in_pane_x = 7;
+  uint32 click_in_pane_y = 8;
+  bool on_frame = 9;
+  string pane_title = 10;
+  optional string pane_command = 11;
+  bool pane_exited = 12;
+  optional int32 pane_exit_status = 13;
+  bool pane_is_held = 14;
+  bool pane_is_floating = 15;
+  optional string selected_text = 16;
+  optional string word_under_cursor = 17;
+  optional string line_under_cursor = 18;
+  optional ContextMenuLink link = 19;
+  repeated ContextMenuItem items = 20;
+}
+
+message ContextMenuRequestedPayload {
+  ContextMenuContext context = 1;
+}
+
+message ContextMenuItemSelectedPayload {
+  string label = 1;
+  repeated ContextItem item_context = 2;
+  ContextMenuContext context = 3;
 }
 
 message InitialKeybindsPayload {
