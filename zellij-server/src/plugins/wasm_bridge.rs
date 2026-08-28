@@ -1030,6 +1030,17 @@ impl WasmBridge {
             new_plugins.insert(plugin_id);
         }
         for plugin_id in new_plugins {
+            // a plugin loaded before this client attached (eg. a background plugin loaded on
+            // startup, keyed under the initiating client's id) already has an instance for this
+            // client - loading another would instantiate it twice and drop the first
+            if self
+                .plugin_map
+                .lock()
+                .unwrap()
+                .contains(plugin_id, client_id)
+            {
+                continue;
+            }
             let Some(run_plugin) = self.run_plugin_of_plugin_id(plugin_id) else {
                 log::error!("Failed to find plugin with id: {}", plugin_id);
                 return Ok(());
