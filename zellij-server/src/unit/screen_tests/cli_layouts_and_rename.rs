@@ -606,3 +606,105 @@ pub fn pty_bytes_and_hold_pane_buffered_before_new_pane() {
         dumped
     );
 }
+
+/// The first `LogError` line reported to the server that mentions `needle`, once one arrives.
+fn wait_for_reported_error_mentioning(
+    received_server_instructions: &Watched<Vec<ServerInstruction>>,
+    needle: &str,
+) -> String {
+    received_server_instructions.wait_until_described(
+        &format!("an error mentioning {needle:?} to be reported to the server"),
+        zellij_test_support::default_timeout(),
+        |instructions| {
+            instructions
+                .iter()
+                .find_map(|instruction| match instruction {
+                    ServerInstruction::LogError(lines, _, _) => {
+                        lines.iter().find(|line| line.contains(needle)).cloned()
+                    },
+                    _ => None,
+                })
+        },
+        |instructions| {
+            let reported: Vec<&String> = instructions
+                .iter()
+                .filter_map(|instruction| match instruction {
+                    ServerInstruction::LogError(lines, _, _) => lines.first(),
+                    _ => None,
+                })
+                .collect();
+            format!(
+                "{} instruction(s); reported errors: {reported:?}",
+                instructions.len()
+            )
+        },
+    )
+}
+
+#[test]
+pub fn rename_active_pane_without_a_connected_client_reports_an_error() {
+    let size = Size {
+        cols: 130,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut mock_screen = MockScreen::new(size);
+    let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
+    let received_server_instructions = Watched::new(vec![]);
+    let server_receiver = mock_screen.server_receiver.take().unwrap();
+    let server_thread = log_actions_in_thread!(
+        received_server_instructions,
+        ServerInstruction::KillSession,
+        server_receiver
+    );
+    // Instructions are drained in order, so the client is gone by the time the rename runs.
+    let _ = mock_screen
+        .to_screen
+        .send(ScreenInstruction::RemoveClient(client_id));
+    let _ = mock_screen
+        .to_screen
+        .send(ScreenInstruction::RenameActivePane(
+            "my-new-name".as_bytes().to_vec(),
+            client_id,
+            None,
+        ));
+    let reported = wait_for_reported_error_mentioning(&received_server_instructions, "--pane-id");
+    mock_screen.teardown(vec![server_thread, screen_thread]);
+    assert!(
+        reported.contains("no client is attached"),
+        "renaming the focused pane with no client attached says why it failed, got: {reported:?}"
+    );
+}
+
+#[test]
+pub fn rename_active_tab_without_a_connected_client_reports_an_error() {
+    let size = Size {
+        cols: 130,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut mock_screen = MockScreen::new(size);
+    let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
+    let received_server_instructions = Watched::new(vec![]);
+    let server_receiver = mock_screen.server_receiver.take().unwrap();
+    let server_thread = log_actions_in_thread!(
+        received_server_instructions,
+        ServerInstruction::KillSession,
+        server_receiver
+    );
+    // Instructions are drained in order, so the client is gone by the time the rename runs.
+    let _ = mock_screen
+        .to_screen
+        .send(ScreenInstruction::RemoveClient(client_id));
+    let _ = mock_screen.to_screen.send(ScreenInstruction::UpdateTabName(
+        "my-new-tab-name".as_bytes().to_vec(),
+        client_id,
+        None,
+    ));
+    let reported = wait_for_reported_error_mentioning(&received_server_instructions, "--tab-id");
+    mock_screen.teardown(vec![server_thread, screen_thread]);
+    assert!(
+        reported.contains("no client is attached"),
+        "renaming the focused tab with no client attached says why it failed, got: {reported:?}"
+    );
+}

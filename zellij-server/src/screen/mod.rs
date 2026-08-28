@@ -1340,6 +1340,32 @@ impl Screen {
         self.active_tab_ids.keys().next().copied()
     }
 
+    /// True when a "focused tab/pane" action has nobody to act for: `client_id` is not attached
+    /// and there is no other client either, so the fallback that
+    /// `active_tab_and_connected_client_id!` makes silently would find nothing.
+    pub fn has_no_client_to_act_for(&self, client_id: ClientId) -> bool {
+        self.get_active_tab(client_id).is_err() && self.get_first_client_id().is_none()
+    }
+
+    /// Reports `message` back to whoever issued the action (the CLI, for `zellij action ...`)
+    /// and completes `completion_tx` so the caller stops waiting.
+    pub fn report_no_client_to_act_for(
+        &self,
+        client_id: ClientId,
+        message: String,
+        completion_tx: Option<NotificationEnd>,
+    ) {
+        self.bus
+            .senders
+            .send_to_server(ServerInstruction::LogError(
+                vec![message],
+                client_id,
+                completion_tx,
+            ))
+            .context("failed to report that no client is attached")
+            .non_fatal();
+    }
+
     fn resolve_tab_and_client(
         &self,
         requested_client_id: ClientId,
