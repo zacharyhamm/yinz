@@ -451,7 +451,8 @@ fn installing_hooks_leaves_the_rest_of_the_settings_alone() {
         }
     });
 
-    let installed = install_into(original.clone(), "/home/me/.claude/hocus/hocus-hook.sh");
+    let installed = install_into(original.clone(), "/home/me/.claude/hocus/hocus-hook.sh")
+        .expect("valid settings");
     assert_eq!(installed["model"], "opus");
     assert_eq!(installed["permissions"]["defaultMode"], "auto");
     assert_eq!(
@@ -475,8 +476,8 @@ fn installing_twice_wires_each_event_once() {
     use serde_json::{json, Value};
 
     let script = "/home/me/.claude/hocus/hocus-hook.sh";
-    let once = install_into(Value::Object(Default::default()), script);
-    let twice = install_into(once.clone(), script);
+    let once = install_into(Value::Object(Default::default()), script).expect("valid settings");
+    let twice = install_into(once.clone(), script).expect("valid settings");
     assert_eq!(once, twice);
 
     let events = installed_events(&twice);
@@ -490,7 +491,7 @@ fn installing_twice_wires_each_event_once() {
     }
 
     // A path that moved still counts as ours, so it is replaced rather than doubled.
-    let moved = install_into(twice, "/opt/hocus/hocus-hook.sh");
+    let moved = install_into(twice, "/opt/hocus/hocus-hook.sh").expect("valid settings");
     assert_eq!(
         moved["hooks"]["Stop"].as_array().expect("an array").len(),
         1
@@ -538,4 +539,37 @@ fn uninstalling_removes_only_what_we_wrote() {
     // And a settings file that is not an object at all is treated as an empty one, so
     // an install onto a machine where nobody has written one still works.
     assert_eq!(uninstall_from(json!(null)), json!({}));
+}
+
+#[test]
+fn installing_hooks_rejects_settings_shapes_it_cannot_merge() {
+    use crate::hocus_hooks::install_into;
+    use serde_json::json;
+
+    assert!(install_into(json!({ "hooks": [] }), "hocus-hook.sh").is_err());
+    assert!(install_into(
+        json!({ "hooks": { "Stop": { "hooks": [] } } }),
+        "hocus-hook.sh"
+    )
+    .is_err());
+}
+
+#[test]
+fn uninstalling_hooks_preserves_user_authored_empty_events() {
+    use crate::hocus_hooks::uninstall_from;
+    use serde_json::json;
+
+    let settings = json!({
+        "hooks": {
+            "SomeEvent": [],
+            "Stop": [
+                { "hooks": [] },
+                { "hooks": [{ "command": "hocus-hook.sh" }] }
+            ]
+        }
+    });
+    assert_eq!(
+        uninstall_from(settings),
+        json!({ "hooks": { "SomeEvent": [], "Stop": [{ "hooks": [] }] } })
+    );
 }

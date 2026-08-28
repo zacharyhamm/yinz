@@ -67,7 +67,7 @@ const EVENTS: &[&str] = &[
 const TIMEOUT_SECONDS: u64 = 5;
 
 /// Bumped whenever [`script`] changes, so `status` can say the installed copy is old.
-const SCRIPT_VERSION: u32 = 1;
+const SCRIPT_VERSION: u32 = 2;
 
 /// What marks an entry in the settings file as ours, and nothing else as ours.
 ///
@@ -114,12 +114,11 @@ fn script(zellij: &Path) -> String {
 ZELLIJ_BIN='{zellij}'
 [ -x "$ZELLIJ_BIN" ] || ZELLIJ_BIN=zellij
 
-payload=$(cat)
 # Broadcast, deliberately without --plugin: addressing the daemon by url would miss
-# the running instance and launch a second one. `--` keeps a payload that starts with
-# a dash from being read as a flag.
+# the running instance and launch a second one. With no payload argument, zellij reads
+# the event from this script's stdin instead of hitting execve's per-argument limit.
 "$ZELLIJ_BIN" pipe --name {PIPE_NAME} --args "{PIPE_PANE_ID_ARG}=$ZELLIJ_PANE_ID" \
-    -- "$payload" >/dev/null 2>&1
+    >/dev/null 2>&1
 
 exit 0
 "#
@@ -149,7 +148,7 @@ fn is_ours(handler: &Value) -> bool {
 /// entry per event rather than two. Nothing else in the file is touched — it is parsed
 /// as a whole `Value` and handed back with the same keys it arrived with, so a setting
 /// this binary has never heard of survives the round trip.
-pub(crate) fn install_into(settings: Value, command: &str) -> Value {
+pub(crate) fn install_into(settings: Value, command: &str) -> Result<Value> {
     let mut settings = uninstall_from(settings);
     let root = settings
         .as_object_mut()
@@ -157,23 +156,21 @@ pub(crate) fn install_into(settings: Value, command: &str) -> Value {
     let hooks = root
         .entry("hooks")
         .or_insert_with(|| Value::Object(Map::new()));
-    if !hooks.is_object() {
-        // Someone has written something else under this key. Replacing it would
-        // throw their file away, so the entries go nowhere and `status` will say so.
-        return settings;
-    }
-    let hooks = hooks.as_object_mut().expect("checked above");
+    let hooks = hooks
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("settings hooks must be an object"))?;
     for event in EVENTS {
         let groups = hooks
             .entry(*event)
             .or_insert_with(|| Value::Array(Vec::new()));
-        if let Some(groups) = groups.as_array_mut() {
-            // No `matcher`: an entry without one fires on every occurrence of the
-            // event, which is what we want for all eight. See `EVENTS`.
-            groups.push(json!({ "hooks": [handler(command)] }));
-        }
+        let groups = groups
+            .as_array_mut()
+            .ok_or_else(|| anyhow!("settings hooks.{event} must be an array"))?;
+        // No `matcher`: an entry without one fires on every occurrence of the
+        // event, which is what we want for all eight. See `EVENTS`.
+        groups.push(json!({ "hooks": [handler(command)] }));
     }
-    settings
+    Ok(settings)
 }
 
 /// `settings` with every entry of ours removed, and nothing else changed.
@@ -187,6 +184,9 @@ pub(crate) fn uninstall_from(mut settings: Value) -> Value {
         // install below has to work on a machine where nobody has written one yet.
         settings = Value::Object(Map::new());
     }
+    if installed_events(&settings).is_empty() {
+        return settings;
+    }
     let Some(hooks) = settings
         .as_object_mut()
         .expect("made an object above")
@@ -195,23 +195,23 @@ pub(crate) fn uninstall_from(mut settings: Value) -> Value {
     else {
         return settings;
     };
-    for groups in hooks.values_mut() {
+    hooks.retain(|_, groups| {
         let Some(groups) = groups.as_array_mut() else {
-            continue;
+            return true;
         };
-        for group in groups.iter_mut() {
+        let mut removed = false;
+        groups.retain_mut(|group| {
             if let Some(handlers) = group.get_mut("hooks").and_then(Value::as_array_mut) {
+                let before = handlers.len();
                 handlers.retain(|handler| !is_ours(handler));
+                let changed = handlers.len() != before;
+                removed |= changed;
+                return !changed || !handlers.is_empty();
             }
-        }
-        groups.retain(|group| {
-            group
-                .get("hooks")
-                .and_then(Value::as_array)
-                .is_none_or(|handlers| !handlers.is_empty())
+            true
         });
-    }
-    hooks.retain(|_, groups| groups.as_array().is_none_or(|groups| !groups.is_empty()));
+        !removed || !groups.is_empty()
+    });
     if hooks.is_empty() {
         settings
             .as_object_mut()
@@ -281,13 +281,14 @@ fn read_settings(path: &Path) -> Result<Value> {
 /// Through a temporary file in the same folder and a rename, so a crash midway leaves
 /// the old file rather than half of the new one. The `.bak` is written first and is
 /// what a person reaches for when this got something wrong.
-fn write_settings(path: &Path, settings: &Value) -> Result<()> {
+fn write_settings(path: &Path, settings: &Value) -> Result<bool> {
     let folder = path
         .parent()
         .ok_or_else(|| anyhow!("{} has no folder to write into", path.display()))?;
     std::fs::create_dir_all(folder)
         .with_context(|| format!("cannot create {}", folder.display()))?;
-    if path.exists() {
+    let backed_up = path.exists();
+    if backed_up {
         let backup = path.with_extension("json.bak");
         std::fs::copy(path, &backup).with_context(|| {
             format!("cannot back {} up to {}", path.display(), backup.display())
@@ -300,7 +301,7 @@ fn write_settings(path: &Path, settings: &Value) -> Result<()> {
         .with_context(|| format!("cannot write {}", temporary.display()))?;
     std::fs::rename(&temporary, path)
         .with_context(|| format!("cannot replace {}", path.display()))?;
-    Ok(())
+    Ok(backed_up)
 }
 
 fn install(project: bool, dry_run: bool) -> Result<()> {
@@ -310,7 +311,7 @@ fn install(project: bool, dry_run: bool) -> Result<()> {
     let settings_path = settings_path(project)?;
     let settings = read_settings(&settings_path)?;
     let command = script_path.display().to_string();
-    let updated = install_into(settings, &command);
+    let updated = install_into(settings, &command)?;
 
     if dry_run {
         println!("would write {}:\n", script_path.display());
@@ -332,7 +333,7 @@ fn install(project: bool, dry_run: bool) -> Result<()> {
     std::fs::write(&script_path, &script)
         .with_context(|| format!("cannot write {}", script_path.display()))?;
     make_executable(&script_path)?;
-    write_settings(&settings_path, &updated)?;
+    let backed_up = write_settings(&settings_path, &updated)?;
 
     println!("wrote {}", script_path.display());
     println!(
@@ -340,10 +341,12 @@ fn install(project: bool, dry_run: bool) -> Result<()> {
         EVENTS.len(),
         settings_path.display()
     );
-    println!(
-        "kept the previous settings as {}",
-        settings_path.with_extension("json.bak").display()
-    );
+    if backed_up {
+        println!(
+            "kept the previous settings as {}",
+            settings_path.with_extension("json.bak").display()
+        );
+    }
     // Said rather than hidden: the file is re-serialized from a parse, so its keys
     // come back in sorted order. Nothing about the settings changes, but a file under
     // version control will show a diff that is mostly not ours.
@@ -363,7 +366,9 @@ fn uninstall(project: bool) -> Result<()> {
     let settings_path = settings_path(project)?;
     let settings = read_settings(&settings_path)?;
     let removed = installed_events(&settings).len();
-    write_settings(&settings_path, &uninstall_from(settings))?;
+    if removed > 0 {
+        write_settings(&settings_path, &uninstall_from(settings))?;
+    }
     println!("removed {removed} events from {}", settings_path.display());
 
     let script_path = script_path()?;
@@ -443,4 +448,70 @@ fn status() -> Result<()> {
         ),
     }
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "zellij-hocus-hooks-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn generated_script_streams_a_large_payload_instead_of_putting_it_in_argv() {
+        let temp = temp_dir("payload");
+        let fake_zellij = temp.join("zellij");
+        let hook = temp.join("hocus-hook.sh");
+        let captured = temp.join("payload");
+        let argc = temp.join("argc");
+        std::fs::write(
+            &fake_zellij,
+            "#!/bin/sh\nprintf '%s' \"$#\" > \"$ARGC\"\ncat > \"$CAPTURE\"\n",
+        )
+        .unwrap();
+        make_executable(&fake_zellij).unwrap();
+        std::fs::write(&hook, script(&fake_zellij)).unwrap();
+        make_executable(&hook).unwrap();
+
+        let payload = vec![b'x'; 200 * 1024];
+        let mut child = Command::new(&hook)
+            .env("ZELLIJ_PANE_ID", "7")
+            .env("CAPTURE", &captured)
+            .env("ARGC", &argc)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(&payload).unwrap();
+        assert!(child.wait().unwrap().success());
+
+        assert_eq!(std::fs::read(captured).unwrap(), payload);
+        assert_eq!(std::fs::read_to_string(argc).unwrap(), "5");
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn writing_new_settings_only_reports_a_backup_when_it_made_one() {
+        let temp = temp_dir("backup");
+        let settings = temp.join(".claude/settings.json");
+
+        assert!(!write_settings(&settings, &json!({ "model": "opus" })).unwrap());
+        assert!(!settings.with_extension("json.bak").exists());
+
+        assert!(write_settings(&settings, &json!({ "model": "sonnet" })).unwrap());
+        assert!(settings.with_extension("json.bak").exists());
+        std::fs::remove_dir_all(temp).unwrap();
+    }
 }

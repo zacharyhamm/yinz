@@ -549,10 +549,11 @@ impl State {
 
     /// One Claude Code hook, from the pane it fired in.
     ///
-    /// Publishes on every event it acts on, and that is the whole point of the feed:
-    /// a state change reaches the strip in the milliseconds it took the pipe to
-    /// arrive, rather than on a heartbeat up to five seconds away and then only
-    /// after three more polls of stillness have agreed with it.
+    /// Publishes whenever an event changes the feed, and that is the whole point of
+    /// the feed: a state change reaches the strip in the milliseconds it took the pipe
+    /// to arrive, rather than on a heartbeat up to five seconds away and then only
+    /// after three more polls of stillness have agreed with it. Repeated events that
+    /// say exactly the same thing cost no snapshot broadcast.
     ///
     /// The summary machinery is deliberately left alone. It still hangs off the
     /// screen heuristic, because what it produces is a *description* — the toast, the
@@ -573,6 +574,15 @@ impl State {
         let Some(phase) = agents::hook_phase(event) else {
             return;
         };
+        let pane_is_agent = self
+            .panes
+            .iter()
+            .flatten()
+            .find(|pane| pane.pane_id == pane_id)
+            .is_some_and(|pane| agents::classify(pane, &self.manual_kinds).is_some());
+        if !pane_is_agent {
+            return;
+        }
         // A hook fired in this pane is that pane demonstrably running Claude Code:
         // better evidence than the foreground command, which stops naming the agent
         // the moment it shells out. Latched through the same map the command sniff
@@ -588,15 +598,16 @@ impl State {
             },
             None => false,
         };
-        self.hooks.insert(
-            pane_id,
-            agents::HookFeed {
-                phase,
-                detail: agents::hook_detail(event),
-                session_id: event.session_id.clone(),
-                cwd: event.cwd.clone(),
-            },
-        );
+        let feed = agents::HookFeed {
+            phase,
+            detail: agents::hook_detail(event),
+            session_id: event.session_id.clone(),
+            cwd: event.cwd.clone(),
+        };
+        let changed = self.hooks.get(&pane_id) != Some(&feed);
+        if changed {
+            self.hooks.insert(pane_id, feed);
+        }
         self.settle_latches();
         if cwd_moved {
             // The agent's folder, which is not always the pane's: an agent told to
@@ -605,7 +616,9 @@ impl State {
             self.rejoin_cwds();
             self.resolve_repositories();
         }
-        self.publish();
+        if changed {
+            self.publish();
+        }
     }
 
     /// Note every pane that is running an agent right now, and write what we
@@ -3211,6 +3224,7 @@ mod tests {
         wire::HookEvent {
             hook_event_name: name.to_owned(),
             session_id: "cc-session-1".to_owned(),
+            source: Some("startup".to_owned()),
             ..Default::default()
         }
     }
@@ -3252,6 +3266,59 @@ mod tests {
             sent.is_empty(),
             "and nothing has been asked of a model to get there"
         );
+    }
+
+    #[test]
+    fn compacting_a_session_does_not_mark_a_working_agent_idle() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        state.on_hook(7, &hook("UserPromptSubmit"));
+        let seq = state.seq;
+
+        state.on_hook(
+            7,
+            &wire::HookEvent {
+                source: Some("compact".to_owned()),
+                ..hook("SessionStart")
+            },
+        );
+
+        assert_eq!(cell(&state, 7), "busy");
+        assert_eq!(state.seq, seq, "an ignored event publishes nothing");
+    }
+
+    #[test]
+    fn a_hook_only_latches_a_pane_the_snapshot_already_calls_an_agent() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "zsh", "/work")]),
+            ..State::default()
+        };
+
+        state.on_hook(99, &hook("Stop"));
+        state.on_hook(7, &hook("Stop"));
+
+        assert!(state.latched.is_empty());
+        assert!(state.hooks.is_empty());
+        assert_eq!(state.seq, 0);
+    }
+
+    #[test]
+    fn an_identical_hook_does_not_publish_the_same_snapshot_twice() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        let event = hook("UserPromptSubmit");
+        state.on_hook(7, &event);
+        let seq = state.seq;
+
+        state.on_hook(7, &event);
+        assert_eq!(state.seq, seq);
+
+        state.on_hook(7, &hook("PermissionRequest"));
+        assert_eq!(state.seq, seq + 1, "a changed phase still publishes");
     }
 
     /// The other half: blocked on the user, said outright rather than guessed at from a
