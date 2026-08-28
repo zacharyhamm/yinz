@@ -101,6 +101,30 @@ fn request_body_advertises_the_tools_when_they_are_enabled() {
     assert_eq!(body["tools"].as_array().unwrap().len(), 65);
 }
 
+#[test]
+fn request_body_advertises_registered_extension_tools() {
+    let mut cfg = test_config();
+    cfg.tools = true;
+    let extension = json!({
+        "type": "function",
+        "function": {
+            "name": "weather_forecast",
+            "description": "Read the forecast.",
+            "parameters": {"type": "object"},
+        },
+    });
+    let body: serde_json::Value = serde_json::from_slice(&request_body_with_project_and_tools(
+        &cfg,
+        &[Message::user("hi")],
+        true,
+        None,
+        false,
+        std::slice::from_ref(&extension),
+    ))
+    .unwrap();
+    assert_eq!(body["tools"].as_array().unwrap().last(), Some(&extension));
+}
+
 /// The tool payload is paid for on every turn, so it is capped rather than left to
 /// drift. The cap was 20kb and the payload had grown to sit just under it, which made
 /// *any* new tool fail this test rather than only an extravagant one. Raised to 21kb
