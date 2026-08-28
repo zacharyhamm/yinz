@@ -21,6 +21,7 @@ fn state_streaming(messages: Vec<Message>, id: &str) -> State {
         stream: Some(StreamState {
             id: id.to_owned(),
             finishing: false,
+            usage: None,
         }),
         ..State::default()
     }
@@ -40,6 +41,7 @@ fn finishing(id: &str) -> Option<StreamState> {
     Some(StreamState {
         id: id.to_owned(),
         finishing: true,
+        usage: None,
     })
 }
 
@@ -55,6 +57,7 @@ fn ready_state() -> State {
         stream: Some(StreamState {
             id: "hocus-1".into(),
             finishing: false,
+            usage: None,
         }),
         reply_at: Some(1),
         messages: vec![Message::user("hi"), Message::assistant("")],
@@ -637,6 +640,7 @@ mod chat_tabs;
 mod chats;
 mod commands;
 mod confirmation;
+mod context_size;
 mod data_store;
 mod extensions;
 mod file_tools;

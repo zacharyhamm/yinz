@@ -910,6 +910,7 @@ impl State {
         self.stream = Some(StreamState {
             id: stream_id,
             finishing: false,
+            usage: None,
         });
         self.pin_to_bottom();
         // After the pin, which clears it: everyone starts this reply following
@@ -963,6 +964,7 @@ impl State {
         self.stream = Some(StreamState {
             id: stream_id,
             finishing: true,
+            usage: None,
         });
         self.pin_to_bottom();
         true
@@ -1014,10 +1016,29 @@ impl State {
                     self.stream = Some(StreamState {
                         id: stream_id.to_owned(),
                         finishing: true,
+                        usage: None,
                     });
                     break;
                 },
                 SseItem::ToolCallFragment { .. } => self.tool_calls.feed(&item),
+                // Held on the stream rather than recorded here: Ollama hangs
+                // the count on the last content chunk, ahead of the text it
+                // covers, and a tool-calling reply is still fragments in
+                // `tool_calls`. The baseline is taken at `done`, once the
+                // transcript holds what was counted.
+                SseItem::Usage { prompt, completion } => {
+                    if let Some(stream) = self.stream.as_mut() {
+                        stream.usage = Some(prompt + completion);
+                    }
+                    self.log(
+                        "api_usage",
+                        serde_json::json!({
+                            "stream_id": stream_id,
+                            "prompt_tokens": prompt,
+                            "completion_tokens": completion,
+                        }),
+                    );
+                },
                 // Informational: `done: true` below is the authoritative end.
                 SseItem::Done => {},
             }
@@ -1025,6 +1046,12 @@ impl State {
 
         if done {
             let settled = self.stream.take();
+            // A cancelled or already-failed stream's count is not recorded
+            // even if one arrived: the outcome on screen is not what it cost.
+            let usage = settled
+                .as_ref()
+                .filter(|stream| !stream.finishing)
+                .and_then(|stream| stream.usage);
             match settled {
                 // Outcome already recorded; this is the terminator we were
                 // waiting to swallow. Any half-accumulated calls go with it.
@@ -1067,7 +1094,11 @@ impl State {
                         asked.content = prior_text.clone();
                         asked.reasoning = prior_reasoning;
                         self.messages.push(asked);
+                        // Both keyed on the fingerprint, which the swap above
+                        // does not move: the same count, and the same length
+                        // of prose now on the tool-calls message.
                         self.transcript_cache = None;
+                        self.context_cache = None;
                         self.saved.1 = self.mutable_len().wrapping_add(1);
                         let tool_payload: Vec<serde_json::Value> = calls
                             .iter()
@@ -1155,10 +1186,24 @@ impl State {
                             // The sidebar is very often not what is being looked
                             // at — the same reason `pump_tools` toasts its own
                             // y/n rather than trusting the pane to be on screen.
-                            notify("hocus has a plan — /execute to carry it out");
+                            notify(
+                                "hocus has a plan — /execute to carry it out, /execute --clear \
+                                 to carry it out in a fresh chat",
+                            );
                         }
                     }
                 },
+            }
+            // The transcript now holds everything the provider counted — the
+            // prose, or the tool-calls message with its arguments — so this is
+            // the baseline that "added since" is measured against. Only a tool
+            // result, or the next question, moves the count off exact.
+            if let Some(tokens) = usage {
+                self.usage = Some(ContextUsage {
+                    tokens,
+                    wire_chars: api::wire_chars(&self.messages),
+                });
+                self.context_cache = None;
             }
             // The reply is settled, so nothing is appending any more — whatever
             // a typed tool pushes from here on is its own message.

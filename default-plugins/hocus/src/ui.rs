@@ -1160,12 +1160,12 @@ fn render_title(state: &mut State, cols: usize) {
 /// A count rides along when other chats are working too, so a background
 /// reply is visible without looking for its `●` in the bar. The job count is
 /// every tab's: a job fires and bills whichever tab is on screen.
-fn title_note(state: &State) -> Option<String> {
+fn title_note(state: &mut State) -> Option<String> {
     let elsewhere = match state.parked_count() {
         0 => String::new(),
         n => format!(" +{n}"),
     };
-    if state.is_streaming() {
+    let activity = if state.is_streaming() {
         Some(format!("streaming…{elsewhere}"))
     } else if !elsewhere.is_empty() {
         Some(format!("working{elsewhere}"))
@@ -1173,6 +1173,35 @@ fn title_note(state: &State) -> Option<String> {
         Some(format!("⏲ {}", state.job_count()))
     } else {
         None
+    };
+    let context = context_note(state);
+    match (activity, context) {
+        (Some(activity), Some(context)) => Some(format!("{activity} · {context}")),
+        (activity, context) => activity.or(context),
+    }
+}
+
+/// `12.3k tok`, or `~12.3k tok` while the number is a guess. Nothing for a
+/// chat with nothing in it, so a fresh pane is as bare as it was.
+fn context_note(state: &mut State) -> Option<String> {
+    if state.messages.is_empty() && state.usage.is_none() {
+        return None;
+    }
+    let (tokens, estimated) = state.context_tokens();
+    let mark = if estimated { "~" } else { "" };
+    Some(format!("{mark}{} tok", format_tokens(tokens)))
+}
+
+/// A token count at the width a title slot can spare: `842`, `12.3k`, `1.2M`.
+pub(crate) fn format_tokens(tokens: u64) -> String {
+    if tokens < 1_000 {
+        tokens.to_string()
+    // The unit is chosen on the rounded value: from 999_950 up, one decimal
+    // of `k` reads `1000.0k`.
+    } else if tokens < 999_950 {
+        format!("{:.1}k", tokens as f64 / 1_000.0)
+    } else {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
     }
 }
 
@@ -1397,11 +1426,7 @@ fn prompt_box(prompt: &Confirmation, plan_inner: Vec<VLine>, cols: usize) -> Vec
 fn plan_at(state: &State, prompt: Option<&Confirmation>) -> Option<usize> {
     prompt
         .filter(|prompt| prompt.kind == PromptKind::Plan)
-        .and_then(|_| {
-            state.messages.iter().rposition(|message| {
-                message.role == Role::Assistant && message.tool_calls.is_empty()
-            })
-        })
+        .and_then(|_| state.plan_index())
 }
 
 fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
@@ -1649,7 +1674,7 @@ fn help_line(state: &State) -> &'static str {
     // Ahead of the `Status` match: a plan waits on the user rather than on the
     // tool queue, so the two are orthogonal and this is the nearer question.
     if state.awaiting_plan() {
-        return "</execute> run  <n> refine  plan ready  <Esc> hide";
+        return "</execute> run  </execute --clear> fresh  <n> refine  <Esc> hide";
     }
     // Esc hides from every one of these; Ctrl-c is what interrupts, and when a tool
     // and a stream are both outstanding it takes the tool first.
@@ -2311,7 +2336,7 @@ mod tests {
 
         state.plan = crate::Plan::AwaitingApproval;
         let help = help_line(&state);
-        assert!(help.starts_with("</execute> run  <n> refine"));
+        assert!(help.starts_with("</execute> run  </execute --clear> fresh  <n> refine"));
     }
 
     #[test]
@@ -2773,15 +2798,19 @@ mod tests {
     #[test]
     fn the_title_note_sees_jobs_in_every_tab() {
         let mut state = tabs_state(2);
-        assert_eq!(title_note(&state), None, "nothing anywhere");
+        assert_eq!(
+            title_note(&mut state).as_deref(),
+            Some("~1 tok"),
+            "nothing happening anywhere: only the size"
+        );
 
         state.jobs.push(job(1));
-        assert_eq!(title_note(&state).as_deref(), Some("⏲ 1"));
+        assert_eq!(title_note(&mut state).as_deref(), Some("⏲ 1 · ~1 tok"));
 
         state.parked[0].jobs.push(job(2));
         assert_eq!(
-            title_note(&state).as_deref(),
-            Some("working +1"),
+            title_note(&mut state).as_deref(),
+            Some("working +1 · ~1 tok"),
             "the other tab is live, and counted"
         );
         assert!(chat_tabs(&state, 80)[1].text.starts_with(" ● "));
@@ -2803,6 +2832,7 @@ mod tests {
         state.stream = Some(crate::StreamState {
             id: "hocus-1".into(),
             finishing: false,
+            usage: None,
         });
         state.parked[1].status = Status::ConfirmingTool;
         let cells = chat_tabs(&state, 60);

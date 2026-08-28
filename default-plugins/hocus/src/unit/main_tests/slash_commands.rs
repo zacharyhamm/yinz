@@ -187,3 +187,33 @@ fn slash_keys_prints_the_keybinding_reference() {
     assert!(notice.content.contains("Ctrl+l"));
     assert!(notice.content.contains("new chat"));
 }
+
+// -- /clear ----------------------------------------------------------------
+
+/// `/clear` is Ctrl-l spelled out: the chat is parked in its tab and an empty
+/// one takes the foreground, the way a new chat is started.
+#[test]
+fn slash_clear_parks_the_chat_and_opens_an_empty_one() {
+    let mut state = ready_state();
+    settle(&mut state);
+    state.messages = vec![Message::user("keep me")];
+    state.input.set_text("/clear".to_owned());
+    state.submit();
+
+    assert!(state.messages.is_empty(), "the foreground is empty");
+    assert_eq!(state.parked.len(), 1);
+    assert_eq!(state.parked[0].messages[0].content, "keep me");
+    assert!(matches!(state.status, Status::Idle));
+}
+
+/// An empty chat is not worth a tab, so `/clear` on one changes nothing — and
+/// in particular it never falls through to `parse_command` as "no such tool".
+#[test]
+fn slash_clear_on_an_empty_chat_opens_no_second_tab() {
+    let mut state = State::default();
+    state.input.set_text("/clear".to_owned());
+    state.submit();
+
+    assert!(state.messages.is_empty());
+    assert!(state.parked.is_empty());
+}

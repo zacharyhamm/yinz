@@ -364,6 +364,116 @@ fn execute_carries_a_trailing_amendment() {
     );
 }
 
+/// `--clear` carries the plan out in a chat of its own: the planning chat is
+/// parked with its research, and the executor is handed the plan and only the
+/// plan, as the one user turn a fresh transcript starts from.
+#[test]
+fn execute_clear_carries_the_plan_into_a_new_tab() {
+    let mut state = planning_state();
+    state.tool_rounds = 4;
+    reply_and_settle(&mut state, "The plan.");
+    state.input.set_text("/execute --clear".to_owned());
+    state.submit();
+
+    assert_eq!(
+        state.parked.len(),
+        1,
+        "the planning chat was parked, not lost"
+    );
+    let planned = &state.parked[0];
+    assert!(
+        matches!(planned.plan, Plan::Off),
+        "the parked chat left the mode"
+    );
+    assert!(
+        planned.messages.iter().any(|m| m.content == "The plan."),
+        "the plan stayed where it was written"
+    );
+    assert_eq!(
+        planned.messages.last().map(|m| m.content.as_str()),
+        Some("planning mode off — carrying out the plan in a new chat"),
+    );
+
+    assert!(matches!(state.plan, Plan::Off));
+    assert_eq!(state.tool_rounds, 0, "execution gets its own budget");
+    assert!(
+        state.is_streaming(),
+        "the request went out from the new chat"
+    );
+    let users: Vec<&str> = state
+        .messages
+        .iter()
+        .filter(|message| message.role == Role::User)
+        .map(|message| message.content.as_str())
+        .collect();
+    assert_eq!(
+        users,
+        vec!["Approved. Carry out this plan:\n\nThe plan."],
+        "the fresh transcript is the plan and nothing else"
+    );
+    assert!(
+        !state.messages.iter().any(|m| m.content == "hi"),
+        "the planning prompt did not come along"
+    );
+}
+
+/// An amendment typed after `--clear` follows the plan it amends.
+#[test]
+fn execute_clear_carries_a_trailing_amendment() {
+    let mut state = planning_state();
+    reply_and_settle(&mut state, "The plan.");
+    state
+        .input
+        .set_text("/execute --clear skip the migration step".to_owned());
+    state.submit();
+
+    let last_user = state
+        .messages
+        .iter()
+        .rfind(|message| message.role == Role::User)
+        .expect("the approval is a user turn");
+    assert_eq!(
+        last_user.content,
+        "Approved. Carry out this plan:\n\nThe plan.\n\nskip the migration step"
+    );
+}
+
+/// `--clearly` is a note, not the flag: only the whole word clears.
+#[test]
+fn execute_clear_is_a_whole_word() {
+    let mut state = planning_state();
+    reply_and_settle(&mut state, "The plan.");
+    state.input.set_text("/execute --clearly".to_owned());
+    state.submit();
+
+    assert!(state.parked.is_empty(), "nothing was parked");
+    let last_user = state
+        .messages
+        .iter()
+        .rfind(|message| message.role == Role::User)
+        .expect("the approval is a user turn");
+    assert_eq!(
+        last_user.content,
+        "Approved. Carry out the plan you just wrote. --clearly"
+    );
+}
+
+/// The flag changes where the plan is carried out, not whether there is one.
+#[test]
+fn execute_clear_without_a_waiting_plan_is_the_same_error() {
+    for plan in [Plan::Planning, Plan::Off] {
+        let mut state = State {
+            plan,
+            ..idle_state()
+        };
+        state.input.set_text("/execute --clear".to_owned());
+        state.submit();
+
+        assert!(state.parked.is_empty(), "nothing was parked");
+        assert_eq!(state.messages.last().unwrap().role, Role::Error);
+    }
+}
+
 /// Mid-research there is no plan to carry out yet, and outside the mode there was
 /// never one. Both are errors rather than a request going out on their own.
 #[test]

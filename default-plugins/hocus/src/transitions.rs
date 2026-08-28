@@ -107,6 +107,8 @@ impl State {
         Chat {
             transcript_cache: self.transcript_cache.take(),
             plan_cache: self.plan_cache.take(),
+            context_cache: self.context_cache.take(),
+            usage: self.usage.take(),
             messages: std::mem::take(&mut self.messages),
             status: std::mem::take(&mut self.status),
             stream: self.stream.take(),
@@ -136,6 +138,7 @@ impl State {
     pub(crate) fn put_chat(&mut self, chat: Chat) {
         self.transcript_cache = chat.transcript_cache;
         self.plan_cache = chat.plan_cache;
+        self.context_cache = chat.context_cache;
         self.messages = chat.messages;
         self.status = chat.status;
         self.stream = chat.stream;
@@ -152,6 +155,7 @@ impl State {
         self.view = chat.view;
         self.job_auto_confirm = chat.job_auto_confirm;
         self.plan = chat.plan;
+        self.usage = chat.usage;
         self.plugin_load = chat.plugin_load;
         self.jobs = chat.jobs;
         self.asks = chat.asks;
@@ -320,6 +324,9 @@ impl State {
                 // Short labels on purpose: the hints are written along the
                 // box's bottom border, and the pane is a third of the screen
                 // wide. Anything longer drops onto a line of its own.
+                // `/execute --clear` is left to the help line below: the
+                // border cannot fit a fourth key without dropping them all
+                // onto a line of their own.
                 keys: vec![("/execute", "run"), ("n", "refine"), ("Esc", "hide")],
             });
         }
@@ -341,6 +348,39 @@ impl State {
     /// planning turn rather than pile up in `asks`.
     pub(crate) fn awaiting_plan(&self) -> bool {
         matches!(self.plan, Plan::AwaitingApproval)
+    }
+
+    /// Where the plan is in the transcript: the last reply that was prose
+    /// rather than a round of tool calls. What the frame lifts into its box
+    /// and what `/execute --clear` carries into a fresh chat.
+    pub(crate) fn plan_index(&self) -> Option<usize> {
+        self.messages
+            .iter()
+            .rposition(|message| message.role == Role::Assistant && message.tool_calls.is_empty())
+    }
+
+    /// How big the context is, in tokens, and whether that is a guess.
+    ///
+    /// Exact only when the provider has counted it and nothing has been added
+    /// since; otherwise the provider's last count plus a `chars / 4` guess for
+    /// what came after, or the guess alone before any reply has arrived.
+    pub(crate) fn context_tokens(&mut self) -> (u64, bool) {
+        let key = self.fingerprint();
+        let chars = match self.context_cache {
+            Some((cached, chars)) if cached == key => chars,
+            _ => {
+                let chars = api::wire_chars(&self.messages);
+                self.context_cache = Some((key, chars));
+                chars
+            },
+        };
+        match self.usage {
+            Some(usage) => {
+                let added = chars.saturating_sub(usage.wire_chars);
+                (usage.tokens + estimate_tokens(added), added > 0)
+            },
+            None => (estimate_tokens(chars), true),
+        }
     }
 
     /// Whether the read-only tool set is what goes out with the next request.
@@ -1022,6 +1062,7 @@ impl State {
         self.stream = Some(StreamState {
             id: stream_id,
             finishing: true,
+            usage: None,
         });
         true
     }
@@ -1056,6 +1097,8 @@ impl State {
         self.reply_at = None;
         self.messages.clear();
         self.plan_cache = None;
+        self.context_cache = None;
+        self.usage = None;
         self.chat_id = None;
         self.saved = self.fingerprint();
         self.picker = None;
@@ -1115,4 +1158,10 @@ impl State {
         self.log_seq = self.log_seq.wrapping_add(1);
         post_log(self.chat_id, self.mono_ms, self.log_seq, kind, payload);
     }
+}
+
+/// The `chars / 4` rule of thumb, which is about right for English prose and
+/// code on every tokenizer this endpoint fronts.
+pub(crate) fn estimate_tokens(chars: usize) -> u64 {
+    (chars / 4) as u64
 }

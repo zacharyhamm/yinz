@@ -28,6 +28,9 @@ fn test_config() -> Config {
         // On, as it resolves by default: the fixtures that carry no reasoning
         // are then also the proof that the field stays off the wire anyway.
         reasoning_echo: true,
+        // On, as it resolves by default; `request_body_asks_for_usage` is the
+        // proof it lands on the wire.
+        stream_usage: true,
     }
 }
 

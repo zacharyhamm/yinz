@@ -100,6 +100,12 @@ pub struct Config {
     /// endpoint that streams reasoning but rejects it on input, as DeepSeek's
     /// own older `deepseek-reasoner` does.
     pub reasoning_echo: bool,
+    /// Whether to ask for a final `usage` chunk via `stream_options`. On by
+    /// default — it is the only way a streamed completion says what the context
+    /// costs — but the same stance as `tools`: `stream_options` is a 2024
+    /// addition and an older proxy or a strict endpoint 400s on the unknown
+    /// field, so it needs an off switch. Off, the count stays an estimate.
+    pub stream_usage: bool,
 }
 
 /// A config problem, carrying enough context to render a useful banner.
@@ -164,6 +170,10 @@ impl Config {
         // merely degrade it, which is the worst thing a typo could do.
         let reasoning_echo = !non_empty(kdl, "reasoning_echo")
             .is_some_and(|value| value.eq_ignore_ascii_case("false"));
+        // And again: a typo leaves the title's count exact rather than losing
+        // every request to a 400.
+        let stream_usage = !non_empty(kdl, "stream_usage")
+            .is_some_and(|value| value.eq_ignore_ascii_case("false"));
 
         match non_empty(env, &api_key_env) {
             Some(api_key) => Ok(Config {
@@ -183,6 +193,7 @@ impl Config {
                 tools,
                 max_tool_rounds,
                 reasoning_echo,
+                stream_usage,
             }),
             // The environment we see is the one captured when the *session*
             // started, so "I exported it after launching zellij" is by far the
@@ -285,9 +296,21 @@ pub fn request_body_planning(cfg: &Config, transcript: &[Message], allow_tools: 
 struct ChatRequest<'a> {
     model: &'a str,
     stream: bool,
+    /// Asks for a final `usage` chunk, which is the only way a streamed
+    /// completion reports how many tokens the context is. OpenAI, OpenRouter,
+    /// DeepSeek, vLLM and Ollama all honour it; anything that ignores it just
+    /// leaves the count estimated. `None` when `Config::stream_usage` is off,
+    /// for the endpoints that reject the field outright.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<StreamOptions>,
     messages: Vec<WireMessage<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct StreamOptions {
+    include_usage: bool,
 }
 
 /// One message, in whichever of the three shapes the endpoint expects. An enum
@@ -449,6 +472,9 @@ pub fn request_body_with_project_and_tools(
     let body = ChatRequest {
         model: &cfg.model,
         stream: true,
+        stream_options: cfg.stream_usage.then_some(StreamOptions {
+            include_usage: true,
+        }),
         messages,
         tools: send_tools.then(|| {
             let mut specs = if plan {
@@ -464,6 +490,40 @@ pub fn request_body_with_project_and_tools(
     };
 
     serde_json::to_vec(&body).expect("serializing a chat request cannot fail")
+}
+
+/// How many characters of `transcript` go on the wire: the same messages
+/// `request_body_with_project_and_tools` sends, by the same rules, minus the
+/// system prompt and the JSON framing around each message. The basis of the `~chars/4` estimate shown while there is
+/// no `usage` from the provider — and, once there is one, of the estimate for
+/// what has been added since it was measured.
+///
+/// Reasoning is left out: it is echoed back on a few endpoints only, and a
+/// count that is honest about being rough is better than one that is rough
+/// in two directions at once.
+pub fn wire_chars(transcript: &[Message]) -> usize {
+    transcript
+        .iter()
+        .map(|message| match message.role {
+            Role::User | Role::Tool => message.content.len(),
+            // The same two rules as the request body: a call's prose goes out
+            // only when the call carries a `display`, and its arguments only
+            // when they are a JSON object.
+            Role::Assistant if !message.tool_calls.is_empty() => {
+                message
+                    .display
+                    .as_ref()
+                    .map_or(0, |_| message.content.len())
+                    + message
+                        .tool_calls
+                        .iter()
+                        .map(|call| call.id.len() + call.name.len() + wire_arguments(call).len())
+                        .sum::<usize>()
+            },
+            Role::Assistant => message.content.len(),
+            Role::Error | Role::Notice => 0,
+        })
+        .sum()
 }
 
 /// Which reasoning field, if either, this assistant turn goes out with, as
@@ -494,19 +554,29 @@ fn wire_reasoning(carried: Option<&Reasoning>, echo: bool) -> (Option<&str>, Opt
     }
 }
 
-fn wire_tool_call(call: &ToolCall) -> WireToolCall<'_> {
-    // `arguments` is echoed back verbatim, and providers 400 with "arguments
-    // must be valid json" on anything that is not a JSON object. A no-argument
-    // call commonly streams as `""`, which dispatch accepts (see
-    // `tools::Args::parse`) but the next request would be rejected for.
+/// The `arguments` a call goes out with.
+///
+/// They are echoed back verbatim, and providers 400 with "arguments must be
+/// valid json" on anything that is not a JSON object. A no-argument call
+/// commonly streams as `""`, which dispatch accepts (see `tools::Args::parse`)
+/// but the next request would be rejected for.
+fn wire_arguments(call: &ToolCall) -> &str {
     let valid =
         serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&call.arguments).is_ok();
+    if valid {
+        call.arguments.as_str()
+    } else {
+        "{}"
+    }
+}
+
+fn wire_tool_call(call: &ToolCall) -> WireToolCall<'_> {
     WireToolCall {
         id: &call.id,
         kind: "function",
         function: WireFunction {
             name: &call.name,
-            arguments: if valid { call.arguments.as_str() } else { "{}" },
+            arguments: wire_arguments(call),
         },
     }
 }
@@ -682,6 +752,12 @@ pub enum SseItem {
         name: Option<String>,
         arguments: Option<String>,
     },
+    /// The provider's count of what the request cost, in tokens. Sent once,
+    /// on the final chunk, and only because the request asked for it.
+    Usage {
+        prompt: u64,
+        completion: u64,
+    },
     /// The `[DONE]` sentinel. Informational only: the authoritative end of
     /// stream is the host's `WebRequestStreamChunk { done: true }`.
     Done,
@@ -794,14 +870,31 @@ fn parse_line(line: &str) -> Vec<SseItem> {
     if let Some(error) = chunk.error {
         return vec![SseItem::ApiError(error.message)];
     }
+    let mut items = Vec::new();
+    // Ahead of the delta: the usage chunk has no choices at all on OpenAI,
+    // while Ollama hangs it on the last content chunk. Either way it is kept.
+    // A `usage` with neither count — `{}`, or `total_tokens` alone — says
+    // nothing worth recording as an exact number; an empty object is what some
+    // proxies send in place of leaving the field out.
+    if let Some(Usage {
+        prompt_tokens: prompt,
+        completion_tokens: completion,
+    }) = chunk.usage
+    {
+        if prompt.is_some() || completion.is_some() {
+            items.push(SseItem::Usage {
+                prompt: prompt.unwrap_or(0),
+                completion: completion.unwrap_or(0),
+            });
+        }
+    }
     let Some(delta) = chunk.choices.into_iter().next().map(|choice| choice.delta) else {
-        return Vec::new();
+        return items;
     };
 
     // A provider may put the final reasoning fragment, prose and several
     // parallel calls in one delta. Keep all of them; dropping any reasoning is
     // enough for DeepSeek to reject the next request.
-    let mut items = Vec::new();
     if let Some((text, key)) = reasoning_delta(&delta) {
         items.push(SseItem::Reasoning {
             text: text.to_owned(),
@@ -842,12 +935,22 @@ fn reasoning_delta(delta: &Delta) -> Option<(&str, ReasoningKey)> {
 
 #[derive(Deserialize)]
 struct StreamChunk {
-    /// Empty on usage-only chunks, hence the default.
+    /// Empty on the usage-only chunk `stream_options` asks for, hence the
+    /// default.
     #[serde(default)]
     choices: Vec<Choice>,
     /// Some proxies report errors inside an otherwise-200 stream.
     #[serde(default)]
     error: Option<ApiError>,
+    /// Only on the final chunk, and only when asked for.
+    #[serde(default)]
+    usage: Option<Usage>,
+}
+
+#[derive(Deserialize)]
+struct Usage {
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]

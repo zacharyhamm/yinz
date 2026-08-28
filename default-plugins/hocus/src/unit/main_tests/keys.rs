@@ -125,6 +125,7 @@ fn ctrl_c_takes_the_tool_before_the_stream() {
     state.stream = Some(StreamState {
         id: "hocus-1".into(),
         finishing: false,
+        usage: None,
     });
 
     state.on_key(ctrl_c());

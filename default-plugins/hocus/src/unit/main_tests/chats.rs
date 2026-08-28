@@ -64,6 +64,7 @@ fn a_chunk_for_a_parked_chat_lands_in_it() {
         stream: Some(StreamState {
             id: "hocus-7".into(),
             finishing: false,
+            usage: None,
         }),
         ..Chat::default()
     });
@@ -94,6 +95,7 @@ fn a_parked_chat_that_settles_stays_open() {
         stream: Some(StreamState {
             id: "hocus-7".into(),
             finishing: false,
+            usage: None,
         }),
         ..Chat::default()
     });
@@ -124,6 +126,7 @@ fn switching_to_a_parked_chat_swaps_the_two() {
         stream: Some(StreamState {
             id: "hocus-7".into(),
             finishing: false,
+            usage: None,
         }),
         ..Chat::default()
     });
