@@ -3756,58 +3756,13 @@ mod tests {
     mod props {
         use super::*;
         use crate::data::{
-            CopyDestination, FileMetadata, HostTerminalThemeMode, PaneId, PermissionStatus,
-            WebServerStatus,
+            CopyDestination, HostTerminalThemeMode, PermissionStatus, WebServerStatus,
+        };
+        use crate::plugin_api::test_generators::{
+            bytes, context, pane_id, paths_with_metadata, strings,
         };
         use hegel::generators;
-        use std::collections::BTreeMap;
         use std::path::PathBuf;
-
-        fn strings(tc: &hegel::TestCase) -> String {
-            tc.draw(generators::text())
-        }
-
-        fn context(tc: &hegel::TestCase) -> BTreeMap<String, String> {
-            tc.draw(
-                generators::vecs(generators::tuples!(generators::text(), generators::text()))
-                    .max_size(4),
-            )
-            .into_iter()
-            .collect()
-        }
-
-        fn bytes(tc: &hegel::TestCase) -> Vec<u8> {
-            tc.draw(generators::binary().max_size(16))
-        }
-
-        fn pane_id(tc: &hegel::TestCase) -> PaneId {
-            let n = tc.draw(generators::integers::<u32>());
-            if tc.draw(generators::booleans()) {
-                PaneId::Terminal(n)
-            } else {
-                PaneId::Plugin(n)
-            }
-        }
-
-        fn paths_with_metadata(tc: &hegel::TestCase) -> Vec<(PathBuf, Option<FileMetadata>)> {
-            let count = tc.draw(generators::integers::<usize>().max_value(3));
-            (0..count)
-                .map(|_| {
-                    let path = PathBuf::from(tc.draw(generators::text()));
-                    let metadata = if tc.draw(generators::booleans()) {
-                        Some(FileMetadata {
-                            is_dir: tc.draw(generators::booleans()),
-                            is_file: tc.draw(generators::booleans()),
-                            is_symlink: tc.draw(generators::booleans()),
-                            len: tc.draw(generators::integers::<u64>()),
-                        })
-                    } else {
-                        None
-                    };
-                    (path, metadata)
-                })
-                .collect()
-        }
 
         /// Every `Event` variant whose payload is built from plain scalars,
         /// collections and small enums.

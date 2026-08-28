@@ -114,9 +114,12 @@ impl FromStr for SearchOption {
     strum_macros::Display,
     strum_macros::EnumString,
     strum_macros::EnumIter,
+    strum_macros::EnumDiscriminants,
     Default,
 )]
 #[strum(ascii_case_insensitive)]
+#[strum_discriminants(name(ActionKind))]
+#[strum_discriminants(derive(strum_macros::EnumIter))]
 pub enum Action {
     /// Quit Zellij.
     Quit,

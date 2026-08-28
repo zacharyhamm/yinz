@@ -13,6 +13,8 @@ pub mod plugin_ids;
 pub mod plugin_permission;
 pub mod resize;
 pub mod style;
+#[cfg(test)]
+pub(crate) mod test_generators;
 // NOTE: This code is currently out of order.
 // Refer to [the PR introducing this change][1] to learn more about the reasons.
 // TL;DR: When running `cargo release --dry-run` the build-script in zellij-utils is not executed
