@@ -382,6 +382,10 @@ impl StdinAnsiParser {
                     if payload.starts_with(b"99;") {
                         out.desktop_notifications
                             .push(payload.get(3..).unwrap_or_default().to_vec());
+                        // The response is consumed here; it must not also
+                        // land in an open forwarding slot, where the pane
+                        // that asked for some other reply would see it.
+                        continue;
                     } else if let Some(reply) = HostReply::from_osc_payload(&payload) {
                         out.replies.push(reply);
                     }
