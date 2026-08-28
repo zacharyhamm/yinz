@@ -3270,12 +3270,16 @@ impl Screen {
         let active_tab_index =
             first_client_id.and_then(|client_id| self.active_tab_ids.get(&client_id));
 
-        // Filter tabs based on optional tab_index parameter
-        let tabs_to_process: Vec<_> = self
+        // Filter tabs based on optional tab_index parameter. `self.tabs` is keyed by
+        // creation id, so walk them by position instead: a dumped or resurrected
+        // layout should keep the order the user put the tabs in, not the order they
+        // opened them in.
+        let mut tabs_to_process: Vec<_> = self
             .tabs
             .iter()
             .filter(|(idx, _)| tab_index.is_none_or(|target| **idx == target))
             .collect();
+        tabs_to_process.sort_by_key(|(_, tab)| tab.position);
 
         for (tab_index, tab) in tabs_to_process {
             let tab_is_focused = active_tab_index == Some(&tab_index);
