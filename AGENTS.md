@@ -7,7 +7,7 @@ plugins compiled to wasm.
 
 ```sh
 cargo x build            # builds plugins (wasm32-wasip1) then the binary
-cargo x test             # plugin tests + per-crate tests
+cargo x test             # the whole workspace in one run (needs cargo-nextest)
 cargo x lint             # clippy at -D warnings; --fix applies the suggestions
 cargo x format           # rustfmt; --check to verify instead of rewrite
 cargo x ci check         # the pre-handoff gate: format --check, lint, assets --check, test
@@ -44,41 +44,47 @@ run — see "Reading a red run" below for why it is not part of the gate.
 
 ### Passing arguments
 
-xtask's own flags come first (`--no-web`, `--release`, …); everything after `--` is
-forwarded — but each command forwards to a different place:
+xtask's own flags come first (`--no-web`, `--release`, …); everything else is forwarded — but
+each command forwards to a different place:
 
 | command | trailing args land in |
 |---|---|
-| `x test` | libtest, in **every** crate's test binary (after `cargo test --`) |
+| `x test` | `cargo nextest run` — nextest flags, not libtest ones |
 | `x integration-test` | `cargo nextest run` — nextest flags, not libtest ones |
 | `x build`, `x install` | the native `cargo build`, repeated per crate (never the wasm plugin build) |
 | `x run` | zellij itself (after `cargo run --`) |
 | `x bench` | criterion (after `cargo bench --`) — criterion flags, not libtest ones |
 | `x ci e2e` | the e2e test runner |
 
-So `cargo x test -p zellij-server` is rejected by xtask (`unexpected flag: -p`), and
-`cargo x test -- -p zellij-server` reaches every plugin test binary as a libtest option,
-failing the plugin phase. **`x test` has no crate filter.** To narrow a run:
+`x test` is one `cargo nextest run` over the whole workspace, so **nextest's own selection flags
+work directly**:
 
-- **One test, every crate:** `cargo x test some_test_name` — a bare filter needs no `--`.
-  Harness flags do: `cargo x test -- --nocapture --test-threads=1`.
-- **One crate, inner loop:** bare cargo is fine here, and is exactly what the per-crate
-  phase runs — `cargo test -p zellij-server --all-features -- some_filter`, from the repo
-  root, never with `CARGO_TARGET_DIR` set. For a plugin crate add
-  `--target "$(rustc -vV | sed -n 's/^host: //p')"`: `default-plugins/*/.cargo/config.toml`
-  pins the build to wasm, and wasm tests can't run. Tests that load a plugin at runtime
-  need `cargo x build -p` (plugins only) first.
-- **Integration tests:** `cargo x integration-test -- -E 'test(resize)'` (nextest
-  expression), or a bare name filter, which works on either runner.
+- **One crate:** `cargo x test -p zellij-server`.
+- **One test, or a pattern:** `cargo x test some_test_name`, or
+  `cargo x test -E 'test(/^screen_tests::/)'` for a nextest filterset.
+- **Output and concurrency:** `cargo x test --no-capture`, `cargo x test -j 1`. Note these are
+  nextest's spellings — libtest's `--nocapture` and `--test-threads` do not apply.
+- **Integration tests:** `cargo x integration-test -E 'test(resize)'`, or a bare name filter.
 - **Remote-pane tests:** `cargo x remote-test --test -- --exact <name>`. They are
   `#[ignore]`d and need `--build` first (docker); see CONTRIBUTING.md.
 
+`x test`'s separate doctest pass follows the narrowing: a `-p`-selected run runs only that
+package's doctests, and a run narrowed by a test name or filterset skips them (`cargo test --doc`
+cannot express either filter), which it says on stdout.
+
+Bare cargo still works for an inner loop and is worth knowing, because nextest runs every test in
+its own process and `cargo test` does not: `cargo test -p zellij-server -- some_filter`, from the
+repo root, never with `CARGO_TARGET_DIR` set. Don't pass `--target`; the plugin crates' wasm pin
+in `default-plugins/*/.cargo/config.toml` is only read when cargo is invoked from inside those
+directories, and passing it splits the artifact tree. Tests that load a plugin at runtime need
+`cargo x build -p` (plugins only) first.
+
 ### Choosing what to run
 
-Default to the tests that cover what you touched, using the narrowing recipes above — the
-per-crate inner loop for unit tests, an `-E 'test(...)'` expression for integration tests.
-A full `cargo x test` rebuilds every wasm plugin and every crate's test binary; it is not the
-default finishing move.
+Default to the tests that cover what you touched, using the narrowing recipes above — `-p` for a
+crate, an `-E 'test(...)'` expression for a pattern. A full `cargo x test` still links every
+crate's test binary, and rebuilds the wasm plugins whenever their sources changed, so it is not
+the default finishing move.
 
 Escalate to the full `cargo x test` (and `cargo x integration-test`) when the change reaches
 past one crate:

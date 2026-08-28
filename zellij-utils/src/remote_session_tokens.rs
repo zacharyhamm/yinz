@@ -36,7 +36,26 @@ impl From<std::io::Error> for TokenError {
 
 type Result<T> = std::result::Result<T, TokenError>;
 
+/// Overrides the location of the session-token database. Set this to give a process its own
+/// database instead of the machine-global one under [`ZELLIJ_PROJ_DIR`].
+///
+/// Tests need this, and not only for isolation from each other: without it they write real
+/// session tokens into the developer's own data directory. Mirrors [`DB_PATH_ENV_VAR`] in
+/// `web_authentication_tokens`. Unlike `ZELLIJ_PROJ_DIR`, which is a `lazy_static` and therefore
+/// frozen at first use, this is read on every call.
+///
+/// [`DB_PATH_ENV_VAR`]: crate::web_authentication_tokens::DB_PATH_ENV_VAR
+pub const DB_PATH_ENV_VAR: &str = "ZELLIJ_REMOTE_SESSIONS_DB";
+
 fn get_db_path() -> Result<PathBuf> {
+    if let Some(overridden) = std::env::var_os(DB_PATH_ENV_VAR) {
+        let db_path = PathBuf::from(overridden);
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        return Ok(db_path);
+    }
+
     let data_dir = ZELLIJ_PROJ_DIR.data_dir();
     std::fs::create_dir_all(data_dir)?;
     let db_path = data_dir.join("remote_sessions.db");

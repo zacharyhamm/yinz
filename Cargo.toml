@@ -33,10 +33,13 @@ serde_json = { workspace = true }
 suggest = { workspace = true }
 thiserror = { workspace = true }
 isahc = { workspace = true }
+# Only the `#[ignore]`d e2e suite uses this, and it drags in libssh2 + OpenSSL. Cargo does not
+# allow optional dev-dependencies, so it is an optional normal dependency instead, enabled by
+# the `e2e` feature that also compiles the module using it.
+ssh2 = { version = "0.9.1", optional = true }
 
 [dev-dependencies]
 insta = "1.48"
-ssh2 = "0.9.1"
 rand = { workspace = true }
 regex = { workspace = true }
 vte = { workspace = true }
@@ -107,7 +110,7 @@ anyhow = { version = "1.0.70", default-features = false, features = ["backtrace"
 async-trait = { version = "0.1", default-features = false }
 chrono = { version = "0.4.19", default-features = false, features = ["std", "clock"] }
 clap = { version = "4.6", default-features = false, features = ["std", "color", "help", "usage", "error-context", "suggestions", "wrap_help", "derive", "env"] }
-criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support", "plotters", "html_reports"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 crossterm = { version = "0.29", default-features = false }
 daemonize = { package = "daemonix", version = "0.1", default-features = false }
 dialoguer = { version = "0.11", default-features = false, features = ["password", "completion"] }
@@ -153,11 +156,14 @@ zellij-utils = { path = "zellij-utils/", version = "0.45.0" }
 [profile.dev]
 debug = "line-tables-only"
 
-[profile.dev-opt]
-inherits = "dev"
-
-[profile.dev-opt.package."*"]
+# Dependencies are optimized; workspace crates are not. `package."*"` deliberately excludes
+# workspace members, so our own code keeps opt-level 0 and stays debuggable while the ~340
+# third-party crates - `wasmi`, which every plugin test runs a plugin on, above all - are fast.
+# One profile for `x build`, `x run`, `x test` and `x integration-test`, so they share one
+# dependency build instead of maintaining a `debug/` and a `dev-opt/` tree apiece.
+[profile.dev.package."*"]
 opt-level = 3
+debug = false
 
 [profile.release]
 lto = true
@@ -194,7 +200,6 @@ default = ["vendored_curl", "web_server_capability"]
 vendored_curl = ["zellij-utils/vendored_curl"]
 unstable = ["zellij-client/unstable", "zellij-utils/unstable"]
 web_server_capability = ["zellij-client/web_server_capability", "zellij-server/web_server_capability", "zellij-utils/web_server_capability"]
-
-# uncomment this when developing plugins in the Zellij UI to make plugin compilation faster
-# [profile.dev.package."*"]
-# opt-level = 3
+# The dockerized end-to-end suite. Off by default so an ordinary `cargo test` does not build
+# libssh2 and OpenSSL for five `#[ignore]`d tests; `cargo x ci e2e` turns it on.
+e2e = ["dep:ssh2"]
