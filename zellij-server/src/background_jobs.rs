@@ -181,6 +181,10 @@ pub enum BackgroundJob {
     ClearHelpText {
         client_id: ClientId,
     },
+    /// End the feedback flash `CopyLastCommandOutput` painted over the copied output.
+    ClearCommandOutputFlash {
+        pane_id: PaneId,
+    },
     FlashPaneBell(Vec<PaneId>),
     StopFlashPaneBell(Vec<PaneId>),
     FlashTabBell(usize),     // usize = tab_id
@@ -223,6 +227,7 @@ static WEB_REQUEST_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 static WEB_REQUEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const WEB_REQUEST_STREAM_CHUNK_SIZE: usize = 8192;
 static HELP_TEXT_DEBOUNCE_DURATION: u64 = 5000;
+static COMMAND_OUTPUT_FLASH_DURATION_MS: u64 = 400;
 
 #[derive(Clone)]
 pub struct SessionScanState {
@@ -265,6 +270,8 @@ pub(crate) fn background_jobs_main(
                                                                            // milliseconds
     let last_render_request: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
     let pending_help_text_clear: Arc<Mutex<HashMap<ClientId, Instant>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let pending_command_output_flash_clear: Arc<Mutex<HashMap<PaneId, Instant>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let mut flashing_pane_bells: HashMap<PaneId, Arc<AtomicBool>> = HashMap::new();
     let mut flashing_tab_bells: HashMap<usize, Arc<AtomicBool>> = HashMap::new();
@@ -765,6 +772,60 @@ pub(crate) fn background_jobs_main(
                                     None => {
                                         let _ = senders.send_to_server(
                                             ServerInstruction::ClearMouseHelpText(client_id),
+                                        );
+                                        break;
+                                    },
+                                }
+                            }
+                        }
+                    });
+                }
+            },
+            BackgroundJob::ClearCommandOutputFlash { pane_id } => {
+                // debounced like ClearHelpText: a second copy restarts the flash rather than
+                // ending it early
+                let should_spawn = {
+                    let mut pending = pending_command_output_flash_clear.lock().unwrap();
+                    let should_spawn = !pending.contains_key(&pane_id);
+                    pending.insert(pane_id, Instant::now());
+                    should_spawn
+                };
+
+                if should_spawn {
+                    runtime.spawn({
+                        let senders = bus.senders.clone();
+                        let pending = pending_command_output_flash_clear.clone();
+                        let flash_duration =
+                            Duration::from_millis(COMMAND_OUTPUT_FLASH_DURATION_MS);
+                        async move {
+                            tokio::time::sleep(flash_duration).await;
+                            loop {
+                                let next_sleep_duration = {
+                                    let mut pending = pending.lock().unwrap();
+                                    match pending.get(&pane_id) {
+                                        Some(&last_flash_time) => {
+                                            let time_since_flash =
+                                                Instant::now().duration_since(last_flash_time);
+                                            if time_since_flash >= flash_duration {
+                                                pending.remove(&pane_id);
+                                                None
+                                            } else {
+                                                Some(
+                                                    flash_duration.saturating_sub(time_since_flash),
+                                                )
+                                            }
+                                        },
+                                        None => break,
+                                    }
+                                };
+
+                                match next_sleep_duration {
+                                    Some(duration) => {
+                                        tokio::time::sleep(duration).await;
+                                    },
+                                    None => {
+                                        let _ = senders.send_to_server(
+                                            ServerInstruction::ClearCommandOutputFlash(pane_id),
                                         );
                                         break;
                                     },

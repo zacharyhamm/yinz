@@ -151,6 +151,7 @@ pub enum ServerInstruction {
     WebServerStarted(String), // String -> base_url
     FailedToStartWebServer(String),
     ClearMouseHelpText(ClientId),
+    ClearCommandOutputFlash(PaneId),
     /// Relay a forwarded-query dispatch from Screen to the server main
     /// loop. The main loop writes `ServerToClientMsg::ForwardQueryToHost`
     ForwardQueryToHost(u32, Vec<u8>, bool),
@@ -1856,6 +1857,16 @@ pub fn start_server_impl(
                     .unwrap()
                     .senders
                     .send_to_screen(ScreenInstruction::ClearMouseHelpText(client_id))
+                    .unwrap();
+            },
+            ServerInstruction::ClearCommandOutputFlash(pane_id) => {
+                session_data
+                    .write()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .senders
+                    .send_to_screen(ScreenInstruction::ClearCommandOutputFlash(pane_id))
                     .unwrap();
             },
             ServerInstruction::ForwardQueryToHost(token, query_bytes, resolve_async) => {

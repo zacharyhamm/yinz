@@ -291,6 +291,10 @@ message Action {
     WarpTabAction warp_tab = 152;
     AdoptTabAction adopt_tab = 153;
     WarpTabFromAction warp_tab_from = 154;
+    ScrollToPreviousPromptAction scroll_to_previous_prompt = 155;
+    ScrollToNextPromptAction scroll_to_next_prompt = 156;
+    SelectCommandAtScrollPositionAction select_command_at_scroll_position = 157;
+    CopyLastCommandOutputAction copy_last_command_output = 158;
   }
 }
 
@@ -316,6 +320,10 @@ message ScrollUpAction {}
 message ScrollDownAction {}
 message ScrollToBottomAction {}
 message ScrollToTopAction {}
+message ScrollToPreviousPromptAction {}
+message ScrollToNextPromptAction {}
+message SelectCommandAtScrollPositionAction {}
+message CopyLastCommandOutputAction {}
 message PageScrollUpAction {}
 message PageScrollDownAction {}
 message HalfPageScrollUpAction {}

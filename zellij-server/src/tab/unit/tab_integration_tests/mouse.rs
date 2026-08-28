@@ -1263,6 +1263,121 @@ fn alt_wheel_up_is_forwarded_to_a_pane_the_client_is_descended_into() {
     );
 }
 
+fn twenty_marked_commands() -> Vec<u8> {
+    let mut content = String::new();
+    for i in 0..20 {
+        content.push_str(&format!(
+            "\u{1b}]133;A\u{7}$ \u{1b}]133;B\u{7}cmd{i}\u{1b}]133;C\u{7}\r\nout{i}\u{1b}]133;D;0\u{7}\r\n"
+        ));
+    }
+    content.into_bytes()
+}
+
+#[test]
+fn alt_wheel_over_a_mouse_tracking_pane_is_forwarded_instead_of_jumping_prompts() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+
+    let mut pty_instruction_bus = MockPtyInstructionBus::new();
+    let mut tab = create_new_tab_with_mock_pty_writer(
+        size,
+        ModeInfo::default(),
+        pty_instruction_bus.pty_write_sender(),
+    );
+    pty_instruction_bus.start();
+
+    tab.handle_pty_bytes(1, Vec::from("\u{1b}[?1002h\u{1b}[?1006h".as_bytes()))
+        .unwrap();
+    tab.handle_pty_bytes(1, twenty_marked_commands()).unwrap();
+
+    tab.handle_mouse_event_with_passthrough(
+        &MouseEvent::new_alt_scroll_up_event(Position::new(5, 71)),
+        client_id,
+        None,
+    )
+    .unwrap();
+
+    pty_instruction_bus.exit();
+
+    assert_eq!(
+        pty_instruction_bus.clone_output(),
+        vec!["\u{1b}[<72;71;5M".to_string()],
+        "a pane that tracks the mouse receives alt wheel just like a plain wheel"
+    );
+    assert!(
+        !tab.get_pane_with_id(PaneId::Terminal(1))
+            .map(|pane| pane.is_scrolled())
+            .unwrap_or(false),
+        "a forwarded alt wheel must not also scroll the host pane"
+    );
+}
+
+#[test]
+fn alt_wheel_jumps_between_prompts_of_the_pane_below_the_cursor() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    tab.handle_pty_bytes(1, twenty_marked_commands()).unwrap();
+
+    let pane_is_scrolled = |tab: &Tab| {
+        tab.get_pane_with_id(PaneId::Terminal(1))
+            .map(|pane| pane.is_scrolled())
+            .unwrap_or(false)
+    };
+    assert!(!pane_is_scrolled(&tab));
+
+    tab.handle_mouse_event(
+        &MouseEvent::new_alt_scroll_up_event(Position::new(10, 60)),
+        client_id,
+    )
+    .unwrap();
+    assert!(
+        pane_is_scrolled(&tab),
+        "alt wheel up must jump to the previous prompt"
+    );
+
+    tab.handle_mouse_event(
+        &MouseEvent::new_alt_scroll_down_event(Position::new(10, 60)),
+        client_id,
+    )
+    .unwrap();
+    assert!(
+        !pane_is_scrolled(&tab),
+        "alt wheel down must jump back towards the bottom of the buffer"
+    );
+}
+
+#[test]
+fn alt_wheel_is_swallowed_when_advanced_mouse_actions_are_disabled() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    tab.update_advanced_mouse_actions(false);
+    tab.handle_pty_bytes(1, twenty_marked_commands()).unwrap();
+
+    tab.handle_mouse_event(
+        &MouseEvent::new_alt_scroll_up_event(Position::new(10, 60)),
+        client_id,
+    )
+    .unwrap();
+
+    assert!(
+        !tab.get_pane_with_id(PaneId::Terminal(1))
+            .map(|pane| pane.is_scrolled())
+            .unwrap_or(false),
+        "alt wheel must be swallowed when advanced mouse actions are disabled"
+    );
+}
+
 #[test]
 fn test_scroll_wheel_up_scrolls_pane() {
     let size = Size {

@@ -212,6 +212,14 @@ pub enum Action {
     ScrollToBottom,
     /// Scroll up to top in focus pane.
     ScrollToTop,
+    /// Scroll the focused pane so the previous shell prompt (OSC 133) is at the top.
+    ScrollToPreviousPrompt,
+    /// Scroll the focused pane so the next shell prompt (OSC 133) is at the top.
+    ScrollToNextPrompt,
+    /// Select the OSC 133 command (and its output) at the top of the focused pane's viewport.
+    SelectCommandAtScrollPosition,
+    /// Copy the output of the last completed OSC 133 command in the focused pane.
+    CopyLastCommandOutput,
     /// Scroll up one page in focus pane.
     PageScrollUp,
     /// Scroll down one page in focus pane.

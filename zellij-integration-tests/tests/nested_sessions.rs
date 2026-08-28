@@ -672,6 +672,27 @@ fn alt_wheel_over_the_descended_guest_reaches_the_guest_instead_of_jumping_host_
 }
 
 #[test]
+fn alt_wheel_over_an_undescended_guest_still_reaches_the_guest() {
+    let mut nested = NestedHarness::start_with_host_and_guest_config(
+        TERMINAL_SIZE,
+        "mouse_mode true\nadvanced_mouse_actions true",
+        "mouse_mode true\nadvanced_mouse_actions false",
+    );
+
+    boot_and_descend_on_first_load(&nested);
+    ascend_via_focus_host_binding(&nested);
+
+    nested.host.send_stdin(&sgr_mouse_report(30, 8, 72));
+    nested.host_pane.wait_for_stdin(
+        "the alt-modified wheel report to reach a guest the host has ascended out of",
+        |stdin| stdin_contains(stdin, b"\x1b[<72;30;"),
+    );
+
+    nested.guest.quit();
+    nested.host.quit();
+}
+
+#[test]
 fn a_key_immediately_after_descend_lands_in_the_guest_and_after_ascend_lands_in_the_host() {
     let mut nested = NestedHarness::start(TERMINAL_SIZE);
     let guest_session_name = nested.guest.session_name().to_string();
