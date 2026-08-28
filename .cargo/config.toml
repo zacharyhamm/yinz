@@ -1,4 +1,3 @@
-parallel-compiler = true
 
 [alias]
 xtask = "run --package xtask --"

@@ -230,10 +230,13 @@ fn e2e_test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
     crate::cargo()
         .and_then(|cargo| {
             // e2e tests
-            cmd!(sh, "{cargo} test -- --ignored --nocapture --test-threads 1")
-                .args(args.clone())
-                .run()
-                .map_err(anyhow::Error::new)?;
+            cmd!(
+                sh,
+                "{cargo} test --features e2e -- --ignored --nocapture --test-threads 1"
+            )
+            .args(args.clone())
+            .run()
+            .map_err(anyhow::Error::new)?;
 
             // plugin system tests are run here because they're medium-slow
             let _pd = sh.push_dir(Path::new("zellij-server"));
