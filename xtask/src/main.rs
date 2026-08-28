@@ -22,6 +22,7 @@ mod test;
 use anyhow::Context;
 use std::{
     env,
+    ffi::OsString,
     path::{Path, PathBuf},
     sync::OnceLock,
     time::Instant,
@@ -164,10 +165,69 @@ fn workspace_members() -> &'static Vec<WorkspaceMember> {
     })
 }
 
+/// The commands whose leftover arguments are forwarded verbatim to another tool, paired with the
+/// flags xtask itself owns.
+///
+/// xflags matches every `-`-prefixed token before `--` against the command's own declaration, so
+/// `cargo x test -p zellij-server` dies with ``unexpected flag: `-p` `` long before the forwarding
+/// code in `test::test` sees it. `insert_forwarding_separator` puts the `--` in for the caller.
+const FORWARDING_COMMANDS: &[(&str, &[&str])] = &[
+    ("test", &["--no-web", "-h", "--help"]),
+    ("integration-test", &["--serial", "-h", "--help"]),
+];
+
+/// Insert the `--` that xflags needs in front of the first argument xtask does not own.
+///
+/// Only the commands in `FORWARDING_COMMANDS` are touched: they take no positionals of their own,
+/// so the first unowned token is unambiguously the start of the forwarded run. Everything else -
+/// `install <destination>`, `ci cross <triple>`, and the commands that still document a `--` - is
+/// passed through untouched, as is any argv that already contains a `--`.
+///
+/// The cost is that a mistyped xtask flag (`--no-wbe`) is now forwarded instead of rejected here.
+/// The tool downstream rejects it, so the run still fails loudly.
+fn insert_forwarding_separator(args: Vec<OsString>) -> Vec<OsString> {
+    let subcommand_at = args
+        .iter()
+        .skip(1)
+        .position(|arg| !arg.to_string_lossy().starts_with('-'))
+        .map(|idx| idx + 1);
+    let Some(subcommand_at) = subcommand_at else {
+        return args;
+    };
+    let Some((_, owned)) = FORWARDING_COMMANDS
+        .iter()
+        .find(|(name, _)| args[subcommand_at] == **name)
+    else {
+        return args;
+    };
+
+    let rest = &args[subcommand_at + 1..];
+    if rest.iter().any(|arg| arg == "--") {
+        return args;
+    }
+    let Some(first_unowned) = rest
+        .iter()
+        .position(|arg| !owned.iter().any(|flag| arg == *flag))
+    else {
+        return args;
+    };
+
+    let mut args = args;
+    args.insert(subcommand_at + 1 + first_unowned, OsString::from("--"));
+    args
+}
+
 fn main() -> anyhow::Result<()> {
     let shell = &Shell::new()?;
 
-    let flags = flags::Xtask::from_env()?;
+    // `from_vec` - unlike `from_env` - expects argv without the program name, which the separator
+    // pass still needs to see so its indices line up with the tests.
+    let flags = flags::Xtask::from_vec(
+        insert_forwarding_separator(env::args_os().collect::<Vec<_>>())
+            .into_iter()
+            .skip(1)
+            .collect(),
+    )?;
     let now = Instant::now();
 
     match flags.subcommand {
@@ -256,4 +316,79 @@ If you're unhappy with `xtask` and decide to disable it, please tell us why so
 we can discuss this before making it final for the next release. Thank you!
 "
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::insert_forwarding_separator;
+    use std::ffi::OsString;
+
+    fn split(args: &[&str]) -> Vec<String> {
+        insert_forwarding_separator(args.iter().map(OsString::from).collect())
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_package_selector_is_forwarded() {
+        assert_eq!(
+            split(&["xtask", "test", "-p", "zellij-server"]),
+            ["xtask", "test", "--", "-p", "zellij-server"]
+        );
+    }
+
+    #[test]
+    fn xtask_own_flags_are_kept_before_the_separator() {
+        assert_eq!(
+            split(&["xtask", "test", "--no-web", "-E", "test(x)"]),
+            ["xtask", "test", "--no-web", "--", "-E", "test(x)"]
+        );
+    }
+
+    #[test]
+    fn a_bare_filter_is_forwarded() {
+        assert_eq!(
+            split(&["xtask", "test", "some_test_name"]),
+            ["xtask", "test", "--", "some_test_name"]
+        );
+    }
+
+    #[test]
+    fn an_explicit_separator_is_left_alone() {
+        assert_eq!(
+            split(&["xtask", "test", "--", "-p", "zellij-server"]),
+            ["xtask", "test", "--", "-p", "zellij-server"]
+        );
+    }
+
+    #[test]
+    fn a_bare_command_is_left_alone() {
+        assert_eq!(split(&["xtask", "test"]), ["xtask", "test"]);
+        assert_eq!(
+            split(&["xtask", "test", "--no-web"]),
+            ["xtask", "test", "--no-web"]
+        );
+    }
+
+    #[test]
+    fn integration_test_takes_flags_directly_too() {
+        assert_eq!(
+            split(&["xtask", "integration-test", "--serial", "-j", "4"]),
+            ["xtask", "integration-test", "--serial", "--", "-j", "4"]
+        );
+    }
+
+    #[test]
+    fn other_commands_and_their_positionals_are_untouched() {
+        assert_eq!(
+            split(&["xtask", "build", "-p", "--release"]),
+            ["xtask", "build", "-p", "--release"]
+        );
+        assert_eq!(
+            split(&["xtask", "install", "/path/to/zellij"]),
+            ["xtask", "install", "/path/to/zellij"]
+        );
+        assert_eq!(split(&["xtask", "ci", "check"]), ["xtask", "ci", "check"]);
+    }
 }
