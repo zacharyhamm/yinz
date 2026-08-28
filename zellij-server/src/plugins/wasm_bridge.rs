@@ -28,8 +28,9 @@ use url::Url;
 use wasmi::{Engine, Module};
 use zellij_utils::consts::{ZELLIJ_CACHE_DIR, ZELLIJ_SESSION_CACHE_DIR, ZELLIJ_TMP_DIR};
 use zellij_utils::data::{
-    FloatingPaneCoordinates, InputMode, KeybindsVec, LayoutInfo, LayoutWithError, PaneContents,
-    PaneRenderReport, PermissionStatus, PermissionType, PipeMessage, PipeSource, QueueJobOutcome,
+    FloatingPaneCoordinates, HostTerminalThemeMode, InputMode, KeybindsVec, LayoutInfo,
+    LayoutWithError, PaneContents, PaneRenderReport, PermissionStatus, PermissionType, PipeMessage,
+    PipeSource, QueueJobOutcome,
 };
 use zellij_utils::downloader::Downloader;
 use zellij_utils::input::keybinds::Keybinds;
@@ -228,6 +229,10 @@ pub struct WasmBridge {
     base_modes: HashMap<ClientId, InputMode>,
     downloader: Downloader,
     previous_pane_render_report: Option<PaneRenderReport>,
+    /// The last `HostTerminalThemeChanged` broadcast to every plugin, replayed
+    /// to a plugin that subscribes to it after the fact so it does not wait
+    /// for the next host report to learn the session's hue.
+    last_host_terminal_theme_mode: Option<HostTerminalThemeMode>,
     pub last_session_save_time: Arc<Mutex<Option<u64>>>, // milliseconds since UNIX epoch
     /// The `plugins { }` block, for plugins asking what a *different* alias was
     /// configured with (`PluginCommand::GetPluginAliasConfiguration`).
@@ -311,6 +316,7 @@ impl WasmBridge {
             base_modes: HashMap::new(),
             downloader,
             previous_pane_render_report: None,
+            last_host_terminal_theme_mode: None,
             last_session_save_time: Arc::new(Mutex::new(None)),
             plugin_aliases: Arc::new(Mutex::new(plugin_aliases)),
         }
@@ -1211,6 +1217,13 @@ impl WasmBridge {
         mut updates: Vec<(Option<PluginId>, Option<ClientId>, Event)>,
         shutdown_sender: Sender<()>,
     ) -> Result<()> {
+        for (plugin_id, client_id, event) in updates.iter() {
+            if plugin_id.is_none() && client_id.is_none() {
+                if let Event::HostTerminalThemeChanged(mode) = event {
+                    self.last_host_terminal_theme_mode = Some(*mode);
+                }
+            }
+        }
         let plugins_to_update: Vec<(
             PluginId,
             ClientId,
@@ -1709,6 +1722,27 @@ impl WasmBridge {
                 ),
             );
         }
+    }
+
+    /// Replay the last broadcast `HostTerminalThemeChanged` to a plugin that
+    /// subscribed to it after the broadcast. Nothing is sent while the hue is
+    /// still unknown.
+    pub fn send_host_terminal_theme_mode_to_plugin(
+        &self,
+        plugin_id: PluginId,
+        client_id: ClientId,
+    ) {
+        let Some(mode) = self.last_host_terminal_theme_mode else {
+            return;
+        };
+        self.senders
+            .send_to_plugin(PluginInstruction::Update(vec![(
+                Some(plugin_id),
+                Some(client_id),
+                Event::HostTerminalThemeChanged(mode),
+            )]))
+            .context("failed to replay the host terminal theme mode to a late subscriber")
+            .non_fatal();
     }
 
     pub fn send_initial_keybinds_to_plugin(&self, plugin_id: PluginId, client_id: ClientId) {
