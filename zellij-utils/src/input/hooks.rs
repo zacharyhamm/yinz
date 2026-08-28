@@ -12,7 +12,7 @@
 //!
 //! ```kdl
 //! hooks {
-//!     agent_exit "file:~/.config/zellij/hooks/agent-exit.lua"
+//!     agent_exit "file:my-agent-exit.lua"
 //! }
 //! ```
 //!

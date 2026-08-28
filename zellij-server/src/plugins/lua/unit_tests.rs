@@ -1052,6 +1052,111 @@ fn a_nested_payload_is_built_from_a_plain_table() {
     assert_marshals(r#"zellij.open_command_pane { { path = "sh", args = { "-c", "true" } }, {} }"#);
 }
 
+/// Build the command a Lua expression means, without letting the host run it.
+///
+/// `assert_marshals` loads a plugin and lets the call through to `run_plugin_command`, which for
+/// this command *does real work*: `prepare_git_checkout_in` shells out to git in the plugin's
+/// cwd, and a `NewBranch` would switch the branch of whatever checkout the tests run in. So the
+/// enum spellings are checked one step earlier, where the question actually is - does serde read
+/// this table as the variant the guide says it does.
+fn command_from_lua(expression: &str) -> Result<zellij_utils::data::PluginCommand> {
+    let lua = mlua::Lua::new();
+    let args: mlua::Value = lua
+        .load(expression)
+        .eval()
+        .expect("the test's own Lua should parse");
+    super::command::plugin_command_from_lua(
+        &lua,
+        "OpenCommandPaneInGitCheckoutNearPlugin",
+        "open_command_pane_in_git_checkout_near_plugin",
+        args,
+    )
+}
+
+/// The shape nothing else in this file covers: an externally-tagged enum nested inside a tuple
+/// variant. `GitCheckout` travels in its own PascalCase spelling - a bare string for the unit
+/// variant, a single-key table for the others - because only the *command* name is pascal-cased
+/// on the way through, never a payload. These are the tables `docs/LUA_PLUGINS.md` shows.
+#[test]
+fn a_nested_enum_is_read_as_the_variant_it_names() {
+    use zellij_utils::data::{GitCheckout, PluginCommand};
+
+    let checkout = |expression: &str| match command_from_lua(expression) {
+        Ok(PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(_, source, checkout)) => {
+            (source, checkout)
+        },
+        Ok(other) => panic!("built the wrong command: {other:?}"),
+        Err(e) => panic!("{e:#}\nsource: {expression}"),
+    };
+
+    let (source, current) = checkout(r#"{ { path = "sh" }, "/host", "Current" }"#);
+    assert_eq!(source, PathBuf::from("/host"));
+    assert_eq!(current, GitCheckout::Current);
+
+    let (_, branch) = checkout(
+        r#"{ { path = "sh" }, "/host", { NewBranch = { branch = "fix-42", base = "main" } } }"#,
+    );
+    assert_eq!(
+        branch,
+        GitCheckout::NewBranch {
+            branch: "fix-42".to_owned(),
+            base: "main".to_owned(),
+        }
+    );
+
+    let (_, worktree) = checkout(
+        r#"{
+             { path = "claude", args = { "--model", "opus" } },
+             "/host",
+             { NewWorktree = { branch = "fix-42", base = "main", path = ".worktrees/fix-42" } },
+           }"#,
+    );
+    assert_eq!(
+        worktree,
+        GitCheckout::NewWorktree {
+            branch: "fix-42".to_owned(),
+            base: "main".to_owned(),
+            path: PathBuf::from(".worktrees/fix-42"),
+        }
+    );
+}
+
+/// The trap the guide warns about: the checkout is not optional, and leaving it out is a length
+/// error rather than a quiet `Current`. Same rule as `run_command`'s fifth element, above.
+#[test]
+fn a_git_checkout_command_needs_all_three_arguments() {
+    let err = command_from_lua(r#"{ { path = "sh" }, "/host" }"#)
+        .expect_err("a two-element call is refused");
+    let err = format!("{err:#}");
+    assert!(err.contains("invalid length 2"), "got: {err}");
+}
+
+/// The other half, which `command_from_lua` cannot see: the prelude turning the named form into
+/// the positional one. Driven through a real load, so only `Current` is used - it is the one
+/// checkout that asks git nothing but where the repository is.
+#[test]
+fn a_git_checkout_command_takes_named_arguments() {
+    for source in [
+        r#"zellij.open_command_pane_in_git_checkout_near_plugin({ path = "sh" }, ".", "Current")"#,
+        r#"zellij.open_command_pane_in_git_checkout_near_plugin { { path = "sh" }, ".", "Current" }"#,
+        r#"zellij.open_command_pane_in_git_checkout_near_plugin {
+             command = { path = "sh" },
+             source_directory = ".",
+             checkout = "Current",
+           }"#,
+    ] {
+        // The host gets as far as trying to open the pane, which these senders cannot do. That is
+        // one step past the question being asked: anything serde refused would have said so
+        // instead, naming the command.
+        if let Some(err) = error_from_load(source) {
+            assert!(
+                !err.contains("could not read the arguments"),
+                "the arguments were refused: {err}\nsource: {source}"
+            );
+        }
+    }
+}
+
 #[test]
 fn a_byte_payload_is_written_as_a_string() {
     // `Write(Vec<u8>)` wants a list of byte values; plugins have a string.

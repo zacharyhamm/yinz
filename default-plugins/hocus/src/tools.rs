@@ -1167,7 +1167,8 @@ pub fn specs() -> Value {
         ),
         tool(
             "agent_spawn",
-            "Start a coding agent in a new pane; `branch` cuts a git worktree for it first.",
+            "Start a coding agent in a new pane; `branch` cuts a git worktree for it first. Not \
+             for writing Zellij Lua plugins - use plugin_write.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1364,9 +1365,12 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_write",
-            "Write a Lua plugin. Call plugin_docs first. `source` is the complete file, not a \
-             patch; `overwrite` is required to replace one that exists. `name` may be \
-             `folder/module` for a file the plugin loads with require(\"folder.module\").",
+            "Write a Lua plugin. This is how a plugin is authored: you write it yourself, never \
+             by spawning an agent to do it. Call plugin_docs first. `source` is the complete \
+             file, not a patch; approving the write grants the permissions the source requests, \
+             and plugin_reload comes next. `overwrite` is required to replace one that exists. \
+             `name` may be `folder/module` for a file the plugin loads with \
+             require(\"folder.module\").",
             json!({
                 "type": "object",
                 "properties": {
@@ -1381,7 +1385,7 @@ pub fn specs() -> Value {
             "plugin_reload",
             "Load or reload one of the user's Lua plugins, opening it in a pane if it is not \
              running. Answers with the pane's id and what it shows once loaded - the plugin's \
-             first render, or the load error.",
+             first render, or the load error. plugin_log has anything it logged.",
             json!({
                 "type": "object",
                 "properties": {

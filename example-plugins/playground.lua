@@ -1,5 +1,9 @@
 -- A Lua plugin that exercises the host command surface, one key at a time.
 --
+--   plugin_write name=playground, then plugin_reload name=playground
+--
+-- or, from a checkout, directly:
+--
 --   zellij plugin --floating -- file:$PWD/example-plugins/playground.lua
 --
 -- `clock.lua` is the small first example; this is the one to read when you want to know what a

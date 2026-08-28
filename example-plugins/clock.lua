@@ -1,5 +1,13 @@
 -- A minimal Lua plugin: a clock that ticks once a second.
 --
+-- A plugin lives in your plugin folder. Hocus puts one there itself, and that is the loop:
+--
+--   plugin_write name=clock   -- the complete file
+--   plugin_reload name=clock  -- its first render, or the load error
+--   plugin_log name=clock     -- anything it logged
+--
+-- From a checkout you can also run this copy directly:
+--
 --   zellij plugin --floating -- file:$PWD/example-plugins/clock.lua
 --
 -- See docs/LUA_PLUGINS.md.
