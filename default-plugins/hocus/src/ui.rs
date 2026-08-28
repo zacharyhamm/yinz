@@ -10,7 +10,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use zellij_tile::prelude::*;
 
 use crate::api::ConfigError;
-use crate::{Picker, PickerKind, Role, RowKind, State, Status};
+use crate::{Confirmation, Picker, PickerKind, PromptKind, Role, RowKind, State, Status};
 
 /// Below this we can't lay out a title, a transcript row and an input row,
 /// so we say so instead of rendering nonsense.
@@ -59,6 +59,11 @@ struct MdStyle {
     bold: bool,
     dim: bool,
     color: Option<usize>,
+    /// Painted in the theme's error colour. A run rather than a whole line,
+    /// because a framed line carries its border and its body together: the
+    /// border must stay dim while the one sentence saying what a mutating call
+    /// will do is the part that goes red.
+    error: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -250,7 +255,7 @@ impl MarkdownRenderer {
                 MdStyle {
                     bold: true,
                     color: Some(0),
-                    dim: false,
+                    ..MdStyle::default()
                 },
             ),
             Event::End(TagEnd::Heading(_)) => self.finish_block(),
@@ -581,6 +586,191 @@ fn right_align(line: &str, cols: usize) -> String {
     format!("{}{line}", " ".repeat(cols.saturating_sub(line.width())))
 }
 
+// ---------------------------------------------------------------------------
+// Frames
+// ---------------------------------------------------------------------------
+
+/// Columns a frame spends on every body row: `│ ` on the left, ` │` on the right.
+const FRAME_PAD: usize = 4;
+/// Narrower than this and the box costs more room than it earns, so the content
+/// is drawn bare instead. `print_text_with_coordinates` truncates rather than
+/// wraps, so a border that doesn't fit would eat the text rather than the border.
+const MIN_FRAME_COLS: usize = MIN_COLS + 8;
+
+/// One styled stretch of a line, for the lines that are assembled rather than
+/// wrapped — a frame's borders, and the key hints written along them.
+struct Run {
+    text: String,
+    style: MdStyle,
+}
+
+impl Run {
+    fn new(text: impl Into<String>, style: MdStyle) -> Self {
+        Run {
+            text: text.into(),
+            style,
+        }
+    }
+}
+
+fn border_style() -> MdStyle {
+    MdStyle {
+        dim: true,
+        ..MdStyle::default()
+    }
+}
+
+/// A key hint: the key itself in the theme's accent colour, its label dim.
+///
+/// Separated by a dim middle dot rather than by spaces, so a row of hints reads
+/// as one strip instead of as four unrelated words.
+fn key_runs(keys: &[(&str, &str)]) -> Vec<Run> {
+    let mut runs = Vec::new();
+    for (index, (key, label)) in keys.iter().enumerate() {
+        if index > 0 {
+            runs.push(Run::new(" · ", border_style()));
+        }
+        runs.push(Run::new(
+            *key,
+            MdStyle {
+                color: Some(2),
+                ..MdStyle::default()
+            },
+        ));
+        runs.push(Run::new(format!(" {label}"), border_style()));
+    }
+    runs
+}
+
+/// Glue runs into a line, keeping `styles` one entry per character — which is
+/// what `styled` indexes by.
+fn line_from_runs(runs: &[Run], role: Role) -> VLine {
+    let mut text = String::new();
+    let mut styles = Vec::new();
+    for run in runs {
+        text.push_str(&run.text);
+        styles.extend(std::iter::repeat_n(run.style, run.text.chars().count()));
+    }
+    VLine { text, role, styles }
+}
+
+fn runs_width(runs: &[Run]) -> usize {
+    runs.iter().map(|run| run.text.width()).sum()
+}
+
+/// The longest prefix of `text` that fits in `width` columns.
+fn truncate_to_width(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let ch_width = ch.width().unwrap_or(0);
+        if used + ch_width > width {
+            break;
+        }
+        out.push(ch);
+        used += ch_width;
+    }
+    out
+}
+
+/// Draw a box around `inner`, `cols` wide, with `title` on the top border and
+/// `footer` written along the bottom one.
+///
+/// The caller renders `inner` at `cols - FRAME_PAD`; anything wider is left to
+/// overhang rather than being clipped, since clipping a plan mid-word is worse
+/// than a ragged right edge.
+fn frame(title: &str, footer: &[Run], inner: Vec<VLine>, cols: usize) -> Vec<VLine> {
+    // Too narrow to box: the content still has to be readable, and the keys
+    // still have to be findable, so both are drawn bare.
+    if cols < MIN_FRAME_COLS {
+        let mut lines = inner;
+        if !footer.is_empty() {
+            lines.push(line_from_runs(footer, Role::Assistant));
+        }
+        return lines;
+    }
+
+    let inner_width = cols - FRAME_PAD;
+    let mut lines = Vec::with_capacity(inner.len() + 2);
+
+    // Top: `┌ TITLE ─────┐`, the title bold so it reads as a label.
+    let title = truncate_to_width(title, inner_width);
+    let mut top = vec![Run::new("┌ ", border_style())];
+    if !title.is_empty() {
+        let used = 2 + title.width() + 1;
+        top.push(Run::new(
+            title,
+            MdStyle {
+                bold: true,
+                ..MdStyle::default()
+            },
+        ));
+        top.push(Run::new(
+            format!(" {}┐", "─".repeat(cols.saturating_sub(used + 1))),
+            border_style(),
+        ));
+    } else {
+        top.push(Run::new(
+            format!("{}┐", "─".repeat(cols.saturating_sub(3))),
+            border_style(),
+        ));
+    }
+    lines.push(line_from_runs(&top, Role::Assistant));
+
+    for line in inner {
+        let pad = inner_width.saturating_sub(line.text.width());
+        let mut text = String::from("│ ");
+        let mut styles = vec![border_style(); 2];
+        text.push_str(&line.text);
+        // A short `styles` is the plain `wrap` path's empty vector, or a line
+        // built by hand; the default carries no colour, so filling with it
+        // leaves the character exactly as it would have rendered unframed.
+        styles.extend(
+            line.styles
+                .iter()
+                .copied()
+                .chain(std::iter::repeat(MdStyle::default()))
+                .take(line.text.chars().count()),
+        );
+        text.push_str(&" ".repeat(pad));
+        styles.extend(std::iter::repeat_n(MdStyle::default(), pad));
+        text.push_str(" │");
+        styles.extend(vec![border_style(); 2]);
+        lines.push(VLine {
+            text,
+            role: Role::Assistant,
+            styles,
+        });
+    }
+
+    // Bottom: `└ y run · n skip ────┘`, or a plain rule with the hints on the
+    // line under it when they are too wide to sit on the border.
+    let footer_width = runs_width(footer);
+    if footer.is_empty() || footer_width + 5 > cols {
+        lines.push(line_from_runs(
+            &[Run::new(
+                format!("└{}┘", "─".repeat(cols.saturating_sub(2))),
+                border_style(),
+            )],
+            Role::Assistant,
+        ));
+        if !footer.is_empty() {
+            let mut hints = vec![Run::new("  ", border_style())];
+            hints.extend(footer.iter().map(|run| Run::new(&*run.text, run.style)));
+            lines.push(line_from_runs(&hints, Role::Assistant));
+        }
+        return lines;
+    }
+    let mut bottom = vec![Run::new("└ ", border_style())];
+    bottom.extend(footer.iter().map(|run| Run::new(&*run.text, run.style)));
+    bottom.push(Run::new(
+        format!(" {}┘", "─".repeat(cols - footer_width - 4)),
+        border_style(),
+    ));
+    lines.push(line_from_runs(&bottom, Role::Assistant));
+    lines
+}
+
 /// The transcript as it is drawn: every message wrapped into display lines, and
 /// where in that list each message began.
 pub struct Transcript {
@@ -719,6 +909,9 @@ fn styled(line: &VLine) -> Text {
         }
         if style.dim {
             text = text.dim_range(start..end);
+        }
+        if style.error {
+            text = text.error_color_range(start..end);
         }
         start = end;
     }
@@ -955,6 +1148,43 @@ fn transcript_window(
     }
 }
 
+/// The box the pending answer is drawn in: the title on the top border, the
+/// body inside it, the keys along the bottom one.
+///
+/// `plan_inner` is the plan's already-rendered lines, and is ignored for a tool
+/// confirmation — a tool describes itself in `Confirmation::detail`, while a
+/// plan's body is the assistant message the caller lifted out of the transcript.
+fn prompt_box(prompt: &Confirmation, plan_inner: Vec<VLine>, cols: usize) -> Vec<VLine> {
+    let inner_cols = cols.saturating_sub(FRAME_PAD).max(1);
+    let inner = match prompt.kind {
+        PromptKind::Plan => plan_inner,
+        PromptKind::Tool => prompt
+            .detail
+            .iter()
+            .flat_map(|(line, consequence)| {
+                // Only the sentence saying what the call will do is red. The
+                // arguments beside it are dim, so the one line worth reading
+                // twice is the one that stands out — which is what the whole
+                // block being red used to cost.
+                let style = match consequence {
+                    true => MdStyle {
+                        error: true,
+                        ..MdStyle::default()
+                    },
+                    false => MdStyle {
+                        dim: true,
+                        ..MdStyle::default()
+                    },
+                };
+                wrap(line, inner_cols)
+                    .into_iter()
+                    .map(move |row| line_from_runs(&[Run::new(row, style)], Role::Assistant))
+            })
+            .collect(),
+    };
+    frame(&prompt.title, &key_runs(&prompt.keys), inner, cols)
+}
+
 fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
     if height == 0 {
         return;
@@ -971,6 +1201,29 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
     // and an anchor holding an older line on the top row would leave it off the
     // bottom of the pane, unanswerable and unexplained.
     let anchor = state.anchor().filter(|_| prompt.is_none());
+    // A plan is boxed, and the box wraps its content two columns narrower than
+    // the cached transcript did — so it is rendered again, here, while `state`
+    // is still free of the cache's borrow.
+    //
+    // Which message is the plan: the last one, and only if it is prose rather
+    // than a round of tool calls — which is exactly the shape `events` reads to
+    // decide a planning turn produced a plan at all. Anything else leaves the
+    // transcript alone and the box empty, rather than lifting the wrong message
+    // out of it.
+    let plan_at = prompt
+        .as_ref()
+        .filter(|prompt| prompt.kind == PromptKind::Plan)
+        .and_then(|_| {
+            let at = state.messages.len().checked_sub(1)?;
+            let message = &state.messages[at];
+            (message.role == Role::Assistant && message.tool_calls.is_empty()).then_some(at)
+        });
+    let plan_inner = plan_at.map(|at| {
+        markdown_lines(
+            &state.messages[at].content,
+            cols.saturating_sub(FRAME_PAD).max(1),
+        )
+    });
 
     let transcript = cached_transcript(state, cols);
     let lines = &transcript.lines;
@@ -1019,27 +1272,36 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
         },
     }
 
-    // Name the call awaiting a y/n. The assistant message above lists every call
-    // it asked for, which doesn't say which one this prompt is about.
+    // What is waiting on an answer, drawn as a box: the title says which call —
+    // the assistant message above lists every call it asked for, which doesn't
+    // say which one this prompt is about — and the keys sit on the bottom
+    // border.
     //
     // Wrapped here rather than left to the host: the tail skips the wrapping the
     // cached body went through, and `print_text_with_coordinates` *truncates* what
     // it is given. Unwrapped, a long argument runs off the pane edge and the user
     // agrees to something they were never shown.
-    if let Some(prompt) = prompt {
-        tail.push(VLine::blank());
-        for line in prompt {
-            for row in wrap(&line, cols) {
-                tail.push(VLine {
-                    text: row,
-                    role: Role::Error,
-                    styles: Vec::new(),
-                });
-            }
+    //
+    // A plan's body is the reply already in `lines`, so the box is drawn around
+    // a re-render of that one message and `plan_body` says where to cut the
+    // cached lines short. Once the plan is answered it falls back into the body
+    // and renders like any other reply.
+    let mut plan_body = None;
+    if let Some(prompt) = &prompt {
+        if prompt.kind == PromptKind::Plan {
+            plan_body = plan_at.and_then(|at| transcript.starts.get(at).copied());
         }
+        tail.push(VLine::blank());
+        tail.extend(prompt_box(prompt, plan_inner.unwrap_or_default(), cols));
     }
 
-    let body = &lines[..lines.len() - usize::from(replaced_last)];
+    // The plan moved into the tail, so the blank separator that preceded it goes
+    // too — the tail pushes its own.
+    let body_end = match plan_body {
+        Some(start) => start.saturating_sub(1),
+        None => lines.len() - usize::from(replaced_last),
+    };
+    let body = &lines[..body_end];
     let total = body.len() + tail.len();
 
     if total == 0 {
@@ -1164,13 +1426,16 @@ fn help_line(state: &State) -> &'static str {
     }
     // Ahead of the `Status` match: a plan waits on the user rather than on the
     // tool queue, so the two are orthogonal and this is the nearer question.
+    // The box in the transcript already names /execute and n on its bottom
+    // border, so this only adds the key that box has no room for.
     if state.awaiting_plan() {
-        return "plan ready  /execute carries it out  <n> keep planning  <Esc> hide";
+        return "plan ready  <Esc> hide";
     }
     // Esc hides from every one of these; Ctrl-c is what interrupts, and when a tool
     // and a stream are both outstanding it takes the tool first.
     match state.status {
-        Status::ConfirmingTool => "run this?  <y> yes  <n> no  <Ctrl c> abort  <Esc> hide",
+        // Likewise: y and n are on the box's bottom border.
+        Status::ConfirmingTool => "run this?  <Ctrl c> abort  <Esc> hide",
         Status::AwaitingCommand => "running…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::AwaitingSearch => "searching…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::AwaitingLinear => "reading linear…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
@@ -1231,6 +1496,148 @@ mod tests {
     /// starts in it.
     fn transcript_lines(messages: &[Message], cols: usize) -> Vec<VLine> {
         transcript(messages, cols).lines
+    }
+
+    // -- frames ---------------------------------------------------------------
+
+    fn plan_prompt() -> Confirmation {
+        Confirmation {
+            kind: PromptKind::Plan,
+            title: "PLAN".to_owned(),
+            detail: Vec::new(),
+            keys: vec![("/execute", "run"), ("n", "refine")],
+        }
+    }
+
+    fn tool_prompt() -> Confirmation {
+        Confirmation {
+            kind: PromptKind::Tool,
+            title: "send_input".to_owned(),
+            detail: vec![
+                ("types into pane 7".to_owned(), true),
+                ("text: ls".to_owned(), false),
+            ],
+            keys: vec![("y", "run"), ("n", "skip")],
+        }
+    }
+
+    /// Every row of a box is exactly as wide as the pane, borders included —
+    /// `print_text_with_coordinates` truncates, so a row a column too wide loses
+    /// its right-hand border rather than wrapping.
+    #[test]
+    fn a_frame_is_exactly_as_wide_as_the_pane() {
+        let cols = 40;
+        let inner = markdown_lines("ordinary words and 日本語 too", cols - FRAME_PAD);
+        let lines = frame("PLAN", &key_runs(&[("n", "keep planning")]), inner, cols);
+
+        for line in &lines {
+            assert_eq!(
+                line.text.width(),
+                cols,
+                "row {:?} is the wrong width",
+                line.text
+            );
+            assert_eq!(
+                line.styles.len(),
+                line.text.chars().count(),
+                "row {:?} has a style per character",
+                line.text
+            );
+        }
+    }
+
+    /// The title sits on the top border and the keys on the bottom one, which is
+    /// what lets the plan be one box rather than a box and a prompt under it.
+    #[test]
+    fn a_frame_carries_its_title_and_keys_on_its_borders() {
+        let lines = prompt_box(&plan_prompt(), markdown_lines("do the thing", 36), 40);
+
+        assert!(lines[0].text.starts_with("┌ PLAN "), "{:?}", lines[0].text);
+        assert!(lines[1].text.contains("do the thing"));
+        let bottom = &lines.last().expect("a bottom border").text;
+        assert!(
+            bottom.starts_with("└ /execute run · n refine "),
+            "{bottom:?}"
+        );
+        assert!(bottom.ends_with('┘'));
+    }
+
+    /// A pane too narrow for `│ … │` keeps the words and loses the box: the
+    /// content is what the user has to read, and the keys are what they have to
+    /// press.
+    #[test]
+    fn a_frame_gives_up_rather_than_clip_a_narrow_pane() {
+        let cols = MIN_FRAME_COLS - 1;
+        let lines = prompt_box(&plan_prompt(), markdown_lines("do the thing", cols), cols);
+
+        assert!(
+            lines.iter().all(|line| !line.text.contains('┌')),
+            "no border was drawn"
+        );
+        assert!(lines[0].text.contains("do the thing"));
+        assert!(lines.last().expect("the keys").text.contains("/execute"));
+    }
+
+    /// Keys wider than the border they would sit on move to their own line
+    /// instead of being cut in half by it.
+    #[test]
+    fn keys_too_wide_for_the_border_move_under_the_box() {
+        let cols = MIN_FRAME_COLS;
+        let wordy = Confirmation {
+            keys: vec![
+                ("/execute", "carry the whole plan out"),
+                ("n", "keep planning"),
+            ],
+            ..plan_prompt()
+        };
+        let lines = prompt_box(
+            &wordy,
+            markdown_lines("do the thing", cols - FRAME_PAD),
+            cols,
+        );
+
+        let border = &lines[lines.len() - 2].text;
+        assert!(
+            border.starts_with('└') && border.ends_with('┘'),
+            "{border:?}"
+        );
+        assert!(lines.last().expect("the keys").text.contains("/execute"));
+    }
+
+    /// The point of the whole change: a confirmation is no longer a block of
+    /// red. Only the sentence saying what the call will do carries the error
+    /// colour, and the border stays dim.
+    #[test]
+    fn only_the_consequence_of_a_tool_call_is_red() {
+        let lines = prompt_box(&tool_prompt(), Vec::new(), 40);
+
+        assert!(
+            lines.iter().all(|line| line.role != Role::Error),
+            "no line is red as a whole"
+        );
+        assert!(lines[0].text.starts_with("┌ send_input "));
+        let reddened: Vec<&str> = lines
+            .iter()
+            .filter(|line| line.styles.iter().any(|style| style.error))
+            .map(|line| line.text.as_str())
+            .collect();
+        assert_eq!(
+            reddened.len(),
+            1,
+            "exactly one line is reddened: {reddened:?}"
+        );
+        assert!(reddened[0].contains("types into pane 7"));
+        // The border of that very line is still dim rather than red.
+        let consequence = lines
+            .iter()
+            .find(|line| line.text.contains("types into pane 7"))
+            .expect("present");
+        assert!(consequence.styles[0].dim && !consequence.styles[0].error);
+        assert!(lines
+            .last()
+            .expect("a bottom border")
+            .text
+            .contains("y run · n skip"));
     }
 
     // -- the input box's wrapping -------------------------------------------

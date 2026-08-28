@@ -7,6 +7,33 @@ use zellij_tile::prelude::*;
 // Transitions
 // ---------------------------------------------------------------------------
 
+/// Which of the two things is waiting on an answer.
+///
+/// They share a renderer but not a body: a tool confirmation carries its own
+/// lines, while a plan's body is the assistant message the box is drawn around.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptKind {
+    Plan,
+    Tool,
+}
+
+/// Everything the pane needs to draw the box that is waiting on an answer.
+///
+/// A struct rather than the lines themselves, because the renderer decides how
+/// the parts are painted — the title on the top border, the keys along the
+/// bottom one, and only the flagged detail line in the theme's error colour.
+#[derive(Debug, Clone)]
+pub struct Confirmation {
+    pub kind: PromptKind,
+    /// What the box is called: the tool's name, or `PLAN`.
+    pub title: String,
+    /// The body, one line each, flagged `true` for the line that says what the
+    /// call will do. Empty for a plan.
+    pub detail: Vec<(String, bool)>,
+    /// `(key, what it does)`, drawn along the bottom border.
+    pub keys: Vec<(&'static str, &'static str)>,
+}
+
 impl State {
     /// The data store.
     ///
@@ -187,21 +214,31 @@ impl State {
     /// so the prompt names the one call it is about rather than leaving the user
     /// to infer it, and says what that call will do rather than handing over the
     /// model's own JSON to read.
-    pub fn confirmation_prompt(&self) -> Option<Vec<String>> {
+    pub fn confirmation_prompt(&self) -> Option<Confirmation> {
         // A plan waiting on an answer renders through the same tail as a tool
-        // does — the wrapping, the blank line above it, and the anchor
-        // suppression that keeps it from being scrolled off the bottom
-        // unanswered are all things it needs for the same reasons.
+        // does — the blank line above it and the anchor suppression that keeps
+        // it from being scrolled off the bottom unanswered are things it needs
+        // for the same reasons. What differs is where the body comes from: a
+        // tool describes itself here, while a plan's body is the reply already
+        // in the transcript, which the renderer lifts into the box.
         if self.awaiting_plan() {
-            return Some(vec![
-                "plan ready  /execute carries it out  <n> keep planning".to_owned(),
-            ]);
+            return Some(Confirmation {
+                kind: PromptKind::Plan,
+                title: "PLAN".to_owned(),
+                detail: Vec::new(),
+                // Short labels on purpose: the hints are written along the
+                // box's bottom border, and the pane is a third of the screen
+                // wide. Anything longer drops onto a line of its own.
+                keys: vec![("/execute", "run"), ("n", "refine"), ("Esc", "hide")],
+            });
         }
         match self.status {
-            Status::ConfirmingTool => self
-                .pending
-                .front()
-                .map(|call| self.confirmation_detail(call)),
+            Status::ConfirmingTool => self.pending.front().map(|call| Confirmation {
+                kind: PromptKind::Tool,
+                title: call.name.clone(),
+                detail: tools::confirmation_body(call),
+                keys: vec![("y", "run"), ("n", "skip"), ("Esc", "hide")],
+            }),
             _ => None,
         }
     }

@@ -371,14 +371,27 @@ pub fn argument_lines(call: &ToolCall) -> Vec<String> {
 /// telling the user different things about the same call.
 pub fn confirmation_detail(call: &ToolCall) -> Vec<String> {
     let mut lines = vec![call.name.clone()];
-    if let Some(consequence) = consequence(call) {
-        lines.push(format!("  {consequence}"));
-    }
     lines.extend(
-        argument_lines(call)
+        confirmation_body(call)
             .into_iter()
-            .map(|line| format!("  {line}")),
+            .map(|(line, _)| format!("  {line}")),
     );
+    lines
+}
+
+/// The same block without the tool's name, unindented, and with the consequence
+/// line flagged.
+///
+/// The pane prompt titles its box with the name, so repeating it inside would
+/// say it twice, and the box supplies the indent that the toast has to draw for
+/// itself. The flag is what lets that one line — the sentence saying what the
+/// call will actually do — be the only red thing on screen.
+pub fn confirmation_body(call: &ToolCall) -> Vec<(String, bool)> {
+    let mut lines = Vec::new();
+    if let Some(consequence) = consequence(call) {
+        lines.push((consequence, true));
+    }
+    lines.extend(argument_lines(call).into_iter().map(|line| (line, false)));
     lines
 }
 

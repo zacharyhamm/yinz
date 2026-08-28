@@ -273,6 +273,24 @@ fn a_finished_plan_asks_to_be_carried_out() {
     );
 }
 
+/// The plan is drawn as a box with the answer written along its bottom border,
+/// so the prompt has to say which kind of box it is and which keys go on it.
+/// The body is deliberately empty: a plan's body is the reply already in the
+/// transcript, which the renderer lifts into the frame.
+#[test]
+fn a_waiting_plan_asks_through_a_plan_box() {
+    let mut state = planning_state();
+    reply_and_settle(&mut state, "the plan");
+
+    let prompt = state.confirmation_prompt().expect("the prompt is up");
+
+    assert_eq!(prompt.kind, PromptKind::Plan);
+    assert_eq!(prompt.title, "PLAN");
+    assert!(prompt.detail.is_empty(), "the reply itself is the body");
+    let keys: Vec<&str> = prompt.keys.iter().map(|(key, _)| *key).collect();
+    assert_eq!(keys, vec!["/execute", "n", "Esc"]);
+}
+
 /// A turn that ended in tool calls is still researching.
 #[test]
 fn a_turn_that_ended_in_tool_calls_keeps_planning() {
