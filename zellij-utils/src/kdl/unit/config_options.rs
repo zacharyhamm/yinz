@@ -238,3 +238,51 @@ fn session_recording_options_kdl_roundtrip() {
     assert_eq!(reparsed.session_recording, Some(true));
     assert_eq!(reparsed.session_recording_input, Some(true));
 }
+
+#[test]
+fn explicit_theme_hue_from_kdl() {
+    let fake_config = r##"
+        explicit_theme_hue "light"
+    "##;
+    let document: KdlDocument = fake_config.parse().unwrap();
+    let deserialized = Options::from_kdl(&document).unwrap();
+    assert_eq!(deserialized.explicit_theme_hue, Some(ThemeHue::Light));
+
+    let empty_document: KdlDocument = "".parse().unwrap();
+    let deserialized_empty = Options::from_kdl(&empty_document).unwrap();
+    assert_eq!(
+        deserialized_empty.explicit_theme_hue, None,
+        "an unspecified explicit_theme_hue leaves the host terminal in charge"
+    );
+}
+
+#[test]
+fn explicit_theme_hue_rejects_unknown_values() {
+    let fake_config = r##"
+        explicit_theme_hue "sepia"
+    "##;
+    let document: KdlDocument = fake_config.parse().unwrap();
+    assert!(
+        Options::from_kdl(&document).is_err(),
+        "only 'dark' and 'light' are accepted"
+    );
+}
+
+#[test]
+fn explicit_theme_hue_round_trips_through_kdl() {
+    let fake_config = r##"
+        explicit_theme_hue "dark"
+    "##;
+    let document: KdlDocument = fake_config.parse().unwrap();
+    let deserialized = Options::from_kdl(&document).unwrap();
+    let mut serialized = Options::to_kdl(&deserialized, false);
+    let mut fake_document = KdlDocument::new();
+    fake_document.nodes_mut().append(&mut serialized);
+    let deserialized_from_serialized =
+        Options::from_kdl(&fake_document.to_string().parse::<KdlDocument>().unwrap()).unwrap();
+    assert_eq!(
+        deserialized_from_serialized.explicit_theme_hue,
+        Some(ThemeHue::Dark),
+        "explicit_theme_hue survives a serialize/parse round trip"
+    );
+}

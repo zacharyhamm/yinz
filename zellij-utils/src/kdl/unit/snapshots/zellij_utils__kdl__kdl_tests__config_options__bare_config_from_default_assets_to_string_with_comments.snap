@@ -1,5 +1,6 @@
 ---
 source: zellij-utils/src/kdl/./unit/config_options.rs
+assertion_line: 191
 expression: fake_config_stringified
 ---
 keybinds clear-defaults=true {
@@ -415,6 +416,12 @@ web_client {
 // Requires `theme_dark` to also be set; otherwise `theme` is used.
 // 
 // theme_light "solarized-light"
+ 
+// Pin the session to a dark or light appearance, ignoring what the
+// host terminal reports. When unset, the host terminal decides.
+// Options: dark, light
+// 
+// explicit_theme_hue "dark"
  
 // Choose the base input mode of zellij.
 // Default: normal

@@ -1360,6 +1360,7 @@ message Options {
   optional string word_separators = 62;
   optional bool dangerously_enable_paste_buffer_read = 63;
   optional bool context_menu_on_right_click = 65;
+  optional ThemeHue explicit_theme_hue = 69;
 }
 
 enum OnForceClose {
@@ -1393,6 +1394,12 @@ enum NestedSessionHandling {
   NESTED_SESSION_HANDLING_FULLSCREEN = 2;
   NESTED_SESSION_HANDLING_DESCEND = 3;
   NESTED_SESSION_HANDLING_NEVER = 4;
+}
+
+enum ThemeHue {
+  THEME_HUE_UNSPECIFIED = 0;
+  THEME_HUE_DARK = 1;
+  THEME_HUE_LIGHT = 2;
 }
 
 
