@@ -38,11 +38,10 @@ When done (Back): ENTER
 
 == Scroll
 Enter search term (Search): s
-Scroll (Scroll): ↓ ↑
-Scroll page (Scroll): PgDn PgUp
-Scroll half page (Scroll): d u
+Scroll (Scroll): ↓ ↑ PgDn PgUp d u
 Edit scrollback in default editor (Edit): e
 Select pane (Select): ENTER
+Scroll commands (Commands): [ ]
 
 == EnterSearch
 When done (Done): ENTER

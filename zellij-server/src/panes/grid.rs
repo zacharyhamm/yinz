@@ -760,6 +760,9 @@ pub struct Grid {
     pub cached_hover_tooltip: Option<String>,
     osc133_markers_seen: bool,
     osc133_command_selection: bool,
+    /// The output of the last copied command, painted for a moment as feedback for
+    /// `CopyLastCommandOutput`; cleared by `BackgroundJob::ClearCommandOutputFlash`.
+    command_output_flash: Option<Selection>,
     word_separators: String,
 }
 
@@ -1122,6 +1125,7 @@ impl Grid {
             cached_hover_tooltip: None,
             osc133_markers_seen: false,
             osc133_command_selection: true,
+            command_output_flash: None,
             word_separators: DEFAULT_WORD_SEPARATORS.to_owned(),
         }
     }
@@ -1610,6 +1614,9 @@ impl Grid {
                 .saturating_sub(transferred_rows_height);
 
             self.selection.move_down(1);
+            if let Some(command_output_flash) = self.command_output_flash.as_mut() {
+                command_output_flash.move_down(1);
+            }
             // Move all search-selections down one line as well
             found_something = self
                 .search_results
@@ -1671,6 +1678,9 @@ impl Grid {
             self.kitty_reanchor_all_from_pixels();
 
             self.selection.move_up(1);
+            if let Some(command_output_flash) = self.command_output_flash.as_mut() {
+                command_output_flash.move_up(1);
+            }
             // Move all search-selections up one line as well
             found_something =
                 self.search_results
@@ -2130,6 +2140,27 @@ impl Grid {
                             content_y,
                         );
                     }
+                }
+            }
+            if let Some(command_output_flash) = self.command_output_flash {
+                if command_output_flash.contains_row(character_chunk.y.saturating_sub(content_y)) {
+                    let foreground_color = match style.colors.text_unselected.emphasis_0 {
+                        PaletteColor::Rgb(rgb) => AnsiCode::RgbCode(rgb),
+                        PaletteColor::EightBit(col) => AnsiCode::ColorIndex(col),
+                    };
+                    character_chunk.add_selection_and_colors(
+                        HighlightSelection {
+                            selection: command_output_flash,
+                            bg: None,
+                            fg: Some(foreground_color),
+                            bold: false,
+                            italic: false,
+                            underline: false,
+                            layer: HighlightLayer::ActionFeedback,
+                        },
+                        content_x,
+                        content_y,
+                    );
                 }
             }
             // Apply pre-computed plugin highlight selections to this chunk.
@@ -3306,6 +3337,15 @@ impl Grid {
         }
         self.text_for_selection(&self.selection)
     }
+    /// The text between two positions, resolved the way a selection is (scrollback included).
+    pub fn text_in_range(&self, start: Position, end: Position) -> Option<String> {
+        let mut range_selection = Selection::default();
+        range_selection.set_start_and_end_positions(start, end);
+        if range_selection.is_empty() {
+            return None;
+        }
+        self.text_for_selection(&range_selection)
+    }
     /// The text a `Selection` covers, whether or not it is the selection the user is making.
     ///
     /// Split out of `get_selected_text` so that anything with a pair of positions - the word under
@@ -3534,7 +3574,7 @@ impl Grid {
                         selection_start = Some(marker_position(line, marker.column));
                         break 'backward;
                     },
-                    Osc133MarkerKind::Prompt | Osc133MarkerKind::End => {
+                    Osc133MarkerKind::Prompt | Osc133MarkerKind::End(_) => {
                         latest_output?;
                         break 'backward;
                     },
@@ -3559,6 +3599,208 @@ impl Grid {
         let selection_end = selection_end?;
 
         Some((selection_start, selection_end))
+    }
+
+    fn osc133_marker_position(line: isize, column: usize) -> Position {
+        Position::new(line as i32, column.min(u16::MAX as usize) as u16)
+    }
+
+    /// How many display rows up the previous prompt is, or `None` when there is none above.
+    ///
+    /// Walks the scrollback upwards. A `Prompt` marker wins outright; an `Input` marker is
+    /// remembered as a fallback for shells that only mark the command, and is used once the
+    /// walk passes the `Output`/`End` of the command before it.
+    fn previous_prompt_line_delta(&self) -> Option<usize> {
+        if !self.osc133_markers_seen {
+            return None;
+        }
+        let first_line = -(self.lines_above.len() as isize);
+        let mut input_candidate: Option<usize> = None;
+        let mut display_delta = 0;
+        for line in (first_line..0).rev() {
+            let Some(row) = self.row_at(line) else {
+                continue;
+            };
+            display_delta += calculate_row_display_height(row.width(), self.width);
+            for marker in row.osc133_markers.iter().rev() {
+                match marker.kind {
+                    Osc133MarkerKind::Prompt => return Some(display_delta),
+                    Osc133MarkerKind::Input => {
+                        if input_candidate.is_none() {
+                            input_candidate = Some(display_delta);
+                        }
+                    },
+                    Osc133MarkerKind::Output | Osc133MarkerKind::End(_) => {
+                        if let Some(candidate) = input_candidate {
+                            return Some(candidate);
+                        }
+                    },
+                }
+            }
+        }
+        input_candidate
+    }
+
+    /// How many rows down the next prompt is, capped at what `lines_below` can still scroll.
+    fn next_prompt_line_delta(&self) -> Option<usize> {
+        if !self.osc133_markers_seen {
+            return None;
+        }
+        let last_line = (self.viewport.len() + self.lines_below.len()) as isize - 1;
+        for line in 1..=last_line {
+            let Some(row) = self.row_at(line) else {
+                continue;
+            };
+            for marker in row.osc133_markers.iter() {
+                match marker.kind {
+                    Osc133MarkerKind::Prompt | Osc133MarkerKind::Input => {
+                        let reachable_delta = (line as usize).min(self.lines_below.len());
+                        return (reachable_delta > 0).then_some(reachable_delta);
+                    },
+                    Osc133MarkerKind::Output | Osc133MarkerKind::End(_) => {},
+                }
+            }
+        }
+        None
+    }
+
+    pub fn scroll_to_previous_prompt(&mut self) -> bool {
+        match self.previous_prompt_line_delta() {
+            Some(delta) => {
+                self.move_viewport_up(delta);
+                true
+            },
+            None => false,
+        }
+    }
+
+    pub fn scroll_to_next_prompt(&mut self) -> bool {
+        match self.next_prompt_line_delta() {
+            Some(delta) => {
+                self.move_viewport_down(delta);
+                true
+            },
+            None => false,
+        }
+    }
+
+    /// The command at the top of the viewport, or failing that the first command whose output
+    /// starts somewhere in the viewport.
+    fn osc133_command_at_scroll_position(&self) -> Option<(Position, Position)> {
+        if let Some(command) = self.osc133_command_around_position(&Position::new(0, 0)) {
+            return Some(command);
+        }
+        for line in 0..self.viewport.len() as isize {
+            let Some(row) = self.row_at(line) else {
+                continue;
+            };
+            for marker in row.osc133_markers.iter() {
+                if marker.kind != Osc133MarkerKind::Output {
+                    continue;
+                }
+                let anchor = Self::osc133_marker_position(line, marker.column);
+                if let Some(command) = self.osc133_command_around_position(&anchor) {
+                    return Some(command);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn select_command_at_scroll_position(&mut self) -> bool {
+        let Some((start_position, end_position)) = self.osc133_command_at_scroll_position() else {
+            return false;
+        };
+        let old_selection = self.selection;
+        self.selection
+            .set_start_and_end_positions(start_position, end_position);
+        self.selection.finalize();
+        let current_selection = self.selection;
+        self.update_selected_lines(&old_selection, &current_selection);
+        self.mark_for_rerender();
+        true
+    }
+
+    fn command_output_text(&self, start: Position, end: Position) -> Option<String> {
+        let output = self.text_in_range(start, end)?;
+        let output = output
+            .strip_prefix('\n')
+            .map(String::from)
+            .unwrap_or(output);
+        if output.trim().is_empty() {
+            return None;
+        }
+        Some(output)
+    }
+
+    /// The output of the most recent command that has both an `Output` marker and a marker
+    /// after it (its `End`, or the next prompt), with the positions the text spans.
+    pub fn last_completed_command_output(&self) -> Option<(String, Position, Position)> {
+        if !self.osc133_markers_seen {
+            return None;
+        }
+        let first_line = -(self.lines_above.len() as isize);
+        let last_line = (self.viewport.len() + self.lines_below.len()) as isize - 1;
+        let mut command_boundary: Option<Position> = None;
+        for line in (first_line..=last_line).rev() {
+            let Some(row) = self.row_at(line) else {
+                continue;
+            };
+            for marker in row.osc133_markers.iter().rev() {
+                let marker_position = Self::osc133_marker_position(line, marker.column);
+                if marker.kind == Osc133MarkerKind::Output {
+                    if let Some(output_end) = command_boundary {
+                        if let Some(output) = self.command_output_text(marker_position, output_end)
+                        {
+                            return Some((output, marker_position, output_end));
+                        }
+                    }
+                }
+                command_boundary = Some(marker_position);
+            }
+        }
+        None
+    }
+
+    pub fn set_command_output_flash(&mut self, start: Position, end: Position) {
+        let mut flash = Selection::default();
+        flash.set_start_and_end_positions(start, end);
+        flash.finalize();
+        self.command_output_flash = Some(flash);
+        self.output_buffer.update_all_lines();
+        self.mark_for_rerender();
+    }
+
+    pub fn clear_command_output_flash(&mut self) -> bool {
+        if self.command_output_flash.take().is_none() {
+            return false;
+        }
+        self.output_buffer.update_all_lines();
+        self.mark_for_rerender();
+        true
+    }
+
+    #[cfg(test)]
+    pub fn command_output_flash_is_shown(&self) -> bool {
+        self.command_output_flash.is_some()
+    }
+
+    #[cfg(test)]
+    pub fn osc133_end_exit_codes(&self) -> Vec<Option<i32>> {
+        let first_line = -(self.lines_above.len() as isize);
+        let last_line = (self.viewport.len() + self.lines_below.len()) as isize - 1;
+        let mut exit_codes = vec![];
+        for line in first_line..=last_line {
+            let Some(row) = self.row_at(line) else {
+                continue;
+            };
+            for marker in row.osc133_markers.iter() {
+                if let Osc133MarkerKind::End(exit_code) = marker.kind {
+                    exit_codes.push(exit_code);
+                }
+            }
+        }
+        exit_codes
     }
 
     fn update_selected_lines(&mut self, old_selection: &Selection, new_selection: &Selection) {
@@ -4672,7 +4914,12 @@ impl Perform for Grid {
                     b"A" | b"P" => Some(Osc133MarkerKind::Prompt),
                     b"B" | b"I" => Some(Osc133MarkerKind::Input),
                     b"C" => Some(Osc133MarkerKind::Output),
-                    b"D" => Some(Osc133MarkerKind::End),
+                    b"D" => Some(Osc133MarkerKind::End(
+                        params
+                            .get(2)
+                            .and_then(|exit_code| std::str::from_utf8(exit_code).ok())
+                            .and_then(|exit_code| exit_code.trim().parse::<i32>().ok()),
+                    )),
                     _ => None,
                 });
                 if let (Some(marker), Some(row)) = (marker, self.viewport.get_mut(self.cursor.y)) {
@@ -5671,7 +5918,8 @@ enum Osc133MarkerKind {
     Prompt,
     Input,
     Output,
-    End,
+    /// `OSC 133 ; D ; <exit code>` - the exit code is optional and not every shell sends one.
+    End(Option<i32>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -463,6 +463,14 @@ pub trait Pane {
     fn scroll_down(&mut self, count: usize, client_id: ClientId);
     fn scroll_left(&mut self, _count: usize, _client_id: ClientId) {}
     fn scroll_right(&mut self, _count: usize, _client_id: ClientId) {}
+    fn scroll_to_previous_prompt(&mut self, _client_id: ClientId) {}
+    fn scroll_to_next_prompt(&mut self, _client_id: ClientId) {}
+    fn select_command_at_scroll_position(&mut self, _client_id: ClientId) {}
+    /// The output of the last completed OSC 133 command, also starting its feedback flash.
+    fn copy_last_command_output(&mut self) -> Option<String> {
+        None
+    }
+    fn clear_command_output_flash(&mut self) {}
     fn clear_scroll(&mut self);
     fn is_scrolled(&self) -> bool;
     fn active_at(&self) -> Instant;
@@ -7161,6 +7169,48 @@ impl Tab {
                     self.process_pending_vte_events(raw_fd).non_fatal();
                 }
             }
+        }
+    }
+
+    pub fn scroll_active_terminal_to_previous_prompt(&mut self, client_id: ClientId) {
+        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
+            active_pane.scroll_to_previous_prompt(client_id);
+        }
+    }
+
+    pub fn scroll_active_terminal_to_next_prompt(&mut self, client_id: ClientId) {
+        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
+            active_pane.scroll_to_next_prompt(client_id);
+        }
+    }
+
+    pub fn select_command_at_scroll_position(&mut self, client_id: ClientId) {
+        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
+            active_pane.select_command_at_scroll_position(client_id);
+        }
+    }
+
+    /// Copies the last completed command's output and schedules the end of its flash.
+    pub fn copy_last_command_output(&mut self, client_id: ClientId) -> Result<()> {
+        let err_context = || format!("failed to copy last command output for client {client_id}");
+        let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) else {
+            return Ok(());
+        };
+        let pane_id = active_pane.pid();
+        let Some(output) = active_pane.copy_last_command_output() else {
+            return Ok(());
+        };
+        self.copy_text_to_clipboard(&output)
+            .with_context(err_context)?;
+        self.senders
+            .send_to_background_jobs(BackgroundJob::ClearCommandOutputFlash { pane_id })
+            .with_context(err_context)?;
+        Ok(())
+    }
+
+    pub fn clear_command_output_flash(&mut self, pane_id: PaneId) {
+        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
+            pane.clear_command_output_flash();
         }
     }
 

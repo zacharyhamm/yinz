@@ -1270,6 +1270,54 @@ pub(crate) fn screen_thread_main(
                 screen.sync_scroll_mode_if_scroll_changed(client_id, was_scrolled)?;
                 screen.render(None)?;
             },
+            // The prompt jumps deliberately do not sync scroll mode: they are bound in normal
+            // mode too, and jumping to a prompt from there must not switch modes.
+            ScreenInstruction::ScrollToPreviousPrompt(client_id, _completion_tx) => {
+                active_tab_and_connected_client_id!(
+                    screen,
+                    client_id,
+                    |tab: &mut Tab, client_id: ClientId| tab
+                        .scroll_active_terminal_to_previous_prompt(client_id)
+                );
+                screen.render(None)?;
+            },
+            ScreenInstruction::ScrollToNextPrompt(client_id, _completion_tx) => {
+                active_tab_and_connected_client_id!(
+                    screen,
+                    client_id,
+                    |tab: &mut Tab, client_id: ClientId| tab
+                        .scroll_active_terminal_to_next_prompt(client_id)
+                );
+                screen.render(None)?;
+            },
+            ScreenInstruction::SelectCommandAtScrollPosition(client_id, _completion_tx) => {
+                active_tab_and_connected_client_id!(
+                    screen,
+                    client_id,
+                    |tab: &mut Tab, client_id: ClientId| tab
+                        .select_command_at_scroll_position(client_id)
+                );
+                screen.render(None)?;
+            },
+            ScreenInstruction::CopyLastCommandOutput(client_id, _completion_tx) => {
+                active_tab_and_connected_client_id!(
+                    screen,
+                    client_id,
+                    |tab: &mut Tab, client_id: ClientId| tab.copy_last_command_output(client_id),
+                    ?
+                );
+                screen.render(None)?;
+            },
+            ScreenInstruction::ClearCommandOutputFlash(pane_id) => {
+                let all_tabs = screen.get_tabs_mut();
+                for tab in all_tabs.values_mut() {
+                    if tab.has_pane_with_pid(&pane_id) {
+                        tab.clear_command_output_flash(pane_id);
+                        break;
+                    }
+                }
+                screen.render(None)?;
+            },
             ScreenInstruction::PageScrollUp(
                 client_id,
                 _completion_tx, // the action ends here, dropping this will release anything
