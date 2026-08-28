@@ -39,7 +39,7 @@ cargo x ci check     # format --check, lint, assets --check, test
 ```
 
 Run it before handing off a branch or opening a PR. Every phase runs even if an earlier one
-fails, so one failure does not hide the rest. `cargo x integration-test -- -j 4` is a separate
+fails, so one failure does not hide the rest. `cargo x integration-test -- -j 16` is a separate
 run — see "Reading a red run" below for why it is not part of the gate.
 
 ### Passing arguments
@@ -109,9 +109,19 @@ them, use sandbox escalation on the first attempt.
 
 Neither suite is reliable enough for a single red run to be evidence. Before believing a failure:
 
-- **Run `integration-test` with `-j 4`.** At default parallelism on a many-core machine it
-  produces ~100 timeouts purely from contention. Even at `-j 4` a handful (`no_focus`,
-  `no_ui_fullscreen`) time out at 60s and pass alone.
+- **Run `integration-test` with `-j 16`.** At default parallelism on a many-core machine it
+  produces ~100 timeouts purely from contention: nothing in the suite conflicts over a port or a
+  directory — `test_env.rs` gives every test process its own `TMPDIR`, `ZELLIJ_SOCKET_DIR`, `HOME`
+  and XDG dirs, and the app runs in-process behind fake OS APIs — but each test spawns a real
+  server plus client threads (~30 threads, ~55 for a `nested_*` one), and the waits are
+  wall-clock-bounded (`default_timeout()` is 10s; nextest kills at 30s × 2). One test per core
+  means thousands of threads, and the contention comes back as timeouts.
+  `-j 16` is the default because it leaves headroom on a 64-core machine while still running four
+  times as wide as the `-j 4` this note used to recommend. Drop to `-j 4` on a smaller machine, or
+  when a run at 16 produces timeouts you cannot reproduce by running the named tests alone. A
+  handful (`no_focus`, `no_ui_fullscreen`) time out at 60s under load and pass alone at any width.
+  Note also that this machine is shared: a sibling worktree running its own suite contends for the
+  same cores, so check for another `cargo x integration-test` before believing a red run.
 - **Known pre-existing failures**, confirmed against a stashed tree: `misc::quit_with_keybinding`
   (it waits for "Bye from Zellij!" but this fork puts a quit-confirmation modal in the way), the
   `nested_guest_modal` / `nested_hardening` / `nested_sessions` / `nested_session_handling_config`
