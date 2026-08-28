@@ -6922,6 +6922,8 @@ pub(crate) fn check_command_permission(
         // there's no use to deny them anything
         return (PermissionStatus::Granted, None);
     }
+    // `None` is an explicit verdict from an exhaustive match — the command needs no permission —
+    // never "not yet classified": a new variant fails to compile in `command_permission`.
     let Some(permission) = command_permission(command) else {
         return (PermissionStatus::Granted, None);
     };
@@ -6935,8 +6937,31 @@ pub(crate) fn check_command_permission(
     (PermissionStatus::Denied, Some(permission))
 }
 
+/// The permission a command needs, or `None` when it needs none.
+///
+/// The match is exhaustive on purpose: `check_command_permission` grants a `None`, so a catch-all
+/// arm would make every variant added later fail open. Each `None` says why below.
 fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
     Some(match command {
+        // Bootstrap and the plugin's own pane: nothing here reaches outside the plugin.
+        PluginCommand::RequestPluginPermissions(..)
+        | PluginCommand::Subscribe(..)
+        | PluginCommand::Unsubscribe(..)
+        | PluginCommand::SetSelectable(..)
+        | PluginCommand::SetSelfMouseSelectionSupport(..)
+        | PluginCommand::ShowCursor(..)
+        | PluginCommand::HideSelf
+        | PluginCommand::ShowSelf(..)
+        | PluginCommand::CloseSelf
+        | PluginCommand::SetTimeout(..)
+        | PluginCommand::ReportPanic(..)
+        | PluginCommand::GetPluginIds
+        | PluginCommand::GetZellijVersion => return None,
+        // A message to the plugin's own worker.
+        PluginCommand::PostMessageTo(..) => return None,
+        // The host folder is preopened to the plugin as `/host` at load, so listing or watching
+        // it grants nothing the WASI mount does not. Moving it is `ChangeHostFolder`, below.
+        PluginCommand::ScanHostFolder(..) | PluginCommand::WatchFilesystem => return None,
         PluginCommand::OpenFile(..)
         | PluginCommand::OpenFileFloating(..)
         | PluginCommand::OpenFileNearPlugin(..)
@@ -6988,6 +7013,8 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
         | PluginCommand::Resize(..)
         | PluginCommand::ResizeWithDirection(..)
         | PluginCommand::FocusNextPane
+        | PluginCommand::FocusPreviousPane
+        | PluginCommand::FocusLastPane
         | PluginCommand::MoveFocus(..)
         | PluginCommand::MoveFocusOrTab(..)
         | PluginCommand::Detach
@@ -7100,7 +7127,9 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
         PluginCommand::UnblockCliPipeInput(..)
         | PluginCommand::BlockCliPipeInput(..)
         | PluginCommand::CliPipeOutput(..) => PermissionType::ReadCliPipes,
-        PluginCommand::MessageToPlugin(..) => PermissionType::MessageAndLaunchOtherPlugins,
+        PluginCommand::MessageToPlugin(..) | PluginCommand::PostMessageToPlugin(..) => {
+            PermissionType::MessageAndLaunchOtherPlugins
+        },
         PluginCommand::ListClients
         | PluginCommand::DumpSessionLayout { .. }
         | PluginCommand::GetPanePid { .. }
@@ -7182,8 +7211,7 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
         PluginCommand::QueueStatus { .. } => PermissionType::ReadApplicationState,
         // A job reporting on itself needs nothing, like `CloseSelf`: it runs headless, and a
         // permission prompt it raised would have no pane for anyone to answer it in.
-        PluginCommand::CloseSelf | PluginCommand::FinishQueueJob { .. } => return None,
-        _ => return None,
+        PluginCommand::FinishQueueJob { .. } => return None,
     })
 }
 
@@ -7208,6 +7236,57 @@ mod permission_tests {
                 .success());
         }
         temp
+    }
+
+    /// Every command that runs without a permission, pinned so a reviewer sees the list change.
+    /// Exhaustiveness itself is the compiler's job: `command_permission` has no catch-all.
+    #[test]
+    fn the_commands_that_need_no_permission_are_exactly_these() {
+        let ungated = [
+            PluginCommand::RequestPluginPermissions(vec![]),
+            PluginCommand::Subscribe(HashSet::new()),
+            PluginCommand::Unsubscribe(HashSet::new()),
+            PluginCommand::SetSelectable(true),
+            PluginCommand::SetSelfMouseSelectionSupport(true),
+            PluginCommand::ShowCursor(None),
+            PluginCommand::HideSelf,
+            PluginCommand::ShowSelf(false),
+            PluginCommand::CloseSelf,
+            PluginCommand::SetTimeout(0.0),
+            PluginCommand::ReportPanic(String::new()),
+            PluginCommand::GetPluginIds,
+            PluginCommand::GetZellijVersion,
+            PluginCommand::PostMessageTo(PluginMessage::new_to_worker("w", "m", "")),
+            PluginCommand::ScanHostFolder(PathBuf::from("/host")),
+            PluginCommand::WatchFilesystem,
+        ];
+        for command in &ungated {
+            assert_eq!(command_permission(command), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn a_message_to_another_plugin_needs_the_same_permission_however_it_is_sent() {
+        let message = PluginMessage::new_to_plugin("m", "");
+        assert_eq!(
+            command_permission(&PluginCommand::PostMessageToPlugin(message)),
+            Some(PermissionType::MessageAndLaunchOtherPlugins)
+        );
+    }
+
+    #[test]
+    fn moving_focus_needs_the_same_permission_in_every_direction() {
+        for command in [
+            PluginCommand::FocusNextPane,
+            PluginCommand::FocusPreviousPane,
+            PluginCommand::FocusLastPane,
+        ] {
+            assert_eq!(
+                command_permission(&command),
+                Some(PermissionType::ChangeApplicationState),
+                "{command}"
+            );
+        }
     }
 
     #[test]

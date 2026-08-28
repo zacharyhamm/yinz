@@ -288,14 +288,18 @@ Three things that must not be discovered late:
    commands — a large real win, and an acceptable intermediate state, **provided** those 76 return
    a clear "this command replies and Lua responses are not yet wired" error. Silently dropping a
    reply is the failure mode to design against.
-3. **The security gate — this one is load-bearing.** `command_permission` in
-   `plugins/zellij_exports.rs` ends in `_ => return None`, and `check_command_permission` (`:6432`)
-   treats `None` as **`PermissionStatus::Granted`**. Unclassified commands therefore fail *open*.
-   Today 7 hand-audited commands reach Lua; after the derive ~152 do at once, and CLAUDE.md is
-   explicit that the permission system is the only thing between a Lua plugin and the server's
-   authority. **An exhaustiveness test asserting every `PluginCommand` variant has an explicit
-   permission classification must gate the derive, not follow it** — and the catch-all arm should
-   become explicit arms first.
+3. **The security gate — DONE.** `command_permission` in `plugins/zellij_exports.rs` used to end
+   in `_ => return None`, and `check_command_permission` treats `None` as
+   **`PermissionStatus::Granted`**, so unclassified commands failed *open*. Counting them found
+   19 of 228 variants in the catch-all. Two were inconsistent with a gated sibling
+   (`FocusPreviousPane`/`FocusLastPane` vs `FocusNextPane`) and one was a privileged twin of a
+   gated command (`PostMessageToPlugin` vs `MessageToPlugin`); those are now gated. The rest are
+   explicit `None` arms with a reason each — including `ScanHostFolder`/`WatchFilesystem`, which
+   read the host folder that is already preopened to the plugin as `/host`. The match is now
+   exhaustive, so a new variant fails to compile rather than defaulting to granted; the ungated
+   list is pinned by `permission_tests::the_commands_that_need_no_permission_are_exactly_these`.
+   CLAUDE.md is explicit that the permission system is the only thing between a Lua plugin and
+   the server's authority, which is why this had to land before the derive widens Lua's reach.
 
 ## B3 — The collapse (last, or never)
 
