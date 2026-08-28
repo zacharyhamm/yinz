@@ -142,6 +142,7 @@ pub enum ServerInstruction {
         keys_to_rebind: Vec<(InputMode, KeyWithModifier, Vec<Action>)>,
         keys_to_unbind: Vec<(InputMode, KeyWithModifier)>,
         write_config_to_disk: bool,
+        plugin_id: Option<u32>,
     },
     StartWebServer(ClientId),
     ShareCurrentSession(ClientId),
@@ -184,10 +185,12 @@ impl ErrorInstruction for ServerInstruction {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SessionConfiguration {
     runtime_config: HashMap<ClientId, Config>, // if present, overrides the saved_config
-    saved_config: Config,                      // the config as it is on disk (not guaranteed),
-                                               // when changed, this resets the runtime config to
-                                               // be identical to it and override any previous
-                                               // changes
+    effective_keybinds: HashMap<ClientId, Keybinds>,
+    plugin_default_keybinds: BTreeMap<u32, Keybinds>,
+    saved_config: Config, // the config as it is on disk (not guaranteed),
+                          // when changed, this resets the runtime config to
+                          // be identical to it and override any previous
+                          // changes
 }
 
 impl SessionConfiguration {
@@ -195,24 +198,29 @@ impl SessionConfiguration {
         self.saved_config = new_saved_config.clone();
 
         let mut config_changes = vec![];
-        for (client_id, current_runtime_config) in self.runtime_config.iter_mut() {
-            if *current_runtime_config != new_saved_config {
-                *current_runtime_config = new_saved_config.clone();
-                config_changes.push((*client_id, new_saved_config.clone()))
+        let client_ids: Vec<_> = self.runtime_config.keys().copied().collect();
+        for client_id in client_ids {
+            if self.runtime_config.get(&client_id) != Some(&new_saved_config) {
+                self.runtime_config
+                    .insert(client_id, new_saved_config.clone());
+                config_changes.push((client_id, new_saved_config.clone()))
             }
         }
+        self.recompute_effective_keybinds();
         config_changes
     }
     pub fn set_saved_configuration(&mut self, config: Config) {
         self.saved_config = config;
+        self.recompute_effective_keybinds();
     }
     pub fn set_client_runtime_configuration(&mut self, client_id: ClientId, client_config: Config) {
         self.runtime_config.insert(client_id, client_config);
+        self.recompute_effective_keybinds();
     }
     pub fn get_client_keybinds(&self, client_id: &ClientId) -> &Keybinds {
         self.runtime_config
             .get(client_id)
-            .map(|c| &c.keybinds)
+            .and_then(|_| self.effective_keybinds.get(client_id))
             .unwrap_or(&self.saved_config.keybinds)
     }
     pub fn get_client_default_input_mode(&self, client_id: &ClientId) -> InputMode {
@@ -244,8 +252,9 @@ impl SessionConfiguration {
         ) {
             Ok(new_config) => {
                 config_changed = current_client_configuration != new_config;
-                full_reconfigured_config = Some(new_config.clone());
                 self.runtime_config.insert(*client_id, new_config);
+                self.recompute_effective_keybinds();
+                full_reconfigured_config = Some(self.get_client_configuration(client_id));
             },
             Err(e) => {
                 log::error!("Failed to reconfigure runtime config: {}", e);
@@ -300,8 +309,56 @@ impl SessionConfiguration {
                 );
             },
         }
+        if config_changed {
+            self.recompute_effective_keybinds();
+        }
 
         (full_reconfigured_config, config_changed)
+    }
+
+    pub fn register_plugin_default_keybinds(
+        &mut self,
+        plugin_id: u32,
+        keybinds: Keybinds,
+    ) -> Vec<(ClientId, Config)> {
+        if keybinds.0.is_empty() {
+            self.plugin_default_keybinds.remove(&plugin_id);
+        } else {
+            self.plugin_default_keybinds.insert(plugin_id, keybinds);
+        }
+        self.recompute_effective_keybinds();
+        self.runtime_config
+            .keys()
+            .copied()
+            .map(|client_id| (client_id, self.get_client_configuration(&client_id)))
+            .collect()
+    }
+
+    fn with_plugin_defaults(&self, mut config: Config) -> Config {
+        for defaults in self.plugin_default_keybinds.values() {
+            for (mode, bindings) in &defaults.0 {
+                let effective = config.keybinds.0.entry(*mode).or_default();
+                for (key, actions) in bindings {
+                    effective
+                        .entry(key.clone())
+                        .or_insert_with(|| actions.clone());
+                }
+            }
+        }
+        config
+    }
+
+    fn recompute_effective_keybinds(&mut self) {
+        self.effective_keybinds = self
+            .runtime_config
+            .iter()
+            .map(|(client_id, config)| {
+                (
+                    *client_id,
+                    self.with_plugin_defaults(config.clone()).keybinds,
+                )
+            })
+            .collect();
     }
 }
 
@@ -383,6 +440,7 @@ impl SessionMetaData {
     ) {
         let mut new_plugin_config = None;
         for (client_id, new_config) in config_changes {
+            let new_config = self.session_configuration.with_plugin_defaults(new_config);
             if new_plugin_config.is_none() {
                 new_plugin_config = Some(new_config.plugins.clone());
             }
@@ -422,10 +480,7 @@ impl SessionMetaData {
                 .send_to_screen(ScreenInstruction::Reconfigure {
                     client_id,
                     keybinds: new_config.keybinds.clone(),
-                    default_mode: new_config
-                        .options
-                        .default_mode
-                        .unwrap_or_else(Default::default),
+                    default_mode: new_config.options.default_mode.unwrap_or_default(),
                     theme: new_config
                         .theme_config(new_config.options.theme.as_ref())
                         .unwrap_or_else(|| default_palette().into()),
@@ -1643,7 +1698,28 @@ pub fn start_server_impl(
                 keys_to_rebind,
                 keys_to_unbind,
                 write_config_to_disk,
+                plugin_id,
             } => {
+                if let Some(plugin_id) = plugin_id {
+                    let mut keybinds = Keybinds::default();
+                    for (mode, key, actions) in keys_to_rebind {
+                        keybinds.0.entry(mode).or_default().insert(key, actions);
+                    }
+                    let changes = session_data
+                        .write()
+                        .unwrap()
+                        .as_mut()
+                        .unwrap()
+                        .session_configuration
+                        .register_plugin_default_keybinds(plugin_id, keybinds);
+                    session_data
+                        .write()
+                        .unwrap()
+                        .as_mut()
+                        .unwrap()
+                        .propagate_configuration_changes(changes, false);
+                    continue;
+                }
                 let (new_config, runtime_config_changed) = session_data
                     .write()
                     .unwrap()
@@ -2435,6 +2511,32 @@ fn update_new_saved_config(
                     .unwrap();
                 return;
             };
+            if config_file_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                == Some("lua")
+            {
+                log::error!("Refusing to rewrite executable Lua configuration");
+                session_data
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .senders
+                    .send_to_plugin(PluginInstruction::FailedToWriteConfigToDisk {
+                        file_path: Some(config_file_path.clone()),
+                    })
+                    .unwrap();
+                if runtime_config_changed {
+                    session_data
+                        .write()
+                        .unwrap()
+                        .as_mut()
+                        .unwrap()
+                        .propagate_configuration_changes(vec![(client_id, new_config)], false);
+                }
+                return;
+            }
             match Config::write_config_to_disk(
                 new_config.to_string(clear_defaults),
                 config_file_path,
@@ -2523,6 +2625,81 @@ mod session_state_tests {
         s.clients.insert(2, None);
         s.set_last_active_client(2);
         assert_eq!(s.pick_forward_target(), Some(2));
+    }
+
+    #[test]
+    fn plugin_default_keybinds_fill_only_free_slots_and_return_after_unbind() {
+        let key = KeyWithModifier::from_str("Ctrl g").unwrap();
+        let mut base = Config::default();
+        base.keybinds
+            .0
+            .entry(InputMode::Normal)
+            .or_default()
+            .insert(key.clone(), vec![Action::Quit]);
+        let mut configuration = SessionConfiguration::default();
+        configuration.set_saved_configuration(base.clone());
+        configuration.set_client_runtime_configuration(1, base);
+
+        let mut defaults = Keybinds::default();
+        defaults.0.entry(InputMode::Normal).or_default().insert(
+            key.clone(),
+            vec![Action::NewPane {
+                direction: None,
+                pane_name: None,
+                start_suppressed: false,
+            }],
+        );
+        configuration.register_plugin_default_keybinds(2, defaults);
+        assert_eq!(
+            configuration
+                .get_client_keybinds(&1)
+                .get_actions_for_key_in_mode(&InputMode::Normal, &key),
+            Some(&vec![Action::Quit])
+        );
+
+        let (_, changed) =
+            configuration.rebind_keys(&1, vec![], vec![(InputMode::Normal, key.clone())]);
+        assert!(changed);
+        assert_eq!(
+            configuration
+                .get_client_keybinds(&1)
+                .get_actions_for_key_in_mode(&InputMode::Normal, &key),
+            Some(&vec![Action::NewPane {
+                direction: None,
+                pane_name: None,
+                start_suppressed: false,
+            }])
+        );
+    }
+
+    #[test]
+    fn lower_plugin_id_wins_default_keybind_conflicts_until_it_unloads() {
+        let key = KeyWithModifier::from_str("Alt x").unwrap();
+        let mut configuration = SessionConfiguration::default();
+        configuration.set_client_runtime_configuration(1, Config::default());
+        for (plugin_id, action) in [(9, Action::Quit), (3, Action::NoOp)] {
+            let mut defaults = Keybinds::default();
+            defaults
+                .0
+                .entry(InputMode::Normal)
+                .or_default()
+                .insert(key.clone(), vec![action]);
+            configuration.register_plugin_default_keybinds(plugin_id, defaults);
+        }
+        assert_eq!(
+            configuration
+                .get_client_keybinds(&1)
+                .get_actions_for_key_in_mode(&InputMode::Normal, &key),
+            Some(&vec![Action::NoOp])
+        );
+
+        configuration.register_plugin_default_keybinds(3, Keybinds::default());
+        assert_eq!(
+            configuration
+                .get_client_keybinds(&1)
+                .get_actions_for_key_in_mode(&InputMode::Normal, &key),
+            Some(&vec![Action::Quit])
+        );
     }
 
     #[test]
