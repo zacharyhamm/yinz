@@ -383,6 +383,10 @@ impl FloatingPanes {
     pub fn all_panes_are_visible(&self) -> bool {
         self.show_panes && !*self.fullscreen_covers_ui.borrow()
     }
+    /// Whether the floating surface is up, regardless of a fullscreen pane covering it.
+    pub fn panes_are_shown(&self) -> bool {
+        self.show_panes
+    }
     pub fn has_active_panes(&self) -> bool {
         !self.active_panes.is_empty()
     }

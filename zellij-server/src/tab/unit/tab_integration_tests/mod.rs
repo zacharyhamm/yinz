@@ -1788,3 +1788,4 @@ mod pane_content;
 mod rendering;
 mod stacked_panes;
 mod swap_layouts;
+mod visibility;
