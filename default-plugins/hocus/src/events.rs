@@ -498,6 +498,17 @@ impl State {
         if self.picker.is_some() {
             return self.picker_key(key);
         }
+        // So is the tab bar, once Shift+Tab has put the highlight on it.
+        if self.chat_tab_focus.is_some() {
+            return self.chat_tab_key(key);
+        }
+        // Shift+Tab reaches us as Tab with the Shift modifier (CSI Z), and the
+        // input box's Tab arm does not look at modifiers — so, like Ctrl-l
+        // above, it has to be taken before the box would complete on it.
+        if Self::is_bar_key(&key) {
+            self.chat_tab_focus = Some(self.chat_tab);
+            return true;
+        }
         // Interrupt whatever is running. This used to be Esc's job, which meant a
         // streaming reply could not be put away without also being killed - the
         // state you are most likely to want out of the way was the one state where
@@ -590,10 +601,49 @@ impl State {
     pub(crate) fn on_paste(&mut self, text: String) -> bool {
         // The states that already take every key before the input box sees it
         // refuse a paste for the same reason.
-        if self.picker.is_some() || self.is_confirming() || self.awaiting_plan() {
+        if self.picker.is_some()
+            || self.chat_tab_focus.is_some()
+            || self.is_confirming()
+            || self.awaiting_plan()
+        {
             return false;
         }
         self.input.insert_text(&text);
+        true
+    }
+
+    /// Shift+Tab: the key that hands the keyboard to the tab bar.
+    pub(crate) fn is_bar_key(key: &KeyWithModifier) -> bool {
+        key.bare_key == BareKey::Tab && key.has_modifiers(&[KeyModifier::Shift])
+    }
+
+    /// Every key while the tab bar has the highlight. Unhandled keys are
+    /// swallowed, as the picker's are: the input box is behind the bar, and a
+    /// stray letter would be typed into it unseen.
+    pub(crate) fn chat_tab_key(&mut self, key: KeyWithModifier) -> bool {
+        let Some(selected) = self.chat_tab_focus else {
+            return false;
+        };
+        // Ctrl-l is taken ahead of this, in `on_key`, and opens a new tab.
+        let last = self.chat_tab_count().saturating_sub(1);
+        match key.bare_key {
+            BareKey::Left => self.chat_tab_focus = Some(selected.saturating_sub(1)),
+            BareKey::Tab if Self::is_bar_key(&key) => {
+                self.chat_tab_focus = Some(selected.saturating_sub(1))
+            },
+            BareKey::Right | BareKey::Tab => self.chat_tab_focus = Some((selected + 1).min(last)),
+            BareKey::Enter => {
+                self.chat_tab_focus = None;
+                self.switch_to_tab(selected);
+            },
+            BareKey::Esc => self.chat_tab_focus = None,
+            BareKey::Char('x') => {
+                self.close_tab(selected);
+                let last = self.chat_tab_count().saturating_sub(1);
+                self.chat_tab_focus = Some(selected.min(last));
+            },
+            _ => {},
+        }
         true
     }
 

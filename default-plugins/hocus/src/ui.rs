@@ -10,7 +10,9 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use zellij_tile::prelude::*;
 
 use crate::api::ConfigError;
-use crate::{Confirmation, Picker, PickerKind, PromptKind, Role, RowKind, State, Status};
+use crate::{
+    history, Confirmation, Picker, PickerKind, Plan, PromptKind, Role, RowKind, State, Status,
+};
 
 /// Below this we can't lay out a title, a transcript row and an input row,
 /// so we say so instead of rendering nonsense.
@@ -1108,6 +1110,8 @@ fn render_chat(state: &mut State, y: usize, cols: usize, layout: &ChatLayout) {
     }
 }
 
+/// The top row: the tab bar on the left, one cell per open chat, and the status
+/// note at the right edge.
 fn render_title(state: &mut State, cols: usize) {
     let model = match &state.cfg {
         Ok(cfg) => cfg.model.clone(),
@@ -1115,8 +1119,7 @@ fn render_title(state: &mut State, cols: usize) {
     };
     // "hocus — {model}" lives in the real window title bar (set below) rather
     // than drawn into the pane, so it survives even when the pane is scrolled
-    // or covered, and doesn't compete with the right-hand status slot for
-    // space.
+    // or covered, and doesn't compete with the tab bar for space.
     let title = if state.plan_mode_on() {
         format!("hocus (plan) — {model}")
     } else {
@@ -1126,30 +1129,190 @@ fn render_title(state: &mut State, cols: usize) {
     // title rather than caching what we asked the host to do.
     rename_plugin_pane(state.own_plugin_id, &title);
 
-    // One slot at the right edge: what is happening now beats what is pending.
-    // A count rides along when other chats are working too, so a background
-    // reply is visible without opening `/history` to look for it.
+    // The note first, so the bar knows how much of the row is its own. A gap
+    // of one keeps the last tab from running into it.
+    let note = title_note(state);
+    let note_width = note.as_ref().map_or(0, |note| note.width() + 1);
+    for cell in chat_tabs(state, cols.saturating_sub(note_width)) {
+        let text = Text::new(&cell.text).unbold_range(..);
+        let text = if cell.highlighted {
+            text.selected()
+        } else if cell.active {
+            text.color_range(2, ..)
+        } else {
+            text.dim_range(..)
+        };
+        print_text_with_coordinates(text, cell.x, 0, Some(cell.width), None);
+    }
+    if let Some(note) = note {
+        let x = cols.saturating_sub(note.width());
+        print_text_with_coordinates(
+            Text::new(&note).dim_range(..),
+            x,
+            0,
+            Some(note.width()),
+            None,
+        );
+    }
+}
+
+/// One slot at the right edge: what is happening now beats what is pending.
+/// A count rides along when other chats are working too, so a background
+/// reply is visible without looking for its `●` in the bar.
+fn title_note(state: &State) -> Option<String> {
     let elsewhere = match state.parked_count() {
         0 => String::new(),
         n => format!(" +{n}"),
     };
-    let note = if state.is_streaming() {
-        format!("streaming…{elsewhere}")
+    if state.is_streaming() {
+        Some(format!("streaming…{elsewhere}"))
     } else if !elsewhere.is_empty() {
-        format!("working{elsewhere}")
+        Some(format!("working{elsewhere}"))
     } else if !state.jobs.is_empty() {
-        format!("⏲ {}", state.jobs.len())
+        Some(format!("⏲ {}", state.jobs.len()))
     } else {
-        return;
+        None
+    }
+}
+
+/// The widest a tab's title is drawn. Long enough to tell chats apart by their
+/// opening question, short enough that several fit in a narrow overlay.
+const TAB_TITLE_COLS: usize = 18;
+
+/// One cell of the tab bar, ready to print at `x` on the top row.
+#[derive(Debug, PartialEq)]
+pub(crate) struct TabCell {
+    pub(crate) x: usize,
+    pub(crate) width: usize,
+    pub(crate) text: String,
+    /// The chat on screen.
+    pub(crate) active: bool,
+    /// Under the bar's highlight, while Shift+Tab has it focused.
+    pub(crate) highlighted: bool,
+}
+
+/// What one tab says: a glyph for what the chat is doing, then its title.
+fn tab_label(messages: &[crate::Message], live: bool, confirming: bool) -> String {
+    let glyph = if confirming {
+        "? "
+    } else if live {
+        "● "
+    } else {
+        ""
     };
-    let x = cols.saturating_sub(note.width());
-    print_text_with_coordinates(
-        Text::new(&note).dim_range(..),
-        x,
-        0,
-        Some(note.width()),
-        None,
-    );
+    let title = match messages.is_empty() {
+        true => "new chat".to_owned(),
+        false => history::title(messages),
+    };
+    let mut clipped = String::new();
+    let mut used = 0;
+    for ch in title.chars() {
+        let w = ch.width().unwrap_or(0);
+        if used + w > TAB_TITLE_COLS {
+            clipped.push('…');
+            break;
+        }
+        clipped.push(ch);
+        used += w;
+    }
+    format!(" {glyph}{clipped} ")
+}
+
+/// The tab bar, laid out in `width` columns. Every open chat gets a cell in
+/// bar order; when they do not all fit, the window slides so the highlighted
+/// tab — or the active one, when the bar is not focused — is always on screen,
+/// with a `…` at whichever edge has tabs hidden past it.
+pub(crate) fn chat_tabs(state: &State, width: usize) -> Vec<TabCell> {
+    let focus = state.chat_tab_focus;
+    let keep = focus.unwrap_or(state.chat_tab);
+    let labels: Vec<String> = (0..state.chat_tab_count())
+        .map(|tab| match state.parked_at_tab(tab) {
+            None => tab_label(
+                &state.messages,
+                state.is_streaming()
+                    || !matches!(state.status, Status::Idle)
+                    || !matches!(state.plan, Plan::Off),
+                matches!(state.status, Status::ConfirmingTool),
+            ),
+            Some(index) => {
+                let chat = &state.parked[index];
+                tab_label(
+                    &chat.messages,
+                    chat.is_live(),
+                    matches!(chat.status, Status::ConfirmingTool),
+                )
+            },
+        })
+        .collect();
+    let widths: Vec<usize> = labels.iter().map(|label| label.width()).collect();
+    if widths.iter().sum::<usize>() <= width {
+        return lay_out(&labels, 0, labels.len(), width, state.chat_tab, focus);
+    }
+
+    // Grow the window outward from `keep` — rightward first, so the tabs after
+    // the one you are on are what you see — until nothing more fits, leaving a
+    // column for each ellipsis the window will need.
+    let mut start = keep;
+    let mut end = keep + 1;
+    let mut used = widths[keep];
+    loop {
+        // Counted even for an edge the next step would reach, which only ever
+        // leaves a column spare.
+        let ellipses = usize::from(start > 0) + usize::from(end < labels.len());
+        let room = width.saturating_sub(ellipses);
+        if end < labels.len() && used + widths[end] <= room {
+            used += widths[end];
+            end += 1;
+        } else if start > 0 && used + widths[start - 1] <= room {
+            start -= 1;
+            used += widths[start];
+        } else {
+            break;
+        }
+    }
+    lay_out(&labels, start, end, width, state.chat_tab, focus)
+}
+
+/// Print-ready cells for the tabs in `start..end`, with an ellipsis on either
+/// side that has tabs hidden past it.
+fn lay_out(
+    labels: &[String],
+    start: usize,
+    end: usize,
+    width: usize,
+    active: usize,
+    focus: Option<usize>,
+) -> Vec<TabCell> {
+    let mut cells = Vec::new();
+    let mut x = 0;
+    let mut full = false;
+    // Stops at the first cell that does not fit, rather than skipping it: a
+    // later, narrower one would otherwise be drawn in its place.
+    let mut push = |text: String, active: bool, highlighted: bool| {
+        let w = text.width();
+        if full || x + w > width {
+            full = true;
+            return;
+        }
+        cells.push(TabCell {
+            x,
+            width: w,
+            text,
+            active,
+            highlighted,
+        });
+        x += w;
+    };
+    if start > 0 {
+        push("…".to_owned(), false, false);
+    }
+    for (tab, label) in labels.iter().enumerate().take(end).skip(start) {
+        push(label.clone(), tab == active, focus == Some(tab));
+    }
+    if end < labels.len() {
+        push("…".to_owned(), false, false);
+    }
+    cells
 }
 
 /// The slice of transcript lines a render draws, and whether the anchor is what
@@ -1481,6 +1644,9 @@ fn render_config_banner(error: &ConfigError, y: usize, height: usize, cols: usiz
 }
 
 fn help_line(state: &State) -> &'static str {
+    if state.chat_tab_focus.is_some() {
+        return "<←→> choose  <Enter> switch  <x> close  <Ctrl l> new  <Esc> back";
+    }
     match state.picker.as_ref().map(|picker| &picker.kind) {
         Some(PickerKind::Chats(_)) => return "<↑↓> choose  <Enter> open  <Esc> back",
         Some(PickerKind::Models) => return "<↑↓> choose  <Enter> use  <Esc> back",
@@ -2571,5 +2737,138 @@ mod tests {
     fn a_tool_call_summary_is_not_the_loaders_home() {
         let lines = transcript_lines(&[Message::assistant("list_session {}")], 40);
         assert!(!ends_with_empty_reply(&lines));
+    }
+
+    // -- the tab bar ----------------------------------------------------------
+
+    fn chat_named(first: &str) -> crate::Chat {
+        crate::Chat {
+            messages: vec![Message::user(first)],
+            ..Default::default()
+        }
+    }
+
+    /// `n` open chats titled by number, the first on screen.
+    fn tabs_state(n: usize) -> State {
+        let mut state = State {
+            messages: vec![Message::user("chat 0")],
+            ..Default::default()
+        };
+        for i in 1..n {
+            state.parked.push(chat_named(&format!("chat {i}")));
+        }
+        state
+    }
+
+    fn texts(cells: &[TabCell]) -> Vec<&str> {
+        cells.iter().map(|cell| cell.text.as_str()).collect()
+    }
+
+    #[test]
+    fn a_single_chat_is_one_active_cell() {
+        let state = State::default();
+        let cells = chat_tabs(&state, 40);
+        assert_eq!(texts(&cells), [" new chat "], "an empty chat is named");
+        assert!(cells[0].active);
+        assert!(!cells[0].highlighted);
+        assert_eq!(cells[0].x, 0);
+    }
+
+    #[test]
+    fn cells_carry_a_glyph_for_what_the_chat_is_doing() {
+        let mut state = tabs_state(3);
+        state.stream = Some(crate::StreamState {
+            id: "hocus-1".into(),
+            finishing: false,
+        });
+        state.parked[1].status = Status::ConfirmingTool;
+        let cells = chat_tabs(&state, 60);
+        assert_eq!(
+            texts(&cells),
+            [" ● chat 0 ", " chat 1 ", " ? chat 2 "],
+            "streaming, idle, waiting on y/n"
+        );
+    }
+
+    #[test]
+    fn cells_sit_side_by_side_and_never_pass_the_width() {
+        let state = tabs_state(4);
+        let cells = chat_tabs(&state, 80);
+        let mut x = 0;
+        for cell in &cells {
+            assert_eq!(cell.x, x);
+            assert_eq!(cell.width, cell.text.width());
+            x += cell.width;
+        }
+        assert!(x <= 80);
+
+        for width in 0..80 {
+            let cells = chat_tabs(&state, width);
+            let end = cells.last().map_or(0, |cell| cell.x + cell.width);
+            assert!(end <= width, "{width} columns, drawn to {end}");
+        }
+    }
+
+    #[test]
+    fn a_long_title_is_clipped_with_an_ellipsis() {
+        let state = State {
+            messages: vec![Message::user(
+                "a question that goes on for a very long time indeed",
+            )],
+            ..Default::default()
+        };
+        let cells = chat_tabs(&state, 80);
+        assert_eq!(texts(&cells), [" a question that go… "]);
+        assert!(cells[0].width <= TAB_TITLE_COLS + 3);
+    }
+
+    #[test]
+    fn the_window_keeps_the_highlighted_tab_on_screen() {
+        // Every cell is " chat N " = 8 columns; room for two and an ellipsis.
+        let mut state = tabs_state(5);
+        let cells = chat_tabs(&state, 18);
+        assert_eq!(
+            texts(&cells),
+            [" chat 0 ", " chat 1 ", "…"],
+            "the active tab first"
+        );
+
+        state.chat_tab_focus = Some(4);
+        let cells = chat_tabs(&state, 18);
+        assert_eq!(texts(&cells), ["…", " chat 3 ", " chat 4 "]);
+        assert!(cells[2].highlighted);
+        assert!(!cells[1].active);
+
+        state.chat_tab_focus = Some(2);
+        let cells = chat_tabs(&state, 18);
+        assert_eq!(
+            texts(&cells),
+            ["…", " chat 2 ", " chat 3 ", "…"],
+            "hidden tabs on both sides, growing rightward first"
+        );
+        let cells = chat_tabs(&state, 17);
+        assert_eq!(
+            texts(&cells),
+            ["…", " chat 2 ", "…"],
+            "and with room for only one"
+        );
+    }
+
+    #[test]
+    fn the_active_cell_is_marked_and_the_highlight_can_be_elsewhere() {
+        let mut state = tabs_state(3);
+        state.chat_tab_focus = Some(2);
+        let cells = chat_tabs(&state, 60);
+        assert!(cells[0].active && !cells[0].highlighted);
+        assert!(!cells[2].active && cells[2].highlighted);
+    }
+
+    #[test]
+    fn bar_focus_has_its_own_help_line() {
+        let state = State {
+            chat_tab_focus: Some(0),
+            ..Default::default()
+        };
+        assert!(help_line(&state).starts_with("<←→> choose"));
     }
 }

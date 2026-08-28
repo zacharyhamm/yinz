@@ -81,6 +81,12 @@ impl State {
     pub(crate) fn save_parked(&mut self) {
         let mut parked = std::mem::take(&mut self.parked);
         for chat in &mut parked {
+            // The same two gates as `save_now`: a tab that was only opened
+            // leaves no row, and an idle one that has not changed since its
+            // last save is not rewritten every time the list opens.
+            if chat.messages.is_empty() || chat.saved == chat.fingerprint() {
+                continue;
+            }
             let mut id = chat.chat_id.take();
             let written = history::save(
                 &self.private_store(),
@@ -91,7 +97,7 @@ impl State {
             );
             chat.chat_id = id;
             if written.is_ok() {
-                chat.saved = (chat.messages.len(), chat.saved.1);
+                chat.saved = chat.fingerprint();
             }
         }
         self.parked = parked;
@@ -119,6 +125,7 @@ impl State {
         // the io worker, and `list` would read the directory before it landed.
         self.flush_save();
         self.save_parked();
+        self.chat_tab_focus = None;
         let live: Vec<u64> = self.live_chat_ids();
         let (ids, titles): (Vec<u64>, Vec<PickerRow>) = history::list(&self.private_store())
             .into_iter()
@@ -139,9 +146,11 @@ impl State {
         });
     }
 
-    /// How many other conversations are working off-screen.
+    /// How many other conversations are working off-screen. Open tabs that
+    /// have settled are not counted: the note this feeds says what is
+    /// happening, and the bar already says what is open.
     pub fn parked_count(&self) -> usize {
-        self.parked.len()
+        self.parked.iter().filter(|chat| chat.is_live()).count()
     }
 
     /// Chats with something still outstanding, foreground and parked alike.
@@ -343,44 +352,111 @@ impl State {
     /// it away. Three cases, in order of how little there is to do:
     ///
     /// 1. it is already the one you are looking at — nothing;
-    /// 2. it is parked and still live — swap the two, and the reply that has
-    ///    been arriving off-screen is there waiting;
-    /// 3. otherwise load it from the archive.
-    ///
-    /// The chat being left is parked only if something is still owed to it. A
-    /// settled one is already in the archive and is dropped, which is what keeps
-    /// `parked` to the handful of conversations actually working.
+    /// 2. it is open in another tab — switch to that tab, and the reply that
+    ///    has been arriving off-screen is there waiting;
+    /// 3. otherwise load it from the archive into a new tab on the end.
     pub(crate) fn switch_to_chat(&mut self, id: u64) {
         if self.chat_id == Some(id) {
             return;
         }
-        let parked = self.parked.iter().position(|chat| chat.chat_id == Some(id));
-        let incoming = match parked {
-            Some(index) => self.parked.remove(index),
-            None => {
-                let Some(messages) = history::load(&self.private_store(), id) else {
-                    return;
-                };
-                Chat {
-                    messages,
-                    chat_id: Some(id),
-                    ..Chat::default()
-                }
-            },
-        };
-
-        let outgoing = self.take_chat();
-        self.put_chat(incoming);
-        if parked.is_none() {
-            // Loaded, not resumed: nothing has changed yet, so this must not
-            // immediately rewrite the file it came from. A parked chat brings
-            // its own `saved`, which may well be behind its transcript.
-            self.saved = self.fingerprint();
+        if let Some(index) = self.parked.iter().position(|chat| chat.chat_id == Some(id)) {
+            self.switch_to_tab(self.tab_of_parked(index));
+            return;
         }
+        let Some(messages) = history::load(&self.private_store(), id) else {
+            return;
+        };
+        let outgoing = self.take_chat();
+        self.parked.insert(self.chat_tab, outgoing);
+        self.chat_tab = self.parked.len();
+        self.put_chat(Chat {
+            messages,
+            chat_id: Some(id),
+            ..Chat::default()
+        });
+        // Loaded, not resumed: nothing has changed yet, so this must not
+        // immediately rewrite the row it came from. A parked chat brings its
+        // own `saved`, which may well be behind its transcript.
+        self.saved = self.fingerprint();
         self.pin_to_bottom();
         self.log_global("open_chat", serde_json::json!({"chat_id": id}));
-        if outgoing.is_live() {
-            self.parked.push(outgoing);
+    }
+
+    /// Put the chat at bar position `tab` on screen. The one being left goes
+    /// back into `parked` where the bar had it, so the order you see never
+    /// changes under a switch.
+    pub(crate) fn switch_to_tab(&mut self, tab: usize) {
+        let Some(index) = self.parked_at_tab(tab) else {
+            return;
+        };
+        if index >= self.parked.len() {
+            return;
+        }
+        let incoming = self.parked.remove(index);
+        let outgoing = self.take_chat();
+        // Once the incoming chat is out, the outgoing one's slot is where it
+        // was in the bar, less one if the incoming chat sat before it.
+        let insert_at = if self.chat_tab < tab {
+            self.chat_tab
+        } else {
+            self.chat_tab - 1
+        };
+        self.parked.insert(insert_at, outgoing);
+        self.chat_tab = tab;
+        self.put_chat(incoming);
+        self.pin_to_bottom();
+        self.log_global("open_chat", serde_json::json!({"chat_id": self.chat_id}));
+    }
+
+    /// Close the tab at bar position `tab`. Whatever it was doing is stopped —
+    /// a stream cancelled, a tool run aborted — and what it has is written
+    /// out, so `/history` can bring it back. Closing the one on screen moves to
+    /// its right-hand neighbour, or the left one from the end; closing the
+    /// last tab leaves a fresh empty chat rather than no chat at all.
+    pub(crate) fn close_tab(&mut self, tab: usize) {
+        if tab >= self.chat_tab_count() {
+            return;
+        }
+        let closing_id = match self.parked_at_tab(tab) {
+            None => self.chat_id,
+            Some(index) => self.parked[index].chat_id,
+        };
+        self.log_global("close_chat", serde_json::json!({"chat_id": closing_id}));
+        if self.parked_at_tab(tab).is_none() {
+            if self.parked.is_empty() {
+                // The only tab: written out, then reset in place. Not
+                // `new_chat`, which would park a chat still mid-reply.
+                if self.tools_busy() {
+                    self.abort_tools();
+                }
+                self.flush_save();
+                self.reset_chat();
+                return;
+            }
+            let neighbour = if tab + 1 < self.chat_tab_count() {
+                tab + 1
+            } else {
+                tab - 1
+            };
+            self.switch_to_tab(neighbour);
+        }
+        // Now certainly parked. Its position may have moved by the switch.
+        let Some(index) = self.parked_at_tab(tab) else {
+            return;
+        };
+        self.with_parked(index, |state| {
+            if state.tools_busy() {
+                state.abort_tools();
+            }
+            state.cancel_in_flight();
+            state.stream = None;
+            state.reply_at = None;
+            state.drop_spotlight();
+            state.flush_save();
+        });
+        self.parked.remove(index);
+        if index < self.chat_tab {
+            self.chat_tab -= 1;
         }
     }
 }

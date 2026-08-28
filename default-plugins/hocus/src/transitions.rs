@@ -113,6 +113,16 @@ impl State {
             job_auto_confirm: std::mem::take(&mut self.job_auto_confirm),
             plan: std::mem::take(&mut self.plan),
             plugin_load: self.plugin_load.take(),
+            draft: {
+                let draft = (
+                    self.input.get_text().to_owned(),
+                    self.input.get_cursor_position(),
+                );
+                self.input.replace_text(String::new(), 0);
+                draft
+            },
+            jobs: std::mem::take(&mut self.jobs),
+            asks: std::mem::take(&mut self.asks),
         }
     }
 
@@ -138,6 +148,10 @@ impl State {
         self.job_auto_confirm = chat.job_auto_confirm;
         self.plan = chat.plan;
         self.plugin_load = chat.plugin_load;
+        let (text, cursor) = chat.draft;
+        self.input.replace_text(text, cursor);
+        self.jobs = chat.jobs;
+        self.asks = chat.asks;
     }
 
     /// Run `f` against a parked chat by swapping it into the foreground for the
@@ -145,9 +159,9 @@ impl State {
     ///
     /// Doing it this way is what keeps `on_chunk`, `pump_tools` and the rest
     /// single-conversation code: they only ever see the chat they are for, in
-    /// the one place they know to look for it. A chat that settles while it is
-    /// in here is archived and dropped rather than re-parked — `/history` reads
-    /// it back from the file.
+    /// the one place they know to look for it. The chat goes back to the same
+    /// index whatever happened to it, which is what keeps the tab bar's order
+    /// — `parked` with the foreground spliced in at `chat_tab` — standing.
     pub(crate) fn with_parked<R>(&mut self, index: usize, f: impl FnOnce(&mut Self) -> R) -> R {
         let foreground = self.take_chat();
         let parked = self.parked.remove(index);
@@ -158,10 +172,42 @@ impl State {
 
         let background = self.take_chat();
         self.put_chat(foreground);
-        if background.is_live() {
-            self.parked.insert(index, background);
-        }
+        self.parked.insert(index, background);
         out
+    }
+
+    /// How many chats the tab bar shows: every parked one plus the foreground.
+    pub(crate) fn chat_tab_count(&self) -> usize {
+        self.parked.len() + 1
+    }
+
+    /// The parked index behind a bar position, or `None` for the foreground.
+    pub(crate) fn parked_at_tab(&self, tab: usize) -> Option<usize> {
+        use std::cmp::Ordering;
+        match tab.cmp(&self.chat_tab) {
+            Ordering::Less => Some(tab),
+            Ordering::Equal => None,
+            Ordering::Greater => Some(tab - 1),
+        }
+    }
+
+    /// The bar position of a parked chat.
+    pub(crate) fn tab_of_parked(&self, index: usize) -> usize {
+        if index < self.chat_tab {
+            index
+        } else {
+            index + 1
+        }
+    }
+
+    /// Whether any chat, on screen or parked, has a job counting down.
+    pub(crate) fn any_jobs(&self) -> bool {
+        !self.jobs.is_empty() || self.parked.iter().any(|chat| !chat.jobs.is_empty())
+    }
+
+    /// Whether any chat has a question waiting for its turn.
+    fn any_asks(&self) -> bool {
+        !self.asks.is_empty() || self.parked.iter().any(|chat| !chat.asks.is_empty())
     }
 
     /// Which parked chat a response belongs to, by whichever id its context
@@ -484,6 +530,16 @@ impl State {
         // job back anyway — `tick_jobs` still runs, for its countdown.
         let asked = self.drain_asks();
         let fired = self.tick_jobs(elapsed);
+        // The same pass for every parked chat: its queue and its jobs are its
+        // own, and it is as able to start a request off-screen as it is to
+        // receive one.
+        let mut fired = fired;
+        for index in 0..self.parked.len() {
+            fired = self.with_parked(index, |state| {
+                let asked = state.drain_asks();
+                state.tick_jobs(elapsed) || asked
+            }) || fired;
+        }
         let fired = self.poll_plugin_loads() || fired;
         let fired = self.poll_extension_scan() || fired;
         let frames = self.wants_frames();
@@ -495,7 +551,7 @@ impl State {
         // screen wants frames: nothing else will wake us, and the report is due in 750ms.
         let loads = self.plugin_load_pending();
         let extension_scan = self.extension_scan_due_ms.is_some();
-        if frames || loads || extension_scan || !self.jobs.is_empty() || !self.asks.is_empty() {
+        if frames || loads || extension_scan || self.any_jobs() || self.any_asks() {
             self.arm_timer(if frames || loads || extension_scan {
                 FRAME_SECONDS
             } else {
@@ -537,8 +593,7 @@ impl State {
     ///
     /// Parked chats are swapped in one at a time through `with_parked`, which is how a parked
     /// chat's stream is serviced too: `poll_plugin_load` and everything it calls only ever see
-    /// the chat they are for. Descending order, because a chat that settles inside `with_parked`
-    /// is dropped rather than re-parked and every later index shifts down with it.
+    /// the chat they are for.
     fn poll_plugin_loads(&mut self) -> bool {
         let mut fired = self.poll_plugin_load();
         let parked: Vec<usize> = self
@@ -907,11 +962,37 @@ impl State {
         }
     }
 
-    /// Start over. The chat being left is *kept* in the archive — detaching from
-    /// its file is all this does, so the next save opens a new one.
+    /// Start over, in a new tab. The chat being left stays open — parked where
+    /// it was in the bar, still owed its reply — and the new one goes on the
+    /// end. A chat with nothing in it is not worth a tab: it is reset in place.
     pub(crate) fn new_chat(&mut self) -> bool {
         let old_id = self.chat_id;
         self.log_global("new_chat", serde_json::json!({"old_chat_id": old_id}));
+        self.picker = None;
+        self.chat_tab_focus = None;
+        // Worth keeping: anything said, anything saved, or a watcher armed that
+        // would otherwise be thrown away with a chat that only looks empty.
+        let worth_a_tab = !self.messages.is_empty()
+            || self.chat_id.is_some()
+            || !self.jobs.is_empty()
+            || self.is_in_flight();
+        if worth_a_tab {
+            let outgoing = self.take_chat();
+            self.parked.insert(self.chat_tab, outgoing);
+            self.chat_tab = self.parked.len();
+            self.input.clear();
+            self.saved = self.fingerprint();
+            self.pin_to_bottom();
+            return true;
+        }
+        self.reset_chat();
+        true
+    }
+
+    /// Throw the foreground conversation away and leave an empty one. Whatever
+    /// it was owed is cancelled; whatever it had said is already written, or
+    /// was never worth writing.
+    pub(crate) fn reset_chat(&mut self) {
         self.cancel_in_flight();
         self.status = Status::Idle;
         self.stream = None;
@@ -937,7 +1018,7 @@ impl State {
         // A watcher armed for the conversation being thrown away has nothing
         // left to compare against, and would otherwise keep billing.
         self.jobs.clear();
-        true
+        self.asks.clear();
     }
 
     /// Scroll toward older messages, for the client that asked. Clamped at
