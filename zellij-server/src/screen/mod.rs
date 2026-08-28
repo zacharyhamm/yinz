@@ -73,8 +73,8 @@ use log::{debug, warn};
 use zellij_utils::data::{
     ContextMenuContext, ContextMenuItem, Direction, EventType, FloatingPaneCoordinates,
     HostTerminalThemeMode, KeyWithModifier, LayoutInfo, LayoutWithError, NotificationInfo,
-    PaneInfo, RemotePaneHandoff, ResizeStrategy, SessionInfo, Styling, TabInfo, WarpedPane,
-    WarpedTab, WebSharing, HOCUS_AGENT_PANE_CONTEXT,
+    PaneInfo, RemotePaneHandoff, ResizeStrategy, SessionInfo, Styling, TabInfo, ThemeHue,
+    WarpedPane, WarpedTab, WebSharing, HOCUS_AGENT_PANE_CONTEXT,
 };
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::command::{RunCommand, TerminalAction};
@@ -595,6 +595,16 @@ impl BreakPanesToTabOutcome {
     }
 }
 
+/// Who decides the session's dark/light appearance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ThemePolicy {
+    /// The host terminal's reports (CSI 2031 / DSR 997) are followed.
+    Auto,
+    /// Pinned by `explicit_theme_hue` or a manual `SetDarkTheme` /
+    /// `SetLightTheme`; host reports are recorded but not applied.
+    Pinned(HostTerminalThemeMode),
+}
+
 pub(crate) struct Screen {
     /// A Bus for sending and receiving messages with the other threads.
     pub bus: Bus<ScreenInstruction>,
@@ -785,7 +795,15 @@ pub(crate) struct Screen {
     guest_ascend_keys: HashMap<PaneId, Vec<KeyWithModifier>>,
     host_descend_keys: Vec<KeyWithModifier>,
     host_descended: bool,
+    /// The mode the session is currently painted in (`None` until resolved).
     host_terminal_theme_mode: Option<HostTerminalThemeMode>,
+    /// The last mode the host terminal reported, recorded even while a pin
+    /// suppresses it so that unpinning can restore it.
+    last_host_reported_theme_mode: Option<HostTerminalThemeMode>,
+    theme_policy: ThemePolicy,
+    /// The `explicit_theme_hue` the session was last configured with, so a
+    /// reconfigure can tell a changed pin from an unchanged one.
+    configured_explicit_theme_hue: Option<ThemeHue>,
     host_theme_dark_styling: Option<Styling>,
     host_theme_light_styling: Option<Styling>,
     nested_session_handling: NestedSessionHandling,
@@ -1246,6 +1264,9 @@ impl Screen {
             host_descend_keys: vec![],
             host_descended: false,
             host_terminal_theme_mode: None,
+            last_host_reported_theme_mode: None,
+            theme_policy: ThemePolicy::Auto,
+            configured_explicit_theme_hue: None,
             host_theme_dark_styling: None,
             host_theme_light_styling: None,
             nested_session_handling,
@@ -2911,6 +2932,7 @@ impl Screen {
         self.arrow_fonts = should_support_arrow_fonts;
 
         // global configuration
+        self.style.colors = theme;
         self.default_mode_info.update_theme(theme);
         self.default_mode_info
             .update_rounded_corners(rounded_corners);
@@ -3012,14 +3034,25 @@ impl Screen {
     }
     /// Apply a host-reported color-palette theme mode (CSI 2031 / DSR 997).
     ///
-    /// This is the Phase 2 entry-point: it
+    /// The report is always remembered (so that unpinning can restore it), but
+    /// it only repaints the session while the theme policy is `Auto`: an
+    /// `explicit_theme_hue` or a manual `SetDarkTheme` / `SetLightTheme`
+    /// outranks the host terminal.
+    pub fn update_host_terminal_theme_mode(&mut self, mode: HostTerminalThemeMode) -> Result<()> {
+        self.last_host_reported_theme_mode = Some(mode);
+        if matches!(self.theme_policy, ThemePolicy::Pinned(_)) {
+            return Ok(());
+        }
+        self.apply_theme_mode(mode)
+    }
+    /// Make `mode` the session's effective theme mode. It
     /// 1. de-duplicates against the last-known mode,
     /// 2. swaps the active palette to the configured `theme_dark` / `theme_light`
     ///    (when both are configured) by reusing the reconfigure propagation,
     /// 3. fans out an `Event::HostTerminalThemeChanged` plugin event,
     /// 4. forwards a `CSI ?997;{1|2}n` DSR onto the pty of every terminal pane
     ///    whose app opted in via `CSI ? 2031 h`.
-    pub fn update_host_terminal_theme_mode(&mut self, mode: HostTerminalThemeMode) -> Result<()> {
+    fn apply_theme_mode(&mut self, mode: HostTerminalThemeMode) -> Result<()> {
         let err_context = || "Failed to update host terminal theme mode".to_string();
 
         // dedupe
@@ -3041,6 +3074,9 @@ impl Screen {
             self.host_theme_dark_styling.is_some() && self.host_theme_light_styling.is_some();
         if auto_switch_enabled {
             if let Some(theme) = resolved {
+                // Screen's own style is what later panes and the
+                // `ColorPaletteMode` guess inherit, so it tracks the swap.
+                self.style.colors = theme;
                 self.default_mode_info.update_theme(theme);
                 for tab in self.tabs.values_mut() {
                     tab.update_theme(theme);
@@ -3119,7 +3155,8 @@ impl Screen {
     /// Apply a manual host-terminal theme mode change requested via the CLI or a
     /// keybinding. Surfaces a clear error to the CLI if the auto-switch gate
     /// (both `theme_dark` and `theme_light` configured) is not satisfied;
-    /// otherwise delegates to `update_host_terminal_theme_mode`, which dedupes,
+    /// otherwise pins the session to `mode` - a deliberate choice is not
+    /// reverted by a later host report - and applies it, which dedupes,
     /// repaints, fans out the plugin event, and forwards DSR to opted-in panes.
     pub fn apply_manual_host_terminal_theme_mode(
         &mut self,
@@ -3138,7 +3175,66 @@ impl Screen {
             }
             return Ok(());
         }
-        self.update_host_terminal_theme_mode(mode)
+        self.theme_policy = ThemePolicy::Pinned(mode);
+        self.apply_theme_mode(mode)
+    }
+    /// Resolve the session to the dark theme when a `theme_dark` /
+    /// `theme_light` pair is configured but nothing has decided the mode yet
+    /// (the host has not reported and nothing is pinned). Without this the
+    /// session would sit on the unrelated static `theme` until the first host
+    /// report. This is a default, not a pin: a later host report still wins.
+    fn resolve_default_theme_mode(&mut self) -> Result<()> {
+        if self.host_terminal_theme_mode.is_some() {
+            return Ok(());
+        }
+        if !matches!(self.theme_policy, ThemePolicy::Auto) {
+            return Ok(());
+        }
+        if self.host_theme_dark_styling.is_some() && self.host_theme_light_styling.is_some() {
+            self.apply_theme_mode(HostTerminalThemeMode::Dark)?;
+        }
+        Ok(())
+    }
+    /// Re-resolve the session's current mode against the (possibly changed)
+    /// `theme_dark` / `theme_light` definitions after a reconfigure, instead
+    /// of leaving it painted with the static theme `reconfigure` applied.
+    fn reapply_effective_theme_mode(&mut self) -> Result<()> {
+        let known_mode = match self.theme_policy {
+            ThemePolicy::Pinned(mode) => Some(mode),
+            ThemePolicy::Auto => self.host_terminal_theme_mode,
+        };
+        if let Some(mode) = known_mode {
+            self.host_terminal_theme_mode = None;
+            self.apply_theme_mode(mode)?;
+        }
+        Ok(())
+    }
+    /// Apply the configured `explicit_theme_hue`: `Some` pins the session to
+    /// that hue, `None` hands authority back to the host terminal and
+    /// restores whatever it last reported. The effective mode is cleared
+    /// first so that pinning (or unpinning) to the hue the session is
+    /// already in still repaints the resolved palette rather than deduping
+    /// into a no-op and leaving the static theme on screen.
+    fn apply_configured_explicit_theme_hue(
+        &mut self,
+        explicit_theme_hue: Option<ThemeHue>,
+    ) -> Result<()> {
+        self.configured_explicit_theme_hue = explicit_theme_hue;
+        self.host_terminal_theme_mode = None;
+        match explicit_theme_hue {
+            Some(hue) => {
+                let mode = HostTerminalThemeMode::from(hue);
+                self.theme_policy = ThemePolicy::Pinned(mode);
+                self.apply_theme_mode(mode)
+            },
+            None => {
+                self.theme_policy = ThemePolicy::Auto;
+                match self.last_host_reported_theme_mode {
+                    Some(mode) => self.apply_theme_mode(mode),
+                    None => Ok(()),
+                }
+            },
+        }
     }
     pub fn toggle_pane_pinned(&mut self, client_id: ClientId) {
         active_tab_and_connected_client_id!(

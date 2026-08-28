@@ -17,7 +17,7 @@ use zellij_utils::data::{
     GetFocusedPaneInfoResponse, HostTerminalThemeMode, InputMode, KeyWithModifier, LayoutInfo,
     LayoutWithError, ListPanesResponse, ListTabsResponse, ModeInfo, NewPanePlacement,
     NotificationInfo, OverlayPlacement, PaneInfo, PaneScrollbackResponse, PluginPermission,
-    RegexHighlight, Resize, ResizeStrategy, SessionInfo, Styling, TabInfo, WarpPlacement,
+    RegexHighlight, Resize, ResizeStrategy, SessionInfo, Styling, TabInfo, ThemeHue, WarpPlacement,
     WarpedPane, WarpedTab,
 };
 use zellij_utils::errors::ScreenContext;
@@ -622,6 +622,10 @@ pub enum ScreenInstruction {
         host_theme_dark: Option<Styling>,
         /// Resolved styling for `theme_light`. See `host_theme_dark`.
         host_theme_light: Option<Styling>,
+        /// `explicit_theme_hue` from the config: pins the session to one
+        /// hue regardless of what the host terminal reports. `None` hands
+        /// authority back to the host.
+        explicit_theme_hue: Option<ThemeHue>,
         simplified_ui: bool,
         default_shell: Option<PathBuf>,
         default_cwd: Option<PathBuf>,
