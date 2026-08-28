@@ -82,6 +82,7 @@ pub(crate) fn screen_thread_main(
     }
 
     let context_menu = config.context_menu.clone();
+    let explicit_theme_hue = config.options.explicit_theme_hue;
     let config_options = config.options;
     let arrow_fonts = !config_options.simplified_ui.unwrap_or_default();
     let pane_frame_style = PaneFrameStyle::from_options(&config_options);
@@ -222,6 +223,16 @@ pub(crate) fn screen_thread_main(
     screen.host_theme_dark_styling = host_theme_dark_styling;
     screen.host_theme_light_styling = host_theme_light_styling;
     screen.paste_buffer_read_enabled = dangerously_enable_paste_buffer_read;
+    // Resolve the session's hue before the first render: an explicit pin
+    // wins; otherwise a dark/light pair defaults to dark until the host
+    // terminal reports.
+    if explicit_theme_hue.is_some() {
+        screen
+            .apply_configured_explicit_theme_hue(explicit_theme_hue)
+            .non_fatal();
+    } else {
+        screen.resolve_default_theme_mode().non_fatal();
+    }
 
     let mut pending_tab_ids: HashSet<usize> = HashSet::new();
     let mut pending_tab_switches: HashSet<(usize, ClientId)> = HashSet::new(); // usize is the
@@ -3777,6 +3788,7 @@ pub(crate) fn screen_thread_main(
                 theme,
                 host_theme_dark,
                 host_theme_light,
+                explicit_theme_hue,
                 simplified_ui,
                 default_shell,
                 default_cwd,
@@ -3838,6 +3850,17 @@ pub(crate) fn screen_thread_main(
                         client_id,
                     )
                     .non_fatal();
+                // `reconfigure` painted the static theme; put the session's
+                // effective hue back on top of it, against the possibly
+                // changed dark/light definitions.
+                if explicit_theme_hue != screen.configured_explicit_theme_hue {
+                    screen
+                        .apply_configured_explicit_theme_hue(explicit_theme_hue)
+                        .non_fatal();
+                } else {
+                    screen.reapply_effective_theme_mode().non_fatal();
+                }
+                screen.resolve_default_theme_mode().non_fatal();
             },
             ScreenInstruction::RerunCommandPane(terminal_pane_id, completion_tx) => {
                 screen.rerun_command_pane_with_id(terminal_pane_id, completion_tx)

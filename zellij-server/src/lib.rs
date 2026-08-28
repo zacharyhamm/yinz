@@ -487,6 +487,7 @@ impl SessionMetaData {
                         .unwrap_or_else(|| default_palette().into()),
                     host_theme_dark,
                     host_theme_light,
+                    explicit_theme_hue: new_config.options.explicit_theme_hue,
                     simplified_ui: new_config.options.simplified_ui.unwrap_or(false),
                     default_shell: new_config.options.default_shell,
                     default_cwd: new_config.options.default_cwd.clone(),
