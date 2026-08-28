@@ -1696,8 +1696,9 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::ChangeFloatingPanesCoordinates => {
             PluginCommand::ChangeFloatingPanesCoordinates(pane_ids_with_coordinates(tc))
         },
-        CommandType::ChangeOverlayCoordinates => {
-            PluginCommand::ChangeOverlayCoordinates(pane_ids_with_coordinates(tc))
+        CommandType::ChangeOverlayCoordinates => PluginCommand::ChangeOverlayCoordinates {
+            placements: pane_ids_with_coordinates(tc),
+            override_user_placement: booleans(tc),
         },
         CommandType::TogglePaneBorderless => PluginCommand::TogglePaneBorderless(pane_id(tc)),
         CommandType::SetPaneBorderless => {

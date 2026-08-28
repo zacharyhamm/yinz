@@ -4088,9 +4088,11 @@ pub(crate) fn screen_thread_main(
             },
             ScreenInstruction::ChangeOverlayCoordinates(
                 pane_ids_and_coordinates,
+                override_user_placement,
                 _completion_tx,
             ) => {
-                screen.change_overlay_coordinates(pane_ids_and_coordinates);
+                screen
+                    .change_overlay_coordinates(pane_ids_and_coordinates, override_user_placement);
                 let _ = screen.render(None);
             },
             ScreenInstruction::TogglePaneBorderless(pane_id, _completion_tx) => {

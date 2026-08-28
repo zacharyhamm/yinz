@@ -3189,10 +3189,11 @@ impl Screen {
     pub fn change_overlay_coordinates(
         &mut self,
         pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
+        override_user_placement: bool,
     ) {
         for (pane_id, coordinates) in pane_ids_and_coordinates {
             if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
-                tab.change_overlay_coordinates(&pane_id, coordinates)
+                tab.change_overlay_coordinates(&pane_id, coordinates, override_user_placement)
                     .non_fatal();
             }
         }

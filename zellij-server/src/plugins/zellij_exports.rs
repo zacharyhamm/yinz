@@ -888,15 +888,17 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     });
             },
             PluginCommand::ClearPaneHighlights(pane_id) => clear_pane_highlights(env, pane_id),
-            PluginCommand::ChangeOverlayCoordinates(pane_ids_and_coordinates) => {
-                change_overlay_coordinates(
-                    env,
-                    pane_ids_and_coordinates
-                        .into_iter()
-                        .map(|(p_id, coordinates)| (p_id.into(), coordinates))
-                        .collect(),
-                )
-            },
+            PluginCommand::ChangeOverlayCoordinates {
+                placements,
+                override_user_placement,
+            } => change_overlay_coordinates(
+                env,
+                placements
+                    .into_iter()
+                    .map(|(p_id, coordinates)| (p_id.into(), coordinates))
+                    .collect(),
+                override_user_placement,
+            ),
         },
         (PermissionStatus::Denied, permission) => {
             log::error!(
@@ -5066,11 +5068,13 @@ fn stack_panes(env: &PluginEnv, pane_ids: Vec<PaneId>) {
 fn change_overlay_coordinates(
     env: &PluginEnv,
     pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
+    override_user_placement: bool,
 ) {
     let _ = env
         .senders
         .send_to_screen(ScreenInstruction::ChangeOverlayCoordinates(
             pane_ids_and_coordinates,
+            override_user_placement,
             None,
         ));
 }

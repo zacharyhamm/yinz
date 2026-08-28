@@ -699,8 +699,12 @@ pub enum ScreenInstruction {
     TogglePanePinned(ClientId, Option<NotificationEnd>),
     SetFloatingPanePinned(PaneId, bool),
     StackPanes(Vec<PaneId>, ClientId, Option<NotificationEnd>),
+    /// The `bool` says the placement is a user gesture made through the plugin, and so may
+    /// reclaim a position the user dragged or a size they resized - see
+    /// `OverlayPanes::change_pane_coordinates`.
     ChangeOverlayCoordinates(
         Vec<(PaneId, FloatingPaneCoordinates)>,
+        bool,
         Option<NotificationEnd>,
     ),
     ChangeFloatingPanesCoordinates(

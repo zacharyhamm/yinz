@@ -394,6 +394,11 @@ plugins {
     // parked chats and anything still streaming are all still there. The two
     // panes hide and open separately: `Ctrl e c` brings the conversation back,
     // `Ctrl e a` the agent list.
+    //
+    // Ctrl o, in the conversation, jumps it over a different tiled pane — the
+    // largest one you are not working in — and it stays inside that pane through
+    // resizes until the pane closes or hocus follows you to another tab, when it
+    // returns to the corner. It works on a pane you have dragged, too.
     hocus location="zellij:hocus" {
         shared true
     }
