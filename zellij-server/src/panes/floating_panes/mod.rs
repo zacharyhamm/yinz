@@ -305,9 +305,24 @@ impl FloatingPanes {
             .and_then(|removed_pane| {
                 let removed_pane_id = removed_pane.pid();
                 let with_pane_id = with_pane.pid();
-                let removed_pane_geom = removed_pane.current_geom();
+                // Copy the base geometry and the override separately: `current_geom()`
+                // would bake a fullscreen override into the replacement's base geometry,
+                // leaving nothing to fall back to when fullscreen is toggled off.
+                let removed_pane_geom = removed_pane.position_and_size();
+                let removed_pane_geom_override = removed_pane.geom_override();
                 with_pane.set_geom(removed_pane_geom);
+                match removed_pane_geom_override {
+                    Some(geom_override) => with_pane.set_geom_override(geom_override),
+                    None => with_pane.reset_size_and_position_override(),
+                };
                 self.panes.insert(with_pane_id, with_pane);
+                // The replacement inherits the removed pane's geom_override (above);
+                // if the removed pane was the fullscreen pane, retarget the fullscreen
+                // bookkeeping so unset_fullscreen can later reset the override on the
+                // pane that actually carries it.
+                if self.fullscreen_pane_id == Some(pane_id) {
+                    self.fullscreen_pane_id = Some(with_pane_id);
+                }
                 let z_index = self
                     .z_indices
                     .iter()
