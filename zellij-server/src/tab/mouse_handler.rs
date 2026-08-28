@@ -318,6 +318,9 @@ struct MouseEventContext {
     mouse_click_through: bool,
     mouse_scroll_resize: bool,
     context_menu_enabled: bool,
+    /// The pane the client is descended into (a nested guest), if any. Alt+mouse over it goes
+    /// to the pane when it tracks the mouse, instead of toggling host pane groups.
+    passthrough_pane_id: Option<PaneId>,
 }
 
 fn edge_and_delta_to_strategies(
@@ -458,11 +461,12 @@ impl MouseHandler {
         tab: &mut Tab,
         event: &MouseEvent,
         client_id: ClientId,
+        passthrough_pane_id: Option<PaneId>,
     ) -> Result<MouseEffect> {
         if let Some(effect) = Self::intercept_guest_modal_mouse_event(tab, event, client_id)? {
             return Ok(effect);
         }
-        let context = Self::gather_mouse_event_context(tab, event, client_id)?;
+        let context = Self::gather_mouse_event_context(tab, event, client_id, passthrough_pane_id)?;
         let action = Self::determine_mouse_action(event, &context)?;
         Self::execute_mouse_action(tab, action, event, client_id)
     }
@@ -529,6 +533,7 @@ impl MouseHandler {
         tab: &mut Tab,
         event: &MouseEvent,
         client_id: ClientId,
+        passthrough_pane_id: Option<PaneId>,
     ) -> Result<MouseEventContext> {
         let err_context = || format!("failed to gather context for event {event:?}");
 
@@ -585,6 +590,7 @@ impl MouseHandler {
             mouse_click_through: tab.mouse_click_through,
             mouse_scroll_resize: tab.mouse_scroll_resize,
             context_menu_enabled: tab.context_menu_on_right_click,
+            passthrough_pane_id,
         })
     }
 
@@ -1636,6 +1642,20 @@ impl MouseHandler {
         }
 
         if event.alt {
+            if let (Some(passthrough_pane_id), Some(details)) =
+                (ctx.passthrough_pane_id, ctx.clicked_pane.as_ref())
+            {
+                if details.pane_id == passthrough_pane_id
+                    && !details.on_frame
+                    && details.terminal_wants_mouse
+                {
+                    return Ok(MouseAction::SendToTerminal {
+                        pane_id: details.pane_id,
+                        event: *event,
+                    });
+                }
+            }
+
             let is_left_press = event.left && event.event_type == MouseEventType::Press;
             let is_left_motion = event.left && event.event_type == MouseEventType::Motion;
 
@@ -2260,6 +2280,7 @@ mod tests {
             mouse_click_through: false,
             mouse_scroll_resize,
             context_menu_enabled: false,
+            passthrough_pane_id: None,
         }
     }
 
