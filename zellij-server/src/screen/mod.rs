@@ -1834,8 +1834,14 @@ impl Screen {
             .tabs
             .get_mut(&tab_index)
             .with_context(|| err_context(tab_index))?;
+        // `remove_client` tells a tab's plugins nobody is looking (`visible(false)`) once
+        // the last client leaves; a client arriving in an empty tab is the other half.
+        let tab_was_empty = tab.has_no_connected_clients();
         tab.add_client(client_id, None)
             .with_context(|| err_context(tab_index))?;
+        if tab_was_empty {
+            tab.visible(true).with_context(|| err_context(tab_index))?;
+        }
         if attach_to_first_tab_on_tiled_surface && tab.are_floating_panes_visible() {
             tab.hide_floating_panes();
         }
