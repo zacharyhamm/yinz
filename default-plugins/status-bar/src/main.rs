@@ -1,4 +1,5 @@
 mod first_line;
+mod keybind_hints;
 mod one_line_ui;
 mod second_line;
 mod tip;
@@ -500,18 +501,32 @@ pub fn action_key(
 /// variant, so every `LaunchOrFocusPlugin` binding in a mode looks identical to it. Matching on the
 /// alias is what keeps each hint pointing at its own key.
 ///
-/// A plugin can be reachable by more than one key — the mode's own leader-then-letter binding plus,
-/// say, a global `Ctrl <something>` the user keeps for the same plugin. Both work, but the hint is
-/// shown *inside* the mode, so the mode's own letter is the one that belongs there: prefer the
-/// fewest modifiers, and break a tie on the key itself so the choice does not ride on keymap order.
+/// Of the keys that do the same thing, the one a hint should name — see [`the_modes_own_key`].
 pub fn plugin_launch_key(
     keymap: &[(KeyWithModifier, Vec<Action>)],
     alias: &str,
 ) -> Vec<KeyWithModifier> {
-    keymap
-        .iter()
-        .filter(|(_, acvec)| acvec.iter().any(|a| a.launches_plugin(alias)))
-        .map(|(key, _)| key)
+    the_modes_own_key(
+        keymap
+            .iter()
+            .filter(|(_, acvec)| acvec.iter().any(|a| a.launches_plugin(alias)))
+            .map(|(key, _)| key),
+    )
+}
+
+/// Pick the key a hint should name out of several that do the same thing.
+///
+/// A thing can be reachable by more than one key — the mode's own leader-then-letter binding plus,
+/// say, a global `Alt <something>` the user keeps for it. Both work, but the hint is shown
+/// *inside* the mode, so the mode's own letter is the one that belongs there: prefer the fewest
+/// modifiers, and break a tie on the key itself so the choice does not ride on keymap order.
+///
+/// Yields `vec![key]`, or an empty vec when there is no candidate, which is how the renderers
+/// spell "nothing bound".
+pub fn the_modes_own_key<'a>(
+    candidates: impl Iterator<Item = &'a KeyWithModifier>,
+) -> Vec<KeyWithModifier> {
+    candidates
         .min_by(|left, right| {
             left.key_modifiers
                 .len()

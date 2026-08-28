@@ -1,0 +1,94 @@
+---
+source: default-plugins/status-bar/src/keybind_hints.rs
+expression: listing
+---
+== Pane
+New (New): n
+Change Focus (Move): ← ↓ ↑ →
+Close (Close): x
+Rename (Rename): c
+Toggle Fullscreen (Fullscreen): f
+Toggle Floating (Floating): w
+Toggle Embed (Embed): e
+Split Right (Right): r
+Split Down (Down): d
+Stack (Stack): s
+Select pane (Select): ENTER
+
+== Tab
+New (New): n
+Change focus (Move): ← →
+Close (Close): x
+Rename (Rename): r
+Sync (Sync): s
+Break pane to new tab (Break out): b
+Break pane left/right (Break): [ ]
+Toggle (Toggle): TAB
+Select pane (Select): ENTER
+
+== Resize
+Increase/Decrease size (Increase/Decrease): + -
+Increase to (Increase): ← ↓ ↑ →
+Decrease from (Decrease): H J K L
+Select pane (Select): ENTER
+
+== Move
+Switch Location (Move): ← ↓ ↑ →
+When done (Back): ENTER
+
+== Scroll
+Enter search term (Search): s
+Scroll (Scroll): ↓ ↑
+Scroll page (Scroll): PgDn PgUp
+Scroll half page (Scroll): d u
+Edit scrollback in default editor (Edit): e
+Select pane (Select): ENTER
+
+== EnterSearch
+When done (Done): ENTER
+Cancel (Cancel): 
+
+== Search
+Enter Search term (Search): 
+Scroll (Scroll): ↓ ↑
+Scroll page (Scroll): PgDn PgUp
+Scroll half page (Scroll): d u
+Search down (Down): n
+Search up (Up): p
+Case sensitive (Case): c
+Wrap (Wrap): w
+Whole words (Whole): o
+
+== Session
+Detach (Detach): d
+Session Manager (Manager): w
+Share (Share): s
+Configure (Config): c
+Layout Manager (Layouts): l
+Plugin Manager (Plugins): p
+About (About): a
+Select pane (Select): ENTER
+
+== Agent
+New agent (New): n
+Duplicate agent (Duplicate): d
+Agents (Agents): a
+Chat (Chat): c
+Select pane (Select): ENTER
+
+== Tmux
+Move focus (Move): ← ↓ ↑ →
+Split down (Down): "
+Split right (Right): %
+Fullscreen (Fullscreen): z
+New tab (New): c
+Rename tab (Rename): ,
+Previous Tab (Previous): p
+Next Tab (Next): n
+Select pane (Select): ENTER
+
+== RenamePane
+When done (Done): ENTER
+
+== RenameTab
+When done (Done): ENTER

@@ -23,6 +23,7 @@ zellij-tile-utils = { path = "../../zellij-tile-utils" }
 [dev-dependencies]
 regex = { workspace = true }
 hegeltest = "0.29.3"
+insta = "1.48"
 # Only to name `RunPluginOrAlias`/`PluginAlias` in tests: they are the field types of
 # `Action::LaunchOrFocusPlugin`, but zellij-tile's prelude does not re-export them.
 zellij-utils = { path = "../../zellij-utils" }
