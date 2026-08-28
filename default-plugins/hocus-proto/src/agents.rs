@@ -380,6 +380,7 @@ const WAITING_NOTIFICATIONS: &[&str] = &[
     "elicitation_dialog",
     "elicitation_url_dialog",
     "agent_needs_input",
+    "worker_permission_prompt",
 ];
 
 /// The longest tool hint a status cell will carry. A sidebar row has no room for
@@ -445,7 +446,12 @@ pub type HookFeeds = BTreeMap<u32, HookFeed>;
 /// state, it ends one. Callers check [`HOOK_SESSION_END`] first.
 pub fn hook_phase(event: &crate::wire::HookEvent) -> Option<HookPhase> {
     match event.hook_event_name.as_str() {
-        "SessionStart" | "Stop" => Some(HookPhase::Idle),
+        "SessionStart"
+            if matches!(event.source.as_deref(), Some("startup" | "resume" | "fork")) =>
+        {
+            Some(HookPhase::Idle)
+        },
+        "Stop" => Some(HookPhase::Idle),
         "UserPromptSubmit" | "PreToolUse" | "PostToolUse" => Some(HookPhase::Busy),
         "PermissionRequest" => Some(HookPhase::Waiting),
         "Notification" => event
@@ -498,16 +504,15 @@ pub fn hook_detail(event: &crate::wire::HookEvent) -> Option<String> {
 /// One word of agent-supplied text, made safe to put in a row: printable characters
 /// only, no whitespace of any kind, and cut to a length a sidebar has.
 fn clean_hint(text: &str) -> Option<String> {
-    let mut hint: String = text
+    let mut chars = text
         .chars()
-        .filter(|c| !c.is_control() && !c.is_whitespace())
-        .take(HOOK_DETAIL_CHARS)
-        .collect();
+        .filter(|c| !c.is_control() && !c.is_whitespace());
+    let mut hint: String = chars.by_ref().take(HOOK_DETAIL_CHARS).collect();
     if hint.is_empty() {
         return None;
     }
     // A cut word is marked, so a truncated file name does not read as the whole one.
-    if hint.chars().count() == HOOK_DETAIL_CHARS && text.chars().count() > HOOK_DETAIL_CHARS {
+    if chars.next().is_some() {
         hint.pop();
         hint.push('…');
     }
@@ -859,6 +864,7 @@ fn waiting_marker(
     summaries: &Summaries,
     activity: &Activity,
     hooks: &HookFeeds,
+    status: AgentStatus,
     pane_id: u32,
 ) -> &'static str {
     // An agent that says it is blocked on the user is blocked on the user. No
@@ -866,8 +872,8 @@ fn waiting_marker(
     // check exists because a summary describes one screen and outlives it, while a
     // feed has no screen behind it at all - it is the current state or it is nothing.
     if let Some(feed) = hooks.get(&pane_id) {
-        return match feed.phase {
-            HookPhase::Waiting => "! ",
+        return match (status, feed.phase) {
+            (AgentStatus::Running, HookPhase::Waiting) => "! ",
             _ => "  ",
         };
     }
@@ -975,7 +981,7 @@ pub fn strip_rows(
             };
             let mut row = format!(
                 "{}{:>3}  {kind_cell}  {}",
-                waiting_marker(summaries, activity, hooks, pane.pane_id),
+                waiting_marker(summaries, activity, hooks, pane.status, pane.pane_id),
                 pane.pane_id,
                 status_cell(
                     pane.status,
@@ -1293,7 +1299,8 @@ pub fn list_json(
             // cannot: a pane can be blocked on the user before anything has been
             // written about it, and the model asking for the list needs to know that.
             if let Some(feed) = hooks.get(&pane.pane_id) {
-                item["awaiting_confirmation"] = json!(feed.phase == HookPhase::Waiting);
+                item["awaiting_confirmation"] =
+                    json!(pane.status == AgentStatus::Running && feed.phase == HookPhase::Waiting);
                 // The label the strip draws, spelled out for a reader that has one
                 // agent's row rather than the whole column: `idle_seconds` above is
                 // the screen's clock, and an agent that reports for itself is not
@@ -2226,7 +2233,25 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(hook_phase(&event("SessionStart")), Some(HookPhase::Idle));
+        for source in ["startup", "resume", "fork"] {
+            assert_eq!(
+                hook_phase(&crate::wire::HookEvent {
+                    source: Some(source.to_owned()),
+                    ..event("SessionStart")
+                }),
+                Some(HookPhase::Idle)
+            );
+        }
+        for source in ["clear", "compact", "something_new"] {
+            assert_eq!(
+                hook_phase(&crate::wire::HookEvent {
+                    source: Some(source.to_owned()),
+                    ..event("SessionStart")
+                }),
+                None
+            );
+        }
+        assert_eq!(hook_phase(&event("SessionStart")), None);
         assert_eq!(hook_phase(&event("Stop")), Some(HookPhase::Idle));
         assert_eq!(
             hook_phase(&event("UserPromptSubmit")),
@@ -2244,6 +2269,10 @@ mod tests {
         );
         assert_eq!(
             hook_phase(&notification("agent_needs_input")),
+            Some(HookPhase::Waiting)
+        );
+        assert_eq!(
+            hook_phase(&notification("worker_permission_prompt")),
             Some(HookPhase::Waiting)
         );
 
@@ -2299,6 +2328,16 @@ mod tests {
             "no escape sequence survives: {nasty:?}"
         );
         assert!(nasty.chars().count() <= 5 + HOOK_DETAIL_CHARS, "{nasty:?}");
+
+        let exact = "abcdefghijkl mnopqrst uvwx";
+        assert_eq!(
+            clean_hint(exact),
+            Some("abcdefghijklmnopqrstuvwx".to_owned())
+        );
+        assert_eq!(
+            clean_hint(&format!("{exact}0")),
+            Some("abcdefghijklmnopqrstuvw…".to_owned())
+        );
 
         // Only a tool *starting* has a hint; anything else clears it.
         assert_eq!(
@@ -2369,6 +2408,38 @@ mod tests {
         let value: Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value[0]["awaiting_confirmation"], true);
         assert!(value[0].get("summary").is_none());
+    }
+
+    #[test]
+    fn a_non_running_pane_does_not_wait_on_a_stale_feed() {
+        let mut held = pane(3, "claude", Some("claude"));
+        held.status = AgentStatus::Held;
+        let panes = [held];
+        let hooks = feeds(&[(3, HookPhase::Waiting)]);
+        let rows = strip_rows(
+            &panes,
+            &manual(&[]),
+            &Activity::new(),
+            &owners(&[]),
+            &branches(&[]),
+            &Summaries::new(),
+            &hooks,
+        );
+        assert!(matches!(&rows[2], StripRow::Agent { text, .. } if text.starts_with("  ")));
+
+        let json = list_json(
+            &panes,
+            &manual(&[]),
+            &Activity::new(),
+            &owners(&[]),
+            &branches(&[]),
+            &Summaries::new(),
+            &hooks,
+            |_| String::new(),
+        );
+        let value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value[0]["state"], "held");
+        assert_eq!(value[0]["awaiting_confirmation"], false);
     }
 
     #[test]

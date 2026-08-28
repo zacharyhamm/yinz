@@ -187,6 +187,9 @@ pub struct HookEvent {
     /// be told from one that merely went quiet.
     #[serde(default)]
     pub session_id: String,
+    /// Why a `SessionStart` fired: `startup`, `resume`, `clear`, `compact`, or `fork`.
+    #[serde(default)]
+    pub source: Option<String>,
     /// The folder Claude Code is working in, which is not always the pane's shell
     /// folder — the agent is what moved, and this is the one that says where to.
     #[serde(default)]
