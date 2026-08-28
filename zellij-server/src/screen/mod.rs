@@ -1734,12 +1734,13 @@ impl Screen {
                     client_id,
                     blocking_terminal,
                 )?;
-                tab.update_input_modes()?;
-
                 if let Some(drained_clients) = drained_clients {
                     tab.visible(true)?;
                     tab.add_multiple_clients(drained_clients)?;
                 }
+                // after the drained clients have joined, so the plugins in this tab hear
+                // about their modes too and not only about the client that opened it
+                tab.update_input_modes()?;
                 // the tab keeps the size its viewers gave it here; `recompute_tab_size` below
                 // reflows it against the session surface
                 let tab_size = tab.size;

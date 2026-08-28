@@ -237,7 +237,9 @@ impl Screen {
                     overlay_carry,
                 )
             };
-            let update_mode_infos = false;
+            // the plugins in the tab the pane lands in need the client's mode, not just
+            // the pane
+            let update_mode_infos = true;
             match direction {
                 Direction::Right | Direction::Down => {
                     self.switch_tab_next(None, update_mode_infos, client_id)?;
