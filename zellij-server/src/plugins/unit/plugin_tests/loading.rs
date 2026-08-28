@@ -505,3 +505,124 @@ pub fn can_subscribe_to_hd_events() {
     });
     assert!(plugin_bytes_event.is_some());
 }
+
+#[test]
+#[serial(plugin_tests)]
+pub fn a_background_plugin_loaded_before_its_client_attached_is_not_instantiated_twice() {
+    // on startup, background plugins are loaded before the first client attaches, keyed under the
+    // initiating client's id. when that client's `AddClient` arrives, the plugin already has an
+    // instance for it: loading another would instantiate the wasm module a second time and
+    // replace the first instance, dropping its state. the fixture renders every event it has
+    // received, so state kept across the client's arrival is what this checks.
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let cache_path = plugin_host_folder.join("permissions_test.kdl");
+    let (plugin_thread_sender, screen_receiver, teardown) = create_plugin_thread(None, None);
+    let run_plugin = RunPluginOrAlias::RunPlugin(RunPlugin {
+        _allow_exec_host_cmd: false,
+        location: RunPluginLocation::File(PathBuf::from(&*PLUGIN_FIXTURE)),
+        configuration: Default::default(),
+        ..Default::default()
+    });
+    let client_id = 1; // the harness's initiating client, not yet connected
+    let plugin_id = 0; // the first plugin the thread loads
+    let received_screen_instructions = Watched::new(vec![]);
+    let screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
+        received_screen_instructions,
+        ScreenInstruction::Exit,
+        screen_receiver,
+        1,
+        &PermissionType::ChangeApplicationState,
+        cache_path,
+        plugin_thread_sender,
+        client_id
+    );
+    // the index of the first render at or after `from` that contains `needle`, and the number of
+    // times it contains it
+    let render_containing = |log: &Vec<ScreenInstruction>, from: usize, needle: &str| {
+        log.iter()
+            .enumerate()
+            .skip(from)
+            .find_map(|(i, instruction)| {
+                let ScreenInstruction::PluginBytes(render_assets) = instruction else {
+                    return None;
+                };
+                let rendered = render_assets
+                    .iter()
+                    .filter(|asset| asset.plugin_id == plugin_id)
+                    .map(|asset| String::from_utf8_lossy(&asset.bytes).to_string())
+                    .collect::<String>();
+                let occurrences = rendered.matches(needle).count();
+                (occurrences > 0).then_some((i, occurrences))
+            })
+    };
+    let describe = |log: &Vec<ScreenInstruction>| {
+        log.iter()
+            .map(|instruction| match instruction {
+                ScreenInstruction::PluginBytes(render_assets) => render_assets
+                    .iter()
+                    .map(|asset| {
+                        format!(
+                            "PluginBytes(plugin {}, client {}: {:?})",
+                            asset.plugin_id,
+                            asset.client_id,
+                            String::from_utf8_lossy(&asset.bytes)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                other => {
+                    let name: &'static str = other.into();
+                    name.to_owned()
+                },
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let _ = plugin_thread_sender.send(PluginInstruction::LoadBackgroundPlugin(
+        run_plugin, client_id,
+    ));
+    // background plugins have no size until something gives them one, and the fixture renders
+    // nothing at 0x0. the render also proves the load (permissions included) is complete: events
+    // sent from here on reach the instance directly rather than being cached for it
+    let _ = plugin_thread_sender.send(PluginInstruction::Resize(plugin_id, 121, 20));
+    let (resized, _) = received_screen_instructions.wait_until_described(
+        "the background plugin to load and render at its new size",
+        zellij_test_support::default_timeout(),
+        |log| render_containing(log, 0, "Rows: 20"),
+        describe,
+    );
+    let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
+        Some(plugin_id),
+        None,
+        Event::InputReceived,
+    )]));
+    let (first_event_render, _) = received_screen_instructions.wait_until_described(
+        "the background plugin to render its first event",
+        zellij_test_support::default_timeout(),
+        |log| render_containing(log, resized + 1, "InputReceived"),
+        describe,
+    );
+
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+    let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
+        Some(plugin_id),
+        None,
+        Event::InputReceived,
+    )]));
+    let (_, events_rendered) = received_screen_instructions.wait_until_described(
+        "the plugin to render an event after its client attached",
+        zellij_test_support::default_timeout(),
+        |log| render_containing(log, first_event_render + 1, "InputReceived"),
+        describe,
+    );
+    teardown();
+    screen_thread.join().unwrap();
+
+    assert_eq!(
+        events_rendered, 2,
+        "the client's arrival must not reload a plugin it already owns: the instance that \
+         received the first event should have received the second one too"
+    );
+}
