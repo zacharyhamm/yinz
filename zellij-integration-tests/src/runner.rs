@@ -54,12 +54,6 @@ impl TestRunner {
         self
     }
 
-    pub fn as_nested_guest(mut self, host_session_name: &str) -> Self {
-        self.env
-            .insert("ZELLIJ".to_string(), host_session_name.to_string());
-        self
-    }
-
     pub fn with_stdout_tap(mut self, sender: crossbeam::channel::Sender<Vec<u8>>) -> Self {
         self.stdout_tap = Some(sender);
         self
