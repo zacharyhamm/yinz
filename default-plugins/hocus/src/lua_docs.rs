@@ -38,7 +38,7 @@ fn prelude_part(index: usize) -> &'static str {
 ///
 /// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
 /// editing the guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 23] = [
+pub const SECTIONS: [&str; 24] = [
     "index",
     "quickstart",
     "contract",
@@ -48,6 +48,7 @@ pub const SECTIONS: [&str; 23] = [
     "modules",
     "data",
     "queues",
+    "hocus_extensions",
     "hooks",
     "files",
     "errors",
@@ -75,6 +76,7 @@ fn heading(section: &str) -> Option<&'static str> {
         "modules" => "Modules",
         "data" => "Data",
         "queues" => "Work queues",
+        "hocus_extensions" => "Hocus extensions",
         "hooks" => "Hooks",
         "files" => "Files",
         "errors" => "Errors",

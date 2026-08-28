@@ -197,6 +197,8 @@ pub enum Status {
     /// claimants for the same reply and let call order decide — exactly the
     /// coupling `on_response`'s "was this mine?" contract exists to prevent.
     AwaitingLinear,
+    /// The head is owned by a registered Lua extension and is waiting on its private pipe reply.
+    AwaitingExtension,
     /// The head of `pending` is a `plugin_reload` whose plugin has been asked to load, waiting
     /// on the timer to go and look at the pane it landed in.
     ///
