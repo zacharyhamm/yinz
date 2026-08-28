@@ -100,7 +100,7 @@ large_enum_variant = "allow"
 
 # `Tab::new`, `route_action` and a handful of their neighbours thread session state through by
 # hand. The fix is parameter structs, which is a refactor of the call graph rather than a lint
-# fix - see docs/TECH_DEBT.md.
+# fix.
 too_many_arguments = "allow"
 
 [workspace.dependencies]
