@@ -2207,6 +2207,8 @@ pub struct Options {
     pub word_separators: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, optional, tag="63")]
     pub dangerously_enable_paste_buffer_read: ::core::option::Option<bool>,
+    #[prost(bool, optional, tag="65")]
+    pub context_menu_on_right_click: ::core::option::Option<bool>,
 }
 /// Pane-targeting action messages
 #[allow(clippy::derive_partial_eq_without_eq)]

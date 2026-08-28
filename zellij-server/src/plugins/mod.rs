@@ -34,6 +34,7 @@ use crate::screen::ScreenInstruction;
 use crate::session_layout_metadata::SessionLayoutMetadata;
 use crate::{pty::PtyInstruction, thread_bus::Bus, ClientId, ServerInstruction};
 use zellij_utils::data::PaneRenderReport;
+use zellij_utils::input::context_menu::ContextMenu;
 use zellij_utils::input::hooks::{HookPoint, Hooks};
 use zellij_utils::input::layout::TabLayoutInfo;
 
@@ -42,9 +43,9 @@ use wasm_bridge::WasmBridge;
 
 use zellij_utils::{
     data::{
-        ClientInfo, CommandOrPlugin, Event, EventType, FloatingPaneCoordinates, InputMode,
-        LayoutInfo, LayoutWithError, MessageToPlugin, OverlayPlacement, PermissionStatus,
-        PermissionType, PipeMessage, PipeSource, WebServerStatus,
+        ClientInfo, CommandOrPlugin, ContextMenuContext, Event, EventType, FloatingPaneCoordinates,
+        InputMode, LayoutInfo, LayoutWithError, MessageToPlugin, OverlayPlacement,
+        PermissionStatus, PermissionType, PipeMessage, PipeSource, WebServerStatus,
     },
     errors::{prelude::*, ContextType, PluginContext},
     input::{
@@ -52,7 +53,7 @@ use zellij_utils::{
         command::TerminalAction,
         keybinds::Keybinds,
         layout::{FloatingPaneLayout, Layout, Run, RunPlugin, RunPluginOrAlias, TiledPaneLayout},
-        plugins::PluginAliases,
+        plugins::{PluginAliases, PluginConfig},
     },
     pane_size::Size,
     session_serialization,
@@ -100,6 +101,17 @@ pub enum PluginInstruction {
         pane_id: PaneId,
         /// Handed to the plugin as its configuration, which is what `load(config)` receives.
         payload: BTreeMap<String, String>,
+        client_id: ClientId,
+    },
+    /// A right-click asked for a context menu. The plugin bound to the `context_menu` hook point
+    /// is sent `Event::ContextMenuRequested` and answers with `set_context_menu`.
+    ///
+    /// Unlike `RunHook` this opens nothing: the menu is drawn by the screen and the plugin only
+    /// says what is in it. And unlike `RunHook` it always answers, even with no hook bound - the
+    /// screen is holding an empty menu open waiting to hear, so silence here would be a menu that
+    /// only the timeout resolves.
+    RequestContextMenu {
+        context: Box<ContextMenuContext>,
         client_id: ClientId,
     },
     Update(Vec<(Option<PluginId>, Option<ClientId>, Event)>), // Focused plugin / broadcast, client_id, event data
@@ -218,6 +230,13 @@ pub enum PluginInstruction {
         layout_dir: Option<PathBuf>,
         user_plugin_dir: Option<PathBuf>,
         builtin_plugins_dir: Option<PathBuf>,
+        /// The hook bindings the new configuration declares. Held by this thread rather than
+        /// re-read per hook, so a reload has to hand them over or every hook point keeps whatever
+        /// the session started with.
+        hooks: Hooks,
+        /// Likewise the configured context menu items, which `request_context_menu` answers from
+        /// when no hook is bound or the hook is not yet loaded.
+        context_menu: ContextMenu,
         was_written_to_disk: bool,
     },
     FailedToWriteConfigToDisk {
@@ -325,7 +344,10 @@ pub(crate) fn plugin_thread_main(
     default_mode: InputMode,
     default_keybinds: Keybinds,
     background_plugins: BTreeSet<RunPluginOrAlias>,
-    hooks: Hooks,
+    // Both are replaced wholesale by `PluginInstruction::Reconfigure`, so a config reload changes
+    // which plugin owns a hook point and what a right-click offers without a restart.
+    mut hooks: Hooks,
+    mut context_menu: ContextMenu,
     builtin_plugins_dir: Option<PathBuf>,
     // the client id that started the session,
     // we need it here because the thread's own list of connected clients might not yet be updated
@@ -456,6 +478,18 @@ pub(crate) fn plugin_thread_main(
                     &mut wasm_bridge,
                     &bus,
                     &plugin_aliases,
+                );
+            },
+            PluginInstruction::RequestContextMenu { context, client_id } => {
+                request_context_menu(
+                    *context,
+                    client_id,
+                    &hooks,
+                    &context_menu,
+                    &mut wasm_bridge,
+                    &plugin_aliases,
+                    &bus,
+                    &shutdown_send,
                 );
             },
             PluginInstruction::LoadBackgroundPlugin(run_plugin_or_alias, client_id) => {
@@ -1207,8 +1241,17 @@ pub(crate) fn plugin_thread_main(
                 layout_dir,
                 user_plugin_dir,
                 builtin_plugins_dir,
+                hooks: new_hooks,
+                context_menu: new_context_menu,
                 was_written_to_disk,
             } => {
+                // Wholesale rather than merged: `Hooks` and `ContextMenu` are both "what the
+                // configuration says", and the config layer has already done the merging. A hook
+                // bound here that is not loaded is not a problem - `run_hook` loads on demand, and
+                // `request_context_menu` answers that one click from the configuration while it
+                // starts.
+                hooks = new_hooks;
+                context_menu = new_context_menu;
                 wasm_bridge
                     .reconfigure(
                         client_id,
@@ -1583,13 +1626,125 @@ fn run_hook(
     }
 }
 
+/// Ask the `context_menu` hook plugin what a menu should say, and make sure the screen hears
+/// something either way.
+///
+/// Three cases, and the third is the one worth reading twice:
+///
+/// 1. **No hook bound.** The configured items are sent straight back. The screen is holding an
+///    empty menu open waiting to hear, so staying silent here - which is what `run_hook` does for
+///    an unbound point - would leave the menu resolved only by its timeout.
+/// 2. **A hook bound and running.** It gets `Event::ContextMenuRequested` and answers with
+///    `set_context_menu` when it is ready.
+/// 3. **A hook bound but not running.** Also answered with the configured items, immediately. The
+///    plugin is loaded at session start precisely so this does not normally happen; loading one
+///    here would put a wasm/Lua load inside the window the user is already waiting through.
+#[allow(clippy::too_many_arguments)]
+fn request_context_menu(
+    context: ContextMenuContext,
+    client_id: ClientId,
+    hooks: &Hooks,
+    context_menu: &ContextMenu,
+    wasm_bridge: &mut WasmBridge,
+    plugin_aliases: &PluginAliases,
+    bus: &Bus<PluginInstruction>,
+    shutdown_send: &tokio::sync::mpsc::Sender<()>,
+) {
+    let answer_with_configured_items = || {
+        drop(
+            bus.senders
+                .send_to_screen(ScreenInstruction::SetContextMenu {
+                    request_id: context.request_id,
+                    items: context_menu.items().to_vec(),
+                    // No plugin answered, so there is no plugin an item's context could go back to.
+                    plugin_id: None,
+                    client_id,
+                }),
+        );
+    };
+
+    let Some(run_plugin_or_alias) = hooks.get(HookPoint::ContextMenu) else {
+        answer_with_configured_items();
+        return;
+    };
+    let mut run_plugin_or_alias = run_plugin_or_alias.clone();
+    run_plugin_or_alias.populate_run_plugin_if_needed(plugin_aliases);
+    let Some(run_plugin) = run_plugin_or_alias.get_run_plugin() else {
+        log::error!("hook 'context_menu' names a plugin that could not be resolved");
+        answer_with_configured_items();
+        return;
+    };
+    let is_shared = PluginConfig::from_run_plugin(&run_plugin)
+        .map(|plugin| plugin.is_shared())
+        .unwrap_or(false);
+    let plugin_ids = wasm_bridge.all_plugin_and_client_ids_for_plugin_location(
+        &run_plugin.location,
+        &run_plugin.configuration,
+    );
+    // A non-shared hook has one instance per client, so an instance existing for some other
+    // client says nothing about this one - only an instance this client owns (or a shared
+    // instance, which every client can reach) counts. A shared hook still has to have been loaded
+    // once: "every client can reach it" says nothing when there is nothing to reach, and taking
+    // `is_shared` alone as proof of an instance would skip the load below and then dispatch to an
+    // empty list, leaving every right-click to the timeout.
+    let has_own_instance = !plugin_ids.is_empty()
+        && (is_shared || plugin_ids.iter().any(|(_, cid)| *cid == Some(client_id)));
+    if !has_own_instance {
+        // First right-click of the session (or first for this client): load the hook headless,
+        // then deliver this request to that new instance. The timeout still provides the
+        // configured fallback if it is slow.
+        //
+        // Lazily rather than at session start, because the menu is opt-in and off by default:
+        // loading a plugin into every session for a feature most of them never turn on would be a
+        // cost paid by everyone for the benefit of a few.
+        if let Some((plugin_id, loaded_client_id)) = load_background_plugin(
+            run_plugin_or_alias.clone(),
+            wasm_bridge,
+            bus,
+            plugin_aliases,
+            client_id,
+        ) {
+            wasm_bridge
+                .update_plugins(
+                    vec![(
+                        Some(plugin_id),
+                        Some(loaded_client_id),
+                        Event::ContextMenuRequested(Box::new(context.clone())),
+                    )],
+                    shutdown_send.clone(),
+                )
+                .non_fatal();
+        }
+        return;
+    }
+
+    // The context already carries the items, stripped of their actions and carrying their ids -
+    // the screen put them there when it opened the menu, so that what the plugin is shown and what
+    // the screen re-attaches against cannot drift.
+    let mut seen_plugin_ids = HashSet::new();
+    let updates: Vec<_> = plugin_ids
+        .into_iter()
+        .filter(|(_, cid)| is_shared || *cid == Some(client_id))
+        .filter_map(|(plugin_id, _)| {
+            seen_plugin_ids.insert(plugin_id).then_some((
+                Some(plugin_id),
+                Some(client_id),
+                Event::ContextMenuRequested(Box::new(context.clone())),
+            ))
+        })
+        .collect();
+    wasm_bridge
+        .update_plugins(updates, shutdown_send.clone())
+        .non_fatal();
+}
+
 fn load_background_plugin(
     mut run_plugin_or_alias: RunPluginOrAlias,
     wasm_bridge: &mut WasmBridge,
     bus: &Bus<PluginInstruction>,
     plugin_aliases: &PluginAliases,
     client_id: ClientId,
-) {
+) -> Option<(PluginId, ClientId)> {
     run_plugin_or_alias.populate_run_plugin_if_needed(&plugin_aliases);
     let cwd = run_plugin_or_alias.get_initial_cwd();
     let run_plugin = run_plugin_or_alias.get_run_plugin();
@@ -1610,9 +1765,11 @@ fn load_background_plugin(
                 cwd,
                 client_id,
             )));
+            Some((plugin_id, client_id))
         },
         Err(e) => {
             log::error!("Failed to load plugin: {e}");
+            None
         },
     }
 }

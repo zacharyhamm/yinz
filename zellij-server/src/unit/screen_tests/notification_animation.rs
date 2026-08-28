@@ -252,23 +252,6 @@ fn a_toast_dismissed_before_it_arrived_leaves_sooner_than_a_settled_one() {
 }
 
 /// Where the active pane wants this client's cursor, in absolute session coordinates.
-fn pane_cursor(screen: &mut Screen, client_id: ClientId) -> (usize, usize) {
-    screen
-        .get_active_tab_mut(client_id)
-        .expect("TEST")
-        .get_active_terminal_cursor_position(client_id)
-        .map(|(x, y, _)| (x, y))
-        .expect("the active pane has a cursor")
-}
-
-fn screen_wired_to_server(
-    screen: &mut Screen,
-) -> channels::Receiver<(ServerInstruction, ErrorContext)> {
-    let (server_sender, server_receiver) = channels::unbounded();
-    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
-    server_receiver
-}
-
 /// The regression test for the cursor jumping into the toast.
 ///
 /// A toast repainting on its own leaves every pane under it clean, so the frame's only chunks are

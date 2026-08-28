@@ -960,6 +960,7 @@ impl From<crate::input::options::Options>
             visual_bell: options.visual_bell,
             focus_follows_mouse: options.focus_follows_mouse,
             mouse_click_through: options.mouse_click_through,
+            context_menu_on_right_click: options.context_menu_on_right_click,
             osc133_command_selection: options.osc133_command_selection,
             word_separators: options.word_separators,
             pane_frame_style: options.pane_frame_style.map(|s| match s {
@@ -1102,6 +1103,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             visual_bell: options.visual_bell,
             focus_follows_mouse: options.focus_follows_mouse,
             mouse_click_through: options.mouse_click_through,
+            context_menu_on_right_click: options.context_menu_on_right_click,
             osc133_command_selection: options.osc133_command_selection,
             word_separators: options.word_separators,
             nested_session_handling: options

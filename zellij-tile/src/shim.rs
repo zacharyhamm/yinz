@@ -3816,6 +3816,25 @@ pub fn set_pane_regex_highlights(pane_id: PaneId, highlights: Vec<RegexHighlight
     unsafe { host_run_plugin_command() };
 }
 
+/// Answer a `Event::ContextMenuRequested` with the menu the user should see.
+///
+/// `request_id` comes from the event; echo it back. An answer for a menu that has already been
+/// dismissed or replaced is dropped by the server, so there is no need to track whether the menu
+/// is still open - and no way to get it wrong by answering late.
+///
+/// The items you were given carry an `id` and no actions: return one with its `id` intact and the
+/// configured actions come back with it, relabelled or reordered however you like. An item you
+/// build yourself has no `id`, runs no actions, and reaches you as `Event::ContextMenuItemSelected`
+/// carrying its `context` - from where `run_action` can do anything an action could.
+///
+/// Requires `RunActionsAsUser` permission.
+pub fn set_context_menu(request_id: u64, items: Vec<ContextMenuItem>) {
+    let plugin_command = PluginCommand::SetContextMenu { request_id, items };
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
 /// Remove all regex highlights this plugin has set on the given pane.
 ///
 /// Other plugins' highlights on the same pane are not affected.

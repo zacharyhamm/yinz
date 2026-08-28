@@ -419,6 +419,7 @@ fn create_plugin_thread_with_user_plugin_dir(
                 Keybinds::default(),
                 Default::default(),
                 Default::default(), // hooks
+                Default::default(), // context_menu
                 None,
                 initiating_client_id,
             )
@@ -505,6 +506,7 @@ fn create_plugin_thread_with_server_receiver(
                 Keybinds::default(),
                 Default::default(),
                 Default::default(), // hooks
+                Default::default(), // context_menu
                 None,
                 initiating_client_id,
             )
@@ -600,6 +602,7 @@ fn create_plugin_thread_with_pty_receiver(
                 Keybinds::default(),
                 Default::default(),
                 Default::default(), // hooks
+                Default::default(), // context_menu
                 None,
                 initiating_client_id,
             )
@@ -687,6 +690,7 @@ fn create_plugin_thread_with_background_jobs_receiver(
                 Keybinds::default(),
                 Default::default(),
                 Default::default(), // hooks
+                Default::default(), // context_menu
                 None,
                 initiating_client_id,
             )

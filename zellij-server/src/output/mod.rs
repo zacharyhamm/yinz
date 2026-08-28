@@ -662,6 +662,10 @@ pub struct Output {
     // `floating_panes_stack`, but they are drawn above everything and must occlude the cursor the
     // same way a floating pane does
     notification_rects: Vec<CellRect>,
+    // what each client's own context menu paints over this frame. per client rather than
+    // session-wide like the toasts above, because a menu is drawn only for the client that opened
+    // it - one client's menu must not blank another client's cursor
+    context_menu_rects: HashMap<ClientId, Vec<CellRect>>,
 }
 
 impl Output {
@@ -1127,16 +1131,35 @@ impl Output {
     pub fn set_notification_rects(&mut self, notification_rects: Vec<CellRect>) {
         self.notification_rects = notification_rects;
     }
+    /// Where each client's context menu paints this frame, in absolute session coordinates.
+    ///
+    /// Set before anything renders, for the reason `set_notification_rects` gives: a fake cursor is
+    /// decided while the panes draw and is emitted as a post-VTE instruction, so it would otherwise
+    /// be painted over a menu that had not been drawn yet when it was decided.
+    pub fn set_context_menu_rects(&mut self, context_menu_rects: HashMap<ClientId, Vec<CellRect>>) {
+        self.context_menu_rects = context_menu_rects;
+    }
+    /// Whether `client_id` may be shown a cursor at this cell - its own, or the fake one standing
+    /// in for another client. `client_id` is the client doing the *looking*: a menu is drawn only
+    /// for the client that opened it, so only that client's menu can hide anything from them.
     pub fn cursor_is_visible(
         &self,
         cursor_x: usize,
         cursor_y: usize,
         z_index: Option<usize>,
+        client_id: ClientId,
     ) -> bool {
         if self
             .notification_rects
             .iter()
             .any(|rect| rect.contains(cursor_x, cursor_y))
+        {
+            return false;
+        }
+        if self
+            .context_menu_rects
+            .get(&client_id)
+            .is_some_and(|rects| rects.iter().any(|rect| rect.contains(cursor_x, cursor_y)))
         {
             return false;
         }

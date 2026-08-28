@@ -871,6 +871,17 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::SetPaneRegexHighlights(pane_id, highlights) => {
                 set_pane_regex_highlights(env, pane_id, highlights)
             },
+            PluginCommand::SetContextMenu { request_id, items } => {
+                let _ = env
+                    .senders
+                    .send_to_screen(ScreenInstruction::SetContextMenu {
+                        request_id,
+                        items,
+                        // So a selection out of this menu comes back to us and to nobody else.
+                        plugin_id: Some(env.plugin_id),
+                        client_id: env.client_id,
+                    });
+            },
             PluginCommand::ClearPaneHighlights(pane_id) => clear_pane_highlights(env, pane_id),
             PluginCommand::ChangeOverlayCoordinates(pane_ids_and_coordinates) => {
                 change_overlay_coordinates(
@@ -7110,7 +7121,11 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
         PluginCommand::GetPaneScrollback { .. }
         | PluginCommand::ListRecordings
         | PluginCommand::SearchRecordings { .. } => PermissionType::ReadPaneContents,
-        PluginCommand::RunAction(..) => PermissionType::RunActionsAsUser,
+        // The same gate `RunAction` sits behind, and for the same reason: a menu item is a list
+        // of actions the server will run as the user, whichever way round it was assembled.
+        PluginCommand::RunAction(..) | PluginCommand::SetContextMenu { .. } => {
+            PermissionType::RunActionsAsUser
+        },
         PluginCommand::GetSessionEnvironmentVariables => {
             PermissionType::ReadSessionEnvironmentVariables
         },

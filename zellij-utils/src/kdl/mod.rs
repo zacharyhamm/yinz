@@ -1,4 +1,5 @@
 mod kdl_layout_parser;
+use crate::data::ContextMenuItem;
 use crate::data::{
     BareKey, Direction, FloatingPaneCoordinates, InputMode, KeyWithModifier, LayoutInfo,
     LayoutMetadata, MultiplayerColors, NewPanePlacement, Palette, PaletteColor, PaneId, PaneInfo,
@@ -8,6 +9,7 @@ use crate::data::{
 use crate::envs::EnvironmentVariables;
 use crate::home::{find_default_config_dir, get_layout_dir};
 use crate::input::config::{Config, ConfigError, KdlError};
+use crate::input::context_menu::ContextMenu;
 use crate::input::hooks::{HookPoint, Hooks};
 use crate::input::keybinds::Keybinds;
 use crate::input::layout::{
@@ -2984,6 +2986,9 @@ impl Options {
         let focus_follows_mouse =
             kdl_property_first_arg_as_bool_or_error!(kdl_options, "focus_follows_mouse")
                 .map(|(v, _)| v);
+        let context_menu_on_right_click =
+            kdl_property_first_arg_as_bool_or_error!(kdl_options, "context_menu_on_right_click")
+                .map(|(v, _)| v);
         let mouse_click_through =
             kdl_property_first_arg_as_bool_or_error!(kdl_options, "mouse_click_through")
                 .map(|(v, _)| v);
@@ -3064,6 +3069,7 @@ impl Options {
             visual_bell,
             focus_follows_mouse,
             mouse_click_through,
+            context_menu_on_right_click,
             osc133_command_selection,
             word_separators,
             web_server_ip,
@@ -4660,6 +4666,34 @@ impl Options {
             None
         }
     }
+    fn context_menu_on_right_click_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
+        let comment_text = format!(
+            "{}\n{}\n{}\n{}",
+            " ",
+            "// Whether right-clicking a pane opens a context menu. A program that is tracking the",
+            "// mouse itself keeps its own right-click either way.",
+            "// default is false",
+        );
+
+        let create_node = |node_value: bool| -> KdlNode {
+            let mut node = KdlNode::new("context_menu_on_right_click");
+            node.push(KdlValue::Bool(node_value));
+            node
+        };
+        if let Some(context_menu_on_right_click) = self.context_menu_on_right_click {
+            let mut node = create_node(context_menu_on_right_click);
+            if add_comments {
+                node.set_leading(format!("{}\n", comment_text));
+            }
+            Some(node)
+        } else if add_comments {
+            let mut node = create_node(false);
+            node.set_leading(format!("{}\n// ", comment_text));
+            Some(node)
+        } else {
+            None
+        }
+    }
     fn osc133_command_selection_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
         let comment_text = format!(
             "{}\n{}\n{}\n{}",
@@ -5066,6 +5100,11 @@ impl Options {
         }
         if let Some(mouse_click_through) = self.mouse_click_through_to_kdl(add_comments) {
             nodes.push(mouse_click_through);
+        }
+        if let Some(context_menu_on_right_click) =
+            self.context_menu_on_right_click_to_kdl(add_comments)
+        {
+            nodes.push(context_menu_on_right_click);
         }
         if let Some(osc133_command_selection) = self.osc133_command_selection_to_kdl(add_comments) {
             nodes.push(osc133_command_selection);
@@ -5596,6 +5635,9 @@ impl Config {
                 .background_plugins
                 .extend(load_plugins_from_kdl(kdl_load_plugins)?);
         }
+        if let Some(kdl_context_menu) = kdl_config.get("context_menu") {
+            config.context_menu = context_menu_from_kdl(kdl_context_menu, &config.options)?;
+        }
         if let Some(kdl_hooks) = kdl_config.get("hooks") {
             let parsed_hooks = hooks_from_kdl(kdl_hooks, &mut config.hooks)?;
             config.hooks.merge(parsed_hooks);
@@ -5636,6 +5678,9 @@ impl Config {
         document.nodes_mut().push(load_plugins);
 
         document.nodes_mut().push(hooks_to_kdl(&self.hooks));
+        document
+            .nodes_mut()
+            .push(context_menu_to_kdl(&self.context_menu));
 
         if let Some(ui_config) = self.ui.to_kdl() {
             document.nodes_mut().push(ui_config);
@@ -5861,6 +5906,93 @@ fn hooks_from_kdl(kdl_hooks: &KdlNode, config_hooks: &mut Hooks) -> Result<Hooks
         }
     }
     Ok(hooks)
+}
+
+/// Parse a `context_menu { }` block.
+///
+/// Each child is one item: its name is the label, its children are actions. `separator` is the one
+/// reserved name, and takes no children.
+///
+/// The block *replaces* the default menu rather than adding to it - see `input::context_menu` for
+/// why - so an empty block is meaningful and is not an error.
+#[allow(clippy::result_large_err)]
+fn context_menu_from_kdl(
+    kdl_context_menu: &KdlNode,
+    config_options: &Options,
+) -> Result<ContextMenu, ConfigError> {
+    let mut items = vec![];
+    if let Some(item_nodes) = kdl_children_nodes!(kdl_context_menu) {
+        for item_node in item_nodes {
+            let name_node = item_node.name();
+            let label = name_node.value();
+            if label == "separator" {
+                if item_node.children().is_some() || !item_node.entries().is_empty() {
+                    return Err(ConfigError::new_kdl_error(
+                        "'separator' takes no children or properties".to_string(),
+                        name_node.span().offset(),
+                        name_node.span().len(),
+                    ));
+                }
+                items.push(ContextMenuItem::separator());
+                continue;
+            }
+            // An item with no actions can never do anything, and is far more likely to be a
+            // half-written line than a deliberate no-op - so it is named rather than drawn.
+            let actions: Vec<Action> = kdl_children_nodes!(item_node)
+                .map(|action_nodes| {
+                    action_nodes
+                        .iter()
+                        .map(|action_node| Action::try_from((action_node, config_options)))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?
+                .unwrap_or_default();
+            if actions.is_empty() {
+                return Err(ConfigError::new_kdl_error(
+                    format!(
+                        "context menu item '{label}' has no actions. Give it one, eg. \
+                         `\"{label}\" {{ Copy; }}`, or write `separator` for a divider"
+                    ),
+                    name_node.span().offset(),
+                    name_node.span().len(),
+                ));
+            }
+            let mut item = ContextMenuItem::new(label, actions);
+            if let Some(shortcut) = kdl_get_string_property_or_child_value!(&item_node, "shortcut")
+            {
+                item = item.with_shortcut(shortcut);
+            }
+            items.push(item);
+        }
+    }
+    Ok(ContextMenu::from_items(items))
+}
+
+pub fn context_menu_to_kdl(context_menu: &ContextMenu) -> KdlNode {
+    let mut menu_node = KdlNode::new("context_menu");
+    let mut children = KdlDocument::new();
+    for item in context_menu.items() {
+        if item.separator {
+            children.nodes_mut().push(KdlNode::new("separator"));
+            continue;
+        }
+        let mut item_node = KdlNode::new(item.label.as_str());
+        if let Some(shortcut) = item.shortcut.as_ref() {
+            item_node.push(("shortcut", KdlValue::String(shortcut.clone())));
+        }
+        let mut actions = KdlDocument::new();
+        for action in &item.actions {
+            // An action with no KDL spelling is dropped rather than written wrong - the same rule
+            // keybinding serialization already follows.
+            if let Some(action_node) = action.to_kdl() {
+                actions.nodes_mut().push(action_node);
+            }
+        }
+        item_node.set_children(actions);
+        children.nodes_mut().push(item_node);
+    }
+    menu_node.set_children(children);
+    menu_node
 }
 
 pub fn hooks_to_kdl(hooks: &Hooks) -> KdlNode {

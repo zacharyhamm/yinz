@@ -20,6 +20,7 @@ use zellij_utils::errors::{prelude::*, ErrorContext};
 use zellij_utils::input::actions::Action;
 use zellij_utils::input::command::{RunCommand, TerminalAction};
 use zellij_utils::input::config::Config;
+use zellij_utils::input::context_menu::ContextMenu;
 use zellij_utils::input::keybinds::Keybinds;
 use zellij_utils::input::layout::{
     FloatingPaneLayout, Layout, PercentOrFixed, PluginAlias, PluginUserConfiguration, Run,
@@ -377,6 +378,7 @@ fn create_new_screen_with_kitty_graphics(
         default_layout,
         default_layout_name,
         default_shell,
+        None, // default_shell_action
         session_serialization,
         serialize_pane_viewport,
         scrollback_lines_to_serialize,
@@ -399,6 +401,8 @@ fn create_new_screen_with_kitty_graphics(
         visual_bell,
         false, // focus_follows_mouse
         false, // mouse_click_through
+        false, // context_menu_on_right_click
+        ContextMenu::default(),
         web_server_ip,
         web_server_port,
         NestedSessionHandling::default(),
@@ -1005,6 +1009,7 @@ fn create_new_screen_with_message_capture(
         default_layout,
         default_layout_name,
         default_shell,
+        None, // default_shell_action
         session_serialization,
         serialize_pane_viewport,
         scrollback_lines_to_serialize,
@@ -1027,6 +1032,8 @@ fn create_new_screen_with_message_capture(
         visual_bell,
         false, // focus_follows_mouse
         false, // mouse_click_through
+        false, // context_menu_on_right_click
+        ContextMenu::default(),
         web_server_ip,
         web_server_port,
         NestedSessionHandling::default(),
@@ -1155,6 +1162,7 @@ fn create_new_screen_with_forward_capture(size: Size) -> (Screen, ForwardCapture
         default_layout,
         default_layout_name,
         default_shell,
+        None, // default_shell_action
         session_serialization,
         serialize_pane_viewport,
         scrollback_lines_to_serialize,
@@ -1177,6 +1185,8 @@ fn create_new_screen_with_forward_capture(size: Size) -> (Screen, ForwardCapture
         visual_bell,
         false, // focus_follows_mouse
         false, // mouse_click_through
+        false, // context_menu_on_right_click
+        ContextMenu::default(),
         web_server_ip,
         web_server_port,
         NestedSessionHandling::default(),
@@ -1303,6 +1313,7 @@ fn create_new_screen_with_theme_capture(size: Size) -> (Screen, ThemeCapture) {
         default_layout,
         None,
         default_shell,
+        None, // default_shell_action
         true,
         false,
         None,
@@ -1325,6 +1336,8 @@ fn create_new_screen_with_theme_capture(size: Size) -> (Screen, ThemeCapture) {
         true,
         false,
         false,
+        false, // context_menu_on_right_click
+        ContextMenu::default(),
         web_server_ip,
         web_server_port,
         NestedSessionHandling::default(),
@@ -1434,6 +1447,7 @@ fn create_non_mirrored_screen(size: Size) -> Screen {
         Box::default(),
         None, // default_layout_name
         PathBuf::from("my_default_shell"),
+        None,  // default_shell_action
         true,  // session_serialization
         false, // serialize_pane_viewport
         None,  // scrollback_lines_to_serialize
@@ -1456,6 +1470,8 @@ fn create_non_mirrored_screen(size: Size) -> Screen {
         true,  // visual_bell
         false, // focus_follows_mouse
         false, // mouse_click_through
+        false, // context_menu_on_right_click
+        ContextMenu::default(),
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
         8080,
         NestedSessionHandling::default(),
@@ -1542,6 +1558,27 @@ fn open_floating_pane(
 /// faithful way to ask: `serialize_chunks` writes an absolute goto per character chunk, so where
 /// the cursor ends up is a property of the whole frame and not just of the post-VTE instructions
 /// `Tab::render_cursor` adds.
+/// Where the active pane thinks its cursor is, in absolute surface coordinates. What the frame
+/// then does with it - place it, or leave it hidden because something is drawn over that cell - is
+/// what the tests using this are about.
+fn pane_cursor(screen: &mut Screen, client_id: ClientId) -> (usize, usize) {
+    screen
+        .get_active_tab_mut(client_id)
+        .expect("TEST")
+        .get_active_terminal_cursor_position(client_id)
+        .map(|(x, y, _)| (x, y))
+        .expect("the active pane has a cursor")
+}
+
+/// Give a directly-constructed `Screen` somewhere to render to, and hand back the other end.
+fn screen_wired_to_server(
+    screen: &mut Screen,
+) -> channels::Receiver<(ServerInstruction, ErrorContext)> {
+    let (server_sender, server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    server_receiver
+}
+
 fn render_frame_and_cursor_into(
     screen: &mut Screen,
     receiver: &channels::Receiver<(ServerInstruction, ErrorContext)>,
@@ -2050,6 +2087,7 @@ mod cli_actions;
 mod cli_layouts_and_rename;
 mod cli_pane_and_tab_id;
 mod clients;
+mod context_menu;
 mod floating_panes;
 mod hooks;
 mod host_query;

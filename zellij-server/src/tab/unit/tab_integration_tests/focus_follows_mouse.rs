@@ -171,6 +171,30 @@ fn focus_follows_mouse_skips_unselectable_panes() {
 }
 
 #[test]
+fn context_menu_skips_unselectable_panes() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    tab.vertical_split(PaneId::Terminal(2), None, client_id, None, None)
+        .unwrap();
+    tab.set_pane_selectable(PaneId::Terminal(1), false);
+    tab.update_context_menu_on_right_click(true);
+
+    let effect = tab
+        .handle_mouse_event(
+            &MouseEvent::new_right_press_event(Position::new(10, 30)),
+            client_id,
+        )
+        .unwrap();
+
+    assert!(effect.open_context_menu.is_none());
+    assert_eq!(tab.get_active_pane_id(client_id), Some(PaneId::Terminal(2)));
+}
+
+#[test]
 fn focus_follows_mouse_no_op_on_active_pane() {
     let size = Size {
         cols: 121,

@@ -605,6 +605,14 @@ impl Screen {
             self.notify_pane_closed_to_subscribers((*p_id).into());
         }
 
+        // A closing tab takes its panes with it without ever emitting a per-pane `ClosePane`, so
+        // the menus opened over them have to be closed here too - `close_context_menus_for_pane`
+        // is otherwise only reached from that instruction. The suppressed panes have already been
+        // filtered out above: they move to another tab and keep theirs.
+        for p_id in &pane_ids {
+            self.close_context_menus_for_pane(*p_id);
+        }
+
         // below we don't check the result of sending the CloseTab instruction to the pty thread
         // because this might be happening when the app is closing, at which point the pty thread
         // has already closed and this would result in an error

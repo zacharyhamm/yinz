@@ -407,11 +407,12 @@ hooks {
 }
 ```
 
-There is one hook point so far:
+The hook points so far:
 
 | Point | When | The plugin is |
 |---|---|---|
 | `agent_exit` | an agent pane's command exited | opened **in place of** that pane |
+| `context_menu` | a right-click asked for a menu | run **headless** - it says what the menu contains, zellij draws it |
 
 The exited pane is *suppressed* behind the hook, not closed: its scrollback survives, and closing
 the hook pane is what brings it back. So a hook that wants to leave the pane alone just closes
@@ -427,6 +428,68 @@ empty:
 | `agent_cwd` | where the agent was working |
 | `agent_exit_code` | absent if the command was killed by a signal |
 | `agent_command` | the command that exited, for display |
+
+### The `context_menu` hook
+
+The odd one out: it is given no pane at all. A right-click menu is a thing zellij draws over the
+panes and hit-tests itself, so the plugin's whole job is to say what is on it. It gets no
+`render`, and it stays loaded between clicks rather than being opened per click.
+
+```kdl
+context_menu_on_right_click true   // in the options; the menu is opt-in
+
+hooks {
+    context_menu "file:~/.config/zellij/hooks/menu.lua"
+}
+```
+
+```lua
+zellij.subscribe { "context_menu_requested" }
+
+zellij.on("context_menu_requested", function(e)
+  local items = {}
+  if e.link then
+    table.insert(items, { label = "Open " .. e.link.matched,
+                          context = { url = e.link.matched } })
+  end
+  for _, item in ipairs(e.items) do          -- what the config declared
+    if item.label ~= "Copy" or e.selected_text then
+      table.insert(items, item)
+    end
+  end
+  zellij.set_context_menu { request_id = e.request_id, items = items }
+end)
+```
+
+The event carries the click: `pane_id`, `click` and `click_in_pane`, `on_frame`, `pane_title`,
+`pane_command`, `selected_text`, `word_under_cursor`, `line_under_cursor`, `link` (a `link`-plugin
+regex match under the cursor), and `items` - what the `context_menu { }` config block declared, in
+order.
+
+Two things it does *not* carry, both because getting them would mean blocking the thread every
+mouse movement goes through: the pane's **cwd** (ask for it with `zellij.get_pane_cwd`) and its
+**scrollback** (`zellij.get_pane_scrollback`). Both are ordinary async calls; re-render when the
+answer arrives.
+
+**Items you were given have an `id` and no actions.** Hand one back with its `id` and its
+configured actions come back with it - so you can relabel, reorder and drop freely. An item you
+build yourself has no `id`, runs no actions, and reaches you as `context_menu_item_selected`
+carrying its `context`, from where `zellij.run_action` can do anything an action could.
+
+Answering is not urgent and cannot be too late: `request_id` says which menu you are answering, and
+an answer for one that has been dismissed or replaced is discarded. If you do not answer within a
+tenth of a second the menu shows the configured items on its own, so a plugin that is slow, wedged
+or absent never makes right-click do nothing.
+
+Answer with an empty list to say "no menu here".
+
+**`context_menu_item_selected` goes to the plugin that offered the item, and to nobody else.** An
+item's `context` is yours; no other plugin sees it, however it is subscribed.
+
+The shipped hook is `zellij-utils/assets/plugins/context-menu.lua`. A copy loaded from a `file:`
+location needs `zellij.request_permission { "run_actions_as_user", "run_commands" }` in its `load`
+- `run_commands` because its "Open" item shells out to the platform's link opener, which it finds
+by probing `xdg-open` and `open` once at load.
 
 A hook point takes **one** plugin. Two plugins cannot both replace the pane, and a precedence
 rule between them would be worse to explain than the restriction - a hook that wants to do

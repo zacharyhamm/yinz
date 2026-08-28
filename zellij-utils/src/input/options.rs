@@ -442,6 +442,16 @@ pub struct Options {
     #[serde(default)]
     pub mouse_click_through: Option<bool>,
 
+    /// Whether right-clicking a pane opens a context menu (true or false)
+    /// default is false
+    ///
+    /// The menu opens only where the pane's program is not itself tracking the mouse: a TUI that
+    /// asked for right-click keeps it, so this can turn off and on again under the same pointer as
+    /// the user starts and quits an editor.
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub context_menu_on_right_click: Option<bool>,
+
     /// Whether triple-clicking inside shell-marked (OSC 133) command output selects the command
     /// and its output rather than the logical line
     /// default is true
@@ -584,6 +594,9 @@ impl Options {
         let visual_bell = other.visual_bell.or(self.visual_bell);
         let focus_follows_mouse = other.focus_follows_mouse.or(self.focus_follows_mouse);
         let mouse_click_through = other.mouse_click_through.or(self.mouse_click_through);
+        let context_menu_on_right_click = other
+            .context_menu_on_right_click
+            .or(self.context_menu_on_right_click);
         let osc133_command_selection = other
             .osc133_command_selection
             .or(self.osc133_command_selection);
@@ -664,6 +677,7 @@ impl Options {
             visual_bell,
             focus_follows_mouse,
             mouse_click_through,
+            context_menu_on_right_click,
             osc133_command_selection,
             word_separators,
             web_server_ip,
@@ -762,6 +776,10 @@ impl Options {
         let visual_bell = other.visual_bell.or(self.visual_bell);
         let focus_follows_mouse = merge_bool(other.focus_follows_mouse, self.focus_follows_mouse);
         let mouse_click_through = merge_bool(other.mouse_click_through, self.mouse_click_through);
+        let context_menu_on_right_click = merge_bool(
+            other.context_menu_on_right_click,
+            self.context_menu_on_right_click,
+        );
         let osc133_command_selection = other
             .osc133_command_selection
             .or(self.osc133_command_selection);
@@ -842,6 +860,7 @@ impl Options {
             visual_bell,
             focus_follows_mouse,
             mouse_click_through,
+            context_menu_on_right_click,
             osc133_command_selection,
             word_separators,
             web_server_ip,

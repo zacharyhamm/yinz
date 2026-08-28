@@ -162,8 +162,8 @@ pub use super::generated_api::api::{
         ScrollToBottomInPaneIdPayload, ScrollToTopInPaneIdPayload, ScrollUpInPaneIdPayload,
         SearchHit as ProtobufSearchHit, SearchRecordingsPayload as ProtobufSearchRecordingsPayload,
         SearchRecordingsResponse as ProtobufSearchRecordingsResponse,
-        SessionListSnapshot as ProtobufSessionListSnapshot, SetFloatingPanePinnedPayload,
-        SetPaneBorderlessPayload, SetPaneColorPayload,
+        SessionListSnapshot as ProtobufSessionListSnapshot, SetContextMenuPayload,
+        SetFloatingPanePinnedPayload, SetPaneBorderlessPayload, SetPaneColorPayload,
         SetPaneFrameStylePayload as ProtobufSetPaneFrameStylePayload,
         SetPaneRegexHighlightsPayload, SetPaneTitlePrefixPayload,
         SetSelfMouseSelectionSupportPayload,
@@ -3005,6 +3005,15 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for SetPaneColor"),
             },
+            Some(CommandName::SetContextMenu) => match protobuf_plugin_command.payload {
+                Some(Payload::SetContextMenuPayload(payload)) => {
+                    Ok(PluginCommand::SetContextMenu {
+                        request_id: payload.request_id,
+                        items: payload.items.into_iter().map(Into::into).collect(),
+                    })
+                },
+                _ => Err("Mismatched payload for SetContextMenu"),
+            },
             Some(CommandName::SetPaneRegexHighlights) => {
                 match protobuf_plugin_command.payload {
                     Some(Payload::SetPaneRegexHighlightsPayload(p)) => {
@@ -5180,6 +5189,13 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     pane_id: Some(pane_id.try_into()?),
                     fg,
                     bg,
+                })),
+            }),
+            PluginCommand::SetContextMenu { request_id, items } => Ok(ProtobufPluginCommand {
+                name: CommandName::SetContextMenu as i32,
+                payload: Some(Payload::SetContextMenuPayload(SetContextMenuPayload {
+                    request_id,
+                    items: items.into_iter().map(Into::into).collect(),
                 })),
             }),
             PluginCommand::SetPaneRegexHighlights(pane_id, highlights) => {
