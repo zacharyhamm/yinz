@@ -1048,6 +1048,8 @@ impl ZellijPlugin for State {
             );
         } else if name == "message_to_plugin" {
             self.message_to_plugin_payload = payload.clone();
+        } else if name == "panic_while_handling_pipe" {
+            panic!("intentional panic for the pipe-release-on-crash test");
         } else if name == "enqueue_queue_job" {
             // payload: the plugin url to queue on "fixture_queue"
             let mut context = BTreeMap::new();
