@@ -1,5 +1,6 @@
 ---
 source: zellij-utils/src/setup.rs
+assertion_line: 682
 expression: "format!(\"{:#?}\", options)"
 ---
 Options {
@@ -7,6 +8,7 @@ Options {
     theme: None,
     theme_dark: None,
     theme_light: None,
+    explicit_theme_hue: None,
     default_mode: None,
     default_shell: None,
     default_cwd: None,

@@ -984,6 +984,13 @@ impl From<crate::input::options::Options>
                     NestedSessionHandling::Never => ProtoNestedSessionHandling::Never as i32,
                 }
             }),
+            explicit_theme_hue: options.explicit_theme_hue.map(|hue| {
+                use crate::client_server_contract::client_server_contract::ThemeHue as ProtoThemeHue;
+                match hue {
+                    crate::data::ThemeHue::Dark => ProtoThemeHue::Dark as i32,
+                    crate::data::ThemeHue::Light => ProtoThemeHue::Light as i32,
+                }
+            }),
         }
     }
 }
@@ -1122,6 +1129,17 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
                         Ok(crate::input::options::NestedSessionHandling::Never)
                     },
                     _ => Err(anyhow!("Invalid NestedSessionHandling value: {}", n)),
+                })
+                .transpose()?,
+            explicit_theme_hue: options
+                .explicit_theme_hue
+                .map(|hue| {
+                    use crate::client_server_contract::client_server_contract::ThemeHue as ProtoThemeHue;
+                    match ProtoThemeHue::try_from(hue).ok() {
+                        Some(ProtoThemeHue::Dark) => Ok(crate::data::ThemeHue::Dark),
+                        Some(ProtoThemeHue::Light) => Ok(crate::data::ThemeHue::Light),
+                        _ => Err(anyhow!("Invalid ThemeHue value: {}", hue)),
+                    }
                 })
                 .transpose()?,
         })

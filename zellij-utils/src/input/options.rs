@@ -1,6 +1,6 @@
 //! Handles cli and configuration options
 use crate::cli::Command;
-use crate::data::{InputMode, WebSharing};
+use crate::data::{InputMode, ThemeHue, WebSharing};
 use clap::{Args, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -183,6 +183,12 @@ pub struct Options {
     /// is missing the static `theme` remains authoritative.
     #[clap(long, value_parser)]
     pub theme_light: Option<String>,
+    /// Pin the session to a dark or light appearance ("dark" or "light"),
+    /// resolved before the first render and kept authoritative over ambient
+    /// host terminal reports (CSI 2031 / DSR 997). When unset, the session
+    /// follows the host terminal.
+    #[clap(long, value_enum, hide_possible_values = true, value_parser)]
+    pub explicit_theme_hue: Option<ThemeHue>,
     /// Set the default mode
     #[clap(long, value_enum, hide_possible_values = true, value_parser)]
     pub default_mode: Option<InputMode>,
@@ -549,6 +555,7 @@ impl Options {
         let theme = other.theme.or_else(|| self.theme.clone());
         let theme_dark = other.theme_dark.or_else(|| self.theme_dark.clone());
         let theme_light = other.theme_light.or_else(|| self.theme_light.clone());
+        let explicit_theme_hue = other.explicit_theme_hue.or(self.explicit_theme_hue);
         let on_force_close = other.on_force_close.or(self.on_force_close);
         let scroll_buffer_size = other.scroll_buffer_size.or(self.scroll_buffer_size);
         let copy_command = other.copy_command.or_else(|| self.copy_command.clone());
@@ -630,6 +637,7 @@ impl Options {
             theme,
             theme_dark,
             theme_light,
+            explicit_theme_hue,
             default_mode,
             default_shell,
             default_cwd,
@@ -739,6 +747,7 @@ impl Options {
         let theme = other.theme.or_else(|| self.theme.clone());
         let theme_dark = other.theme_dark.or_else(|| self.theme_dark.clone());
         let theme_light = other.theme_light.or_else(|| self.theme_light.clone());
+        let explicit_theme_hue = other.explicit_theme_hue.or(self.explicit_theme_hue);
         let on_force_close = other.on_force_close.or(self.on_force_close);
         let scroll_buffer_size = other.scroll_buffer_size.or(self.scroll_buffer_size);
         let copy_command = other.copy_command.or_else(|| self.copy_command.clone());
@@ -813,6 +822,7 @@ impl Options {
             theme,
             theme_dark,
             theme_light,
+            explicit_theme_hue,
             default_mode,
             default_shell,
             default_cwd,

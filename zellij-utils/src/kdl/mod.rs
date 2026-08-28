@@ -4,7 +4,7 @@ use crate::data::{
     BareKey, Direction, FloatingPaneCoordinates, InputMode, KeyWithModifier, LayoutInfo,
     LayoutMetadata, MultiplayerColors, NewPanePlacement, Palette, PaletteColor, PaneId, PaneInfo,
     PaneManifest, PermissionType, Resize, SessionInfo, StyleDeclaration, Styling, TabInfo,
-    WebSharing, DEFAULT_STYLES,
+    ThemeHue, WebSharing, DEFAULT_STYLES,
 };
 use crate::envs::EnvironmentVariables;
 use crate::home::{find_default_config_dir, get_layout_dir};
@@ -2842,6 +2842,16 @@ impl Options {
             .map(|(theme, _entry)| theme.to_string());
         let theme_light = kdl_property_first_arg_as_string_or_error!(kdl_options, "theme_light")
             .map(|(theme, _entry)| theme.to_string());
+        let explicit_theme_hue =
+            match kdl_property_first_arg_as_string_or_error!(kdl_options, "explicit_theme_hue") {
+                Some((string, entry)) => Some(ThemeHue::from_str(string).map_err(|_| {
+                    kdl_parsing_error!(
+                        format!("Invalid value for explicit_theme_hue: '{}'", string),
+                        entry
+                    )
+                })?),
+                None => None,
+            };
         let default_mode =
             match kdl_property_first_arg_as_string_or_error!(kdl_options, "default_mode") {
                 Some((string, entry)) => Some(InputMode::from_str(string).map_err(|_| {
@@ -3044,6 +3054,7 @@ impl Options {
             theme,
             theme_dark,
             theme_light,
+            explicit_theme_hue,
             default_mode,
             default_shell,
             default_cwd,
@@ -3248,6 +3259,35 @@ impl Options {
             Some(node)
         } else if add_comments {
             let mut node = create_node("solarized-light");
+            node.set_leading(format!("{}\n// ", comment_text));
+            Some(node)
+        } else {
+            None
+        }
+    }
+    fn explicit_theme_hue_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
+        let comment_text = format!(
+            "{}\n{}\n{}\n{}\n{}",
+            " ",
+            "// Pin the session to a dark or light appearance, ignoring what the",
+            "// host terminal reports. When unset, the host terminal decides.",
+            "// Options: dark, light",
+            "// ",
+        );
+
+        let create_node = |hue: &ThemeHue| -> KdlNode {
+            let mut node = KdlNode::new("explicit_theme_hue");
+            node.push(format!("{}", hue));
+            node
+        };
+        if let Some(explicit_theme_hue) = &self.explicit_theme_hue {
+            let mut node = create_node(explicit_theme_hue);
+            if add_comments {
+                node.set_leading(format!("{}\n", comment_text));
+            }
+            Some(node)
+        } else if add_comments {
+            let mut node = create_node(&ThemeHue::Dark);
             node.set_leading(format!("{}\n// ", comment_text));
             Some(node)
         } else {
@@ -4967,6 +5007,9 @@ impl Options {
         }
         if let Some(theme_light_node) = self.theme_light_to_kdl(add_comments) {
             nodes.push(theme_light_node);
+        }
+        if let Some(explicit_theme_hue_node) = self.explicit_theme_hue_to_kdl(add_comments) {
+            nodes.push(explicit_theme_hue_node);
         }
         if let Some(default_mode) = self.default_mode_to_kdl(add_comments) {
             nodes.push(default_mode);
