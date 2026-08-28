@@ -77,7 +77,7 @@ pub struct PluginLoadWatch {
 /// second bills the user sixty times a minute for a pane that hasn't changed.
 const MIN_JOB_SECONDS: f64 = 5.0;
 
-/// How many questions from the ask popup may wait for a busy hocus at once.
+/// How many `hocus_ask` questions may wait for a busy hocus at once.
 /// Deep enough that nobody hits it typing at human speed, shallow enough that
 /// a stream which never settles cannot bury the conversation.
 const MAX_QUEUED_ASKS: usize = 8;
@@ -330,17 +330,17 @@ pub struct State {
     last_strip: agents::Strip,
     /// Scheduled prompts, counted down by the timer chain.
     pub jobs: Vec<Job>,
-    /// Questions from the `hocus-ask` popup that arrived while hocus was busy,
+    /// Questions from the `hocus_ask` pipe that arrived while hocus was busy,
     /// oldest first. Drained one per tick by `drain_asks`.
     ///
-    /// A queue rather than a single slot because the popup *tells the user*
+    /// A queue rather than a single slot because a plugin caller is *told*
     /// their question was taken: last-wins would silently drop something
     /// already acknowledged as queued, and first-wins would drop the newer
     /// question with no acknowledgement to match. Answering both in the order
     /// they were asked is the only behaviour that matches what was promised.
     ///
-    /// Capped by `MAX_QUEUED_ASKS`. Past the cap the popup is refused, which is
-    /// an answer the user can see, rather than an unbounded pile of questions
+    /// Capped by `MAX_QUEUED_ASKS`. Past the cap the ask is refused, which is
+    /// an answer the caller can see, rather than an unbounded pile of questions
     /// stacking up behind one wedged stream.
     pub asks: VecDeque<String>,
     job_seq: u64,
@@ -933,7 +933,7 @@ impl State {
                 // a pane would otherwise sit there titled for a question that
                 // can no longer be answered.
                 self.drop_spotlight();
-                // A question the popup was told had been queued must not simply
+                // A question the asker was told had been queued must not simply
                 // vanish. As a notice it survives into the archive and shows up
                 // in /history, and — being a notice — it never reaches the
                 // model, so reopening the chat does not answer it by surprise.

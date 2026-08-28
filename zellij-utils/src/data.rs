@@ -3801,7 +3801,7 @@ impl FromStr for WebSharing {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OverlayKind {
     /// Watches `PaneUpdate` and closes itself once it sees it is no longer focused, so focus may
-    /// be taken from it freely - `hocus-ask`, `file-finder`.
+    /// be taken from it freely - `file-finder`.
     #[default]
     Dismissible,
     /// Closes only on Esc, on submit, or on `Event::Visible(false)`. It has no way to learn that

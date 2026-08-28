@@ -1485,7 +1485,7 @@ fn a_client_switching_into_a_tab_with_a_modal_lands_on_it() {
 }
 
 /// The other half of the rule. A dismissible overlay that gave its focus up - which is how
-/// `hocus-ask` learns to close itself - stays given up: a joining client inherits what the other
+/// `file-finder` learns to close itself - stays given up: a joining client inherits what the other
 /// clients actually have, and nobody has that overlay. Focusing it here would resurrect a dialog
 /// the user already dismissed.
 #[test]

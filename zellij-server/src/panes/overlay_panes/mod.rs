@@ -1,7 +1,7 @@
 //! Panes drawn over the whole session surface, above a tab's own panes and chrome.
 //!
 //! An overlay is *not* on a tab's floating layer. It is a pane the session puts in front of
-//! everything - `file-finder`, `hocus-ask`, `quit-confirmation`, `hocus-new-agent`. A modal
+//! everything - `file-finder`, `quit-confirmation`, `hocus-new-agent`. A modal
 //! (`OverlayKind::Modal`) is an overlay that must not have focus taken from it, because it has no
 //! way to learn that it lost it.
 //!
@@ -824,7 +824,7 @@ impl OverlayPanes {
     /// holding it. `true` means the keyboard is free to move - including when this client held no
     /// overlay focus to begin with.
     ///
-    /// A dismissible overlay (hocus-ask and friends) watches `PaneUpdate` and closes itself once
+    /// A dismissible overlay (file-finder and friends) watches `PaneUpdate` and closes itself once
     /// it sees it is no longer focused; giving the focus up is how it learns. A modal
     /// (hocus-new-agent) only closes on Esc/submit/`Visible(false)` and has no such channel, so
     /// taking the keyboard from it would leave it on screen while input went elsewhere. It keeps

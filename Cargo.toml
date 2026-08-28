@@ -64,7 +64,6 @@ members = [
     "default-plugins/shared-test",
     "default-plugins/hocus",
     "default-plugins/hocus-agents",
-    "default-plugins/hocus-ask",
     "default-plugins/hocus-new-agent",
     "default-plugins/hocus-proto",
     "default-plugins/hocus-agentd",

@@ -212,19 +212,6 @@ keybinds {
             };
             SwitchToMode "Normal"
         }
-        // Ask the running hocus a question without leaving the pane you are in.
-        // A small popup takes one line; on Enter it closes and focus returns to
-        // where it came from. hocus itself is not revealed — open it when you
-        // want to read the answer. Does nothing useful if hocus is not running,
-        // and says so.
-        bind "k" {
-            LaunchOrFocusPlugin "hocus-ask" {
-                floating true
-                overlay true
-                move_to_focused_tab true
-            };
-            SwitchToMode "Normal"
-        }
     }
     tmux {
         bind "[" { SwitchToMode "Scroll"; }
@@ -410,10 +397,6 @@ plugins {
     hocus-agents location="zellij:hocus-agents" {
         shared true
     }
-    // The one-line "ask hocus" popup, bound to Alt a above. Deliberately not
-    // shared: each attached client gets its own prompt buffer. `x`/`y`/`width`/
-    // `height` size it.
-    hocus-ask location="zellij:hocus-ask"
     hocus-new-agent location="zellij:hocus-new-agent"
     hocus-duplicate-agent location="zellij:hocus-new-agent" {
         duplicate_focused true

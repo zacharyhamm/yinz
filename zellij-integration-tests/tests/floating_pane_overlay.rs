@@ -2,8 +2,8 @@
 
 //! An overlay - a pane placed against the whole session surface, above a tab's own panes, rather
 //! than on a tab's floating layer - used to be reachable only by the built-in plugins that called
-//! the low-level floating-open shims directly (`hocus-ask`, `file-finder`; see
-//! `zellij-integration-tests/tests/hocus_ask.rs` and `file_finder.rs`). It is a placement on the
+//! the low-level floating-open shims directly (`file-finder`; see
+//! `zellij-integration-tests/tests/file_finder.rs`). It is a placement on the
 //! `zellij action` CLI surface now: `--overlay`, or `--modal` for one that keeps focus.
 //!
 //! This file exercises that generic path with a plain command pane (not a plugin), and guards the
