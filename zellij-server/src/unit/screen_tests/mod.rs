@@ -1558,6 +1558,27 @@ fn open_floating_pane(
 /// faithful way to ask: `serialize_chunks` writes an absolute goto per character chunk, so where
 /// the cursor ends up is a property of the whole frame and not just of the post-VTE instructions
 /// `Tab::render_cursor` adds.
+/// Where the active pane thinks its cursor is, in absolute surface coordinates. What the frame
+/// then does with it - place it, or leave it hidden because something is drawn over that cell - is
+/// what the tests using this are about.
+fn pane_cursor(screen: &mut Screen, client_id: ClientId) -> (usize, usize) {
+    screen
+        .get_active_tab_mut(client_id)
+        .expect("TEST")
+        .get_active_terminal_cursor_position(client_id)
+        .map(|(x, y, _)| (x, y))
+        .expect("the active pane has a cursor")
+}
+
+/// Give a directly-constructed `Screen` somewhere to render to, and hand back the other end.
+fn screen_wired_to_server(
+    screen: &mut Screen,
+) -> channels::Receiver<(ServerInstruction, ErrorContext)> {
+    let (server_sender, server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    server_receiver
+}
+
 fn render_frame_and_cursor_into(
     screen: &mut Screen,
     receiver: &channels::Receiver<(ServerInstruction, ErrorContext)>,

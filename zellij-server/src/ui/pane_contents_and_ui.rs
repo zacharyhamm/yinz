@@ -271,6 +271,9 @@ impl<'a> PaneContentsAndUi<'a> {
                                 self.pane.x() + x,
                                 self.pane.y() + y,
                                 self.z_index,
+                                // the client being drawn for, not the one whose cursor this is:
+                                // the menu that could hide it is the viewer's own
+                                client_id,
                             ))
                         } else {
                             None

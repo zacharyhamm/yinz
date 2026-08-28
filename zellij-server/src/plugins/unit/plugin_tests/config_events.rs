@@ -671,3 +671,69 @@ pub fn a_second_clients_context_menu_request_loads_its_own_hook_instance() {
          against client 1's, got: {plugin_ids_loaded:?}"
     );
 }
+
+/// A shared hook runs as one instance for the whole session, which every client can reach - but
+/// only once it exists. Before the fix, `shared true` alone was taken as proof of an instance:
+/// the load below was skipped, the dispatch that follows it had no instance to address, and every
+/// right-click in the session was left to fall back on its timeout.
+#[test]
+#[serial(plugin_tests)]
+pub fn a_shared_context_menu_hook_is_loaded_on_the_first_request() {
+    use std::collections::BTreeMap;
+    use zellij_utils::data::ContextMenuContext;
+    use zellij_utils::input::hooks::{HookPoint, Hooks};
+
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread(Some(plugin_host_folder), None);
+
+    let hook_plugin = RunPluginOrAlias::RunPlugin(
+        RunPlugin::from_url(&format!("file:{}", *PLUGIN_FIXTURE))
+            .unwrap()
+            .with_configuration(BTreeMap::from([("shared".to_owned(), "true".to_owned())])),
+    );
+    let _ = plugin_thread_sender.send(PluginInstruction::Reconfigure {
+        client_id: 1,
+        keybinds: None,
+        default_mode: None,
+        default_shell: None,
+        layout_dir: None,
+        user_plugin_dir: None,
+        builtin_plugins_dir: None,
+        hooks: Hooks::from_data(BTreeMap::from([(HookPoint::ContextMenu, hook_plugin)])),
+        context_menu: Default::default(),
+        was_written_to_disk: false,
+    });
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(1));
+
+    let _ = plugin_thread_sender.send(PluginInstruction::RequestContextMenu {
+        context: Box::new(ContextMenuContext {
+            request_id: 1,
+            client_id: 1,
+            ..Default::default()
+        }),
+        client_id: 1,
+    });
+
+    let mut plugin_ids_loaded = std::collections::HashSet::new();
+    let deadline = std::time::Instant::now() + zellij_test_support::default_timeout();
+    while plugin_ids_loaded.is_empty() && std::time::Instant::now() < deadline {
+        let Ok((instruction, _)) =
+            screen_receiver.recv_timeout(std::time::Duration::from_millis(200))
+        else {
+            continue;
+        };
+        if let ScreenInstruction::AddPlugin(_, _, _, _, _, _, plugin_id, ..) = instruction {
+            plugin_ids_loaded.insert(plugin_id);
+        }
+    }
+    teardown();
+
+    assert_eq!(
+        plugin_ids_loaded.len(),
+        1,
+        "a shared hook nobody has loaded yet has to be loaded by the request that needs it, \
+         got: {plugin_ids_loaded:?}"
+    );
+}

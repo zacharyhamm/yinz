@@ -24,6 +24,7 @@
 //!   would keep its glyphs. [`Screen::close_context_menu`] force-renders every tab and the global
 //!   panes, exactly as `advance_notification_animations` does when a toast leaves.
 
+use std::collections::HashMap;
 use std::thread;
 
 use zellij_utils::data::{ContextMenuContext, ContextMenuItem, Event, KeyWithModifier};
@@ -43,6 +44,7 @@ use crate::ui::context_menu::{
     context_menu_chunks, context_menu_contains, context_menu_item_at, context_menu_layout,
     next_selectable, ContextMenuLayout,
 };
+use crate::ui::damage::CellRect;
 use crate::ClientId;
 
 /// How long a menu waits for its hook plugin before falling back to the configured items.
@@ -275,6 +277,34 @@ impl Screen {
         }
         let layout = context_menu_layout(items, menu.anchor, viewport, menu.selected);
         (!layout.is_empty()).then_some(layout)
+    }
+
+    /// The cells these clients' menus will paint into `viewport`.
+    ///
+    /// The same relationship to `render_context_menus` that `notification_cell_rects` has to
+    /// `render_notifications`: one mapping, derived from the one layout function, so what occludes
+    /// the cursor and what is drawn cannot drift apart. Told to `Output` before anything renders,
+    /// because a fake cursor is decided while the panes draw.
+    pub(super) fn context_menu_cell_rects(
+        &self,
+        client_ids: &[ClientId],
+        viewport: Viewport,
+    ) -> HashMap<ClientId, Vec<CellRect>> {
+        client_ids
+            .iter()
+            .filter_map(|client_id| {
+                let layout = self.context_menu_layout_for(*client_id, viewport)?;
+                Some((
+                    *client_id,
+                    vec![CellRect {
+                        x: layout.x,
+                        y: layout.y,
+                        cols: layout.width,
+                        rows: layout.height(),
+                    }],
+                ))
+            })
+            .collect()
     }
 
     /// Paint the menus for these clients, on top of everything already in the frame.
@@ -538,6 +568,13 @@ impl Screen {
         let senders = self.bus.senders.clone();
         let default_mode = self.default_mode_info.mode;
         let default_shell = self.default_shell_action.clone();
+        // `UserInput` calls this a terminal id, and the only other place the two are related -
+        // routing a CLI action - reads one back as `PaneId::Terminal`. A menu over a plugin pane
+        // therefore has no terminal to name.
+        let terminal_id = match pane_id {
+            PaneId::Terminal(id) => Some(id),
+            PaneId::Plugin(_) => None,
+        };
         let spawned = thread::Builder::new()
             .name("context_menu_actions".to_string())
             .spawn(move || {
@@ -549,6 +586,18 @@ impl Screen {
                         .send_to_screen(ScreenInstruction::FocusPaneWithId(
                             pane_id, false, false, client_id, None,
                         ))
+                        .non_fatal();
+                    // An item's action is something the user performed, so the plugins holding
+                    // `InterceptInput` and watching `Event::UserAction` have to see it - the key
+                    // and CLI paths in `route.rs` both send this before routing, and a menu is
+                    // just a third way of asking for the same action.
+                    senders
+                        .send_to_plugin(PluginInstruction::UserInput {
+                            client_id,
+                            action: action.clone(),
+                            terminal_id,
+                            cli_client_id: None,
+                        })
                         .non_fatal();
                     // Named rather than left as `None`: `new_pane_routing` consults it for
                     // `no_focus`/`near_current_pane` placements, which without it would be placed

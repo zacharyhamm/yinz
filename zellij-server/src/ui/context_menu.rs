@@ -113,7 +113,11 @@ fn truncate_to_width(text: &str, max: usize) -> String {
     let mut used = 0;
     let mut out = String::new();
     for character in text.chars() {
-        let character_width = character.width().unwrap_or(0).max(1);
+        // Zero for a combining mark, which is what `UnicodeWidthStr::width` above and
+        // `TerminalCharacter::new_styled` both say it is. Flooring it at one would disagree with
+        // the width this menu was laid out to, and would drop an accent from the character it
+        // belongs to while keeping that character.
+        let character_width = character.width().unwrap_or(0);
         if used + character_width > max {
             break;
         }
@@ -368,7 +372,10 @@ pub fn context_menu_chunks(
 
         let mut used = 0;
         for character in row.label.chars() {
-            let character_width = character.width().unwrap_or(0).max(1);
+            // Zero-width for the same reason `truncate_to_width` says: `used` is compared against
+            // widths the layout measured with `UnicodeWidthStr`, and the padding below is derived
+            // from it, so a mark counted as a column here makes the row narrower than its border.
+            let character_width = character.width().unwrap_or(0);
             if used + character_width > text_width {
                 break;
             }
