@@ -436,6 +436,101 @@ permission prompt it raised would have no pane to be answered in.
 Two things a queue does not do: remember jobs across sessions, and tell an enqueuer that has
 since unloaded anything - its events are dropped, and the job runs to completion regardless.
 
+## Hocus extensions
+
+Hocus discovers direct `.lua` files in the `hocus` folder under `user_plugin_dir` and loads them
+headlessly. A file named `hocus/weather.lua` owns the `weather_` tool namespace. File and local
+tool names are lower snake case, so a local tool named `forecast` is advertised to the model and
+available at the prompt as `weather_forecast` and `/weather_forecast`.
+
+An extension registers its complete tool set over a plugin message. Register after permissions
+are granted, and again whenever Hocus broadcasts `hocus_extension_discover`: that is how a Hocus
+reload finds extensions that are still running.
+
+```lua
+local zellij = require("zellij")
+local M = {}
+
+local function register()
+  zellij.message_to_plugin {
+    message_name = "hocus_extension_register",
+    message_payload = zellij.json.encode {
+      version = 1,
+      namespace = M.config.hocus_extension_name,
+      path = M.config.hocus_extension_path,
+      tools = {
+        {
+          name = "forecast",
+          description = "Return a short forecast for a city.",
+          parameters = {
+            type = "object",
+            properties = { city = { type = "string" } },
+            required = { "city" },
+          },
+          safety = "read_only",
+        },
+      },
+    },
+  }
+end
+
+local function reply(call, result)
+  zellij.message_to_plugin {
+    destination_plugin_id = call.reply_to,
+    message_name = "hocus_extension_result",
+    message_payload = zellij.json.encode {
+      version = 1,
+      call_id = call.call_id,
+      result = result,
+    },
+  }
+end
+
+function M.load(config)
+  M.config = config
+  zellij.subscribe { "permission_request_result" }
+  zellij.request_permission { "message_and_launch_other_plugins" }
+end
+
+zellij.on("permission_request_result", register)
+
+function M.pipe(message)
+  if message.name == "hocus_extension_discover" then
+    register()
+    return
+  end
+  if message.name ~= "hocus_extension_call" then return end
+
+  local call = zellij.json.decode(message.payload)
+  if call.version ~= 1 or call.tool ~= "forecast" then return end
+  reply(call, "Clear skies over " .. tostring(call.arguments.city))
+end
+
+return M
+```
+
+Every tool declares one safety mode:
+
+| Mode | Planning mode | Confirmation |
+|---|---|---|
+| `read_only` | available | none |
+| `automatic` | withheld | none |
+| `confirm` | withheld | required before every model call |
+
+A `confirm` tool also needs a non-empty `consequence`, written as the sentence the confirmation
+shows (for example, `consequence = "posts the message to the shared channel"`). Typing a slash
+command is already a user decision, so manual `/weather_forecast` calls do not ask again.
+
+These safety modes do not grant authority. Every host command the Lua code calls still goes
+through Zellij's plugin permissions. When Hocus writes the source, its `plugin_write` confirmation
+shows and pre-grants the permissions requested in the file. A file installed by hand gets the
+normal permission prompt when Hocus first loads its suppressed pane.
+
+Use `plugin_write name=hocus/weather`, then `plugin_reload name=hocus/weather`. The reload runs
+the extension in the background and reports the names it registered. A registration or runtime
+error is in `plugin_log name=hocus/weather`. There is deliberately no file watcher: reload is the
+point at which a complete edit becomes live.
+
 ## Hooks
 
 A **hook point** is a moment in the session's life that a plugin can own. Bind one in the config:

@@ -169,7 +169,12 @@ const FAMILIES: &[(&str, &[&str])] = &[
 /// transcript renders through `wrap` rather than through the markdown pass, so
 /// any syntax here would be shown literally. The grouping is the whole benefit
 /// and it survives being plain.
+#[cfg(test)]
 pub fn commands() -> String {
+    commands_with(Vec::new())
+}
+
+pub fn commands_with(extra: Vec<String>) -> String {
     let mut groups: Vec<(String, Vec<String>)> = vec![(
         "hocus".to_owned(),
         crate::LOCAL_COMMANDS
@@ -178,7 +183,9 @@ pub fn commands() -> String {
             .collect(),
     )];
 
-    let all = tools::names();
+    let mut all = tools::names();
+    all.extend(extra);
+    all.sort();
     let mut placed: Vec<String> = Vec::new();
     for (family, prefixes) in FAMILIES {
         let names: Vec<String> = all

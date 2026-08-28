@@ -24,7 +24,7 @@ impl State {
             // Here rather than in `run_head`, which is what exempts the user:
             // `run_manual` calls `run_head` directly, and typing `/close_pane`
             // is a person acting, not the model slipping the mode.
-            if self.is_planning() && !tools::READ_ONLY.contains(&call.name.as_str()) {
+            if self.is_planning() && !self.tool_is_read_only(&call.name) {
                 let refusal = format!(
                     "refused: planning mode is on, so `{}` is not available. \
                      Finish the plan; the user can approve it and you will get the tool back.",
@@ -37,7 +37,7 @@ impl State {
                 self.finish_head(refusal);
                 continue;
             }
-            let needs_confirmation = tools::call_needs_confirmation(&call);
+            let needs_confirmation = self.call_needs_confirmation(&call);
             if needs_confirmation && !self.job_auto_confirm {
                 self.status = Status::ConfirmingTool;
                 self.pin_to_bottom();
@@ -47,7 +47,7 @@ impl State {
                 // a scheduled run with `show: false` never opens it at all. A
                 // toast is drawn over whatever pane you are actually in, so the
                 // ask cannot stall unseen with every other job queued behind it.
-                notify(&tools::confirmation_toast(&call));
+                notify(&self.confirmation_toast(&call));
                 // And for the calls that name a pane, the pane itself: the toast
                 // says "types into pane 7", this is what puts pane 7 in front of
                 // you, wearing a label, before you agree to it.
@@ -104,6 +104,9 @@ impl State {
     /// Dispatch the head. Returns whether the queue advanced — `false` means the
     /// result is deferred and `pump_tools` must stop and wait.
     pub(crate) fn run_head(&mut self, call: &ToolCall) -> bool {
+        if self.extensions.tool(&call.name).is_some() {
+            return self.start_extension_tool(call);
+        }
         // Needs the resolved config and defers on a web request, neither of
         // which tools::dispatch can reach.
         if call.name == "web_search" {
@@ -143,6 +146,69 @@ impl State {
         true
     }
 
+    pub(crate) fn tool_is_read_only(&self, name: &str) -> bool {
+        tools::READ_ONLY.contains(&name)
+            || self
+                .extensions
+                .tool(name)
+                .is_some_and(|tool| tool.safety == extensions::Safety::ReadOnly)
+    }
+
+    pub(crate) fn call_needs_confirmation(&self, call: &ToolCall) -> bool {
+        self.extensions.tool(&call.name).map_or_else(
+            || tools::call_needs_confirmation(call),
+            |tool| tool.safety == extensions::Safety::Confirm,
+        )
+    }
+
+    pub(crate) fn confirmation_detail(&self, call: &ToolCall) -> Vec<String> {
+        let Some(tool) = self.extensions.tool(&call.name) else {
+            return tools::confirmation_detail(call);
+        };
+        let mut lines = vec![call.name.clone()];
+        if let Some(consequence) = &tool.consequence {
+            lines.push(format!("  {consequence}"));
+        }
+        lines.extend(
+            tools::argument_lines(call)
+                .into_iter()
+                .map(|line| format!("  {line}")),
+        );
+        lines
+    }
+
+    fn confirmation_toast(&self, call: &ToolCall) -> String {
+        let mut lines = vec![tools::TOAST_HEADLINE.to_owned()];
+        lines.extend(self.confirmation_detail(call));
+        lines.join("\n")
+    }
+
+    fn start_extension_tool(&mut self, call: &ToolCall) -> bool {
+        let Some(tool) = self.extensions.tool(&call.name).cloned() else {
+            return true;
+        };
+        let arguments = match serde_json::from_str(&call.arguments) {
+            Ok(arguments) => arguments,
+            Err(error) => {
+                self.finish_head(format!("invalid arguments for {}: {error}", call.name));
+                return true;
+            },
+        };
+        let payload = serde_json::to_string(&extensions::Call {
+            version: extensions::VERSION,
+            call_id: &call.id,
+            tool: &tool.local_name,
+            arguments,
+            reply_to: self.own_plugin_id,
+        })
+        .expect("serializing an extension call cannot fail");
+        extensions::call(tool.owner, payload);
+        self.status = Status::AwaitingExtension;
+        self.pin_to_bottom();
+        self.arm_timer(FRAME_SECONDS);
+        false
+    }
+
     /// Run a tool the user typed as `/name key=value …`.
     ///
     /// Recorded as a real call-and-result pair rather than a notice, so the model
@@ -156,7 +222,7 @@ impl State {
         self.pin_to_bottom();
         let line = line.trim();
         if line == "/" || line == "/help" {
-            let help = present::commands();
+            let help = present::commands_with(self.extensions.names());
             self.messages.push(Message::notice(help.clone()));
             self.log(
                 "notice",
