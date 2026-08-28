@@ -308,6 +308,9 @@ pub struct State {
     /// transcript — re-wraps nothing. See `ui::TranscriptKey` for why the key is
     /// sufficient.
     pub transcript_cache: Option<(ui::TranscriptKey, ui::Transcript)>,
+    /// The awaiting plan is rendered narrower inside its frame, so it has its
+    /// own cache rather than making every keystroke parse the markdown again.
+    pub plan_cache: Option<(ui::PlanKey, Vec<ui::VLine>)>,
     /// Which archived chat this conversation is being written back to. `None`
     /// until the first save, which is what makes an untouched pane leave no file.
     chat_id: Option<u64>,
@@ -587,6 +590,7 @@ impl Default for State {
             client: 0,
             transcript_rows: 0,
             transcript_cache: None,
+            plan_cache: None,
             chat_id: None,
             saved: (0, 0),
             parked: Vec::new(),

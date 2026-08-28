@@ -94,6 +94,7 @@ impl State {
     /// Lift the foreground conversation out, leaving an empty one behind.
     pub(crate) fn take_chat(&mut self) -> Chat {
         self.transcript_cache = None;
+        self.plan_cache = None;
         Chat {
             messages: std::mem::take(&mut self.messages),
             status: std::mem::take(&mut self.status),
@@ -119,6 +120,7 @@ impl State {
     /// always paired with a `take_chat`.
     pub(crate) fn put_chat(&mut self, chat: Chat) {
         self.transcript_cache = None;
+        self.plan_cache = None;
         self.messages = chat.messages;
         self.status = chat.status;
         self.stream = chat.stream;
@@ -916,6 +918,7 @@ impl State {
         self.stream = None;
         self.reply_at = None;
         self.messages.clear();
+        self.plan_cache = None;
         self.chat_id = None;
         self.saved = self.fingerprint();
         self.picker = None;

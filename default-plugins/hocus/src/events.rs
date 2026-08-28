@@ -1099,6 +1099,7 @@ impl State {
                         // and is still researching; an error or an empty
                         // response leaves the mode alone to be retried.
                         if self.is_planning() {
+                            self.plan_cache = None;
                             self.plan = Plan::AwaitingApproval;
                             self.pin_to_bottom();
                             // The sidebar is very often not what is being looked
