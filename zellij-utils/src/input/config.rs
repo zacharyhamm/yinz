@@ -1518,6 +1518,22 @@ mod config_test {
     }
 
     #[test]
+    fn a_separator_with_children_is_a_config_error() {
+        let err =
+            Config::from_kdl("context_menu {\n separator {\n CloseFocus\n }\n}", None).unwrap_err();
+        let message = format!("{err:?}");
+        assert!(message.contains("separator"), "{message}");
+    }
+
+    #[test]
+    fn a_separator_with_a_property_is_a_config_error() {
+        let err =
+            Config::from_kdl("context_menu {\n separator shortcut=\"x\"\n}", None).unwrap_err();
+        let message = format!("{err:?}");
+        assert!(message.contains("separator"), "{message}");
+    }
+
+    #[test]
     fn context_menu_survives_serialization() {
         let config = Config::from_kdl(
             "context_menu {\n \"Copy\" shortcut=\"Ctrl-c\" {\n Copy\n }\n separator\n}",

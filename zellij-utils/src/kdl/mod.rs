@@ -5926,6 +5926,13 @@ fn context_menu_from_kdl(
             let name_node = item_node.name();
             let label = name_node.value();
             if label == "separator" {
+                if item_node.children().is_some() || !item_node.entries().is_empty() {
+                    return Err(ConfigError::new_kdl_error(
+                        "'separator' takes no children or properties".to_string(),
+                        name_node.span().offset(),
+                        name_node.span().len(),
+                    ));
+                }
                 items.push(ContextMenuItem::separator());
                 continue;
             }
