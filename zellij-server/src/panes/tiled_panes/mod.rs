@@ -731,6 +731,10 @@ impl TiledPanes {
                 let mut position_and_size = pane.current_geom();
                 let is_stacked = position_and_size.is_stacked();
                 let is_flexible = !position_and_size.rows.is_fixed();
+                // A collapsed stack member is a single title row with no content of its
+                // own, so it never reserves a title row. A fixed-size pane outside a stack
+                // does: its title is drawn over its own top row.
+                let is_one_liner_in_stack = is_stacked && !is_flexible;
                 let pane_is_borderless = pane.borderless();
                 if let Some(position_and_size_of_stack) = position_and_size
                     .stacked
@@ -741,7 +745,7 @@ impl TiledPanes {
                 let (pane_columns_offset, pane_rows_offset) =
                     pane_content_offset(&position_and_size, &boundary_viewport);
                 let reserve_title_row = if draws_titles {
-                    !pane_is_borderless && is_flexible && !single_selectable_tiled_pane
+                    !pane_is_borderless && !single_selectable_tiled_pane && !is_one_liner_in_stack
                 } else {
                     is_stacked && is_flexible
                 };
