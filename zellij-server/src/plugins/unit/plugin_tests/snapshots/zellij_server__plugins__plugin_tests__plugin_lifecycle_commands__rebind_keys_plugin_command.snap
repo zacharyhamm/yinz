@@ -226,5 +226,6 @@ Some(
             ),
         ],
         write_config_to_disk: true,
+        plugin_id: None,
     },
 )

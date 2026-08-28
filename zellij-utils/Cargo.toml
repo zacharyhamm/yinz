@@ -59,6 +59,7 @@ suggest = { workspace = true }
 names = { workspace = true }
 rusqlite = { version = "0.30", default-features = false, features = ["bundled"] }
 notify = { workspace = true }
+mlua = { workspace = true }
 vte = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]

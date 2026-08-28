@@ -257,6 +257,7 @@ enum CommandName {
   FsCreateDir = 267;
   FsRename = 268;
   GrantPluginPermissions = 269;
+  RegisterDefaultKeybindings = 270;
 }
 
 message PluginCommand {
@@ -454,6 +455,7 @@ message PluginCommand {
     FsCreateDirPayload fs_create_dir_payload = 208;
     FsRenamePayload fs_rename_payload = 209;
     GrantPluginPermissionsPayload grant_plugin_permissions_payload = 210;
+    string register_default_keybindings_payload = 211;
   }
 }
 

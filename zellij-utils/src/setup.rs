@@ -372,10 +372,7 @@ impl Setup {
         let user_plugin_dir =
             user_plugin_dir_or_default(config_options.user_plugin_dir.clone(), config_dir.clone());
         let system_data_dir = system_data_dir();
-        let config_file = opts
-            .config
-            .clone()
-            .or_else(|| config_dir.clone().map(|p| p.join(CONFIG_NAME)));
+        let config_file = Config::config_file_path(opts);
 
         // according to
         // https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda
@@ -422,8 +419,8 @@ impl Setup {
             message.push_str("[CONFIG FILE]: Not Found\n");
             writeln!(
                 &mut message,
-                " By default zellij looks for a file called [{}] in the configuration directory",
-                CONFIG_NAME
+                " By default zellij looks for [config.lua], then [{}], in the configuration directory",
+                CONFIG_NAME,
             )
             .unwrap();
         }

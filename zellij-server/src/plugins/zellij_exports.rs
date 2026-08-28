@@ -90,7 +90,9 @@ use zellij_utils::{
         actions::Action,
         command::{OpenFilePayload, RunCommand, RunCommandAction, TerminalAction},
         config::ConfigError,
+        keybinds::Keybinds,
         layout::{Layout, RunPluginOrAlias, TabLayoutInfo},
+        options::Options,
     },
     plugin_api::{
         event::{
@@ -692,6 +694,9 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 keys_to_unbind,
                 write_config_to_disk,
             } => rebind_keys(env, keys_to_rebind, keys_to_unbind, write_config_to_disk)?,
+            PluginCommand::RegisterDefaultKeybindings(keybindings) => {
+                register_default_keybindings(env, keybindings)?
+            },
             PluginCommand::ListClients => list_clients(env),
             PluginCommand::ChangeHostFolder(new_host_folder) => {
                 change_host_folder(env, new_host_folder)
@@ -3374,9 +3379,42 @@ fn rebind_keys(
             keys_to_rebind,
             keys_to_unbind,
             write_config_to_disk,
+            plugin_id: None,
         })
         .with_context(err_context)?;
     Ok(())
+}
+
+fn register_default_keybindings(env: &PluginEnv, keybindings: String) -> Result<()> {
+    let parsed = Keybinds::from_string(keybindings, Keybinds::default(), &Options::default())
+        .map_err(|error| anyhow!("{error}"))?;
+    let mut keys_to_rebind = vec![];
+    for (mode, bindings) in parsed.0 {
+        for (key, mut actions) in bindings {
+            for action in &mut actions {
+                if let Action::KeybindPipe {
+                    name: Some(name),
+                    plugin_id,
+                    ..
+                } = action
+                {
+                    if name.starts_with("__zellij_default_keybinding:") {
+                        *plugin_id = Some(env.plugin_id);
+                    }
+                }
+            }
+            keys_to_rebind.push((mode, key, actions));
+        }
+    }
+    env.senders
+        .send_to_server(ServerInstruction::RebindKeys {
+            client_id: env.client_id,
+            keys_to_rebind,
+            keys_to_unbind: vec![],
+            write_config_to_disk: false,
+            plugin_id: Some(env.plugin_id),
+        })
+        .context("failed to register default keybindings")
 }
 
 fn switch_to_mode(env: &PluginEnv, input_mode: InputMode) {
@@ -7080,9 +7118,9 @@ fn command_permission(command: &PluginCommand) -> Option<PermissionType> {
         | PluginCommand::DataCount { .. }
         | PluginCommand::DataWatch { .. }
         | PluginCommand::DataUnwatch { .. } => PermissionType::PluginData,
-        PluginCommand::RebindKeys { .. } | PluginCommand::Reconfigure(..) => {
-            PermissionType::Reconfigure
-        },
+        PluginCommand::RebindKeys { .. }
+        | PluginCommand::RegisterDefaultKeybindings(..)
+        | PluginCommand::Reconfigure(..) => PermissionType::Reconfigure,
         PluginCommand::ChangeHostFolder(..) => PermissionType::FullHdAccess,
         // Nominal: the handler refuses anything that is not a builtin, and a builtin is never
         // asked. Listed so that the command is not permissionless on paper.

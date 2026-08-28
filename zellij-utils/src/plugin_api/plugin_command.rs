@@ -3295,6 +3295,14 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for FinishQueueJob"),
             },
+            Some(CommandName::RegisterDefaultKeybindings) => {
+                match protobuf_plugin_command.payload {
+                    Some(Payload::RegisterDefaultKeybindingsPayload(keybindings)) => {
+                        Ok(PluginCommand::RegisterDefaultKeybindings(keybindings))
+                    },
+                    _ => Err("Mismatched payload for RegisterDefaultKeybindings"),
+                }
+            },
             None => Err("Unrecognized plugin command"),
         }
     }
@@ -5462,6 +5470,10 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     payload,
                 })),
             }),
+            PluginCommand::RegisterDefaultKeybindings(keybindings) => Ok(ProtobufPluginCommand {
+                name: CommandName::RegisterDefaultKeybindings as i32,
+                payload: Some(Payload::RegisterDefaultKeybindingsPayload(keybindings)),
+            }),
         }
     }
 }
@@ -6560,6 +6572,19 @@ impl From<SearchHit> for ProtobufSearchHit {
 mod tests {
     use super::*;
     use crate::data::{CommandToRun, GitCheckout, PluginCommand};
+
+    #[test]
+    fn default_keybindings_survive_the_wire() {
+        let protobuf: ProtobufPluginCommand = PluginCommand::RegisterDefaultKeybindings(
+            "keybinds { normal { bind \"x\" { Quit; }; }; }".to_owned(),
+        )
+        .try_into()
+        .unwrap();
+        let decoded: PluginCommand = protobuf.try_into().unwrap();
+        assert!(
+            matches!(decoded, PluginCommand::RegisterDefaultKeybindings(keybindings) if keybindings.contains("Quit"))
+        );
+    }
 
     #[test]
     fn git_checkout_command_survives_the_wire() {

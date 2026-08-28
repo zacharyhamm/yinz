@@ -569,6 +569,13 @@ impl WasmBridge {
     }
     pub fn unload_plugin(&mut self, pid: PluginId) -> Result<()> {
         info!("Bye from plugin {}", pid);
+        let _ = self.senders.send_to_server(ServerInstruction::RebindKeys {
+            client_id: 0,
+            keys_to_rebind: vec![],
+            keys_to_unbind: vec![],
+            write_config_to_disk: false,
+            plugin_id: Some(pid),
+        });
         self.shared_plugin_ids.remove(&pid);
 
         // Remove from plugin_map on main thread. A plugin whose loader has not run yet has
