@@ -460,6 +460,9 @@ local tuple_fields = {
   -- here. All five must be given - serde counts a tuple variant's elements, and
   -- `max_bytes_returned` being an `Option` makes it nullable, not absent.
   run_command = { "command", "env_variables", "cwd", "context", "max_bytes_returned" },
+  -- Three arguments of three different meanings, the last of them a nested enum: which of the
+  -- three a bare positional table meant is unguessable at the call site.
+  open_command_pane_in_git_checkout_near_plugin = { "command", "source_directory", "checkout" },
 }
 
 --- Turn `{ tab_index = 0, name = "logs" }` into `{ 0, "logs" }` for the commands above. A table
