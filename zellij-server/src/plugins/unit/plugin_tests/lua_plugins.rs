@@ -5,8 +5,10 @@
 //! loaded, subscribed, updated and rendered by exactly the same code.
 
 use super::*;
+use crate::plugins::PluginId;
 use zellij_test_support::Watched;
 use zellij_utils::input::command::TerminalAction;
+use zellij_utils::input::hooks::HookPoint;
 
 /// Load the Lua fixture and return everything the screen was told to draw for it.
 fn rendered_output(instructions: &[ScreenInstruction]) -> Vec<String> {
@@ -700,6 +702,147 @@ pub fn the_agent_exit_hook_renders_the_screen_it_replaced() {
     );
     assert!(rendered.contains("create another agent"), "got: {rendered}");
     assert!(rendered.contains("close pane"), "got: {rendered}");
+}
+
+/// The `AddPlugin` a hook produces, as (plugin id, pane it replaces).
+///
+/// Asserted on rather than counted: a hook that opens *something* is not the contract - the
+/// contract is that it opens over the pane that exited, which is what makes the terminal pane
+/// go behind it instead of staying on screen with its exit code.
+fn hook_panes_opened(instructions: &[ScreenInstruction]) -> Vec<(PluginId, PaneId)> {
+    instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            ScreenInstruction::AddPlugin(
+                _,
+                true, // should_be_open_in_place
+                _,
+                _,
+                _,
+                _,
+                plugin_id,
+                Some(pane_id_to_replace),
+                ..,
+            ) => Some((*plugin_id, *pane_id_to_replace)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn the_agent_exit_hook_opens_a_pane_in_place_of_the_one_that_exited() {
+    // The whole of what a hook promises: the pane that exited is replaced by the plugin bound
+    // to the point. Driven through `RunHook`, the way the screen fires it - the tests around
+    // this one load the plugin directly, which is the half that was already covered.
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread(Some(plugin_host_folder), None);
+    let client_id = 1;
+
+    let received_screen_instructions = Watched::new(vec![]);
+    let screen_thread = log_actions_in_thread!(
+        received_screen_instructions,
+        ScreenInstruction::AddPlugin,
+        screen_receiver,
+        1
+    );
+
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+    let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
+        point: HookPoint::AgentExit,
+        pane_id: PaneId::Terminal(7),
+        payload: agent_exit_payload(),
+        client_id,
+    });
+    screen_thread.join().unwrap();
+    teardown();
+
+    let opened = hook_panes_opened(&received_screen_instructions.lock());
+    assert_eq!(
+        opened.iter().map(|(_, pane)| *pane).collect::<Vec<_>>(),
+        vec![PaneId::Terminal(7)],
+        "expected the hook to open over pane 7, got: {:?}",
+        received_screen_instructions.lock()
+    );
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn the_agent_exit_hook_opens_again_after_the_first_one_is_closed() {
+    // The hook's own flow: it offers to restart the agent, and a restarted agent exits again -
+    // with the same pane, cwd, command and exit code, so with the same payload and therefore
+    // the same plugin identity as the hook that has just closed.
+    //
+    // Worth pinning because plugin identity is (location, configuration) and the hook's
+    // configuration *is* its payload: the second firing looks identical to the first, and
+    // anything that dedupes on that identity would answer it with the instance that has just
+    // gone. The pipe in the middle is a plugin lookup landing between the two, which is the
+    // shape hocus produces continuously - it must not change the answer.
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread(Some(plugin_host_folder), None);
+    let client_id = 1;
+
+    let received_screen_instructions = Watched::new(vec![]);
+    let screen_thread = log_actions_in_thread!(
+        received_screen_instructions,
+        ScreenInstruction::AddPlugin,
+        screen_receiver,
+        2
+    );
+
+    let fire = || {
+        let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
+            point: HookPoint::AgentExit,
+            pane_id: PaneId::Terminal(7),
+            payload: agent_exit_payload(),
+            client_id,
+        });
+    };
+
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+    fire();
+    // Waited for rather than slept past: the id of the first hook pane is what has to be
+    // unloaded, and it is not known until the screen has been told about it.
+    let first = received_screen_instructions.wait_until(
+        "the first hook pane",
+        zellij_test_support::default_timeout(),
+        |instructions| hook_panes_opened(instructions).first().map(|(id, _)| *id),
+    );
+    // A lookup of the same plugin while the first hook is still up, between the two firings.
+    let _ = plugin_thread_sender.send(PluginInstruction::CliPipe {
+        pipe_id: "cache-warmer".to_owned(),
+        name: "ping".to_owned(),
+        payload: None,
+        plugin: Some("zellij:agent-exit".to_owned()),
+        args: None,
+        configuration: Some(agent_exit_payload()),
+        floating: Some(false),
+        pane_id_to_replace: None,
+        pane_title: None,
+        cwd: None,
+        skip_cache: false,
+        cli_client_id: client_id,
+    });
+    let _ = plugin_thread_sender.send(PluginInstruction::Unload(first));
+    fire();
+    screen_thread.join().unwrap();
+    teardown();
+
+    let opened = hook_panes_opened(&received_screen_instructions.lock());
+    assert_eq!(
+        opened.iter().map(|(_, pane)| *pane).collect::<Vec<_>>(),
+        vec![PaneId::Terminal(7), PaneId::Terminal(7)],
+        "expected a second hook pane over pane 7, got: {:?}",
+        received_screen_instructions.lock()
+    );
+    assert_ne!(
+        opened[0].0, opened[1].0,
+        "the second hook is a new instance, not the closed one named again"
+    );
 }
 
 #[test]

@@ -1374,19 +1374,23 @@ impl State {
             Err(error) => return error,
         };
         let result = if matches!(checkout, GitCheckout::Current) {
-            let host = ToolCall {
-                id: String::new(),
-                name: "new_pane".to_owned(),
-                arguments: serde_json::json!({
-                    // From the plan, not from `args`: `agent`, `model` and `prompt`
-                    // are all in here, and none of them is a key `new_pane` knows.
-                    "command": command.path.display().to_string(),
-                    "args": command.args,
-                    "cwd": cwd,
-                })
-                .to_string(),
+            // From the plan, not from `args`: `agent`, `model` and `prompt` are all in
+            // `command`, and none of them is a key `new_pane` knows. Nothing else of `args`
+            // comes along - that was true of the `new_pane` call this replaces, and carrying
+            // more now would be a behaviour change wearing a refactor's clothes.
+            let pane = tools::Args {
+                command: Some(serde_json::Value::String(
+                    command.path.display().to_string(),
+                )),
+                args: command.args,
+                cwd,
+                ..tools::Args::default()
             };
-            tools::dispatch(&host)
+            // The one thing this route did not do. `spawn_in_checkout` goes through a host
+            // call that marks the pane as an agent's itself; an agent with no branch to cut
+            // opens an ordinary command pane, so it has to say so here or the `agent_exit`
+            // hook will never fire for it.
+            tools::new_pane_with_context(&pane, launch::agent_pane_context())
         } else {
             tools::spawn_in_checkout(args, cwd)
         };
