@@ -16,7 +16,7 @@
 //! so it is gated the way [`crate::store::Host`] is, with a stub on the host triple that
 //! fails loudly rather than quietly answering nothing.
 
-use zellij_tile::prelude::{CommandToRun, GitCheckout, PaneId};
+use zellij_tile::prelude::{CommandToRun, GitCheckout, PaneId, HOCUS_AGENT_PANE_CONTEXT};
 
 /// The branch a new one is cut from when the caller does not say.
 ///
@@ -192,6 +192,17 @@ pub fn open(_spec: &Spec, _source_directory: std::path::PathBuf) -> Result<PaneI
 /// contributes its own block - `shared true` - to that configuration, and the keybindings open
 /// both halves by alias. A second spelling would open a second pane rather than reach the one
 /// already there.
+/// The context that marks a command pane as an agent's.
+///
+/// The host reads this off the pane's originating plugin when the command exits, and it is
+/// what tells `agent_exit` apart from an ordinary command pane holding on its exit code.
+/// One spelling, here, because every route that starts an agent has to carry it: the two
+/// host calls that set it themselves, and `agent_spawn`'s no-checkout route, which opens an
+/// ordinary command pane and so has to say so.
+pub fn agent_pane_context() -> std::collections::BTreeMap<String, String> {
+    std::collections::BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), "true".to_owned())])
+}
+
 pub const HOCUS_ALIAS: &str = "hocus";
 pub const HOCUS_AGENTS_ALIAS: &str = "hocus-agents";
 

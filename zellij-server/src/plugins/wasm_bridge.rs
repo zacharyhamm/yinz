@@ -2005,6 +2005,24 @@ impl WasmBridge {
                 }
             })
     }
+    /// Whether an instance of `run_plugin` is already running or on its way up.
+    ///
+    /// Asked of the live `plugin_map` and of `loading_plugins`, not of `cached_plugin_map`:
+    /// this answers "should a hook open a pane", and a hook that opened none because a
+    /// snapshot said so would leave the pane it was fired for showing nothing but its exit
+    /// code. The snapshot is maintained correctly today; not depending on it is one less
+    /// thing between an agent exiting and the screen that says so.
+    pub(crate) fn plugin_instance_exists(&self, run_plugin: &RunPlugin) -> bool {
+        if self
+            .plugin_id_of_loading_plugin(&run_plugin.location, &run_plugin.configuration)
+            .is_some()
+        {
+            return true;
+        }
+        self.all_plugin_ids_for_plugin_location(&run_plugin.location, &run_plugin.configuration)
+            .map(|plugin_ids| !plugin_ids.is_empty())
+            .unwrap_or(false)
+    }
     fn all_plugin_ids_for_plugin_location(
         &self,
         plugin_location: &RunPluginLocation,

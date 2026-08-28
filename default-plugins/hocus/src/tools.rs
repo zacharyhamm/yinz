@@ -3240,6 +3240,17 @@ mod host {
     }
 
     fn new_pane(args: &Args) -> String {
+        new_pane_with_context(args, BTreeMap::new())
+    }
+
+    /// `new_pane`, plus the context the pane's originating plugin should carry.
+    ///
+    /// Only `agent_spawn`'s no-checkout route passes anything: an agent started without a
+    /// branch to cut lands here rather than in `spawn_in_checkout`, and the host sets the
+    /// agent marker itself only on the git-checkout call. Without this it would open a pane
+    /// the host cannot tell from any other command pane, and the `agent_exit` hook would
+    /// never fire for it.
+    pub fn new_pane_with_context(args: &Args, context: BTreeMap<String, String>) -> String {
         let words = args.command_words();
         let cwd = args.cwd.clone().map(PathBuf::from);
 
@@ -3252,11 +3263,11 @@ mod host {
                     ..Default::default()
                 };
                 if args.in_new_tab {
-                    open_command_pane_in_new_tab(command, BTreeMap::new()).1
+                    open_command_pane_in_new_tab(command, context).1
                 } else if args.floating {
-                    open_command_pane_floating(command, None, BTreeMap::new())
+                    open_command_pane_floating(command, None, context)
                 } else {
-                    open_command_pane(command, BTreeMap::new())
+                    open_command_pane(command, context)
                 }
             },
             // No command: a plain shell. `open_terminal*` wants a cwd, and the
@@ -3675,7 +3686,10 @@ mod host {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub use host::{dispatch, grant_permissions, observe_plugin, reload_plugin, spawn_in_checkout};
+pub use host::{
+    dispatch, grant_permissions, new_pane_with_context, observe_plugin, reload_plugin,
+    spawn_in_checkout,
+};
 
 /// What a `plugin_reload` found when it went to look: the plugin's pane, and its text.
 #[derive(Clone, Debug, PartialEq)]
@@ -3716,6 +3730,11 @@ pub fn dispatch(_call: &ToolCall) -> String {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn spawn_in_checkout(_args: &Args, _source: Option<String>) -> String {
+    "tools are unavailable outside zellij".to_owned()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn new_pane_with_context(_args: &Args, _context: BTreeMap<String, String>) -> String {
     "tools are unavailable outside zellij".to_owned()
 }
 

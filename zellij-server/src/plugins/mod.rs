@@ -454,6 +454,7 @@ pub(crate) fn plugin_thread_main(
                     client_id,
                     &hooks,
                     &mut wasm_bridge,
+                    &bus,
                     &plugin_aliases,
                 );
             },
@@ -1510,9 +1511,13 @@ fn pipe_to_specific_plugins(
 /// instance, which is what makes two agents exiting at once get a hook pane each rather than
 /// fighting over one.
 ///
-/// `should_focus` is false: an agent exiting in a tab the user is not looking at must not pull
-/// them out of the pane they are working in. That was true of the banner this replaces, and is
-/// the reason the hook is a pane rather than a session-wide modal.
+/// Loaded and placed here rather than through `WasmBridge::get_or_load_plugins`, for the same
+/// reason `WasmBridge::launch_job` bypasses it: that function opens a pane only when it has to
+/// *load* the plugin, and answers a request for one that already exists with its id and no
+/// screen instruction at all. That is the right shape for "open it, or focus the one already
+/// open". It is the wrong shape for a hook, whose whole contract is that a pane appears - a
+/// hook that quietly resolved to an existing instance would leave the pane it was fired for
+/// showing nothing but its exit code, which is exactly the failure it exists to replace.
 fn run_hook(
     point: HookPoint,
     pane_id: PaneId,
@@ -1520,42 +1525,62 @@ fn run_hook(
     client_id: ClientId,
     hooks: &Hooks,
     wasm_bridge: &mut WasmBridge,
+    bus: &Bus<PluginInstruction>,
     plugin_aliases: &PluginAliases,
 ) {
     let Some(run_plugin_or_alias) = hooks.get(point) else {
         // An unbound hook point. Every hook site fires unconditionally so that "is this
         // configured" is answered here and not at each of them.
+        log::info!("hook '{point}' is not bound to a plugin, so {pane_id:?} keeps its own screen");
         return;
     };
+    // One line per hook, because until now every way this could come to nothing was silent:
+    // an unmarked pane never reaches here at all, an unbound point returns above, and a
+    // plugin that will not load says so below. Which of those happened is the whole of
+    // diagnosing "the hook screen did not appear".
+    log::info!(
+        "running hook '{point}' for {pane_id:?}: {}",
+        run_plugin_or_alias.location_string()
+    );
     let mut run_plugin_or_alias = run_plugin_or_alias.clone();
     run_plugin_or_alias.populate_run_plugin_if_needed(plugin_aliases);
-    let initial_cwd = run_plugin_or_alias.get_initial_cwd();
+    let cwd = run_plugin_or_alias.get_initial_cwd();
     let Some(run_plugin) = run_plugin_or_alias.get_run_plugin() else {
         log::error!("hook '{point}' names a plugin that could not be resolved");
         return;
     };
     // Merged rather than replaced: a hook declared with its own configuration block keeps it,
     // and the payload wins where the two name the same key.
-    let run_plugin_or_alias =
-        RunPluginOrAlias::RunPlugin(run_plugin.merge_configuration(&Some(payload)));
-    let cwd = initial_cwd;
+    let run_plugin = run_plugin.merge_configuration(&Some(payload));
+    // One hook pane per (pane, exit): a point that fires twice for the same moment must not
+    // stack a second screen on the first. Asked of the live plugin map, so an instance the
+    // user has since closed does not count as one already up.
+    if wasm_bridge.plugin_instance_exists(&run_plugin) {
+        log::info!("hook '{point}' is already up for {pane_id:?}");
+        return;
+    }
     let skip_cache = false;
-    let should_float = false;
-    let should_be_open_in_place = true;
-    let should_focus = false;
-    wasm_bridge.get_or_load_plugins(
-        run_plugin_or_alias,
+    match wasm_bridge.load_plugin(
+        &Some(run_plugin.clone()),
+        None,
         Size::default(),
-        cwd,
+        cwd.clone(),
         skip_cache,
-        should_float,
-        should_be_open_in_place,
-        None, // pane_title
-        Some(pane_id),
         Some(client_id),
-        None, // floating_pane_coordinates
-        should_focus,
-    );
+    ) {
+        Ok((plugin_id, client_id)) => {
+            drop(bus.senders.send_to_screen(add_plugin_pane_in_place_of(
+                RunPluginOrAlias::RunPlugin(run_plugin),
+                plugin_id,
+                pane_id,
+                cwd,
+                client_id,
+            )));
+        },
+        Err(e) => {
+            log::error!("hook '{point}' could not load its plugin: {e}");
+        },
+    }
 }
 
 fn load_background_plugin(
@@ -1590,6 +1615,45 @@ fn load_background_plugin(
             log::error!("Failed to load plugin: {e}");
         },
     }
+}
+
+/// The screen-side half of a hook: a pane opened over `pane_id_to_replace`, which is
+/// suppressed behind it rather than closed.
+///
+/// Suppressed rather than closed so that the pane's scrollback survives and it can be re-run -
+/// which is exactly what the shipped `agent_exit` screen offers to do. `should_focus` is false:
+/// an agent exiting in a tab the user is not looking at must not pull them out of the pane they
+/// are working in. That was true of the banner this replaces, and is the reason a hook is a
+/// pane rather than a session-wide modal.
+pub(crate) fn add_plugin_pane_in_place_of(
+    run_plugin_or_alias: RunPluginOrAlias,
+    plugin_id: PluginId,
+    pane_id_to_replace: PaneId,
+    cwd: Option<PathBuf>,
+    client_id: ClientId,
+) -> ScreenInstruction {
+    let should_float = Some(false);
+    let should_be_open_in_place = true;
+    let pane_title = None;
+    let start_suppressed = false;
+    let should_focus = Some(false);
+    ScreenInstruction::AddPlugin(
+        should_float,
+        should_be_open_in_place,
+        false, // close_replaced_pane
+        run_plugin_or_alias,
+        pane_title,
+        None, // tab_index
+        plugin_id,
+        Some(pane_id_to_replace),
+        cwd,
+        start_suppressed,
+        None, // floating_pane_coordinates
+        should_focus,
+        Some(client_id),
+        None, // completion_tx
+        None, // overlay placement
+    )
 }
 
 /// The screen-side half of a headless plugin: a suppressed pane that holds no place in any
