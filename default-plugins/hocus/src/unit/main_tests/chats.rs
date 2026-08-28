@@ -82,10 +82,10 @@ fn a_chunk_for_a_parked_chat_lands_in_it() {
     );
 }
 
-/// Once a background chat settles it is archived and let go: the file is the
-/// copy of record, and `/history` reads it back.
+/// A background chat that settles stays open: it is a tab in the bar until it
+/// is closed, and its reply is there waiting when you switch to it.
 #[test]
-fn a_parked_chat_that_settles_is_dropped() {
+fn a_parked_chat_that_settles_stays_open() {
     let mut state = ready_state();
     state.parked.push(Chat {
         messages: vec![Message::user("older"), Message::assistant("done")],
@@ -105,7 +105,9 @@ fn a_parked_chat_that_settles_is_dropped() {
         error: None,
     });
 
-    assert!(state.parked.is_empty(), "settled, so the archive has it");
+    assert_eq!(state.parked.len(), 1, "settled, and still open");
+    assert!(!state.parked[0].is_live(), "with nothing left owed to it");
+    assert_eq!(state.parked[0].messages[1].content, "done");
     assert!(state.is_receiving(), "and ours is still going");
 }
 
@@ -138,10 +140,10 @@ fn switching_to_a_parked_chat_swaps_the_two() {
     assert_eq!(state.active_stream_id().as_deref(), Some("hocus-1"));
 }
 
-/// A settled chat is already in the archive, so parking it would only be a
-/// second copy to keep in step.
+/// Leaving a settled chat parks it like any other: the tab stays, and coming
+/// back finds the same transcript rather than a reload from the archive.
 #[test]
-fn a_settled_chat_is_not_parked_when_you_leave_it() {
+fn a_settled_chat_is_parked_when_you_leave_it() {
     let mut state = ready_state();
     settle(&mut state);
     state.chat_id = Some(1);
@@ -152,7 +154,9 @@ fn a_settled_chat_is_not_parked_when_you_leave_it() {
     });
 
     state.switch_to_chat(4);
-    assert!(state.parked.is_empty(), "nothing outstanding, nothing held");
+    assert_eq!(state.chat_id, Some(4));
+    assert_eq!(state.parked.len(), 1, "settled, and still held");
+    assert_eq!(state.parked[0].chat_id, Some(1));
 }
 
 /// The gate that keeps a stream from writing the file once per socket read.

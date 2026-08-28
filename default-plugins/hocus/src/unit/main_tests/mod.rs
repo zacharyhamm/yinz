@@ -633,6 +633,7 @@ fn user_messages(state: &State) -> Vec<&str> {
 
 mod agent_snapshots;
 mod agent_tools;
+mod chat_tabs;
 mod chats;
 mod commands;
 mod confirmation;
