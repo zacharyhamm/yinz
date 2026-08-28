@@ -372,6 +372,9 @@ pub(crate) struct Tab {
     pub tab_has_pending_bell: bool,
     pub tab_bell_flash: bool, // currently in mid-notification-flash
     pub tab_bell_ring: bool,  // need to send ANSI BEL to the controlling terminal
+    /// What `visible` last said about this tab; floating-surface toggles only report their own
+    /// visibility to plugins while the tab itself is on screen.
+    tab_visible: bool,
 }
 
 // FIXME: Use a struct that has a pane_type enum, to reduce all of the duplication
@@ -1252,6 +1255,7 @@ impl Tab {
             tab_bell_flash: false,
             tab_bell_ring: false,
             dimmed_clients: HashSet::new(),
+            tab_visible: true,
         }
     }
 
@@ -7426,20 +7430,28 @@ impl Tab {
         // screen to begin with. A hidden *overlay* is the same statement about
         // the same thing, so it is filtered here rather than extracted: hocus
         // set aside with Esc must not be told the tab it is not being drawn on
-        // just became visible.
+        // just became visible. The same goes for a floating plugin while the
+        // floating surface is down: it is told about the surface by
+        // `show_floating_panes`/`hide_floating_panes`, and a tab coming back
+        // with its surface hidden must not tell it that it is visible.
+        self.tab_visible = visible;
+        let floating_panes_are_shown = self.floating_panes.panes_are_shown();
         let visible_overlays: Vec<PaneId> = self.overlay_panes.stack_layer_ids();
-        let pids_in_this_tab = self
-            .tiled_panes
-            .pane_ids()
-            .chain(self.floating_panes.pane_ids())
-            .chain(visible_overlays.iter())
-            .filter_map(|p| match p {
-                PaneId::Plugin(pid) => Some(pid),
-                _ => None,
-            });
+        let tiled_pids = self.tiled_panes.pane_ids().filter_map(|p| match p {
+            PaneId::Plugin(pid) => Some(*pid),
+            _ => None,
+        });
+        let floating_pids = self.floating_panes.pane_ids().filter_map(|p| match p {
+            PaneId::Plugin(pid) if !visible || floating_panes_are_shown => Some(*pid),
+            _ => None,
+        });
+        let overlay_pids = visible_overlays.iter().filter_map(|p| match p {
+            PaneId::Plugin(pid) => Some(*pid),
+            _ => None,
+        });
         let mut plugin_updates = vec![];
-        for pid in pids_in_this_tab {
-            plugin_updates.push((Some(*pid), None, Event::Visible(visible)));
+        for pid in tiled_pids.chain(floating_pids).chain(overlay_pids) {
+            plugin_updates.push((Some(pid), None, Event::Visible(visible)));
         }
         self.senders
             .send_to_plugin(PluginInstruction::Update(plugin_updates))
@@ -7802,20 +7814,53 @@ impl Tab {
     }
     pub fn show_floating_panes(&mut self) {
         // this function is to be preferred to directly invoking floating_panes.toggle_show_panes(true)
+        let were_shown = self.floating_panes.panes_are_shown();
         self.floating_panes.toggle_show_panes(true);
         self.tiled_panes.unfocus_all_panes();
         self.set_force_render();
+        if !were_shown {
+            self.notify_floating_plugins_of_visibility(true);
+        }
     }
 
     pub fn hide_floating_panes(&mut self) {
         // this function is to be preferred to directly invoking
         // floating_panes.toggle_show_panes(false)
+        let were_shown = self.floating_panes.panes_are_shown();
         if self.floating_panes.fullscreen_is_active() {
             self.floating_panes.unset_fullscreen();
         }
         self.floating_panes.toggle_show_panes(false);
         self.tiled_panes.focus_all_panes();
         self.set_force_render();
+        if were_shown {
+            self.notify_floating_plugins_of_visibility(false);
+        }
+    }
+
+    /// Tell the plugins on the floating surface that the surface was raised or lowered. Only
+    /// the panes in `floating_panes` are concerned: overlays are drawn on their own layer and
+    /// suppressed panes are not on screen either way. Nothing is sent while the tab itself is
+    /// hidden - `visible(true)` reports the state the surface is in when the tab returns.
+    fn notify_floating_plugins_of_visibility(&self, visible: bool) {
+        if !self.tab_visible {
+            return;
+        }
+        let plugin_updates: Vec<_> = self
+            .floating_panes
+            .pane_ids()
+            .filter_map(|p| match p {
+                PaneId::Plugin(pid) => Some((Some(*pid), None, Event::Visible(visible))),
+                _ => None,
+            })
+            .collect();
+        if plugin_updates.is_empty() {
+            return;
+        }
+        self.senders
+            .send_to_plugin(PluginInstruction::Update(plugin_updates))
+            .with_context(|| format!("failed to set visibility of floating panes to {visible}"))
+            .non_fatal();
     }
 
     pub fn show_floating_panes_atomic(&mut self, mut completion: Option<NotificationEnd>) {
