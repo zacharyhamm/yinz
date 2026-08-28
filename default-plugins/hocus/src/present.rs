@@ -506,6 +506,13 @@ fn idle(agent: &Value) -> String {
     if status != "running" {
         return status;
     }
+    // An agent that reports for itself has already said which word this is - see
+    // `agents::status_cell`. Deriving one from `idle_seconds` here as well would be a
+    // third place deciding busy from idle, and the one most likely to disagree.
+    let state = text(agent, "state");
+    if !state.is_empty() {
+        return state;
+    }
     match agent.get("idle_seconds").and_then(Value::as_u64) {
         None => "running".to_owned(),
         Some(0) => "busy".to_owned(),

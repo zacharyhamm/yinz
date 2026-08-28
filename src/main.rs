@@ -1,4 +1,5 @@
 mod commands;
+mod hocus_hooks;
 #[cfg(test)]
 mod tests;
 
@@ -69,6 +70,17 @@ fn main() {
             }
             std::process::exit(0);
         }
+    }
+
+    // Local file work only - a hook is installed into Claude Code's settings, not
+    // into a session - so it branches here beside the other two commands that need
+    // neither a client nor a server.
+    if let Some(Command::Hocus(hocus)) = opts.command.clone() {
+        if let Err(e) = hocus_hooks::hocus(hocus) {
+            eprintln!("Error: {e:#}");
+            std::process::exit(1);
+        }
+        std::process::exit(0);
     }
 
     // Handle offline recordings command before client/server startup

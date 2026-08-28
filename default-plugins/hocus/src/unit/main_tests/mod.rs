@@ -247,6 +247,7 @@ fn worktree_snapshot(seq: u64, branch: &str) -> PipeMessage {
                 focused: None,
                 focused_plugin: None,
                 summaries: agents::Summaries::new(),
+                hooks: agents::HookFeeds::new(),
             })
             .expect("serialize"),
         ),
@@ -403,6 +404,7 @@ fn poll_focus(
         panes,
         agents::Activity::new(),
         agents::Summaries::new(),
+        agents::HookFeeds::new(),
         focused,
     );
     // The snapshot handler pushes the strip on every snapshot, not only the
@@ -553,6 +555,7 @@ fn agent_snapshot_with(seq: u64, panes: Vec<agents::AgentPane>) -> PipeMessage {
                 focused: None,
                 focused_plugin: None,
                 summaries: agents::Summaries::new(),
+                hooks: agents::HookFeeds::new(),
             })
             .expect("serialize"),
         ),
@@ -590,6 +593,7 @@ fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
                 focused,
                 focused_plugin: None,
                 summaries: agents::Summaries::new(),
+                hooks: agents::HookFeeds::new(),
             })
             .expect("serialize"),
         ),

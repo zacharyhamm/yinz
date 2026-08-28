@@ -281,12 +281,14 @@ fn agent_changes_do_not_post_to_chat() {
         panes,
         agents::Activity::new(),
         agents::Summaries::new(),
+        agents::HookFeeds::new(),
         None,
     );
     state.apply_poll(
         Vec::new(),
         agents::Activity::new(),
         agents::Summaries::new(),
+        agents::HookFeeds::new(),
         None,
     );
 

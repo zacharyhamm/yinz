@@ -161,6 +161,44 @@ pub enum Recordings {
     },
 }
 
+/// The hocus side of the CLI: things about the agent plugins that a person, or an
+/// agent's own hook, runs from a shell.
+#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
+pub enum Hocus {
+    /// Wire Claude Code's hooks up to the agent plugins, so a Claude pane reports
+    /// its own state instead of being watched.
+    #[clap(subcommand)]
+    Hooks(HocusHooks),
+}
+
+#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
+pub enum HocusHooks {
+    /// Write the hook script and add it to Claude Code's settings.
+    ///
+    /// Idempotent: running it again rewrites the script and replaces the entries it
+    /// put there before, leaving everything else in the file alone.
+    Install {
+        /// Install into this project's `.claude/settings.json` instead of
+        /// `~/.claude/settings.json`.
+        ///
+        /// Claude Code merges hooks across both rather than one overriding the
+        /// other, so an install in each fires every hook twice.
+        #[clap(long)]
+        project: bool,
+        /// Print what would be written, and write nothing.
+        #[clap(long)]
+        dry_run: bool,
+    },
+    /// Remove the hook entries and the script.
+    Uninstall {
+        /// Uninstall from this project's `.claude/settings.json`.
+        #[clap(long)]
+        project: bool,
+    },
+    /// Say what is wired up, and what would stop it working.
+    Status,
+}
+
 /// Unix-only, because `zellij_server::pty_host` is: an ungated variant would
 /// still parse elsewhere, find no handler in `main`, fall past the whole
 /// dispatch chain and quietly start a normal session instead.
@@ -248,6 +286,10 @@ pub enum Command {
     /// Read local terminal pane recordings.
     #[clap(subcommand)]
     Recordings(Recordings),
+
+    /// The hocus agent plugins.
+    #[clap(subcommand)]
+    Hocus(Hocus),
 
     /// Inspect and clean up detached pane supervisors. Panes outlive a server
     /// that was killed rather than shut down, and this is how you find them.

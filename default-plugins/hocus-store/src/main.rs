@@ -316,6 +316,10 @@ mod tests {
             // Discovery does not read it; which pane has focus says nothing
             // about which folders are projects.
             focused: None,
+            // Nor does it read what an agent says about itself: a project is made
+            // of folders, and a folder is a folder whether the agent in it is
+            // working or waiting.
+            hooks: agents::HookFeeds::new(),
             focused_plugin: None,
             summaries: agents::Summaries::new(),
         })

@@ -296,6 +296,7 @@ fn poll_reply_round_trips_through_json() {
         focused: Some(7),
         focused_plugin: Some(11),
         summaries: agents::Summaries::new(),
+        hooks: agents::HookFeeds::new(),
     };
     let json = serde_json::to_string(&reply).expect("serialize");
     let back: PollReply = serde_json::from_str(&json).expect("deserialize");

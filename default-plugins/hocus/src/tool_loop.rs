@@ -1394,6 +1394,7 @@ impl State {
             &self.pane_projects(),
             &self.pane_branches(),
             &self.summaries,
+            &self.hooks,
             read_pane_text,
         )
     }
@@ -1609,10 +1610,12 @@ impl State {
         panes: Vec<agents::AgentPane>,
         activity: agents::Activity,
         summaries: agents::Summaries,
+        hooks: agents::HookFeeds,
         focused: Option<u32>,
     ) {
         self.activity = activity;
         self.summaries = summaries;
+        self.hooks = hooks;
         let kinds_pruned = self.set_panes(panes);
         self.note_focus(focused);
         self.focused_pane = focused;

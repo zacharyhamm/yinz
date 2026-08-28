@@ -196,6 +196,7 @@ impl State {
             &self.pane_projects(),
             &self.pane_branches(),
             &self.summaries,
+            &self.hooks,
         );
         // Only the summaries with a row to sit under. A summary outlives the pane it is about -
         // that is deliberate, it is an account of a moment - but the box is drawn *for the

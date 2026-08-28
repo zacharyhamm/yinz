@@ -391,3 +391,151 @@ fn recordings_state_strings() {
         "pane with error should show incomplete"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `zellij hocus hooks`
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_hocus_hooks_parses_its_three_subcommands() {
+    use zellij_utils::cli::{Hocus, HocusHooks};
+
+    let install = try_parse_cli(["zellij", "hocus", "hooks", "install"]).expect("parsed");
+    assert!(matches!(
+        install.command,
+        Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
+            project: false,
+            dry_run: false
+        })))
+    ));
+
+    let project =
+        try_parse_cli(["zellij", "hocus", "hooks", "install", "--project"]).expect("parsed");
+    assert!(matches!(
+        project.command,
+        Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
+            project: true,
+            ..
+        })))
+    ));
+
+    let status = try_parse_cli(["zellij", "hocus", "hooks", "status"]).expect("parsed");
+    assert!(matches!(
+        status.command,
+        Some(Command::Hocus(Hocus::Hooks(HocusHooks::Status)))
+    ));
+
+    assert!(
+        try_parse_cli(["zellij", "hocus", "hooks"]).is_err(),
+        "`hooks` on its own names no action"
+    );
+}
+
+/// The one thing an installer that edits somebody else's config file must get right:
+/// it may add and remove its own entries and it may touch nothing else.
+#[test]
+fn installing_hooks_leaves_the_rest_of_the_settings_alone() {
+    use crate::hocus_hooks::{install_into, installed_events, uninstall_from};
+    use serde_json::json;
+
+    let original = json!({
+        "model": "opus",
+        "permissions": { "defaultMode": "auto" },
+        "hooks": {
+            "Stop": [
+                { "hooks": [ { "type": "command", "command": "/usr/local/bin/mine.sh" } ] }
+            ],
+            "PreCompact": [
+                { "matcher": "auto", "hooks": [ { "type": "command", "command": "notify" } ] }
+            ]
+        }
+    });
+
+    let installed = install_into(original.clone(), "/home/me/.claude/hocus/hocus-hook.sh");
+    assert_eq!(installed["model"], "opus");
+    assert_eq!(installed["permissions"]["defaultMode"], "auto");
+    assert_eq!(
+        installed["hooks"]["PreCompact"], original["hooks"]["PreCompact"],
+        "an event we do not wire is not ours to touch"
+    );
+    // Someone else's Stop hook is still there, beside ours rather than instead of it.
+    let stop = installed["hooks"]["Stop"].as_array().expect("an array");
+    assert_eq!(stop.len(), 2);
+    assert_eq!(stop[0]["hooks"][0]["command"], "/usr/local/bin/mine.sh");
+
+    // And uninstalling puts the file back exactly as it was.
+    assert_eq!(uninstall_from(installed), original);
+    assert!(installed_events(&original).is_empty());
+}
+
+/// Running the installer twice is a thing people do, and a thing an upgrade does.
+#[test]
+fn installing_twice_wires_each_event_once() {
+    use crate::hocus_hooks::{install_into, installed_events};
+    use serde_json::{json, Value};
+
+    let script = "/home/me/.claude/hocus/hocus-hook.sh";
+    let once = install_into(Value::Object(Default::default()), script);
+    let twice = install_into(once.clone(), script);
+    assert_eq!(once, twice);
+
+    let events = installed_events(&twice);
+    assert_eq!(events.len(), 8, "{events:?}");
+    for event in &events {
+        assert_eq!(
+            twice["hooks"][event].as_array().expect("an array").len(),
+            1,
+            "{event} wired more than once"
+        );
+    }
+
+    // A path that moved still counts as ours, so it is replaced rather than doubled.
+    let moved = install_into(twice, "/opt/hocus/hocus-hook.sh");
+    assert_eq!(
+        moved["hooks"]["Stop"].as_array().expect("an array").len(),
+        1
+    );
+    assert_eq!(
+        moved["hooks"]["Stop"][0]["hooks"][0]["command"],
+        json!("/opt/hocus/hocus-hook.sh")
+    );
+}
+
+/// Uninstalling from a file that has nothing of ours in it is not a licence to tidy it.
+#[test]
+fn uninstalling_removes_only_what_we_wrote() {
+    use crate::hocus_hooks::uninstall_from;
+    use serde_json::json;
+
+    let theirs = json!({
+        "hooks": {
+            "Stop": [
+                { "hooks": [
+                    { "type": "command", "command": "/usr/local/bin/mine.sh" },
+                    { "type": "command", "command": "/home/me/.claude/hocus/hocus-hook.sh" }
+                ] },
+                { "hooks": [ { "type": "command", "command": "/home/me/.claude/hocus/hocus-hook.sh" } ] }
+            ]
+        }
+    });
+
+    let cleaned = uninstall_from(theirs);
+    assert_eq!(
+        cleaned,
+        json!({ "hooks": { "Stop": [ { "hooks": [
+            { "type": "command", "command": "/usr/local/bin/mine.sh" }
+        ] } ] } }),
+        "ours goes, theirs stays, and the group we emptied goes with it"
+    );
+
+    // A file with nothing but our entries loses the `hooks` key entirely rather than
+    // keeping a husk of empty arrays.
+    let ours_only = json!({ "model": "opus", "hooks": { "Stop": [
+        { "hooks": [ { "type": "command", "command": "hocus-hook.sh" } ] }
+    ] } });
+    assert_eq!(uninstall_from(ours_only), json!({ "model": "opus" }));
+
+    // And a settings file that is not an object at all is treated as an empty one, so
+    // an install onto a machine where nobody has written one still works.
+    assert_eq!(uninstall_from(json!(null)), json!({}));
+}

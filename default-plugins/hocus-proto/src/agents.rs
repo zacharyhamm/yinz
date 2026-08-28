@@ -360,13 +360,197 @@ pub fn activity_hash(activity: &Activity, pane_id: u32) -> Option<u64> {
     activity.get(&pane_id).map(|(hash, _)| *hash)
 }
 
-/// The status column of one agent row: the plain status until activity says more,
-/// then `busy`, `idle`, and `idle Nm`.
+// ---------------------------------------------------------------------------
+// What an agent says about itself
+// ---------------------------------------------------------------------------
+
+/// The event name that ends a session, and so ends a feed.
+pub const HOOK_SESSION_END: &str = "SessionEnd";
+
+/// The `Notification` kinds that mean the agent is blocked on the user.
+///
+/// Most notifications are not about being waited on — `auth_success` and the
+/// `quota_auto_resume_*` family say nothing about the turn, and `idle_prompt`
+/// fires a minute *after* a finished turn, which is idleness rather than a
+/// question. Naming the ones that count, rather than excluding the ones that do
+/// not, means a notification kind added in a later Claude Code cannot silently
+/// start drawing a `!`.
+const WAITING_NOTIFICATIONS: &[&str] = &[
+    "permission_prompt",
+    "elicitation_dialog",
+    "elicitation_url_dialog",
+    "agent_needs_input",
+];
+
+/// The longest tool hint a status cell will carry. A sidebar row has no room for
+/// an argument, and `tool_input` is free-form text of arbitrary size.
+const HOOK_DETAIL_CHARS: usize = 24;
+
+/// What a Claude Code pane says it is doing, in the three states a row can draw.
+///
+/// Deliberately coarser than the hook stream that feeds it: `PreToolUse` and
+/// `UserPromptSubmit` are both simply work, and the distinction between them
+/// lives in [`HookFeed::detail`] rather than in a variant nothing would render
+/// differently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HookPhase {
+    /// The agent is working.
+    Busy,
+    /// The agent has stopped and is blocked on the user — a permission prompt, a
+    /// question, a form. This is the claim the strip's `!` marker makes.
+    Waiting,
+    /// The agent finished its turn and is at its prompt.
+    Idle,
+}
+
+/// What one pane's own hooks have last reported.
+///
+/// A pane with one of these is not guessed at. The screen-diff heuristic beside it
+/// — [`observe`], [`Activity`] and the idle summary the daemon buys on the busy→idle
+/// edge — is inference from a picture; this is the agent saying so. Where the two
+/// disagree, this wins.
+///
+/// **Nothing here expires on a clock.** That was the tempting design and it is wrong
+/// twice over: a permission prompt can sit unanswered all day without the pane's state
+/// having changed, and a ten-minute `cargo build` under one `PreToolUse` is a pane that
+/// is genuinely working while saying nothing. A feed ends when the session does
+/// (`SessionEnd`), when the pane closes, or when the pane stops being an agent at all —
+/// all three of which are observed rather than assumed. The cost is that a single
+/// dropped event leaves a pane mislabelled until the next one, which is a fair trade
+/// against a timer that confidently lies.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HookFeed {
+    pub phase: HookPhase,
+    /// The tool the agent is running, as a few words. `None` outside a tool call.
+    #[serde(default)]
+    pub detail: Option<String>,
+    /// Claude Code's own session id, so a session restarted in the same pane can be
+    /// told from one that merely went quiet.
+    #[serde(default)]
+    pub session_id: String,
+    /// The folder the *agent* is working in, which is not always the pane's shell
+    /// folder — an agent that moved is what this reports, and the shell never heard.
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+/// Pane id → what that pane's own hooks last said.
+pub type HookFeeds = BTreeMap<u32, HookFeed>;
+
+/// The phase one hook event names, or `None` for an event that says nothing about
+/// the agent's state — an unrecognised name, or a notification that is not about
+/// the user being waited on.
+///
+/// `SessionEnd` is `None` here too, and deliberately: it does not move a feed to a
+/// state, it ends one. Callers check [`HOOK_SESSION_END`] first.
+pub fn hook_phase(event: &crate::wire::HookEvent) -> Option<HookPhase> {
+    match event.hook_event_name.as_str() {
+        "SessionStart" | "Stop" => Some(HookPhase::Idle),
+        "UserPromptSubmit" | "PreToolUse" | "PostToolUse" => Some(HookPhase::Busy),
+        "PermissionRequest" => Some(HookPhase::Waiting),
+        "Notification" => event
+            .notification_type
+            .as_deref()
+            .filter(|kind| WAITING_NOTIFICATIONS.contains(kind))
+            .map(|_| HookPhase::Waiting),
+        _ => None,
+    }
+}
+
+/// The few words a status cell shows for the tool a `PreToolUse` names.
+///
+/// The tool's own name, and one argument's worth of hint where the tool has an
+/// obvious one: which file, or which program. Everything else about `tool_input` is
+/// ignored rather than summarised — it is free-form text of arbitrary size that the
+/// agent's *input* can steer, so what little is taken is cut to
+/// [`HOOK_DETAIL_CHARS`] and stripped of anything that is not printable.
+///
+/// `None` for any event that is not a tool starting, which is what clears the hint
+/// when the tool finishes.
+pub fn hook_detail(event: &crate::wire::HookEvent) -> Option<String> {
+    if event.hook_event_name != "PreToolUse" {
+        return None;
+    }
+    let tool = clean_hint(event.tool_name.as_deref()?)?;
+    let input = event.tool_input.as_ref();
+    let hint = match tool.as_str() {
+        // The program, not the command line: a row has room for `git`, not for the
+        // rest of it.
+        "Bash" => input
+            .and_then(|input| input.get("command")?.as_str())
+            .and_then(|command| command.split_whitespace().next()),
+        "Read" | "Edit" | "Write" | "NotebookEdit" => input
+            .and_then(|input| input.get("file_path")?.as_str())
+            .map(|path| {
+                Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(path)
+            }),
+        _ => None,
+    };
+    match hint.and_then(clean_hint) {
+        Some(hint) => Some(format!("{tool} {hint}")),
+        None => Some(tool),
+    }
+}
+
+/// One word of agent-supplied text, made safe to put in a row: printable characters
+/// only, no whitespace of any kind, and cut to a length a sidebar has.
+fn clean_hint(text: &str) -> Option<String> {
+    let mut hint: String = text
+        .chars()
+        .filter(|c| !c.is_control() && !c.is_whitespace())
+        .take(HOOK_DETAIL_CHARS)
+        .collect();
+    if hint.is_empty() {
+        return None;
+    }
+    // A cut word is marked, so a truncated file name does not read as the whole one.
+    if hint.chars().count() == HOOK_DETAIL_CHARS && text.chars().count() > HOOK_DETAIL_CHARS {
+        hint.pop();
+        hint.push('…');
+    }
+    Some(hint)
+}
+
+/// The status column of one agent row.
+///
+/// A pane whose agent reports for itself is rendered from that report and nothing
+/// else: `busy`, `busy · Bash`, `waiting`, `idle`, `idle Nm`. A pane without one
+/// falls back to the screen-diff heuristic, which is the plain status until activity
+/// says more, then `busy`, `idle`, and `idle Nm`.
 ///
 /// Minutes are the finest label on purpose: a per-second label would make every
-/// poll a new row text for nothing.
-pub fn status_cell(status: AgentStatus, activity: Option<&(u64, u32)>) -> String {
-    let Some((_, polls)) = activity.filter(|_| status == AgentStatus::Running) else {
+/// poll a new row text for nothing. They come from `activity` on both paths, so a
+/// hook-fed pane's idle clock reads the same as every other pane's.
+pub fn status_cell(
+    status: AgentStatus,
+    activity: Option<&(u64, u32)>,
+    hook: Option<&HookFeed>,
+) -> String {
+    if status != AgentStatus::Running {
+        return status.as_str().to_owned();
+    }
+    if let Some(feed) = hook {
+        return match feed.phase {
+            HookPhase::Waiting => "waiting".to_owned(),
+            HookPhase::Busy => match &feed.detail {
+                Some(detail) => format!("busy · {detail}"),
+                None => "busy".to_owned(),
+            },
+            // Zero polls is `busy` on the heuristic path below, because a screen that
+            // just moved is a screen doing something. Here the agent has said it
+            // stopped, so the same reading is the start of an idle stretch.
+            HookPhase::Idle => {
+                match activity.map_or(0, |(_, polls)| u64::from(*polls)) * POLL_SECONDS {
+                    seconds if seconds < 60 => "idle".to_owned(),
+                    seconds => format!("idle {}m", seconds / 60),
+                }
+            },
+        };
+    }
+    let Some((_, polls)) = activity else {
         return status.as_str().to_owned();
     };
     match u64::from(*polls) * POLL_SECONDS {
@@ -671,7 +855,22 @@ pub fn parse_summary(body: &[u8], hash: u64) -> Option<Summary> {
 /// moment it describes: it is deliberately kept while the agent works again — that is what
 /// lets an agent returning to the same screen be free rather than another request — and an
 /// agent that is working is not waiting on anybody, whatever it was waiting on before.
-fn waiting_marker(summaries: &Summaries, activity: &Activity, pane_id: u32) -> &'static str {
+fn waiting_marker(
+    summaries: &Summaries,
+    activity: &Activity,
+    hooks: &HookFeeds,
+    pane_id: u32,
+) -> &'static str {
+    // An agent that says it is blocked on the user is blocked on the user. No
+    // freshness check against `activity` here, unlike the summary path below: that
+    // check exists because a summary describes one screen and outlives it, while a
+    // feed has no screen behind it at all - it is the current state or it is nothing.
+    if let Some(feed) = hooks.get(&pane_id) {
+        return match feed.phase {
+            HookPhase::Waiting => "! ",
+            _ => "  ",
+        };
+    }
     let idle = activity.get(&pane_id).is_some_and(|(_, polls)| *polls > 0);
     let current = activity_hash(activity, pane_id);
     let fresh = summaries
@@ -760,6 +959,7 @@ pub fn strip_rows(
     owners: &BTreeMap<u32, String>,
     branches: &BTreeMap<u32, String>,
     summaries: &Summaries,
+    hooks: &HookFeeds,
 ) -> Vec<StripRow> {
     let mut agents: Vec<SortableAgent<'_>> = panes
         .iter()
@@ -775,9 +975,13 @@ pub fn strip_rows(
             };
             let mut row = format!(
                 "{}{:>3}  {kind_cell}  {}",
-                waiting_marker(summaries, activity, pane.pane_id),
+                waiting_marker(summaries, activity, hooks, pane.pane_id),
                 pane.pane_id,
-                status_cell(pane.status, activity.get(&pane.pane_id))
+                status_cell(
+                    pane.status,
+                    activity.get(&pane.pane_id),
+                    hooks.get(&pane.pane_id)
+                )
             );
             if let Some((_, name)) = &pane.tab {
                 row.push_str("  ");
@@ -930,6 +1134,7 @@ pub fn mention_context(
     panes: &[AgentPane],
     manual: &BTreeMap<u32, String>,
     activity: &Activity,
+    hooks: &HookFeeds,
 ) -> Option<String> {
     // (mention as typed, pane id), deduped by pane, first-appearance order.
     let mut found: Vec<(String, u32)> = Vec::new();
@@ -962,7 +1167,7 @@ pub fn mention_context(
             let (kind, _) = classify(pane, manual)?;
             let mut line = format!(
                 "[@{body} is agent pane {id} ({kind}, {})",
-                status_cell(pane.status, activity.get(id))
+                status_cell(pane.status, activity.get(id), hooks.get(id))
             );
             if let Some((_, name)) = &pane.tab {
                 line.push_str(&format!(" on tab \"{name}\""));
@@ -1033,6 +1238,7 @@ pub fn list_json(
     owners: &BTreeMap<u32, String>,
     branches: &BTreeMap<u32, String>,
     summaries: &Summaries,
+    hooks: &HookFeeds,
     mut read: impl FnMut(u32) -> String,
 ) -> String {
     let items: Vec<Value> = panes
@@ -1076,8 +1282,29 @@ pub fn list_json(
             // thing the strip draws. Absent until an agent has gone idle at least once.
             if let Some(summary) = summaries.get(&pane.pane_id) {
                 item["summary"] = json!(summary.text);
-                // Gated on idleness exactly as the strip's marker is, so the model and the
-                // list cannot disagree about who is blocked. See `waiting_marker`.
+            }
+            // Answered exactly as the strip's marker is, so the model and the list
+            // cannot disagree about who is blocked. See `waiting_marker`: an agent
+            // reporting for itself is believed outright, and only a pane without a
+            // feed is read off a summary — where the answer is gated on that summary
+            // still describing the screen the pane is showing.
+            //
+            // The feed answers whether or not a summary exists, which the summary path
+            // cannot: a pane can be blocked on the user before anything has been
+            // written about it, and the model asking for the list needs to know that.
+            if let Some(feed) = hooks.get(&pane.pane_id) {
+                item["awaiting_confirmation"] = json!(feed.phase == HookPhase::Waiting);
+                // The label the strip draws, spelled out for a reader that has one
+                // agent's row rather than the whole column: `idle_seconds` above is
+                // the screen's clock, and an agent that reports for itself is not
+                // described by it. Absent for a pane without a feed, whose readers
+                // go on deriving the label from the seconds as they always have.
+                item["state"] = json!(status_cell(
+                    pane.status,
+                    activity.get(&pane.pane_id),
+                    Some(feed)
+                ));
+            } else if let Some(summary) = summaries.get(&pane.pane_id) {
                 item["awaiting_confirmation"] = json!(
                     summary.awaiting
                         && activity
@@ -1168,6 +1395,30 @@ mod tests {
             kind: kind_in(text),
             text: format!("! {text}"),
         }
+    }
+
+    /// A session where nothing reports for itself, which is every pane that is not
+    /// a Claude Code one with the hooks installed.
+    fn no_hooks() -> HookFeeds {
+        HookFeeds::new()
+    }
+
+    /// One pane's feed, in the phase named.
+    fn feeds(pairs: &[(u32, HookPhase)]) -> HookFeeds {
+        pairs
+            .iter()
+            .map(|(pane_id, phase)| {
+                (
+                    *pane_id,
+                    HookFeed {
+                        phase: *phase,
+                        detail: None,
+                        session_id: "s1".to_owned(),
+                        cwd: None,
+                    },
+                )
+            })
+            .collect()
     }
 
     fn summaries(pairs: &[(u32, bool)]) -> Summaries {
@@ -1788,6 +2039,7 @@ mod tests {
             // Pane 4 is blocked; pane 3 has a summary but is merely finished; pane 5 has
             // never gone idle and so has no summary at all.
             &summaries(&[(3, false), (4, true)]),
+            &no_hooks(),
         );
 
         assert_eq!(
@@ -1817,6 +2069,7 @@ mod tests {
             &owners(&[]),
             &branches(&[]),
             &summaries(&[(4, true)]),
+            &no_hooks(),
         );
 
         assert_eq!(
@@ -1841,6 +2094,7 @@ mod tests {
             &owners(&[]),
             &branches(&[]),
             &summaries(&[(3, true)]),
+            &no_hooks(),
             |_| String::new(),
         );
         let value: Value = serde_json::from_str(&json).unwrap();
@@ -1863,6 +2117,7 @@ mod tests {
             &owners(&[]),
             &branches(&[]),
             &summaries(&[(3, true)]),
+            &no_hooks(),
             |_| String::new(),
         );
         let value: Value = serde_json::from_str(&json).unwrap();
@@ -1874,14 +2129,246 @@ mod tests {
 
     #[test]
     fn status_cell_grades_a_running_agent_by_how_long_its_pane_sat_still() {
-        let cell = |polls| status_cell(AgentStatus::Running, Some(&(1, polls)));
-        assert_eq!(status_cell(AgentStatus::Running, None), "running");
+        let cell = |polls| status_cell(AgentStatus::Running, Some(&(1, polls)), None);
+        assert_eq!(status_cell(AgentStatus::Running, None, None), "running");
         assert_eq!(cell(0), "busy");
         assert_eq!(cell(11), "idle");
         assert_eq!(cell(12), "idle 1m");
         assert_eq!(cell(36), "idle 3m");
         // A pane that is not running has a better word than any guess.
-        assert_eq!(status_cell(AgentStatus::Held, Some(&(1, 40))), "held");
+        assert_eq!(status_cell(AgentStatus::Held, Some(&(1, 40)), None), "held");
+    }
+
+    /// The whole point of the feed: a pane whose agent reports for itself is read off
+    /// that report, not off how long its picture has held still. A `Stop` names the
+    /// pane idle on the poll it arrives, where the heuristic would have called the
+    /// same reading `busy` and then spent three more polls settling.
+    #[test]
+    fn a_reporting_agent_is_read_off_its_own_report_not_off_its_screen() {
+        let feed = |phase| HookFeed {
+            phase,
+            detail: None,
+            session_id: "s1".to_owned(),
+            cwd: None,
+        };
+        let just_moved = Some(&(1u64, 0u32));
+
+        assert_eq!(
+            status_cell(AgentStatus::Running, just_moved, None),
+            "busy",
+            "without a feed, a screen that just moved is a working agent"
+        );
+        assert_eq!(
+            status_cell(
+                AgentStatus::Running,
+                just_moved,
+                Some(&feed(HookPhase::Idle))
+            ),
+            "idle",
+            "with one, the same reading is the start of an idle stretch"
+        );
+        assert_eq!(
+            status_cell(
+                AgentStatus::Running,
+                just_moved,
+                Some(&feed(HookPhase::Waiting))
+            ),
+            "waiting"
+        );
+        // The idle clock is still `activity`'s, so one pane's minutes read like
+        // every other pane's.
+        assert_eq!(
+            status_cell(
+                AgentStatus::Running,
+                Some(&(1, 36)),
+                Some(&feed(HookPhase::Idle))
+            ),
+            "idle 3m"
+        );
+        // A pane that is not running has a better word than any report about it.
+        assert_eq!(
+            status_cell(AgentStatus::Held, just_moved, Some(&feed(HookPhase::Busy))),
+            "held"
+        );
+    }
+
+    /// The tool hint rides in the status cell rather than in a variant of its own.
+    #[test]
+    fn a_running_tool_is_named_in_the_status_cell() {
+        let busy = |detail: Option<&str>| {
+            status_cell(
+                AgentStatus::Running,
+                Some(&(1, 0)),
+                Some(&HookFeed {
+                    phase: HookPhase::Busy,
+                    detail: detail.map(str::to_owned),
+                    session_id: "s1".to_owned(),
+                    cwd: None,
+                }),
+            )
+        };
+        assert_eq!(busy(None), "busy");
+        assert_eq!(busy(Some("Bash cargo")), "busy · Bash cargo");
+    }
+
+    /// Every event we wire, and the states they name. The three that say nothing are
+    /// as important as the ones that do: a notification about a quota reset must not
+    /// draw a `!` beside a pane that is working.
+    #[test]
+    fn hook_events_map_to_the_states_they_name() {
+        let event = |name: &str| crate::wire::HookEvent {
+            hook_event_name: name.to_owned(),
+            ..Default::default()
+        };
+        let notification = |kind: &str| crate::wire::HookEvent {
+            hook_event_name: "Notification".to_owned(),
+            notification_type: Some(kind.to_owned()),
+            ..Default::default()
+        };
+
+        assert_eq!(hook_phase(&event("SessionStart")), Some(HookPhase::Idle));
+        assert_eq!(hook_phase(&event("Stop")), Some(HookPhase::Idle));
+        assert_eq!(
+            hook_phase(&event("UserPromptSubmit")),
+            Some(HookPhase::Busy)
+        );
+        assert_eq!(hook_phase(&event("PreToolUse")), Some(HookPhase::Busy));
+        assert_eq!(hook_phase(&event("PostToolUse")), Some(HookPhase::Busy));
+        assert_eq!(
+            hook_phase(&event("PermissionRequest")),
+            Some(HookPhase::Waiting)
+        );
+        assert_eq!(
+            hook_phase(&notification("permission_prompt")),
+            Some(HookPhase::Waiting)
+        );
+        assert_eq!(
+            hook_phase(&notification("agent_needs_input")),
+            Some(HookPhase::Waiting)
+        );
+
+        // A finished turn nobody has answered yet is idleness, not a question.
+        assert_eq!(hook_phase(&notification("idle_prompt")), None);
+        assert_eq!(hook_phase(&notification("quota_auto_resume_fired")), None);
+        // Ending a session is not a state to be in - callers check HOOK_SESSION_END.
+        assert_eq!(hook_phase(&event(HOOK_SESSION_END)), None);
+        // A version that grows an event we have never heard of costs us nothing.
+        assert_eq!(hook_phase(&event("SomethingNewInAYearsTime")), None);
+    }
+
+    /// `tool_input` is free-form text an agent's own input can steer, so the little
+    /// that is taken from it is cut short and stripped of anything that could move a
+    /// cursor or break a row.
+    #[test]
+    fn a_tool_hint_is_short_and_holds_no_control_characters() {
+        let pre = |tool: &str, input: serde_json::Value| crate::wire::HookEvent {
+            hook_event_name: "PreToolUse".to_owned(),
+            tool_name: Some(tool.to_owned()),
+            tool_input: Some(input),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            hook_detail(&pre(
+                "Bash",
+                json!({"command": "cargo x test -p hocus-proto"})
+            )),
+            Some("Bash cargo".to_owned()),
+            "the program, not the command line"
+        );
+        assert_eq!(
+            hook_detail(&pre(
+                "Edit",
+                json!({"file_path": "/work/hocus/src/main.rs"})
+            )),
+            Some("Edit main.rs".to_owned())
+        );
+        assert_eq!(
+            hook_detail(&pre("WebFetch", json!({"url": "https://example/x"}))),
+            Some("WebFetch".to_owned()),
+            "a tool with no obvious argument is named on its own"
+        );
+
+        let nasty = hook_detail(&pre(
+            "Bash",
+            json!({"command": "\u{1b}[2Jrm-rf-and-a-very-long-argument-indeed"}),
+        ))
+        .expect("a hint");
+        assert!(
+            !nasty.chars().any(char::is_control),
+            "no escape sequence survives: {nasty:?}"
+        );
+        assert!(nasty.chars().count() <= 5 + HOOK_DETAIL_CHARS, "{nasty:?}");
+
+        // Only a tool *starting* has a hint; anything else clears it.
+        assert_eq!(
+            hook_detail(&crate::wire::HookEvent {
+                hook_event_name: "PostToolUse".to_owned(),
+                tool_name: Some("Bash".to_owned()),
+                ..Default::default()
+            }),
+            None
+        );
+    }
+
+    /// The `!` marker, and the two rules behind it. A summary describes one screen and
+    /// outlives it, so it is believed only while the pane still shows that screen. A
+    /// feed has no screen behind it - it is the state - so it is believed outright.
+    #[test]
+    fn the_waiting_marker_believes_a_feed_outright_and_a_summary_only_while_it_is_fresh() {
+        let panes = vec![pane(3, "claude", Some("claude"))];
+        let owners = owners(&[]);
+        let branches = branches(&[]);
+
+        // Waiting, with a screen that is still moving and no summary anywhere.
+        let rows = strip_rows(
+            &panes,
+            &manual(&[]),
+            &Activity::from([(3, (9, 0))]),
+            &owners,
+            &branches,
+            &Summaries::new(),
+            &feeds(&[(3, HookPhase::Waiting)]),
+        );
+        assert!(
+            matches!(&rows[2], StripRow::Agent { text, .. } if text.starts_with("! ")),
+            "{rows:?}"
+        );
+
+        // The same pane working: no marker, whatever a stale summary once said.
+        let rows = strip_rows(
+            &panes,
+            &manual(&[]),
+            &Activity::from([(3, (1, 4))]),
+            &owners,
+            &branches,
+            &summaries(&[(3, true)]),
+            &feeds(&[(3, HookPhase::Busy)]),
+        );
+        assert!(
+            matches!(&rows[2], StripRow::Agent { text, .. } if text.starts_with("  ")),
+            "a feed outranks the summary beside it: {rows:?}"
+        );
+    }
+
+    /// A pane can be blocked on the user before anything has been written about it,
+    /// which the summary path could never say - it only ever answered where a summary
+    /// existed, and gated that on the screen not having moved since.
+    #[test]
+    fn list_json_reports_a_waiting_agent_that_has_no_summary_yet() {
+        let json = list_json(
+            &[pane(3, "claude", Some("claude"))],
+            &manual(&[]),
+            &Activity::from([(3, (9, 0))]),
+            &owners(&[]),
+            &branches(&[]),
+            &Summaries::new(),
+            &feeds(&[(3, HookPhase::Waiting)]),
+            |_| String::new(),
+        );
+        let value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value[0]["awaiting_confirmation"], true);
+        assert!(value[0].get("summary").is_none());
     }
 
     #[test]
@@ -1895,7 +2382,13 @@ mod tests {
         let activity = Activity::from([(3, (1, 24)), (5, (1, 0))]);
 
         assert_eq!(
-            mention_context("ask @codex and @5, please", &panes, &kinds, &activity),
+            mention_context(
+                "ask @codex and @5, please",
+                &panes,
+                &kinds,
+                &activity,
+                &no_hooks()
+            ),
             Some(
                 "[@codex is agent pane 3 (codex, idle 2m) on tab \"work\"]\n\
                  [@5 is agent pane 5 (reviewer, busy)]"
@@ -1904,16 +2397,16 @@ mod tests {
         );
         // An id mention, a duplicate, and punctuation after the body.
         assert_eq!(
-            mention_context("@3 @codex again", &panes, &kinds, &activity),
+            mention_context("@3 @codex again", &panes, &kinds, &activity, &no_hooks(),),
             Some("[@3 is agent pane 3 (codex, idle 2m) on tab \"work\"]".to_owned()),
         );
         // Unresolved kinds, non-agent panes, embedded @ and bare @ say nothing.
         assert_eq!(
-            mention_context("@aider @7 a@b @", &panes, &kinds, &activity),
+            mention_context("@aider @7 a@b @", &panes, &kinds, &activity, &no_hooks(),),
             None
         );
         assert_eq!(
-            mention_context("no mentions here", &panes, &kinds, &activity),
+            mention_context("no mentions here", &panes, &kinds, &activity, &no_hooks(),),
             None
         );
     }
@@ -1944,6 +2437,7 @@ mod tests {
             &owners(&[]),
             &branches(&[]),
             &Summaries::new(),
+            &no_hooks(),
         );
         // Nothing to group by, and the headers say so rather than going missing:
         // a row with no header above it would read as belonging to the one above
@@ -1972,6 +2466,7 @@ mod tests {
             &owners(&[]),
             &branches(&[]),
             &Summaries::new(),
+            &no_hooks(),
             |_| String::new(),
         );
         let value: Value = serde_json::from_str(&json).unwrap();
@@ -1999,6 +2494,7 @@ mod tests {
             &owners(&[]),
             &branches(&[]),
             &Summaries::new(),
+            &no_hooks(),
             |pane_id| {
                 reads.push(pane_id);
                 "ready".to_owned()
@@ -2030,6 +2526,7 @@ mod tests {
             &owners(&[(3, "hocus")]),
             &branches(&[(3, "topic")]),
             &Summaries::new(),
+            &no_hooks(),
             |_| String::new(),
         );
 
@@ -2053,6 +2550,7 @@ mod tests {
             &owners(&[(3, "pocus"), (5, "hocus")]),
             &branches(&[(3, "main"), (5, "main")]),
             &Summaries::new(),
+            &no_hooks(),
         );
 
         // Projects in name order with the unowned agent last, and no row
@@ -2089,6 +2587,7 @@ mod tests {
             &owners(&[(3, "hocus"), (4, "hocus"), (5, "hocus")]),
             &branches(&[(3, "main"), (4, "topic"), (5, "main")]),
             &Summaries::new(),
+            &no_hooks(),
         );
 
         assert_eq!(
@@ -2120,6 +2619,7 @@ mod tests {
             &owners(&[]),
             &branches(&[]),
             &summaries(&[]),
+            &no_hooks(),
         );
 
         assert_eq!(
@@ -2148,6 +2648,7 @@ mod tests {
             &owners(&[]),
             &branches(&[(3, "main"), (4, "topic")]),
             &Summaries::new(),
+            &no_hooks(),
         );
 
         assert_eq!(
@@ -2182,6 +2683,7 @@ mod tests {
             // it yet.
             &branches(&[(3, "main")]),
             &Summaries::new(),
+            &no_hooks(),
         );
 
         assert_eq!(
