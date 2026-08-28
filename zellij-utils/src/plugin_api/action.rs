@@ -61,6 +61,7 @@ pub use super::generated_api::api::{
         ScrollAtPayload,
         SearchDirection as ProtobufSearchDirection,
         SearchOption as ProtobufSearchOption,
+        SetPaneBorderlessPayload,
         SetPaneFrameStylePayload,
         ShowFloatingPanesPayload,
         SplitDirection as ProtobufSplitDirection,
@@ -97,7 +98,7 @@ use crate::input::layout::{
     SwapTiledLayout, TabLayoutInfo, TiledPaneLayout,
 };
 use crate::input::mouse::{MouseEvent, MouseEventType};
-use crate::position::Position;
+use crate::position::{Column, Line, Position};
 
 use std::collections::BTreeMap;
 use std::convert::TryFrom;
@@ -690,13 +691,14 @@ impl TryFrom<ProtobufAction> for Action {
             Some(ProtobufActionName::LaunchOrFocusPlugin) => {
                 match protobuf_action.optional_payload {
                     Some(OptionalPayload::LaunchOrFocusPluginPayload(payload)) => {
-                        let configuration: PluginUserConfiguration = payload
+                        let configuration = payload
                             .plugin_configuration
-                            .and_then(|p| PluginUserConfiguration::try_from(p).ok())
-                            .unwrap_or_default();
+                            .map(PluginUserConfiguration::try_from)
+                            .transpose()?
+                            .map(|c| c.inner().clone());
                         let run_plugin_or_alias = RunPluginOrAlias::from_url(
                             payload.plugin_url.as_str(),
-                            &Some(configuration.inner().clone()),
+                            &configuration,
                             None,
                             None,
                         )
@@ -720,13 +722,14 @@ impl TryFrom<ProtobufAction> for Action {
             },
             Some(ProtobufActionName::LaunchPlugin) => match protobuf_action.optional_payload {
                 Some(OptionalPayload::LaunchOrFocusPluginPayload(payload)) => {
-                    let configuration: PluginUserConfiguration = payload
+                    let configuration = payload
                         .plugin_configuration
-                        .and_then(|p| PluginUserConfiguration::try_from(p).ok())
-                        .unwrap_or_default();
+                        .map(PluginUserConfiguration::try_from)
+                        .transpose()?
+                        .map(|c| c.inner().clone());
                     let run_plugin_or_alias = RunPluginOrAlias::from_url(
                         payload.plugin_url.as_str(),
-                        &Some(configuration.inner().clone()),
+                        &configuration,
                         None,
                         None,
                     )
@@ -848,15 +851,13 @@ impl TryFrom<ProtobufAction> for Action {
             Some(ProtobufActionName::NewTiledPluginPane) => {
                 match protobuf_action.optional_payload {
                     Some(OptionalPayload::NewTiledPluginPanePayload(payload)) => {
-                        let run_plugin_location =
-                            RunPluginLocation::parse(&payload.plugin_url, None)
-                                .map_err(|_| "Malformed NewTiledPluginPane payload")?;
-                        let run_plugin = RunPluginOrAlias::RunPlugin(RunPlugin {
-                            location: run_plugin_location,
-                            _allow_exec_host_cmd: false,
-                            configuration: PluginUserConfiguration::default(),
-                            ..Default::default()
-                        });
+                        let run_plugin = RunPluginOrAlias::from_url(
+                            payload.plugin_url.as_str(),
+                            &None,
+                            None,
+                            None,
+                        )
+                        .map_err(|_| "Malformed NewTiledPluginPane payload")?;
                         let pane_name = payload.pane_name;
                         let skip_plugin_cache = payload.skip_plugin_cache;
                         Ok(Action::NewTiledPluginPane {
@@ -874,15 +875,13 @@ impl TryFrom<ProtobufAction> for Action {
             Some(ProtobufActionName::NewFloatingPluginPane) => {
                 match protobuf_action.optional_payload {
                     Some(OptionalPayload::NewFloatingPluginPanePayload(payload)) => {
-                        let run_plugin_location =
-                            RunPluginLocation::parse(&payload.plugin_url, None)
-                                .map_err(|_| "Malformed NewTiledPluginPane payload")?;
-                        let run_plugin = RunPluginOrAlias::RunPlugin(RunPlugin {
-                            location: run_plugin_location,
-                            _allow_exec_host_cmd: false,
-                            configuration: PluginUserConfiguration::default(),
-                            ..Default::default()
-                        });
+                        let run_plugin = RunPluginOrAlias::from_url(
+                            payload.plugin_url.as_str(),
+                            &None,
+                            None,
+                            None,
+                        )
+                        .map_err(|_| "Malformed NewFloatingPluginPane payload")?;
                         let pane_name = payload.pane_name;
                         let skip_plugin_cache = payload.skip_plugin_cache;
                         Ok(Action::NewFloatingPluginPane {
@@ -1121,6 +1120,34 @@ impl TryFrom<ProtobufAction> for Action {
                     None => Ok(Action::ToggleHostFullscreen),
                 }
             },
+            Some(ProtobufActionName::SetPaneBorderless) => match protobuf_action.optional_payload {
+                Some(OptionalPayload::SetPaneBorderlessPayload(payload)) => {
+                    let pane_id = payload
+                        .pane_id
+                        .ok_or("SetPaneBorderlessPayload must have a pane_id")?
+                        .try_into()?;
+                    Ok(Action::SetPaneBorderless {
+                        pane_id,
+                        borderless: payload.borderless,
+                    })
+                },
+                _ => Err("Wrong payload for Action::SetPaneBorderless"),
+            },
+            Some(ProtobufActionName::GoToTabById) => match protobuf_action.optional_payload {
+                Some(OptionalPayload::GoToTabByIdPayload(id)) => Ok(Action::GoToTabById { id }),
+                _ => Err("Wrong payload for Action::GoToTabById"),
+            },
+            Some(ProtobufActionName::CloseTabById) => match protobuf_action.optional_payload {
+                Some(OptionalPayload::CloseTabByIdPayload(id)) => Ok(Action::CloseTabById { id }),
+                _ => Err("Wrong payload for Action::CloseTabById"),
+            },
+            Some(ProtobufActionName::RenameTabById) => match protobuf_action.optional_payload {
+                Some(OptionalPayload::RenameTabByIdPayload(payload)) => Ok(Action::RenameTabById {
+                    id: payload.tab_id,
+                    name: payload.name,
+                }),
+                _ => Err("Wrong payload for Action::RenameTabById"),
+            },
             _ => Err("Unknown Action"),
         }
     }
@@ -1160,9 +1187,6 @@ impl TryFrom<Action> for ProtobufAction {
             Action::WriteToPaneId { .. }
             | Action::WriteCharsToPaneId { .. }
             | Action::Paste { .. }
-            | Action::GoToTabById { .. }
-            | Action::CloseTabById { .. }
-            | Action::RenameTabById { .. }
             | Action::ScrollUpByPaneId { .. }
             | Action::ScrollDownByPaneId { .. }
             | Action::ScrollToTopByPaneId { .. }
@@ -1192,6 +1216,33 @@ impl TryFrom<Action> for ProtobufAction {
             | Action::MoveTabByTabId { .. } => {
                 Err("These are CLI-only actions, not available in keybindings")
             },
+            Action::GoToTabById { id } => Ok(ProtobufAction {
+                name: ProtobufActionName::GoToTabById as i32,
+                optional_payload: Some(OptionalPayload::GoToTabByIdPayload(id)),
+            }),
+            Action::CloseTabById { id } => Ok(ProtobufAction {
+                name: ProtobufActionName::CloseTabById as i32,
+                optional_payload: Some(OptionalPayload::CloseTabByIdPayload(id)),
+            }),
+            Action::RenameTabById { id, name } => Ok(ProtobufAction {
+                name: ProtobufActionName::RenameTabById as i32,
+                optional_payload: Some(OptionalPayload::RenameTabByIdPayload(TabIdAndName {
+                    tab_id: id,
+                    name,
+                })),
+            }),
+            Action::SetPaneBorderless {
+                pane_id,
+                borderless,
+            } => Ok(ProtobufAction {
+                name: ProtobufActionName::SetPaneBorderless as i32,
+                optional_payload: Some(OptionalPayload::SetPaneBorderlessPayload(
+                    SetPaneBorderlessPayload {
+                        pane_id: Some(pane_id.try_into()?),
+                        borderless,
+                    },
+                )),
+            }),
             Action::SwitchToMode { input_mode } => {
                 let input_mode: ProtobufInputMode = input_mode.try_into()?;
                 Ok(ProtobufAction {
@@ -1676,22 +1727,19 @@ impl TryFrom<Action> for ProtobufAction {
                 close_replaced_pane: _close_replaced_pane,
                 skip_cache: skip_plugin_cache,
                 ..
-            } => {
-                let configuration = run_plugin_or_alias.get_configuration().unwrap_or_default();
-                Ok(ProtobufAction {
-                    name: ProtobufActionName::LaunchOrFocusPlugin as i32,
-                    optional_payload: Some(OptionalPayload::LaunchOrFocusPluginPayload(
-                        LaunchOrFocusPluginPayload {
-                            plugin_url: run_plugin_or_alias.location_string(),
-                            should_float,
-                            move_to_focused_tab,
-                            should_open_in_place,
-                            plugin_configuration: Some(configuration.try_into()?),
-                            skip_plugin_cache,
-                        },
-                    )),
-                })
-            },
+            } => Ok(ProtobufAction {
+                name: ProtobufActionName::LaunchOrFocusPlugin as i32,
+                optional_payload: Some(OptionalPayload::LaunchOrFocusPluginPayload(
+                    LaunchOrFocusPluginPayload {
+                        plugin_url: run_plugin_or_alias.location_string(),
+                        should_float,
+                        move_to_focused_tab,
+                        should_open_in_place,
+                        plugin_configuration: plugin_configuration_payload(&run_plugin_or_alias)?,
+                        skip_plugin_cache,
+                    },
+                )),
+            }),
             Action::LaunchPlugin {
                 plugin: run_plugin_or_alias,
                 should_float,
@@ -1700,22 +1748,19 @@ impl TryFrom<Action> for ProtobufAction {
                 skip_cache: skip_plugin_cache,
                 cwd: _cwd,
                 ..
-            } => {
-                let configuration = run_plugin_or_alias.get_configuration().unwrap_or_default();
-                Ok(ProtobufAction {
-                    name: ProtobufActionName::LaunchPlugin as i32,
-                    optional_payload: Some(OptionalPayload::LaunchOrFocusPluginPayload(
-                        LaunchOrFocusPluginPayload {
-                            plugin_url: run_plugin_or_alias.location_string(),
-                            should_float,
-                            move_to_focused_tab: false,
-                            should_open_in_place,
-                            plugin_configuration: Some(configuration.try_into()?),
-                            skip_plugin_cache,
-                        },
-                    )),
-                })
-            },
+            } => Ok(ProtobufAction {
+                name: ProtobufActionName::LaunchPlugin as i32,
+                optional_payload: Some(OptionalPayload::LaunchOrFocusPluginPayload(
+                    LaunchOrFocusPluginPayload {
+                        plugin_url: run_plugin_or_alias.location_string(),
+                        should_float,
+                        move_to_focused_tab: false,
+                        should_open_in_place,
+                        plugin_configuration: plugin_configuration_payload(&run_plugin_or_alias)?,
+                        skip_plugin_cache,
+                    },
+                )),
+            }),
             Action::MouseEvent { event } => {
                 let payload: ProtobufMouseEventPayload = event.try_into()?;
                 Ok(ProtobufAction {
@@ -1972,7 +2017,7 @@ impl TryFrom<Action> for ProtobufAction {
                 let command = run_command_action.and_then(|r| {
                     let mut protobuf_run_command_action: ProtobufRunCommandAction =
                         r.try_into().ok()?;
-                    protobuf_run_command_action.pane_name = pane_name;
+                    protobuf_run_command_action.pane_name = pane_name.clone();
                     Some(protobuf_run_command_action)
                 });
                 let pane_id_to_replace = pane_id_to_replace.and_then(|p| p.try_into().ok());
@@ -1981,7 +2026,7 @@ impl TryFrom<Action> for ProtobufAction {
                     optional_payload: Some(OptionalPayload::NewInPlacePanePayload(
                         NewInPlacePanePayload {
                             command,
-                            pane_name: None, // pane_name is already embedded in command
+                            pane_name,
                             near_current_pane,
                             pane_id_to_replace,
                             close_replace_pane: close_replaced_pane,
@@ -2001,8 +2046,11 @@ impl TryFrom<Action> for ProtobufAction {
                 name: ProtobufActionName::ToggleHostFullscreen as i32,
                 optional_payload: None,
             }),
-            Action::NoOp
-            | Action::Confirm
+            Action::NoOp => Ok(ProtobufAction {
+                name: ProtobufActionName::NoOp as i32,
+                optional_payload: None,
+            }),
+            Action::Confirm
             | Action::NewInPlacePluginPane { .. }
             | Action::Deny
             | Action::Copy
@@ -2016,7 +2064,6 @@ impl TryFrom<Action> for ProtobufAction {
                 coordinates: _,
             }
             | Action::TogglePaneBorderless { pane_id: _ }
-            | Action::SetPaneBorderless { .. }
             | Action::SkipConfirm { action: _ }
             | Action::SwitchSession { .. }
             // Moving a pane or a tab between sessions is a CLI operation, like
@@ -2033,6 +2080,19 @@ impl TryFrom<Action> for ProtobufAction {
             | Action::SetPaneColor { .. } => Err("Unsupported action"),
         }
     }
+}
+
+/// The configuration a `LaunchOrFocusPluginPayload` carries next to its plugin URL: a plugin's
+/// own, or the alias's own - the one the decoder hands back to `RunPluginOrAlias::from_url`,
+/// so an alias that was given none does not come back with an empty one.
+fn plugin_configuration_payload(
+    plugin: &RunPluginOrAlias,
+) -> Result<Option<ProtobufPluginConfiguration>, &'static str> {
+    let configuration = match plugin {
+        RunPluginOrAlias::RunPlugin(run_plugin) => Some(run_plugin.configuration.clone()),
+        RunPluginOrAlias::Alias(alias) => alias.configuration.clone(),
+    };
+    configuration.map(TryInto::try_into).transpose()
 }
 
 impl TryFrom<ProtobufSearchOption> for SearchOption {
@@ -2153,10 +2213,10 @@ impl TryFrom<RunCommandAction> for ProtobufRunCommandAction {
 impl TryFrom<ProtobufPosition> for Position {
     type Error = &'static str;
     fn try_from(protobuf_position: ProtobufPosition) -> Result<Self, &'static str> {
-        Ok(Position::new(
-            protobuf_position.line as i32,
-            protobuf_position.column as u16,
-        ))
+        Ok(Position {
+            line: Line(protobuf_position.line as isize),
+            column: Column(protobuf_position.column as usize),
+        })
     }
 }
 
@@ -2189,7 +2249,10 @@ impl TryFrom<ProtobufMouseEventPayload> for MouseEvent {
             shift: protobuf_event.shift,
             alt: protobuf_event.alt,
             ctrl: protobuf_event.ctrl,
-            position: Position::new(protobuf_event.line as i32, protobuf_event.column as u16),
+            position: Position {
+                line: Line(protobuf_event.line as isize),
+                column: Column(protobuf_event.column as usize),
+            },
         })
     }
 }
@@ -3385,6 +3448,537 @@ mod tests {
             let protobuf: ProtobufAction = original.clone().try_into().expect("encode");
             let decoded: Action = protobuf.try_into().expect("decode");
             assert_eq!(original, decoded);
+        }
+    }
+
+    mod props {
+        use super::*;
+        use crate::input::actions::ActionKind;
+        use crate::input::command::RunCommand;
+        use crate::plugin_api::test_generators::action_of_kind;
+        use strum::IntoEnumIterator;
+
+        /// `RunCommandAction` on the plugin wire (`message RunCommandAction`) has `command`,
+        /// `args`, `cwd`, `direction`, `hold_on_close` and `hold_on_start`, and nothing else.
+        fn run_command_action(command: RunCommandAction) -> RunCommandAction {
+            RunCommandAction {
+                originating_plugin: None,
+                use_terminal_title: false,
+                remote_host: None,
+                remote_default_shell: false,
+                ..command
+            }
+        }
+
+        /// A layout's `Run::Command` crosses as the same `RunCommandAction` message.
+        fn run(run: Run) -> Run {
+            match run {
+                Run::Command(command) => Run::Command(RunCommand {
+                    originating_plugin: None,
+                    use_terminal_title: false,
+                    remote_host: None,
+                    remote_default_shell: false,
+                    ..command
+                }),
+                other => other,
+            }
+        }
+
+        /// `message TiledPaneLayout` has `bool borderless`, not an optional one, and no
+        /// `default_fg` / `default_bg`.
+        fn tiled_pane_layout(layout: TiledPaneLayout) -> TiledPaneLayout {
+            TiledPaneLayout {
+                children: layout.children.into_iter().map(tiled_pane_layout).collect(),
+                run: layout.run.map(run),
+                borderless: Some(layout.borderless.unwrap_or(false)),
+                default_fg: None,
+                default_bg: None,
+                ..layout
+            }
+        }
+
+        /// `message FloatingPaneLayout` has no `default_fg` / `default_bg`.
+        fn floating_pane_layout(layout: FloatingPaneLayout) -> FloatingPaneLayout {
+            FloatingPaneLayout {
+                run: layout.run.map(run),
+                default_fg: None,
+                default_bg: None,
+                ..layout
+            }
+        }
+
+        fn floating_pane_layouts(layouts: Vec<FloatingPaneLayout>) -> Vec<FloatingPaneLayout> {
+            layouts.into_iter().map(floating_pane_layout).collect()
+        }
+
+        fn swap_tiled_layout((layouts, name): SwapTiledLayout) -> SwapTiledLayout {
+            (
+                layouts
+                    .into_iter()
+                    .map(|(constraint, layout)| (constraint, tiled_pane_layout(layout)))
+                    .collect(),
+                name,
+            )
+        }
+
+        fn swap_floating_layout((layouts, name): SwapFloatingLayout) -> SwapFloatingLayout {
+            (
+                layouts
+                    .into_iter()
+                    .map(|(constraint, layouts)| (constraint, floating_pane_layouts(layouts)))
+                    .collect(),
+                name,
+            )
+        }
+
+        fn command_or_plugin(pane: CommandOrPlugin) -> CommandOrPlugin {
+            match pane {
+                CommandOrPlugin::Command(command) => {
+                    CommandOrPlugin::Command(run_command_action(command))
+                },
+                other => other,
+            }
+        }
+
+        /// A plugin named only by `string plugin_url` (`NewPluginPanePayload`,
+        /// `start_or_reload_plugin_payload`) comes back through `RunPluginOrAlias::from_url`
+        /// with no configuration at all.
+        fn plugin_by_url_alone(plugin: RunPluginOrAlias) -> RunPluginOrAlias {
+            match plugin {
+                RunPluginOrAlias::RunPlugin(run_plugin) => RunPluginOrAlias::RunPlugin(RunPlugin {
+                    configuration: PluginUserConfiguration::default(),
+                    ..run_plugin
+                }),
+                RunPluginOrAlias::Alias(alias) => RunPluginOrAlias::Alias(PluginAlias {
+                    configuration: None,
+                    ..alias
+                }),
+            }
+        }
+
+        /// What the plugin wire hands back for `action`, or `None` where `action.proto` has no
+        /// encoding for it at all.
+        ///
+        /// Written against the payload messages, not against the conversion: every field
+        /// zeroed here is one its payload has no room for, so the round trip is exact
+        /// everywhere else, and a field the payload *does* carry going missing still fails.
+        fn as_the_plugin_wire_carries_it(action: Action) -> Option<Action> {
+            Some(match action {
+                carried @ (Action::Quit
+                | Action::Write { .. }
+                | Action::WriteChars { .. }
+                | Action::SwitchToMode { .. }
+                | Action::SwitchModeForAllClients { .. }
+                | Action::Resize { .. }
+                | Action::FocusNextPane
+                | Action::FocusPreviousPane
+                | Action::FocusLastPane
+                | Action::SwitchFocus
+                | Action::MoveFocus { .. }
+                | Action::MoveFocusOrTab { .. }
+                | Action::MovePane { .. }
+                | Action::MovePaneBackwards
+                | Action::ClearScreen
+                | Action::DumpScreen { .. }
+                | Action::ScrollUp
+                | Action::ScrollUpAt { .. }
+                | Action::ScrollDown
+                | Action::ScrollDownAt { .. }
+                | Action::ScrollToBottom
+                | Action::ScrollToTop
+                | Action::PageScrollUp
+                | Action::PageScrollDown
+                | Action::HalfPageScrollUp
+                | Action::HalfPageScrollDown
+                | Action::ToggleFocusFullscreen
+                | Action::ToggleFocusNoUiFullscreen
+                | Action::TogglePaneFrames
+                | Action::SetPaneFrameStyle(_)
+                | Action::ToggleActiveSyncTab
+                | Action::TogglePaneEmbedOrFloating
+                | Action::ToggleFloatingPanes
+                | Action::ShowFloatingPanes { .. }
+                | Action::HideFloatingPanes { .. }
+                | Action::AreFloatingPanesVisible { .. }
+                | Action::CloseFocus
+                | Action::PaneNameInput { .. }
+                | Action::UndoRenamePane
+                | Action::NoOp
+                | Action::GoToNextTab
+                | Action::GoToPreviousTab
+                | Action::CloseTab
+                | Action::GoToTab { .. }
+                | Action::GoToTabName { .. }
+                | Action::ToggleTab
+                | Action::TabNameInput { .. }
+                | Action::UndoRenameTab
+                | Action::MoveTab {
+                    direction: Direction::Left | Direction::Right,
+                }
+                | Action::Detach
+                | Action::SetDarkTheme
+                | Action::SetLightTheme
+                | Action::ToggleTheme
+                | Action::MouseEvent { .. }
+                | Action::SearchInput { .. }
+                | Action::Search { .. }
+                | Action::SearchToggleOption { .. }
+                | Action::ToggleMouseMode
+                | Action::PreviousSwapLayout
+                | Action::NextSwapLayout
+                | Action::QueryTabNames
+                | Action::CloseTerminalPane { .. }
+                | Action::ClosePluginPane { .. }
+                | Action::FocusTerminalPaneWithId { .. }
+                | Action::FocusPluginPaneWithId { .. }
+                | Action::RenameTerminalPane { .. }
+                | Action::RenamePluginPane { .. }
+                | Action::RenameTab { .. }
+                | Action::GoToTabById { .. }
+                | Action::CloseTabById { .. }
+                | Action::RenameTabById { .. }
+                | Action::BreakPane
+                | Action::BreakPaneRight
+                | Action::BreakPaneLeft
+                | Action::FocusHostSession
+                | Action::FocusGuestSession
+                | Action::ToggleHostFullscreen
+                | Action::RenameSession { .. }
+                | Action::Notify(_)
+                | Action::TogglePanePinned
+                | Action::SetPaneBorderless { .. }
+                | Action::TogglePaneInGroup
+                | Action::ToggleGroupMarking) => carried,
+                // `MoveTabDirection` is `Left` or `Right`; the encoder refuses the rest.
+                Action::MoveTab { .. } => return None,
+                // `EditScrollback` has no payload.
+                Action::EditScrollback { .. } => Action::EditScrollback { ansi: false },
+                // `NewPanePayload` has `direction` and `pane_name`.
+                Action::NewPane {
+                    direction,
+                    pane_name,
+                    ..
+                } => Action::NewPane {
+                    direction,
+                    pane_name,
+                    start_suppressed: false,
+                },
+                // `NewBlockingPanePayload` has no `no_focus` and no `tab_id`.
+                Action::NewBlockingPane {
+                    placement,
+                    pane_name,
+                    command,
+                    unblock_condition,
+                    near_current_pane,
+                    ..
+                } => Action::NewBlockingPane {
+                    placement,
+                    pane_name,
+                    command: command.map(run_command_action),
+                    unblock_condition,
+                    near_current_pane,
+                    no_focus: false,
+                    tab_id: None,
+                },
+                // `EditFilePayload` has the file, `line_number`, `cwd`, `direction`,
+                // `should_float` and `near_current_pane`.
+                Action::EditFile {
+                    payload,
+                    direction,
+                    floating,
+                    near_current_pane,
+                    ..
+                } => Action::EditFile {
+                    payload: OpenFilePayload {
+                        originating_plugin: None,
+                        ..payload
+                    },
+                    direction,
+                    floating,
+                    in_place: false,
+                    close_replaced_pane: false,
+                    start_suppressed: false,
+                    placement: NewPanePlacement::Floating(None),
+                    near_current_pane,
+                    no_focus: false,
+                    tab_id: None,
+                },
+                // `NewFloatingPanePayload` has `command` and `near_current_pane`; the pane name
+                // rides inside the command, so without one there is nowhere to put it.
+                Action::NewFloatingPane {
+                    command,
+                    pane_name,
+                    near_current_pane,
+                    ..
+                } => Action::NewFloatingPane {
+                    pane_name: pane_name.filter(|_| command.is_some()),
+                    command: command.map(run_command_action),
+                    placement: NewPanePlacement::Floating(None),
+                    near_current_pane,
+                    no_focus: false,
+                    tab_id: None,
+                },
+                // `NewTiledPanePayload` adds `direction` and `borderless` to the same shape.
+                Action::NewTiledPane {
+                    direction,
+                    command,
+                    pane_name,
+                    near_current_pane,
+                    borderless,
+                    ..
+                } => Action::NewTiledPane {
+                    direction,
+                    pane_name: pane_name.filter(|_| command.is_some()),
+                    command: command.map(run_command_action),
+                    near_current_pane,
+                    no_focus: false,
+                    borderless,
+                    tab_id: None,
+                },
+                // `NewInPlacePanePayload` has no `no_focus` and no `tab_id`.
+                Action::NewInPlacePane {
+                    command,
+                    pane_name,
+                    near_current_pane,
+                    pane_id_to_replace,
+                    close_replaced_pane,
+                    ..
+                } => Action::NewInPlacePane {
+                    command: command.map(run_command_action),
+                    pane_name,
+                    near_current_pane,
+                    no_focus: false,
+                    pane_id_to_replace,
+                    close_replaced_pane,
+                    tab_id: None,
+                },
+                // `NewStackedPanePayload` is empty (its one field is reserved).
+                Action::NewStackedPane { .. } => Action::NewStackedPane {
+                    command: None,
+                    pane_name: None,
+                    near_current_pane: false,
+                    no_focus: false,
+                    tab_id: None,
+                },
+                Action::NewTab {
+                    tiled_layout,
+                    floating_layouts,
+                    swap_tiled_layouts,
+                    swap_floating_layouts,
+                    tab_name,
+                    should_change_focus_to_new_tab,
+                    cwd,
+                    initial_panes,
+                    first_pane_unblock_condition,
+                } => Action::NewTab {
+                    tiled_layout: tiled_layout.map(tiled_pane_layout),
+                    floating_layouts: floating_pane_layouts(floating_layouts),
+                    swap_tiled_layouts: swap_tiled_layouts
+                        .map(|layouts| layouts.into_iter().map(swap_tiled_layout).collect()),
+                    swap_floating_layouts: swap_floating_layouts
+                        .map(|layouts| layouts.into_iter().map(swap_floating_layout).collect()),
+                    tab_name,
+                    should_change_focus_to_new_tab,
+                    cwd,
+                    initial_panes: initial_panes
+                        .map(|panes| panes.into_iter().map(command_or_plugin).collect()),
+                    first_pane_unblock_condition,
+                },
+                // `run_payload` is a bare `RunCommandAction`.
+                Action::Run { command, .. } => Action::Run {
+                    command: run_command_action(command),
+                    near_current_pane: false,
+                    no_focus: false,
+                },
+                // `LaunchOrFocusPluginPayload` has no `close_replaced_pane`, `cwd`, `no_focus`
+                // or `tab_id`.
+                Action::LaunchOrFocusPlugin {
+                    plugin,
+                    should_float,
+                    move_to_focused_tab,
+                    should_open_in_place,
+                    skip_cache,
+                    ..
+                } => Action::LaunchOrFocusPlugin {
+                    plugin,
+                    should_float,
+                    move_to_focused_tab,
+                    should_open_in_place,
+                    close_replaced_pane: false,
+                    skip_cache,
+                    tab_id: None,
+                },
+                Action::LaunchPlugin {
+                    plugin,
+                    should_float,
+                    should_open_in_place,
+                    skip_cache,
+                    ..
+                } => Action::LaunchPlugin {
+                    plugin,
+                    should_float,
+                    should_open_in_place,
+                    close_replaced_pane: false,
+                    skip_cache,
+                    cwd: None,
+                    no_focus: false,
+                    tab_id: None,
+                },
+                Action::OverrideLayout {
+                    tabs,
+                    retain_existing_terminal_panes,
+                    retain_existing_plugin_panes,
+                    apply_only_to_active_tab,
+                } => Action::OverrideLayout {
+                    tabs: tabs
+                        .into_iter()
+                        .map(|tab| TabLayoutInfo {
+                            tiled_layout: tiled_pane_layout(tab.tiled_layout),
+                            floating_layouts: floating_pane_layouts(tab.floating_layouts),
+                            swap_tiled_layouts: tab.swap_tiled_layouts.map(|layouts| {
+                                layouts.into_iter().map(swap_tiled_layout).collect()
+                            }),
+                            swap_floating_layouts: tab.swap_floating_layouts.map(|layouts| {
+                                layouts.into_iter().map(swap_floating_layout).collect()
+                            }),
+                            ..tab
+                        })
+                        .collect(),
+                    retain_existing_terminal_panes,
+                    retain_existing_plugin_panes,
+                    apply_only_to_active_tab,
+                },
+                // `NewPluginPanePayload` has `plugin_url`, `pane_name` and `skip_plugin_cache`.
+                Action::NewTiledPluginPane {
+                    plugin,
+                    pane_name,
+                    skip_cache,
+                    ..
+                } => Action::NewTiledPluginPane {
+                    plugin: plugin_by_url_alone(plugin),
+                    pane_name,
+                    skip_cache,
+                    cwd: None,
+                    no_focus: false,
+                    tab_id: None,
+                },
+                Action::NewFloatingPluginPane {
+                    plugin,
+                    pane_name,
+                    skip_cache,
+                    ..
+                } => Action::NewFloatingPluginPane {
+                    plugin: plugin_by_url_alone(plugin),
+                    pane_name,
+                    skip_cache,
+                    cwd: None,
+                    placement: NewPanePlacement::Floating(None),
+                    no_focus: false,
+                    tab_id: None,
+                },
+                Action::StartOrReloadPlugin { plugin } => Action::StartOrReloadPlugin {
+                    plugin: plugin_by_url_alone(plugin),
+                },
+                // `KeybindPipe` has no payload.
+                Action::KeybindPipe { .. } => Action::KeybindPipe {
+                    name: None,
+                    payload: None,
+                    args: None,
+                    plugin: None,
+                    plugin_id: None,
+                    configuration: None,
+                    launch_new: false,
+                    skip_cache: false,
+                    floating: None,
+                    in_place: None,
+                    cwd: None,
+                    pane_title: None,
+                },
+                // No `ActionName` at all (`CliPipe` has one, but `CliPipePayload` cannot carry
+                // a pipe id), so the encoder refuses these.
+                Action::WriteToPaneId { .. }
+                | Action::WriteCharsToPaneId { .. }
+                | Action::Paste { .. }
+                | Action::DumpLayout
+                | Action::SaveSession
+                | Action::SetPaneColor { .. }
+                | Action::SwitchSession { .. }
+                | Action::WarpPane { .. }
+                | Action::AdoptPane { .. }
+                | Action::WarpTab { .. }
+                | Action::AdoptTab { .. }
+                | Action::WarpTabFrom { .. }
+                | Action::Copy
+                | Action::Confirm
+                | Action::Deny
+                | Action::SkipConfirm { .. }
+                | Action::NewInPlacePluginPane { .. }
+                | Action::CliPipe { .. }
+                | Action::ListClients
+                | Action::ListPanes { .. }
+                | Action::ListTabs { .. }
+                | Action::CurrentTabInfo { .. }
+                | Action::StackPanes { .. }
+                | Action::ChangeFloatingPaneCoordinates { .. }
+                | Action::TogglePaneBorderless { .. }
+                | Action::ScrollUpByPaneId { .. }
+                | Action::ScrollDownByPaneId { .. }
+                | Action::ScrollToTopByPaneId { .. }
+                | Action::ScrollToBottomByPaneId { .. }
+                | Action::PageScrollUpByPaneId { .. }
+                | Action::PageScrollDownByPaneId { .. }
+                | Action::HalfPageScrollUpByPaneId { .. }
+                | Action::HalfPageScrollDownByPaneId { .. }
+                | Action::ResizeByPaneId { .. }
+                | Action::MovePaneByPaneId { .. }
+                | Action::MovePaneBackwardsByPaneId { .. }
+                | Action::ClearScreenByPaneId { .. }
+                | Action::EditScrollbackByPaneId { .. }
+                | Action::ToggleFocusFullscreenByPaneId { .. }
+                | Action::ToggleFocusNoUiFullscreenByPaneId { .. }
+                | Action::TogglePaneEmbedOrFloatingByPaneId { .. }
+                | Action::CloseFocusByPaneId { .. }
+                | Action::RenamePaneByPaneId { .. }
+                | Action::UndoRenamePaneByPaneId { .. }
+                | Action::TogglePanePinnedByPaneId { .. }
+                | Action::FocusPaneByPaneId { .. }
+                | Action::UndoRenameTabByTabId { .. }
+                | Action::ToggleActiveSyncTabByTabId { .. }
+                | Action::ToggleFloatingPanesByTabId { .. }
+                | Action::PreviousSwapLayoutByTabId { .. }
+                | Action::NextSwapLayoutByTabId { .. }
+                | Action::MoveTabByTabId { .. } => return None,
+            })
+        }
+
+        /// Every variant, every case: the kinds are walked rather than sampled, so a variant
+        /// the wire mishandles cannot hide behind an unlucky draw.
+        #[hegel::test]
+        fn every_action_survives_the_plugin_api_round_trip(tc: hegel::TestCase) {
+            use prost::Message;
+            for kind in ActionKind::iter() {
+                let action = action_of_kind(&tc, kind);
+                let expected = as_the_plugin_wire_carries_it(action.clone());
+                let (protobuf, expected) =
+                    match (ProtobufAction::try_from(action.clone()), expected) {
+                        (Err(_), None) => continue,
+                        (Err(e), Some(_)) => panic!("{action:?} failed to encode: {e}"),
+                        (Ok(_), None) => panic!(
+                            "{action:?} encoded, but this test says action.proto cannot carry it"
+                        ),
+                        (Ok(protobuf), Some(expected)) => (protobuf, expected),
+                    };
+                let bytes = protobuf.encode_to_vec();
+                let decoded: ProtobufAction = Message::decode(bytes.as_slice())
+                    .unwrap_or_else(|e| panic!("{action:?} failed to decode: {e}"));
+                let round_tripped: Action = decoded
+                    .try_into()
+                    .unwrap_or_else(|e| panic!("{action:?} failed to convert back: {e}"));
+                assert_eq!(
+                    round_tripped, expected,
+                    "the plugin wire changed {action:?}"
+                );
+            }
         }
     }
 }
