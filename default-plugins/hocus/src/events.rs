@@ -94,6 +94,7 @@ impl State {
                 // value-returning gated call before the grant lands waits on a reply the host
                 // never sends. Like the environment, it is fixed for the session.
                 self.user_plugin_dir = get_user_plugin_dir();
+                self.start_extension_scan();
                 Config::resolve(&self.kdl, &self.env)
             },
             PermissionStatus::Denied => Err(ConfigError {
@@ -168,6 +169,145 @@ impl State {
         // can still change the answer.
         self.refresh_tab_projects();
         false
+    }
+
+    fn start_extension_scan(&mut self) {
+        let dir = self.user_plugin_dir.trim();
+        if dir.is_empty() {
+            return;
+        }
+        let Ok((argv, env)) = tools::plugin_argv("plugin_list", &tools::Args::default(), dir, dir)
+        else {
+            return;
+        };
+        let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+        run_command_with_output_limit(
+            &borrowed,
+            env,
+            std::path::PathBuf::from("."),
+            BTreeMap::from([(extensions::SCAN_CONTEXT.to_owned(), "true".to_owned())]),
+            MAX_TOOL_OUTPUT,
+        );
+    }
+
+    pub(crate) fn on_extension_scan_result(
+        &mut self,
+        exit_code: Option<i32>,
+        stdout: &[u8],
+    ) -> bool {
+        self.extension_files = if exit_code == Some(0) {
+            extensions::extension_files(&self.user_plugin_dir, &String::from_utf8_lossy(stdout))
+        } else {
+            BTreeMap::new()
+        };
+        if self.extension_files.is_empty() {
+            return false;
+        }
+        extensions::discover();
+        self.extension_scan_due_ms = Some(self.mono_ms.saturating_add(PLUGIN_LOAD_MS));
+        self.arm_timer(FRAME_SECONDS);
+        false
+    }
+
+    pub(crate) fn on_extension_registration(&mut self, owner: u32, payload: Option<&str>) -> bool {
+        let Some(payload) = payload else {
+            return false;
+        };
+        let reserved: BTreeSet<String> = tools::names()
+            .into_iter()
+            .chain(LOCAL_COMMANDS.iter().map(|name| (*name).to_owned()))
+            .collect();
+        let names = match self
+            .extensions
+            .register(owner, payload, &self.extension_files, &reserved)
+        {
+            Ok(names) => names,
+            Err(error) => {
+                self.log(
+                    "extension_error",
+                    serde_json::json!({"plugin_id": owner, "error": error}),
+                );
+                return false;
+            },
+        };
+        let Some(path) = self
+            .extension_files
+            .values()
+            .find(|path| self.extensions.owner_for_path(path) == Some(owner))
+            .cloned()
+        else {
+            return false;
+        };
+        if self
+            .plugin_load
+            .as_ref()
+            .is_some_and(|watch| watch.extension && watch.target == path)
+        {
+            return self.finish_extension_load(&path, &names);
+        }
+        let parked = self.parked.iter().position(|chat| {
+            chat.plugin_load
+                .as_ref()
+                .is_some_and(|watch| watch.extension && watch.target == path)
+        });
+        parked.is_some_and(|index| {
+            self.with_parked(index, |state| state.finish_extension_load(&path, &names))
+        })
+    }
+
+    fn finish_extension_load(&mut self, path: &str, names: &[String]) -> bool {
+        if !matches!(self.status, Status::AwaitingPluginLoad)
+            || !self
+                .plugin_load
+                .as_ref()
+                .is_some_and(|watch| watch.extension && watch.target == path)
+        {
+            return false;
+        }
+        self.plugin_load = None;
+        self.status = Status::Idle;
+        let result = if names.is_empty() {
+            format!("loaded {path}; it registered no tools")
+        } else {
+            format!("loaded {path}; registered: {}", names.join(", "))
+        };
+        self.finish_head(result);
+        self.pump_tools();
+        true
+    }
+
+    pub(crate) fn on_extension_result(&mut self, owner: u32, payload: Option<&str>) -> bool {
+        let Some(payload) = payload else {
+            return false;
+        };
+        let result = match serde_json::from_str::<extensions::ToolResult>(payload) {
+            Ok(result) if result.version == extensions::VERSION => result,
+            _ => return false,
+        };
+        match self.parked_with_call(&result.call_id) {
+            Some(index) => {
+                self.with_parked(index, |state| state.finish_extension_result(owner, result))
+            },
+            None => self.finish_extension_result(owner, result),
+        }
+    }
+
+    fn finish_extension_result(&mut self, owner: u32, result: extensions::ToolResult) -> bool {
+        if !matches!(self.status, Status::AwaitingExtension) {
+            return false;
+        }
+        let Some(head) = self.pending.front() else {
+            return false;
+        };
+        if head.id != result.call_id
+            || self.extensions.tool(&head.name).map(|tool| tool.owner) != Some(owner)
+        {
+            return false;
+        }
+        self.status = Status::Idle;
+        self.finish_head(log::truncate_str(&result.result, MAX_TOOL_OUTPUT));
+        self.pump_tools();
+        true
     }
 
     /// Watch our own pane for the two things only the server knows: which tab it is on, and
@@ -431,6 +571,7 @@ impl State {
             .iter()
             .map(|name| (*name).to_owned())
             .chain(tools::names())
+            .chain(self.extensions.names())
             .filter(|name| name.starts_with(prefix))
             .collect();
         match matches.as_slice() {
@@ -638,12 +779,14 @@ impl State {
         if self.awaiting_plan() {
             self.plan = Plan::Planning;
         }
-        let body = api::request_body_with_project(
+        let extension_specs = self.extensions.specs(self.is_planning());
+        let body = api::request_body_with_project_and_tools(
             cfg,
             &self.messages,
             allow_tools,
             project,
             self.is_planning(),
+            &extension_specs,
         );
         let body_len = body.len();
         self.log(
@@ -1034,10 +1177,24 @@ impl State {
             self.pump_tools();
             return true;
         };
-        tools::reload_plugin(&target);
+        let extension =
+            extensions::namespace_for_path(&self.user_plugin_dir, &target).map(str::to_owned);
+        if let Some(namespace) = &extension {
+            self.extension_files
+                .insert(namespace.clone(), target.clone());
+            if let Some(owner) = self.extensions.owner_for_path(&target) {
+                self.extensions.remove_owner(owner);
+                extensions::reload(owner);
+            } else {
+                extensions::load(&target, namespace);
+            }
+        } else {
+            tools::reload_plugin(&target);
+        }
         self.plugin_load = Some(PluginLoadWatch {
             target,
             started_ms: self.mono_ms,
+            extension: extension.is_some(),
         });
         self.status = Status::AwaitingPluginLoad;
         self.arm_timer(FRAME_SECONDS);

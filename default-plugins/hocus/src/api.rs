@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use serde_json::json;
+use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
@@ -345,12 +346,24 @@ impl<'a> WireMessage<'a> {
     }
 }
 
+#[cfg(test)]
 pub fn request_body_with_project(
     cfg: &Config,
     transcript: &[Message],
     allow_tools: bool,
     project: Option<(&str, &str)>,
     plan: bool,
+) -> Vec<u8> {
+    request_body_with_project_and_tools(cfg, transcript, allow_tools, project, plan, &[])
+}
+
+pub fn request_body_with_project_and_tools(
+    cfg: &Config,
+    transcript: &[Message],
+    allow_tools: bool,
+    project: Option<(&str, &str)>,
+    plan: bool,
+    extension_tools: &[Value],
 ) -> Vec<u8> {
     let send_tools = cfg.tools && allow_tools;
     let mut messages: Vec<WireMessage> = Vec::with_capacity(transcript.len() + 1);
@@ -438,11 +451,15 @@ pub fn request_body_with_project(
         stream: true,
         messages,
         tools: send_tools.then(|| {
-            if plan {
+            let mut specs = if plan {
                 tools::read_only_specs()
             } else {
                 tools::specs()
+            };
+            if let Value::Array(specs) = &mut specs {
+                specs.extend_from_slice(extension_tools);
             }
+            specs
         }),
     };
 

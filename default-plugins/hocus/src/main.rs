@@ -3,6 +3,7 @@
 mod api;
 mod archive;
 mod events;
+mod extensions;
 mod history;
 mod linear;
 mod log;
@@ -66,6 +67,9 @@ pub struct PluginLoadWatch {
     pub target: String,
     /// `mono_ms` when the reload was requested.
     pub started_ms: u64,
+    /// Hocus extensions load headlessly and prove success by registering tools; ordinary
+    /// plugins open a pane and prove it by rendering there.
+    pub extension: bool,
 }
 
 /// The shortest interval `schedule` will accept. A model that asks for one
@@ -226,6 +230,13 @@ pub struct State {
     /// absolute path that was asked to load, and the tick it was asked on. Parked chats carry
     /// their own in `Chat::plugin_load`; `poll_plugin_load` polls those through `with_parked`.
     pub plugin_load: Option<PluginLoadWatch>,
+    /// Live Lua-provided tools, shared by every conversation in this Hocus instance.
+    extensions: extensions::Registry,
+    /// Valid `hocus/*.lua` files from the latest scan, keyed by their namespace.
+    extension_files: BTreeMap<String, String>,
+    /// When to load scanned files that did not answer the discovery broadcast. The grace period
+    /// lets extensions survive a Hocus reload without being duplicated.
+    extension_scan_due_ms: Option<u64>,
     pub messages: Vec<Message>,
     pub input: TextInput,
     pub status: Status,
@@ -544,6 +555,9 @@ impl Default for State {
             env: BTreeMap::new(),
             user_plugin_dir: String::new(),
             plugin_load: None,
+            extensions: extensions::Registry::default(),
+            extension_files: BTreeMap::new(),
+            extension_scan_due_ms: None,
             messages: Vec::new(),
             input: TextInput::empty(),
             status: Status::Idle,
@@ -745,6 +759,18 @@ impl ZellijPlugin for State {
     /// Every snapshot ends up in `apply_poll`. There is no second path into it
     /// any more; the daemon is the only source of panes and folders.
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        if pipe_message.name == extensions::REGISTER {
+            let PipeSource::Plugin(owner) = pipe_message.source else {
+                return false;
+            };
+            return self.on_extension_registration(owner, pipe_message.payload.as_deref());
+        }
+        if pipe_message.name == extensions::RESULT {
+            let PipeSource::Plugin(owner) = pipe_message.source else {
+                return false;
+            };
+            return self.on_extension_result(owner, pipe_message.payload.as_deref());
+        }
         match pipe_message.name.as_str() {
             wire::AGENT_HELLO => {
                 self.subscribe_to_agentd();
@@ -848,6 +874,9 @@ impl State {
                 None => self.on_chunk(&stream_id, &chunk, done, error),
             },
             Event::RunCommandResult(exit_code, stdout, stderr, context) => {
+                if context.contains_key(extensions::SCAN_CONTEXT) {
+                    return self.on_extension_scan_result(exit_code, &stdout);
+                }
                 match self.owner_of(&context) {
                     Some(index) => self.with_parked(index, |state| {
                         state.on_command_result(exit_code, &stdout, &stderr, &context)

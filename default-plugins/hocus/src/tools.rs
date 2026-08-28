@@ -384,6 +384,7 @@ pub fn confirmation_detail(call: &ToolCall) -> Vec<String> {
 
 /// The confirmation as a toast: the same block behind a line saying who is
 /// asking, since a toast is read from a pane that has nothing to do with hocus.
+#[cfg(test)]
 pub fn confirmation_toast(call: &ToolCall) -> String {
     let mut lines = vec![TOAST_HEADLINE.to_owned()];
     lines.extend(confirmation_detail(call));

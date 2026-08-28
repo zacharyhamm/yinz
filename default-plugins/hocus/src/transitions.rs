@@ -198,7 +198,10 @@ impl State {
             ]);
         }
         match self.status {
-            Status::ConfirmingTool => self.pending.front().map(tools::confirmation_detail),
+            Status::ConfirmingTool => self
+                .pending
+                .front()
+                .map(|call| self.confirmation_detail(call)),
             _ => None,
         }
     }
@@ -239,6 +242,7 @@ impl State {
             Status::AwaitingCommand
             | Status::AwaitingSearch
             | Status::AwaitingLinear
+            | Status::AwaitingExtension
             | Status::AwaitingPluginLoad => true,
             // A confirmation prompt is waiting on the user rather than on us,
             // so the only thing left to be waiting on is the reply. Once its
@@ -282,6 +286,10 @@ impl State {
             // `linear_issues` often has no query worth showing.
             if let Some(call) = head {
                 return Some(format!("{spinner} linear: {}", call.name));
+            }
+        } else if matches!(self.status, Status::AwaitingExtension) {
+            if let Some(call) = head {
+                return Some(format!("{spinner} extension: {}", call.name));
             }
         } else if matches!(self.status, Status::AwaitingPluginLoad) {
             return Some(format!("{spinner} loading plugin"));
@@ -438,6 +446,7 @@ impl State {
         let asked = self.drain_asks();
         let fired = self.tick_jobs(elapsed);
         let fired = self.poll_plugin_loads() || fired;
+        let fired = self.poll_extension_scan() || fired;
         let frames = self.wants_frames();
         if frames {
             self.tick += 1;
@@ -446,8 +455,9 @@ impl State {
         // A parked chat's plugin load keeps the chain running at frame rate even when nothing on
         // screen wants frames: nothing else will wake us, and the report is due in 750ms.
         let loads = self.plugin_load_pending();
-        if frames || loads || !self.jobs.is_empty() || !self.asks.is_empty() {
-            self.arm_timer(if frames || loads {
+        let extension_scan = self.extension_scan_due_ms.is_some();
+        if frames || loads || extension_scan || !self.jobs.is_empty() || !self.asks.is_empty() {
+            self.arm_timer(if frames || loads || extension_scan {
                 FRAME_SECONDS
             } else {
                 JOB_SECONDS
@@ -456,6 +466,22 @@ impl State {
         // A quiet tick changed nothing on screen; asking for a render would
         // recomposite the whole session for nothing.
         frames || fired
+    }
+
+    fn poll_extension_scan(&mut self) -> bool {
+        let Some(due) = self.extension_scan_due_ms else {
+            return false;
+        };
+        if self.mono_ms < due {
+            return false;
+        }
+        self.extension_scan_due_ms = None;
+        for (namespace, path) in &self.extension_files {
+            if self.extensions.owner_for_path(path).is_none() {
+                extensions::load(path, namespace);
+            }
+        }
+        false
     }
 
     /// Whether any chat, foreground or parked, is waiting on a `plugin_reload`.
@@ -513,7 +539,14 @@ impl State {
         if self.mono_ms.saturating_sub(watch.started_ms) < PLUGIN_LOAD_MS {
             return false;
         }
-        let report = tools::plugin_load_report(&watch.target, tools::observe_plugin(&watch.target));
+        let report = if watch.extension {
+            format!(
+                "loaded {}, but it did not register Hocus tools; call plugin_log for its error",
+                watch.target
+            )
+        } else {
+            tools::plugin_load_report(&watch.target, tools::observe_plugin(&watch.target))
+        };
         self.plugin_load = None;
         self.status = Status::Idle;
         self.finish_head(report);
