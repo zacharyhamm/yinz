@@ -6,6 +6,8 @@ pub mod context_menu;
 pub mod hooks;
 pub mod keybinds;
 pub mod layout;
+#[cfg(not(target_family = "wasm"))]
+mod lua_config;
 pub mod mouse;
 pub mod options;
 pub mod permission;

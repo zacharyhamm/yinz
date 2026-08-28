@@ -26,6 +26,7 @@ use crate::envs::EnvironmentVariables;
 use crate::{home, setup};
 
 pub const DEFAULT_CONFIG_FILE_NAME: &str = "config.kdl";
+pub const DEFAULT_LUA_CONFIG_FILE_NAME: &str = "config.lua";
 
 type ConfigResult = Result<Config, ConfigError>;
 
@@ -150,6 +151,8 @@ pub enum ConfigError {
     DownloadError(String),
     #[error("failed to block on async task")]
     Async(#[from] std::io::Error),
+    #[error("Lua configuration error: {0}")]
+    Lua(String),
 }
 
 impl ConfigError {
@@ -202,7 +205,12 @@ impl TryFrom<&CliArgs> for Config {
             .or_else(home::find_default_config_dir);
 
         if let Some(ref config) = config_dir {
-            let path = config.join(DEFAULT_CONFIG_FILE_NAME);
+            let lua_path = config.join(DEFAULT_LUA_CONFIG_FILE_NAME);
+            let path = if lua_path.exists() {
+                lua_path
+            } else {
+                config.join(DEFAULT_CONFIG_FILE_NAME)
+            };
             if path.exists() {
                 let default_config = Config::from_default_assets()?;
                 Config::from_path(&path, Some(default_config))
@@ -236,6 +244,10 @@ impl Config {
     }
     #[allow(clippy::result_large_err)]
     pub fn from_path(path: &PathBuf, default_config: Option<Config>) -> ConfigResult {
+        #[cfg(not(target_family = "wasm"))]
+        if path.extension().and_then(|extension| extension.to_str()) == Some("lua") {
+            return super::lua_config::from_path(path, default_config);
+        }
         match File::open(path) {
             Ok(mut file) => {
                 let mut kdl_config = String::new();
@@ -298,11 +310,25 @@ impl Config {
                     home::try_create_home_config_dir();
                     home::find_default_config_dir()
                 })
-                .map(|config_dir| config_dir.join(DEFAULT_CONFIG_FILE_NAME))
+                .map(|config_dir| {
+                    let lua_path = config_dir.join(DEFAULT_LUA_CONFIG_FILE_NAME);
+                    if lua_path.exists() {
+                        lua_path
+                    } else {
+                        config_dir.join(DEFAULT_CONFIG_FILE_NAME)
+                    }
+                })
         })
     }
     pub fn default_config_file_path() -> Option<PathBuf> {
-        home::find_default_config_dir().map(|config_dir| config_dir.join(DEFAULT_CONFIG_FILE_NAME))
+        home::find_default_config_dir().map(|config_dir| {
+            let lua_path = config_dir.join(DEFAULT_LUA_CONFIG_FILE_NAME);
+            if lua_path.exists() {
+                lua_path
+            } else {
+                config_dir.join(DEFAULT_CONFIG_FILE_NAME)
+            }
+        })
     }
     pub fn write_config_to_disk(
         config: String,
