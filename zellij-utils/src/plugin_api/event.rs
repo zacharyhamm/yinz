@@ -1973,6 +1973,7 @@ impl TryFrom<ProtobufAgentInfo> for AgentInfo {
             state,
             source,
             detail: protobuf.detail,
+            waiting_on: protobuf.waiting_on,
             cwd: protobuf.cwd,
             session_id: protobuf.session_id,
         })
@@ -1998,6 +1999,7 @@ impl TryFrom<AgentInfo> for ProtobufAgentInfo {
             state: state as i32,
             source: source as i32,
             detail: agent.detail,
+            waiting_on: agent.waiting_on,
             cwd: agent.cwd,
             session_id: agent.session_id,
         })

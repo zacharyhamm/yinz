@@ -1570,6 +1570,7 @@ fn a_plugin_can_set_a_panes_agent_record() {
             state: AgentState::Waiting,
             source: AgentSource::Reported,
             detail: Some("y/n".to_owned()),
+            waiting_on: None,
             cwd: None,
             session_id: None,
         })

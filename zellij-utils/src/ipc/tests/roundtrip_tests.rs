@@ -3510,6 +3510,7 @@ fn test_client_messages() {
                 state: AgentState::Waiting,
                 source: AgentSource::Reported,
                 detail: Some("Bash cargo".to_owned()),
+                waiting_on: Some("Bash cargo".to_owned()),
                 cwd: Some("/work".to_owned()),
                 session_id: Some("s1".to_owned()),
             }),

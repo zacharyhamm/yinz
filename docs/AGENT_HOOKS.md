@@ -4,7 +4,7 @@
 five seconds it reads the pane's scrollback, hashes the word sequence, and calls the
 pane busy if the hash moved. Whether the agent is *blocked on the user* is not observed
 at all — after three unchanged polls (~15s) the daemon sends 120 lines of pane tail to a
-model and asks.
+model and asks. The same tail, and the same wait, is what an idle summary is made of.
 
 That is the only thing that works for an agent which says nothing about itself, and it
 is a guess bought with fifteen seconds and a round trip. Claude Code says. Install its
@@ -29,7 +29,7 @@ that file as `legacy:` while they are still there.
 ## What is wired
 
 The installer writes `~/.claude/hocus/hocus-hook.sh` and registers it, with no matcher,
-against eight events. The script hands each event's JSON to the session:
+against seventeen events. The script hands each event's JSON to the session:
 
 ```sh
 zellij action agent-report --hook-json < "$payload"
@@ -37,10 +37,30 @@ zellij action agent-report --hook-json < "$payload"
 
 `agent-report` reads the event, works out what it means (`zellij-utils/src/agent.rs`,
 `hook_outcome`) and sets the pane's **agent record** — `PaneInfo.agent`: the kind (`claude`),
-the state, the tool it is running, its folder and its session id. The pane is
-`$ZELLIJ_PANE_ID`, which the action reads itself. Every reader of the pane manifest then sees
-the same answer: plugins on `PaneUpdate`, `zellij events`, `zellij action list-panes --json`,
-and hocus's agents list. The record is complete every time it is set; nothing merges.
+the state, the tool it is running, what it is blocked on, its folder and its session id. The
+pane is `$ZELLIJ_PANE_ID`, which the action reads itself. Every reader of the pane manifest
+then sees the same answer: plugins on `PaneUpdate`, `zellij events`, `zellij action list-panes
+--json`, and hocus's agents list. The record is complete every time it is set; nothing merges.
+
+**The same command also broadcasts the event itself**, whole, on the `agent_hook` pipe. A
+record is deliberately smaller than an event: the agent's own final message on a `Stop`, the
+prompt behind it on a `UserPromptSubmit`, the permission mode on every one of them — none of
+those belong on a manifest that every plugin is handed on every pane update, and all three are
+what an idle summary and a well-judged interruption are made of. So one process spawn does
+both, and a plugin that wants more than a record holds subscribes to the pipe. It is a
+broadcast without a pipe id, so nothing waits to be unblocked and a hook cannot stall the turn
+it fired in.
+
+"Whole" has one bound on it, `agent::HOOK_BROADCAST_MAX_BYTES` (64 KiB). Two of the fields
+Claude Code sends have no size limit in its own schema — `tool_input`, so a `Write` of a
+two-megabyte file, and `tool_response`, so a `Read` of anything — and this payload is copied
+into every running plugin's memory, twice per tool call, inside a hook with five seconds to
+live. An event over the cap goes out through `HookEvent::pruned` instead: every field it
+models survives, with each string cut to 256 characters and a budget spent across
+`tool_input`, which leaves everything any reader actually takes from it — the `Bash` command,
+the `file_path`, the first `AskUserQuestion` question. Anything the struct does not model,
+`tool_response` above all, is gone. Under the cap, which is nearly every event, the JSON
+arrives exactly as Claude Code wrote it.
 
 The same record is written by two other roads, which is what makes "is this pane an agent" one
 question with one answer: the spawn path, when a plugin opens a pane *as* an agent pane
@@ -63,51 +83,143 @@ is a no-op on the pane. Pass `hooks: false` to spawn without it.
 | Event | State | Why |
 |---|---|---|
 | `SessionStart` | idle | Starts the feed, and proves the pane runs Claude Code |
-| `UserPromptSubmit` | busy | |
+| `UserPromptSubmit` | busy | Carries `prompt`, kept for the summary at the end of the turn |
 | `PreToolUse` | busy | Names the tool: `busy · Bash cargo` |
 | `PostToolUse` | busy | Clears the tool name |
+| `PostToolUseFailure` | busy | A tool that failed is still the agent working |
+| `PreToolUse` (`AskUserQuestion`, `ExitPlanMode`) | **waiting** | These two tools *are* the question |
 | `PermissionRequest` | **waiting** | Fires as the prompt goes up |
-| `Notification` | **waiting** | Only for `permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input` |
-| `Stop` | idle | Every turn end |
-| `SessionEnd` | — | Clears the record |
+| `PermissionDenied` | busy | Auto mode refused a call; the agent carries on |
+| `Elicitation` | **waiting** | An MCP server asking for input |
+| `ElicitationResult` | busy | The answer came back |
+| `Notification` | **waiting** | Backstop; see below |
+| `SubagentStart` / `SubagentStop` | busy | A worker under an agent that is working anyway |
+| `PreCompact` / `PostCompact` | busy | Work the user did not ask for and is waiting on |
+| `Stop` | idle | Every turn end. **Carries `last_assistant_message`** |
+| `StopFailure` | idle | The turn died on an API error — the only thing that says so |
+| `SessionEnd` | — | Clears the record, and ends the feed |
 
 `PermissionRequest` is the primary waiting signal and `Notification` the backstop: the
 notification only fires after ~6s of the prompt going unanswered, which is most of what
-the feed exists to remove. Neither one returns a decision — the script exits 0 with
-empty stdout, which leaves the permission flow exactly as it was.
+the feed exists to remove. Its `notification_type` is matched against an allowlist —
+`permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`,
+`worker_permission_prompt` — so a kind added in a later Claude Code cannot silently start
+drawing a `!`. None of these hooks returns a decision: the script exits 0 with empty stdout,
+which leaves the permission flow exactly as it was.
+
+**No notification means the turn ended**, and `agent_completed` least of all, though it reads
+like the one that would. Claude Code raises it from its background-job monitor, for an async
+agent this session started, on the foreground session's own payload — so a pane whose Claude
+launched one and kept working would be marked idle mid-turn by it. The turn ending has `Stop`
+and `StopFailure`, which arrive earlier and carry the words to describe it. `agent_needs_input`
+stays on the waiting list despite coming from that same monitor, because it has a second
+source the finish notification does not: the foreground dialog map, which raises it for
+teammate setup, a Slack-connect dialog and an offline file sync. Those are this session,
+blocked, with a person to tell.
 
 Two rules the generated script keeps, both of which matter:
 
 - **It never writes to stdout.** On `UserPromptSubmit` and `SessionStart`, an exit-0
   hook's stdout is injected verbatim into Claude's context.
-- **It always exits 0.** A hook that fails must not interfere with the agent it is only
-  reporting on.
+- **It always exits 0.** A hook that fails must not interfere with the agent it is
+  only reporting on.
 
 Each entry carries an explicit `"timeout": 5`. The default is ten minutes and a hook
 blocks the turn.
 
 ## What the feed changes
 
-hocus-agentd reads the records off the pane manifest: a record the agent reported itself
-(`AgentSource::Reported`, not `Exited`) is a *feed*, and a pane with one is read off it and
-nothing else:
+hocus-agentd reads a feed two ways, and prefers the first. A pane whose events it hears on
+`agent_hook` is read from those, because the event stream carries what a record cannot — see
+`event_fed`. Every other pane is read off the manifest: a record the agent reported itself
+(`AgentSource::Reported`, not `Exited`) is a feed too, which is what gives a pane hocus
+spawned, an `agent-report --state` script, or a plugin speaking for an agent the same row.
+Either way a pane with a feed is read off it and nothing else:
 
+- **`◆` on the kind**, so `claude` reads `claude◆` and a remote one `claude◆@box`. Every
+  other row on the strip is a guess made by reading a screen; a row carrying this one is
+  being told. There is no other way to see that the install took, or that a feed has gone.
 - `busy` / `waiting` / `idle` in the agent strip, with no settle delay — a `Stop`
   lands the idle label on the message that carries it.
+- **`waiting · <what for>`**: the tool a permission prompt is about, the question an
+  `AskUserQuestion` is asking, the sentence an MCP server wrote. The row cuts it to the
+  sidebar's budget; the toast below gets the longer form.
 - The `!` marker and `agent_list`'s `awaiting_confirmation` come from the feed. The
   model is no longer asked whether an agent is blocked on the user; where it answers
-  anyway, `finish_summary_with` overwrites it.
+  anyway, `finish_summary_with` overwrites it. `agent_list` also carries `hooks: true`
+  and `waiting_on`.
 - The pane stays classified as an agent while Claude shells out to `git` — a hook
   firing in a pane is better evidence than its foreground command, which stops naming
   the agent the moment a tool runs.
 - The agent's `cwd` comes from the hook, which is the only thing that reports an agent
   told to work in a folder the shell under it never entered.
 
-Idle summaries are **unchanged**. They still hang off the screen heuristic, because
-what they produce is a description — the toast, the summary box, the pane's new name —
-and a description of a screen is fairly made by reading it.
+### The summary is made from what the agent said
 
-Every other agent kind, and a `claude` pane with no feed, behaves exactly as before.
+A `Stop` carries `last_assistant_message` — Claude Code's own description of the field
+is "avoids the need to read and parse the transcript file" — so for a pane with a feed
+the idle summary no longer comes from the screen at all:
+
+- **The trigger is the `Stop`.** No settle wait, no `worth_summarizing` on screen text,
+  no baseline comparison. A `Stop` fires once per turn, so it *is* the edge, and it
+  cannot ask twice about one turn. There is no cooldown either: three short questions in
+  a minute are owed three answers.
+- **The input is prose written for a person**, plus the `UserPromptSubmit` that asked for
+  it. A description of an answer written without sight of the question is half a
+  description.
+- **`awaiting` is not asked for.** The feed already knows, so asking would only create a
+  disagreement to resolve.
+- **The screen stops asking about these panes.** Two answers per turn, one of them a
+  guess, and whichever landed last would win.
+- **Staleness is the opposite rule.** A screen summary is void the moment the screen
+  moves. A turn summary is void when the session is replaced, or when any later work
+  begins — a `cargo build` printing throughout the round trip does not make the sentence
+  about it wrong, but the next `busy` event does, and cancels the request where it
+  arrives rather than testing the phase when the answer lands. A short turn can start
+  *and finish* inside one round trip, and checking only the phase would find that pane
+  idle again and take the stale answer for a current one.
+- **With no API key it still works.** `local_summary` takes the message's opening
+  sentences, drops fenced blocks and markdown markers, and gives no title — so the pane
+  keeps its name. Before the feed there was nothing to fall back *to*: a screen tail is
+  not a summary of anything.
+
+### A waiting agent interrupts
+
+The `!` in a sidebar was only ever half the answer; the sidebar is very often not what is
+being looked at. On the edge into a wait the daemon toasts, over whatever pane the user
+is actually in, and the toast focuses the waiting pane when clicked:
+
+```
+agent waiting · 7 · claude◆
+Which library should we use for date formatting?
+```
+
+Three rules, each the same one the summary toast already keeps — and a fourth this one needs
+on its own:
+
+- **Not over the pane it describes.** If the user is focused there, they can see it.
+- **The edge, on the phase alone.** `PermissionRequest` puts the prompt up and the
+  `Notification` for that same prompt follows ~6s later, wording it differently — so
+  comparing the two descriptions is exactly the comparison that would let one prompt
+  interrupt twice. Nothing is lost: between two genuine questions the agent *works*, and
+  that `busy` is what re-arms the edge. For the same reason a `Notification` never
+  overwrites a `waiting_on` that is already set — it fills a gap, it does not replace.
+- **Not for a prompt the mode answers itself** — and only for those. A mode answers a
+  *permission prompt*: `bypassPermissions` and `dontAsk` answer every one, resolving to a
+  blanket allow and a blanket deny, and `acceptEdits` answers only the file-editing tools, so
+  a `Bash` prompt under it blocks exactly as it would under `default` and still interrupts. An
+  `AskUserQuestion`, an `ExitPlanMode`, an MCP `Elicitation` and every waiting `Notification`
+  are never suppressed under any mode: the first three address a person directly, and the last
+  fires only once its prompt has gone six seconds unanswered, which is itself the proof
+  nothing answered it. The row draws the wait either way — it is what the agent said.
+- **`auto` is silenced on the odds, and the backstop is what settles up.** It resolves to a
+  *classifier*, not to an allow: it clears what it judges safe and puts the rest in front of
+  the user exactly as `default` would. Silencing its requests is still right — most of them
+  really are answered — but a request has by then moved the feed to `waiting`, so the
+  `Notification` behind it has no busy→waiting edge left to cross, and a genuinely blocked
+  agent would go unannounced. So a wait drawn but not announced *holds its edge open*
+  (`suppressed_waits` in the daemon) until something spends it: the backstop toasts on the
+  question the request itself worded, or the agent goes back to work and the wait is over.
 
 ## When a feed ends
 
@@ -116,23 +228,40 @@ unanswered all day without the pane's state having changed, and a ten-minute
 `cargo build` is one `PreToolUse` and a long silence. A record ends only where an ending
 is *observed* — `SessionEnd` clears it, the command exiting marks it `Exited`, the pane
 closing takes it with it. The cost is that a single dropped event leaves a pane mislabelled
-until the next one arrives.
+until the next one arrives, which is what `StopFailure` exists to stop being the common case.
 
-A script from before v3 of the installer still pipes the event to hocus-agentd
+The record going `Exited` is read **even for a pane the daemon hears events from**, which is
+the one place the manifest overrules the pipe. An agent killed outright sends no `SessionEnd`,
+so without that the feed would never end, and the screen heuristic behind it stays disabled —
+a pane parked on `waiting · Bash rm` for the life of the session.
+
+A `session_id` that changes in the same pane is a session replaced rather than ended —
+`/clear` — and drops the summary, the in-flight request and the held prompt with it.
+
+A script from before v4 of the installer pipes the event to hocus-agentd and nothing else
 (`zellij pipe --name agent_hook`); the daemon writes the same record through
-`set_pane_agent`, so an old install lands in the same place. `zellij hocus hooks status`
-says when the installed script is old.
+`set_pane_agent`, so an old install lands in the same place, minus the nine events v4
+added. `zellij hocus hooks status` says when the installed script is old.
 
 ## Where it lives
 
 | Piece | File |
 |---|---|
 | The record, and who may write it | `zellij-utils/src/data.rs` (`AgentInfo`, `AgentState`, `AgentSource`, `PaneInfo::agent`) |
-| Event → record | `zellij-utils/src/agent.rs` (`HookEvent`, `hook_state`, `hook_detail`, `hook_outcome`) |
-| The action, and the installer | `zellij-utils/src/cli.rs` (`AgentReport`), `zellij-utils/src/input/actions.rs`, `src/hocus_hooks.rs` |
+| Event → record, and every rule for reading one | `zellij-utils/src/agent.rs` (`HookEvent`, `hook_state`, `hook_detail`, `waiting_detail`, `waiting_needs_a_person`, `hook_outcome`, `CLAUDE_HOOK_EVENTS`, `AGENT_HOOK_PIPE`) |
+| The action, the fan-out, and the installer | `zellij-utils/src/cli.rs` (`AgentReport`), `zellij-utils/src/input/actions.rs`, `src/hocus_hooks.rs` |
 | Carrying it on the pane | `zellij-server/src/panes/terminal_pane.rs` (`agent`, `agent_from_run`), `screen/thread_main.rs` (`SetPaneAgent`), `screen/mod.rs` (`fire_agent_exit_hook`, `fire_agent_state_hooks`, `agent_hook_edges`) |
-| What a row draws | `default-plugins/hocus-proto/src/agents.rs` (`HookFeed::from_agent`, `status_cell`, `waiting_marker`) |
-| The old pipe road | `default-plugins/hocus-agentd/src/main.rs` (`State::on_hook`) |
+| What a row draws | `default-plugins/hocus-proto/src/agents.rs` (`HookFeed::from_agent`, `status_cell`, `waiting_marker`, `kind_cell`, `HOOK_MARKER`) |
+| What a wait says, and the summary | same (`waiting_toast`, `turn_summary_request_body`, `local_summary`) |
+| Receiving the broadcast, publishing, toasting | `default-plugins/hocus-agentd/src/main.rs` (`on_hook_with`, `on_turn_end_with`, `finish_local_summary_with`) |
+
+The pipe's name and the pane argument are spelled once, in `zellij_utils::agent`;
+`hocus_proto::wire` re-exports both, so the two ends of a broadcast that is silent when it
+does not match cannot drift.
+
+The event payloads are pinned against Claude Code's own shipped schemas rather than
+against its documentation. `strings` on the binary finds them: they are Zod definitions,
+one per `hook_event_name`, and they are the authority on which fields are optional.
 
 Note: `zellij hocus hooks` is unrelated to the `hooks { … }` block in zellij's own
 config, which binds a plugin to a moment in the session's life

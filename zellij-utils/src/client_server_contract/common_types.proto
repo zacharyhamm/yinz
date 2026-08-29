@@ -792,6 +792,7 @@ message AgentInfo {
   optional string detail = 4;
   optional string cwd = 5;
   optional string session_id = 6;
+  optional string waiting_on = 7;
 }
 
 enum AgentState {

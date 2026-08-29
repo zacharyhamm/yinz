@@ -3651,6 +3651,7 @@ fn agent_info_to_proto(
         state: state as i32,
         source: source as i32,
         detail: agent.detail,
+        waiting_on: agent.waiting_on,
         cwd: agent.cwd,
         session_id: agent.session_id,
     }
@@ -3681,6 +3682,7 @@ fn agent_info_from_proto(
         state,
         source,
         detail: proto.detail,
+        waiting_on: proto.waiting_on,
         cwd: proto.cwd,
         session_id: proto.session_id,
     })

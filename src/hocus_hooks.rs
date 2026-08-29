@@ -23,10 +23,14 @@ use zellij_utils::cli::{Hocus, HocusHooks};
 
 /// The events, the timeout and the handler shape live in `zellij_utils::agent`, so that this
 /// installer and a spawned Claude Code pane's inline `--settings` cannot wire different events.
-const EVENTS: &[&str] = zellij_utils::agent::CLAUDE_HOOK_EVENTS;
+///
+/// `pub(crate)` because the CLI tests count against the table rather than against a literal:
+/// it has grown once already, and a number here goes stale silently the next time it does.
+pub(crate) const EVENTS: &[&str] = zellij_utils::agent::CLAUDE_HOOK_EVENTS;
 
-/// Bumped whenever [`script`] changes, so `status` can say the installed copy is old.
-const SCRIPT_VERSION: u32 = 3;
+/// Bumped whenever [`script`] changes, or whenever the set of events wired around it does, so
+/// `status` can say the installed copy is old. v4 is the seventeen-event table.
+const SCRIPT_VERSION: u32 = 4;
 
 /// What marks an entry in the settings file as ours, and nothing else as ours.
 ///
@@ -73,9 +77,11 @@ fn script(zellij: &Path) -> String {
 # `zellij hocus hooks install` rewrites this file, and `--uninstall` removes it.
 #
 # Claude Code runs this on each wired hook event, with that event's JSON on stdin.
-# It hands the JSON to the session, which carries what it means on the pane
-# (`zellij action agent-report`): a Claude pane reports its own busy/waiting/idle
-# state instead of being guessed at from its screen.
+# It hands the JSON to the session, which carries what it means on the pane and
+# broadcasts the event itself to the plugins (`zellij action agent-report`): a Claude
+# pane reports its own busy/waiting/idle state instead of being guessed at from its
+# screen, and what a record has no room for - the agent's own last message, the prompt
+# behind it - reaches whoever wants it.
 #
 # Two rules this file keeps, both of which matter:
 #   - it never writes to stdout. On UserPromptSubmit and SessionStart, an exit-0
@@ -136,7 +142,7 @@ pub(crate) fn install_into(settings: Value, command: &str) -> Result<Value> {
             .as_array_mut()
             .ok_or_else(|| anyhow!("settings hooks.{event} must be an array"))?;
         // No `matcher`: an entry without one fires on every occurrence of the
-        // event, which is what we want for all eight. See `EVENTS`.
+        // event, which is what we want for every one of them. See `EVENTS`.
         groups.push(json!({ "hooks": [handler(command)] }));
     }
     Ok(settings)
@@ -474,13 +480,17 @@ fn status(files: &Files) -> Result<()> {
                  settings.local.json"
             );
         }
-        for missing in EVENTS
+        // One line rather than one per event: an upgrade that wires new events leaves a
+        // working install several short, and a column of them reads as a list of faults
+        // rather than as the one instruction it is.
+        let missing: Vec<&str> = EVENTS
             .iter()
-            .filter(|event| !events.iter().any(|wired| wired == *event))
-        {
-            if !events.is_empty() {
-                println!("            missing: {missing}");
-            }
+            .copied()
+            .filter(|event| !events.iter().any(|wired| wired == event))
+            .collect();
+        if !events.is_empty() && !missing.is_empty() {
+            println!("            missing: {}", missing.join(", "));
+            println!("            run `install` again to add them");
         }
         // The two ways a correctly written hook never runs.
         if settings.get("disableAllHooks") == Some(&Value::Bool(true)) {
@@ -525,6 +535,29 @@ mod tests {
         ));
         std::fs::create_dir(&path).unwrap();
         path
+    }
+
+    /// Installing wires every event, and installing twice wires each of them once.
+    /// Idempotence is by construction — the removal runs first — but the table has grown
+    /// and this is what says the growth reached the settings file.
+    #[test]
+    fn installing_wires_every_event_and_installing_twice_changes_nothing() {
+        let command = "/home/me/.claude/hocus/hocus-hook.sh";
+        let once = install_into(json!({}), command).expect("installed");
+        let mut wired = installed_events(&once);
+        wired.sort();
+        let mut expected: Vec<String> = EVENTS.iter().map(|e| (*e).to_owned()).collect();
+        expected.sort();
+        assert_eq!(wired, expected);
+
+        // The three the summary and the toast now hang off, named rather than merely
+        // counted: dropping one would leave a feed stuck on `busy` or a question silent.
+        for event in ["Stop", "StopFailure", "PermissionRequest"] {
+            assert!(EVENTS.contains(&event), "{event}");
+        }
+
+        let twice = install_into(once.clone(), command).expect("installed again");
+        assert_eq!(twice, once);
     }
 
     #[test]

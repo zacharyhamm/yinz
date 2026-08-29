@@ -2618,6 +2618,14 @@ pub struct AgentInfo {
     /// A few words on what it is doing: the tool it is running, mostly.
     #[serde(default)]
     pub detail: Option<String>,
+    /// What it is blocked on, in one line, when the state is `Waiting`: the tool a permission
+    /// prompt is about, the question it asked, the sentence an MCP server wrote.
+    ///
+    /// A field of its own rather than a reuse of `detail`, because the two are cleared by
+    /// different events and read in different places: `detail` names a tool in a status row,
+    /// this names a question to somebody who has to answer it.
+    #[serde(default)]
+    pub waiting_on: Option<String>,
     /// The folder the agent is working in, which is not always the pane's: an agent told to
     /// work in a worktree moved without the shell under it hearing.
     #[serde(default)]

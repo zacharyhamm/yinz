@@ -366,6 +366,14 @@ plugins {
     //   summaries      "false" switches off the summary hocus-agentd asks for each
     //                  time an agent stops working. On otherwise; each summary is one
     //                  small request per agent per busy-to-idle transition.
+    //
+    //                  A Claude Code pane with `zellij hocus hooks install` run against
+    //                  it is summarised from what the agent itself said at the end of
+    //                  the turn, rather than from a reading of its screen - and where
+    //                  there is no API key at all it still gets a short summary taken
+    //                  straight from that message, with no request and no pane rename.
+    //                  Setting this to "false" switches off that fallback too. See
+    //                  docs/AGENT_HOOKS.md.
     //   summary_model  the model those summaries are asked of. Defaults to `model`;
     //                  set it to point the cheap work somewhere cheaper.
     //
