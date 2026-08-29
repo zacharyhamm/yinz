@@ -1830,11 +1830,12 @@ impl State {
     pub(crate) fn unschedule(&mut self, id: Option<u64>) -> String {
         let result = match id {
             Some(id) => {
-                let before = self.job_count();
+                let before = self.total_job_count();
                 for jobs in self.all_jobs_mut() {
                     jobs.retain(|job| job.id != id);
                 }
-                if self.job_count() == before {
+                self.held_jobs.retain(|_, jobs| !jobs.is_empty());
+                if self.total_job_count() == before {
                     format!("no job {id}")
                 } else {
                     self.forget_jobs(vec![id]);
@@ -1842,11 +1843,12 @@ impl State {
                 }
             },
             None => {
-                let count = self.job_count();
+                let count = self.total_job_count();
                 let mut gone = Vec::new();
                 for jobs in self.all_jobs_mut() {
                     gone.extend(jobs.drain(..).map(|job| job.id));
                 }
+                self.held_jobs.clear();
                 self.forget_jobs(gone);
                 format!("cancelled {count} scheduled job(s)")
             },
@@ -1862,9 +1864,10 @@ impl State {
     }
 
     /// The kill switch that doesn't need the model to cooperate. Every job in
-    /// every tab, from whichever tab it is typed in.
+    /// every tab, from whichever tab it is typed in - and every job held for
+    /// a chat that is not open, which no tab could reach.
     pub(crate) fn stop_jobs(&mut self) -> bool {
-        if self.job_count() == 0 {
+        if self.total_job_count() == 0 {
             return false;
         }
         let notice = self.unschedule(None);

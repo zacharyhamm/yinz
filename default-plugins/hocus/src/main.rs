@@ -403,6 +403,12 @@ pub struct State {
     /// The foreground chat's scheduled prompts, counted down by the timer
     /// chain. A parked chat's are in `Chat::jobs` and tick through `with_parked`.
     pub jobs: Vec<Job>,
+    /// Jobs read back from the store for chats that are not open, keyed by
+    /// the chat that armed them. A restart reopens no chat, so the jobs of
+    /// every chat that was open at exit land here and wait: they do not tick,
+    /// and `/history` opening their chat is what hands them to it. They still
+    /// count for `/stop_jobs`, and their chat shows as live in `/history`.
+    pub(crate) held_jobs: BTreeMap<u64, Vec<Job>>,
     /// Questions that arrived for the foreground chat while it was busy —
     /// from the `hocus_ask` pipe or typed mid-reply — oldest first. Drained
     /// one per tick by `drain_asks`. Per chat, so a question queued at one
@@ -702,6 +708,7 @@ impl Default for State {
             picker: None,
             last_strip: agents::Strip::default(),
             jobs: Vec::new(),
+            held_jobs: BTreeMap::new(),
             asks: VecDeque::new(),
             job_seq: 0,
             scheduled_run: None,

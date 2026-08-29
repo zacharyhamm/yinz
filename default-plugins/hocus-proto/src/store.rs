@@ -151,9 +151,10 @@ pub fn prompt_def() -> EntityDef {
 ///
 /// `next_due_at` is a wall-clock second, written when the job is armed and
 /// when it fires — never per tick, so a countdown does not wake every watcher
-/// in the session once a second. `chat_id` is null for a chat that has not been
-/// saved yet, and is carried so that jobs can one day follow a chat that is
-/// reopened; today every restored job lands in the foreground.
+/// in the session once a second. `chat_id` is the chat that armed the job -
+/// null for one that had not been saved yet - and is what lets a restored job
+/// wait for `/history` to reopen its chat rather than fire into whichever chat
+/// is on screen; a null one lands in the foreground, having nowhere else to go.
 pub fn job_def() -> EntityDef {
     EntityDef::new("job", 1)
         .attr(AttrDef::int("job_id").unique().required())
