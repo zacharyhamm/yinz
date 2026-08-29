@@ -1012,7 +1012,7 @@ async fn buffered_web_request(
     Ok((status_code, headers, body))
 }
 
-/// Sends the leading `WebRequestResult` and then one `WebRequestStreamChunk` per read off the
+/// Sends the leading `WebRequestResult` and then coalesced `WebRequestStreamChunk`s from the
 /// socket. Never emits the terminating chunk itself: it reports back with
 /// `BackgroundJob::WebRequestStreamFinished` so the terminator is emitted from a single place
 /// even when this task is aborted mid-read by a cancellation.
@@ -1087,7 +1087,15 @@ async fn streamed_web_request(
         return finished(error);
     }
     send_event(Event::WebRequestResult(status, headers, vec![], context));
+    let error = forward_streamed_body(res.body_mut(), &stream_id, &send_event).await;
+    finished(error);
+}
 
+async fn forward_streamed_body<R, F>(body: &mut R, stream_id: &str, send_event: F) -> Option<String>
+where
+    R: futures_lite::io::AsyncRead + Unpin,
+    F: Fn(Event),
+{
     // Reads are coalesced over a short window rather than forwarded one-for-one: a token stream
     // produces ~50 socket reads a second, and each one used to be its own `PluginInstruction`,
     // its own wasm `update()` and its own trip through the plugin thread's queue - the same
@@ -1103,7 +1111,7 @@ async fn streamed_web_request(
         () => {
             if !pending.is_empty() {
                 send_event(Event::WebRequestStreamChunk {
-                    stream_id: stream_id.clone(),
+                    stream_id: stream_id.to_owned(),
                     chunk: std::mem::take(&mut pending),
                     done: false,
                     error: None,
@@ -1115,14 +1123,14 @@ async fn streamed_web_request(
     // `None` means nothing is being held and the read below may wait indefinitely, exactly as it
     // used to.
     let mut deadline: Option<tokio::time::Instant> = None;
-    let error = loop {
+    loop {
         // The read future is created once and then *held across* any deadline that expires while
         // it is pending, rather than being re-issued. `AsyncRead::read` makes no cancellation-
         // safety promise: dropping a partially-completed read could take buffered bytes with it,
         // which on a token stream means silently corrupting the reply. So the timeout only ever
         // borrows the future, and the future itself lives until it resolves.
         let outcome: std::io::Result<usize> = {
-            let read = res.body_mut().read(&mut buf);
+            let read = body.read(&mut buf);
             tokio::pin!(read);
             loop {
                 let finished = match deadline {
@@ -1166,8 +1174,7 @@ async fn streamed_web_request(
                 break Some(e.to_string());
             },
         }
-    };
-    finished(error);
+    }
 }
 
 /// Ends a stream: drop it from the registry, abort its task if it is still running, and emit its
@@ -1526,6 +1533,9 @@ mod tests {
 mod web_request_stream_tests {
     use super::*;
     use crate::thread_bus::ThreadSenders;
+    use futures_lite::io::AsyncRead;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use zellij_utils::channels::{unbounded, Receiver, SenderWithContext};
     use zellij_utils::errors::ErrorContext;
@@ -1536,6 +1546,67 @@ mod web_request_stream_tests {
 
     type PluginRx = Receiver<(PluginInstruction, ErrorContext)>;
     type JobRx = Receiver<(BackgroundJob, ErrorContext)>;
+
+    struct ControlledReader {
+        chunks: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+        waiting: Option<tokio::sync::oneshot::Sender<()>>,
+        current: Vec<u8>,
+        offset: usize,
+    }
+
+    impl ControlledReader {
+        fn new() -> (
+            Self,
+            tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+            tokio::sync::oneshot::Receiver<()>,
+        ) {
+            let (sender, chunks) = tokio::sync::mpsc::unbounded_channel();
+            let (waiting, reader_is_waiting) = tokio::sync::oneshot::channel();
+            (
+                Self {
+                    chunks,
+                    waiting: Some(waiting),
+                    current: vec![],
+                    offset: 0,
+                },
+                sender,
+                reader_is_waiting,
+            )
+        }
+    }
+
+    impl AsyncRead for ControlledReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut [u8],
+        ) -> Poll<std::io::Result<usize>> {
+            let this = self.get_mut();
+            loop {
+                if this.offset < this.current.len() {
+                    let bytes_read = buf.len().min(this.current.len() - this.offset);
+                    let end = this.offset + bytes_read;
+                    buf[..bytes_read].copy_from_slice(&this.current[this.offset..end]);
+                    this.offset = end;
+                    return Poll::Ready(Ok(bytes_read));
+                }
+
+                match Pin::new(&mut this.chunks).poll_recv(cx) {
+                    Poll::Ready(Some(next)) => {
+                        this.current = next;
+                        this.offset = 0;
+                    },
+                    Poll::Ready(None) => return Poll::Ready(Ok(0)),
+                    Poll::Pending => {
+                        if let Some(waiting) = this.waiting.take() {
+                            let _ = waiting.send(());
+                        }
+                        return Poll::Pending;
+                    },
+                }
+            }
+        }
+    }
 
     fn test_senders() -> (ThreadSenders, PluginRx, JobRx) {
         let (to_plugin, plugin_rx) = unbounded();
@@ -1587,68 +1658,57 @@ mod web_request_stream_tests {
         url
     }
 
-    /// Like `serve_once`, but writes every part back-to-back so they land inside one coalescing
-    /// window.
-    async fn serve_burst(parts: Vec<&'static str>) -> String {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/", listener.local_addr().unwrap());
-        tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            let mut byte = [0u8; 1];
-            while !request.ends_with(b"\r\n\r\n") {
-                match socket.read(&mut byte).await {
-                    Ok(0) | Err(_) => return,
-                    Ok(_) => request.push(byte[0]),
-                }
-            }
-            let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
-                        Transfer-Encoding: chunked\r\n\r\n";
-            socket.write_all(head.as_bytes()).await.unwrap();
-            for part in parts {
-                let chunk = format!("{:x}\r\n{}\r\n", part.len(), part);
-                socket.write_all(chunk.as_bytes()).await.unwrap();
-            }
-            let _ = socket.write_all(b"0\r\n\r\n").await;
-            let _ = socket.flush().await;
-        });
-        url
-    }
-
     /// Frames arriving back-to-back are joined into one event rather than one apiece. Every one
     /// used to be its own `PluginInstruction`, its own wasm `update()` and its own place in the
     /// plugin thread's queue - ahead of whatever the user was typing.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_burst_of_frames_arrives_as_fewer_events_than_frames() {
-        let parts: Vec<&'static str> = vec![
-            "data: {\"n\":1}\n\n",
-            "data: {\"n\":2}\n\n",
-            "data: {\"n\":3}\n\n",
-            "data: {\"n\":4}\n\n",
-            "data: [DONE]\n\n",
+    #[tokio::test(start_paused = true)]
+    async fn a_burst_of_frames_arrives_as_one_event_after_the_coalescing_window() {
+        let parts: &[&[u8]] = &[
+            b"data: {\"n\":1}\n\n",
+            b"data: {\"n\":2}\n\n",
+            b"data: {\"n\":3}\n\n",
+            b"data: {\"n\":4}\n\n",
+            b"data: [DONE]\n\n",
         ];
-        let expected: String = parts.concat();
-        let url = serve_burst(parts).await;
-        let (events, _) = run_stream(url).await;
-
-        let chunks: Vec<&Vec<u8>> = events[1..]
-            .iter()
-            .map(|e| match e {
+        let expected = parts.concat();
+        let (mut reader, reader_handle, reader_is_waiting) = ControlledReader::new();
+        for part in parts {
+            reader_handle.send(part.to_vec()).unwrap();
+        }
+        let (emitted, mut emitted_chunks) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            forward_streamed_body(&mut reader, "stream-1", move |event| match event {
                 Event::WebRequestStreamChunk { chunk, done, .. } => {
                     assert!(!done, "the task must never emit the terminator itself");
-                    chunk
+                    emitted.send(chunk).unwrap();
                 },
-                other => panic!("expected a chunk, got {:?}", other),
+                other => panic!("expected a stream chunk, got {:?}", other),
             })
-            .collect();
+            .await
+        });
+
+        reader_is_waiting.await.unwrap();
+        tokio::time::advance(WEB_REQUEST_STREAM_COALESCE_WINDOW - Duration::from_millis(1)).await;
         assert!(
-            chunks.len() < 5,
-            "a burst should be joined, got {} chunk(s)",
-            chunks.len()
+            matches!(
+                emitted_chunks.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "the burst must wait for the coalescing deadline"
         );
-        // Joining must not lose, duplicate or reorder a byte.
-        let joined: Vec<u8> = chunks.into_iter().flatten().copied().collect();
-        assert_eq!(String::from_utf8(joined).unwrap(), expected);
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        assert_eq!(emitted_chunks.recv().await.unwrap(), expected);
+        assert!(
+            matches!(
+                emitted_chunks.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "the burst must produce exactly one chunk"
+        );
+
+        drop(reader_handle);
+        assert_eq!(task.await.unwrap(), None);
     }
 
     async fn serve_truncated_response() -> String {
