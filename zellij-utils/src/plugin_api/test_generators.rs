@@ -1203,6 +1203,7 @@ fn agent_infos(tc: &hegel::TestCase) -> AgentInfo {
             AgentSource::Reported,
         ])),
         detail: optional_strings(tc),
+        waiting_on: optional_strings(tc),
         cwd: optional_strings(tc),
         session_id: optional_strings(tc),
     }

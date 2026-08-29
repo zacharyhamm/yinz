@@ -27,14 +27,39 @@ pub const CLAUDE_HOOK_EVENTS: &[&str] = &[
     // Work continues, and names the tool it is in.
     "PreToolUse",
     "PostToolUse",
+    // A tool that failed is still the agent working; without this the record sits on the
+    // failed tool's name until the next one starts.
+    "PostToolUseFailure",
+    // A worker starting and finishing under an agent that is working either way. Wired
+    // so a long subagent run keeps saying so rather than falling silent between the
+    // parent's own tool calls.
+    "SubagentStart",
+    "SubagentStop",
+    // Compaction is work the user did not ask for and is waiting on all the same.
+    "PreCompact",
+    "PostCompact",
     // Blocked on the user, said as the prompt goes up.
     "PermissionRequest",
+    // Auto mode refusing a tool call: not a wait, but the agent carrying on, and the
+    // record would otherwise still be showing the tool that never ran.
+    "PermissionDenied",
+    // An MCP server asking for input, and the answer coming back. The `Notification`
+    // pair for the same exchange fires about six seconds later; these two are the
+    // instant version of it.
+    "Elicitation",
+    "ElicitationResult",
     // The same, from the other direction: the backstop for a Claude Code too old to
     // have `PermissionRequest`, and the only signal for an MCP form or a background
     // session wanting input.
     "Notification",
-    // The turn ended.
+    // The turn ended. Carries `last_assistant_message`, which is what an idle summary
+    // is made from - see `docs/AGENT_HOOKS.md`.
     "Stop",
+    // The turn ended in an API error. Carries the same message field, and is the only
+    // thing that says so: without it a failed turn leaves the record on `busy` until the
+    // user types again, which for a record that expires on nothing is the worst case
+    // there is.
+    "StopFailure",
     // The feed ends.
     "SessionEnd",
 ];
@@ -52,6 +77,17 @@ pub const CLAUDE_HOOK_TIMEOUT_SECONDS: u64 = 5;
 /// inherits `ZELLIJ_PANE_ID`, which the action reads itself, and `zellij` is on the path the
 /// pane's shell found it on.
 pub const CLAUDE_HOOK_REPORT_COMMAND: &str = "zellij action agent-report --hook-json";
+
+/// The pipe the raw event is broadcast on beside the record, and the `--args` key naming the
+/// pane it fired in.
+///
+/// `agent-report --hook-json` sets the pane's record *and* hands the event itself to whatever
+/// plugin wants more than a record holds - hocus's daemon reads `last_assistant_message` off a
+/// `Stop` to make a summary, and `permission_mode` off a `PermissionRequest` to decide whether
+/// a wait is worth interrupting somebody over. Spelled here rather than in the plugin crate so
+/// the two ends cannot drift: a pipe name that does not match is silent.
+pub const AGENT_HOOK_PIPE: &str = "agent_hook";
+pub const AGENT_HOOK_PANE_ID_ARG: &str = "pane_id";
 
 /// One handler entry, as Claude Code's settings spell it.
 pub fn claude_hook_handler(command: &str) -> Value {
@@ -128,9 +164,34 @@ pub const WAITING_NOTIFICATIONS: &[&str] = &[
     "worker_permission_prompt",
 ];
 
+/// The `Notification` kinds that mean the agent has *finished*, rather than that it is
+/// blocked. Named separately from [`WAITING_NOTIFICATIONS`] for the same reason that list is
+/// an allowlist: a kind that means neither must go on saying nothing.
+pub const IDLE_NOTIFICATIONS: &[&str] = &["agent_completed"];
+
+/// The tools whose `PreToolUse` *is* the question going up.
+///
+/// Every other tool starting is work, but these two do nothing except put a prompt in front of
+/// the user and wait. Their `PostToolUse` is ordinary work again, which is what clears the wait
+/// - so a tool named here needs no special case on the way out.
+pub const WAITING_TOOLS: &[&str] = &["AskUserQuestion", "ExitPlanMode"];
+
+/// The permission modes that answer prompts without a person.
+///
+/// A wait reported under one of these has nobody to interrupt: either the mode decided
+/// already, or the prompt that fired is one the user has said in advance they do not want to
+/// see. The state is still recorded - it is what the agent said - but see
+/// [`waiting_needs_a_person`].
+pub const UNATTENDED_MODES: &[&str] = &["acceptEdits", "bypassPermissions", "dontAsk", "auto"];
+
 /// The longest tool hint a record carries. A status row has no room for an argument, and
 /// `tool_input` is free-form text of arbitrary size.
 pub const HOOK_DETAIL_CHARS: usize = 24;
+
+/// The longest description of what an agent is blocked on. Longer than [`HOOK_DETAIL_CHARS`]
+/// because its home is a toast, which has two lines and fifty columns, rather than one cell of
+/// a sidebar row.
+pub const WAITING_DETAIL_CHARS: usize = 80;
 
 /// A Claude Code hook event, as its JSON arrives.
 ///
@@ -165,6 +226,43 @@ pub struct HookEvent {
     /// is taken from it is truncated hard and drawn as plain text.
     #[serde(default)]
     pub tool_input: Option<serde_json::Value>,
+    /// What the agent said last, on a `Stop` or a `StopFailure`.
+    ///
+    /// Claude Code's own description of the field is "avoids the need to read and parse the
+    /// transcript file", and that is exactly what it buys here: an idle summary made from the
+    /// agent's own words rather than from a photograph of its terminal. Optional in Claude
+    /// Code's schema, so a turn that ended without one falls back.
+    ///
+    /// Too big for the pane's record - this is read by a plugin off the broadcast event, not
+    /// carried on [`AgentInfo`].
+    #[serde(default)]
+    pub last_assistant_message: Option<String>,
+    /// The notification's text, on a `Notification`, and the MCP server's question on an
+    /// `Elicitation`. Required in both of Claude Code's schemas; optional here for the same
+    /// reason every other field is — a missing one must not cost us the event.
+    #[serde(default)]
+    pub message: Option<String>,
+    /// The permission mode the session is in: `default`, `plan`, `acceptEdits`, `auto`,
+    /// `dontAsk`, `bypassPermissions`. Carried on every event.
+    ///
+    /// Read for one thing only: a mode that answers permission prompts by itself has nobody to
+    /// interrupt, so a wait reported under it is not worth a toast. See
+    /// [`waiting_needs_a_person`].
+    #[serde(default)]
+    pub permission_mode: Option<String>,
+    /// What the user just asked for, on a `UserPromptSubmit`.
+    ///
+    /// Held by a reader so the summary made at the end of the turn can say what the turn was
+    /// *for*. A description of an answer with no sight of the question is half a description.
+    #[serde(default)]
+    pub prompt: Option<String>,
+    /// The subagent this event came from, when it came from one at all.
+    ///
+    /// Present only for a hook firing inside a subagent, which is the one thing that makes a
+    /// `Stop`-shaped event not mean the pane's own turn ended: a `SubagentStop` is one worker
+    /// finishing while the agent above it works on.
+    #[serde(default)]
+    pub agent_id: Option<String>,
 }
 
 /// The state one hook event names, or `None` for an event that says nothing about the agent's
@@ -179,16 +277,51 @@ pub fn hook_state(event: &HookEvent) -> Option<AgentState> {
         {
             Some(AgentState::Idle)
         },
-        "Stop" => Some(AgentState::Idle),
-        "UserPromptSubmit" | "PreToolUse" | "PostToolUse" => Some(AgentState::Busy),
+        // A turn that died on an API error ends just as surely as one that finished, and
+        // `StopFailure` is the only event that says so. Without it the record sits on `busy`
+        // until the user types again — the worst case for a record that, by design, expires on
+        // nothing.
+        "Stop" | "StopFailure" => Some(AgentState::Idle),
+        // The two tools that are themselves a question. Everything else starting is work; see
+        // [`WAITING_TOOLS`]. This arm must precede the general `PreToolUse` one below.
+        "PreToolUse"
+            if event
+                .tool_name
+                .as_deref()
+                .is_some_and(|tool| WAITING_TOOLS.contains(&tool)) =>
+        {
+            Some(AgentState::Waiting)
+        },
+        // An MCP server asking for input, said as the form goes up. The `Notification` that
+        // follows it is the same backstop `PermissionRequest` has.
+        "Elicitation" => Some(AgentState::Waiting),
         "PermissionRequest" => Some(AgentState::Waiting),
-        "Notification" => event
-            .notification_type
-            .as_deref()
-            .filter(|kind| WAITING_NOTIFICATIONS.contains(kind))
-            .map(|_| AgentState::Waiting),
+        // Everything that is the agent doing something. `SubagentStart`/`SubagentStop` are a
+        // worker beginning and ending under an agent that is working either way, and compaction
+        // is work the user did not ask for but is waiting on all the same.
+        "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
+        | "PermissionDenied" | "ElicitationResult" | "SubagentStart" | "SubagentStop"
+        | "PreCompact" | "PostCompact" => Some(AgentState::Busy),
+        "Notification" => match event.notification_type.as_deref() {
+            Some(kind) if WAITING_NOTIFICATIONS.contains(&kind) => Some(AgentState::Waiting),
+            Some(kind) if IDLE_NOTIFICATIONS.contains(&kind) => Some(AgentState::Idle),
+            _ => None,
+        },
         _ => None,
     }
+}
+
+/// Whether a reported wait is one a person has to answer.
+///
+/// `false` under a permission mode that answers by itself: the agent is momentarily blocked,
+/// and recording that is right, but interrupting somebody over a prompt that is about to
+/// answer itself is not. Read only by whatever would interrupt — the state, the record and the
+/// row all take the agent at its word.
+pub fn waiting_needs_a_person(event: &HookEvent) -> bool {
+    !event
+        .permission_mode
+        .as_deref()
+        .is_some_and(|mode| UNATTENDED_MODES.contains(&mode))
 }
 
 /// The few words a record carries for the tool a `PreToolUse` names.
@@ -205,6 +338,15 @@ pub fn hook_detail(event: &HookEvent) -> Option<String> {
     if event.hook_event_name != "PreToolUse" {
         return None;
     }
+    tool_summary(event)
+}
+
+/// A tool named, with one argument's worth of hint where it has an obvious one.
+///
+/// Shared by [`hook_detail`], which puts it on the record for a tool that is running, and by
+/// [`waiting_detail`], which describes a tool that is waiting to be allowed to run. One reading
+/// of `tool_input`, so the two cannot name the same tool call two different ways.
+fn tool_summary(event: &HookEvent) -> Option<String> {
     let tool = clean_hint(event.tool_name.as_deref()?)?;
     let input = event.tool_input.as_ref();
     let hint = match tool.as_str() {
@@ -226,6 +368,86 @@ pub fn hook_detail(event: &HookEvent) -> Option<String> {
         Some(hint) => Some(format!("{tool} {hint}")),
         None => Some(tool),
     }
+}
+
+/// What the agent is blocked on, in one line, or `None` for an event that is not a wait.
+///
+/// The counterpart of [`hook_detail`] for the other half of a record. Every source here is
+/// text the agent or an MCP server wrote, so all of it goes through [`clean_line`] — but with
+/// [`WAITING_DETAIL_CHARS`] rather than the row's much tighter cap, because what this feeds is
+/// a toast with two lines to spend.
+///
+/// Read defensively throughout: `tool_input` has no schema we control, and a Claude Code that
+/// reshapes `AskUserQuestion`'s arguments must cost us the question's text, not the fact that a
+/// question was asked.
+pub fn waiting_detail(event: &HookEvent) -> Option<String> {
+    match event.hook_event_name.as_str() {
+        "PreToolUse" => match event.tool_name.as_deref() {
+            Some("AskUserQuestion") => event
+                .tool_input
+                .as_ref()
+                .and_then(|input| input.get("questions")?.get(0).cloned())
+                .and_then(|question| {
+                    let text = question.get("question").and_then(|v| v.as_str());
+                    let header = question.get("header").and_then(|v| v.as_str());
+                    text.or(header).and_then(clean_line)
+                })
+                .or_else(|| Some("a question".to_owned())),
+            Some("ExitPlanMode") => Some("approve the plan".to_owned()),
+            _ => None,
+        },
+        // The tool it wants to run is the whole of what is being asked. No fallback:
+        // `tool_name` is required in Claude Code's own schema, and a bare "permission" beside a
+        // `waiting` that already says as much is a word for nothing.
+        "PermissionRequest" => tool_summary(event),
+        // Both of these carry the sentence Claude Code would have shown the user, which is a
+        // better line than anything reconstructed from the event around it.
+        "Elicitation" | "Notification" => event.message.as_deref().and_then(clean_line),
+        _ => None,
+    }
+}
+
+/// A line of agent-supplied text, made safe to show: printable characters only, runs of
+/// whitespace collapsed to one space, and cut to [`WAITING_DETAIL_CHARS`].
+///
+/// Unlike [`clean_hint`], whitespace is collapsed rather than removed — this is a sentence
+/// rather than one word, and a question with its spaces taken out is not readable.
+pub fn clean_line(text: &str) -> Option<String> {
+    let mut line = String::with_capacity(text.len().min(WAITING_DETAIL_CHARS));
+    let mut cut = false;
+    let mut pending_space = false;
+    for ch in text.chars() {
+        // Whitespace *first*, because a newline and a tab are control characters too, and
+        // dropping them rather than collapsing them welds the words on either side of a line
+        // break into one.
+        if ch.is_whitespace() {
+            // Held rather than pushed, so a trailing run never reaches the string and a cut
+            // never lands on one.
+            pending_space = !line.is_empty();
+            continue;
+        }
+        if ch.is_control() {
+            continue;
+        }
+        // The `…` a cut adds has to fit inside the cap as well, so one column is held back for
+        // it: the bound is on the finished line, not on what was kept.
+        if line.chars().count() + usize::from(pending_space) >= WAITING_DETAIL_CHARS {
+            cut = true;
+            break;
+        }
+        if pending_space {
+            line.push(' ');
+            pending_space = false;
+        }
+        line.push(ch);
+    }
+    if line.is_empty() {
+        return None;
+    }
+    if cut {
+        line.push('…');
+    }
+    Some(line)
 }
 
 /// One word of agent-supplied text, made safe to put in a row: printable characters only, no
@@ -269,6 +491,7 @@ pub fn hook_outcome(kind: &str, event: &HookEvent) -> HookOutcome {
             state,
             source: AgentSource::Reported,
             detail: hook_detail(event),
+            waiting_on: waiting_detail(event),
             cwd: event.cwd.clone(),
             session_id: (!event.session_id.is_empty()).then(|| event.session_id.clone()),
         }),
@@ -372,6 +595,150 @@ mod tests {
         assert_eq!(hook_state(&notification("quota_auto_resume_fired")), None);
         assert_eq!(hook_state(&event(HOOK_SESSION_END)), None);
         assert_eq!(hook_state(&event("SomethingNewInAYearsTime")), None);
+
+        // The nine events the table grew by. A turn that died on an API error ended; a
+        // subagent, a compaction and a refused tool call are all the agent working; an MCP
+        // form is a person being asked.
+        assert_eq!(hook_state(&event("StopFailure")), Some(AgentState::Idle));
+        for busy in [
+            "PostToolUseFailure",
+            "PermissionDenied",
+            "ElicitationResult",
+            "SubagentStart",
+            "SubagentStop",
+            "PreCompact",
+            "PostCompact",
+        ] {
+            assert_eq!(hook_state(&event(busy)), Some(AgentState::Busy), "{busy}");
+        }
+        assert_eq!(hook_state(&event("Elicitation")), Some(AgentState::Waiting));
+        assert_eq!(
+            hook_state(&notification("agent_completed")),
+            Some(AgentState::Idle)
+        );
+
+        // The two tools that *are* the question. Every other tool starting is work.
+        let tool = |name: &str, tool: &str| HookEvent {
+            tool_name: Some(tool.to_owned()),
+            ..event(name)
+        };
+        for asking in ["AskUserQuestion", "ExitPlanMode"] {
+            assert_eq!(
+                hook_state(&tool("PreToolUse", asking)),
+                Some(AgentState::Waiting),
+                "{asking}"
+            );
+            assert_eq!(
+                hook_state(&tool("PostToolUse", asking)),
+                Some(AgentState::Busy),
+                "{asking} finishing is work again"
+            );
+        }
+        assert_eq!(
+            hook_state(&tool("PreToolUse", "Bash")),
+            Some(AgentState::Busy)
+        );
+
+        // Every wired event says something, or is `SessionEnd`, which ends a record rather
+        // than moving it. An event wired for nothing is a hook run for nothing.
+        for wired in CLAUDE_HOOK_EVENTS {
+            if *wired == HOOK_SESSION_END || *wired == "Notification" {
+                continue;
+            }
+            let said = match *wired {
+                "SessionStart" => hook_state(&start("startup")),
+                "PreToolUse" | "PostToolUse" => hook_state(&tool(wired, "Bash")),
+                _ => hook_state(&event(wired)),
+            };
+            assert!(said.is_some(), "{wired} is wired and says nothing");
+        }
+    }
+
+    /// A wait a mode answers by itself is still a wait; it is just not one to interrupt
+    /// somebody over.
+    #[test]
+    fn a_wait_the_mode_answers_needs_nobody() {
+        let request = |mode: Option<&str>| HookEvent {
+            permission_mode: mode.map(str::to_owned),
+            tool_name: Some("Bash".to_owned()),
+            ..event("PermissionRequest")
+        };
+        assert!(waiting_needs_a_person(&request(None)));
+        assert!(waiting_needs_a_person(&request(Some("default"))));
+        assert!(waiting_needs_a_person(&request(Some("plan"))));
+        for unattended in UNATTENDED_MODES {
+            assert!(
+                !waiting_needs_a_person(&request(Some(unattended))),
+                "{unattended}"
+            );
+        }
+    }
+
+    /// What a record says the agent is blocked on. Every source is text the agent or an MCP
+    /// server wrote, so all of it is cleaned and cut.
+    #[test]
+    fn a_wait_names_what_it_is_waiting_for() {
+        let ask = HookEvent {
+            tool_name: Some("AskUserQuestion".to_owned()),
+            tool_input: Some(serde_json::json!({
+                "questions": [{ "question": "Which library\nfor dates?", "header": "Library" }]
+            })),
+            ..event("PreToolUse")
+        };
+        assert_eq!(
+            waiting_detail(&ask).as_deref(),
+            Some("Which library for dates?"),
+            "a line, not a word: the newline collapses to a space"
+        );
+        let headerless = HookEvent {
+            tool_input: Some(serde_json::json!({ "questions": [{ "header": "Library" }] })),
+            ..ask.clone()
+        };
+        assert_eq!(waiting_detail(&headerless).as_deref(), Some("Library"));
+        let shapeless = HookEvent {
+            tool_input: Some(serde_json::json!({ "nothing": "we know" })),
+            ..ask
+        };
+        assert_eq!(
+            waiting_detail(&shapeless).as_deref(),
+            Some("a question"),
+            "a reshaped tool_input costs the text, not the fact that a question was asked"
+        );
+
+        let plan = HookEvent {
+            tool_name: Some("ExitPlanMode".to_owned()),
+            ..event("PreToolUse")
+        };
+        assert_eq!(waiting_detail(&plan).as_deref(), Some("approve the plan"));
+
+        let permission = HookEvent {
+            tool_name: Some("Bash".to_owned()),
+            tool_input: Some(serde_json::json!({ "command": "rm -rf target" })),
+            ..event("PermissionRequest")
+        };
+        assert_eq!(waiting_detail(&permission).as_deref(), Some("Bash rm"));
+
+        let elicitation = HookEvent {
+            message: Some("Which account should I use?".to_owned()),
+            ..event("Elicitation")
+        };
+        assert_eq!(
+            waiting_detail(&elicitation).as_deref(),
+            Some("Which account should I use?")
+        );
+
+        // Nothing that is not a wait names one.
+        assert_eq!(waiting_detail(&event("PostToolUse")), None);
+        assert_eq!(waiting_detail(&event("Stop")), None);
+
+        // A long question is cut to what a toast holds, and the cut is marked.
+        let long = HookEvent {
+            message: Some("q ".repeat(200)),
+            ..event("Notification")
+        };
+        let line = waiting_detail(&long).expect("a line");
+        assert_eq!(line.chars().count(), WAITING_DETAIL_CHARS);
+        assert!(line.ends_with('…'));
     }
 
     #[test]
@@ -388,10 +755,25 @@ mod tests {
                 state: AgentState::Busy,
                 source: AgentSource::Reported,
                 detail: Some("Bash cargo".to_owned()),
+                waiting_on: None,
                 cwd: Some("/work".to_owned()),
                 session_id: Some("s1".to_owned()),
             })
         );
+        // A wait carries the question as well as the tool: the record is what a row draws
+        // *and* what an interruption is written from.
+        let permission = HookEvent {
+            tool_name: Some("Bash".to_owned()),
+            tool_input: Some(serde_json::json!({ "command": "rm -rf target" })),
+            ..event("PermissionRequest")
+        };
+        match hook_outcome("claude", &permission) {
+            HookOutcome::Reported(info) => {
+                assert_eq!(info.state, AgentState::Waiting);
+                assert_eq!(info.waiting_on.as_deref(), Some("Bash rm"));
+            },
+            other => panic!("{other:?}"),
+        }
         assert_eq!(
             hook_outcome("claude", &event(HOOK_SESSION_END)),
             HookOutcome::Ended
@@ -416,5 +798,74 @@ mod tests {
         let hint = clean_hint(&long).unwrap();
         assert_eq!(hint.chars().count(), HOOK_DETAIL_CHARS);
         assert!(hint.ends_with('…'));
+    }
+
+    /// A `Stop` as Claude Code actually writes it, with every field this module reads.
+    ///
+    /// Pinned against the shipped schema rather than the docs: the field that matters most
+    /// here, `last_assistant_message`, is optional in Claude Code's own definition, and a
+    /// rename would otherwise cost a summary silently.
+    #[test]
+    fn a_stop_event_carries_the_agents_last_words() {
+        let event: HookEvent = serde_json::from_str(
+            r#"{
+                "session_id": "abc",
+                "transcript_path": "/tmp/t.jsonl",
+                "cwd": "/work",
+                "permission_mode": "default",
+                "hook_event_name": "Stop",
+                "stop_hook_active": false,
+                "last_assistant_message": "Ran the tests; they pass."
+            }"#,
+        )
+        .expect("parsed");
+        assert_eq!(event.hook_event_name, "Stop");
+        assert_eq!(event.session_id, "abc");
+        assert_eq!(event.cwd.as_deref(), Some("/work"));
+        assert_eq!(event.permission_mode.as_deref(), Some("default"));
+        assert_eq!(
+            event.last_assistant_message.as_deref(),
+            Some("Ran the tests; they pass."),
+        );
+    }
+
+    /// Everything but the event name is optional, and unknown fields are ignored: a Claude
+    /// Code that adds one, or drops one we do not read, must not cost us the event.
+    #[test]
+    fn a_hook_event_parses_with_nothing_but_its_name() {
+        let event: HookEvent = serde_json::from_str(
+            r#"{"hook_event_name":"Stop","something_new_in_a_years_time":{"a":1}}"#,
+        )
+        .expect("parsed");
+        assert_eq!(event.hook_event_name, "Stop");
+        assert!(event.session_id.is_empty());
+        assert_eq!(event.last_assistant_message, None);
+        assert_eq!(event.message, None);
+        assert_eq!(event.prompt, None);
+        assert_eq!(event.agent_id, None);
+    }
+
+    /// The two events that name what the user is being asked, each in its own field.
+    #[test]
+    fn a_notification_and_a_prompt_submission_each_carry_their_text() {
+        let event: HookEvent = serde_json::from_str(
+            r#"{"hook_event_name":"Notification","notification_type":"permission_prompt",
+                "message":"Claude needs your permission to use Bash","title":"Claude Code"}"#,
+        )
+        .expect("parsed");
+        assert_eq!(
+            event.notification_type.as_deref(),
+            Some("permission_prompt")
+        );
+        assert_eq!(
+            event.message.as_deref(),
+            Some("Claude needs your permission to use Bash"),
+        );
+
+        let event: HookEvent = serde_json::from_str(
+            r#"{"hook_event_name":"UserPromptSubmit","prompt":"fix the flaky test","source":"user"}"#,
+        )
+        .expect("parsed");
+        assert_eq!(event.prompt.as_deref(), Some("fix the flaky test"));
     }
 }

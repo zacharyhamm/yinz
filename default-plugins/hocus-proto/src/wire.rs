@@ -78,6 +78,13 @@ pub const AGENT_SELECTION: &str = "agent_selection";
 pub const STORE_MUTATE: &str = "store_mutate";
 /// hocus/CLI → store: read something without a subscription.
 pub const STORE_QUERY: &str = "store_query";
+/// The `--args` key naming the pane a hook fired in.
+///
+/// A `zellij pipe` carries the pane it was run in on the message itself
+/// (`PipeMessage::pane_id`, from the same `ZELLIJ_PANE_ID`) and the daemon reads that first,
+/// but a broadcast has no pane of its own - only a `CliPipe` does - so `agent-report` names it
+/// here, and so does a hook script from before either.
+pub use zellij_tile::agent::AGENT_HOOK_PANE_ID_ARG as HOOK_PANE_ID;
 /// A Claude Code hook → agentd: one lifecycle event from a pane running claude.
 ///
 /// The one message here a *shell* sends rather than a plugin. It is broadcast —
@@ -87,16 +94,14 @@ pub const STORE_QUERY: &str = "store_query";
 /// reaches plugins that are already running, and this name is handled here and
 /// nowhere else.
 ///
+/// Re-exported from `zellij_utils::agent` rather than spelled again, because
+/// `zellij action agent-report --hook-json` is what broadcasts it now and a name that
+/// does not match is silent - the host delivers it and nothing answers.
+///
 /// ```sh
 /// zellij pipe --name agent_hook --args "pane_id=$ZELLIJ_PANE_ID" -- '{...}'
 /// ```
-pub const AGENT_HOOK: &str = "agent_hook";
-/// The `--args` key naming the pane a hook fired in.
-///
-/// Historical: a `zellij pipe` now carries the pane it was run in on the message itself
-/// (`PipeMessage::pane_id`, from the same `ZELLIJ_PANE_ID`), and the daemon reads that first.
-/// The argument is what a hook script from before that says instead, and is still honoured.
-pub const HOOK_PANE_ID: &str = "pane_id";
+pub use zellij_tile::agent::AGENT_HOOK_PIPE as AGENT_HOOK;
 
 /// → hocus: a question put to the running hocus, from a plugin or from
 /// `zellij pipe`.

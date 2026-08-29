@@ -373,7 +373,10 @@ pub fn activity_hash(activity: &Activity, pane_id: u32) -> Option<u64> {
 // What an agent says about itself
 // ---------------------------------------------------------------------------
 
-pub use zellij_tile::agent::{clean_hint, hook_detail, HOOK_DETAIL_CHARS, HOOK_SESSION_END};
+pub use zellij_tile::agent::{
+    clean_hint, hook_detail, waiting_detail, waiting_needs_a_person, HOOK_DETAIL_CHARS,
+    HOOK_SESSION_END, WAITING_DETAIL_CHARS,
+};
 use zellij_tile::prelude::{AgentInfo, AgentSource, AgentState};
 
 /// What a Claude Code pane says it is doing, in the three states a row can draw.
@@ -419,6 +422,14 @@ pub struct HookFeed {
     /// The tool the agent is running, as a few words. `None` outside a tool call.
     #[serde(default)]
     pub detail: Option<String>,
+    /// What the agent is blocked on, in one line. `None` outside a wait.
+    ///
+    /// A separate field from `detail` rather than a reuse of it, because the two are
+    /// cleared by different events and read in different places: `detail` names a tool
+    /// in a sidebar cell, this names a question in a toast. Sharing one slot would mean
+    /// a `PostToolUse` clearing a question it knows nothing about.
+    #[serde(default)]
+    pub waiting_on: Option<String>,
     /// Claude Code's own session id, so a session restarted in the same pane can be
     /// told from one that merely went quiet.
     #[serde(default)]
@@ -442,6 +453,7 @@ impl HookFeed {
         Some(HookFeed {
             phase: HookPhase::from_state(agent.state)?,
             detail: agent.detail.clone(),
+            waiting_on: agent.waiting_on.clone(),
             session_id: agent.session_id.clone().unwrap_or_default(),
             cwd: agent.cwd.clone(),
         })
@@ -459,6 +471,24 @@ pub type HookFeeds = BTreeMap<u32, HookFeed>;
 /// state, it ends one. Callers check [`HOOK_SESSION_END`] first.
 pub fn hook_phase(event: &crate::wire::HookEvent) -> Option<HookPhase> {
     zellij_tile::agent::hook_state(event).and_then(HookPhase::from_state)
+}
+
+/// A line already cleaned for a toast, cut again to what one cell of a row can hold.
+///
+/// Cutting rather than re-cleaning: the text has been through `agent::clean_line` already, so
+/// it holds no control characters and no whitespace runs, and doing that work twice would only
+/// be a second place for the two to disagree.
+fn short_hint(line: &str) -> Option<String> {
+    if line.is_empty() {
+        return None;
+    }
+    let mut chars = line.chars();
+    let mut hint: String = chars.by_ref().take(HOOK_DETAIL_CHARS).collect();
+    if chars.next().is_some() {
+        hint.pop();
+        hint.push('…');
+    }
+    Some(hint)
 }
 
 /// The status column of one agent row.
@@ -481,7 +511,14 @@ pub fn status_cell(
     }
     if let Some(feed) = hook {
         return match feed.phase {
-            HookPhase::Waiting => "waiting".to_owned(),
+            // Same shape as `busy · Bash cargo` below, so the two states read alike.
+            // Cut to the sidebar's own budget rather than the toast's: `waiting_on` is
+            // written for a box fifty columns wide, and a row that carries the whole of
+            // it pushes the tab name off the end of every line beside it.
+            HookPhase::Waiting => match feed.waiting_on.as_deref().and_then(short_hint) {
+                Some(waiting_on) => format!("waiting · {waiting_on}"),
+                None => "waiting".to_owned(),
+            },
             HookPhase::Busy => match &feed.detail {
                 Some(detail) => format!("busy · {detail}"),
                 None => "busy".to_owned(),
@@ -537,6 +574,136 @@ its work; and \"title\", at most four words naming the task the agent is working
 no trailing punctuation, to be used as the name of the pane. A completed task is not \
 awaiting. A permission prompt, a yes/no question, or a menu of choices is awaiting.";
 
+/// The prompt for a turn the agent described itself.
+///
+/// Two differences from [`SUMMARY_SYSTEM_PROMPT`], and both are the point of the hook
+/// feed. The input is the agent's *own last message* rather than a photograph of a
+/// terminal, so the model is reading prose written for a person rather than inferring
+/// intent from a redraw. And `awaiting` is not asked for at all: the feed already knows
+/// whether the agent is blocked on the user, and a second opinion would only be a
+/// disagreement to resolve — see `finish_summary_with`, which overwrites it either way.
+const TURN_SUMMARY_SYSTEM_PROMPT: &str = "A coding agent has just finished a turn. You \
+will be shown what the user asked for, if anything, and the agent's own final message. \
+Reply with a single JSON object and nothing else - no prose, no markdown, no code \
+fences. The object has exactly two keys: \"summary\", one or two plain sentences \
+describing what the agent did and where the session now stands; and \"title\", at most \
+four words naming the task, with no trailing punctuation, to be used as the name of the \
+pane. Write about the work, not about the message: do not begin with \"the agent\" or \
+quote the message back.";
+
+/// The body of one completion asking what a turn that just ended was.
+///
+/// The counterpart of [`summary_request_body`] for a pane that reports for itself.
+/// Carries the same header — kind, folder, branch — so the two paths give the model the
+/// same context, and adds the user's request where one was seen: a description of an
+/// answer written without sight of the question is half a description.
+pub fn turn_summary_request_body(
+    model: &str,
+    kind: &str,
+    cwd: Option<&str>,
+    branch: Option<&str>,
+    prompt: Option<&str>,
+    message: &str,
+) -> Vec<u8> {
+    let mut header = format!("Agent: {kind}.");
+    if let Some(cwd) = cwd {
+        header.push_str(&format!(" Folder: {cwd}."));
+    }
+    if let Some(branch) = branch {
+        header.push_str(&format!(" Branch: {branch}."));
+    }
+    let mut user = header;
+    if let Some(prompt) = prompt.map(str::trim).filter(|p| !p.is_empty()) {
+        user.push_str(&format!("\n\n--- the user asked ---\n{prompt}"));
+    }
+    user.push_str(&format!("\n\n--- the agent replied ---\n{message}"));
+    let body = json!({
+        "model": model,
+        "stream": false,
+        "messages": [
+            { "role": "system", "content": TURN_SUMMARY_SYSTEM_PROMPT },
+            { "role": "user", "content": user },
+        ],
+    });
+    serde_json::to_vec(&body).expect("serializing a summary request cannot fail")
+}
+
+/// A summary made from the agent's own words, with no model asked.
+///
+/// The fallback for a pane whose agent reports for itself but whose session has no
+/// endpoint configured — no API key, or `summaries "false"`. Before the hook feed there
+/// was nothing to fall back *to*: a screen tail is not a summary of anything, and
+/// showing one raw would have been worse than showing nothing. A final message is
+/// already prose written for a person, so the honest thing is to show its opening and
+/// say no more.
+///
+/// The title is deliberately empty. Naming a pane in four words is a judgement, and
+/// this path has nobody to make it; [`rename_title`] reads an empty title as "leave the
+/// pane's name alone", which is the right answer rather than a missing one.
+///
+/// `None` when what is left is too short to be worth drawing — the same floor
+/// [`worth_summarizing`] applies to a screen.
+pub fn local_summary(message: &str, hash: u64) -> Option<Summary> {
+    let text = plain_prose(message);
+    (text.chars().count() >= SUMMARY_MIN_CHARS).then(|| Summary {
+        text,
+        title: String::new(),
+        awaiting: false,
+        hash,
+    })
+}
+
+/// An agent's message with its markdown taken off, cut to what a summary holds.
+///
+/// Not a markdown renderer and not trying to be: what this removes is the decoration
+/// that reads as noise in a one-line box — fenced blocks, heading and quote and bullet
+/// markers, emphasis runs — and what it keeps is the sentences. A fenced block is
+/// dropped whole rather than unwrapped, because a summary that opens with three lines
+/// of someone else's Rust has said nothing.
+fn plain_prose(message: &str) -> String {
+    let mut out = String::new();
+    let mut in_fence = false;
+    for line in crate::text::sanitize(message).lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        // Leading structure, in the order it is written: quote markers, then heading
+        // hashes, then a list bullet.
+        let mut body = trimmed.trim_start_matches(['>', ' ']);
+        body = body.trim_start_matches('#').trim_start();
+        if let Some(rest) = body
+            .strip_prefix("- ")
+            .or_else(|| body.strip_prefix("* "))
+            .or_else(|| body.strip_prefix("+ "))
+        {
+            body = rest;
+        }
+        let body = body.replace("**", "").replace("`", "");
+        let body = body.trim();
+        if body.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(body);
+        if out.chars().count() >= SUMMARY_TEXT_CHARS {
+            break;
+        }
+    }
+    if out.chars().count() > SUMMARY_TEXT_CHARS {
+        out = out.chars().take(SUMMARY_TEXT_CHARS - 1).collect();
+        out.push('…');
+    }
+    out
+}
+
+/// What the model said about an idle agent's pane.
 /// What the model said about an idle agent's pane.
 ///
 /// Held in memory by `hocus-agentd` and shipped in its snapshot. `awaiting` is the strip's
@@ -573,6 +740,7 @@ pub fn registered_agent(kind: &str, cwd: Option<String>) -> AgentInfo {
         state: AgentState::Idle,
         source: AgentSource::Registered,
         detail: None,
+        waiting_on: None,
         cwd,
         session_id: None,
     }
@@ -724,6 +892,31 @@ pub fn summary_toast(pane_id: u32, kind: Option<&str>, summary: &Summary) -> Str
         headline.push_str(&format!(" · {kind}"));
     }
     format!("{headline}\n{}", summary.text)
+}
+
+/// The moment an agent starts waiting, as the toast that says so.
+///
+/// The other half of the reason [`summary_toast`] exists, and the more urgent one: a
+/// summary describes work that is over, while this describes work that has *stopped* and
+/// will not resume until somebody answers. Before the hook feed there was no way to draw
+/// this in time — the screen heuristic needed fifteen seconds of stillness and a round
+/// trip to a model to reach the same conclusion, by which point the interruption was
+/// stale. A `PermissionRequest` arrives in the milliseconds the pipe took.
+///
+/// Shaped exactly like [`summary_toast`], down to the `·` separators, so a user who has
+/// seen one recognises the other: headline, then one line saying what is being asked.
+pub fn waiting_toast(pane_id: u32, kind: Option<&str>, feed: &HookFeed) -> String {
+    let mut headline = format!("agent waiting · {pane_id}");
+    if let Some(kind) = kind {
+        headline.push_str(&format!(" · {kind}"));
+    }
+    // A wait we could not name is still worth interrupting for: the pane id in the
+    // headline is what the user acts on, and the toast focuses that pane when clicked.
+    let detail = feed
+        .waiting_on
+        .as_deref()
+        .unwrap_or("waiting for you to answer");
+    format!("{headline}\n{detail}")
 }
 
 /// How wide the summary box is allowed to get. A box the full width of a wide pane reads as a
@@ -950,6 +1143,37 @@ fn waiting_marker(
     }
 }
 
+/// What marks an agent whose state is *reported* rather than inferred.
+///
+/// Every other row on the strip is a guess made by reading a screen. A row carrying
+/// this one is being told, by the agent itself, over its own hooks — so its `busy`,
+/// its `waiting` and its summary mean something the others do not, and the difference
+/// is worth one column. It rides on the kind, where `@host` already rides, because
+/// what it qualifies is *which agent this is*: a claude with a feed, not a claude.
+///
+/// Deliberately not a character the `!` search in the agents pane could confuse for a
+/// marker of its own — see `render_summary` there.
+pub const HOOK_MARKER: &str = "◆";
+
+/// The kind column of one agent row: what the agent is, marked with what is known
+/// about it and where it runs.
+///
+/// One formatter, because the strip's rows and the summary box's header both name the
+/// same agent and a user comparing the two must not find them spelled differently.
+/// Order is `claude◆@remote`: the marker qualifies the kind, and the host stays the
+/// outermost suffix so it reads the way a host is written everywhere else.
+pub fn kind_cell(kind: &str, host: Option<&str>, hooked: bool) -> String {
+    let mut cell = kind.to_owned();
+    if hooked {
+        cell.push_str(HOOK_MARKER);
+    }
+    if let Some(host) = host {
+        cell.push('@');
+        cell.push_str(host);
+    }
+    cell
+}
+
 /// What a header stands in for when there is nothing to name.
 const NO_PROJECT: &str = "no project";
 const NO_BRANCH: &str = "no branch";
@@ -1018,7 +1242,9 @@ pub struct Strip {
 /// One agent, sorted before it becomes a row: its project, its branch, its pane, the line as
 /// drawn, and the kind that line names. Named because clippy counts the tuple's arms, and
 /// because the sort below reads better against a name than against five anonymous slots.
-type SortableAgent<'a> = (Option<&'a str>, Option<&'a str>, u32, String, &'a str);
+/// The kind is owned rather than borrowed because it carries the hook marker, which
+/// is a fact about the pane rather than about the kind's name.
+type SortableAgent<'a> = (Option<&'a str>, Option<&'a str>, u32, String, String);
 
 pub fn strip_rows(
     panes: &[AgentPane],
@@ -1036,13 +1262,12 @@ pub fn strip_rows(
             // The host rides on the kind rather than in a column of its own:
             // it is absent for nearly every agent, and a column that is usually
             // blank costs width in a sidebar that has none to spare. `@host`
-            // also reads the way a host is written everywhere else.
-            let kind_cell = match &pane.host {
-                Some(host) => format!("{kind}@{host}"),
-                None => kind.to_owned(),
-            };
+            // also reads the way a host is written everywhere else. The hook
+            // marker rides there too — see `kind_cell`.
+            let hooked = hooks.contains_key(&pane.pane_id);
+            let cell = kind_cell(kind, pane.host.as_deref(), hooked);
             let mut row = format!(
-                "{}{:>3}  {kind_cell}  {}",
+                "{}{:>3}  {cell}  {}",
                 waiting_marker(summaries, activity, hooks, pane.status, pane.pane_id),
                 pane.pane_id,
                 status_cell(
@@ -1060,7 +1285,9 @@ pub fn strip_rows(
                 branches.get(&pane.pane_id).map(String::as_str),
                 pane.pane_id,
                 row,
-                kind,
+                // Marked, but never hosted: the box this heads is drawn beside the row
+                // that already names the machine, and a header is one line wide.
+                kind_cell(kind, None, hooked),
             ))
         })
         .collect();
@@ -1099,7 +1326,7 @@ pub fn strip_rows(
         rows.push(StripRow::Agent {
             pane_id,
             text,
-            kind: kind.to_owned(),
+            kind,
         });
     }
     rows
@@ -1363,6 +1590,13 @@ pub fn list_json(
             if let Some(feed) = hooks.get(&pane.pane_id) {
                 item["awaiting_confirmation"] =
                     json!(pane.status == AgentStatus::Running && feed.phase == HookPhase::Waiting);
+                // The fact the strip spells `◆`. A reader of this list wants to know
+                // that the two fields below are reported rather than inferred; it has
+                // no use for the glyph that says so in a column.
+                item["hooks"] = json!(true);
+                if let Some(waiting_on) = &feed.waiting_on {
+                    item["waiting_on"] = json!(waiting_on);
+                }
                 // The label the strip draws, spelled out for a reader that has one
                 // agent's row rather than the whole column: `idle_seconds` above is
                 // the screen's clock, and an agent that reports for itself is not
@@ -1497,6 +1731,7 @@ mod tests {
                     HookFeed {
                         phase: *phase,
                         detail: None,
+                        waiting_on: None,
                         session_id: "s1".to_owned(),
                         cwd: None,
                     },
@@ -2104,6 +2339,136 @@ mod tests {
         );
     }
 
+    /// The fallback that makes summaries work with no API key at all. Before the hook
+    /// feed there was nothing to fall back *to* — a screen tail is not a summary of
+    /// anything, and showing one raw would be worse than showing nothing. A final message
+    /// is prose already, so its opening is an honest answer.
+    #[test]
+    fn a_summary_can_be_made_from_the_agents_own_words_with_no_model() {
+        let summary = local_summary(
+            "I ran the test suite and it passes. Two snapshots were regenerated along \
+             the way; both diffs are whitespace only.",
+            42,
+        )
+        .expect("long enough to be worth drawing");
+        assert!(summary
+            .text
+            .starts_with("I ran the test suite and it passes."));
+        assert_eq!(summary.hash, 42);
+        // Naming a pane in four words is a judgement, and this path has nobody to make
+        // it. An empty title is `rename_title`'s "leave the pane's name alone".
+        assert_eq!(summary.title, "");
+        assert_eq!(rename_title(&summary), None);
+        // Decided by the feed, never here.
+        assert!(!summary.awaiting);
+    }
+
+    /// A summary that opens with three lines of somebody else's Rust has said nothing,
+    /// so a fenced block is dropped whole rather than unwrapped. The markers around the
+    /// prose go too: they are structure for a renderer this box does not have.
+    #[test]
+    fn a_local_summary_keeps_the_sentences_and_drops_the_markdown() {
+        let summary = local_summary(
+            "## Done\n\n\
+             The **flaky** test is fixed. It was waiting on a `sleep` rather than on the \
+             condition it cared about.\n\n\
+             ```rust\nfn main() { panic!() }\n```\n\n\
+             - regenerated one snapshot\n\
+             - left the other alone\n",
+            0,
+        )
+        .expect("long enough");
+        assert_eq!(
+            summary.text,
+            "Done The flaky test is fixed. It was waiting on a sleep rather than on the \
+             condition it cared about. regenerated one snapshot left the other alone"
+        );
+        assert!(!summary.text.contains("panic!"));
+        assert!(!summary.text.contains('`') && !summary.text.contains('#'));
+    }
+
+    /// The same floor a screen has: below it there is nothing to describe, and a box
+    /// holding three words is worse than no box.
+    #[test]
+    fn a_reply_too_short_to_be_a_summary_is_not_one() {
+        assert_eq!(local_summary("Done.", 0), None);
+        assert_eq!(local_summary("", 0), None);
+        assert_eq!(local_summary("```\nfn main() {}\n```", 0), None);
+        assert!(local_summary(&"x".repeat(SUMMARY_MIN_CHARS), 0).is_some());
+    }
+
+    /// A model told to be brief occasionally is not, and neither is an agent. The cut is
+    /// the same one the model's own answer is held to.
+    #[test]
+    fn a_long_reply_is_cut_to_what_a_summary_holds() {
+        let summary = local_summary(&"word ".repeat(400), 0).expect("long enough");
+        assert!(summary.text.chars().count() <= SUMMARY_TEXT_CHARS);
+        assert!(summary.text.ends_with('…'));
+    }
+
+    /// What the model is shown for a turn: the agent's own message, and the question it
+    /// was answering. A description of an answer written without sight of the question is
+    /// half a description.
+    #[test]
+    fn a_turn_summary_asks_about_the_reply_and_the_request_behind_it() {
+        let body = turn_summary_request_body(
+            "gpt-4o-mini",
+            "claude",
+            Some("/work"),
+            Some("main"),
+            Some("fix the flaky test"),
+            "Fixed it; it was waiting on a sleep.",
+        );
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("valid JSON");
+        assert_eq!(body["model"], "gpt-4o-mini");
+        assert_eq!(body["stream"], false);
+        let user = body["messages"][1]["content"].as_str().expect("a string");
+        assert!(user.starts_with("Agent: claude. Folder: /work. Branch: main."));
+        assert!(user.contains("fix the flaky test"));
+        assert!(user.contains("Fixed it; it was waiting on a sleep."));
+
+        // The system prompt asks for two keys and does not ask about `awaiting`: the feed
+        // already knows, and a second opinion would only be a disagreement to resolve.
+        let system = body["messages"][0]["content"].as_str().expect("a string");
+        assert!(system.contains("\"summary\"") && system.contains("\"title\""));
+        assert!(!system.contains("awaiting"));
+
+        // A turn with no prompt behind it - a resumed session, a hook-driven
+        // continuation - is summarised without one rather than against a stale question.
+        let body = turn_summary_request_body("m", "claude", None, None, None, "Done.");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("valid JSON");
+        let user = body["messages"][1]["content"].as_str().expect("a string");
+        assert_eq!(user, "Agent: claude.\n\n--- the agent replied ---\nDone.");
+    }
+
+    /// The interruption the feed exists to make in time. Shaped like `summary_toast`, so
+    /// a user who has seen one recognises the other.
+    #[test]
+    fn a_waiting_toast_names_the_pane_and_what_it_is_asking() {
+        let feed = |waiting_on: Option<&str>| HookFeed {
+            phase: HookPhase::Waiting,
+            detail: None,
+            waiting_on: waiting_on.map(str::to_owned),
+            session_id: "s1".to_owned(),
+            cwd: None,
+        };
+        assert_eq!(
+            waiting_toast(7, Some("claude◆"), &feed(Some("Bash cargo"))),
+            "agent waiting · 7 · claude◆\nBash cargo"
+        );
+        // A wait we could not name is still worth interrupting for: the pane id is what
+        // the user acts on, and the toast focuses that pane when it is clicked.
+        assert_eq!(
+            waiting_toast(7, Some("claude"), &feed(None)),
+            "agent waiting · 7 · claude\nwaiting for you to answer"
+        );
+        // A pane whose classification failed keeps the id and loses the segment.
+        assert_eq!(
+            waiting_toast(9, None, &feed(Some("approve the plan"))),
+            "agent waiting · 9\napprove the plan"
+        );
+    }
+
     /// The marker column is always there, so the list does not shift sideways as agents
     /// start and stop waiting - only what is *in* it changes.
     #[test]
@@ -2136,6 +2501,68 @@ mod tests {
                 agent(5, "  5  aider  idle"),
             ],
         );
+    }
+
+    /// A pane whose state is reported rather than inferred says so, in the one column
+    /// that already qualifies the kind. Everything about that pane's row means something
+    /// different from the rows around it — its `busy` is a fact and theirs is a guess —
+    /// and there is no other way for a user to tell which they are looking at.
+    #[test]
+    fn a_pane_that_reports_for_itself_is_marked_as_such() {
+        let mut remote = pane(5, "claude", Some("claude"));
+        remote.host = Some("box".to_owned());
+        let panes = vec![
+            pane(3, "codex", Some("codex")),
+            pane(4, "claude", Some("claude")),
+            remote,
+        ];
+        let rows = strip_rows(
+            &panes,
+            &manual(&[]),
+            &Activity::from([(3, (1, 2)), (4, (1, 2)), (5, (1, 2))]),
+            &owners(&[]),
+            &branches(&[]),
+            &summaries(&[]),
+            // The two claudes report; the codex beside them cannot.
+            &feeds(&[(4, HookPhase::Idle), (5, HookPhase::Busy)]),
+        );
+
+        assert_eq!(
+            rows,
+            vec![
+                project("no project"),
+                branch("no branch"),
+                agent(3, "  3  codex  idle"),
+                agent(4, "  4  claude◆  idle"),
+                // The marker qualifies the kind; the host stays the outermost suffix, so
+                // it reads the way a host is written everywhere else.
+                agent(5, "  5  claude◆@box  busy"),
+            ],
+        );
+
+        // The summary box heads its pane the same way the row names it, minus the host:
+        // the box is drawn beside a row that already says which machine.
+        assert_eq!(
+            rows.iter()
+                .filter_map(|row| match row {
+                    StripRow::Agent { pane_id, kind, .. } => Some((*pane_id, kind.as_str())),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec![(3, "codex"), (4, "claude◆"), (5, "claude◆")],
+        );
+    }
+
+    /// The marker cannot be confused for the one the agents pane looks for. That pane
+    /// colours the `!` in a box header by *searching* the line for the character, so a
+    /// marker sharing it would light up the wrong column — see `render_summary` there.
+    #[test]
+    fn the_hook_marker_is_not_the_waiting_marker() {
+        assert!(!HOOK_MARKER.contains('!'));
+        assert_eq!(kind_cell("claude", None, false), "claude");
+        assert_eq!(kind_cell("claude", None, true), "claude◆");
+        assert_eq!(kind_cell("claude", Some("box"), true), "claude◆@box");
+        assert_eq!(kind_cell("claude", Some("box"), false), "claude@box");
     }
 
     /// A pane that has settled on a screen the stored summary was never made for — the
@@ -2232,6 +2659,7 @@ mod tests {
         let feed = |phase| HookFeed {
             phase,
             detail: None,
+            waiting_on: None,
             session_id: "s1".to_owned(),
             cwd: None,
         };
@@ -2286,6 +2714,7 @@ mod tests {
                 Some(&HookFeed {
                     phase: HookPhase::Busy,
                     detail: detail.map(str::to_owned),
+                    waiting_on: None,
                     session_id: "s1".to_owned(),
                     cwd: None,
                 }),
@@ -2295,21 +2724,28 @@ mod tests {
         assert_eq!(busy(Some("Bash cargo")), "busy · Bash cargo");
     }
 
+    /// One hook event carrying nothing but its name.
+    fn event(name: &str) -> crate::wire::HookEvent {
+        crate::wire::HookEvent {
+            hook_event_name: name.to_owned(),
+            ..Default::default()
+        }
+    }
+
+    /// One `Notification` of the kind named.
+    fn notification(kind: &str) -> crate::wire::HookEvent {
+        crate::wire::HookEvent {
+            hook_event_name: "Notification".to_owned(),
+            notification_type: Some(kind.to_owned()),
+            ..Default::default()
+        }
+    }
+
     /// Every event we wire, and the states they name. The three that say nothing are
     /// as important as the ones that do: a notification about a quota reset must not
     /// draw a `!` beside a pane that is working.
     #[test]
     fn hook_events_map_to_the_states_they_name() {
-        let event = |name: &str| crate::wire::HookEvent {
-            hook_event_name: name.to_owned(),
-            ..Default::default()
-        };
-        let notification = |kind: &str| crate::wire::HookEvent {
-            hook_event_name: "Notification".to_owned(),
-            notification_type: Some(kind.to_owned()),
-            ..Default::default()
-        };
-
         for source in ["startup", "resume", "fork"] {
             assert_eq!(
                 hook_phase(&crate::wire::HookEvent {
@@ -2360,6 +2796,235 @@ mod tests {
         assert_eq!(hook_phase(&event(HOOK_SESSION_END)), None);
         // A version that grows an event we have never heard of costs us nothing.
         assert_eq!(hook_phase(&event("SomethingNewInAYearsTime")), None);
+    }
+
+    /// A turn that dies on an API error has ended as surely as one that finished, and
+    /// `StopFailure` is the only thing that says so. Without it the feed sits on `busy`
+    /// until the user types again — and nothing here expires on a clock, so "until the
+    /// user types again" means exactly that.
+    #[test]
+    fn a_turn_that_failed_ends_the_agents_work_like_one_that_finished() {
+        let failed = crate::wire::HookEvent {
+            hook_event_name: "StopFailure".to_owned(),
+            last_assistant_message: Some("I was about to run the tests.".to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(hook_phase(&failed), Some(HookPhase::Idle));
+    }
+
+    /// The two tools that are themselves a question. Every other tool starting is work;
+    /// these do nothing but put a prompt up and wait, so a `PreToolUse` naming one is a
+    /// wait rather than the busy every other `PreToolUse` is.
+    #[test]
+    fn a_tool_that_asks_the_user_something_is_a_wait_not_work() {
+        let pre = |tool: &str| crate::wire::HookEvent {
+            hook_event_name: "PreToolUse".to_owned(),
+            tool_name: Some(tool.to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(
+            hook_phase(&pre("AskUserQuestion")),
+            Some(HookPhase::Waiting)
+        );
+        assert_eq!(hook_phase(&pre("ExitPlanMode")), Some(HookPhase::Waiting));
+        assert_eq!(hook_phase(&pre("Bash")), Some(HookPhase::Busy));
+
+        // And the answer coming back is ordinary work again, which is what clears the
+        // wait without either tool needing a case of its own on the way out.
+        let post = crate::wire::HookEvent {
+            hook_event_name: "PostToolUse".to_owned(),
+            tool_name: Some("AskUserQuestion".to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(hook_phase(&post), Some(HookPhase::Busy));
+    }
+
+    /// The events wired since the first eight, each in the state it names.
+    #[test]
+    fn the_rest_of_the_lifecycle_names_the_state_it_is_in() {
+        for name in [
+            "PostToolUseFailure",
+            "PermissionDenied",
+            "ElicitationResult",
+            "SubagentStart",
+            "SubagentStop",
+            "PreCompact",
+            "PostCompact",
+        ] {
+            assert_eq!(
+                hook_phase(&event(name)),
+                Some(HookPhase::Busy),
+                "{name} is the agent working"
+            );
+        }
+        assert_eq!(hook_phase(&event("Elicitation")), Some(HookPhase::Waiting));
+        // A background session that finished is idle, not blocked. Named in its own
+        // list rather than added to the waiting one, so the allowlist stance holds on
+        // both sides: a kind that means neither goes on saying nothing.
+        assert_eq!(
+            hook_phase(&notification("agent_completed")),
+            Some(HookPhase::Idle)
+        );
+    }
+
+    /// A permission mode that answers by itself has nobody to interrupt. The phase is
+    /// still whatever the agent said — only the toast is gated on this.
+    #[test]
+    fn a_wait_under_an_unattended_mode_is_drawn_but_not_announced() {
+        let request = |mode: Option<&str>| crate::wire::HookEvent {
+            hook_event_name: "PermissionRequest".to_owned(),
+            permission_mode: mode.map(str::to_owned),
+            ..Default::default()
+        };
+        assert!(waiting_needs_a_person(&request(None)));
+        assert!(waiting_needs_a_person(&request(Some("default"))));
+        assert!(waiting_needs_a_person(&request(Some("plan"))));
+        assert!(!waiting_needs_a_person(&request(Some("bypassPermissions"))));
+        assert!(!waiting_needs_a_person(&request(Some("acceptEdits"))));
+
+        // The phase is unaffected either way: the agent said it stopped.
+        assert_eq!(
+            hook_phase(&request(Some("bypassPermissions"))),
+            Some(HookPhase::Waiting)
+        );
+    }
+
+    /// What the user is actually being asked, from each of the four events that can
+    /// say. This is what the toast carries, so it is worth pinning exactly.
+    #[test]
+    fn a_wait_says_what_it_is_waiting_for() {
+        let ask = crate::wire::HookEvent {
+            hook_event_name: "PreToolUse".to_owned(),
+            tool_name: Some("AskUserQuestion".to_owned()),
+            tool_input: Some(json!({
+                "questions": [{
+                    "question": "Which library should we use for date formatting?",
+                    "header": "Library",
+                    "options": [{"label": "chrono", "description": "the usual one"}],
+                }],
+            })),
+            ..Default::default()
+        };
+        assert_eq!(
+            waiting_detail(&ask).as_deref(),
+            Some("Which library should we use for date formatting?")
+        );
+
+        let plan = crate::wire::HookEvent {
+            hook_event_name: "PreToolUse".to_owned(),
+            tool_name: Some("ExitPlanMode".to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(waiting_detail(&plan).as_deref(), Some("approve the plan"));
+
+        let permission = crate::wire::HookEvent {
+            hook_event_name: "PermissionRequest".to_owned(),
+            tool_name: Some("Bash".to_owned()),
+            tool_input: Some(json!({"command": "cargo x test -p hocus-proto"})),
+            ..Default::default()
+        };
+        assert_eq!(waiting_detail(&permission).as_deref(), Some("Bash cargo"));
+
+        let elicitation = crate::wire::HookEvent {
+            hook_event_name: "Elicitation".to_owned(),
+            message: Some("Pick a repository".to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(
+            waiting_detail(&elicitation).as_deref(),
+            Some("Pick a repository")
+        );
+
+        // Nothing to say about an event that is not a wait.
+        assert_eq!(waiting_detail(&event("Stop")), None);
+        assert_eq!(waiting_detail(&event("PostToolUse")), None);
+    }
+
+    /// `tool_input` has no schema we control. A Claude Code that reshapes
+    /// `AskUserQuestion`'s arguments must cost us the question's *text*, not the fact
+    /// that a question was asked — and must never cost us a panic.
+    #[test]
+    fn a_question_we_cannot_read_still_says_a_question_was_asked() {
+        let ask = |input: serde_json::Value| crate::wire::HookEvent {
+            hook_event_name: "PreToolUse".to_owned(),
+            tool_name: Some("AskUserQuestion".to_owned()),
+            tool_input: Some(input),
+            ..Default::default()
+        };
+        for input in [
+            json!({}),
+            json!({"questions": []}),
+            json!({"questions": "not an array"}),
+            json!({"questions": [{}]}),
+            json!({"questions": [{"question": ""}]}),
+            json!({"questions": [{"question": 7}]}),
+        ] {
+            assert_eq!(
+                waiting_detail(&ask(input.clone())).as_deref(),
+                Some("a question"),
+                "{input}"
+            );
+        }
+        // The header is the fallback while there is still one to read.
+        assert_eq!(
+            waiting_detail(&ask(json!({"questions": [{"header": "Library"}]}))).as_deref(),
+            Some("Library")
+        );
+    }
+
+    /// The other half of the `tool_input` argument: text the agent's own input can
+    /// steer, going into a toast. Newlines collapse, control characters go, and a long
+    /// question is cut rather than allowed to fill the box.
+    #[test]
+    fn a_wait_detail_is_one_clean_line_of_bounded_length() {
+        let ask = |question: &str| crate::wire::HookEvent {
+            hook_event_name: "PreToolUse".to_owned(),
+            tool_name: Some("AskUserQuestion".to_owned()),
+            tool_input: Some(json!({"questions": [{"question": question}]})),
+            ..Default::default()
+        };
+
+        let detail =
+            waiting_detail(&ask("  which\n\n\tone\x1b[2J  do   you\rwant?  ")).expect("a question");
+        assert_eq!(detail, "which one[2J do you want?");
+        assert!(!detail.contains('\n') && !detail.contains('\t'));
+
+        // The cap counts the ellipsis: what it bounds is the width of the finished line,
+        // not the length of what was kept before it was marked as cut.
+        let long = waiting_detail(&ask(&"word ".repeat(80))).expect("a question");
+        assert!(long.chars().count() <= WAITING_DETAIL_CHARS, "{long}");
+        assert!(long.ends_with('…'));
+        assert!(long.starts_with("word word"), "{long}");
+    }
+
+    /// Whatever the toast is given, the row gets the short form: a sidebar cell that
+    /// carried the whole of a question would push every tab name off the end of the
+    /// line beside it.
+    #[test]
+    fn a_waiting_row_carries_the_question_cut_to_the_sidebars_budget() {
+        let waiting = |waiting_on: Option<&str>| {
+            status_cell(
+                AgentStatus::Running,
+                Some(&(1, 0)),
+                Some(&HookFeed {
+                    phase: HookPhase::Waiting,
+                    detail: None,
+                    waiting_on: waiting_on.map(str::to_owned),
+                    session_id: "s1".to_owned(),
+                    cwd: None,
+                }),
+            )
+        };
+        assert_eq!(waiting(None), "waiting");
+        assert_eq!(waiting(Some("Bash cargo")), "waiting · Bash cargo");
+
+        let long = waiting(Some("Which library should we use for date formatting?"));
+        assert!(long.starts_with("waiting · Which library"), "{long}");
+        assert!(long.ends_with('…'), "{long}");
+        assert_eq!(
+            long.chars().count(),
+            "waiting · ".chars().count() + HOOK_DETAIL_CHARS
+        );
     }
 
     /// `tool_input` is free-form text an agent's own input can steer, so the little
