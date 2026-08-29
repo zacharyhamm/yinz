@@ -330,11 +330,10 @@ Two things learned landing the loop test, for anyone touching hooks or plugin lo
 Known environment noise: the 19 `zellij-client web_client_tests` time out in a full `cargo x
 test` on this machine **on `main` as well** (verified in a control worktree) and pass 97/97
 when `cargo x test -p zellij-client` runs alone, so they are load-sensitive rather than broken.
-Three more fail on this machine at the pre-Phase-3 commit `d9d4b338c` too (checked while
-landing Phase 3), so they are not Phase 3's:
-`hocus_tab_projects::a_tab_is_named_after_the_project_its_agent_is_in`,
-`floating_pane_overlay::an_overlay_floating_pane_moves_to_another_tab_when_its_own_tab_closes`
-and `modes::switch_to_agent_mode`. The integration harness cannot end a session (`quit()` runs into the quit-confirmation
+The three integration tests that were red before this branch (`hocus_tab_projects`,
+`floating_pane_overlay`'s tab-close test, `modes::switch_to_agent_mode`) are fixed under next
+step 8 below. `cli::send_command_through_the_cli` failed its snapshot once in a 12-test run
+after the merge and passed 3/3 alone, so treat it as load-sensitive. The integration harness cannot end a session (`quit()` runs into the quit-confirmation
 modal and times out twice, ~20s per test), so no integration test can assert "the stream ended
 with the session". The box is shared: check for sibling `cargo x test` runs before believing a
 timeout.
@@ -431,4 +430,12 @@ trustworthy, 3–5 closed the loose ends it left, and all five are done — cont
    `screen_tests::hooks::enter_in_a_held_agent_pane_fires_agent_start` pins it, and counts one
    `ReRunCommandInPane` at the pty.)*
 8. **The three pre-existing red integration tests** listed under environment noise: bisect
-   them on `main`, they predate this branch.
+   them on `main`, they predate this branch. *(done — none was a production regression.
+   `modes::switch_to_agent_mode` was fixed on `main` (`eab69116d`: the ` k  Ask ` hints went
+   stale when `d01497fbe` removed hocus-ask) and came over with the merge. The other two fail
+   at `75376d615` ("Remove the global panes feature"), the commit that rewrote their layouts:
+   with the global left-hand pane gone, each test's own overlay landed on the row it read -
+   hocus at `x=0 y=0` covered the tab bar `hocus_tab_projects` inspects (a floating pane's
+   `y=0` is the screen's top row, tab bar included), and the 20%×20% overlay at `0%,0%` covered
+   the "first tab shell" text the overlay test waits for. Both overlays moved off those rows;
+   each binary passes whole, and the two tests 3/3 in a loop.)*
