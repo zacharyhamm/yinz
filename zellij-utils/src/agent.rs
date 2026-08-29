@@ -156,6 +156,19 @@ pub const HOOK_SESSION_END: &str = "SessionEnd";
 /// *after* a finished turn, which is idleness rather than a question. Naming the ones that
 /// count, rather than excluding the ones that do not, means a notification kind added in a
 /// later Claude Code cannot silently start reading as waiting.
+///
+/// **No notification means the turn *ended*, and `agent_completed` least of all.** It reads
+/// like the one that would, and it is the only kind that names a finish — but Claude Code
+/// emits it from the background-job monitor, for an async agent this session started, and the
+/// payload carries the current session's fields rather than that job's. A pane whose Claude
+/// launched a background agent and worked on would be marked idle mid-turn by it. The turn
+/// ending has its own events, `Stop` and `StopFailure`, which arrive earlier and carry
+/// `last_assistant_message` besides.
+///
+/// `agent_needs_input` is on this list despite coming from that same monitor, because it has a
+/// second source that the finish notification does not: the foreground dialog map, which
+/// raises it for teammate setup, a Slack-connect dialog and an offline file sync. Those are
+/// this session, blocked, with a person to tell.
 pub const WAITING_NOTIFICATIONS: &[&str] = &[
     "permission_prompt",
     "elicitation_dialog",
@@ -164,11 +177,6 @@ pub const WAITING_NOTIFICATIONS: &[&str] = &[
     "worker_permission_prompt",
 ];
 
-/// The `Notification` kinds that mean the agent has *finished*, rather than that it is
-/// blocked. Named separately from [`WAITING_NOTIFICATIONS`] for the same reason that list is
-/// an allowlist: a kind that means neither must go on saying nothing.
-pub const IDLE_NOTIFICATIONS: &[&str] = &["agent_completed"];
-
 /// The tools whose `PreToolUse` *is* the question going up.
 ///
 /// Every other tool starting is work, but these two do nothing except put a prompt in front of
@@ -176,12 +184,20 @@ pub const IDLE_NOTIFICATIONS: &[&str] = &["agent_completed"];
 /// - so a tool named here needs no special case on the way out.
 pub const WAITING_TOOLS: &[&str] = &["AskUserQuestion", "ExitPlanMode"];
 
-/// The permission modes that answer *every* permission prompt without a person.
+/// The permission modes that answer a permission prompt without a person.
 ///
-/// A permission prompt reported under one of these has nobody to interrupt: either the mode
-/// decided already, or the prompt that fired is one the user has said in advance they do not
-/// want to see. The state is still recorded - it is what the agent said - but see
+/// A permission prompt reported under one of these usually has nobody to interrupt: either the
+/// mode decided already, or the prompt that fired is one the user has said in advance they do
+/// not want to see. The state is still recorded - it is what the agent said - but see
 /// [`waiting_needs_a_person`].
+///
+/// `bypassPermissions` and `dontAsk` do answer *every* one: Claude Code resolves them to a
+/// blanket allow and a blanket deny. `auto` resolves to a classifier, which clears what it
+/// judges safe and puts the rest in front of the user exactly as `default` would - so a wait
+/// under it is silenced here on the odds, not on a guarantee. What recovers the ones the
+/// classifier refused is the backstop: the `Notification` six seconds later, which by its own
+/// existence proves nothing answered the prompt. The daemon holds the suppressed edge open for
+/// it rather than counting the wait as already announced.
 ///
 /// `acceptEdits` is deliberately not here: it answers one kind of prompt rather than all of
 /// them, which is what [`AUTO_ACCEPTED_EDIT_TOOLS`] names.
@@ -202,6 +218,33 @@ pub const HOOK_DETAIL_CHARS: usize = 24;
 /// because its home is a toast, which has two lines and fifty columns, rather than one cell of
 /// a sidebar row.
 pub const WAITING_DETAIL_CHARS: usize = 80;
+
+/// The largest hook event handed to the plugins exactly as it arrived.
+///
+/// A hook event is broadcast to *every* running plugin, which means a copy into each of some
+/// fifteen wasm memories, twice per tool call, inside a hook with a five-second timeout. Two
+/// fields have no bound at all in Claude Code's own schema — `tool_input`, so a `Write` of a
+/// two-megabyte file, and `tool_response`, so a `Read` of anything — and neither is worth that
+/// much of a turn. Over this, the event goes out through [`HookEvent::pruned`] instead of
+/// verbatim; under it, nothing changes, which is nearly always.
+pub const HOOK_BROADCAST_MAX_BYTES: usize = 64 * 1024;
+
+/// The longest any one string in a pruned event's `tool_input` keeps.
+///
+/// Comfortably above [`WAITING_DETAIL_CHARS`], which is the most any reader here takes from
+/// one of them, so a prune costs nothing that is actually read.
+const PRUNED_STRING_CHARS: usize = 256;
+
+/// What one pruned event's `tool_input` may spend in total, over which the remaining keys and
+/// elements are dropped. Only a pathological object — thousands of small keys — reaches it,
+/// because every string is cut first.
+const PRUNED_INPUT_BUDGET: usize = 4 * 1024;
+
+/// The longest prose a pruned event keeps, per field. `last_assistant_message` is the one
+/// genuinely used at length — it is what a turn summary is made of — and its reader cuts it
+/// again to six thousand characters, so this is set above that: a prune takes nothing the
+/// summary was going to keep.
+const PRUNED_MESSAGE_CHARS: usize = 8 * 1024;
 
 /// A Claude Code hook event, as its JSON arrives.
 ///
@@ -275,6 +318,89 @@ pub struct HookEvent {
     pub agent_id: Option<String>,
 }
 
+impl HookEvent {
+    /// This event, cut to a size worth broadcasting. See [`HOOK_BROADCAST_MAX_BYTES`].
+    ///
+    /// Every field survives — what is cut is how much of each one does. Strings first and a
+    /// budget second, deliberately in that order: the keys a reader actually looks at inside
+    /// `tool_input` are `command`, `file_path` and `questions[0]`, none of which is long, so
+    /// cutting each string to [`PRUNED_STRING_CHARS`] leaves them all intact whatever order
+    /// they arrived in. The budget only ever bites on an object with more keys than a tool
+    /// call has any business carrying, and it drops the tail rather than the head.
+    ///
+    /// Anything Claude Code sends that this struct does not model — `tool_response` above
+    /// all — is gone, because a pruned event travels re-serialized from the fields here.
+    /// Nothing in this tree reads those: every reader parses this same struct.
+    pub fn pruned(&self) -> HookEvent {
+        let cut = |text: &Option<String>, chars: usize| {
+            text.as_deref().map(|text| truncate_chars(text, chars))
+        };
+        HookEvent {
+            hook_event_name: self.hook_event_name.clone(),
+            session_id: self.session_id.clone(),
+            source: self.source.clone(),
+            cwd: self.cwd.clone(),
+            notification_type: self.notification_type.clone(),
+            tool_name: self.tool_name.clone(),
+            tool_input: self.tool_input.as_ref().map(|input| {
+                let mut budget = PRUNED_INPUT_BUDGET;
+                prune_value(input, &mut budget)
+            }),
+            last_assistant_message: cut(&self.last_assistant_message, PRUNED_MESSAGE_CHARS),
+            message: cut(&self.message, PRUNED_MESSAGE_CHARS),
+            permission_mode: self.permission_mode.clone(),
+            prompt: cut(&self.prompt, PRUNED_MESSAGE_CHARS),
+            agent_id: self.agent_id.clone(),
+        }
+    }
+}
+
+/// The first `chars` characters of `text`, on a character boundary.
+fn truncate_chars(text: &str, chars: usize) -> String {
+    match text.char_indices().nth(chars) {
+        Some((end, _)) => text[..end].to_owned(),
+        None => text.to_owned(),
+    }
+}
+
+/// One `tool_input` value with every string cut and `budget` bytes to spend on the rest.
+///
+/// Recursion is bounded by the budget rather than by a depth count: a nested value costs its
+/// parent's budget, so a deep structure runs out the same way a wide one does.
+fn prune_value(value: &serde_json::Value, budget: &mut usize) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::String(text) => {
+            let cut = truncate_chars(text, PRUNED_STRING_CHARS);
+            *budget = budget.saturating_sub(cut.len());
+            Value::String(cut)
+        },
+        Value::Array(items) => {
+            let mut kept = Vec::new();
+            for item in items {
+                if *budget == 0 {
+                    break;
+                }
+                kept.push(prune_value(item, budget));
+            }
+            Value::Array(kept)
+        },
+        Value::Object(fields) => {
+            let mut kept = serde_json::Map::new();
+            for (key, field) in fields {
+                if *budget == 0 {
+                    break;
+                }
+                *budget = budget.saturating_sub(key.len());
+                kept.insert(key.clone(), prune_value(field, budget));
+            }
+            Value::Object(kept)
+        },
+        // A number, a bool or a null is already as small as it goes.
+        scalar => scalar.clone(),
+    }
+}
+
 /// The state one hook event names, or `None` for an event that says nothing about the agent's
 /// state — an unrecognised name, or a notification that is not about the user being waited on.
 ///
@@ -312,9 +438,10 @@ pub fn hook_state(event: &HookEvent) -> Option<AgentState> {
         "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
         | "PermissionDenied" | "ElicitationResult" | "SubagentStart" | "SubagentStop"
         | "PreCompact" | "PostCompact" => Some(AgentState::Busy),
+        // Waiting or nothing, never idle: see [`WAITING_NOTIFICATIONS`] for why no
+        // notification is read as the turn ending, `agent_completed` included.
         "Notification" => match event.notification_type.as_deref() {
             Some(kind) if WAITING_NOTIFICATIONS.contains(&kind) => Some(AgentState::Waiting),
-            Some(kind) if IDLE_NOTIFICATIONS.contains(&kind) => Some(AgentState::Idle),
             _ => None,
         },
         _ => None,
@@ -530,7 +657,13 @@ pub fn hook_outcome(kind: &str, event: &HookEvent) -> HookOutcome {
             state,
             source: AgentSource::Reported,
             detail: hook_detail(event),
-            waiting_on: waiting_detail(event),
+            // Only on a wait, the way the plugin-side feed clears it on every phase that is
+            // not one. A record that says `idle` and carries a question is a record that
+            // disagrees with itself, and the row, the toast and `agent_list` all read both
+            // halves of it.
+            waiting_on: (state == AgentState::Waiting)
+                .then(|| waiting_detail(event))
+                .flatten(),
             cwd: event.cwd.clone(),
             session_id: (!event.session_id.is_empty()).then(|| event.session_id.clone()),
         }),
@@ -651,10 +784,11 @@ mod tests {
             assert_eq!(hook_state(&event(busy)), Some(AgentState::Busy), "{busy}");
         }
         assert_eq!(hook_state(&event("Elicitation")), Some(AgentState::Waiting));
-        assert_eq!(
-            hook_state(&notification("agent_completed")),
-            Some(AgentState::Idle)
-        );
+        // The one notification that reads like a turn ending and is not: Claude Code raises
+        // it for a *background* job this session started, from the same payload the
+        // foreground would use. A pane whose agent launched one and worked on would be
+        // marked idle mid-turn by it. `Stop` is the turn ending, and says so earlier.
+        assert_eq!(hook_state(&notification("agent_completed")), None);
 
         // The two tools that *are* the question. Every other tool starting is work.
         let tool = |name: &str, tool: &str| HookEvent {
@@ -882,6 +1016,115 @@ mod tests {
             },
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A record that says `idle` and carries a question is a record that disagrees with
+    /// itself, and every reader of it — the row, the toast, `agent_list` — reads both halves.
+    /// The only source of a wait's text is [`waiting_detail`], which will answer for an
+    /// `Elicitation` or a `Notification` whatever the state around it turned out to be.
+    #[test]
+    fn only_a_wait_carries_what_it_is_waiting_on() {
+        let elicitation = HookEvent {
+            message: Some("Which account?".to_owned()),
+            ..event("Elicitation")
+        };
+        match hook_outcome("claude", &elicitation) {
+            HookOutcome::Reported(info) => {
+                assert_eq!(info.state, AgentState::Waiting);
+                assert_eq!(info.waiting_on.as_deref(), Some("Which account?"));
+            },
+            other => panic!("{other:?}"),
+        }
+        // The same text on an event that is not a wait. `ElicitationResult` is the answer
+        // coming back, which is the agent working again.
+        let answered = HookEvent {
+            message: Some("Which account?".to_owned()),
+            ..event("ElicitationResult")
+        };
+        match hook_outcome("claude", &answered) {
+            HookOutcome::Reported(info) => {
+                assert_eq!(info.state, AgentState::Busy);
+                assert_eq!(info.waiting_on, None);
+            },
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The broadcast is copied into every running plugin's memory, twice per tool call,
+    /// inside a hook with five seconds to live — so a `Write` of a large file must not
+    /// travel whole. What a reader takes from `tool_input` is short and must survive.
+    #[test]
+    fn a_pruned_event_keeps_what_is_read_and_drops_the_rest() {
+        let huge = "x".repeat(2 * 1024 * 1024);
+        let write = HookEvent {
+            tool_name: Some("Write".to_owned()),
+            tool_input: Some(serde_json::json!({
+                // Deliberately first, the way Claude Code's own schema orders it: cutting
+                // every string rather than stopping at a byte count is what keeps the read
+                // key alive behind the enormous one.
+                "content": huge,
+                "file_path": "/work/src/main.rs",
+            })),
+            last_assistant_message: Some(huge.clone()),
+            prompt: Some(huge.clone()),
+            ..event("PreToolUse")
+        };
+
+        let pruned = write.pruned();
+        let json = serde_json::to_string(&pruned).expect("a pruned event serializes");
+        assert!(
+            json.len() < HOOK_BROADCAST_MAX_BYTES,
+            "a pruned event fits the cap, got {}",
+            json.len()
+        );
+        // Every reading still works off the pruned event, which is the whole point of
+        // cutting the strings rather than dropping the fields.
+        assert_eq!(hook_detail(&pruned).as_deref(), Some("Write main.rs"));
+        assert_eq!(hook_state(&pruned), hook_state(&write));
+        assert!(pruned
+            .last_assistant_message
+            .is_some_and(|message| message.chars().count() == PRUNED_MESSAGE_CHARS));
+
+        // The other reader of `tool_input`, whose question is nested two levels down.
+        let asking = HookEvent {
+            tool_name: Some("AskUserQuestion".to_owned()),
+            tool_input: Some(serde_json::json!({
+                "questions": [{ "question": "Which library?", "header": "Library" }],
+                "context": huge,
+            })),
+            ..event("PreToolUse")
+        };
+        assert_eq!(
+            waiting_detail(&asking.pruned()).as_deref(),
+            Some("Which library?")
+        );
+
+        // An event already inside the cap travels unchanged, which is nearly all of them —
+        // `hook_report_actions` does not even call this for one.
+        let small = HookEvent {
+            tool_name: Some("Bash".to_owned()),
+            tool_input: Some(serde_json::json!({ "command": "cargo test" })),
+            ..event("PreToolUse")
+        };
+        assert_eq!(small.pruned(), small);
+    }
+
+    /// The budget behind the per-string cut, for the shape the cut alone cannot bound: an
+    /// object with more keys than a tool call has any business carrying. What it promises is
+    /// a size, not any particular key — the keys a reader wants are covered by the cut above.
+    #[test]
+    fn a_prune_bounds_an_object_no_string_cut_could() {
+        let mut input = serde_json::Map::new();
+        for i in 0..8192 {
+            input.insert(format!("k{i:04}"), serde_json::json!("x".repeat(512)));
+        }
+        let event = HookEvent {
+            tool_name: Some("mcp__something__enormous".to_owned()),
+            tool_input: Some(serde_json::Value::Object(input)),
+            ..event("PreToolUse")
+        };
+        let json = serde_json::to_string(&event.pruned()).expect("a pruned event serializes");
+        assert!(json.len() < HOOK_BROADCAST_MAX_BYTES, "{}", json.len());
     }
 
     #[test]

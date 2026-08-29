@@ -450,10 +450,17 @@ impl HookFeed {
         if agent.source != AgentSource::Reported {
             return None;
         }
+        let phase = HookPhase::from_state(agent.state)?;
         Some(HookFeed {
-            phase: HookPhase::from_state(agent.state)?,
+            phase,
             detail: agent.detail.clone(),
-            waiting_on: agent.waiting_on.clone(),
+            // Only on a wait, which is what the pipe road does for itself: a feed built from
+            // an event clears this on every phase that is not one. Without the same rule here
+            // a pane read off the manifest could show a question beside a working agent, and
+            // `list_json` would hand a model `"state":"idle"` and a `waiting_on` in one row.
+            waiting_on: (phase == HookPhase::Waiting)
+                .then(|| agent.waiting_on.clone())
+                .flatten(),
             session_id: agent.session_id.clone().unwrap_or_default(),
             cwd: agent.cwd.clone(),
         })
@@ -1640,6 +1647,32 @@ mod tests {
             HookFeed::from_agent(&record).is_none(),
             "a person's word about the kind is not a hook feed"
         );
+    }
+
+    /// A feed read off a record clears `waiting_on` on every phase that is not a wait, the
+    /// way a feed built from events does. A row that says `idle` beside a question, or a
+    /// `list_json` item carrying `"state":"idle"` and a `waiting_on` together, is a record
+    /// disagreeing with itself in front of whoever reads it.
+    #[test]
+    fn a_feed_off_a_record_only_waits_on_something_while_it_is_waiting() {
+        let record = |state, waiting_on: Option<&str>| AgentInfo {
+            kind: "claude".to_owned(),
+            state,
+            source: AgentSource::Reported,
+            detail: None,
+            waiting_on: waiting_on.map(str::to_owned),
+            cwd: None,
+            session_id: None,
+        };
+
+        let waiting = HookFeed::from_agent(&record(AgentState::Waiting, Some("Bash rm")))
+            .expect("a wait is a feed");
+        assert_eq!(waiting.waiting_on.as_deref(), Some("Bash rm"));
+
+        let idle = HookFeed::from_agent(&record(AgentState::Idle, Some("Bash rm")))
+            .expect("an idle agent is a feed too");
+        assert_eq!(idle.phase, HookPhase::Idle);
+        assert_eq!(idle.waiting_on, None);
     }
 
     fn pane(pane_id: u32, title: &str, command: Option<&str>) -> AgentPane {
@@ -2858,13 +2891,11 @@ mod tests {
             );
         }
         assert_eq!(hook_phase(&event("Elicitation")), Some(HookPhase::Waiting));
-        // A background session that finished is idle, not blocked. Named in its own
-        // list rather than added to the waiting one, so the allowlist stance holds on
-        // both sides: a kind that means neither goes on saying nothing.
-        assert_eq!(
-            hook_phase(&notification("agent_completed")),
-            Some(HookPhase::Idle)
-        );
+        // A *background* session that finished, which is the pane's agent still working —
+        // Claude Code raises this one from its background-job monitor, on the foreground
+        // session's payload. The pane's own turn ending is `Stop`, which arrives earlier and
+        // carries the words to describe it. See `agent::WAITING_NOTIFICATIONS`.
+        assert_eq!(hook_phase(&notification("agent_completed")), None);
     }
 
     /// One `PermissionRequest` for a tool, under a mode.

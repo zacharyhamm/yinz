@@ -808,8 +808,9 @@ fn kdl_string(text: &str) -> String {
 /// Both, from the one process a hook may spend. A record is deliberately smaller than an event
 /// — the agent's own final message on a `Stop`, the prompt behind it on a `UserPromptSubmit`,
 /// the permission mode on every one of them, none of which belong on a manifest broadcast to
-/// every plugin on every pane update — so the event goes out whole beside it, and whoever wants
-/// more than a record holds reads it there.
+/// every plugin on every pane update — so the event goes out beside it, whole up to
+/// `agent::HOOK_BROADCAST_MAX_BYTES` and pruned above that, and whoever wants more than a
+/// record holds reads it there.
 fn hook_report_actions(
     kind: &str,
     pane_id: PaneId,
@@ -830,12 +831,21 @@ fn hook_report_actions(
         // because "says nothing about the state" is not "says nothing".
         crate::agent::HookOutcome::Nothing => {},
     }
+    // Whole, unless whole is unreasonable. `tool_input` and `tool_response` have no bound in
+    // Claude Code's schema, and this payload is copied into every running plugin's memory —
+    // see `agent::HOOK_BROADCAST_MAX_BYTES`. A pruned event is still an event; a two-megabyte
+    // one is a stalled turn.
+    let payload = if json.len() <= crate::agent::HOOK_BROADCAST_MAX_BYTES {
+        json
+    } else {
+        serde_json::to_string(&event.pruned()).unwrap_or(json)
+    };
     // A `KeybindPipe` rather than a `CliPipe`: it broadcasts to every running plugin without a
     // pipe id, so nothing waits to be unblocked and a hook cannot stall the turn it fired in.
     // The pane travels as an argument because only a `CliPipe` carries `PipeMessage::pane_id`.
     actions.push(Action::KeybindPipe {
         name: Some(crate::agent::AGENT_HOOK_PIPE.to_owned()),
-        payload: Some(json),
+        payload: Some(payload),
         // The bare number, which is what a reader parses; a hook never fires in a plugin pane,
         // so there is nothing to say for one.
         args: match pane_id {
@@ -4023,6 +4033,49 @@ mod tests {
         let actions = hook(json);
         assert_eq!(actions.len(), 1, "nothing to report is nothing to set");
         broadcast(&actions, json);
+    }
+
+    /// …but not at any size. This payload is copied into every running plugin's memory,
+    /// twice per tool call, inside a hook with five seconds to live, and `tool_input` and
+    /// `tool_response` have no bound at all in Claude Code's schema. Over the cap the event
+    /// goes out pruned — still an event, and still carrying everything a reader takes.
+    #[test]
+    fn a_hook_event_too_big_to_hand_round_is_cut_rather_than_dropped() {
+        let json = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/work/src/main.rs",
+                "content": "x".repeat(2 * 1024 * 1024),
+            },
+            // Not on `HookEvent` at all, so no reader here has ever seen it.
+            "tool_response": "y".repeat(2 * 1024 * 1024),
+        })
+        .to_string();
+        assert!(json.len() > crate::agent::HOOK_BROADCAST_MAX_BYTES);
+
+        let event: crate::agent::HookEvent = serde_json::from_str(&json).expect("parsed");
+        let actions = hook_report_actions("claude", PaneId::Terminal(7), &event, json);
+        let Some(Action::KeybindPipe {
+            payload: Some(payload),
+            ..
+        }) = actions.last()
+        else {
+            panic!("{actions:?}");
+        };
+        assert!(
+            payload.len() <= crate::agent::HOOK_BROADCAST_MAX_BYTES,
+            "the broadcast is bounded, got {}",
+            payload.len()
+        );
+        let arrived: crate::agent::HookEvent =
+            serde_json::from_str(payload).expect("a pruned event is still an event");
+        assert_eq!(
+            crate::agent::hook_detail(&arrived).as_deref(),
+            Some("Write main.rs"),
+            "and still says what the row draws"
+        );
     }
 
     /// `agent-report` is what an agent's hooks call: a state names the record, `--clear` ends
