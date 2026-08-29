@@ -152,9 +152,12 @@ the idle summary no longer comes from the screen at all:
 - **The screen stops asking about these panes.** Two answers per turn, one of them a
   guess, and whichever landed last would win.
 - **Staleness is the opposite rule.** A screen summary is void the moment the screen
-  moves. A turn summary is void when the session is replaced or the agent is already
-  back at work — a `cargo build` printing throughout the round trip does not make the
-  sentence about it wrong.
+  moves. A turn summary is void when the session is replaced, or when any later work
+  begins — a `cargo build` printing throughout the round trip does not make the sentence
+  about it wrong, but the next `busy` event does, and cancels the request where it
+  arrives rather than testing the phase when the answer lands. A short turn can start
+  *and finish* inside one round trip, and checking only the phase would find that pane
+  idle again and take the stale answer for a current one.
 - **With no API key it still works.** `local_summary` takes the message's opening
   sentences, drops fenced blocks and markdown markers, and gives no title — so the pane
   keeps its name. Before the feed there was nothing to fall back *to*: a screen tail is
@@ -180,9 +183,14 @@ Three rules, each the same one the summary toast already keeps:
   interrupt twice. Nothing is lost: between two genuine questions the agent *works*, and
   that `busy` is what re-arms the edge. For the same reason a `Notification` never
   overwrites a `waiting_on` that is already set — it fills a gap, it does not replace.
-- **Not under an unattended permission mode.** `acceptEdits`, `bypassPermissions`,
-  `dontAsk` and `auto` answer prompts without a person. The row still draws the wait —
-  it is what the agent said — but there is nobody to interrupt.
+- **Not for a prompt the mode answers itself** — and only for those. A mode answers a
+  *permission prompt*: `bypassPermissions`, `dontAsk` and `auto` answer every one, and
+  `acceptEdits` answers only the file-editing tools, so a `Bash` prompt under it blocks
+  exactly as it would under `default` and still interrupts. An `AskUserQuestion`, an
+  `ExitPlanMode`, an MCP `Elicitation` and every waiting `Notification` are never
+  suppressed under any mode: the first three address a person directly, and the last
+  fires only once its prompt has gone six seconds unanswered, which is itself the proof
+  nothing answered it. The row draws the wait either way — it is what the agent said.
 
 ## When a feed ends
 
