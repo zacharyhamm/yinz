@@ -202,11 +202,12 @@ Read `docs/ARCHITECTURE.md` before changing server internals, and
 - Changing anything under `zellij-utils/assets/` (plugins, protobufs): regenerate with
   `cargo x proto` / `cargo x assets`, and CI's `assets --check` must pass.
 
-## Self-programming roadmap
+## Self-programming
 
-`docs/SELF_PROGRAMMING_ROADMAP.md` is the plan for making this fork drive and rewrite itself
-through coding agents, with a status per item and a handoff section for the next phase. Read it
-before touching agent records, `zellij events`, `config.d`, or plugin authoring.
+`docs/SELF_PROGRAMMING.md` summarises the workstream that made this fork drive and rewrite itself
+through coding agents - the goal, what landed where, proto numbers in use, and the plugin-loading
+lessons. Read it before touching agent records, `zellij events`, `config.d`, hooks or plugin
+authoring.
 
 ## Agent state from Claude Code hooks
 

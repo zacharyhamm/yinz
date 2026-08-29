@@ -1,5 +1,5 @@
 > **Status: parked.** This design is implemented through milestone 6 on the `assembly-lines` branch
-> (no agent step yet) and is not on `main`. See `docs/SELF_PROGRAMMING_ROADMAP.md` for why it is
+> (no agent step yet) and is not on `main`. See `docs/SELF_PROGRAMMING.md` for why it is
 > parked and what it would build on when picked up.
 
 # Assembly Lines — deterministic workflows with decision gates
