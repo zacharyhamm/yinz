@@ -675,7 +675,28 @@ empty:
 is loaded the first time its point fires and stays loaded; each firing is a `hook` event carrying
 the point's name and a string-to-string payload. A firing that arrives while that first load is
 still under way is held for the loading instance and delivered once it is up, in order - two
-points firing within a few milliseconds of each other reach one plugin, not two:
+points firing within a few milliseconds of each other reach one plugin, not two.
+
+**Quickstart.** A headless hook ships with zellij, `zellij:agent-policy`
+(`zellij-utils/assets/plugins/agent-policy.lua` in the source tree). It logs every firing it
+receives and raises a notification when an agent stops for a question. Nothing binds it by
+default. To see the shape work, from a shell in the session:
+
+```sh
+zellij action set-hook agent_waiting zellij:agent-policy --write
+zellij action set-hook agent_start zellij:agent-policy --write
+zellij run -- claude          # or type `claude` in a pane whose hooks are installed
+zellij plugins log agent-policy
+```
+
+The first `agent_start` loads the plugin and is delivered to it; each line it logs reads
+`[lua:agent-policy] hook agent_start agent_cwd=... agent_kind=claude ...`, and the next
+permission prompt in that pane raises a toast that focuses the pane when clicked. To make it
+yours, copy the file into your plugin folder as a plugin of its own - `plugin_write name=my-policy`
+through hocus, or `zellij plugins write my-policy < agent-policy.lua` - add
+`zellij.request_permission { "change_application_state" }` to its `load` (the shipped copy is a
+builtin and needs no grant; yours is not), and bind `file:my-policy.lua` instead. The whole plugin
+is:
 
 ```lua
 local zellij = require("zellij")
@@ -683,14 +704,17 @@ local M = {}
 
 function M.load(config)
   zellij.subscribe { "hook" }
-  zellij.request_permission { "change_application_state", "run_commands" }
+  zellij.request_permission { "change_application_state" }   -- for a file: copy
 end
 
 zellij.on("hook", function(e)
+  zellij.log("hook " .. e.point .. " pane=" .. (e.payload.agent_pane_id or e.payload.exit_pane_id or "?"))
   if e.point == "agent_waiting" then
-    zellij.log("pane " .. e.payload.agent_pane_id .. " is waiting: " .. (e.payload.agent_detail or ""))
-  elseif e.point == "pane_exit" and e.payload.exit_code ~= "0" then
-    zellij.log(e.payload.exit_command .. " failed in pane " .. e.payload.exit_pane_id)
+    zellij.notify {
+      message = (e.payload.agent_kind or "agent") .. " in pane " .. e.payload.agent_pane_id
+        .. ": " .. (e.payload.agent_detail or "is waiting for you"),
+      pane_id = zellij.terminal_pane(tonumber(e.payload.agent_pane_id)),
+    }
   end
 end)
 

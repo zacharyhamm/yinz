@@ -555,13 +555,21 @@ mod tests {
     #[test]
     fn a_builtin_lua_plugin_resolves_to_the_lua_runtime() {
         // A builtin's `path` is the bare tag with no extension, so the extension rule that
-        // identifies every other Lua plugin cannot see this one.
-        let plugin = builtin_plugin("agent-exit");
-        assert_eq!(plugin.runtime(), super::PluginRuntime::Lua);
-        assert!(
-            plugin.is_builtin(),
-            "so that it bypasses permission prompts"
-        );
+        // identifies every other Lua plugin cannot see this one. Every entry in the table,
+        // so that a shipped plugin whose name is misspelt in the table is caught here rather
+        // than by a user binding it.
+        for (name, _) in zellij_utils_consts_builtin_lua_plugins() {
+            let plugin = builtin_plugin(name);
+            assert_eq!(plugin.runtime(), super::PluginRuntime::Lua, "{name}");
+            assert!(
+                plugin.is_builtin(),
+                "{name}: so that it bypasses permission prompts"
+            );
+        }
+    }
+
+    fn zellij_utils_consts_builtin_lua_plugins() -> &'static [(&'static str, &'static str)] {
+        crate::consts::BUILTIN_LUA_PLUGINS
     }
 
     #[test]
