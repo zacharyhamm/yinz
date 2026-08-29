@@ -214,22 +214,32 @@ pub enum HocusHooks {
     /// Idempotent: running it again rewrites the script and replaces the entries it
     /// put there before, leaving everything else in the file alone.
     Install {
-        /// Install into this project's `.claude/settings.json` instead of
-        /// `~/.claude/settings.json`.
+        /// Install into this project's `.claude/settings.local.json` (not committed)
+        /// instead of `~/.claude/settings.json`.
         ///
         /// Claude Code merges hooks across both rather than one overriding the
-        /// other, so an install in each fires every hook twice.
+        /// other, so an install in each fires every hook twice. An older install in
+        /// the project's committed `settings.json` is moved out.
         #[clap(long)]
         project: bool,
+        /// The project folder to install for, instead of the current one. Implies
+        /// `--project`.
+        #[clap(long, value_name = "DIR")]
+        project_dir: Option<PathBuf>,
         /// Print what would be written, and write nothing.
         #[clap(long)]
         dry_run: bool,
     },
     /// Remove the hook entries and the script.
     Uninstall {
-        /// Uninstall from this project's `.claude/settings.json`.
+        /// Uninstall from this project's `.claude/settings.local.json` (and its
+        /// committed `settings.json`, if an older install is still in it).
         #[clap(long)]
         project: bool,
+        /// The project folder to uninstall from, instead of the current one. Implies
+        /// `--project`.
+        #[clap(long, value_name = "DIR")]
+        project_dir: Option<PathBuf>,
     },
     /// Say what is wired up, and what would stop it working.
     Status,

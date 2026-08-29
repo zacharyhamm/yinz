@@ -16,9 +16,15 @@ zellij hocus hooks status      # what is wired, and what would stop it working
 zellij hocus hooks uninstall
 ```
 
-`--project` writes to `<cwd>/.claude/settings.json` instead. Do **not** install into
-both: Claude Code merges hooks across settings files rather than one overriding the
-other, so every event would fire twice. `status` says so if it sees it.
+`--project` writes to `<cwd>/.claude/settings.local.json` instead - the file Claude Code
+reads beside a project's committed `settings.json` and keeps out of git, so the install (which
+carries this machine's path to the binary) never lands in the project's history.
+`--project-dir <dir>` names the folder, for a plugin or a script installing for a project it is
+not sitting in. Do **not** install into both the user's file and a project's: Claude Code
+merges hooks across settings files rather than one overriding the other, so every event
+would fire twice. `status` says so if it sees it. An older zellij wrote a project install into
+the committed `settings.json`; `install --project` moves those entries out, and `status` lists
+that file as `legacy:` while they are still there.
 
 ## What is wired
 

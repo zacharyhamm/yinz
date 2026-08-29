@@ -405,9 +405,27 @@ fn cli_hocus_hooks_parses_its_three_subcommands() {
         install.command,
         Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
             project: false,
+            project_dir: None,
             dry_run: false
         })))
     ));
+
+    let project_dir = try_parse_cli([
+        "zellij",
+        "hocus",
+        "hooks",
+        "install",
+        "--project-dir",
+        "/work/app",
+    ])
+    .expect("parsed");
+    match project_dir.command {
+        Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
+            project_dir: Some(dir),
+            ..
+        }))) => assert_eq!(dir, std::path::PathBuf::from("/work/app")),
+        other => panic!("expected an install with a project dir, got {other:?}"),
+    }
 
     let project =
         try_parse_cli(["zellij", "hocus", "hooks", "install", "--project"]).expect("parsed");
