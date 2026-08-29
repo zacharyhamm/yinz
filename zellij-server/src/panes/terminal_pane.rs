@@ -1550,6 +1550,7 @@ fn agent_from_run(invoked_with: Option<&Run>) -> Option<AgentInfo> {
         state: AgentState::Busy,
         source: AgentSource::Spawned,
         detail: None,
+        waiting_on: None,
         cwd: run_command
             .cwd
             .as_ref()
