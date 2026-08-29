@@ -8,7 +8,7 @@ use crate::os_input_output_unix::{
 };
 use std::io::prelude::*;
 use std::io::IsTerminal;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::{io, thread, time};
 use zellij_utils::{
@@ -133,6 +133,37 @@ pub trait StdioAccess {
     }
 }
 
+/// How long a client waits for the server's socket to appear before giving up.
+///
+/// The wait is normally a few milliseconds — the server has usually just been
+/// spawned by this same client and only has to bind. The margin is for a loaded
+/// machine starting a debug build, not for a server that is in trouble: one that
+/// has not bound in this long is not going to.
+const CONNECT_TO_SERVER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const CONNECT_TO_SERVER_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// The server socket never became connectable.
+#[derive(Debug)]
+pub struct ConnectToServerError {
+    pub path: PathBuf,
+    pub waited: std::time::Duration,
+    pub last_error: io::Error,
+}
+
+impl std::fmt::Display for ConnectToServerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "could not connect to the zellij server at {} after {:?}: {}",
+            self.path.display(),
+            self.waited,
+            self.last_error,
+        )
+    }
+}
+
+impl std::error::Error for ConnectToServerError {}
+
 /// The IPC link to the session's server process.
 pub trait ServerConnection {
     /// Sends a message to the server.
@@ -145,7 +176,12 @@ pub trait ServerConnection {
     /// and must not be retried, the second may be.
     fn recv_from_server(&self) -> IpcRecv<ServerToClientMsg>;
     /// Establish a connection with the server socket.
-    fn connect_to_server(&self, path: &Path);
+    ///
+    /// Fails rather than waiting forever: the server this is waiting on may
+    /// never arrive (it failed to start, or it is wedged and never binds), and
+    /// a client that spins on that gives the user a hang with nothing on screen
+    /// to explain it.
+    fn connect_to_server(&self, path: &Path) -> Result<(), ConnectToServerError>;
     fn update_session_name(&mut self, new_session_name: String);
     fn spawn_server(&self, socket_path: &Path, debug: bool) -> Result<(), std::io::Error> {
         crate::spawn_server(socket_path, debug)
@@ -303,22 +339,27 @@ impl ServerConnection for ClientOsInputOutput {
             .unwrap()
             .recv_server_msg()
     }
-    fn connect_to_server(&self, path: &Path) {
-        let socket;
-        loop {
+    fn connect_to_server(&self, path: &Path) -> Result<(), ConnectToServerError> {
+        let deadline = std::time::Instant::now() + CONNECT_TO_SERVER_TIMEOUT;
+        let socket = loop {
             match zellij_utils::consts::ipc_connect(path) {
-                Ok(sock) => {
-                    socket = sock;
-                    break;
-                },
-                Err(_) => {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                Ok(sock) => break sock,
+                Err(last_error) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(ConnectToServerError {
+                            path: path.to_path_buf(),
+                            waited: CONNECT_TO_SERVER_TIMEOUT,
+                            last_error,
+                        });
+                    }
+                    std::thread::sleep(CONNECT_TO_SERVER_RETRY_INTERVAL);
                 },
             }
-        }
+        };
         let (sender, receiver) = setup_ipc(socket, path);
         *self.send_instructions_to_server.lock().unwrap() = Some(sender);
         *self.receive_instructions_from_server.lock().unwrap() = Some(receiver);
+        Ok(())
     }
 }
 

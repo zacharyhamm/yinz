@@ -2375,7 +2375,7 @@ macro_rules! send_to_screen_or_retry_queue {
 pub(crate) fn route_thread_main(
     session_data: Arc<RwLock<Option<SessionMetaData>>>,
     session_state: Arc<RwLock<SessionState>>,
-    os_input: Box<dyn ServerOsApi>,
+    mut os_input: Box<dyn ServerOsApi>,
     to_server: SenderWithContext<ServerInstruction>,
     mut receiver: IpcReceiverWithContext<ClientToServerMsg>,
     client_id: ClientId,
@@ -2389,6 +2389,38 @@ pub(crate) fn route_thread_main(
             IpcRecv::Msg(instruction, err_ctx) => {
                 consecutive_malformed_messages_received = 0;
                 err_ctx.update_thread_ctx();
+
+                // A liveness probe is answered here, ahead of everything else,
+                // and never leaves this thread.
+                //
+                // The sender is `assert_socket` in `zellij-utils`'s
+                // `sessions.rs`, and its whole job is to tell a wedged server
+                // apart from a dead one. Handing it to the main loop would make
+                // it ask a stalled loop whether it is stalled: the reply would
+                // queue behind whatever is stuck, and since every enumeration
+                // path funnels through that probe, one wedged session would hang
+                // `zellij`, `zellij attach` and `zellij ls` for every other
+                // session on the machine. Answering here also keeps it ahead of
+                // the `session_data` read below, which is the lock a server
+                // tearing a session down is holding. The reply is a constant, so
+                // nothing in the session is needed to produce it.
+                //
+                // Cleanup is deliberately the light one rather than
+                // `ServerInstruction::RemoveClient`: a probe never attached, so
+                // it has no screen or plugin state to tear down, and the heavy
+                // path would wake the screen and plugin threads of every live
+                // session on every `zellij ls`.
+                if matches!(instruction, ClientToServerMsg::ConnStatus) {
+                    let _ = os_input.send_to_client(client_id, ServerToClientMsg::Connected);
+                    crate::remove_client_and_flush_forwards(
+                        client_id,
+                        &mut os_input,
+                        &session_state,
+                        &session_data,
+                    );
+                    return Ok(());
+                }
+
                 let mut handle_instruction = |instruction: ClientToServerMsg,
                                               mut retry_queue: Option<
                     &mut VecDeque<ClientToServerMsg>,
@@ -2842,8 +2874,12 @@ pub(crate) fn route_thread_main(
                                 .with_context(err_context)?;
                         },
                         ClientToServerMsg::ConnStatus => {
-                            let _ = to_server.send(ServerInstruction::ConnStatus(client_id));
-                            should_break = true;
+                            // Intercepted before this closure is ever called, so
+                            // that a liveness probe is answered without waiting
+                            // on the `session_data` read above. Kept as an arm
+                            // rather than a catch-all so that a new message can
+                            // still not be forgotten here.
+                            log::error!("ConnStatus reached the router; it is answered earlier");
                         },
                         ClientToServerMsg::DetachSession { client_ids } => {
                             let _ =

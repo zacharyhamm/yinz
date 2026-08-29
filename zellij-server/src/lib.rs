@@ -117,7 +117,6 @@ pub enum ServerInstruction {
         ClientId,
     ),
     AttachWatcherClient(ClientId, Size, bool), // bool -> is_web_client
-    ConnStatus(ClientId),
     Log(Vec<String>, ClientId, Option<NotificationEnd>),
     LogError(Vec<String>, ClientId, Option<NotificationEnd>),
     SwitchSession(ConnectToSession, ClientId, Option<NotificationEnd>),
@@ -610,7 +609,7 @@ impl Drop for SessionMetaData {
 /// away while holding an in-flight forward leaves `Screen`'s
 /// `forward_in_flight` flag stuck — the flag is only released by
 /// replies, and no reply will ever come.
-fn remove_client_and_flush_forwards(
+pub(crate) fn remove_client_and_flush_forwards(
     client_id: ClientId,
     os_input: &mut Box<dyn ServerOsApi>,
     session_state: &Arc<RwLock<SessionState>>,
@@ -1317,7 +1316,19 @@ pub fn start_server_impl(
                         .send_to_plugin(PluginInstruction::RemoveClient(client_id))
                         .unwrap();
                     if !session_state.read().unwrap().active_clients_are_connected() {
-                        *session_data.write().unwrap() = None;
+                        // Take it out under the lock, drop it outside. Dropping
+                        // `SessionMetaData` joins the screen, pty and plugin
+                        // threads, and assigning `None` through the guard would
+                        // run those joins while still holding the write lock —
+                        // parking this loop and, with it, every route thread
+                        // waiting on `session_data.read()`. A session whose
+                        // screen thread is slow to exit would take the whole
+                        // server's client-connection path down with it, which is
+                        // what makes an unrelated `zellij attach` hang.
+                        // The guard is a temporary, so it is released at the
+                        // semicolon — before the `drop` below.
+                        let session_metadata = session_data.write().unwrap().take();
+                        drop(session_metadata);
                         let client_ids_to_cleanup: Vec<ClientId> = session_state
                             .read()
                             .unwrap()
@@ -1528,10 +1539,6 @@ pub fn start_server_impl(
                 }
                 exit_reason = "a fatal error in the server";
                 break;
-            },
-            ServerInstruction::ConnStatus(client_id) => {
-                let _ = os_input.send_to_client(client_id, ServerToClientMsg::Connected);
-                remove_client!(client_id, os_input, session_state, session_data);
             },
             ServerInstruction::Log(
                 lines_to_log,
@@ -1986,7 +1993,13 @@ pub fn start_server_impl(
     // Drop cached session data before exit. This joins the pty thread, which
     // drops `Pty` and closes every pane — which is what terminates each pane's
     // supervisor, via `clear_terminal_id`.
-    *session_data.write().unwrap() = None;
+    //
+    // Taken out under the lock and dropped outside it, for the same reason as
+    // the teardown in the loop above: those joins must not run with the write
+    // lock held, or route threads still blocked on `session_data.read()` stay
+    // blocked for the whole shutdown instead of seeing the socket close.
+    let session_metadata = session_data.write().unwrap().take();
+    drop(session_metadata);
 
     // Belt and braces. A supervisor that outlived the sweep above would be a
     // leaked user process holding a live shell, invisible until `pty-host list`.

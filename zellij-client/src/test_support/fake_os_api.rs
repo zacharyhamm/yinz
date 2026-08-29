@@ -213,7 +213,12 @@ impl ServerConnection for FakeClientOsApi {
             },
         }
     }
-    fn connect_to_server(&self, _path: &Path) {}
+    fn connect_to_server(
+        &self,
+        _path: &Path,
+    ) -> Result<(), crate::os_input_output::ConnectToServerError> {
+        Ok(())
+    }
     fn update_session_name(&mut self, _new_session_name: String) {}
 }
 

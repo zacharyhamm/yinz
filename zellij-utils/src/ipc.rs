@@ -437,10 +437,12 @@ pub enum IpcRecv<T> {
     Eof,
     /// A frame arrived but could not be read as a message. Possibly survivable.
     Malformed,
-    /// Nothing has arrived yet. A real socket blocks instead of saying this, so
-    /// only non-blocking transports and test doubles ever produce it — but they
-    /// do, and without a name for it "nothing yet" gets counted as "garbage",
-    /// which is the conflation this enum exists to stop.
+    /// Nothing has arrived yet. A blocking socket with no deadline never says
+    /// this — it waits — so this comes from non-blocking transports, test
+    /// doubles, and sockets carrying a receive timeout (see `assert_socket` in
+    /// `sessions.rs`, which probes a possibly-wedged server). Without a name for
+    /// it "nothing yet" gets counted as "garbage", which is the conflation this
+    /// enum exists to stop.
     Idle,
 }
 
@@ -475,6 +477,15 @@ fn classify_read_error<T>(e: anyhow::Error, msg_type: &str) -> IpcRecv<T> {
                 | io::ErrorKind::BrokenPipe
         ) {
             return IpcRecv::Eof;
+        }
+        // A receive timeout expiring is not a bad frame: nothing arrived at all,
+        // and the stream is still open and still in sync. Linux reports it as
+        // `WouldBlock`, other platforms as `TimedOut`.
+        if matches!(
+            io_err.kind(),
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+        ) {
+            return IpcRecv::Idle;
         }
     }
     // Previously discarded outright, which is what made a desynchronised stream
