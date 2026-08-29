@@ -82,7 +82,7 @@ impl Screen {
         let has_regular_clients = self
             .connected_clients
             .borrow()
-            .keys()
+            .iter()
             .any(|id| !self.watcher_clients.contains_key(id));
         let has_watchers = !self.watcher_clients.is_empty(); // No change needed
 
@@ -147,7 +147,7 @@ impl Screen {
             let regular_client_ids: Vec<ClientId> = if has_overlays {
                 self.connected_clients
                     .borrow()
-                    .keys()
+                    .iter()
                     .filter(|client_id| !self.watcher_clients.contains_key(client_id))
                     .copied()
                     .collect()

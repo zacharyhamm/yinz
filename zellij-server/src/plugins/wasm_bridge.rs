@@ -2857,11 +2857,9 @@ fn check_event_permission(
         | EventType::AvailableLayoutInfo
         | EventType::PluginConfigurationChanged
         | EventType::HighlightClicked
-        | EventType::SoftKeyboardVisibilityChanged
         | EventType::HintText
         | EventType::ActivePaneScroll
         | EventType::InputReceived => PermissionType::ReadApplicationState,
-        EventType::WebServerStatus => PermissionType::StartWebServer,
         EventType::PluginDataChanged => PermissionType::PluginData,
         // Other plugins' jobs are session state. A plugin's own jobs' Started/Finished events
         // need nothing more than the permission it enqueued with.
@@ -2887,7 +2885,6 @@ fn check_event_permission(
         | EventType::RunCommandResult
         | EventType::WebRequestResult
         | EventType::WebRequestStreamChunk
-        | EventType::FailedToStartWebServer
         | EventType::ListClients
         | EventType::HostFolderChanged
         | EventType::FailedToChangeHostFolder

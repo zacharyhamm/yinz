@@ -15,7 +15,7 @@ import "plugin_data.proto";
 package api.plugin_command;
 
 enum CommandName {
-  reserved 216, 219, 222, 230, 246;
+  reserved 127, 133, 134, 135, 136, 138, 139, 140, 141, 142, 215, 216, 219, 222, 230, 246;
   Subscribe = 0;
   Unsubscribe = 1;
   SetSelectable = 2;
@@ -143,22 +143,12 @@ enum CommandName {
   OpenFileNearPlugin = 124;
   OpenFileFloatingNearPlugin = 125;
   OpenFileInPlaceOfPlugin = 126;
-  StartWebServer = 127;
   GroupAndUngroupPanes = 128;
   HighlightAndUnhighlightPanes = 129;
   CloseMultiplePanes = 130;
   FloatMultiplePanes = 131;
   EmbedMultiplePanes = 132;
-  ShareCurrentSession = 133;
-  StopSharingCurrentSession = 134;
-  StopWebServer = 135;
-  QueryWebServerStatus = 136;
   SetSelfMouseSelectionSupport = 137;
-  GenerateWebLoginToken = 138;
-  RevokeWebLoginToken = 139;
-  ListWebLoginTokens = 140;
-  RevokeAllWebLoginTokens = 141;
-  RenameWebLoginToken = 142;
   InterceptKeyPresses = 143;
   ClearKeyPressesIntercepts = 144;
   ReplacePaneWithExistingPane = 155;
@@ -210,7 +200,6 @@ enum CommandName {
   KillSessionsAndReply = 212;
   DeleteDeadSessionAndReply = 213;
   DeleteAllDeadSessionsAndReply = 214;
-  SetSoftKeyboard = 215;
   NewTabUnfocused = 220;
   NewTiledPaneInTab = 221;
   FocusLastPane = 223;
@@ -266,7 +255,7 @@ enum CommandName {
 }
 
 message PluginCommand {
-  reserved 165, 167, 173, 187;
+  reserved 108, 109, 110, 164, 165, 167, 173, 187;
   CommandName name = 1;
   oneof payload {
     SubscribePayload subscribe_payload = 2;
@@ -366,9 +355,6 @@ message PluginCommand {
     FloatMultiplePanesPayload float_multiple_panes_payload = 105;
     EmbedMultiplePanesPayload embed_multiple_panes_payload = 106;
     SetSelfMouseSelectionSupportPayload set_self_mouse_selection_support_payload = 107;
-    GenerateWebLoginTokenPayload generate_web_login_token_payload = 108;
-    RevokeWebLoginTokenPayload revoke_web_login_token_payload = 109;
-    RenameWebLoginTokenPayload rename_web_login_token_payload = 110;
     ReplacePaneWithExistingPanePayload replace_pane_with_existing_pane_payload = 111;
     NewTabPayload new_tab_payload = 112;
     GetPaneScrollbackPayload get_pane_scrollback_payload = 113;
@@ -419,7 +405,6 @@ message PluginCommand {
     GetSessionListPayload get_session_list_payload = 161;
     KillSessionsPayload kill_sessions_and_reply_payload = 162;
     string delete_dead_session_and_reply_payload = 163;
-    SetSoftKeyboardPayload set_soft_keyboard_payload = 164;
     NewTabUnfocusedPayload new_tab_unfocused_payload = 168;
     NewTiledPaneInTabPayload new_tiled_pane_in_tab_payload = 169;
     SetPaneFrameStylePayload set_pane_frame_style_payload = 170;
@@ -839,20 +824,6 @@ message ReplacePaneWithExistingPanePayload {
   PaneId pane_id_to_replace = 1;
   PaneId existing_pane_id = 2;
   bool suppress_replaced_pane = 3;
-}
-
-message RenameWebLoginTokenPayload {
-  string old_name = 1;
-  string new_name = 2;
-}
-
-message RevokeWebLoginTokenPayload {
-  string token_label = 1;
-}
-
-message GenerateWebLoginTokenPayload {
-  optional string token_label = 1;
-  optional bool read_only = 2;
 }
 
 message SetSelfMouseSelectionSupportPayload {
@@ -1312,29 +1283,6 @@ message CreateTokenResponse {
   optional string token = 1;
   optional string token_label = 2;
   optional string error = 3;
-}
-
-message RevokeTokenResponse {
-  bool successfully_revoked = 1;
-  optional string error = 2;
-}
-
-message ListTokensResponse {
-  // tokens/creation_times/read_only_flags should be synchronized
-  repeated string tokens = 1;
-  repeated string creation_times = 2;
-  repeated bool read_only_flags = 3;
-  optional string error = 4;
-}
-
-message RevokeAllWebTokensResponse {
-  bool successfully_revoked = 1;
-  optional string error = 2;
-}
-
-message RenameWebTokenResponse {
-  bool successfully_renamed = 1;
-  optional string error = 2;
 }
 
 message GetPaneScrollbackPayload {
@@ -1937,8 +1885,4 @@ message DeleteDeadSessionResponse {
 
 message DeleteAllDeadSessionsResponse {
   optional string error = 1; // absent => success
-}
-
-message SetSoftKeyboardPayload {
-  bool on = 1;
 }

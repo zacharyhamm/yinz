@@ -377,11 +377,7 @@ impl Screen {
                     let current_tab_index = current_tab.id;
                     let new_tab_index = new_tab.id;
                     let affected_client_ids: Vec<ClientId> = if self.session_is_mirrored {
-                        self.connected_clients
-                            .borrow()
-                            .iter()
-                            .map(|(c, _i)| *c)
-                            .collect()
+                        self.connected_clients.borrow().iter().copied().collect()
                     } else {
                         vec![client_id]
                     };
@@ -397,12 +393,8 @@ impl Screen {
                             None,
                         )
                         .with_context(err_context)?;
-                        let all_connected_clients: Vec<ClientId> = self
-                            .connected_clients
-                            .borrow()
-                            .iter()
-                            .map(|(c, _i)| *c)
-                            .collect();
+                        let all_connected_clients: Vec<ClientId> =
+                            self.connected_clients.borrow().iter().copied().collect();
                         for client_id in all_connected_clients {
                             self.update_client_tab_focus(client_id, new_tab_index);
                             match (

@@ -81,12 +81,6 @@ impl Screen {
                 },
             }
             let should_change_focus_to_new_tab = true;
-            let is_web_client = self
-                .connected_clients
-                .borrow()
-                .get(&client_id)
-                .copied()
-                .unwrap_or(false);
             self.bus.senders.send_to_plugin(PluginInstruction::NewTab(
                 None,
                 default_shell,
@@ -96,7 +90,7 @@ impl Screen {
                 None,  // initial_panes
                 false, // block_on_first_terminal
                 should_change_focus_to_new_tab,
-                (client_id, is_web_client),
+                client_id,
                 None,
             ))?;
         } else {
@@ -182,12 +176,6 @@ impl Screen {
             }
             tiled_panes_layout.ignore_run_instruction(run_instruction.clone());
         }
-        let is_web_client = self
-            .connected_clients
-            .borrow()
-            .get(&client_id)
-            .copied()
-            .unwrap_or(false);
         self.bus.senders.send_to_plugin(PluginInstruction::NewTab(
             None,
             default_shell,
@@ -197,7 +185,7 @@ impl Screen {
             None,  // initial_panes
             false, // block_on_first_terminal
             should_change_focus_to_new_tab,
-            (client_id, is_web_client),
+            client_id,
             None,
         ))?;
         Ok(tab_index)

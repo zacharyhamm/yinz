@@ -78,7 +78,7 @@ pub fn screen_can_break_pane_to_a_new_tab() {
         Default::default(),
         1,
         true,
-        (1, false),
+        1,
         None,
         None,
     ));
@@ -184,7 +184,7 @@ pub fn screen_can_break_floating_pane_to_a_new_tab() {
         Default::default(),
         1,
         true,
-        (1, false),
+        1,
         None,
         None,
     ));
@@ -274,7 +274,7 @@ pub fn screen_can_break_multiple_stacked_panes_to_a_new_tab() {
         Default::default(),
         1,
         true,
-        (1, false),
+        1,
         None,
         None,
     ));
@@ -355,7 +355,7 @@ pub fn screen_can_break_plugin_pane_to_a_new_tab() {
         Default::default(),
         1,
         true,
-        (1, false),
+        1,
         None,
         None,
     ));
@@ -435,7 +435,7 @@ pub fn screen_can_break_floating_plugin_pane_to_a_new_tab() {
         Default::default(),
         1,
         true,
-        (1, false),
+        1,
         None,
         None,
     ));
@@ -503,7 +503,7 @@ pub fn screen_can_move_pane_to_a_new_tab_right() {
         Default::default(),
         1,
         true,
-        (1, false),
+        1,
         None,
         None,
     ));
@@ -567,7 +567,7 @@ pub fn screen_can_move_pane_to_a_new_tab_left() {
         Default::default(),
         1,
         true,
-        (1, false),
+        1,
         None,
         None,
     ));

@@ -9,7 +9,7 @@
 
 use crate::os_input_output::ClientOsApi;
 use crate::terminal_escapes::ClientTeardown;
-use crate::{create_ipc_pipe, spawn_server_error_message, spawn_web_server, ClientInfo};
+use crate::{create_ipc_pipe, spawn_server_error_message, ClientInfo};
 use std::path::{Path, PathBuf};
 use zellij_utils::cli::CliArgs;
 use zellij_utils::{
@@ -38,7 +38,6 @@ pub(crate) struct StartupContext<'a> {
     /// How to hand the terminal back if startup fails. `None` when there is
     /// no controlling terminal to restore, i.e. the detached path.
     pub teardown: Option<ClientTeardown>,
-    pub should_start_web_server: bool,
 }
 
 impl<'a> StartupContext<'a> {
@@ -48,29 +47,22 @@ impl<'a> StartupContext<'a> {
         config_options: &'a Options,
         terminal_window_size: Size,
         teardown: ClientTeardown,
-        should_start_web_server: bool,
     ) -> Self {
         Self {
             cli_args,
             config_options,
             terminal_window_size,
             teardown: Some(teardown),
-            should_start_web_server,
         }
     }
 
     /// Context for spawning a server with no client attached to it.
-    pub fn detached(
-        cli_args: &'a CliArgs,
-        config_options: &'a Options,
-        should_start_web_server: bool,
-    ) -> Self {
+    pub fn detached(cli_args: &'a CliArgs, config_options: &'a Options) -> Self {
         Self {
             cli_args,
             config_options,
             terminal_window_size: DETACHED_WINDOW_SIZE,
             teardown: None,
-            should_start_web_server,
         }
     }
 
@@ -124,16 +116,11 @@ impl<'a> StartupContext<'a> {
     }
 
     /// Fork the server process for a session that does not have one yet, and
-    /// start the web server alongside it if configured. Does not return if
-    /// the server cannot be spawned — there is no session to attach to.
+    /// Does not return if the server cannot be spawned — there is no session
+    /// to attach to.
     fn spawn_server(&self, os_input: &dyn ClientOsApi, ipc_pipe: &Path) {
         if let Err(e) = os_input.spawn_server(ipc_pipe, self.cli_args.debug) {
             ClientTeardown::exit_after_startup_error(self.teardown, spawn_server_error_message(e));
-        }
-        if self.should_start_web_server {
-            if let Err(e) = spawn_web_server(self.cli_args) {
-                log::error!("Failed to start web server: {}", e);
-            }
         }
     }
 
@@ -171,7 +158,6 @@ impl<'a> StartupContext<'a> {
                         pane_to_focus: focus.pane.map(|(pane_id, is_plugin)| {
                             zellij_utils::ipc::PaneReference { pane_id, is_plugin }
                         }),
-                        is_web_client: false,
                     },
                     ipc_pipe,
                 )
@@ -184,7 +170,6 @@ impl<'a> StartupContext<'a> {
                 (
                     ClientToServerMsg::AttachWatcherClient {
                         terminal_size: self.terminal_window_size,
-                        is_web_client: false,
                     },
                     ipc_pipe,
                 )
@@ -206,10 +191,7 @@ impl<'a> StartupContext<'a> {
                 self.spawn_server(&**os_input, &ipc_pipe);
 
                 (
-                    ClientToServerMsg::FirstClientConnected {
-                        cli_assets,
-                        is_web_client: false,
-                    },
+                    ClientToServerMsg::FirstClientConnected { cli_assets },
                     ipc_pipe,
                 )
             },
@@ -227,10 +209,7 @@ impl<'a> StartupContext<'a> {
                 self.spawn_server(&**os_input, &ipc_pipe);
 
                 (
-                    ClientToServerMsg::FirstClientConnected {
-                        cli_assets,
-                        is_web_client: false,
-                    },
+                    ClientToServerMsg::FirstClientConnected { cli_assets },
                     ipc_pipe,
                 )
             },

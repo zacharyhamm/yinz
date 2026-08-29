@@ -137,7 +137,7 @@ fn create_layout_applier_fixtures(
     Rc<RefCell<Palette>>,
     Rc<RefCell<HashMap<usize, String>>>,
     Rc<RefCell<Option<SizeInPixels>>>,
-    Rc<RefCell<HashMap<ClientId, bool>>>,
+    Rc<RefCell<HashSet<ClientId>>>,
     Style,
     Rc<RefCell<Size>>,
     TiledPanes,
@@ -168,8 +168,8 @@ fn create_layout_applier_fixtures(
     let character_cell_size = Rc::new(RefCell::new(None));
 
     let client_id = 1;
-    let mut connected_clients_map = HashMap::new();
-    connected_clients_map.insert(client_id, false);
+    let mut connected_clients_map = HashSet::new();
+    connected_clients_map.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients_map));
 
     let style = Style::default();
@@ -265,7 +265,7 @@ fn create_layout_applier_fixtures_with_receivers(
     Rc<RefCell<Palette>>,
     Rc<RefCell<HashMap<usize, String>>>,
     Rc<RefCell<Option<SizeInPixels>>>,
-    Rc<RefCell<HashMap<ClientId, bool>>>,
+    Rc<RefCell<HashSet<ClientId>>>,
     Style,
     Rc<RefCell<Size>>,
     TiledPanes,
@@ -304,8 +304,8 @@ fn create_layout_applier_fixtures_with_receivers(
     let character_cell_size = Rc::new(RefCell::new(None));
 
     let client_id = 1;
-    let mut connected_clients_map = HashMap::new();
-    connected_clients_map.insert(client_id, false);
+    let mut connected_clients_map = HashSet::new();
+    connected_clients_map.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients_map));
 
     let style = Style::default();

@@ -8,29 +8,23 @@ use crate::{
         ClientToServerMsg as ProtoClientToServerMsg, ColorRegistersMsg, ConfigFileUpdatedMsg,
         ConnStatusMsg, ConnectedMsg, DesktopNotificationResponseMsg, DetachSessionMsg,
         EmitNestedSessionFrameMsg, EventUpdateMsg, ExitMsg, ExitReason as ProtoExitReason,
-        FailedToStartWebServerMsg, FirstClientConnectedMsg, ForegroundColorMsg,
-        ForwardQueryToHostMsg, ForwardedReplyFromHostMsg, HostTerminalFocusChangedMsg,
-        HostTerminalThemeChangedMsg,
+        FirstClientConnectedMsg, ForegroundColorMsg, ForwardQueryToHostMsg,
+        ForwardedReplyFromHostMsg, HostTerminalFocusChangedMsg, HostTerminalThemeChangedMsg,
         HostTerminalThemeIndication as ProtoHostTerminalThemeIndication,
         InputMode as ProtoInputMode, KeyMsg, KillSessionMsg, KittyGraphicsSupportMsg,
-        LayoutMetadata as ProtoLayoutMetadata, LogErrorMsg, LogMsg, MobileActivePaneMsg,
-        MobilePaneMsg, MobileRenderPrefsMsg, MobileSessionMsg, MobileSizeMsg, MobileStateMsg,
-        MobileTabMsg, NestedSessionFrameFromHostMsg, PaneMetadata as ProtoPaneMetadata,
-        PaneRenderUpdateMsg, QueryTerminalSizeMsg, RenamedSessionMsg, RenderMsg,
-        RequestSessionListMsg, ServerToClientMsg as ProtoServerToClientMsg,
-        SetMobileRenderPreferencesMsg, SetSoftKeyboardMsg, SixelSupportMsg,
-        SoftKeyboardVisibilityChangedMsg, StartWebServerMsg, SubscribeToEventsMsg,
+        LayoutMetadata as ProtoLayoutMetadata, LogErrorMsg, LogMsg, NestedSessionFrameFromHostMsg,
+        PaneMetadata as ProtoPaneMetadata, PaneRenderUpdateMsg, QueryTerminalSizeMsg,
+        RenamedSessionMsg, RenderMsg, RequestSessionListMsg,
+        ServerToClientMsg as ProtoServerToClientMsg, SixelSupportMsg, SubscribeToEventsMsg,
         SubscribeToPaneRendersMsg, SubscribedPaneClosedMsg, SwitchSessionMsg,
         TabMetadata as ProtoTabMetadata, TerminalPixelDimensionsMsg, TerminalResizeMsg,
         UnblockCliPipeInputMsg, UnblockInputThreadMsg, WarpPlacement as ProtobufWarpPlacement,
-        WebServerStartedMsg,
     },
     data::{HostTerminalThemeMode, InputMode, PaneId},
     errors::prelude::*,
     ipc::{
-        ClientToServerMsg, ColorRegister, ExitReason, MobileActivePanePayload, MobilePanePayload,
-        MobileRenderPrefsPayload, MobileSessionPayload, MobileSizePayload, MobileStatePayload,
-        MobileTabPayload, PaneReference, PixelDimensions, ServerToClientMsg,
+        ClientToServerMsg, ColorRegister, ExitReason, PaneReference, PixelDimensions,
+        ServerToClientMsg,
     },
 };
 use std::collections::BTreeMap;
@@ -72,31 +66,25 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
                     new_size: Some(new_size.into()),
                 })
             },
-            ClientToServerMsg::FirstClientConnected {
-                cli_assets,
-                is_web_client,
-            } => client_to_server_msg::Message::FirstClientConnected(FirstClientConnectedMsg {
-                cli_assets: Some(cli_assets.into()),
-                is_web_client,
-            }),
+            ClientToServerMsg::FirstClientConnected { cli_assets } => {
+                client_to_server_msg::Message::FirstClientConnected(FirstClientConnectedMsg {
+                    cli_assets: Some(cli_assets.into()),
+                })
+            },
             ClientToServerMsg::AttachClient {
                 cli_assets,
                 tab_position_to_focus,
                 pane_to_focus,
-                is_web_client,
             } => client_to_server_msg::Message::AttachClient(AttachClientMsg {
                 cli_assets: Some(cli_assets.into()),
                 tab_position_to_focus: tab_position_to_focus.map(|pos| pos as u32),
                 pane_to_focus: pane_to_focus.map(|p| p.into()),
-                is_web_client,
             }),
-            ClientToServerMsg::AttachWatcherClient {
-                terminal_size,
-                is_web_client,
-            } => client_to_server_msg::Message::AttachWatcherClient(AttachWatcherClientMsg {
-                terminal_size: Some(terminal_size.into()),
-                is_web_client,
-            }),
+            ClientToServerMsg::AttachWatcherClient { terminal_size } => {
+                client_to_server_msg::Message::AttachWatcherClient(AttachWatcherClientMsg {
+                    terminal_size: Some(terminal_size.into()),
+                })
+            },
             ClientToServerMsg::Action {
                 action,
                 terminal_id,
@@ -125,14 +113,6 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
             },
             ClientToServerMsg::ConnStatus => {
                 client_to_server_msg::Message::ConnStatus(ConnStatusMsg {})
-            },
-            ClientToServerMsg::WebServerStarted { base_url } => {
-                client_to_server_msg::Message::WebServerStarted(WebServerStartedMsg { base_url })
-            },
-            ClientToServerMsg::FailedToStartWebServer { error } => {
-                client_to_server_msg::Message::FailedToStartWebServer(FailedToStartWebServerMsg {
-                    error,
-                })
             },
             ClientToServerMsg::SubscribeToPaneRenders {
                 pane_ids,
@@ -167,11 +147,6 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
                     },
                 )
             },
-            ClientToServerMsg::SoftKeyboardVisibilityChanged { visible } => {
-                client_to_server_msg::Message::SoftKeyboardVisibilityChanged(
-                    SoftKeyboardVisibilityChangedMsg { visible },
-                )
-            },
             ClientToServerMsg::NestedSessionFrameFromHost { payload_bytes } => {
                 client_to_server_msg::Message::NestedSessionFrameFromHost(
                     NestedSessionFrameFromHostMsg { payload_bytes },
@@ -187,11 +162,6 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
             },
             ClientToServerMsg::RequestSessionList => {
                 client_to_server_msg::Message::RequestSessionList(RequestSessionListMsg {})
-            },
-            ClientToServerMsg::SetMobileRenderPreferences { single_pane, fit } => {
-                client_to_server_msg::Message::SetMobileRenderPreferences(
-                    SetMobileRenderPreferencesMsg { single_pane, fit },
-                )
             },
             ClientToServerMsg::HostTerminalFocusChanged { focused } => {
                 client_to_server_msg::Message::HostTerminalFocusChanged(
@@ -258,7 +228,6 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                         .cli_assets
                         .ok_or_else(|| anyhow!("Missing cli_assets"))?
                         .try_into()?,
-                    is_web_client: first_client.is_web_client,
                 })
             },
             Some(client_to_server_msg::Message::AttachClient(attach)) => {
@@ -269,7 +238,6 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                         .try_into()?,
                     tab_position_to_focus: attach.tab_position_to_focus.map(|pos| pos as usize),
                     pane_to_focus: attach.pane_to_focus.map(|p| p.try_into()).transpose()?,
-                    is_web_client: attach.is_web_client,
                 })
             },
             Some(client_to_server_msg::Message::AttachWatcherClient(attach_watcher)) => {
@@ -278,7 +246,6 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                         .terminal_size
                         .ok_or_else(|| anyhow::anyhow!("Missing terminal_size"))?
                         .try_into()?,
-                    is_web_client: attach_watcher.is_web_client,
                 })
             },
             Some(client_to_server_msg::Message::Action(action)) => Ok(ClientToServerMsg::Action {
@@ -302,16 +269,6 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                 Ok(ClientToServerMsg::KillSession)
             },
             Some(client_to_server_msg::Message::ConnStatus(_)) => Ok(ClientToServerMsg::ConnStatus),
-            Some(client_to_server_msg::Message::WebServerStarted(web_server)) => {
-                Ok(ClientToServerMsg::WebServerStarted {
-                    base_url: web_server.base_url,
-                })
-            },
-            Some(client_to_server_msg::Message::FailedToStartWebServer(failed)) => {
-                Ok(ClientToServerMsg::FailedToStartWebServer {
-                    error: failed.error,
-                })
-            },
             Some(client_to_server_msg::Message::SubscribeToPaneRenders(msg)) => {
                 let pane_ids: Result<Vec<PaneId>> =
                     msg.pane_ids.into_iter().map(|p| p.try_into()).collect();
@@ -344,11 +301,6 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                     mode: proto_mode.into(),
                 })
             },
-            Some(client_to_server_msg::Message::SoftKeyboardVisibilityChanged(msg)) => {
-                Ok(ClientToServerMsg::SoftKeyboardVisibilityChanged {
-                    visible: msg.visible,
-                })
-            },
             Some(client_to_server_msg::Message::NestedSessionFrameFromHost(msg)) => {
                 Ok(ClientToServerMsg::NestedSessionFrameFromHost {
                     payload_bytes: msg.payload_bytes,
@@ -366,12 +318,6 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
             },
             Some(client_to_server_msg::Message::RequestSessionList(_)) => {
                 Ok(ClientToServerMsg::RequestSessionList)
-            },
-            Some(client_to_server_msg::Message::SetMobileRenderPreferences(msg)) => {
-                Ok(ClientToServerMsg::SetMobileRenderPreferences {
-                    single_pane: msg.single_pane,
-                    fit: msg.fit,
-                })
             },
             Some(client_to_server_msg::Message::HostTerminalFocusChanged(msg)) => {
                 Ok(ClientToServerMsg::HostTerminalFocusChanged {
@@ -431,9 +377,6 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
             ServerToClientMsg::QueryTerminalSize => {
                 server_to_client_msg::Message::QueryTerminalSize(QueryTerminalSizeMsg {})
             },
-            ServerToClientMsg::StartWebServer => {
-                server_to_client_msg::Message::StartWebServer(StartWebServerMsg {})
-            },
             ServerToClientMsg::RenamedSession { name } => {
                 server_to_client_msg::Message::RenamedSession(RenamedSessionMsg { name })
             },
@@ -473,141 +416,16 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
                 query_bytes,
                 resolve_async,
             }),
-            ServerToClientMsg::SetSoftKeyboard { on } => {
-                server_to_client_msg::Message::SetSoftKeyboard(SetSoftKeyboardMsg { on })
-            },
             ServerToClientMsg::EmitNestedSessionFrame { payload_bytes } => {
                 server_to_client_msg::Message::EmitNestedSessionFrame(EmitNestedSessionFrameMsg {
                     payload_bytes,
                 })
-            },
-            ServerToClientMsg::MobileState { payload } => {
-                server_to_client_msg::Message::MobileState(mobile_state_payload_to_proto(payload))
             },
         };
 
         ProtoServerToClientMsg {
             message: Some(message),
         }
-    }
-}
-
-fn mobile_state_payload_to_proto(payload: MobileStatePayload) -> MobileStateMsg {
-    MobileStateMsg {
-        session_name: payload.session_name,
-        now_secs: payload.now_secs,
-        is_welcome_screen: payload.is_welcome_screen,
-        desktop_client_connected: payload.desktop_client_connected,
-        desktop_size: payload.desktop_size.map(|s| MobileSizeMsg {
-            cols: s.cols as u32,
-            rows: s.rows as u32,
-        }),
-        active_pane: payload.active_pane.map(|p| MobileActivePaneMsg {
-            pane_id: p.pane_id,
-            is_plugin: p.is_plugin,
-            tab_position: p.tab_position as u32,
-        }),
-        tabs: payload
-            .tabs
-            .into_iter()
-            .map(|t| MobileTabMsg {
-                position: t.position as u32,
-                name: t.name,
-                active: t.active,
-            })
-            .collect(),
-        panes: payload
-            .panes
-            .into_iter()
-            .map(|p| MobilePaneMsg {
-                tab_position: p.tab_position as u32,
-                pane_id: p.pane_id,
-                is_plugin: p.is_plugin,
-                title: p.title,
-                is_floating: p.is_floating,
-                last_activity_secs_ago: p.last_activity_secs_ago,
-            })
-            .collect(),
-        sessions: payload
-            .sessions
-            .into_iter()
-            .map(|s| MobileSessionMsg {
-                name: s.name,
-                web_clients_allowed: s.web_clients_allowed,
-                tab_count: s.tab_count as u32,
-                pane_count: s.pane_count as u32,
-                connected_clients: s.connected_clients as u32,
-                creation_secs_ago: s.creation_secs_ago,
-            })
-            .collect(),
-        render_prefs: Some(MobileRenderPrefsMsg {
-            single_pane: payload.render_prefs.single_pane,
-            fit: payload.render_prefs.fit,
-            active_pane_is_fullscreen: payload.render_prefs.active_pane_is_fullscreen,
-        }),
-    }
-}
-
-fn mobile_state_payload_from_proto(msg: MobileStateMsg) -> MobileStatePayload {
-    MobileStatePayload {
-        session_name: msg.session_name,
-        now_secs: msg.now_secs,
-        is_welcome_screen: msg.is_welcome_screen,
-        desktop_client_connected: msg.desktop_client_connected,
-        desktop_size: msg.desktop_size.map(|s| MobileSizePayload {
-            cols: s.cols as usize,
-            rows: s.rows as usize,
-        }),
-        active_pane: msg.active_pane.map(|p| MobileActivePanePayload {
-            pane_id: p.pane_id,
-            is_plugin: p.is_plugin,
-            tab_position: p.tab_position as usize,
-        }),
-        tabs: msg
-            .tabs
-            .into_iter()
-            .map(|t| MobileTabPayload {
-                position: t.position as usize,
-                name: t.name,
-                active: t.active,
-            })
-            .collect(),
-        panes: msg
-            .panes
-            .into_iter()
-            .map(|p| MobilePanePayload {
-                tab_position: p.tab_position as usize,
-                pane_id: p.pane_id,
-                is_plugin: p.is_plugin,
-                title: p.title,
-                is_floating: p.is_floating,
-                last_activity_secs_ago: p.last_activity_secs_ago,
-            })
-            .collect(),
-        sessions: msg
-            .sessions
-            .into_iter()
-            .map(|s| MobileSessionPayload {
-                name: s.name,
-                web_clients_allowed: s.web_clients_allowed,
-                tab_count: s.tab_count as usize,
-                pane_count: s.pane_count as usize,
-                connected_clients: s.connected_clients as usize,
-                creation_secs_ago: s.creation_secs_ago,
-            })
-            .collect(),
-        render_prefs: msg
-            .render_prefs
-            .map(|p| MobileRenderPrefsPayload {
-                single_pane: p.single_pane,
-                fit: p.fit,
-                active_pane_is_fullscreen: p.active_pane_is_fullscreen,
-            })
-            .unwrap_or(MobileRenderPrefsPayload {
-                single_pane: true,
-                fit: true,
-                active_pane_is_fullscreen: false,
-            }),
     }
 }
 
@@ -676,9 +494,6 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
             Some(server_to_client_msg::Message::QueryTerminalSize(_)) => {
                 Ok(ServerToClientMsg::QueryTerminalSize)
             },
-            Some(server_to_client_msg::Message::StartWebServer(_)) => {
-                Ok(ServerToClientMsg::StartWebServer)
-            },
             Some(server_to_client_msg::Message::RenamedSession(renamed)) => {
                 Ok(ServerToClientMsg::RenamedSession { name: renamed.name })
             },
@@ -722,17 +537,9 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
                     resolve_async: msg.resolve_async,
                 })
             },
-            Some(server_to_client_msg::Message::SetSoftKeyboard(msg)) => {
-                Ok(ServerToClientMsg::SetSoftKeyboard { on: msg.on })
-            },
             Some(server_to_client_msg::Message::EmitNestedSessionFrame(msg)) => {
                 Ok(ServerToClientMsg::EmitNestedSessionFrame {
                     payload_bytes: msg.payload_bytes,
-                })
-            },
-            Some(server_to_client_msg::Message::MobileState(msg)) => {
-                Ok(ServerToClientMsg::MobileState {
-                    payload: mobile_state_payload_from_proto(msg),
                 })
             },
             None => Err(anyhow!("Empty ServerToClientMsg message")),
@@ -914,7 +721,6 @@ impl From<crate::input::options::Options>
     fn from(options: crate::input::options::Options) -> Self {
         use crate::client_server_contract::client_server_contract::{
             Clipboard as ProtoClipboard, OnForceClose as ProtoOnForceClose,
-            WebSharing as ProtoWebSharing,
         };
 
         Self {
@@ -969,12 +775,6 @@ impl From<crate::input::options::Options>
             disable_session_metadata: options.disable_session_metadata,
             support_kitty_keyboard_protocol: options.support_kitty_keyboard_protocol,
             support_kitty_graphics_protocol: options.support_kitty_graphics_protocol,
-            web_server: options.web_server,
-            web_sharing: options.web_sharing.map(|w| match w {
-                crate::data::WebSharing::On => ProtoWebSharing::On as i32,
-                crate::data::WebSharing::Off => ProtoWebSharing::Off as i32,
-                crate::data::WebSharing::Disabled => ProtoWebSharing::Disabled as i32,
-            }),
             stacked_resize: options.stacked_resize,
             stacked_pane_list: options.stacked_pane_list,
             dangerously_enable_paste_buffer_read: options.dangerously_enable_paste_buffer_read,
@@ -983,17 +783,7 @@ impl From<crate::input::options::Options>
             advanced_mouse_actions: options.advanced_mouse_actions,
             mouse_scroll_resize: options.mouse_scroll_resize,
             mouse_hover_effects: options.mouse_hover_effects,
-            web_server_ip: options.web_server_ip.map(|ip| ip.to_string()),
-            web_server_port: options.web_server_port.map(|p| p as u32),
-            web_server_cert: options
-                .web_server_cert
-                .map(|p| p.to_string_lossy().to_string()),
-            web_server_key: options
-                .web_server_key
-                .map(|p| p.to_string_lossy().to_string()),
-            enforce_https_for_localhost: options.enforce_https_for_localhost,
             post_command_discovery_hook: options.post_command_discovery_hook,
-            client_async_worker_tasks: options.client_async_worker_tasks.map(|v| v as u64),
             visual_bell: options.visual_bell,
             focus_follows_mouse: options.focus_follows_mouse,
             mouse_click_through: options.mouse_click_through,
@@ -1044,7 +834,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
     ) -> Result<Self> {
         use crate::client_server_contract::client_server_contract::{
             Clipboard as ProtoClipboard, NestedSessionHandling as ProtoNestedSessionHandling,
-            OnForceClose as ProtoOnForceClose, WebSharing as ProtoWebSharing,
+            OnForceClose as ProtoOnForceClose,
         };
 
         Ok(Self {
@@ -1118,16 +908,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             disable_session_metadata: options.disable_session_metadata,
             support_kitty_keyboard_protocol: options.support_kitty_keyboard_protocol,
             support_kitty_graphics_protocol: options.support_kitty_graphics_protocol,
-            web_server: options.web_server,
-            web_sharing: options
-                .web_sharing
-                .map(|w| match ProtoWebSharing::try_from(w) {
-                    Ok(ProtoWebSharing::On) => Ok(crate::data::WebSharing::On),
-                    Ok(ProtoWebSharing::Off) => Ok(crate::data::WebSharing::Off),
-                    Ok(ProtoWebSharing::Disabled) => Ok(crate::data::WebSharing::Disabled),
-                    _ => Err(anyhow!("Invalid WebSharing value: {}", w)),
-                })
-                .transpose()?,
             stacked_resize: options.stacked_resize,
             stacked_pane_list: options.stacked_pane_list,
             dangerously_enable_paste_buffer_read: options.dangerously_enable_paste_buffer_read,
@@ -1136,17 +916,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             advanced_mouse_actions: options.advanced_mouse_actions,
             mouse_scroll_resize: options.mouse_scroll_resize,
             mouse_hover_effects: options.mouse_hover_effects,
-            web_server_ip: options
-                .web_server_ip
-                .map(|ip| ip.parse())
-                .transpose()
-                .map_err(|e| anyhow!("Invalid IP address: {}", e))?,
-            web_server_port: options.web_server_port.map(|p| p as u16),
-            web_server_cert: options.web_server_cert.map(std::path::PathBuf::from),
-            web_server_key: options.web_server_key.map(std::path::PathBuf::from),
-            enforce_https_for_localhost: options.enforce_https_for_localhost,
             post_command_discovery_hook: options.post_command_discovery_hook,
-            client_async_worker_tasks: options.client_async_worker_tasks.map(|v| v as usize),
             visual_bell: options.visual_bell,
             focus_follows_mouse: options.focus_follows_mouse,
             mouse_click_through: options.mouse_click_through,
@@ -3744,7 +3514,6 @@ impl From<ExitReason> for ProtoExitReason {
             ExitReason::ForceDetached => ProtoExitReason::ForceDetached,
             ExitReason::CannotAttach => ProtoExitReason::CannotAttach,
             ExitReason::Disconnect => ProtoExitReason::Disconnect,
-            ExitReason::WebClientsForbidden => ProtoExitReason::WebClientsForbidden,
             ExitReason::KickedByHost => ProtoExitReason::KickedByHost,
             ExitReason::Error(_msg) => ProtoExitReason::Error,
             ExitReason::CustomExitStatus(_status) => ProtoExitReason::CustomExitStatus,
@@ -3761,7 +3530,6 @@ impl TryFrom<ProtoExitReason> for ExitReason {
             ProtoExitReason::ForceDetached => Ok(ExitReason::ForceDetached),
             ProtoExitReason::CannotAttach => Ok(ExitReason::CannotAttach),
             ProtoExitReason::Disconnect => Ok(ExitReason::Disconnect),
-            ProtoExitReason::WebClientsForbidden => Ok(ExitReason::WebClientsForbidden),
             ProtoExitReason::KickedByHost => Ok(ExitReason::KickedByHost),
             ProtoExitReason::Error => Ok(ExitReason::Error("Protobuf error".to_string())),
             // The status rides in `ExitMsg.payload`, which a bare reason does not carry. The

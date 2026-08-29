@@ -106,7 +106,7 @@ fn host_focus_loss_is_withheld_while_another_client_is_still_focused() {
         create_new_screen_with_capture(size, true, true, true, true);
     new_tab(&mut screen, 1, 0);
     screen.set_client_size(second_client_id, size);
-    screen.add_client(second_client_id, false).unwrap();
+    screen.add_client(second_client_id).unwrap();
     subscribe_pane_to_focus_events(&mut screen, first_client_id, 1);
     tty_stdin_bytes.lock().unwrap().clear();
 
@@ -152,7 +152,7 @@ fn host_focus_changes_of_clients_on_different_panes_are_independent() {
         create_new_screen_with_capture(size, true, true, true, false);
     new_tab(&mut screen, 1, 0);
     screen.set_client_size(second_client_id, size);
-    screen.add_client(second_client_id, false).unwrap();
+    screen.add_client(second_client_id).unwrap();
     {
         let active_tab = screen.get_active_tab_mut(first_client_id).unwrap();
         active_tab
@@ -193,7 +193,7 @@ fn a_departing_client_leaves_no_host_focus_state_behind() {
         create_new_screen_with_capture(size, true, true, true, true);
     new_tab(&mut screen, 1, 0);
     screen.set_client_size(2, size);
-    screen.add_client(2, false).unwrap();
+    screen.add_client(2).unwrap();
     screen.host_terminal_focus_changed(2, false);
     assert!(screen.client_host_focused.contains_key(&2));
 

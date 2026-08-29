@@ -57,7 +57,6 @@ pub(crate) struct State {
     pub(crate) single_screen_state: SingleScreenState,
     pub(crate) show_kill_all_sessions_warning: bool,
     request_ids: Vec<String>,
-    is_web_client: bool,
     current_session_last_saved_time: Option<u64>,
     is_visible: bool,
     refresh_timer_armed: bool,
@@ -157,11 +156,6 @@ impl ZellijPlugin for State {
             },
             Event::ModeUpdate(mode_info) => {
                 self.colors = Colors::new(mode_info.style.colors);
-                let was_web_client = self.is_web_client;
-                self.is_web_client = mode_info.is_web_client.unwrap_or(false);
-                if was_web_client != self.is_web_client {
-                    self.refresh_session_list();
-                }
                 should_render = true;
             },
             Event::Key(key) => {
@@ -1145,12 +1139,6 @@ impl State {
                 } else if self.new_session_info.name().contains('/') {
                     self.show_error("Session name cannot contain '/'");
                     return;
-                } else if self
-                    .sessions
-                    .has_forbidden_session(self.new_session_info.name())
-                {
-                    self.show_error("This session exists and web clients cannot attach to it.");
-                    return;
                 }
                 self.new_session_info.handle_selection(&self.session_name);
             },
@@ -1307,13 +1295,6 @@ impl State {
                                 self.show_error("Session name cannot contain '/'");
                                 return;
                             }
-                            if self.sessions.has_forbidden_session(&typed_name) {
-                                self.show_error(
-                                    "This session exists and web clients cannot attach to it.",
-                                );
-                                return;
-                            }
-
                             // Check exact match against active sessions
                             if self.sessions.has_session(&typed_name) {
                                 if self.session_name.as_deref() == Some(&typed_name) {
@@ -1447,27 +1428,13 @@ impl State {
         let session_ui_infos: Vec<SessionUiInfo> = session_infos
             .iter()
             .filter_map(|s| {
-                if self.is_web_client && !s.web_clients_allowed {
-                    None
-                } else if self.is_welcome_screen && s.is_current_session {
+                if self.is_welcome_screen && s.is_current_session {
                     // do not display current session if we're the welcome screen
                     // because:
                     // 1. attaching to the welcome screen from the welcome screen is not a thing
-                    // 2. it can cause issues on the web (since we're disconnecting and
-                    //    reconnecting to a session we just closed by disconnecting...)
                     None
                 } else {
                     Some(SessionUiInfo::from_session_info(s))
-                }
-            })
-            .collect();
-        let forbidden_sessions: Vec<SessionUiInfo> = session_infos
-            .iter()
-            .filter_map(|s| {
-                if self.is_web_client && !s.web_clients_allowed {
-                    Some(SessionUiInfo::from_session_info(s))
-                } else {
-                    None
                 }
             })
             .collect();
@@ -1481,8 +1448,7 @@ impl State {
         if let Some(current_session_name) = current_session_name {
             self.session_name = Some(current_session_name);
         }
-        self.sessions
-            .set_sessions(session_ui_infos, forbidden_sessions);
+        self.sessions.set_sessions(session_ui_infos);
     }
     fn main_menu_size(&self, rows: usize, cols: usize) -> (usize, usize, usize, usize) {
         // x, y, width, height

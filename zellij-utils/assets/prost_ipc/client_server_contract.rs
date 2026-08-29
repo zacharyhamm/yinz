@@ -2205,10 +2205,6 @@ pub struct Options {
     pub disable_session_metadata: ::core::option::Option<bool>,
     #[prost(bool, optional, tag="27")]
     pub support_kitty_keyboard_protocol: ::core::option::Option<bool>,
-    #[prost(bool, optional, tag="28")]
-    pub web_server: ::core::option::Option<bool>,
-    #[prost(enumeration="WebSharing", optional, tag="29")]
-    pub web_sharing: ::core::option::Option<i32>,
     #[prost(bool, optional, tag="30")]
     pub stacked_resize: ::core::option::Option<bool>,
     #[prost(bool, optional, tag="31")]
@@ -2217,24 +2213,12 @@ pub struct Options {
     pub show_release_notes: ::core::option::Option<bool>,
     #[prost(bool, optional, tag="33")]
     pub advanced_mouse_actions: ::core::option::Option<bool>,
-    #[prost(string, optional, tag="34")]
-    pub web_server_ip: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(uint32, optional, tag="35")]
-    pub web_server_port: ::core::option::Option<u32>,
-    #[prost(string, optional, tag="36")]
-    pub web_server_cert: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(string, optional, tag="37")]
-    pub web_server_key: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(bool, optional, tag="38")]
-    pub enforce_https_for_localhost: ::core::option::Option<bool>,
     #[prost(string, optional, tag="39")]
     pub post_command_discovery_hook: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, optional, tag="40")]
     pub osc8_hyperlinks: ::core::option::Option<bool>,
     #[prost(bool, optional, tag="41")]
     pub mouse_hover_effects: ::core::option::Option<bool>,
-    #[prost(uint64, optional, tag="42")]
-    pub client_async_worker_tasks: ::core::option::Option<u64>,
     #[prost(bool, optional, tag="43")]
     pub visual_bell: ::core::option::Option<bool>,
     #[prost(bool, optional, tag="44")]
@@ -2976,7 +2960,6 @@ pub enum ExitReason {
     ForceDetached = 3,
     CannotAttach = 4,
     Disconnect = 5,
-    WebClientsForbidden = 6,
     Error = 7,
     CustomExitStatus = 8,
     KickedByHost = 9,
@@ -2994,7 +2977,6 @@ impl ExitReason {
             ExitReason::ForceDetached => "EXIT_REASON_FORCE_DETACHED",
             ExitReason::CannotAttach => "EXIT_REASON_CANNOT_ATTACH",
             ExitReason::Disconnect => "EXIT_REASON_DISCONNECT",
-            ExitReason::WebClientsForbidden => "EXIT_REASON_WEB_CLIENTS_FORBIDDEN",
             ExitReason::Error => "EXIT_REASON_ERROR",
             ExitReason::CustomExitStatus => "EXIT_REASON_CUSTOM_EXIT_STATUS",
             ExitReason::KickedByHost => "EXIT_REASON_KICKED_BY_HOST",
@@ -3009,7 +2991,6 @@ impl ExitReason {
             "EXIT_REASON_FORCE_DETACHED" => Some(Self::ForceDetached),
             "EXIT_REASON_CANNOT_ATTACH" => Some(Self::CannotAttach),
             "EXIT_REASON_DISCONNECT" => Some(Self::Disconnect),
-            "EXIT_REASON_WEB_CLIENTS_FORBIDDEN" => Some(Self::WebClientsForbidden),
             "EXIT_REASON_ERROR" => Some(Self::Error),
             "EXIT_REASON_CUSTOM_EXIT_STATUS" => Some(Self::CustomExitStatus),
             "EXIT_REASON_KICKED_BY_HOST" => Some(Self::KickedByHost),
@@ -3305,38 +3286,6 @@ impl StackDirection {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
-pub enum WebSharing {
-    Unspecified = 0,
-    On = 1,
-    Off = 2,
-    Disabled = 3,
-}
-impl WebSharing {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            WebSharing::Unspecified => "WEB_SHARING_UNSPECIFIED",
-            WebSharing::On => "WEB_SHARING_ON",
-            WebSharing::Off => "WEB_SHARING_OFF",
-            WebSharing::Disabled => "WEB_SHARING_DISABLED",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "WEB_SHARING_UNSPECIFIED" => Some(Self::Unspecified),
-            "WEB_SHARING_ON" => Some(Self::On),
-            "WEB_SHARING_OFF" => Some(Self::Off),
-            "WEB_SHARING_DISABLED" => Some(Self::Disabled),
-            _ => None,
-        }
-    }
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
 pub enum NestedSessionHandling {
     Unspecified = 0,
     Ask = 1,
@@ -3402,7 +3351,7 @@ impl ThemeHue {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientToServerMsg {
-    #[prost(oneof="client_to_server_msg::Message", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 28, 24, 25, 26, 27")]
+    #[prost(oneof="client_to_server_msg::Message", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27")]
     pub message: ::core::option::Option<client_to_server_msg::Message>,
 }
 /// Nested message and enum types in `ClientToServerMsg`.
@@ -3436,10 +3385,6 @@ pub mod client_to_server_msg {
         KillSession(super::KillSessionMsg),
         #[prost(message, tag="13")]
         ConnStatus(super::ConnStatusMsg),
-        #[prost(message, tag="14")]
-        WebServerStarted(super::WebServerStartedMsg),
-        #[prost(message, tag="15")]
-        FailedToStartWebServer(super::FailedToStartWebServerMsg),
         #[prost(message, tag="16")]
         AttachWatcherClient(super::AttachWatcherClientMsg),
         #[prost(message, tag="17")]
@@ -3450,8 +3395,6 @@ pub mod client_to_server_msg {
         ForwardedReplyFromHost(super::ForwardedReplyFromHostMsg),
         #[prost(message, tag="20")]
         HostTerminalThemeChanged(super::HostTerminalThemeChangedMsg),
-        #[prost(message, tag="21")]
-        SoftKeyboardVisibilityChanged(super::SoftKeyboardVisibilityChangedMsg),
         #[prost(message, tag="22")]
         NestedSessionFrameFromHost(super::NestedSessionFrameFromHostMsg),
         #[prost(message, tag="23")]
@@ -3462,8 +3405,6 @@ pub mod client_to_server_msg {
         SixelSupport(super::SixelSupportMsg),
         #[prost(message, tag="25")]
         RequestSessionList(super::RequestSessionListMsg),
-        #[prost(message, tag="26")]
-        SetMobileRenderPreferences(super::SetMobileRenderPreferencesMsg),
         #[prost(message, tag="27")]
         HostTerminalFocusChanged(super::HostTerminalFocusChangedMsg),
     }
@@ -3509,8 +3450,6 @@ pub struct TerminalResizeMsg {
 pub struct FirstClientConnectedMsg {
     #[prost(message, optional, tag="1")]
     pub cli_assets: ::core::option::Option<CliAssets>,
-    #[prost(bool, tag="2")]
-    pub is_web_client: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -3521,16 +3460,12 @@ pub struct AttachClientMsg {
     pub tab_position_to_focus: ::core::option::Option<u32>,
     #[prost(message, optional, tag="3")]
     pub pane_to_focus: ::core::option::Option<PaneReference>,
-    #[prost(bool, tag="4")]
-    pub is_web_client: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AttachWatcherClientMsg {
     #[prost(message, optional, tag="1")]
     pub terminal_size: ::core::option::Option<Size>,
-    #[prost(bool, tag="2")]
-    pub is_web_client: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -3571,18 +3506,6 @@ pub struct ConnStatusMsg {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct WebServerStartedMsg {
-    #[prost(string, tag="1")]
-    pub base_url: ::prost::alloc::string::String,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct FailedToStartWebServerMsg {
-    #[prost(string, tag="1")]
-    pub error: ::prost::alloc::string::String,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SubscribeToPaneRendersMsg {
     #[prost(message, repeated, tag="1")]
     pub pane_ids: ::prost::alloc::vec::Vec<PaneId>,
@@ -3619,12 +3542,6 @@ pub struct HostTerminalThemeChangedMsg {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SoftKeyboardVisibilityChangedMsg {
-    #[prost(bool, tag="1")]
-    pub visible: bool,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NestedSessionFrameFromHostMsg {
     #[prost(bytes="vec", tag="1")]
     pub payload_bytes: ::prost::alloc::vec::Vec<u8>,
@@ -3645,14 +3562,6 @@ pub struct SixelSupportMsg {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RequestSessionListMsg {
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SetMobileRenderPreferencesMsg {
-    #[prost(bool, tag="1")]
-    pub single_pane: bool,
-    #[prost(bool, tag="2")]
-    pub fit: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -3689,7 +3598,7 @@ impl HostTerminalThemeIndication {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerToClientMsg {
-    #[prost(oneof="server_to_client_msg::Message", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20")]
+    #[prost(oneof="server_to_client_msg::Message", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 18, 20")]
     pub message: ::core::option::Option<server_to_client_msg::Message>,
 }
 /// Nested message and enum types in `ServerToClientMsg`.
@@ -3717,8 +3626,6 @@ pub mod server_to_client_msg {
         CliPipeOutput(super::CliPipeOutputMsg),
         #[prost(message, tag="10")]
         QueryTerminalSize(super::QueryTerminalSizeMsg),
-        #[prost(message, tag="11")]
-        StartWebServer(super::StartWebServerMsg),
         #[prost(message, tag="12")]
         RenamedSession(super::RenamedSessionMsg),
         #[prost(message, tag="13")]
@@ -3729,12 +3636,8 @@ pub mod server_to_client_msg {
         SubscribedPaneClosed(super::SubscribedPaneClosedMsg),
         #[prost(message, tag="16")]
         ForwardQueryToHost(super::ForwardQueryToHostMsg),
-        #[prost(message, tag="17")]
-        SetSoftKeyboard(super::SetSoftKeyboardMsg),
         #[prost(message, tag="18")]
         EmitNestedSessionFrame(super::EmitNestedSessionFrameMsg),
-        #[prost(message, tag="19")]
-        MobileState(super::MobileStateMsg),
         #[prost(message, tag="20")]
         EventUpdate(super::EventUpdateMsg),
     }
@@ -3800,11 +3703,6 @@ pub struct CliPipeOutputMsg {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct QueryTerminalSizeMsg {
 }
-/// Empty message
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct StartWebServerMsg {
-}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RenamedSessionMsg {
@@ -3856,107 +3754,7 @@ pub struct ForwardQueryToHostMsg {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SetSoftKeyboardMsg {
-    #[prost(bool, tag="1")]
-    pub on: bool,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct EmitNestedSessionFrameMsg {
     #[prost(bytes="vec", tag="1")]
     pub payload_bytes: ::prost::alloc::vec::Vec<u8>,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MobileSizeMsg {
-    #[prost(uint32, tag="1")]
-    pub cols: u32,
-    #[prost(uint32, tag="2")]
-    pub rows: u32,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MobileActivePaneMsg {
-    #[prost(uint32, tag="1")]
-    pub pane_id: u32,
-    #[prost(bool, tag="2")]
-    pub is_plugin: bool,
-    #[prost(uint32, tag="3")]
-    pub tab_position: u32,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MobileTabMsg {
-    #[prost(uint32, tag="1")]
-    pub position: u32,
-    #[prost(string, tag="2")]
-    pub name: ::prost::alloc::string::String,
-    #[prost(bool, tag="3")]
-    pub active: bool,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MobilePaneMsg {
-    #[prost(uint32, tag="1")]
-    pub tab_position: u32,
-    #[prost(uint32, tag="2")]
-    pub pane_id: u32,
-    #[prost(bool, tag="3")]
-    pub is_plugin: bool,
-    #[prost(string, tag="4")]
-    pub title: ::prost::alloc::string::String,
-    #[prost(bool, tag="5")]
-    pub is_floating: bool,
-    #[prost(uint64, tag="6")]
-    pub last_activity_secs_ago: u64,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MobileSessionMsg {
-    #[prost(string, tag="1")]
-    pub name: ::prost::alloc::string::String,
-    #[prost(bool, tag="2")]
-    pub web_clients_allowed: bool,
-    #[prost(uint32, tag="3")]
-    pub tab_count: u32,
-    #[prost(uint32, tag="4")]
-    pub pane_count: u32,
-    #[prost(uint32, tag="5")]
-    pub connected_clients: u32,
-    #[prost(uint64, tag="6")]
-    pub creation_secs_ago: u64,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MobileRenderPrefsMsg {
-    #[prost(bool, tag="1")]
-    pub single_pane: bool,
-    #[prost(bool, tag="2")]
-    pub fit: bool,
-    #[prost(bool, tag="3")]
-    pub active_pane_is_fullscreen: bool,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MobileStateMsg {
-    #[prost(string, tag="1")]
-    pub session_name: ::prost::alloc::string::String,
-    #[prost(uint64, tag="2")]
-    pub now_secs: u64,
-    #[prost(bool, tag="3")]
-    pub is_welcome_screen: bool,
-    #[prost(bool, tag="4")]
-    pub desktop_client_connected: bool,
-    #[prost(message, optional, tag="5")]
-    pub desktop_size: ::core::option::Option<MobileSizeMsg>,
-    #[prost(message, optional, tag="6")]
-    pub active_pane: ::core::option::Option<MobileActivePaneMsg>,
-    #[prost(message, repeated, tag="7")]
-    pub tabs: ::prost::alloc::vec::Vec<MobileTabMsg>,
-    #[prost(message, repeated, tag="8")]
-    pub panes: ::prost::alloc::vec::Vec<MobilePaneMsg>,
-    #[prost(message, repeated, tag="9")]
-    pub sessions: ::prost::alloc::vec::Vec<MobileSessionMsg>,
-    #[prost(message, optional, tag="10")]
-    pub render_prefs: ::core::option::Option<MobileRenderPrefsMsg>,
 }

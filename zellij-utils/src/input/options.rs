@@ -1,12 +1,10 @@
 //! Handles cli and configuration options
 use crate::cli::Command;
-use crate::data::{InputMode, ThemeHue, WebSharing};
+use crate::data::{InputMode, ThemeHue};
 use clap::{Args, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::str::FromStr;
-
-use std::net::IpAddr;
 
 pub const DEFAULT_WORD_SEPARATORS: &str = "[]{}<>()";
 
@@ -404,40 +402,6 @@ pub struct Options {
     #[serde(default)]
     pub support_kitty_graphics_protocol: Option<bool>,
 
-    /// Whether to make sure a local web server is running when a new Zellij session starts.
-    /// This web server will allow creating new sessions and attaching to existing ones that have
-    /// opted in to being shared in the browser.
-    ///
-    /// Note: a local web server can still be manually started from within a Zellij session or from the CLI.
-    /// If this is not desired, one can use a version of Zellij compiled without
-    /// web_server_capability
-    ///
-    /// Possible values:
-    /// - true
-    /// - false
-    ///
-    ///   Default: false
-    #[clap(long, value_parser)]
-    #[serde(default)]
-    pub web_server: Option<bool>,
-
-    /// Whether to allow new sessions to be shared through a local web server, assuming one is
-    /// running (see the `web_server` option for more details).
-    ///
-    /// Note: if Zellij was compiled without web_server_capability, this option will be locked to
-    /// "disabled"
-    ///
-    /// Possible values:
-    /// - "on" (new sessions will allow web sharing through the local web server if it
-    ///   is online)
-    /// - "off" (new sessions will not allow web sharing unless they explicitly opt-in to it)
-    /// - "disabled" (new sessions will not allow web sharing and will not be able to opt-in to it)
-    ///
-    ///   Default: "off"
-    #[clap(long, value_parser)]
-    #[serde(default)]
-    pub web_sharing: Option<WebSharing>,
-
     /// Whether to stack panes when resizing beyond a certain size
     /// default is true
     #[clap(long, value_parser)]
@@ -526,25 +490,10 @@ pub struct Options {
     #[serde(default)]
     pub host_notification_protocol: Option<HostNotificationProtocol>,
 
-    // these are intentionally excluded from the CLI options as they must be specified in the
-    // configuration file
-    pub web_server_ip: Option<IpAddr>,
-    pub web_server_port: Option<u16>,
-    pub web_server_cert: Option<PathBuf>,
-    pub web_server_key: Option<PathBuf>,
-    pub enforce_https_for_localhost: Option<bool>,
     /// A command to run after the discovery of running commands when serializing, for the purpose
     /// of manipulating the command (eg. with a regex) before it gets serialized
     #[clap(long, value_parser)]
     pub post_command_discovery_hook: Option<String>,
-
-    /// Number of async worker tasks to spawn per active client.
-    ///
-    /// Allocating few tasks may result in resource contention and lags. Small values (around 4)
-    /// should typically work best. Set to 0 to use the number of (physical) CPU cores.
-    /// NOTE: This only applies to web clients at the moment.
-    #[clap(long)]
-    pub client_async_worker_tasks: Option<usize>,
 
     /// How to handle a nested Zellij session detected inside a pane
     /// (ask, fullscreen, descend, never)
@@ -643,8 +592,6 @@ impl Options {
         let support_kitty_graphics_protocol = other
             .support_kitty_graphics_protocol
             .or(self.support_kitty_graphics_protocol);
-        let web_server = other.web_server.or(self.web_server);
-        let web_sharing = other.web_sharing.or(self.web_sharing);
         let stacked_resize = other.stacked_resize.or(self.stacked_resize);
         let stacked_pane_list = other.stacked_pane_list.or(self.stacked_pane_list);
         let show_startup_tips = other.show_startup_tips.or(self.show_startup_tips);
@@ -664,21 +611,9 @@ impl Options {
         let word_separators = other
             .word_separators
             .or_else(|| self.word_separators.clone());
-        let web_server_ip = other.web_server_ip.or(self.web_server_ip);
-        let web_server_port = other.web_server_port.or(self.web_server_port);
-        let web_server_cert = other
-            .web_server_cert
-            .or_else(|| self.web_server_cert.clone());
-        let web_server_key = other.web_server_key.or_else(|| self.web_server_key.clone());
-        let enforce_https_for_localhost = other
-            .enforce_https_for_localhost
-            .or(self.enforce_https_for_localhost);
         let post_command_discovery_hook = other
             .post_command_discovery_hook
             .or(self.post_command_discovery_hook.clone());
-        let client_async_worker_tasks = other
-            .client_async_worker_tasks
-            .or(self.client_async_worker_tasks);
         let nested_session_handling = other
             .nested_session_handling
             .or(self.nested_session_handling);
@@ -730,8 +665,6 @@ impl Options {
             disable_session_metadata,
             support_kitty_keyboard_protocol,
             support_kitty_graphics_protocol,
-            web_server,
-            web_sharing,
             stacked_resize,
             stacked_pane_list,
             show_startup_tips,
@@ -745,13 +678,7 @@ impl Options {
             context_menu_on_right_click,
             osc133_command_selection,
             word_separators,
-            web_server_ip,
-            web_server_port,
-            web_server_cert,
-            web_server_key,
-            enforce_https_for_localhost,
             post_command_discovery_hook,
-            client_async_worker_tasks,
             nested_session_handling,
             host_notification_protocol,
             dangerously_enable_paste_buffer_read,
@@ -831,8 +758,6 @@ impl Options {
         let support_kitty_graphics_protocol = other
             .support_kitty_graphics_protocol
             .or(self.support_kitty_graphics_protocol);
-        let web_server = other.web_server.or(self.web_server);
-        let web_sharing = other.web_sharing.or(self.web_sharing);
         let stacked_resize = other.stacked_resize.or(self.stacked_resize);
         let stacked_pane_list = other.stacked_pane_list.or(self.stacked_pane_list);
         let show_startup_tips = other.show_startup_tips.or(self.show_startup_tips);
@@ -853,21 +778,9 @@ impl Options {
         let word_separators = other
             .word_separators
             .or_else(|| self.word_separators.clone());
-        let web_server_ip = other.web_server_ip.or(self.web_server_ip);
-        let web_server_port = other.web_server_port.or(self.web_server_port);
-        let web_server_cert = other
-            .web_server_cert
-            .or_else(|| self.web_server_cert.clone());
-        let web_server_key = other.web_server_key.or_else(|| self.web_server_key.clone());
-        let enforce_https_for_localhost = other
-            .enforce_https_for_localhost
-            .or(self.enforce_https_for_localhost);
         let post_command_discovery_hook = other
             .post_command_discovery_hook
             .or_else(|| self.post_command_discovery_hook.clone());
-        let client_async_worker_tasks = other
-            .client_async_worker_tasks
-            .or(self.client_async_worker_tasks);
         let nested_session_handling = other
             .nested_session_handling
             .or(self.nested_session_handling);
@@ -919,8 +832,6 @@ impl Options {
             disable_session_metadata,
             support_kitty_keyboard_protocol,
             support_kitty_graphics_protocol,
-            web_server,
-            web_sharing,
             stacked_resize,
             stacked_pane_list,
             show_startup_tips,
@@ -934,13 +845,7 @@ impl Options {
             context_menu_on_right_click,
             osc133_command_selection,
             word_separators,
-            web_server_ip,
-            web_server_port,
-            web_server_cert,
-            web_server_key,
-            enforce_https_for_localhost,
             post_command_discovery_hook,
-            client_async_worker_tasks,
             nested_session_handling,
             host_notification_protocol,
             dangerously_enable_paste_buffer_read,

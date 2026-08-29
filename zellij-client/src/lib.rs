@@ -12,139 +12,25 @@ mod command_is_executing;
 mod input_handler;
 mod keyboard_parser;
 mod nested_reannounce;
-#[cfg(feature = "web_server_capability")]
-pub mod remote_attach;
-#[cfg(feature = "web_server_capability")]
-mod remote_terminal_loop;
-#[cfg(feature = "web_server_capability")]
-pub use remote_terminal_loop::run_remote_client_terminal_loop;
 mod router;
 mod startup;
 mod stdin_ansi_parser;
 mod stdin_handler;
 mod terminal_escapes;
-#[cfg(feature = "web_server_capability")]
-pub mod web_client;
-#[cfg(feature = "web_server_capability")]
-pub mod web_protocol;
 
 use log::info;
 use std::env::current_exe;
 use std::io::{self, Write};
-use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use zellij_utils::errors::FatalError;
 
-#[cfg(feature = "web_server_capability")]
-static ASYNC_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-#[cfg(feature = "web_server_capability")]
-use std::sync::OnceLock;
-
 use crate::terminal_escapes::{
     announce_nested, enter_terminal, say_bye, write_seqs, ClientTeardown, CLEAR_SCREEN,
     ENABLE_BRACKETED_PASTE, ENABLE_FOCUS_REPORTING,
 };
-
-/// Spawn an async runtime for this client instance.
-///
-/// The number of workers can be configured to any nonzero value. Passing zero or `None` will spawn
-/// one worker per physical CPU on the current machine.
-#[cfg(feature = "web_server_capability")]
-pub(crate) fn async_runtime(maybe_number_of_workers: Option<usize>) -> tokio::runtime::Handle {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => handle.clone(),
-        _ => {
-            let number_of_workers = match maybe_number_of_workers {
-                Some(value) if value > 0 => {
-                    log::debug!(
-                        "Creating client async runtime with {} tasks based on user request",
-                        value
-                    );
-                    value
-                },
-                _ => {
-                    let cpus = num_cpus::get_physical();
-                    log::debug!(
-                        "Creating client async runtime with {} tasks based on CPU count",
-                        cpus
-                    );
-                    cpus
-                },
-            };
-            let runtime = ASYNC_RUNTIME.get_or_init(|| {
-                tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(number_of_workers)
-                    .thread_name("zellij client async-runtime")
-                    .enable_all()
-                    .build()
-                    .expect("Failed to create tokio runtime")
-            });
-            runtime.handle().clone()
-        },
-    }
-}
-
-#[derive(Debug)]
-pub enum RemoteClientError {
-    InvalidAuthToken,
-    SessionTokenExpired,
-    Unauthorized,
-    ConnectionFailed(String),
-    UrlParseError(url::ParseError),
-    IoError(std::io::Error),
-    Other(Box<dyn std::error::Error + Send + Sync>),
-}
-
-impl std::fmt::Display for RemoteClientError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RemoteClientError::InvalidAuthToken => write!(f, "Invalid authentication token"),
-            RemoteClientError::SessionTokenExpired => write!(f, "Session token expired"),
-            RemoteClientError::Unauthorized => write!(f, "Unauthorized"),
-            RemoteClientError::ConnectionFailed(msg) => write!(f, "Connection failed: {}", msg),
-            RemoteClientError::UrlParseError(e) => write!(f, "Invalid URL: {}", e),
-            RemoteClientError::IoError(e) => write!(f, "IO error: {}", e),
-            RemoteClientError::Other(e) => write!(f, "{}", e),
-        }
-    }
-}
-
-impl std::error::Error for RemoteClientError {}
-
-impl From<url::ParseError> for RemoteClientError {
-    fn from(error: url::ParseError) -> Self {
-        RemoteClientError::UrlParseError(error)
-    }
-}
-
-impl From<std::io::Error> for RemoteClientError {
-    fn from(error: std::io::Error) -> Self {
-        RemoteClientError::IoError(error)
-    }
-}
-
-impl From<serde_json::Error> for RemoteClientError {
-    fn from(error: serde_json::Error) -> Self {
-        RemoteClientError::Other(Box::new(error))
-    }
-}
-
-#[cfg(feature = "web_server_capability")]
-impl From<isahc::http::Error> for RemoteClientError {
-    fn from(error: isahc::http::Error) -> Self {
-        RemoteClientError::Other(Box::new(error))
-    }
-}
-
-#[cfg(feature = "web_server_capability")]
-impl From<isahc::Error> for RemoteClientError {
-    fn from(error: isahc::Error) -> Self {
-        RemoteClientError::Other(Box::new(error))
-    }
-}
 
 use crate::stdin_ansi_parser::{AnsiStdinInstruction, StdinAnsiParser, SyncOutput};
 use crate::{
@@ -178,7 +64,6 @@ pub(crate) enum ClientInstruction {
     UnblockCliPipeInput(()), // String -> pipe name
     CliPipeOutput((), ()),   // String -> pipe name, String -> output
     QueryTerminalSize,
-    StartWebServer,
     #[allow(dead_code)] // we need the session name here even though we're not currently using it
     RenamedSession(String), // String -> new session name
     ConfigFileUpdated,
@@ -209,7 +94,6 @@ impl From<ServerToClientMsg> for ClientInstruction {
             },
             ServerToClientMsg::CliPipeOutput { .. } => ClientInstruction::CliPipeOutput((), ()),
             ServerToClientMsg::QueryTerminalSize => ClientInstruction::QueryTerminalSize,
-            ServerToClientMsg::StartWebServer => ClientInstruction::StartWebServer,
             ServerToClientMsg::RenamedSession { name } => ClientInstruction::RenamedSession(name),
             ServerToClientMsg::ConfigFileUpdated => ClientInstruction::ConfigFileUpdated,
             ServerToClientMsg::ForwardQueryToHost {
@@ -228,8 +112,6 @@ impl From<ServerToClientMsg> for ClientInstruction {
             ServerToClientMsg::PaneRenderUpdate { .. } => ClientInstruction::UnblockInputThread,
             ServerToClientMsg::SubscribedPaneClosed { .. } => ClientInstruction::UnblockInputThread,
             ServerToClientMsg::EventUpdate { .. } => ClientInstruction::UnblockInputThread,
-            ServerToClientMsg::SetSoftKeyboard { .. } => ClientInstruction::UnblockInputThread,
-            ServerToClientMsg::MobileState { .. } => ClientInstruction::UnblockInputThread,
         }
     }
 }
@@ -249,7 +131,6 @@ impl From<&ClientInstruction> for ClientContext {
             ClientInstruction::UnblockCliPipeInput(..) => ClientContext::UnblockCliPipeInput,
             ClientInstruction::CliPipeOutput(..) => ClientContext::CliPipeOutput,
             ClientInstruction::QueryTerminalSize => ClientContext::QueryTerminalSize,
-            ClientInstruction::StartWebServer => ClientContext::StartWebServer,
             ClientInstruction::RenamedSession(..) => ClientContext::RenamedSession,
             ClientInstruction::ConfigFileUpdated => ClientContext::ConfigFileUpdated,
             ClientInstruction::ForwardQueryToHost { .. } => ClientContext::ForwardQueryToHost,
@@ -262,45 +143,6 @@ impl ErrorInstruction for ClientInstruction {
     fn error(err: String) -> Self {
         ClientInstruction::Error(err)
     }
-}
-
-#[cfg(feature = "web_server_capability")]
-fn spawn_web_server(cli_args: &CliArgs) -> Result<String, String> {
-    let mut cmd = Command::new(current_exe().map_err(|e| e.to_string())?);
-    if let Some(config_file_path) = Config::config_file_path(cli_args) {
-        let config_file_path_exists = Path::new(&config_file_path).exists();
-        if !config_file_path_exists {
-            return Err(format!(
-                "Config file: {} does not exist",
-                config_file_path.display()
-            ));
-        }
-        // this is so that if Zellij itself was started with a different config file, we'll use it
-        // to start the webserver
-        cmd.arg("--config");
-        cmd.arg(format!("{}", config_file_path.display()));
-    }
-    cmd.arg("web");
-    cmd.arg("-d");
-    let output = cmd.output();
-    match output {
-        Ok(output) => {
-            if output.status.success() {
-                Ok(String::from_utf8_lossy(&output.stdout).to_string())
-            } else {
-                Err(String::from_utf8_lossy(&output.stderr).to_string())
-            }
-        },
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-#[cfg(not(feature = "web_server_capability"))]
-fn spawn_web_server(_cli_args: &CliArgs) -> Result<String, String> {
-    log::error!(
-        "This version of Zellij was compiled without web server support, cannot run web server!"
-    );
-    Ok("".to_owned())
 }
 
 fn check_ipc_pipe_length(ipc_pipe: &Path) {
@@ -443,95 +285,6 @@ pub(crate) enum InputInstruction {
     Exit,
 }
 
-#[cfg(feature = "web_server_capability")]
-#[allow(clippy::too_many_arguments)]
-pub fn start_remote_client(
-    mut os_input: Box<dyn ClientOsApi>,
-    remote_session_url: &str,
-    token: Option<String>,
-    remember: bool,
-    forget: bool,
-    ca_cert: Option<std::path::PathBuf>,
-    insecure: bool,
-    async_worker_tasks: Option<usize>,
-) -> Result<Option<ConnectToSession>, RemoteClientError> {
-    info!("Starting Zellij client!");
-
-    let remote_session_name = remote_session_url
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or_default()
-        .to_owned();
-
-    let runtime = crate::async_runtime(async_worker_tasks);
-
-    let connections = remote_attach::attach_to_remote_session(
-        runtime.clone(),
-        os_input.clone(),
-        remote_session_url,
-        token,
-        remember,
-        forget,
-        ca_cert.as_deref(),
-        insecure,
-    )?;
-
-    let reconnect_to_session = None;
-    os_input.unset_raw_mode().unwrap();
-
-    enter_terminal(&*os_input, true);
-
-    envs::set_zellij("0".to_string());
-
-    let full_screen_ws = os_input.get_terminal_size();
-
-    os_input.set_raw_mode();
-    write_seqs(
-        &*os_input,
-        &[ENABLE_BRACKETED_PASTE, ENABLE_FOCUS_REPORTING],
-    );
-    // Announce unconditionally: whether there is a Zellij host on the other
-    // side of the terminal is learnt from it answering, not from the
-    // environment (which a remote pane, for one, does not carry over).
-    announce_nested(&*os_input, &remote_session_name);
-    let host_contacted = Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-    std::panic::set_hook({
-        use zellij_utils::errors::handle_panic;
-        let os_input = os_input.clone();
-        Box::new(move |info| {
-            os_input.disable_mouse().non_fatal();
-            if let Ok(()) = os_input.unset_raw_mode() {
-                handle_panic::<ClientInstruction>(info, None);
-            }
-        })
-    });
-
-    let teardown = ClientTeardown::new(full_screen_ws.rows, true);
-
-    runtime.block_on(run_remote_client_terminal_loop(
-        os_input.clone(),
-        connections,
-        Some(remote_session_name.clone()),
-        host_contacted.clone(),
-    ))?;
-
-    if host_contacted.load(std::sync::atomic::Ordering::Relaxed) {
-        say_bye(&*os_input);
-    }
-
-    let exit_msg = String::from("Bye from Zellij!");
-
-    if reconnect_to_session.is_none() {
-        teardown.tear_down(&*os_input, exit_msg, 0);
-    } else {
-        write_seqs(&*os_input, &[CLEAR_SCREEN]);
-    }
-
-    Ok(reconnect_to_session)
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn start_client(
     mut os_input: Box<dyn ClientOsApi>,
@@ -566,7 +319,6 @@ pub fn start_client(
     let support_kitty_graphics_protocol = config_options
         .support_kitty_graphics_protocol
         .unwrap_or(true);
-    let should_start_web_server = config_options.web_server.unwrap_or(false);
     if tracing_attach {
         log::info!(
             "attach trace: client pid={} terminal preparation begin",
@@ -591,14 +343,6 @@ pub fn start_client(
 
     let full_screen_ws = os_input.get_terminal_size();
 
-    let web_server_ip = config_options
-        .web_server_ip
-        .unwrap_or_else(|| IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
-    let web_server_port = config_options.web_server_port.unwrap_or(8082);
-    let has_certificate =
-        config_options.web_server_cert.is_some() && config_options.web_server_key.is_some();
-    let enforce_https_for_localhost = config_options.enforce_https_for_localhost.unwrap_or(false);
-
     let terminal_teardown = ClientTeardown::at_startup(!explicitly_disable_kitty_keyboard_protocol);
 
     let startup = crate::startup::StartupContext::attached(
@@ -606,7 +350,6 @@ pub fn start_client(
         &config_options,
         full_screen_ws,
         terminal_teardown,
-        should_start_web_server,
     );
     if tracing_attach {
         log::info!(
@@ -796,17 +539,10 @@ pub fn start_client(
 
     let outcome = crate::client_loop::ClientLoop {
         os_input: &*os_input,
-        cli_args: &cli_args,
         command_is_executing: &mut command_is_executing,
         stdin_ansi_parser: &stdin_ansi_parser,
         send_input_instructions: &send_input_instructions,
         nested_reannounce: &nested_reannounce,
-        web_server_address: crate::client_loop::WebServerAddress {
-            ip: web_server_ip,
-            port: web_server_port,
-            has_certificate,
-            enforce_https_for_localhost,
-        },
         teardown,
         synchronised_output: match os_input.env_variable("TERM").as_deref() {
             Some("alacritty") => Some(SyncOutput::DCS),
@@ -845,8 +581,6 @@ pub fn start_server_detached(
     envs::set_zellij("0".to_string());
     config.env.set_vars();
 
-    let should_start_web_server = config_options.web_server.unwrap_or(false);
-
     // Only a session that does not exist yet can be started detached;
     // attaching needs a controlling terminal to attach to.
     if matches!(info, ClientInfo::Attach(..) | ClientInfo::Watch(..)) {
@@ -854,11 +588,7 @@ pub fn start_server_detached(
         std::process::exit(1);
     }
 
-    let startup = crate::startup::StartupContext::detached(
-        &cli_args,
-        &config_options,
-        should_start_web_server,
-    );
+    let startup = crate::startup::StartupContext::detached(&cli_args, &config_options);
     let (first_msg, ipc_pipe) = startup.first_message(&mut os_input, info, Default::default());
 
     if let Err(e) = os_input.connect_to_server(&ipc_pipe) {

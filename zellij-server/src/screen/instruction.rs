@@ -221,8 +221,8 @@ pub enum ScreenInstruction {
         Option<Vec<CommandOrPlugin>>, // initial_panes
         bool,                         // block_on_first_terminal
         bool,                         // should_change_focus_to_new_tab
-        (ClientId, bool),             // bool -> is_web_client
-        Option<NotificationEnd>,      // completion signal
+        ClientId,
+        Option<NotificationEnd>, // completion signal
     ),
     /// Apply layout to tab with given stable ID.
     ///
@@ -234,9 +234,9 @@ pub enum ScreenInstruction {
         Vec<(u32, HoldForCommand)>, // new pane pids
         Vec<(u32, HoldForCommand)>, // new floating pane pids
         HashMap<RunPluginOrAlias, Vec<u32>>,
-        usize,                          // tab_id - stable identifier from NewTab instruction
-        bool,                           // should change focus to new tab
-        (ClientId, bool),               // bool -> is_web_client
+        usize, // tab_id - stable identifier from NewTab instruction
+        bool,  // should change focus to new tab
+        ClientId,
         Option<NotificationEnd>,        // regular completion signal
         Option<(u32, NotificationEnd)>, // blocking_terminal (terminal_id, completion_tx)
     ),
@@ -351,7 +351,6 @@ pub enum ScreenInstruction {
     Copy(ClientId, Option<NotificationEnd>),
     AddClient(
         ClientId,
-        bool,                // is_web_client
         Size,                // client viewport size
         Option<usize>,       // tab position to focus
         Option<(u32, bool)>, // (pane_id, is_plugin) => pane_id to focus
@@ -708,11 +707,6 @@ pub enum ScreenInstruction {
     PageScrollUpInPaneId(PaneId),
     PageScrollDownInPaneId(PaneId),
     TogglePaneIdFullscreen(PaneId),
-    SetMobileRenderPreferences {
-        client_id: ClientId,
-        single_pane: bool,
-        fit: bool,
-    },
     TogglePaneEmbedOrEjectForPaneId(PaneId),
     CloseTabWithIndex(usize),
     BreakPanesToNewTab {
@@ -763,7 +757,6 @@ pub enum ScreenInstruction {
     EmbedMultiplePanes(Vec<PaneId>, ClientId),
     TogglePaneInGroup(ClientId, Option<NotificationEnd>),
     ToggleGroupMarking(ClientId, Option<NotificationEnd>),
-    SessionSharingStatusChange(bool),
     SetMouseSelectionSupport(PaneId, bool),
     InterceptKeyPresses(PluginId, ClientId),
     ClearKeyPressesIntercepts(ClientId),
@@ -827,10 +820,6 @@ pub enum ScreenInstruction {
     PreviousSwapLayoutWithTabId(usize, Option<NotificationEnd>),
     NextSwapLayoutWithTabId(usize, Option<NotificationEnd>),
     MoveTabWithTabId(usize, Direction, Option<NotificationEnd>),
-    SetSoftKeyboard {
-        client_id: ClientId,
-        on: bool,
-    },
     FocusHostSession(ClientId, Option<NotificationEnd>),
     FocusGuestSession(ClientId, Option<NotificationEnd>),
     ToggleHostFullscreen(ClientId, Option<NotificationEnd>),

@@ -288,7 +288,6 @@ pub fn hints_for_mode(mi: &ModeInfo) -> Vec<Hint> {
     ]} else if mi.mode == IM::Session { vec![
         hint("Detach", "Detach", action_key(&km, &[A::Detach])),
         hint("Session Manager", "Manager", plugin_launch_key(&km, "session-manager")),
-        hint("Share", "Share", plugin_launch_key(&km, "zellij:share")),
         hint("Configure", "Config", plugin_launch_key(&km, "configuration")),
         hint("Layout Manager", "Layouts", plugin_launch_key(&km, "zellij:layout-manager")),
         hint("Plugin Manager", "Plugins", plugin_launch_key(&km, "plugin-manager")),

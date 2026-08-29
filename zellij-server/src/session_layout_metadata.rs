@@ -190,9 +190,6 @@ impl SessionLayoutMetadata {
             if location_string == "zellij:configuration-manager" {
                 return true;
             }
-            if location_string == "zellij:share" {
-                return true;
-            }
         }
         false
     }

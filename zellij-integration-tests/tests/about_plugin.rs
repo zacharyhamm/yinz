@@ -28,11 +28,10 @@ const DOWN_ARROW: &[u8] = b"\x1b[B";
 /// The "what's new" menu, top to bottom. The "Update Keybindings" page is not in it: that
 /// page sits behind `u`, offered only when the config lacks one of the new binds, and the
 /// default config binds them all.
-const RELEASE_NOTE_PAGES: [&str; 6] = [
+const RELEASE_NOTE_PAGES: [&str; 5] = [
     "Nested Sessions",
     "Kitty Graphics Protocol",
     "Scroll By Command",
-    "Mobile Web UI",
     "New UI",
     "Focus Last Pane and Fullscreen Floating Panes",
 ];

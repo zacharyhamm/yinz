@@ -32,8 +32,6 @@ fn config_options_to_string() {
         serialization_interval 1
         disable_session_metadata true
         support_kitty_keyboard_protocol false
-        web_server true
-        web_sharing "disabled"
     "##;
     let document: KdlDocument = fake_config.parse().unwrap();
     let deserialized = Options::from_kdl(&document).unwrap();
@@ -81,8 +79,6 @@ fn config_options_to_string_with_comments() {
         serialization_interval 1
         disable_session_metadata true
         support_kitty_keyboard_protocol false
-        web_server true
-        web_sharing "disabled"
     "##;
     let document: KdlDocument = fake_config.parse().unwrap();
     let deserialized = Options::from_kdl(&document).unwrap();

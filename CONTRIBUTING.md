@@ -102,8 +102,8 @@ No feature flags are involved: the binary never carries plugins, so the plugins 
 installed into one of the lookup locations above.
 
 `protoc` is required to regenerate the protobuf definitions in `zellij-utils/assets/prost*`
-via `cargo x proto`. The `web_server_capability` and `vendored_curl` features are optional
-and may be dropped with `--no-default-features`.
+via `cargo x proto`. The `vendored_curl` feature is optional and may be dropped with
+`--no-default-features`.
 
 ## Running the end-to-end tests
 Zellij includes some end-to-end tests which test the whole application as a black-box from the outside.

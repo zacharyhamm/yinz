@@ -175,11 +175,8 @@ three chunks by binary (`ls zellij-integration-tests/tests` is the list): `about
 `-E 'binary(/^(a|b|…)$/)'`.
 
 **Known red, none of it this branch's** (CLAUDE.md keeps the list): `misc::quit_with_keybinding`,
-the `nested_*` group, `stacked_pane_list::a_stack_list_survives_session_resurrection`; three
-`zellij-client web_client_tests` (`test_full_session_flow`,
-`test_regular_token_uses_first_client_connected_for_new_session`,
-`test_read_only_token_uses_watcher_message_type`) fail on `main` itself, verified in a control
-worktree. `cli::send_command_through_the_cli` is a snapshot race under load. The box is shared
+the `nested_*` group, `stacked_pane_list::a_stack_list_survives_session_resurrection`.
+`cli::send_command_through_the_cli` is a snapshot race under load. The box is shared
 with sibling worktrees running their own gates: run a red test alone before believing it.
 
 One race worth knowing about, fixed in its test: since `main`'s `9003d98e6` a tab's plugins hear

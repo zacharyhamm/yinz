@@ -218,7 +218,7 @@ impl Screen {
         let regular_client_ids: Vec<ClientId> = self
             .connected_clients
             .borrow()
-            .keys()
+            .iter()
             .filter(|client_id| !self.watcher_clients.contains_key(client_id))
             .copied()
             .collect();
@@ -399,7 +399,6 @@ impl Screen {
                     .non_fatal();
             }
             self.clear_bell_for_pane_id(pane_id, client_id);
-            self.reconcile_single_pane_focus(client_id);
             self.sync_scroll_mode_on_focus(client_id).non_fatal();
             self.log_and_report_session_state().non_fatal();
         }

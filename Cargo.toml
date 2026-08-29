@@ -56,7 +56,6 @@ members = [
     "default-plugins/configuration",
     "default-plugins/plugin-manager",
     "default-plugins/about",
-    "default-plugins/share",
     "default-plugins/multiple-select",
     "default-plugins/layout-manager",
     "default-plugins/link",
@@ -195,11 +194,9 @@ bin-dir = "{ bin }{ binary-ext }"
 pkg-fmt = "tgz"
 
 [features]
-# See remarks in zellij_utils/Cargo.toml
-default = ["vendored_curl", "web_server_capability"]
+default = ["vendored_curl"]
 vendored_curl = ["zellij-utils/vendored_curl"]
 unstable = ["zellij-client/unstable", "zellij-utils/unstable"]
-web_server_capability = ["zellij-client/web_server_capability", "zellij-server/web_server_capability", "zellij-utils/web_server_capability"]
 # The dockerized end-to-end suite. Off by default so an ordinary `cargo test` does not build
 # libssh2 and OpenSSL for five `#[ignore]`d tests; `cargo x ci e2e` turns it on.
 e2e = ["dep:ssh2"]

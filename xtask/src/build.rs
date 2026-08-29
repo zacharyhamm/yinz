@@ -3,7 +3,7 @@
 //! Currently has the following functions:
 //!
 //! - [`build`]: Builds general cargo projects (i.e. zellij components) with `cargo build`
-use crate::{flags, metadata, WorkspaceMember};
+use crate::{flags, WorkspaceMember};
 use anyhow::Context;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -93,23 +93,6 @@ pub fn build(sh: &Shell, flags: flags::Build) -> anyhow::Result<()> {
             let mut base_cmd = cmd!(sh, "{cargo} build");
             if flags.release {
                 base_cmd = base_cmd.arg("--release");
-            }
-            if flags.no_web {
-                // Check if this crate has web features that need modification
-                match metadata::get_no_web_features(sh, crate_name)
-                    .context("Failed to check web features")?
-                {
-                    Some(features) => {
-                        base_cmd = base_cmd.arg("--no-default-features");
-                        if !features.is_empty() {
-                            base_cmd = base_cmd.arg("--features");
-                            base_cmd = base_cmd.arg(features);
-                        }
-                    },
-                    None => {
-                        // Crate doesn't have web features, build normally
-                    },
-                }
             }
             base_cmd = base_cmd.args(&flags.args);
             base_cmd.run().with_context(err_context)?;
@@ -403,11 +386,6 @@ fn run_proto_codegen(sh: &Shell, force: bool) {
             "assets/prost_ipc",
             "src/client_server_contract",
             "generated_client_server_api.rs",
-        ),
-        (
-            "assets/prost_web_server",
-            "src/web_server_contract",
-            "generated_web_server_api.rs",
         ),
         (
             "assets/prost_nested_session",

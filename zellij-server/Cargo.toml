@@ -85,9 +85,6 @@ tempfile = "3.2.0"
 wasmi = { version = "1.1.0", features = ["std"] }
 rusqlite = { version = "0.30", default-features = false, features = ["bundled"] }
 
-[features]
-web_server_capability = ["zellij-utils/web_server_capability"]
-
 # `test = false` keeps `cargo test` (and therefore `cargo x test`) from building and running the
 # bench binary in test mode, which would slow the test command down for no coverage gain.
 [[bench]]

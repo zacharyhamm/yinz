@@ -8,9 +8,8 @@ use crate::{
     },
 };
 use clap::builder::styling::{AnsiColor, Color, Style, Styles};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
-use std::net::IpAddr;
 use std::path::PathBuf;
 use url::Url;
 
@@ -310,10 +309,6 @@ pub enum Command {
     #[clap(name = "setup", value_parser)]
     Setup(Setup),
 
-    /// Run a web server to serve terminal sessions
-    #[clap(name = "web", value_parser)]
-    Web(WebCli),
-
     /// Send actions to a specific session
     #[clap(visible_alias = "ac")]
     #[clap(subcommand)]
@@ -398,105 +393,6 @@ pub struct EventsCli {
     pub event_type: Vec<String>,
 }
 
-#[derive(Debug, Clone, Args, Serialize, Deserialize)]
-pub struct WebCli {
-    /// Start the server (default unless other arguments are specified)
-    #[clap(long, value_parser, display_order = 1)]
-    pub start: bool,
-
-    /// Stop the server
-    #[clap(long, value_parser, exclusive(true), display_order = 2)]
-    pub stop: bool,
-
-    /// Get the server status
-    #[clap(long, value_parser, conflicts_with("start"), display_order = 3)]
-    pub status: bool,
-
-    /// Timeout in seconds for the status check (default: 30)
-    #[clap(long, value_parser, requires = "status", display_order = 4)]
-    pub timeout: Option<u64>,
-
-    /// Run the server in the background
-    #[clap(
-        short,
-        long,
-        value_parser,
-        conflicts_with_all(&["stop", "status", "create_token", "revoke_token", "revoke_all_tokens"]),
-        display_order = 5
-    )]
-    pub daemonize: bool,
-    /// Create a login token for the web interface, will only be displayed once and cannot later be
-    /// retrieved. Returns the token name and the token.
-    #[clap(long, value_parser, exclusive(true), display_order = 7)]
-    pub create_token: bool,
-    /// Optional name for the token
-    #[clap(long, value_parser, value_name = "TOKEN_NAME", display_order = 8)]
-    pub token_name: Option<String>,
-    /// Create a read-only login token (can only attach to existing sessions as watcher)
-    #[clap(long, value_parser, exclusive(true), display_order = 9)]
-    pub create_read_only_token: bool,
-    /// Revoke a login token by its name
-    #[clap(
-        long,
-        value_parser,
-        exclusive(true),
-        value_name = "TOKEN NAME",
-        display_order = 10
-    )]
-    pub revoke_token: Option<String>,
-    /// Revoke all login tokens
-    #[clap(long, value_parser, exclusive(true), display_order = 11)]
-    pub revoke_all_tokens: bool,
-    /// List token names and their creation dates (cannot show actual tokens)
-    #[clap(long, value_parser, exclusive(true), display_order = 12)]
-    pub list_tokens: bool,
-    /// The ip address to listen on locally for connections (defaults to 127.0.0.1)
-    #[clap(
-        long,
-        value_parser,
-        conflicts_with_all(&["stop", "create_token", "revoke_token", "revoke_all_tokens"]),
-        display_order = 13
-    )]
-    pub ip: Option<IpAddr>,
-    /// The port to listen on locally for connections (defaults to 8082)
-    #[clap(
-        long,
-        value_parser,
-        conflicts_with_all(&["stop", "create_token", "revoke_token", "revoke_all_tokens"]),
-        display_order = 14
-    )]
-    pub port: Option<u16>,
-    /// The path to the SSL certificate (required if not listening on 127.0.0.1)
-    #[clap(
-        long,
-        value_parser,
-        conflicts_with_all(&["stop", "status", "create_token", "revoke_token", "revoke_all_tokens"]),
-        display_order = 15
-    )]
-    pub cert: Option<PathBuf>,
-    /// The path to the SSL key (required if not listening on 127.0.0.1)
-    #[clap(
-        long,
-        value_parser,
-        conflicts_with_all(&["stop", "status", "create_token", "revoke_token", "revoke_all_tokens"]),
-        display_order = 16
-    )]
-    pub key: Option<PathBuf>,
-}
-
-impl WebCli {
-    pub fn get_start(&self) -> bool {
-        self.start
-            || !(self.stop
-                || self.status
-                || self.create_token
-                || self.create_read_only_token
-                || self.revoke_token.is_some()
-                || self.revoke_all_tokens
-                || self.list_tokens)
-    }
-}
-
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum SessionCommand {
     /// Change the behaviour of zellij
@@ -554,26 +450,6 @@ pub enum Sessions {
         /// If resurrecting a dead session, immediately run all its commands on startup
         #[clap(short, long)]
         force_run_commands: bool,
-
-        /// Authentication token for remote sessions
-        #[clap(short('t'), long, value_parser)]
-        token: Option<String>,
-
-        /// Save session for automatic re-authentication (4 weeks)
-        #[clap(short('r'), long, value_parser)]
-        remember: bool,
-
-        /// Delete saved session before connecting
-        #[clap(long, value_parser)]
-        forget: bool,
-
-        /// Path to a custom CA certificate (PEM format) for verifying the remote server
-        #[clap(long, value_name = "FILE", value_parser)]
-        ca_cert: Option<PathBuf>,
-
-        /// Skip TLS certificate validation (DANGEROUS — development only)
-        #[clap(long, value_parser)]
-        insecure: bool,
     },
 
     /// Watch a session (read-only)

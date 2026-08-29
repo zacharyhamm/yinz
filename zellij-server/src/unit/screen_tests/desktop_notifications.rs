@@ -242,7 +242,7 @@ fn each_client_is_spoken_to_in_the_protocol_of_its_own_host() {
         create_new_screen_with_capture(size, true, true, true, true);
     new_tab(&mut screen, 1, 0);
     screen.set_client_size(2, size);
-    screen.add_client(2, false).unwrap();
+    screen.add_client(2).unwrap();
     screen.set_client_host_terminal_env(1, kitty_env());
     screen.set_client_host_terminal_env(2, BTreeMap::new());
     while server_receiver.try_recv().is_ok() {}
@@ -301,7 +301,7 @@ fn a_departing_client_leaves_no_host_notification_state_behind() {
         create_new_screen_with_capture(size, true, true, true, true);
     new_tab(&mut screen, 1, 0);
     screen.set_client_size(2, size);
-    screen.add_client(2, false).unwrap();
+    screen.add_client(2).unwrap();
     screen.set_client_host_terminal_env(2, kitty_env());
     assert!(screen.client_notification_protocols.contains_key(&2));
     assert!(screen.client_host_terminal_env.contains_key(&2));

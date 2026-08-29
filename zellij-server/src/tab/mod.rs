@@ -24,7 +24,6 @@ use crate::ui::damage::CellRect;
 use copy_command::CopyCommand;
 pub use mouse_handler::{MouseEffect, MouseHandler, PaneEdge, PaneResizeState, ResizeDragTarget};
 use std::env::temp_dir;
-use std::net::IpAddr;
 use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
@@ -33,7 +32,7 @@ use zellij_utils::data::PaneContents;
 use zellij_utils::data::{
     Direction, KeyWithModifier, NewPanePlacement, OverlayKind, OverlayPlacement, PaneInfo,
     PermissionStatus, PermissionType, PluginPermission, RegexHighlight, ResizeStrategy, Style,
-    StyledText, WebSharing,
+    StyledText,
 };
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::command::RunCommand;
@@ -344,8 +343,6 @@ pub(crate) struct Tab {
     styled_underlines: bool,
     osc8_hyperlinks: bool,
     explicitly_disable_kitty_keyboard_protocol: bool,
-    web_clients_allowed: bool,
-    web_sharing: WebSharing,
     mouse_hover_pane_id: HashMap<ClientId, PaneId>,
     dimmed_clients: HashSet<ClientId>,
     plugin_hover_pane_id: HashMap<ClientId, PaneId>,
@@ -364,11 +361,7 @@ pub(crate) struct Tab {
     osc133_command_selection: bool,
     word_separators: String,
     currently_marking_pane_group: Rc<RefCell<HashMap<ClientId, bool>>>,
-    connected_clients_in_app: Rc<RefCell<HashMap<ClientId, bool>>>, // bool -> is_web_client
-    // the below are the configured values - the ones that will be set if and when the web server
-    // is brought online
-    web_server_ip: IpAddr,
-    web_server_port: u16,
+    connected_clients_in_app: Rc<RefCell<HashSet<ClientId>>>,
     pub panes_with_pending_bell: HashSet<PaneId>,
     pub tab_has_pending_bell: bool,
     pub tab_bell_flash: bool, // currently in mid-notification-flash
@@ -1087,7 +1080,7 @@ impl Tab {
         default_mode_info: ModeInfo,
         pane_frame_style: PaneFrameStyle,
         auto_layout: bool,
-        connected_clients_in_app: Rc<RefCell<HashMap<ClientId, bool>>>, // bool -> is_web_client
+        connected_clients_in_app: Rc<RefCell<HashSet<ClientId>>>,
         session_is_mirrored: bool,
         client_id: Option<ClientId>,
         copy_options: CopyOptions,
@@ -1101,8 +1094,6 @@ impl Tab {
         osc8_hyperlinks: bool,
         explicitly_disable_kitty_keyboard_protocol: bool,
         default_editor: Option<PathBuf>,
-        web_clients_allowed: bool,
-        web_sharing: WebSharing,
         current_pane_group: Rc<RefCell<PaneGroups>>,
         currently_marking_pane_group: Rc<RefCell<HashMap<ClientId, bool>>>,
         advanced_mouse_actions: bool,
@@ -1111,8 +1102,6 @@ impl Tab {
         focus_follows_mouse: bool,
         mouse_click_through: bool,
         context_menu_on_right_click: bool,
-        web_server_ip: IpAddr,
-        web_server_port: u16,
     ) -> Self {
         let default_name = if name.is_empty() {
             format!("Tab #{}", id + 1)
@@ -1248,8 +1237,6 @@ impl Tab {
             osc8_hyperlinks,
             explicitly_disable_kitty_keyboard_protocol,
             default_editor,
-            web_clients_allowed,
-            web_sharing,
             mouse_hover_pane_id: HashMap::new(),
             plugin_hover_pane_id: HashMap::new(),
             mouse_last_pane_id: HashMap::new(),
@@ -1268,8 +1255,6 @@ impl Tab {
             osc133_command_selection: true,
             word_separators: DEFAULT_WORD_SEPARATORS.to_owned(),
             connected_clients_in_app,
-            web_server_ip,
-            web_server_port,
             panes_with_pending_bell: HashSet::new(),
             tab_has_pending_bell: false,
             tab_bell_flash: false,
@@ -2345,22 +2330,8 @@ impl Tab {
                 .clone();
             mode_info.shell = Some(self.default_shell.clone());
             mode_info.editor = self.default_editor.clone();
-            mode_info.web_clients_allowed = Some(self.web_clients_allowed);
-            mode_info.web_sharing = Some(self.web_sharing);
             mode_info.currently_marking_pane_group =
                 currently_marking_pane_group.get(client_id).copied();
-            mode_info.web_server_ip = Some(self.web_server_ip);
-            mode_info.web_server_port = Some(self.web_server_port);
-            mode_info.is_web_client = self
-                .connected_clients_in_app
-                .borrow()
-                .get(&client_id)
-                .copied();
-            if cfg!(feature = "web_server_capability") {
-                mode_info.web_server_capability = Some(true);
-            } else {
-                mode_info.web_server_capability = Some(false);
-            }
             mode_info.pane_frame_style = Some(self.pane_frame_style);
             for plugin_id in &tab_plugin_ids {
                 plugin_updates.push((
@@ -2993,7 +2964,7 @@ impl Tab {
                     self.character_cell_size.clone(),
                     self.connected_clients_in_app
                         .borrow()
-                        .keys()
+                        .iter()
                         .copied()
                         .collect(),
                     self.style,
@@ -3129,7 +3100,7 @@ impl Tab {
                     self.character_cell_size.clone(),
                     self.connected_clients_in_app
                         .borrow()
-                        .keys()
+                        .iter()
                         .copied()
                         .collect(),
                     self.style,
@@ -3230,7 +3201,7 @@ impl Tab {
                     self.character_cell_size.clone(),
                     self.connected_clients_in_app
                         .borrow()
-                        .keys()
+                        .iter()
                         .copied()
                         .collect(),
                     self.style,
@@ -3464,7 +3435,7 @@ impl Tab {
                     self.character_cell_size.clone(),
                     self.connected_clients_in_app
                         .borrow()
-                        .keys()
+                        .iter()
                         .copied()
                         .collect(),
                     self.style,
@@ -3749,7 +3720,7 @@ impl Tab {
                     self.character_cell_size.clone(),
                     self.connected_clients_in_app
                         .borrow()
-                        .keys()
+                        .iter()
                         .copied()
                         .collect(),
                     self.style,
@@ -4212,10 +4183,6 @@ impl Tab {
                     .filter(|_| self.floating_panes.panes_are_visible())
             })
             .or_else(|| self.tiled_panes.get_active_pane_id(client_id))
-    }
-    pub fn get_active_pane_id_or_first_selectable(&self, client_id: ClientId) -> Option<PaneId> {
-        self.get_active_pane_id(client_id)
-            .or_else(|| self.tiled_panes.first_selectable_pane_id())
     }
     fn get_active_terminal_id(&self, client_id: ClientId) -> Option<u32> {
         if let Some(PaneId::Terminal(pid)) = self.get_active_pane_id(client_id) {
@@ -8230,17 +8197,6 @@ impl Tab {
             .insert(pane.pid(), SuppressedPane::parked(pane));
     }
 
-    pub fn pane_last_activity(&self) -> HashMap<PaneId, u64> {
-        let now = Instant::now();
-        let mut activity = HashMap::new();
-        for pane_id in self.get_all_pane_ids() {
-            if let Some(pane) = self.get_pane_with_id(pane_id) {
-                let secs_ago = now.saturating_duration_since(pane.active_at()).as_secs();
-                activity.insert(pane_id, secs_ago);
-            }
-        }
-        activity
-    }
     pub fn pane_infos(&self) -> Vec<PaneInfo> {
         let mut pane_info = vec![];
         let current_pane_group = { self.current_pane_group.borrow().clone_inner() };
@@ -8816,13 +8772,6 @@ impl Tab {
         self.plugin_hover_pane_id.clear();
         self.mouse_last_pane_id.clear();
         self.mouse_help_text_visible.clear();
-    }
-    pub fn update_web_sharing(&mut self, web_sharing: WebSharing) {
-        let old_value = self.web_sharing;
-        self.web_sharing = web_sharing;
-        if old_value != self.web_sharing {
-            let _ = self.update_input_modes();
-        }
     }
     pub fn extract_suppressed_panes(&mut self) -> SuppressedPanes {
         let stack_list_members = &self.stack_list_of_member;

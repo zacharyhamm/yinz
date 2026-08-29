@@ -2668,11 +2668,6 @@ const REPLYING_COMMANDS: &[CommandType] = &[
     CommandType::OpenCommandPaneInNewTab,
     CommandType::OpenPluginPaneInNewTab,
     CommandType::OpenEditorPaneInNewTab,
-    CommandType::GenerateWebLoginToken,
-    CommandType::RevokeWebLoginToken,
-    CommandType::RevokeAllWebLoginTokens,
-    CommandType::RenameWebLoginToken,
-    CommandType::ListWebLoginTokens,
     CommandType::FsRead,
     CommandType::FsList,
     CommandType::FsMetadata,
@@ -2879,27 +2874,6 @@ fn a_pane_scrollback_reply_is_the_pane_contents() {
     assert_eq!(
         decode_error(CommandType::GetPaneScrollback, &reply),
         "no such pane"
-    );
-}
-
-#[test]
-fn web_login_tokens_arrive_as_one_row_per_token() {
-    use prost::Message;
-    use zellij_utils::plugin_api::plugin_command::ListTokensResponse;
-    let reply = ListTokensResponse {
-        tokens: vec!["laptop".to_owned(), "phone".to_owned()],
-        creation_times: vec!["2026-01-01".to_owned(), "2026-02-02".to_owned()],
-        read_only_flags: vec![false, true],
-        error: None,
-    }
-    .encode_to_vec();
-    assert_eq!(
-        decoded(
-            CommandType::ListWebLoginTokens,
-            &reply,
-            "return #v .. ' ' .. v[2].token .. ' ' .. v[2].creation_time .. ' ' .. tostring(v[2].read_only)"
-        ),
-        "2 phone 2026-02-02 true"
     );
 }
 

@@ -73,7 +73,7 @@ fn kitty_support_recomputed_on_client_detach() {
     };
     let mut screen = create_new_screen(size, true, true);
     new_tab(&mut screen, 1, 0);
-    screen.add_client(2, false).expect("TEST");
+    screen.add_client(2).expect("TEST");
     screen.update_kitty_graphics_support(1, false);
     screen.update_kitty_graphics_support(2, true);
     screen.remove_client(2).expect("TEST");
@@ -136,7 +136,7 @@ fn sixel_support_recomputed_on_client_detach() {
     };
     let mut screen = create_new_screen(size, true, true);
     new_tab(&mut screen, 1, 0);
-    screen.add_client(2, false).expect("TEST");
+    screen.add_client(2).expect("TEST");
     screen.update_sixel_support(1, false);
     screen.update_sixel_support(2, true);
     screen.remove_client(2).expect("TEST");

@@ -91,16 +91,6 @@ impl Page {
                         let main_screen_builder = main_screen_builder.clone();
                         move || Page::new_scroll_by_command(keybinding_state, main_screen_builder)
                     })),
-                    ActiveComponent::new(TextOrCustomRender::Text(main_menu_item(
-                        "Mobile Web UI",
-                    )))
-                    .with_hover(TextOrCustomRender::Text(
-                        main_menu_item("Mobile Web UI").selected(),
-                    ))
-                    .with_left_click_action(ClickAction::new_change_page({
-                        let link_executable = link_executable.clone();
-                        move || Page::new_mobile_web_ui(link_executable)
-                    })),
                     ActiveComponent::new(TextOrCustomRender::Text(main_menu_item("New UI")))
                     .with_hover(TextOrCustomRender::Text(
                         main_menu_item("New UI").selected(),
@@ -450,54 +440,6 @@ impl Page {
             )])])
             .with_help(Box::new(|_hovering_over_link, _menu_item_is_selected| {
                 esc_to_go_back_help()
-            }))
-    }
-    fn new_mobile_web_ui(link_executable: Rc<RefCell<String>>) -> Page {
-        Page::new()
-            .with_title(Text::new("Mobile Web UI").color_range(0, ..))
-            .with_paragraph(vec![
-                ComponentLine::new(vec![ActiveComponent::new(TextOrCustomRender::Text(
-                    Text::new("The web client now has a dedicated mobile interface."),
-                ))]),
-                ComponentLine::new(vec![ActiveComponent::new(TextOrCustomRender::Text(
-                    Text::new("It provides touch controls and a layout adapted to small screens,")
-                        .color_substring(1, "touch controls"),
-                ))]),
-                ComponentLine::new(vec![ActiveComponent::new(TextOrCustomRender::Text(
-                    Text::new("making sessions usable from a phone or a tablet."),
-                ))]),
-                ComponentLine::new(vec![ActiveComponent::new(TextOrCustomRender::Text(
-                    Text::new("Sessions and panes can be switched directly from this interface.")
-                        .color_substring(1, "Sessions and panes"),
-                ))]),
-            ])
-            .with_paragraph(vec![
-                ComponentLine::new(vec![ActiveComponent::new(TextOrCustomRender::Text(
-                    Text::new("The web client can also be installed as a standalone app (PWA)")
-                        .color_substring(1, "standalone app (PWA)"),
-                ))]),
-                ComponentLine::new(vec![ActiveComponent::new(TextOrCustomRender::Text(
-                    Text::new("directly from the browser."),
-                ))]),
-            ])
-            .with_paragraph(vec![ComponentLine::new(vec![
-                ActiveComponent::new(TextOrCustomRender::Text(
-                    Text::new("Learn more: ").color_range(2, ..),
-                )),
-                ActiveComponent::new(TextOrCustomRender::Text(Text::new(
-                    "https://zellij.dev/tutorials/web-client/",
-                )))
-                .with_hover(TextOrCustomRender::CustomRender(
-                    Box::new(web_client_link_selected),
-                    Box::new(web_client_link_selected_len),
-                ))
-                .with_left_click_action(ClickAction::new_open_link(
-                    "https://zellij.dev/tutorials/web-client/".to_owned(),
-                    link_executable.clone(),
-                )),
-            ])])
-            .with_help(Box::new(|hovering_over_link, menu_item_is_selected| {
-                esc_go_back_plus_link_hover(hovering_over_link, menu_item_is_selected)
             }))
     }
     fn new_ui() -> Page {
@@ -1121,19 +1063,6 @@ fn sponsors_link_text_selected_len() -> usize {
     34
 }
 
-fn web_client_link_selected(x: usize, y: usize) -> usize {
-    print!(
-        "\u{1b}[{};{}H\u{1b}[m\u{1b}[1;4mhttps://zellij.dev/tutorials/web-client/",
-        y + 1,
-        x + 1
-    );
-    40
-}
-
-fn web_client_link_selected_len() -> usize {
-    40
-}
-
 // Text components
 fn whats_new_title() -> Text {
     Text::new("What's new?")
@@ -1204,18 +1133,6 @@ fn link_hover_help() -> Text {
     Text::new("Help: Click or Shift-Click to open in browser")
         .color_range(3, 6..=10)
         .color_range(3, 15..=25)
-}
-
-fn esc_go_back_plus_link_hover(hovering_over_link: bool, _menu_item_is_selected: bool) -> Text {
-    if hovering_over_link {
-        let help_text = "Help: Click or Shift-Click to open in browser".to_string();
-        Text::new(help_text)
-            .color_range(3, 6..=10)
-            .color_range(3, 15..=25)
-    } else {
-        let help_text = "Help: <ESC> - Go back".to_string();
-        Text::new(help_text).color_range(1, 6..=10)
-    }
 }
 
 fn esc_to_go_back_help() -> Text {

@@ -3,6 +3,7 @@ syntax = "proto3";
 package api.plugin_permission;
 
 enum PermissionType {
+  reserved 11;
   ReadApplicationState = 0;
   ChangeApplicationState = 1;
   OpenFiles = 2;
@@ -14,7 +15,6 @@ enum PermissionType {
   MessageAndLaunchOtherPlugins = 8;
   Reconfigure = 9;
   FullHdAccess = 10;
-  StartWebServer = 11;
   InterceptInput = 12;
   ReadPaneContents = 13;
   RunActionsAsUser = 14;

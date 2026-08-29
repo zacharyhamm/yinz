@@ -46,7 +46,7 @@ use zellij_utils::{
     data::{
         ClientInfo, CommandOrPlugin, ContextMenuContext, Event, EventType, FloatingPaneCoordinates,
         InputMode, LayoutInfo, LayoutWithError, MessageToPlugin, OverlayPlacement,
-        PermissionStatus, PermissionType, PipeMessage, PipeSource, WebServerStatus,
+        PermissionStatus, PermissionType, PipeMessage, PipeSource,
     },
     errors::{prelude::*, ContextType, PluginContext},
     input::{
@@ -148,8 +148,8 @@ pub enum PluginInstruction {
         Option<Vec<CommandOrPlugin>>, // initial_panes
         bool,                         // block_on_first_terminal
         bool,                         // should change focus to new tab
-        (ClientId, bool),             // bool -> is_web_client
-        Option<NotificationEnd>,      // completion signal
+        ClientId,
+        Option<NotificationEnd>, // completion signal
     ),
     OverrideLayout(
         Option<PathBuf>,        // cwd
@@ -263,8 +263,6 @@ pub enum PluginInstruction {
     WatchFilesystem,
     ListClientsToPlugin(SessionLayoutMetadata, PluginId, ClientId),
     ChangePluginHostDir(PathBuf, PluginId, ClientId),
-    WebServerStarted(String), // String -> the base url of the web server
-    FailedToStartWebServer(String),
     PaneRenderReport(PaneRenderReport),
     UserInput {
         client_id: ClientId,
@@ -681,7 +679,7 @@ pub(crate) fn plugin_thread_main(
                 initial_panes,
                 block_on_first_terminal,
                 should_change_focus_to_new_tab,
-                (client_id, is_web_client),
+                client_id,
                 completion_tx,
             ) => {
                 // prefer connected clients so as to avoid opening plugins in the background for
@@ -782,7 +780,7 @@ pub(crate) fn plugin_thread_main(
                     initial_panes,
                     block_on_first_terminal,
                     should_change_focus_to_new_tab,
-                    (client_id, is_web_client),
+                    client_id,
                     completion_tx,
                 )));
             },
@@ -1388,22 +1386,6 @@ pub(crate) fn plugin_thread_main(
                         )),
                     );
                 }
-            },
-            PluginInstruction::WebServerStarted(base_url) => {
-                let updates = vec![(
-                    None,
-                    None,
-                    Event::WebServerStatus(WebServerStatus::Online(base_url)),
-                )];
-                wasm_bridge
-                    .update_plugins(updates, shutdown_send.clone())
-                    .non_fatal();
-            },
-            PluginInstruction::FailedToStartWebServer(error) => {
-                let updates = vec![(None, None, Event::FailedToStartWebServer(error))];
-                wasm_bridge
-                    .update_plugins(updates, shutdown_send.clone())
-                    .non_fatal();
             },
             PluginInstruction::PaneRenderReport(pane_render_report) => {
                 wasm_bridge

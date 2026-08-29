@@ -64,7 +64,7 @@ pub use super::generated_api::api::{
         FsReadResponse as ProtobufFsReadResponse, FsRemovePayload, FsRenamePayload, FsWritePayload,
         GenerateRandomNamePayload,
         GenerateRandomNameResponse as ProtobufGenerateRandomNameResponse,
-        GenerateWebLoginTokenPayload, GetFocusedPaneInfoPayload,
+        GetFocusedPaneInfoPayload,
         GetFocusedPaneInfoResponse as ProtobufGetFocusedPaneInfoResponse, GetLayoutDirPayload,
         GetLayoutDirResponse as ProtobufGetLayoutDirResponse,
         GetPaneCwdPayload as ProtobufGetPaneCwdPayload,
@@ -93,10 +93,9 @@ pub use super::generated_api::api::{
         KillSessionsResponse as ProtobufKillSessionsResponse,
         ListNotificationsResponse as ProtobufListNotificationsResponse,
         ListOrphanedPanesResponse as ProtobufListOrphanedPanesResponse,
-        ListRecordingsResponse as ProtobufListRecordingsResponse, ListTokensResponse,
-        LoadNewPluginPayload, MessageToPluginPayload, MovePaneWithPaneIdInDirectionPayload,
-        MovePaneWithPaneIdPayload, MovePayload, NewBranchGitCheckout,
-        NewPluginArgs as ProtobufNewPluginArgs, NewTabPayload,
+        ListRecordingsResponse as ProtobufListRecordingsResponse, LoadNewPluginPayload,
+        MessageToPluginPayload, MovePaneWithPaneIdInDirectionPayload, MovePaneWithPaneIdPayload,
+        MovePayload, NewBranchGitCheckout, NewPluginArgs as ProtobufNewPluginArgs, NewTabPayload,
         NewTabResponse as ProtobufNewTabResponse, NewTabUnfocusedPayload,
         NewTabUnfocusedResponse as ProtobufNewTabUnfocusedResponse,
         NewTabsResponse as ProtobufNewTabsResponse, NewTabsWithLayoutInfoPayload,
@@ -155,10 +154,9 @@ pub use super::generated_api::api::{
         ReconfigurePayload, RecordingSummary as ProtobufRecordingSummary,
         RegexHighlight as ProtobufRegexHighlight, ReloadPluginPayload, RenameLayoutPayload,
         RenameLayoutResponse as ProtobufRenameLayoutResponse, RenameTabWithIdPayload,
-        RenameWebLoginTokenPayload, RenameWebTokenResponse, ReplacePaneWithExistingPanePayload,
-        RequestPluginPermissionPayload, RerunCommandPanePayload, ResizePaneIdWithDirectionPayload,
-        ResizePayload, RevealPaneWithIdPayload, RevokeAllWebTokensResponse, RevokeTokenResponse,
-        RevokeWebLoginTokenPayload, RunActionPayload, RunCommandPayload,
+        ReplacePaneWithExistingPanePayload, RequestPluginPermissionPayload,
+        RerunCommandPanePayload, ResizePaneIdWithDirectionPayload, ResizePayload,
+        RevealPaneWithIdPayload, RunActionPayload, RunCommandPayload,
         RunningCommand as ProtobufRunningCommand, SaveLayoutPayload,
         SaveLayoutResponse as ProtobufSaveLayoutResponse, SaveSessionPayload,
         SaveSessionResponse as ProtobufSaveSessionResponse, ScrollDownInPaneIdPayload,
@@ -169,10 +167,8 @@ pub use super::generated_api::api::{
         SetFloatingPanePinnedPayload, SetPaneAgentPayload, SetPaneBorderlessPayload,
         SetPaneColorPayload, SetPaneFrameStylePayload as ProtobufSetPaneFrameStylePayload,
         SetPaneRegexHighlightsPayload, SetPaneTitlePrefixPayload,
-        SetSelfMouseSelectionSupportPayload,
-        SetSoftKeyboardPayload as ProtobufSetSoftKeyboardPayload, SetTabProjectsPayload,
-        SetTimeoutPayload, ShowCursorPayload,
-        ShowFloatingPanesPayload as ProtobufShowFloatingPanesPayload,
+        SetSelfMouseSelectionSupportPayload, SetTabProjectsPayload, SetTimeoutPayload,
+        ShowCursorPayload, ShowFloatingPanesPayload as ProtobufShowFloatingPanesPayload,
         ShowFloatingPanesResponse as ProtobufShowFloatingPanesResponse, ShowPaneWithIdPayload,
         StackPanesPayload, SubscribePayload, SwitchSessionPayload, SwitchTabToIdPayload,
         SwitchTabToPayload, TabProject, ToggleFloatingPanesPayload, TogglePaneBorderlessPayload,
@@ -1786,12 +1782,6 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::DeleteAllDeadSessionsAndReply) => {
                 Ok(PluginCommand::DeleteAllDeadSessionsAndReply)
             },
-            Some(CommandName::SetSoftKeyboard) => match protobuf_plugin_command.payload {
-                Some(Payload::SetSoftKeyboardPayload(payload)) => {
-                    Ok(PluginCommand::SetSoftKeyboard(payload.on))
-                },
-                _ => Err("Mismatched payload for SetSoftKeyboard"),
-            },
             Some(CommandName::DumpSessionLayout) => match protobuf_plugin_command.payload {
                 Some(Payload::DumpSessionLayoutPayload(payload)) => {
                     Ok(PluginCommand::DumpSessionLayout {
@@ -2575,27 +2565,6 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for OpenFileInPlaceOfPlugin"),
             },
-            Some(CommandName::StartWebServer) => {
-                if protobuf_plugin_command.payload.is_some() {
-                    Err("StartWebServer should not have a payload")
-                } else {
-                    Ok(PluginCommand::StartWebServer)
-                }
-            },
-            Some(CommandName::StopWebServer) => {
-                if protobuf_plugin_command.payload.is_some() {
-                    Err("StopWebServer should not have a payload")
-                } else {
-                    Ok(PluginCommand::StopWebServer)
-                }
-            },
-            Some(CommandName::QueryWebServerStatus) => {
-                if protobuf_plugin_command.payload.is_some() {
-                    Err("QueryWebServerStatus should not have a payload")
-                } else {
-                    Ok(PluginCommand::QueryWebServerStatus)
-                }
-            },
             Some(CommandName::GroupAndUngroupPanes) => match protobuf_plugin_command.payload {
                 Some(Payload::GroupAndUngroupPanesPayload(group_and_ungroup_panes_payload)) => {
                     Ok(PluginCommand::GroupAndUngroupPanes(
@@ -2694,20 +2663,6 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for EmbedMultiplePanes"),
             },
-            Some(CommandName::ShareCurrentSession) => {
-                if protobuf_plugin_command.payload.is_some() {
-                    Err("ShareCurrentSession should not have a payload")
-                } else {
-                    Ok(PluginCommand::ShareCurrentSession)
-                }
-            },
-            Some(CommandName::StopSharingCurrentSession) => {
-                if protobuf_plugin_command.payload.is_some() {
-                    Err("StopSharingCurrentSession should not have a payload")
-                } else {
-                    Ok(PluginCommand::StopSharingCurrentSession)
-                }
-            },
             Some(CommandName::SetSelfMouseSelectionSupport) => {
                 match protobuf_plugin_command.payload {
                     Some(Payload::SetSelfMouseSelectionSupportPayload(
@@ -2717,44 +2672,6 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     )),
                     _ => Err("SetSelfMouseSelectionSupport requires a payload"),
                 }
-            },
-            Some(CommandName::GenerateWebLoginToken) => match protobuf_plugin_command.payload {
-                Some(Payload::GenerateWebLoginTokenPayload(generate_web_login_token_payload)) => {
-                    Ok(PluginCommand::GenerateWebLoginToken(
-                        generate_web_login_token_payload.token_label,
-                        generate_web_login_token_payload.read_only.unwrap_or(false),
-                    ))
-                },
-                _ => Err("GenerateWebLoginToken requires a payload"),
-            },
-            Some(CommandName::RevokeWebLoginToken) => match protobuf_plugin_command.payload {
-                Some(Payload::RevokeWebLoginTokenPayload(revoke_web_login_token_payload)) => Ok(
-                    PluginCommand::RevokeWebLoginToken(revoke_web_login_token_payload.token_label),
-                ),
-                _ => Err("RevokeWebLoginToken requires a payload"),
-            },
-            Some(CommandName::ListWebLoginTokens) => {
-                if protobuf_plugin_command.payload.is_some() {
-                    Err("ListWebLoginTokens should not have a payload")
-                } else {
-                    Ok(PluginCommand::ListWebLoginTokens)
-                }
-            },
-            Some(CommandName::RevokeAllWebLoginTokens) => {
-                if protobuf_plugin_command.payload.is_some() {
-                    Err("RevokeAllWebLoginTokens should not have a payload")
-                } else {
-                    Ok(PluginCommand::RevokeAllWebLoginTokens)
-                }
-            },
-            Some(CommandName::RenameWebLoginToken) => match protobuf_plugin_command.payload {
-                Some(Payload::RenameWebLoginTokenPayload(rename_web_login_token_payload)) => {
-                    Ok(PluginCommand::RenameWebLoginToken(
-                        rename_web_login_token_payload.old_name,
-                        rename_web_login_token_payload.new_name,
-                    ))
-                },
-                _ => Err("RenameWebLoginToken requires a payload"),
             },
             Some(CommandName::InterceptKeyPresses) => match protobuf_plugin_command.payload {
                 Some(_) => Err("InterceptKeyPresses should have no payload, found a payload"),
@@ -4179,12 +4096,6 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 name: CommandName::DeleteAllDeadSessionsAndReply as i32,
                 payload: None,
             }),
-            PluginCommand::SetSoftKeyboard(on) => Ok(ProtobufPluginCommand {
-                name: CommandName::SetSoftKeyboard as i32,
-                payload: Some(Payload::SetSoftKeyboardPayload(
-                    ProtobufSetSoftKeyboardPayload { on },
-                )),
-            }),
             PluginCommand::DumpSessionLayout { tab_index } => Ok(ProtobufPluginCommand {
                 name: CommandName::DumpSessionLayout as i32,
                 payload: tab_index.map(|idx| {
@@ -4870,18 +4781,6 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     },
                 )),
             }),
-            PluginCommand::StartWebServer => Ok(ProtobufPluginCommand {
-                name: CommandName::StartWebServer as i32,
-                payload: None,
-            }),
-            PluginCommand::StopWebServer => Ok(ProtobufPluginCommand {
-                name: CommandName::StopWebServer as i32,
-                payload: None,
-            }),
-            PluginCommand::QueryWebServerStatus => Ok(ProtobufPluginCommand {
-                name: CommandName::QueryWebServerStatus as i32,
-                payload: None,
-            }),
             PluginCommand::HighlightAndUnhighlightPanes(
                 panes_to_highlight,
                 panes_to_unhighlight,
@@ -4940,14 +4839,6 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     },
                 )),
             }),
-            PluginCommand::ShareCurrentSession => Ok(ProtobufPluginCommand {
-                name: CommandName::ShareCurrentSession as i32,
-                payload: None,
-            }),
-            PluginCommand::StopSharingCurrentSession => Ok(ProtobufPluginCommand {
-                name: CommandName::StopSharingCurrentSession as i32,
-                payload: None,
-            }),
             PluginCommand::SetSelfMouseSelectionSupport(support_mouse_selection) => {
                 Ok(ProtobufPluginCommand {
                     name: CommandName::SetSelfMouseSelectionSupport as i32,
@@ -4958,37 +4849,6 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     )),
                 })
             },
-            PluginCommand::GenerateWebLoginToken(token_label, read_only) => {
-                Ok(ProtobufPluginCommand {
-                    name: CommandName::GenerateWebLoginToken as i32,
-                    payload: Some(Payload::GenerateWebLoginTokenPayload(
-                        GenerateWebLoginTokenPayload {
-                            token_label,
-                            read_only: Some(read_only),
-                        },
-                    )),
-                })
-            },
-            PluginCommand::RevokeWebLoginToken(token_label) => Ok(ProtobufPluginCommand {
-                name: CommandName::RevokeWebLoginToken as i32,
-                payload: Some(Payload::RevokeWebLoginTokenPayload(
-                    RevokeWebLoginTokenPayload { token_label },
-                )),
-            }),
-            PluginCommand::ListWebLoginTokens => Ok(ProtobufPluginCommand {
-                name: CommandName::ListWebLoginTokens as i32,
-                payload: None,
-            }),
-            PluginCommand::RevokeAllWebLoginTokens => Ok(ProtobufPluginCommand {
-                name: CommandName::RevokeAllWebLoginTokens as i32,
-                payload: None,
-            }),
-            PluginCommand::RenameWebLoginToken(old_name, new_name) => Ok(ProtobufPluginCommand {
-                name: CommandName::RenameWebLoginToken as i32,
-                payload: Some(Payload::RenameWebLoginTokenPayload(
-                    RenameWebLoginTokenPayload { old_name, new_name },
-                )),
-            }),
             PluginCommand::InterceptKeyPresses => Ok(ProtobufPluginCommand {
                 name: CommandName::InterceptKeyPresses as i32,
                 payload: None,
@@ -7309,10 +7169,6 @@ mod tests {
                 | PluginCommand::OpenCommandPaneInPlaceOfPlugin(..)
                 | PluginCommand::OpenFileNearPlugin(..)
                 | PluginCommand::OpenFileFloatingNearPlugin(..)
-                | PluginCommand::StartWebServer
-                | PluginCommand::StopWebServer
-                | PluginCommand::ShareCurrentSession
-                | PluginCommand::StopSharingCurrentSession
                 | PluginCommand::OpenFileInPlaceOfPlugin(..)
                 | PluginCommand::GroupAndUngroupPanes(..)
                 | PluginCommand::HighlightAndUnhighlightPanes(..)
@@ -7320,13 +7176,7 @@ mod tests {
                 | PluginCommand::CloseMultiplePanes(_)
                 | PluginCommand::FloatMultiplePanes(_)
                 | PluginCommand::EmbedMultiplePanes(_)
-                | PluginCommand::QueryWebServerStatus
                 | PluginCommand::SetSelfMouseSelectionSupport(_)
-                | PluginCommand::GenerateWebLoginToken(..)
-                | PluginCommand::RevokeWebLoginToken(_)
-                | PluginCommand::ListWebLoginTokens
-                | PluginCommand::RevokeAllWebLoginTokens
-                | PluginCommand::RenameWebLoginToken(..)
                 | PluginCommand::InterceptKeyPresses
                 | PluginCommand::ClearKeyPressesIntercepts
                 | PluginCommand::ReplacePaneWithExistingPane(..)
@@ -7364,7 +7214,6 @@ mod tests {
                 | PluginCommand::KillSessionsAndReply(_)
                 | PluginCommand::DeleteDeadSessionAndReply(_)
                 | PluginCommand::DeleteAllDeadSessionsAndReply
-                | PluginCommand::SetSoftKeyboard(_)
                 | PluginCommand::FocusHostSession
                 | PluginCommand::ListRecordings
                 | PluginCommand::ListNotifications

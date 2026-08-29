@@ -76,9 +76,6 @@ pub(super) fn from_path(path: &PathBuf, base: Option<Config>) -> Result<Config, 
     if cleared.get::<bool>("env").unwrap_or(false) {
         base.env = Default::default();
     }
-    if cleared.get::<bool>("web_client").unwrap_or(false) {
-        base.web_client = Default::default();
-    }
     Config::from_kdl(&kdl, Some(base)).map_err(|e| {
         ConfigError::Lua(format!(
             "{} generated invalid configuration: {e}",

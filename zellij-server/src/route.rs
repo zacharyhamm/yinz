@@ -1101,8 +1101,6 @@ pub(crate) fn route_action(
             first_pane_unblock_condition,
         } => {
             let shell = default_shell.clone();
-            let is_web_client = false; // actions cannot be initiated directly from the web
-
             // Construct completion_tx conditionally
             let (completion_tx, block_on_first_terminal) = if let Some(condition) =
                 first_pane_unblock_condition
@@ -1125,7 +1123,7 @@ pub(crate) fn route_action(
                     initial_panes,
                     block_on_first_terminal,
                     should_change_focus_to_new_tab,
-                    (client_id, is_web_client),
+                    client_id,
                     Some(completion_tx),
                 ))
                 .with_context(err_context)?;
@@ -2825,13 +2823,9 @@ pub(crate) fn route_thread_main(
                             )
                             .with_context(err_context)?;
                         },
-                        ClientToServerMsg::FirstClientConnected {
-                            cli_assets,
-                            is_web_client,
-                        } => {
+                        ClientToServerMsg::FirstClientConnected { cli_assets } => {
                             let new_client_instruction = ServerInstruction::FirstClientConnected(
                                 cli_assets,
-                                is_web_client,
                                 client_id,
                             );
                             to_server
@@ -2842,87 +2836,23 @@ pub(crate) fn route_thread_main(
                             cli_assets,
                             tab_position_to_focus,
                             pane_to_focus: pane_id_to_focus,
-                            is_web_client,
                         } => {
-                            let started_at = std::time::Instant::now();
-                            log::info!(
-                                "attach trace: server router client_id={client_id} received AttachClient; waiting for session_data read lock"
+                            let attach_client_instruction = ServerInstruction::AttachClient(
+                                cli_assets,
+                                tab_position_to_focus,
+                                pane_id_to_focus.map(|p| (p.pane_id, p.is_plugin)),
+                                client_id,
                             );
-                            let session_data_guard = session_data.read().ok();
-                            log::info!(
-                                "attach trace: server router client_id={client_id} acquired session_data read lock after {:?}",
-                                started_at.elapsed()
-                            );
-                            let allow_web_connections = session_data_guard
-                                .as_ref()
-                                .and_then(|s| {
-                                    s.as_ref().map(|s| s.web_sharing.web_clients_allowed())
-                                })
-                                .unwrap_or(false);
-                            drop(session_data_guard);
-                            let should_allow_connection = !is_web_client || allow_web_connections;
-                            if should_allow_connection {
-                                let attach_client_instruction = ServerInstruction::AttachClient(
-                                    cli_assets,
-                                    tab_position_to_focus,
-                                    pane_id_to_focus.map(|p| (p.pane_id, p.is_plugin)),
-                                    is_web_client,
-                                    client_id,
-                                );
-                                log::info!(
-                                    "attach trace: server router client_id={client_id} main-loop enqueue begin"
-                                );
-                                to_server
-                                    .send(attach_client_instruction)
-                                    .with_context(err_context)?;
-                                log::info!(
-                                    "attach trace: server router client_id={client_id} main-loop enqueue complete after {:?}",
-                                    started_at.elapsed()
-                                );
-                            } else {
-                                let error = "This session does not allow web connections.";
-                                let _ = to_server.send(ServerInstruction::LogError(
-                                    vec![error.to_owned()],
-                                    client_id,
-                                    None,
-                                ));
-                                let _ = to_server
-                                    .send(ServerInstruction::SendWebClientsForbidden(client_id));
-                            }
+                            to_server
+                                .send(attach_client_instruction)
+                                .with_context(err_context)?;
                         },
-                        ClientToServerMsg::AttachWatcherClient {
-                            terminal_size,
-                            is_web_client,
-                        } => {
-                            let allow_web_connections = session_data
-                                .read()
-                                .ok()
-                                .and_then(|s| {
-                                    s.as_ref().map(|s| s.web_sharing.web_clients_allowed())
-                                })
-                                .unwrap_or(false);
-                            let should_allow_connection = !is_web_client || allow_web_connections;
-
-                            if should_allow_connection {
-                                let attach_watcher_instruction =
-                                    ServerInstruction::AttachWatcherClient(
-                                        client_id,
-                                        terminal_size,
-                                        is_web_client,
-                                    );
-                                to_server
-                                    .send(attach_watcher_instruction)
-                                    .with_context(err_context)?;
-                            } else {
-                                let error = "This session does not allow web connections.";
-                                let _ = to_server.send(ServerInstruction::LogError(
-                                    vec![error.to_owned()],
-                                    client_id,
-                                    None,
-                                ));
-                                let _ = to_server
-                                    .send(ServerInstruction::SendWebClientsForbidden(client_id));
-                            }
+                        ClientToServerMsg::AttachWatcherClient { terminal_size } => {
+                            let attach_watcher_instruction =
+                                ServerInstruction::AttachWatcherClient(client_id, terminal_size);
+                            to_server
+                                .send(attach_watcher_instruction)
+                                .with_context(err_context)?;
                         },
                         ClientToServerMsg::ClientExited => {
                             let _ = to_server.send(ServerInstruction::RemoveClient(client_id));
@@ -2957,13 +2887,6 @@ pub(crate) fn route_thread_main(
                             let _ =
                                 to_server.send(ServerInstruction::DetachSession(client_ids, None));
                             should_break = true;
-                        },
-                        ClientToServerMsg::WebServerStarted { base_url } => {
-                            let _ = to_server.send(ServerInstruction::WebServerStarted(base_url));
-                        },
-                        ClientToServerMsg::FailedToStartWebServer { error } => {
-                            let _ =
-                                to_server.send(ServerInstruction::FailedToStartWebServer(error));
                         },
                         ClientToServerMsg::DesktopNotificationResponse { ref raw_bytes } => {
                             let _ = send_to_screen_or_retry_queue!(
@@ -3032,15 +2955,6 @@ pub(crate) fn route_thread_main(
                                         event_types: event_types.clone(),
                                     },
                                 );
-                            }
-                        },
-                        ClientToServerMsg::SoftKeyboardVisibilityChanged { visible } => {
-                            if let Some(senders) = senders.as_ref() {
-                                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                                    None,
-                                    Some(client_id),
-                                    Event::SoftKeyboardVisibilityChanged(visible),
-                                )]));
                             }
                         },
                         ClientToServerMsg::NestedSessionFrameFromHost { ref payload_bytes } => {
@@ -3135,18 +3049,6 @@ pub(crate) fn route_thread_main(
                                     );
                                 }
                             }
-                        },
-                        ClientToServerMsg::SetMobileRenderPreferences { single_pane, fit } => {
-                            let _ = send_to_screen_or_retry_queue!(
-                                senders,
-                                ScreenInstruction::SetMobileRenderPreferences {
-                                    client_id,
-                                    single_pane,
-                                    fit,
-                                },
-                                instruction,
-                                retry_queue
-                            );
                         },
                         ClientToServerMsg::HostTerminalFocusChanged { focused } => {
                             let _ = send_to_screen_or_retry_queue!(

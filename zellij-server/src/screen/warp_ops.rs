@@ -678,12 +678,6 @@ impl Screen {
         self.new_tab(tab_index, swap_layouts, None, Some(client_id))?;
         let (mut tiled_panes_layout, floating_panes_layout) = default_layout.new_tab();
         tiled_panes_layout.ignore_run_instruction(invoked_with);
-        let is_web_client = self
-            .connected_clients
-            .borrow()
-            .get(&client_id)
-            .copied()
-            .unwrap_or(false);
         self.bus
             .senders
             .send_to_plugin(PluginInstruction::NewTab(
@@ -695,7 +689,7 @@ impl Screen {
                 None,
                 false,
                 true,
-                (client_id, is_web_client),
+                client_id,
                 None,
             ))
             .with_context(err_context)?;
@@ -735,12 +729,6 @@ impl Screen {
             Some(client_id),
         )?;
 
-        let is_web_client = self
-            .connected_clients
-            .borrow()
-            .get(&client_id)
-            .copied()
-            .unwrap_or(false);
         let mut tiled_layout = payload.tiled_layout;
         tiled_layout.hide_floating_panes = payload.hide_floating_panes;
 
@@ -771,7 +759,7 @@ impl Screen {
                 None,
                 false,
                 true,
-                (client_id, is_web_client),
+                client_id,
                 None,
             ))
             .with_context(err_context)?;

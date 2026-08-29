@@ -4,6 +4,7 @@ package client_server_contract;
 import "common_types.proto";
 
 message ClientToServerMsg {
+  reserved 14, 15, 21, 26;
   oneof message {
     DetachSessionMsg detach_session = 1;
     TerminalPixelDimensionsMsg terminal_pixel_dimensions = 2;
@@ -18,20 +19,16 @@ message ClientToServerMsg {
     ClientExitedMsg client_exited = 11;
     KillSessionMsg kill_session = 12;
     ConnStatusMsg conn_status = 13;
-    WebServerStartedMsg web_server_started = 14;
-    FailedToStartWebServerMsg failed_to_start_web_server = 15;
     AttachWatcherClientMsg attach_watcher_client = 16;
     SubscribeToPaneRendersMsg subscribe_to_pane_renders = 17;
     DesktopNotificationResponseMsg desktop_notification_response = 18;
     ForwardedReplyFromHostMsg forwarded_reply_from_host = 19;
     HostTerminalThemeChangedMsg host_terminal_theme_changed = 20;
-    SoftKeyboardVisibilityChangedMsg soft_keyboard_visibility_changed = 21;
     NestedSessionFrameFromHostMsg nested_session_frame_from_host = 22;
     KittyGraphicsSupportMsg kitty_graphics_support = 23;
     SubscribeToEventsMsg subscribe_to_events = 28;
     SixelSupportMsg sixel_support = 24;
     RequestSessionListMsg request_session_list = 25;
-    SetMobileRenderPreferencesMsg set_mobile_render_preferences = 26;
     HostTerminalFocusChangedMsg host_terminal_focus_changed = 27;
   }
 }
@@ -61,20 +58,20 @@ message TerminalResizeMsg {
 }
 
 message FirstClientConnectedMsg {
+  reserved 2;
   CliAssets cli_assets = 1;
-  bool is_web_client = 2;
 }
 
 message AttachClientMsg {
+  reserved 4;
   CliAssets cli_assets = 1;
   optional uint32 tab_position_to_focus = 2;
   optional PaneReference pane_to_focus = 3;
-  bool is_web_client = 4;
 }
 
 message AttachWatcherClientMsg {
+  reserved 2;
   Size terminal_size = 1;
-  bool is_web_client = 2;
 }
 
 message ActionMsg {
@@ -100,14 +97,6 @@ message KillSessionMsg {
 
 message ConnStatusMsg {
   // Empty message (just indicates connection status request)
-}
-
-message WebServerStartedMsg {
-  string base_url = 1;
-}
-
-message FailedToStartWebServerMsg {
-  string error = 1;
 }
 
 message SubscribeToPaneRendersMsg {
@@ -138,10 +127,6 @@ enum HostTerminalThemeIndication {
   HOST_TERMINAL_THEME_INDICATION_LIGHT = 1;
 }
 
-message SoftKeyboardVisibilityChangedMsg {
-  bool visible = 1;
-}
-
 message NestedSessionFrameFromHostMsg {
   bytes payload_bytes = 1;
 }
@@ -156,11 +141,6 @@ message SixelSupportMsg {
 
 message RequestSessionListMsg {
   // Empty message
-}
-
-message SetMobileRenderPreferencesMsg {
-  bool single_pane = 1;
-  bool fit = 2;
 }
 
 message HostTerminalFocusChangedMsg {

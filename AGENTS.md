@@ -10,7 +10,7 @@ cargo x build            # builds plugins (wasm32-wasip1) then the binary
 cargo x test             # the whole workspace in one run (needs cargo-nextest)
 cargo x lint             # clippy at -D warnings; --fix applies the suggestions
 cargo x format           # rustfmt; --check to verify instead of rewrite
-cargo x ci check         # the pre-handoff gate: format --check, lint, assets --check, test
+cargo x ci check         # the pre-handoff gate: format --check, lint, test
 cargo x run -- -l strider
 cargo x integration-test # whole-app tests (needs cargo-nextest)
 cargo x bench            # render throughput benchmarks (criterion); not part of the gate
@@ -35,7 +35,7 @@ actually changed, and don't report the churn.
 nothing checks a branch unless a person runs it. The gate is:
 
 ```sh
-cargo x ci check     # format --check, lint, assets --check, test
+cargo x ci check     # format --check, lint, test
 ```
 
 Run it before handing off a branch or opening a PR. Every phase runs even if an earlier one
@@ -44,7 +44,7 @@ run — see "Reading a red run" below for why it is not part of the gate.
 
 ### Passing arguments
 
-xtask's own flags come first (`--no-web`, `--release`, …); everything else is forwarded — but
+xtask's own flags come first (`--release`, …); everything else is forwarded — but
 each command forwards to a different place:
 
 | command | trailing args land in |
@@ -92,7 +92,7 @@ past one crate:
 - `zellij-utils/` — IPC contracts, config/KDL parsing, errors, plugin API; nearly everything
   depends on it
 - `zellij-tile/`, `zellij-tile-utils/`, or anything under `zellij-utils/assets/` (protobufs,
-  embedded plugins — also regenerate with `cargo x proto` / `cargo x assets`)
+  embedded plugins — also regenerate with `cargo x proto`)
 - the render path in `zellij-server/` (grid, panes, output), which the `insta` snapshots and
   integration tests cover broadly
 - screen/tab/pty plumbing that both plugins and the client sit on
@@ -174,7 +174,7 @@ Benchmarks: see `.claude/skills/bench/SKILL.md` (`cargo x bench`).
 | Path | What |
 |---|---|
 | `zellij-server/` | screen, tabs, panes, pty, plugin host — most logic lives here |
-| `zellij-client/` | input handling, terminal I/O, web client |
+| `zellij-client/` | input handling and terminal I/O |
 | `zellij-utils/` | shared: IPC contracts, config/KDL parsing, errors, plugin API |
 | `zellij-tile/`, `zellij-tile-utils/` | plugin-facing API |
 | `default-plugins/*` | builtin plugins, each a wasm crate |
@@ -198,8 +198,7 @@ Read `docs/ARCHITECTURE.md` before changing server internals, and
 - **Logs** while debugging: `$TMPDIR/zellij-<UID>/zellij-log/zellij.log` (truncated at
   100KB). `--debug` also dumps raw pty bytes per pane.
 - Toolchain is `stable` per `rust-toolchain.toml`; no MSRV policy.
-- Changing anything under `zellij-utils/assets/` (plugins, protobufs): regenerate with
-  `cargo x proto` / `cargo x assets`, and CI's `assets --check` must pass.
+- Changing protobufs under `zellij-utils/assets/`: regenerate with `cargo x proto`.
 
 ## Self-programming
 

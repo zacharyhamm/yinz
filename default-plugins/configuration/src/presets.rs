@@ -160,13 +160,6 @@ keybinds clear-defaults=true {{
             }};
             SwitchToMode "Locked"
         }}
-        bind "s" {{
-            LaunchOrFocusPlugin "zellij:share" {{
-                floating true
-                move_to_focused_tab true
-            }};
-            SwitchToMode "Locked"
-        }}
         bind "l" {{
             LaunchOrFocusPlugin "zellij:layout-manager" {{
                 floating true
@@ -390,13 +383,6 @@ keybinds clear-defaults=true {{
         }}
         bind "a" {{
             LaunchOrFocusPlugin "zellij:about" {{
-                floating true
-                move_to_focused_tab true
-            }};
-            SwitchToMode "Normal"
-        }}
-        bind "s" {{
-            LaunchOrFocusPlugin "zellij:share" {{
                 floating true
                 move_to_focused_tab true
             }};
@@ -630,13 +616,6 @@ keybinds clear-defaults=true {{
             }};
             SwitchToMode "Normal"
         }}
-        bind "s" {{
-            LaunchOrFocusPlugin "zellij:share" {{
-                floating true
-                move_to_focused_tab true
-            }};
-            SwitchToMode "Normal"
-        }}
         bind "l" {{
             LaunchOrFocusPlugin "zellij:layout-manager" {{
                 floating true
@@ -841,13 +820,6 @@ keybinds clear-defaults=true {{
         }}
         bind "a" {{
             LaunchOrFocusPlugin "zellij:about" {{
-                floating true
-                move_to_focused_tab true
-            }};
-            SwitchToMode "Normal"
-        }}
-        bind "s" {{
-            LaunchOrFocusPlugin "zellij:share" {{
                 floating true
                 move_to_focused_tab true
             }};
@@ -1061,13 +1033,6 @@ keybinds clear-defaults=true {
             };
             SwitchToMode "Normal"
         }
-        bind "s" {
-            LaunchOrFocusPlugin "zellij:share" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode "Normal"
-        }
         bind "l" {
             LaunchOrFocusPlugin "zellij:layout-manager" {
                 floating true
@@ -1267,13 +1232,6 @@ keybinds clear-defaults=true {{
         }}
         bind "a" {{
             LaunchOrFocusPlugin "zellij:about" {{
-                floating true
-                move_to_focused_tab true
-            }};
-            SwitchToMode "Normal"
-        }}
-        bind "s" {{
-            LaunchOrFocusPlugin "zellij:share" {{
                 floating true
                 move_to_focused_tab true
             }};

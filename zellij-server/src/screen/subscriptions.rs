@@ -22,7 +22,7 @@ impl Screen {
         let regular_client_id = self
             .connected_clients
             .borrow()
-            .keys()
+            .iter()
             .find(|id| !self.watcher_clients.contains_key(id))
             .copied();
 

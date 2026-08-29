@@ -1,6 +1,5 @@
 ---
 source: zellij-integration-tests/tests/about_plugin.rs
-assertion_line: 92
 expression: "rendered_pages.join(\"\\n\")"
 ---
 === Nested Sessions
@@ -69,30 +68,6 @@ $
                │       - Hold <Alt> with the mouse wheel to scroll through commands.                    │
                │       - Triple-click to select an entire command.                                      │
                │         ↳ Opt out of triple-click selection with: osc133_command_selection false       │
-               │                                                                                        │
-               │                                                                                        │
-               │                                                                                        │
-               │Help: <ESC> - Go back                                                                   │
-               └────────────────────────────────────────────────────────────────────────────────────────┘
- Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <e> AGENT  <q> QUIT   
-=== Mobile Web UI
- Zellij (test)  Tab #1  + 
-$
-               ┌ Release Notes 0.45.0 ───────────────────────────────────────────────────────── PIN [ ] ┐
-               │                                                                                        │
-               │                                                                                        │
-               │                                                                                        │
-               │           Mobile Web UI                                                                │
-               │                                                                                        │
-               │           The web client now has a dedicated mobile interface.                         │
-               │           It provides touch controls and a layout adapted to small screens,            │
-               │           making sessions usable from a phone or a tablet.                             │
-               │           Sessions and panes can be switched directly from this interface.             │
-               │                                                                                        │
-               │           The web client can also be installed as a standalone app (PWA)               │
-               │           directly from the browser.                                                   │
-               │                                                                                        │
-               │           Learn more: https://zellij.dev/tutorials/web-client/                         │
                │                                                                                        │
                │                                                                                        │
                │                                                                                        │

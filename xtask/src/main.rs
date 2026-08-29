@@ -6,7 +6,6 @@
 //!
 //! This binary is integrated into the `cargo` command line by using an alias in `.cargo/config`.
 
-mod assets;
 mod bench;
 mod build;
 mod ci;
@@ -76,10 +75,6 @@ fn workspace_members() -> &'static Vec<WorkspaceMember> {
             },
             WorkspaceMember {
                 crate_name: "default-plugins/multiple-select",
-                build: true,
-            },
-            WorkspaceMember {
-                crate_name: "default-plugins/share",
                 build: true,
             },
             WorkspaceMember {
@@ -168,7 +163,7 @@ fn workspace_members() -> &'static Vec<WorkspaceMember> {
 /// `cargo x test -p zellij-server` dies with ``unexpected flag: `-p` `` long before the forwarding
 /// code in `test::test` sees it. `insert_forwarding_separator` puts the `--` in for the caller.
 const FORWARDING_COMMANDS: &[(&str, &[&str])] = &[
-    ("test", &["--no-web", "-h", "--help"]),
+    ("test", &["-h", "--help"]),
     ("integration-test", &["--serial", "-h", "--help"]),
 ];
 
@@ -236,7 +231,6 @@ fn main() -> anyhow::Result<()> {
         flags::XtaskCmd::RemoteTest(flags) => remote_test::main(shell, flags),
         flags::XtaskCmd::Bench(flags) => bench::bench(shell, flags),
         flags::XtaskCmd::Proto(_flags) => build::proto(shell),
-        flags::XtaskCmd::Assets(flags) => assets::assets(shell, flags),
         // Pipelines
         // These are composite commands, made up of multiple "stages" defined above.
         flags::XtaskCmd::Make(flags) => pipelines::make(shell, flags),
@@ -335,14 +329,6 @@ mod tests {
     }
 
     #[test]
-    fn xtask_own_flags_are_kept_before_the_separator() {
-        assert_eq!(
-            split(&["xtask", "test", "--no-web", "-E", "test(x)"]),
-            ["xtask", "test", "--no-web", "--", "-E", "test(x)"]
-        );
-    }
-
-    #[test]
     fn a_bare_filter_is_forwarded() {
         assert_eq!(
             split(&["xtask", "test", "some_test_name"]),
@@ -361,10 +347,6 @@ mod tests {
     #[test]
     fn a_bare_command_is_left_alone() {
         assert_eq!(split(&["xtask", "test"]), ["xtask", "test"]);
-        assert_eq!(
-            split(&["xtask", "test", "--no-web"]),
-            ["xtask", "test", "--no-web"]
-        );
     }
 
     #[test]

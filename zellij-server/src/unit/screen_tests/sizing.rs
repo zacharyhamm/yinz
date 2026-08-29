@@ -249,7 +249,7 @@ fn applying_a_layout_to_an_existing_tab_keeps_its_viewer_derived_size() {
             HashMap::new(),
             0,
             true,
-            (1, false),
+            1,
             None,
         )
         .expect("TEST");
@@ -290,7 +290,7 @@ fn recompute_tab_size_takes_independent_min_across_axes() {
     };
     let mut screen = create_new_screen(initial_size, true, true);
     new_tab(&mut screen, 1, 0);
-    screen.add_client(2, false).expect("TEST");
+    screen.add_client(2).expect("TEST");
 
     screen.set_client_size(
         1,
@@ -317,7 +317,7 @@ fn resize_to_clients_takes_the_min_across_clients_and_grows_back_on_detach() {
     };
     let mut screen = create_new_screen(initial_size, true, true);
     new_tab(&mut screen, 1, 0);
-    screen.add_client(2, false).expect("TEST");
+    screen.add_client(2).expect("TEST");
 
     screen.set_client_size(
         1,
@@ -380,7 +380,7 @@ fn attaching_client_records_the_surface_before_a_render_tick() {
     // a second, smaller client attaches - what ScreenInstruction::AddClient runs, minus the
     // debounced render that would otherwise be the first thing to record the new surface
     screen.set_client_size(2, Size { cols: 80, rows: 24 });
-    screen.add_client(2, false).expect("TEST");
+    screen.add_client(2).expect("TEST");
     screen.reflow_all_tabs().expect("TEST");
 
     // ...and both clients detach before that render tick can fire
@@ -469,7 +469,7 @@ fn resize_to_clients_keeps_every_tab_within_smallest_client_bounds() {
     let mut screen = create_non_mirrored_screen(initial_size);
     new_tab(&mut screen, 1, 0);
     new_tab(&mut screen, 2, 1);
-    screen.add_client(2, false).expect("TEST");
+    screen.add_client(2).expect("TEST");
     screen.set_client_size(1, Size { cols: 80, rows: 24 });
     screen.set_client_size(
         2,
@@ -542,7 +542,7 @@ fn switching_tabs_keeps_source_and_destination_at_session_bounds() {
     let mut screen = create_non_mirrored_screen(initial_size);
     new_tab(&mut screen, 1, 0);
     new_tab(&mut screen, 2, 1);
-    screen.add_client(2, false).expect("TEST");
+    screen.add_client(2).expect("TEST");
 
     screen.set_client_size(1, Size { cols: 80, rows: 24 });
     screen.set_client_size(
@@ -582,7 +582,7 @@ fn break_pane_to_new_tab_recomputes_source_and_destination() {
     let mut screen = create_non_mirrored_screen(initial_size);
     new_tab(&mut screen, 1, 0);
     new_tab(&mut screen, 2, 1);
-    screen.add_client(2, false).expect("TEST");
+    screen.add_client(2).expect("TEST");
 
     screen.set_client_size(1, Size { cols: 80, rows: 24 });
     screen.set_client_size(
@@ -645,7 +645,7 @@ fn moving_panes_between_tabs_with_focus_change_recomputes_both() {
     let mut screen = create_non_mirrored_screen(initial_size);
     new_tab(&mut screen, 1, 0);
     new_tab(&mut screen, 2, 1);
-    screen.add_client(2, false).expect("TEST");
+    screen.add_client(2).expect("TEST");
 
     screen.set_client_size(1, Size { cols: 80, rows: 24 });
     screen.set_client_size(
@@ -712,7 +712,7 @@ fn detaching_client_grows_vacated_tab_back() {
     };
     let mut screen = create_new_screen(initial_size, true, true);
     new_tab(&mut screen, 1, 0);
-    screen.add_client(2, false).expect("TEST");
+    screen.add_client(2).expect("TEST");
 
     screen.set_client_size(
         1,

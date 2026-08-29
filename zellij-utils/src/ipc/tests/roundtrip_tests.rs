@@ -3,7 +3,7 @@ use crate::data::{
     AgentInfo, AgentSource, AgentState, BareKey, CommandOrPlugin, ConnectToSession, Direction,
     FloatingPaneCoordinates, HostTerminalThemeMode, InputMode, KeyModifier, KeyWithModifier,
     LayoutInfo, LayoutMetadata, NewPanePlacement, OriginatingPlugin, PaneId, PluginTag,
-    RemotePaneHandoff, Resize, UnblockCondition, WarpPlacement, WarpedPane, WarpedTab, WebSharing,
+    RemotePaneHandoff, Resize, UnblockCondition, WarpPlacement, WarpedPane, WarpedTab,
 };
 use crate::input::actions::{Action, SearchDirection, SearchOption};
 use crate::input::cli_assets::CliAssets;
@@ -19,9 +19,7 @@ use crate::input::options::{
     Options, PaneFrameStyle,
 };
 use crate::ipc::{
-    ClientToServerMsg, ColorRegister, ExitReason, MobileActivePanePayload, MobilePanePayload,
-    MobileRenderPrefsPayload, MobileSessionPayload, MobileSizePayload, MobileStatePayload,
-    MobileTabPayload, PaneReference, PixelDimensions, ServerToClientMsg,
+    ClientToServerMsg, ColorRegister, ExitReason, PaneReference, PixelDimensions, ServerToClientMsg,
 };
 use crate::pane_size::{Size, SizeInPixels};
 use crate::position::Position;
@@ -499,11 +497,9 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets::default(),
-        is_web_client: false,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets::default(),
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -522,7 +518,6 @@ fn test_client_messages() {
                 .into_iter()
                 .collect(),
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -541,7 +536,6 @@ fn test_client_messages() {
                 .into_iter()
                 .collect(),
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -590,21 +584,13 @@ fn test_client_messages() {
                 disable_session_metadata: Some(true),
                 support_kitty_keyboard_protocol: Some(true),
                 support_kitty_graphics_protocol: Some(false),
-                web_server: Some(true),
-                web_sharing: Some(WebSharing::On),
                 stacked_resize: Some(true),
                 stacked_pane_list: Some(true),
                 show_startup_tips: Some(true),
                 show_release_notes: Some(true),
                 advanced_mouse_actions: Some(true),
                 mouse_scroll_resize: Some(true),
-                web_server_ip: Some("1.1.1.1".parse().unwrap()),
-                web_server_port: Some(8080),
-                web_server_cert: Some(PathBuf::from("web_server_cert")),
-                web_server_key: Some(PathBuf::from("web_server_key")),
-                enforce_https_for_localhost: Some(true),
                 post_command_discovery_hook: Some("post_command_discovery_hook".to_owned()),
-                client_async_worker_tasks: Some(16),
                 mouse_hover_effects: Some(false),
                 visual_bell: Some(true),
                 focus_follows_mouse: Some(false),
@@ -627,7 +613,6 @@ fn test_client_messages() {
                 .into_iter()
                 .collect(),
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -640,7 +625,6 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -653,7 +637,6 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -666,7 +649,6 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -679,7 +661,6 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -692,7 +673,6 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -705,7 +685,6 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -718,7 +697,6 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -731,7 +709,6 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -744,7 +721,6 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -757,7 +733,6 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -770,7 +745,6 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -783,7 +757,6 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -796,7 +769,6 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -809,7 +781,6 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -822,7 +793,6 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -835,12 +805,10 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
-                web_sharing: Some(WebSharing::Off),
                 ..Default::default()
             }),
             host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
@@ -848,12 +816,10 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
-                web_sharing: Some(WebSharing::Disabled),
                 ..Default::default()
             }),
             host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
@@ -861,7 +827,6 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -874,7 +839,6 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -887,7 +851,6 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -900,7 +863,6 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
@@ -913,19 +875,16 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::AttachClient {
         cli_assets: CliAssets::default(),
         tab_position_to_focus: None,
         pane_to_focus: None,
-        is_web_client: false,
     });
     test_client_roundtrip!(ClientToServerMsg::AttachClient {
         cli_assets: CliAssets::default(),
         tab_position_to_focus: Some(0),
         pane_to_focus: None,
-        is_web_client: false,
     });
     test_client_roundtrip!(ClientToServerMsg::AttachClient {
         cli_assets: CliAssets::default(),
@@ -934,7 +893,6 @@ fn test_client_messages() {
             pane_id: 0,
             is_plugin: false,
         }),
-        is_web_client: false,
     });
     test_client_roundtrip!(ClientToServerMsg::AttachClient {
         cli_assets: CliAssets::default(),
@@ -943,7 +901,6 @@ fn test_client_messages() {
             pane_id: 100,
             is_plugin: true,
         }),
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::AttachClient {
         cli_assets: CliAssets {
@@ -958,7 +915,6 @@ fn test_client_messages() {
         },
         tab_position_to_focus: None,
         pane_to_focus: None,
-        is_web_client: false,
     });
     // TODO: Action
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3898,22 +3854,8 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::KillSession);
     test_client_roundtrip!(ClientToServerMsg::ConnStatus);
     test_client_roundtrip!(ClientToServerMsg::RequestSessionList);
-    test_client_roundtrip!(ClientToServerMsg::SetMobileRenderPreferences {
-        single_pane: true,
-        fit: false,
-    });
-    test_client_roundtrip!(ClientToServerMsg::SetMobileRenderPreferences {
-        single_pane: false,
-        fit: true,
-    });
     test_client_roundtrip!(ClientToServerMsg::HostTerminalFocusChanged { focused: true });
     test_client_roundtrip!(ClientToServerMsg::HostTerminalFocusChanged { focused: false });
-    test_client_roundtrip!(ClientToServerMsg::WebServerStarted {
-        base_url: "http://localhost:8080".to_string(),
-    });
-    test_client_roundtrip!(ClientToServerMsg::FailedToStartWebServer {
-        error: "Port already in use".to_string(),
-    });
     test_client_roundtrip!(ClientToServerMsg::SubscribeToPaneRenders {
         pane_ids: vec![PaneId::Terminal(1), PaneId::Plugin(2)],
         scrollback: Some(100),
@@ -4214,11 +4156,9 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::AttachWatcherClient {
         terminal_size: Size { rows: 24, cols: 80 },
-        is_web_client: false,
     });
     test_client_roundtrip!(ClientToServerMsg::AttachWatcherClient {
         terminal_size: Size { rows: 0, cols: 0 },
-        is_web_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::DesktopNotificationResponse { raw_bytes: vec![] });
     // as with ForwardedReplyFromHost below, the payload is raw terminal bytes and must survive
@@ -4226,8 +4166,6 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::DesktopNotificationResponse {
         raw_bytes: (0u8..=255u8).collect(),
     });
-    test_client_roundtrip!(ClientToServerMsg::SoftKeyboardVisibilityChanged { visible: true });
-    test_client_roundtrip!(ClientToServerMsg::SoftKeyboardVisibilityChanged { visible: false });
     test_client_roundtrip!(ClientToServerMsg::ForwardedReplyFromHost {
         token: 0,
         reply_bytes: vec![],
@@ -4278,7 +4216,6 @@ fn test_server_messages() {
     test_server_roundtrip!(ServerToClientMsg::UnblockInputThread);
     test_server_roundtrip!(ServerToClientMsg::Connected);
     test_server_roundtrip!(ServerToClientMsg::QueryTerminalSize);
-    test_server_roundtrip!(ServerToClientMsg::StartWebServer);
     test_server_roundtrip!(ServerToClientMsg::ConfigFileUpdated);
     test_server_roundtrip!(ServerToClientMsg::RenamedSession {
         name: "my-session".to_string(),
@@ -4318,9 +4255,6 @@ fn test_server_messages() {
     });
     test_server_roundtrip!(ServerToClientMsg::Exit {
         exit_reason: ExitReason::Disconnect,
-    });
-    test_server_roundtrip!(ServerToClientMsg::Exit {
-        exit_reason: ExitReason::WebClientsForbidden,
     });
     test_server_roundtrip!(ServerToClientMsg::Log { lines: vec![] });
     test_server_roundtrip!(ServerToClientMsg::Log {
@@ -4442,86 +4376,6 @@ fn test_server_messages() {
     });
     test_server_roundtrip!(ServerToClientMsg::EmitNestedSessionFrame {
         payload_bytes: (0u8..=255u8).collect(),
-    });
-    test_server_roundtrip!(ServerToClientMsg::SetSoftKeyboard { on: true });
-    test_server_roundtrip!(ServerToClientMsg::SetSoftKeyboard { on: false });
-    test_server_roundtrip!(ServerToClientMsg::MobileState {
-        payload: MobileStatePayload {
-            session_name: String::new(),
-            now_secs: 0,
-            is_welcome_screen: false,
-            desktop_client_connected: false,
-            desktop_size: None,
-            active_pane: None,
-            tabs: vec![],
-            panes: vec![],
-            sessions: vec![],
-            render_prefs: MobileRenderPrefsPayload {
-                single_pane: true,
-                fit: true,
-                active_pane_is_fullscreen: false,
-            },
-        },
-    });
-    test_server_roundtrip!(ServerToClientMsg::MobileState {
-        payload: MobileStatePayload {
-            session_name: "my-session".to_string(),
-            now_secs: 1_700_000_000,
-            is_welcome_screen: true,
-            desktop_client_connected: true,
-            desktop_size: Some(MobileSizePayload {
-                cols: 200,
-                rows: 60,
-            }),
-            active_pane: Some(MobileActivePanePayload {
-                pane_id: 3,
-                is_plugin: true,
-                tab_position: 1,
-            }),
-            tabs: vec![
-                MobileTabPayload {
-                    position: 0,
-                    name: "Tab #1".to_string(),
-                    active: true,
-                },
-                MobileTabPayload {
-                    position: 1,
-                    name: "Tab #2".to_string(),
-                    active: false,
-                },
-            ],
-            panes: vec![
-                MobilePanePayload {
-                    tab_position: 0,
-                    pane_id: 1,
-                    is_plugin: false,
-                    title: "zsh".to_string(),
-                    is_floating: false,
-                    last_activity_secs_ago: 0,
-                },
-                MobilePanePayload {
-                    tab_position: 1,
-                    pane_id: 3,
-                    is_plugin: true,
-                    title: "welcome-screen".to_string(),
-                    is_floating: true,
-                    last_activity_secs_ago: 340,
-                },
-            ],
-            sessions: vec![MobileSessionPayload {
-                name: "other-session".to_string(),
-                web_clients_allowed: true,
-                tab_count: 2,
-                pane_count: 4,
-                connected_clients: 1,
-                creation_secs_ago: 3600,
-            }],
-            render_prefs: MobileRenderPrefsPayload {
-                single_pane: false,
-                fit: false,
-                active_pane_is_fullscreen: true,
-            },
-        },
     });
 }
 

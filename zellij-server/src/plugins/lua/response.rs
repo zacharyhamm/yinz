@@ -41,21 +41,20 @@ use zellij_utils::plugin_api::plugin_command::{
     get_pane_git_probe_response, get_pane_pid_response, get_pane_running_command_response,
     hide_floating_panes_response, new_tab_response, open_command_pane_in_git_checkout_response,
     parse_layout_response, read_plugin_log_response, rename_layout_response, save_layout_response,
-    save_session_response, show_floating_panes_response, CreateTokenResponse, ListTokensResponse,
-    ProtobufBreakPanesToNewTabResponse, ProtobufBreakPanesToTabWithIdResponse,
-    ProtobufBreakPanesToTabWithIndexResponse, ProtobufCheckLuaPluginResponse,
-    ProtobufCurrentSessionLastSavedTimeResponse, ProtobufDataApplyResponse,
-    ProtobufDataCountResponse, ProtobufDataDefineResponse, ProtobufDataFetchResponse,
-    ProtobufDataUnwatchResponse, ProtobufDataWatchResponse, ProtobufDeleteAllDeadSessionsResponse,
-    ProtobufDeleteDeadSessionResponse, ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse,
-    ProtobufDumpSessionLayoutResponse, ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse,
-    ProtobufFocusOrCreateTabResponse, ProtobufFsListResponse, ProtobufFsMetadataResponse,
-    ProtobufFsMutateResponse, ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse,
-    ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse,
-    ProtobufGetPaneGitProbeResponse, ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
-    ProtobufGetPaneRunningCommandResponse, ProtobufGetPluginAliasConfigurationResponse,
-    ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
-    ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
+    save_session_response, show_floating_panes_response, ProtobufBreakPanesToNewTabResponse,
+    ProtobufBreakPanesToTabWithIdResponse, ProtobufBreakPanesToTabWithIndexResponse,
+    ProtobufCheckLuaPluginResponse, ProtobufCurrentSessionLastSavedTimeResponse,
+    ProtobufDataApplyResponse, ProtobufDataCountResponse, ProtobufDataDefineResponse,
+    ProtobufDataFetchResponse, ProtobufDataUnwatchResponse, ProtobufDataWatchResponse,
+    ProtobufDeleteAllDeadSessionsResponse, ProtobufDeleteDeadSessionResponse,
+    ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse, ProtobufDumpSessionLayoutResponse,
+    ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse, ProtobufFocusOrCreateTabResponse,
+    ProtobufFsListResponse, ProtobufFsMetadataResponse, ProtobufFsMutateResponse,
+    ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse, ProtobufGetFocusedPaneInfoResponse,
+    ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneGitProbeResponse,
+    ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
+    ProtobufGetPluginAliasConfigurationResponse, ProtobufGetSessionEnvironmentVariablesResponse,
+    ProtobufGetSessionListResponse, ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
     ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
     ProtobufListNotificationsResponse, ProtobufListOrphanedPanesResponse,
     ProtobufListRecordingsResponse, ProtobufNewTabResponse, ProtobufNewTabsResponse,
@@ -72,7 +71,6 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufParseLayoutResponse, ProtobufQueueStatusResponse, ProtobufReadPluginLogResponse,
     ProtobufRenameLayoutResponse, ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse,
     ProtobufSearchRecordingsResponse, ProtobufShowFloatingPanesResponse, ProtobufWarpPaneResponse,
-    RenameWebTokenResponse, RevokeAllWebTokensResponse, RevokeTokenResponse,
 };
 use zellij_utils::plugin_api::plugin_ids::{ProtobufPluginIds, ProtobufZellijVersion};
 
@@ -528,48 +526,6 @@ pub fn response_to_lua(lua: &Lua, command: CommandType, bytes: &[u8]) -> Option<
                 )
             })
         },
-        CommandType::GenerateWebLoginToken => {
-            decode(bytes).and_then(|r: CreateTokenResponse| match (r.error, r.token) {
-                (Some(e), _) => Err(anyhow!("{}", e)),
-                (None, Some(token)) => value(
-                    lua,
-                    WebToken {
-                        token,
-                        token_label: r.token_label,
-                    },
-                ),
-                (None, None) => Err(anyhow!("zellij answered with nothing")),
-            })
-        },
-        CommandType::RevokeWebLoginToken => {
-            decode(bytes).and_then(|r: RevokeTokenResponse| error_or_true(r.error))
-        },
-        CommandType::RevokeAllWebLoginTokens => {
-            decode(bytes).and_then(|r: RevokeAllWebTokensResponse| error_or_true(r.error))
-        },
-        CommandType::RenameWebLoginToken => {
-            decode(bytes).and_then(|r: RenameWebTokenResponse| error_or_true(r.error))
-        },
-        CommandType::ListWebLoginTokens => {
-            decode(bytes).and_then(|r: ListTokensResponse| match r.error {
-                Some(e) => Err(anyhow!("{}", e)),
-                None => {
-                    // Three parallel lists on the wire, zipped the way the shim zips them.
-                    let tokens: Vec<WebTokenInfo> = r
-                        .tokens
-                        .into_iter()
-                        .zip(r.creation_times)
-                        .zip(r.read_only_flags)
-                        .map(|((token, creation_time), read_only)| WebTokenInfo {
-                            token,
-                            creation_time,
-                            read_only,
-                        })
-                        .collect();
-                    value(lua, tokens)
-                },
-            })
-        },
         CommandType::ReadPluginLog => {
             decode(bytes).and_then(|r: ProtobufReadPluginLogResponse| match r.result {
                 Some(read_plugin_log_response::Result::Lines(lines)) => value(lua, lines),
@@ -659,22 +615,6 @@ struct SessionLayout {
 struct PaneInNewTab {
     tab_id: Option<usize>,
     pane_id: Option<PaneId>,
-}
-
-/// A freshly generated web login token. The shim returns only the token; the label is kept
-/// because it is what the revoke and rename commands take.
-#[derive(Serialize)]
-struct WebToken {
-    token: String,
-    token_label: Option<String>,
-}
-
-/// One row of `ListWebLoginTokens`, which travels as three parallel lists.
-#[derive(Serialize)]
-struct WebTokenInfo {
-    token: String,
-    creation_time: String,
-    read_only: bool,
 }
 
 fn decode<T: Message + Default>(bytes: &[u8]) -> Result<T> {
