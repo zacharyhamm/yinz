@@ -125,7 +125,10 @@ fn a_partial_reply_survives_a_mid_stream_error() {
 #[test]
 fn an_api_error_revokes_job_authority_and_discards_tool_calls() {
     let mut state = ready_state();
-    state.job_auto_confirm = true;
+    state.scheduled_run = Some(ScheduledRun {
+        job_id: 1,
+        auto_confirm: true,
+    });
     let frame = tool_call_frame("call_1", "clear_pane", r#"{"pane_id":1,"is_plugin":false}"#);
     state.on_chunk("hocus-1", &frame, false, None);
     state.on_chunk(
@@ -136,7 +139,7 @@ fn an_api_error_revokes_job_authority_and_discards_tool_calls() {
     );
 
     assert!(state.stream.as_ref().is_some_and(|s| s.finishing));
-    assert!(!state.job_auto_confirm);
+    assert!(state.scheduled_run.is_none());
     state.on_chunk("hocus-1", b"", true, None);
     assert!(tool_results(&state).is_empty());
 }
@@ -144,11 +147,14 @@ fn an_api_error_revokes_job_authority_and_discards_tool_calls() {
 #[test]
 fn cancelling_a_stream_revokes_job_authority_immediately() {
     let mut state = ready_state();
-    state.job_auto_confirm = true;
+    state.scheduled_run = Some(ScheduledRun {
+        job_id: 1,
+        auto_confirm: true,
+    });
 
     state.cancel_stream();
 
-    assert!(!state.job_auto_confirm);
+    assert!(state.scheduled_run.is_none());
 }
 
 #[test]

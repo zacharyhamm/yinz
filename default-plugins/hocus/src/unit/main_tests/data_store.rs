@@ -57,3 +57,77 @@ fn an_unknown_pipe_message_is_ignored() {
     assert!(!state.panes.is_empty());
     assert_eq!(state.agent_seq, 0, "an unrelated message merges nothing");
 }
+
+/// The daemon's summaries are mirrored as they arrive - only the changed ones -
+/// and are what a restarted hocus shows until the daemon speaks again.
+#[test]
+fn summaries_are_mirrored_and_restored_without_their_hash() {
+    let mut state = state_with_panes();
+    let summary = |text: &str, hash: u64| agents::Summary {
+        text: text.to_owned(),
+        title: "task".to_owned(),
+        awaiting: false,
+        hash,
+    };
+    let stored = |state: &State| {
+        let rows = state
+            .store()
+            .fetch(&FetchRequest::entity(agents::rows::SUMMARY_ENTITY))
+            .expect("fetched");
+        agents::rows::summaries_from_rows(&rows)
+    };
+    let panes = state.panes.clone();
+    state.apply_poll(
+        panes.clone(),
+        BTreeMap::new(),
+        BTreeMap::from([(3, summary("reviewing", 7))]),
+        BTreeMap::new(),
+        None,
+    );
+    assert_eq!(
+        stored(&state),
+        BTreeMap::from([(3, summary("reviewing", 0))])
+    );
+
+    // A poll that changes nothing but the hash writes nothing.
+    let before = state
+        .store()
+        .count(&FetchRequest::entity(agents::rows::SUMMARY_ENTITY));
+    state.apply_poll(
+        panes.clone(),
+        BTreeMap::new(),
+        BTreeMap::from([(3, summary("reviewing", 8))]),
+        BTreeMap::new(),
+        None,
+    );
+    assert_eq!(
+        state
+            .store()
+            .count(&FetchRequest::entity(agents::rows::SUMMARY_ENTITY)),
+        before
+    );
+
+    let mut restarted = State::default();
+    restarted
+        .store()
+        .apply(vec![agents::rows::summary_mutation(
+            3,
+            &summary("reviewing", 7),
+        )])
+        .expect("copied");
+    restarted.open_store();
+    assert_eq!(
+        restarted.summaries,
+        BTreeMap::from([(3, summary("reviewing", 0))])
+    );
+
+    // A pane the daemon no longer summarizes is forgotten.
+    state.apply_poll(
+        panes,
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        None,
+    );
+    assert!(stored(&state).is_empty());
+}

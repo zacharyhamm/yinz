@@ -20,7 +20,7 @@ mod worker;
 
 pub use message::{
     Job, Message, Picker, PickerKind, PickerRow, Plan, Reasoning, ReasoningKey, Role, RowKind,
-    Status, StreamState,
+    ScheduledRun, Status, StreamState,
 };
 use worker::post_log;
 
@@ -172,7 +172,7 @@ struct Chat {
     pub(crate) chat_id: Option<u64>,
     pub(crate) saved: (usize, usize),
     pub(crate) view: View,
-    pub(crate) job_auto_confirm: bool,
+    pub(crate) scheduled_run: Option<ScheduledRun>,
     pub(crate) plan: Plan,
     pub(crate) usage: Option<ContextUsage>,
     pub(crate) context_cache: Option<((usize, usize), usize)>,
@@ -417,8 +417,8 @@ pub struct State {
     /// stacking up behind one wedged stream.
     pub asks: VecDeque<String>,
     job_seq: u64,
-    /// Authority for the scheduled run that currently owns the conversation.
-    job_auto_confirm: bool,
+    /// The scheduled run that currently owns the conversation, if one does.
+    scheduled_run: Option<ScheduledRun>,
     /// Terminal panes from hocus-agentd's latest event-fed snapshot. This is the
     /// only snapshot agent tools trust, which stops them acting on a closed pane.
     panes: Vec<agents::AgentPane>,
@@ -427,15 +427,17 @@ pub struct State {
     /// machine. Filled from the daemon's snapshot; see `wire::PollReply`.
     repositories: BTreeMap<Location, projects::Repository>,
     /// Kinds the user set by hand with `agent_register`, keyed by pane id. These win
-    /// over detection, and are dropped when their pane leaves the snapshot.
+    /// over detection, and are dropped when their pane leaves the snapshot. Mirrored
+    /// as `agent_latch` rows in the store, so a reload keeps them.
     manual_kinds: BTreeMap<u32, String>,
     /// Spawned panes whose ids are allocated but have not reached a pane snapshot yet.
     /// Their manual kinds survive early snapshots and are pruned normally once seen.
     pending_agent_panes: BTreeSet<u32>,
     /// Consecutive unchanged scrollback observations from hocus-agentd.
     activity: agents::Activity,
-    /// What the daemon's model last made of each idle agent's pane. Read-only here: the
-    /// daemon is the only writer, the same way it is for `activity`.
+    /// What the daemon's model last made of each idle agent's pane. The daemon is the
+    /// only source, the same way it is for `activity`; hocus mirrors them as
+    /// `agent_summary` rows so a reload starts with the last ones rather than none.
     summaries: agents::Summaries,
     /// What each Claude Code pane has reported about itself, over its own hooks.
     /// Read-only here for the same reason and from the same writer.
@@ -700,7 +702,7 @@ impl Default for State {
             jobs: Vec::new(),
             asks: VecDeque::new(),
             job_seq: 0,
-            job_auto_confirm: false,
+            scheduled_run: None,
             panes: Vec::new(),
             repositories: BTreeMap::new(),
             manual_kinds: BTreeMap::new(),
@@ -1047,8 +1049,9 @@ impl State {
                 for chat in &mut self.parked {
                     archive::unsent_asks_to_notices(&mut chat.messages, &mut chat.asks);
                 }
-                // Nothing left to flush but the transcripts. Projects and todos
-                // are written as each change lands, and so is every prompt.
+                // Nothing left to flush but the transcripts. Projects, todos,
+                // jobs, latches and summaries are written as each change lands,
+                // and so is every prompt.
                 //
                 // This is the last chance: write the transcript here or lose the
                 // last exchange. Background chats have the same one chance, and

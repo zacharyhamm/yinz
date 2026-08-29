@@ -982,7 +982,8 @@ pub fn specs() -> Value {
         ),
         tool(
             "schedule",
-            "Repeat a prompt until cancelled; unschedule it when done.",
+            "Repeat a prompt until cancelled; unschedule it when done. A scheduled run declines \
+         confirmation-gated tools unless the job has auto_confirm. Jobs survive a reload.",
             json!({
                 "type": "object",
                 "properties": {

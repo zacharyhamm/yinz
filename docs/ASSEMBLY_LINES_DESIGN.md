@@ -8,8 +8,9 @@
 
 Nothing workflow-shaped exists in this fork. `hocus` has an in-memory `Job` scheduler
 (`default-plugins/hocus/src/message.rs:159`, `transitions.rs:426 tick_jobs`) that fires prompts on
-a timer, but it has no graph, no persistence, no retry model and no run history — a plugin reload
-drops every job. Meanwhile the fork already has every *part* a workflow engine needs: a
+a timer, but it has no graph, no retry model and no run history. (Since R15 of the
+self-programming roadmap its jobs persist as `job` rows in `shared:hocus` and survive a reload;
+the rest of this sentence still holds.) Meanwhile the fork already has every *part* a workflow engine needs: a
 transactional SQLite store with schema migration and reactive watches
 (`zellij-utils/src/plugin_data_store/`), agent spawn/drive/monitor
 (`default-plugins/hocus/src/tool_loop.rs:1089`, `hocus-proto/src/agents.rs`), git worktree identity

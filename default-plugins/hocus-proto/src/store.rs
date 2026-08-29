@@ -147,9 +147,55 @@ pub fn prompt_def() -> EntityDef {
     EntityDef::new("prompt", 1).attr(AttrDef::text("text").required())
 }
 
-/// Every entity in [`SHARED`]. Both plugins declare all of them on load.
+/// A scheduled prompt, keyed by hocus's own job id. See `crate::jobs`.
+///
+/// `next_due_at` is a wall-clock second, written when the job is armed and
+/// when it fires — never per tick, so a countdown does not wake every watcher
+/// in the session once a second. `chat_id` is null for a chat that has not been
+/// saved yet, and is carried so that jobs can one day follow a chat that is
+/// reopened; today every restored job lands in the foreground.
+pub fn job_def() -> EntityDef {
+    EntityDef::new("job", 1)
+        .attr(AttrDef::int("job_id").unique().required())
+        .attr(AttrDef::int("chat_id"))
+        .attr(AttrDef::real("every").required())
+        .attr(AttrDef::int("next_due_at").required())
+        .attr(AttrDef::text("prompt").required())
+        .attr(AttrDef::boolean("show").required().default(false))
+        .attr(AttrDef::boolean("auto_confirm").required().default(false))
+}
+
+/// A kind the user set on a pane by hand with `agent_register`, keyed by pane
+/// id. Pruned as panes go, so a stale row names a pane id that has since been
+/// reused only until the next snapshot.
+pub fn agent_latch_def() -> EntityDef {
+    EntityDef::new("agent_latch", 1)
+        .attr(AttrDef::int("pane_id").unique().required())
+        .attr(AttrDef::text("kind").required())
+}
+
+/// What the daemon's model last said about an idle agent's pane, keyed by pane
+/// id. The activity hash is deliberately not here: it is not stable across runs.
+pub fn agent_summary_def() -> EntityDef {
+    EntityDef::new("agent_summary", 1)
+        .attr(AttrDef::int("pane_id").unique().required())
+        .attr(AttrDef::text("text").required())
+        .attr(AttrDef::text("title").required().default(""))
+        .attr(AttrDef::boolean("awaiting").required().default(false))
+}
+
+/// Every entity in [`SHARED`]. Both plugins declare all of them on load — the
+/// job, latch and summary rows are hocus's alone to write, but a declaration
+/// has to agree wherever it is made.
 pub fn shared_defs() -> Vec<EntityDef> {
-    vec![project_def(), todo_def(), import_marker_def()]
+    vec![
+        project_def(),
+        todo_def(),
+        import_marker_def(),
+        job_def(),
+        agent_latch_def(),
+        agent_summary_def(),
+    ]
 }
 
 /// Every entity in hocus's own namespace. Only hocus declares these.
