@@ -15,6 +15,7 @@ use crate::{
 use std::io::Write;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use zellij_utils::cli::CliArgs;
 use zellij_utils::shared::web_server_base_url;
 use zellij_utils::{
@@ -85,6 +86,8 @@ impl ClientLoop<'_> {
             exit_msg: String::new(),
             reconnect_to_session: None,
         };
+        let started_at = Instant::now();
+        let mut waiting_for_first_render = true;
 
         loop {
             let (client_instruction, mut err_ctx) = receive_client_instructions
@@ -93,7 +96,31 @@ impl ClientLoop<'_> {
 
             err_ctx.add_call(ContextType::Client((&client_instruction).into()));
 
-            if self.handle(client_instruction, &mut outcome) {
+            let first_render_bytes = if waiting_for_first_render {
+                match &client_instruction {
+                    ClientInstruction::Render(output) => Some(output.len()),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if let Some(bytes) = first_render_bytes {
+                log::info!(
+                    "attach trace: client pid={} client loop received first Render bytes={bytes} after {:?}; terminal write begin",
+                    std::process::id(),
+                    started_at.elapsed()
+                );
+            }
+            let should_exit = self.handle(client_instruction, &mut outcome);
+            if first_render_bytes.is_some() {
+                log::info!(
+                    "attach trace: client pid={} first Render terminal write complete after {:?}",
+                    std::process::id(),
+                    started_at.elapsed()
+                );
+                waiting_for_first_render = false;
+            }
+            if should_exit {
                 break;
             }
         }

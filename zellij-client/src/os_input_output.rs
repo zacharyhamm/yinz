@@ -183,12 +183,32 @@ pub fn connect_with_deadline(
     timeout: std::time::Duration,
     retry_interval: std::time::Duration,
 ) -> Result<interprocess::local_socket::Stream, ConnectToServerError> {
+    let started_at = std::time::Instant::now();
+    let mut attempts = 0;
+    log::info!(
+        "attach trace: client pid={} IPC connect loop begin path={}",
+        std::process::id(),
+        path.display()
+    );
     let deadline = std::time::Instant::now() + timeout;
     loop {
+        attempts += 1;
         match zellij_utils::consts::ipc_connect(path) {
-            Ok(socket) => return Ok(socket),
+            Ok(socket) => {
+                log::info!(
+                    "attach trace: client pid={} IPC connect succeeded after {:?} attempts={attempts}",
+                    std::process::id(),
+                    started_at.elapsed()
+                );
+                return Ok(socket);
+            },
             Err(last_error) => {
                 if std::time::Instant::now() >= deadline {
+                    log::warn!(
+                        "attach trace: client pid={} IPC connect timed out after {:?} attempts={attempts}: {last_error}",
+                        std::process::id(),
+                        started_at.elapsed()
+                    );
                     return Err(ConnectToServerError {
                         path: path.to_path_buf(),
                         waited: timeout,
@@ -359,9 +379,36 @@ impl ServerConnection for ClientOsInputOutput {
     }
 
     fn send_to_server(&self, msg: ClientToServerMsg) {
-        match self.send_instructions_to_server.lock().unwrap().as_mut() {
+        let tracing_attach = matches!(&msg, ClientToServerMsg::AttachClient { .. });
+        let started_at = std::time::Instant::now();
+        if tracing_attach {
+            log::info!(
+                "attach trace: client pid={} waiting for IPC sender lock",
+                std::process::id()
+            );
+        }
+        let mut sender = self.send_instructions_to_server.lock().unwrap();
+        if tracing_attach {
+            log::info!(
+                "attach trace: client pid={} acquired IPC sender lock after {:?}",
+                std::process::id(),
+                started_at.elapsed()
+            );
+        }
+        match sender.as_mut() {
             Some(sender) => {
-                let _ = sender.send_client_msg(msg);
+                let result = sender.send_client_msg(msg);
+                if tracing_attach {
+                    log::info!(
+                        "attach trace: client pid={} IPC AttachClient write finished after {:?} ({})",
+                        std::process::id(),
+                        started_at.elapsed(),
+                        if result.is_ok() { "ok" } else { "error" }
+                    );
+                }
+                if let Err(error) = result {
+                    log::warn!("failed to send message to server: {error:#}");
+                }
             },
             None => {
                 log::warn!("Server not ready, dropping message.");

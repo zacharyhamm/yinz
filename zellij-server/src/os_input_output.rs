@@ -417,11 +417,39 @@ impl ClientSender {
         live_writers.register();
         std::thread::spawn(move || {
             let err_context = || format!("failed to send message to client {client_id}");
+            let mut first_message = true;
+            let mut first_render = true;
             while let Some(msg) = writer_queue.pop() {
-                sender
-                    .send_server_msg(msg)
-                    .with_context(err_context)
-                    .non_fatal();
+                let started_at = Instant::now();
+                let is_render = matches!(&msg, ServerToClientMsg::Render { .. });
+                let trace_write = first_message || (first_render && is_render);
+                if trace_write {
+                    let kind = match &msg {
+                        ServerToClientMsg::Render { content } => {
+                            format!("first Render(bytes={})", content.len())
+                        },
+                        ServerToClientMsg::Connected => "Connected".to_owned(),
+                        ServerToClientMsg::QueryTerminalSize => "QueryTerminalSize".to_owned(),
+                        ServerToClientMsg::Exit { .. } => "Exit".to_owned(),
+                        _ => "other".to_owned(),
+                    };
+                    log::info!(
+                        "attach trace: server client writer client_id={client_id} socket write begin message={kind}"
+                    );
+                }
+                let result = sender.send_server_msg(msg).with_context(err_context);
+                if trace_write {
+                    log::info!(
+                        "attach trace: server client writer client_id={client_id} socket write finished after {:?} ({})",
+                        started_at.elapsed(),
+                        if result.is_ok() { "ok" } else { "error" }
+                    );
+                }
+                first_message = false;
+                if is_render {
+                    first_render = false;
+                }
+                result.non_fatal();
             }
             let _ = sender.send_server_msg(ServerToClientMsg::Exit {
                 exit_reason: ExitReason::Disconnect,

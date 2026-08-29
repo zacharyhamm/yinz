@@ -17,7 +17,7 @@ use anyhow;
 use humantime::format_duration;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use std::{fs, io, process};
 use suggest::Suggest;
 
@@ -222,19 +222,39 @@ fn assert_socket(name: &str) -> SessionProbe {
     use crate::consts::ipc_connect;
     use interprocess::local_socket::prelude::*;
     let path = &*ZELLIJ_SOCK_DIR.join(name);
+    let started_at = Instant::now();
+    log::info!("attach trace: probe {name:?} connect begin");
     match ipc_connect(path) {
         Ok(stream) => {
+            log::info!(
+                "attach trace: probe {name:?} connected after {:?}; sending ConnStatus",
+                started_at.elapsed()
+            );
             // Best effort: a platform that will not take a timeout still gets
             // probed, it just gets the old unbounded behaviour.
             let _ = stream.set_recv_timeout(Some(PROBE_TIMEOUT));
             let _ = stream.set_send_timeout(Some(PROBE_TIMEOUT));
             let mut sender: IpcSenderWithContext<ClientToServerMsg> =
                 IpcSenderWithContext::new(stream);
-            let _ = sender.send_client_msg(ClientToServerMsg::ConnStatus);
+            let send_result = sender.send_client_msg(ClientToServerMsg::ConnStatus);
+            log::info!(
+                "attach trace: probe {name:?} ConnStatus send finished after {:?} ({}); waiting for reply",
+                started_at.elapsed(),
+                if send_result.is_ok() { "ok" } else { "error" }
+            );
             let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = sender.get_receiver();
-            classify_probe_reply(receiver.recv_server_msg())
+            let status = classify_probe_reply(receiver.recv_server_msg());
+            log::info!(
+                "attach trace: probe {name:?} reply {status:?} after {:?}",
+                started_at.elapsed()
+            );
+            status
         },
         Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
+            log::info!(
+                "attach trace: probe {name:?} connection refused after {:?}",
+                started_at.elapsed()
+            );
             // Nobody is listening, so the socket outlived its server: clean it up.
             // Deliberately not reachable from the timeout above — a wedged server
             // is still running, and deleting its socket would strand it with no
@@ -242,7 +262,13 @@ fn assert_socket(name: &str) -> SessionProbe {
             drop(fs::remove_file(path));
             SessionProbe::Absent
         },
-        Err(_) => SessionProbe::Absent,
+        Err(e) => {
+            log::info!(
+                "attach trace: probe {name:?} connect failed after {:?}: {e}",
+                started_at.elapsed()
+            );
+            SessionProbe::Absent
+        },
     }
 }
 
