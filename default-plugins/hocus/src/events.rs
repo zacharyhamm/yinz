@@ -744,11 +744,13 @@ impl State {
                     .map(|cell| cell.target);
                 match target {
                     Some(ui::TabTarget::Tab(tab)) => {
+                        self.chat_tab_focus = None;
                         self.chat_tab_view = None;
                         self.switch_to_tab(tab);
                         true
                     },
                     Some(ui::TabTarget::Reveal(tab)) => {
+                        self.chat_tab_focus = None;
                         self.chat_tab_view = Some(tab);
                         true
                     },

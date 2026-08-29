@@ -971,12 +971,14 @@ fn styled(line: &VLine) -> Text {
 
 pub fn render(state: &mut State, rows: usize, cols: usize) {
     if rows < MIN_ROWS || cols < MIN_COLS {
+        state.chat_tab_width = 0;
         show_cursor(None);
         print_text_with_coordinates(Text::new("pane too small"), 0, 0, Some(cols), None);
         return;
     }
 
     if !state.perms {
+        state.chat_tab_width = 0;
         show_cursor(None);
         print_text_with_coordinates(
             Text::new("waiting for permissions…").dim_range(..),
