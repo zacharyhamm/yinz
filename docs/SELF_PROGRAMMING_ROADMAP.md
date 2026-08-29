@@ -297,9 +297,10 @@ only those). What the next session needs to know without re-deriving it:
 **Test recipes that cover the new surface.**
 
 ```sh
-cargo x test -p zellij-utils -p zellij-server -p zellij -p hocus -p hocus-agentd \
+cargo x test -p zellij-utils -p zellij-server -p zellij -p hocus -p hocus-agentd -p hocus-proto \
   -E 'test(/agent/) | test(/events/) | test(/reconfigure/) | test(/set_hook/) | test(/overlay/) \
-      | test(/plugin_authoring/) | test(/lua/) | test(/pipe/) | test(/hook/)'
+      | test(/plugin_authoring/) | test(/lua/) | test(/pipe/) | test(/hook/) \
+      | test(/job/) | test(/chat/) | test(/plugin_/) | test(/shipped/)'
 # nextest flags go after `--`; `-E` before it is refused by xtask
 cargo x integration-test -- -j 16 -E 'binary(cli) | binary(/hocus_/) | binary(new_agent_modal) | binary(plugins)'
 # the whole self-programming loop in one session, ~1.5s; loop it when touching hooks
