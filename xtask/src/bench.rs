@@ -1,6 +1,19 @@
 use crate::flags;
 use anyhow::Context;
+use std::ffi::OsString;
 use xshell::{cmd, Shell};
+
+fn hocus_args(args: &[OsString]) -> Vec<OsString> {
+    args.iter()
+        .map(|arg| match arg.to_str() {
+            Some("--baseline") => OsString::from("--baseline-lenient"),
+            Some(arg) if arg.starts_with("--baseline=") => {
+                OsString::from(arg.replacen("--baseline=", "--baseline-lenient=", 1))
+            },
+            _ => arg.clone(),
+        })
+        .collect()
+}
 
 pub fn bench(sh: &Shell, flags: flags::Bench) -> anyhow::Result<()> {
     let err_context = "failed to run task 'bench'";
@@ -28,8 +41,12 @@ pub fn bench(sh: &Shell, flags: flags::Bench) -> anyhow::Result<()> {
     .run()
     .context(err_context);
 
+    // `main` predates the hocus benchmark, so its first comparison has no matching baseline.
+    // Criterion's lenient mode still compares any hocus cases that do exist and measures new
+    // ones without making the valid server comparison fail.
+    let hocus_args = hocus_args(&flags.args);
     let hocus = cmd!(sh, "{cargo} bench -p hocus --bench transcript --")
-        .args(&flags.args)
+        .args(&hocus_args)
         .run()
         .context(err_context);
 
@@ -37,4 +54,28 @@ pub fn bench(sh: &Shell, flags: flags::Bench) -> anyhow::Result<()> {
     hocus?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hocus_uses_lenient_named_baselines() {
+        for (args, expected) in [
+            (
+                vec!["--baseline", "main", "streaming_frame"],
+                "--baseline-lenient",
+            ),
+            (
+                vec!["--baseline=main", "streaming_frame"],
+                "--baseline-lenient=main",
+            ),
+        ] {
+            let args = args.into_iter().map(OsString::from).collect::<Vec<_>>();
+            let actual = hocus_args(&args);
+            assert_eq!(actual[0], expected);
+            assert_eq!(actual.last().unwrap(), "streaming_frame");
+        }
+    }
 }
