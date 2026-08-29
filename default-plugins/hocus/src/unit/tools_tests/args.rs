@@ -323,6 +323,7 @@ fn agent_spawn_arguments_become_the_spec_the_new_agent_modal_builds() {
             base: Some("develop".to_owned()),
             worktree: Some(false),
             worktree_path: Some("/elsewhere".to_owned()),
+            ..Default::default()
         }
     );
 }
@@ -360,9 +361,11 @@ fn a_bare_command_spec_is_unchanged_by_the_new_arguments() {
 /// to the pane.
 #[test]
 fn an_agents_own_arguments_survive_having_no_command_to_hang_off() {
-    let spec = Args::parse(r#"{"agent":"claude","args":["--dangerously-skip-permissions"]}"#)
-        .unwrap()
-        .launch_spec();
+    let spec = Args::parse(
+        r#"{"agent":"claude","args":["--dangerously-skip-permissions"],"hooks":false}"#,
+    )
+    .unwrap()
+    .launch_spec();
     assert_eq!(spec.args, ["--dangerously-skip-permissions"]);
     let (command, _) = launch::plan(&spec).unwrap();
     assert_eq!(command.args, ["--dangerously-skip-permissions"]);

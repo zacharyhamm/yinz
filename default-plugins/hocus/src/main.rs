@@ -1,5 +1,7 @@
 //! hocus — chat with an OpenAI-compatible endpoint from a Zellij popup.
 
+// The tool schemas are one `json!` literal each, and the largest is past the default limit.
+#![recursion_limit = "256"]
 mod api;
 mod archive;
 mod events;

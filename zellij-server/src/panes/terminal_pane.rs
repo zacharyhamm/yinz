@@ -1542,10 +1542,7 @@ fn agent_from_run(invoked_with: Option<&Run>) -> Option<AgentInfo> {
     let context = &run_command.originating_plugin.as_ref()?.context;
     let marker = context.get(HOCUS_AGENT_PANE_CONTEXT)?;
     let kind = match marker.trim() {
-        "" | "true" => run_command
-            .command
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())?,
+        "" | "true" => zellij_utils::agent::agent_kind_of(&run_command.command, &run_command.args)?,
         kind => kind.to_owned(),
     };
     Some(AgentInfo {
