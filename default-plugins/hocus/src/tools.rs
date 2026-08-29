@@ -2098,10 +2098,10 @@ pub const PROJECT_READ_TOOLS: [&str; 6] = [
 
 /// The tools that read and write the user's own Zellij plugin folder.
 ///
-/// Intercepted in `run_head` for the same two reasons the file tools are: they need a path only
-/// the host knows — `get_user_plugin_dir`, since a wasm plugin's WASI preopens are `/host`,
-/// `/data`, `/cache` and `/tmp` and a config dir is none of them — and the three that touch the
-/// filesystem answer later, on the host's `RunCommandResult`.
+/// Intercepted in `run_head` for the same reason the file tools are: they need the plugin
+/// folder, which the host exposes as the `/plugins` root (and names through
+/// `get_user_plugin_dir`, for the reload URL and the permission grant). `plugin_log` alone
+/// answers later, on the host's `RunCommandResult`.
 pub const PLUGIN_TOOLS: [&str; 7] = [
     "plugin_docs",
     "plugin_check",
@@ -2112,18 +2112,10 @@ pub const PLUGIN_TOOLS: [&str; 7] = [
     "plugin_log",
 ];
 
-/// The plugin tools that shell out, as opposed to `plugin_docs`, answered from in here.
-///
-/// `plugin_reload` is one of them even though the reload itself is a plugin command rather than a
-/// process: what it shells out for is the symlink check below, and the reload happens on the
-/// result.
-pub const PLUGIN_FILE_TOOLS: [&str; 5] = [
-    "plugin_list",
-    "plugin_read",
-    "plugin_write",
-    "plugin_reload",
-    "plugin_log",
-];
+/// The one plugin tool that still shells out: `plugin_log` greps zellij's own log, a file
+/// outside every root a plugin can reach. The others go through the host's `fs_*` commands
+/// against the `/plugins` root and answer at once.
+pub const PLUGIN_FILE_TOOLS: [&str; 1] = ["plugin_log"];
 
 /// Compile `source` as the plugin `name` would be loaded, answering the compile error.
 ///
@@ -2189,13 +2181,6 @@ pub const PLUGIN_LOG_LINES: usize = 50;
 /// shell computes it from the same two inputs the server does - the temp folder and the uid.
 const ZELLIJ_LOG_FILE: &str = "${TMPDIR:-/tmp}/zellij-$(id -u)/zellij-log/zellij.log";
 
-/// The largest plugin source a write may carry.
-///
-/// The source travels as one environment-variable value, and Linux caps a single argv/env string
-/// at `MAX_ARG_STRLEN` (128 KiB). This leaves generous room under that, and is already far more
-/// Lua than a plugin needs — the largest shipped example is under 8 KB.
-pub const MAX_PLUGIN_SOURCE_BYTES: usize = 64_000;
-
 /// The longest plugin name accepted, so a name cannot be used to build an unreasonable path.
 const MAX_PLUGIN_NAME_LEN: usize = 64;
 
@@ -2205,92 +2190,17 @@ pub const NO_PLUGIN_FOLDER: &str = "no plugin folder is configured; set `user_pl
                                     Zellij config, or start a session where the config dir can \
                                     be found";
 
-/// Refuse a target that is a symlink, in the one place that can actually tell: the host.
+/// The root the host mounts the user's plugin folder at, for every `fs_*` command.
 ///
-/// `resolve_plugin_file` proves the path is a single component under the plugin folder, but that
-/// proof is *lexical* — a link sitting in the folder under a perfectly ordinary name satisfies it
-/// while pointing anywhere at all. Following one would let a read leave the folder and let an
-/// `overwrite=true` truncate a file the confirmation never named.
-///
-/// The last component is not the only one that can be a link: a module name (`app/ui`) puts one
-/// folder of the model's choosing in the path too, and a symlinked `app/` leads out of the plugin
-/// folder just as surely. That folder travels in `HOCUS_PLUGIN_MODULE_DIR` — set by `plugin_argv`
-/// only when the name had a folder in it — and is checked here as well.
-///
-/// The plugin folder *itself* is deliberately not checked: it is the user's own configuration
-/// rather than anything the model chose, and a dotfiles setup that symlinks it is not an escape.
-///
-/// `-L` is true for a link whatever it points at, including a dangling one, so this refuses
-/// before `set -C` has to reason about what a link "existing" means.
-///
-/// The check and the use of the path are two syscalls, so a link planted between them would still
-/// be followed. Nothing hocus offers writes into that folder except the guarded script below, and
-/// closing the window properly needs an `O_NOFOLLOW` open that no shell exposes.
-const PLUGIN_SYMLINK_GUARD: &str = concat!(
-    r#"if [ -L "$1" ]; then printf '%s\n' "$1 is a symlink; refusing" >&2; exit 1; fi"#,
-    "\n",
-    r#"if [ -n "${HOCUS_PLUGIN_MODULE_DIR-}" ] && [ -L "$HOCUS_PLUGIN_MODULE_DIR" ]; then printf '%s\n' "$HOCUS_PLUGIN_MODULE_DIR is a symlink; refusing" >&2; exit 1; fi"#,
-);
+/// The host resolves symlinks and refuses a path that leaves the folder, which is the
+/// containment `resolve_plugin_file` can only assert lexically - and it is what retired the
+/// shell-side symlink guard these tools used to run in front of every open.
+pub const PLUGINS_ROOT: &str = "/plugins";
 
-/// Write `$HOCUS_PLUGIN_SOURCE` to `$1`, creating the folder `$2` first.
-///
-/// `sh -c` is the only way to redirect: Zellij execs argv directly, and `RunCommand` gives the
-/// child no stdin to pipe into (`background_jobs.rs` sets `Stdio::null()`).
-///
-/// The source travels in the *environment* rather than in an argument. That keeps it out of `ps`,
-/// keeps the argv short, and — the point — makes it a shell variable that is never re-parsed, so
-/// nothing the model wrote can become a shell token. The path is `"$1"` for the same reason.
-///
-/// `printf %s` rather than `echo`, which mangles backslashes and eats a leading `-n`.
-///
-/// `set -C` is `noclobber`: the write *fails* rather than truncating an existing file, which is
-/// how `overwrite=false` is enforced without an existence check this plugin cannot perform. It is
-/// dropped for `overwrite=true`, which is the only difference between the two forms.
-///
-/// One statement per line, rather than the `&&` chain this used to be: a compound `if` in the
-/// middle of a chain still lets what follows the next `;` run, so a failed `mkdir` would go on to
-/// write. Every step that can fail says `|| exit 1` for itself.
-///
-/// The guard runs *first*, before the `mkdir`: `mkdir -p` through a symlinked module folder
-/// succeeds silently (the folder already exists, as far as it can tell), so checking afterwards
-/// would be checking a link this script had already walked through.
-fn plugin_write_script(overwrite: bool) -> String {
-    let noclobber = match overwrite {
-        true => "",
-        false => "set -C\n",
-    };
-    format!(
-        "{PLUGIN_SYMLINK_GUARD}\nmkdir -p \"$2\" || exit 1\n{noclobber}printf %s \
-         \"$HOCUS_PLUGIN_SOURCE\" > \"$1\""
-    )
-}
-
-/// The environment variable carrying a plugin's source to the write script.
-const PLUGIN_SOURCE_VAR: &str = "HOCUS_PLUGIN_SOURCE";
-
-/// The environment variable carrying the module folder to `PLUGIN_SYMLINK_GUARD`.
-///
-/// The environment rather than a positional argument because the positions differ per tool - `$2`
-/// is a line range for `plugin_read` and the folder to create for `plugin_write` - while the
-/// guard is one piece of text shared by all of them.
-const PLUGIN_MODULE_DIR_VAR: &str = "HOCUS_PLUGIN_MODULE_DIR";
-
-/// The folder a module name put in the path, if the name had one.
-///
-/// `None` for a plain plugin name, whose parent is the plugin folder itself: that one is the
-/// user's configuration and is deliberately left unchecked - see `PLUGIN_SYMLINK_GUARD`.
-fn plugin_module_dir(dir: &str, target: &str) -> Option<String> {
-    let parent = std::path::Path::new(target).parent()?.display().to_string();
-    (parent != dir).then_some(parent)
-}
-
-/// The environment every guarded plugin tool runs with: the module folder to check, when there
-/// is one.
-fn plugin_guard_env(dir: &str, target: &str) -> BTreeMap<String, String> {
-    match plugin_module_dir(dir, target) {
-        Some(module_dir) => BTreeMap::from([(PLUGIN_MODULE_DIR_VAR.to_owned(), module_dir)]),
-        None => BTreeMap::new(),
-    }
+/// `/plugins/<name>.lua`: the path the host's `fs_*` commands take for a plugin the model named.
+/// The same rules as `resolve_plugin_file`, against the root instead of the real folder.
+pub fn plugin_fs_path(name: Option<&str>) -> Result<String, String> {
+    resolve_plugin_file(PLUGINS_ROOT, name)
 }
 
 /// Resolve a plugin the model named against the user's plugin folder.
@@ -2306,9 +2216,9 @@ fn plugin_guard_env(dir: &str, target: &str) -> BTreeMap<String, String> {
 /// cannot disagree.
 ///
 /// Everything here is lexical, which is the whole of what a wasm plugin can check: a symlink in
-/// the folder passes every rule below while pointing anywhere at all. `PLUGIN_SYMLINK_GUARD` is
-/// the other half of the containment, and runs on the host in front of every tool that opens the
-/// resolved path.
+/// the folder passes every rule below while pointing anywhere at all. The host's `/plugins`
+/// root is the other half of the containment - it canonicalizes the path and refuses one that
+/// leaves the folder - and every tool that opens the file goes through it.
 pub fn resolve_plugin_file(dir: &str, name: Option<&str>) -> Result<String, String> {
     let dir = dir.trim();
     if dir.is_empty() {
@@ -2361,73 +2271,16 @@ pub fn resolve_plugin_file(dir: &str, name: Option<&str>) -> Result<String, Stri
     Ok(path)
 }
 
-/// The argv and environment a plugin tool becomes.
+/// The argv and environment of the one plugin tool that shells out.
 ///
-/// `target` is the path `resolve_plugin_file` already checked, and `dir` the folder it is in.
-/// Nothing else here comes from the model without landing in an argument of its own.
+/// `target` is the path `resolve_plugin_file` already checked. Nothing else here comes from the
+/// model without landing in an argument of its own.
 pub fn plugin_argv(
     name: &str,
     args: &Args,
-    dir: &str,
     target: &str,
 ) -> Result<(Vec<String>, BTreeMap<String, String>), String> {
     match name {
-        // `find` rather than `ls` or `rg`: POSIX, present everywhere, does not need the folder to
-        // be a repository, and — unlike `rg --files` — does not silently skip a plugin whose name
-        // some `.gitignore` happens to match.
-        "plugin_list" => Ok((
-            vec![
-                "find".to_owned(),
-                dir.to_owned(),
-                "-maxdepth".to_owned(),
-                "2".to_owned(),
-                "-type".to_owned(),
-                "f".to_owned(),
-                "-name".to_owned(),
-                "*.lua".to_owned(),
-            ],
-            BTreeMap::new(),
-        )),
-        // The `read_file` shape, for the same reason it uses `sed`: an unbounded read of
-        // something enormous would be cut mid-line after the host had already read all of it.
-        //
-        // Wrapped in `sh` only so the symlink guard can run first; `exec` then leaves `sed` as
-        // the process, so what the model sees is what `read_file` would have shown it.
-        "plugin_read" => {
-            let start = args.start_line.unwrap_or(1).max(1);
-            let end = match args.line_count {
-                Some(count) => start.saturating_add(count.max(1)).saturating_sub(1),
-                None => start.saturating_add(FILE_TOOL_LINES).saturating_sub(1),
-            };
-            Ok((
-                vec![
-                    "sh".to_owned(),
-                    "-c".to_owned(),
-                    format!("{PLUGIN_SYMLINK_GUARD}\nexec sed -n \"$2\" -- \"$1\""),
-                    // `$0`, so the file is `$1` and the line range `$2`.
-                    "sh".to_owned(),
-                    target.to_owned(),
-                    format!("{start},{end}p"),
-                ],
-                plugin_guard_env(dir, target),
-            ))
-        },
-        // A reload runs nothing: this command exists to answer "may that file be loaded at all",
-        // and `plugin_tool_result` starts the plugin when it says yes. `-f` after the guard, so
-        // a name that was never written is refused here rather than opening a pane to say so.
-        "plugin_reload" => Ok((
-            vec![
-                "sh".to_owned(),
-                "-c".to_owned(),
-                format!(
-                    "{PLUGIN_SYMLINK_GUARD}\nif [ ! -f \"$1\" ]; then printf '%s\\n' \"$1: no \
-                     such plugin; write it first\" >&2; exit 1; fi"
-                ),
-                "sh".to_owned(),
-                target.to_owned(),
-            ],
-            plugin_guard_env(dir, target),
-        )),
         // The lines tagged with this plugin's file. The runtime tags a plugin's `zellij.log`
         // and `print` output `[lua:<path>]`, and its loader errors name the path, so matching
         // on `<name>.lua]` finds the former whether the path was given absolute or bare, and
@@ -2454,47 +2307,84 @@ pub fn plugin_argv(
                 BTreeMap::new(),
             ))
         },
-        "plugin_write" => {
-            let source = args
-                .source
-                .as_deref()
-                .ok_or("source is required: send the complete plugin file, not a patch")?;
-            if source.trim().is_empty() {
-                return Err("source is required and must not be empty".to_owned());
-            }
-            if source.len() > MAX_PLUGIN_SOURCE_BYTES {
-                return Err(format!(
-                    "source is {} bytes; the limit is {MAX_PLUGIN_SOURCE_BYTES}. Shorten the \
-                     plugin or split it up.",
-                    source.len()
-                ));
-            }
-            // Exactly one trailing newline, so `printf %s` leaves a well-formed file whatever
-            // the model sent.
-            let source = format!("{}\n", source.trim_end_matches('\n'));
-            Ok((
-                vec![
-                    "sh".to_owned(),
-                    "-c".to_owned(),
-                    plugin_write_script(args.overwrite),
-                    // `$0`, so the file is `$1` and the folder it goes in `$2` - the plugin
-                    // folder itself, or the one subfolder a module name may put it in.
-                    "sh".to_owned(),
-                    target.to_owned(),
-                    std::path::Path::new(target)
-                        .parent()
-                        .map(|parent| parent.display().to_string())
-                        .unwrap_or_else(|| dir.to_owned()),
-                ],
-                {
-                    let mut env = plugin_guard_env(dir, target);
-                    env.insert(PLUGIN_SOURCE_VAR.to_owned(), source);
-                    env
-                },
-            ))
-        },
         other => Err(format!("no such tool: {other}")),
     }
+}
+
+/// The source a `plugin_write` carries, with exactly one trailing newline so the file is
+/// well-formed whatever the model sent, or why there is none to write.
+pub fn plugin_source(args: &Args) -> Result<String, String> {
+    let source = args
+        .source
+        .as_deref()
+        .ok_or("source is required: send the complete plugin file, not a patch")?;
+    if source.trim().is_empty() {
+        return Err("source is required and must not be empty".to_owned());
+    }
+    Ok(format!("{}\n", source.trim_end_matches('\n')))
+}
+
+/// The 1-based, inclusive line range a `plugin_read` asked for: the `read_file` shape, so an
+/// unbounded read of something enormous is cut to a page rather than sent whole.
+pub fn read_range(args: &Args) -> (usize, usize) {
+    let start = args.start_line.unwrap_or(1).max(1);
+    let end = match args.line_count {
+        Some(count) => start.saturating_add(count.max(1)).saturating_sub(1),
+        None => start.saturating_add(FILE_TOOL_LINES).saturating_sub(1),
+    };
+    (start, end)
+}
+
+/// Lines `start..=end` of `contents`, as `sed -n 'start,endp'` would print them; empty past the
+/// end of the file.
+pub fn lines_in_range(contents: &str, start: usize, end: usize) -> String {
+    contents
+        .lines()
+        .skip(start.saturating_sub(1))
+        .take(end.saturating_sub(start).saturating_add(1))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The plugin names a listing answers with: every `.lua` under `root`, one folder deep, as the
+/// name the tools take back (`keys.lua`, `app/ui.lua`) rather than as a path.
+pub fn listing_names(root: &str, entries: &[zellij_tile::prelude::FsEntry]) -> Vec<String> {
+    let prefix = format!("{}/", root.trim_end_matches('/'));
+    let mut names: Vec<String> = entries
+        .iter()
+        .filter(|entry| entry.path.ends_with(".lua"))
+        .filter(|entry| entry.metadata.map(|m| m.is_file).unwrap_or(true))
+        .map(|entry| {
+            entry
+                .path
+                .strip_prefix(&prefix)
+                .unwrap_or(&entry.path)
+                .to_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// What a `plugin_write` answers once the file is there, and its permissions granted.
+pub fn write_report(name: &str, granted: &[PermissionType]) -> String {
+    let name = name.trim().trim_end_matches(".lua");
+    if granted.is_empty() {
+        return format!("wrote {name}.lua; call plugin_reload to load it");
+    }
+    format!(
+        "wrote {name}.lua and granted it {}; call plugin_reload to load it",
+        permission_names(granted).join(", ")
+    )
+}
+
+/// What a `plugin_write` says about a file that is already there.
+pub fn exists_report(name: &str) -> String {
+    let name = name.trim().trim_end_matches(".lua");
+    format!(
+        "{name}.lua already exists; pass overwrite=true to replace it, or read it first with \
+         plugin_read"
+    )
 }
 
 /// How many lines of a listing or a search reach the model before the rest is
@@ -2939,6 +2829,49 @@ mod host {
     /// Write a pane's agent record to the session, for every reader of the manifest.
     pub fn report_pane_agent(pane_id: u32, agent: AgentInfo) {
         set_pane_agent(PaneId::Terminal(pane_id), Some(agent));
+    }
+
+    /// Write a plugin's source at `path` under `/plugins`, making its folder first. `Ok(false)`
+    /// means the file was already there and `overwrite` was not asked for: checked and then
+    /// written as two calls, which is the one thing the shell's `set -C` did in one - the folder
+    /// has no other writer while a confirmation is open, so the gap is a formality.
+    pub fn plugin_fs_write(path: &str, source: &str, overwrite: bool) -> Result<bool, String> {
+        let path = std::path::Path::new(path);
+        if !overwrite && zellij_tile::shim::fs_metadata(path)?.is_some() {
+            return Ok(false);
+        }
+        zellij_tile::shim::fs_write(path, source.as_bytes(), false, true)?;
+        Ok(true)
+    }
+
+    /// A plugin's source at `path` under `/plugins`.
+    pub fn plugin_fs_read(path: &str) -> Result<String, String> {
+        let bytes = zellij_tile::shim::fs_read(std::path::Path::new(path), None)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Every entry under `root`, one folder deep - the depth a module name can reach. A root
+    /// that is not there yet is an empty listing: the folder is made by the first write.
+    pub fn plugin_fs_list(root: &str) -> Result<Vec<zellij_tile::prelude::FsEntry>, String> {
+        let root_path = std::path::Path::new(root);
+        if zellij_tile::shim::fs_metadata(root_path)?.is_none() {
+            return Ok(Vec::new());
+        }
+        let mut entries = zellij_tile::shim::fs_list(root_path)?;
+        let folders: Vec<String> = entries
+            .iter()
+            .filter(|entry| entry.metadata.is_some_and(|m| m.is_dir))
+            .map(|entry| entry.path.clone())
+            .collect();
+        for folder in folders {
+            entries.extend(zellij_tile::shim::fs_list(std::path::Path::new(&folder))?);
+        }
+        Ok(entries)
+    }
+
+    /// Whether the plugin at `path` under `/plugins` is there to be loaded.
+    pub fn plugin_fs_exists(path: &str) -> Result<bool, String> {
+        Ok(zellij_tile::shim::fs_metadata(std::path::Path::new(path))?.is_some())
     }
 
     pub fn dispatch(call: &ToolCall) -> String {
@@ -3784,8 +3717,9 @@ mod host {
 
 #[cfg(target_arch = "wasm32")]
 pub use host::{
-    dispatch, grant_permissions, new_pane_with_context, observe_plugin, reload_plugin,
-    report_pane_agent, spawn_in_checkout,
+    dispatch, grant_permissions, new_pane_with_context, observe_plugin, plugin_fs_exists,
+    plugin_fs_list, plugin_fs_read, plugin_fs_write, reload_plugin, report_pane_agent,
+    spawn_in_checkout,
 };
 
 /// What a `plugin_reload` found when it went to look: the plugin's pane, and its text.
@@ -3841,6 +3775,32 @@ pub fn reload_plugin(_path: &str) {}
 /// Off wasm there is no session to hold the record; the tests read `manual_kinds`.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn report_pane_agent(_pane_id: u32, _agent: zellij_tile::prelude::AgentInfo) {}
+
+/// What every plugin file tool answers off wasm, where there is no host and no plugin folder:
+/// the tests cover the pure halves, and this is the sentence the tool loop passes through.
+#[cfg(not(target_arch = "wasm32"))]
+pub const PLUGIN_FOLDER_UNREACHABLE: &str =
+    "the plugin folder is only reachable from inside zellij";
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn plugin_fs_write(_path: &str, _source: &str, _overwrite: bool) -> Result<bool, String> {
+    Err(PLUGIN_FOLDER_UNREACHABLE.to_owned())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn plugin_fs_read(_path: &str) -> Result<String, String> {
+    Err(PLUGIN_FOLDER_UNREACHABLE.to_owned())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn plugin_fs_list(_root: &str) -> Result<Vec<zellij_tile::prelude::FsEntry>, String> {
+    Err(PLUGIN_FOLDER_UNREACHABLE.to_owned())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn plugin_fs_exists(_path: &str) -> Result<bool, String> {
+    Err(PLUGIN_FOLDER_UNREACHABLE.to_owned())
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn observe_plugin(_path: &str) -> Option<PluginObservation> {

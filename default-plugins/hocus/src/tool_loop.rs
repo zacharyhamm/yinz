@@ -639,14 +639,16 @@ impl State {
 
     /// Run one of the plugin-authoring tools.
     ///
-    /// Two of the seven answer here and now — `plugin_docs`, from compiled-in text, and
-    /// `plugin_check`, from the host's compiler. The other five shell out and answer later on
-    /// `RunCommandResult`, exactly as the file tools do.
-    /// `plugin_reload` is among them even though `start_or_reload_plugin` is fire-and-forget:
-    /// what it waits for is `PLUGIN_SYMLINK_GUARD`, which only the host can run.
+    /// Six of the seven answer here and now: `plugin_docs` from compiled-in text, `plugin_check`
+    /// from the host's compiler, and the four that touch the plugin folder through the host's
+    /// `fs_*` commands against the `/plugins` root, which answer synchronously. `plugin_log`
+    /// alone shells out and answers later on `RunCommandResult`, exactly as the file tools do.
+    /// A cleared `plugin_reload` is the one that changes state rather than answering: the load
+    /// is fire-and-forget, so the head stays pending until the pane has had time to show what
+    /// happened.
     ///
-    /// Everything refusable without running anything is refused here: no plugin folder, a bad
-    /// name, a source over the size cap.
+    /// Everything refusable without touching anything is refused first: no plugin folder, a bad
+    /// name, an empty source.
     pub(crate) fn start_plugin_tool(&mut self, call: &ToolCall) -> bool {
         let args = match tools::Args::parse(&call.arguments) {
             Ok(args) => args,
@@ -675,45 +677,118 @@ impl State {
         }
 
         let dir = self.user_plugin_dir.clone();
+        if dir.trim().is_empty() {
+            self.finish_head(tools::NO_PLUGIN_FOLDER);
+            return true;
+        }
         // `plugin_list` names no plugin - it is the folder itself that is the target.
-        let target = match call.name.as_str() {
-            "plugin_list" => match dir.trim().is_empty() {
-                true => Err(tools::NO_PLUGIN_FOLDER.to_owned()),
-                false => Ok(dir.clone()),
-            },
-            _ => tools::resolve_plugin_file(&dir, args.name.as_deref()),
-        };
-        let target = match target {
-            Ok(target) => target,
-            Err(error) => {
+        if call.name == "plugin_list" {
+            let result = match tools::plugin_fs_list(tools::PLUGINS_ROOT) {
+                Ok(entries) => {
+                    let names = tools::listing_names(tools::PLUGINS_ROOT, &entries);
+                    match names.is_empty() {
+                        true => "no plugins yet".to_owned(),
+                        false => log::truncate_str(&names.join("\n"), MAX_TOOL_OUTPUT),
+                    }
+                },
+                Err(error) => error,
+            };
+            self.finish_head(result);
+            return true;
+        }
+
+        // Two spellings of one file: the real path, for the reload URL and the permission
+        // grant, and the `/plugins` path the host's file commands take. Both go through the
+        // same rules, so they cannot name different files.
+        let (target, fs_path) = match (
+            tools::resolve_plugin_file(&dir, args.name.as_deref()),
+            tools::plugin_fs_path(args.name.as_deref()),
+        ) {
+            (Ok(target), Ok(fs_path)) => (target, fs_path),
+            (Err(error), _) | (_, Err(error)) => {
                 self.finish_head(error);
                 return true;
             },
         };
+        let name = args.name.clone().unwrap_or_default();
 
-        let (argv, env) = match tools::plugin_argv(&call.name, &args, &dir, &target) {
-            Ok(argv) => argv,
-            Err(error) => {
-                self.finish_head(error);
-                return true;
+        match call.name.as_str() {
+            "plugin_read" => {
+                let (start, end) = tools::read_range(&args);
+                let result = match tools::plugin_fs_read(&fs_path) {
+                    Ok(contents) => {
+                        let lines = tools::lines_in_range(&contents, start, end);
+                        match lines.is_empty() {
+                            true => "no lines".to_owned(),
+                            false => log::truncate_str(&lines, MAX_TOOL_OUTPUT),
+                        }
+                    },
+                    Err(error) => error,
+                };
+                self.finish_head(result);
+                true
             },
-        };
-
-        let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
-        run_command_with_output_limit(
-            &borrowed,
-            env,
-            // `.` for the reason spelled out in `start_project_read`: the host rewrites a cwd
-            // under `/tmp`, `/host`, `/data` or `/cache` into the plugin's own folder of that
-            // name, and every path in the argv is absolute anyway.
-            std::path::PathBuf::from("."),
-            BTreeMap::from([("tool_call_id".to_owned(), call.id.clone())]),
-            MAX_TOOL_OUTPUT,
-        );
-        self.status = Status::AwaitingCommand;
-        self.pin_to_bottom();
-        self.arm_timer(FRAME_SECONDS);
-        false
+            "plugin_write" => {
+                let source = match tools::plugin_source(&args) {
+                    Ok(source) => source,
+                    Err(error) => {
+                        self.finish_head(error);
+                        return true;
+                    },
+                };
+                let result = match tools::plugin_fs_write(&fs_path, &source, args.overwrite) {
+                    Ok(true) => {
+                        // The user approved this source, and with it the permissions it asks
+                        // for - the confirmation said so. Granting them now is what keeps the
+                        // plugin from prompting in a pane nobody in this loop is looking at.
+                        let granted = tools::requested_permissions(&source);
+                        if !granted.is_empty() {
+                            tools::grant_permissions(&target, &granted);
+                        }
+                        tools::write_report(&name, &granted)
+                    },
+                    Ok(false) => tools::exists_report(&name),
+                    Err(error) => error,
+                };
+                self.finish_head(result);
+                true
+            },
+            "plugin_reload" => match tools::plugin_fs_exists(&fs_path) {
+                Ok(true) => self.start_plugin_load(),
+                Ok(false) => {
+                    self.finish_head(format!("{target}: no such plugin; write it first"));
+                    true
+                },
+                Err(error) => {
+                    self.finish_head(error);
+                    true
+                },
+            },
+            _ => {
+                let (argv, env) = match tools::plugin_argv(&call.name, &args, &target) {
+                    Ok(argv) => argv,
+                    Err(error) => {
+                        self.finish_head(error);
+                        return true;
+                    },
+                };
+                let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+                run_command_with_output_limit(
+                    &borrowed,
+                    env,
+                    // `.` for the reason spelled out in `start_project_read`: the host rewrites
+                    // a cwd under `/tmp`, `/host`, `/data` or `/cache` into the plugin's own
+                    // folder of that name, and every path in the argv is absolute anyway.
+                    std::path::PathBuf::from("."),
+                    BTreeMap::from([("tool_call_id".to_owned(), call.id.clone())]),
+                    MAX_TOOL_OUTPUT,
+                );
+                self.status = Status::AwaitingCommand;
+                self.pin_to_bottom();
+                self.arm_timer(FRAME_SECONDS);
+                false
+            },
+        }
     }
 
     /// The deferred half of `web_search`. Returns whether this response was one:

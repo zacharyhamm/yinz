@@ -1,5 +1,6 @@
 //! The plugin tools as the tool loop actually runs them: which answer at once, which defer on
-//! the host, and what happens when there is no plugin folder to write into.
+//! the host, and what happens when there is no plugin folder to write into. Off wasm the host's
+//! file commands are stubs that say so, which is what the file tools answer here.
 
 use super::*;
 
@@ -132,41 +133,62 @@ fn a_plugin_tool_refuses_a_name_that_is_a_path() {
     }
 }
 
-/// The four that touch the filesystem hand off to the host and wait, rather than answering
-/// with something they made up. `plugin_reload` is one of them because the file it is about to
-/// run has to be checked for being a symlink out of the folder, which only the host can do.
+/// The four that touch the plugin folder go through the host's file commands and answer at
+/// once - off wasm, with the stub's own sentence. Only `plugin_log` still shells out and waits.
 #[test]
-fn the_filesystem_tools_defer_on_the_host() {
+fn the_file_tools_answer_at_once_and_only_the_log_defers() {
     for (name, arguments) in [
         ("plugin_list", "{}"),
         ("plugin_read", r#"{"name":"keys"}"#),
         ("plugin_write", r#"{"name":"keys","source":"local M = {}"}"#),
         ("plugin_reload", r#"{"name":"keys"}"#),
-        ("plugin_log", r#"{"name":"keys"}"#),
     ] {
         let mut state = plugin_state();
         assert!(
-            !run_file_tool(&mut state, name, arguments),
-            "{name} must defer rather than answer"
+            run_file_tool(&mut state, name, arguments),
+            "{name} must answer rather than defer"
         );
-        assert!(matches!(state.status, Status::AwaitingCommand));
-        assert!(tool_results(&state).is_empty());
+        assert!(!matches!(state.status, Status::AwaitingCommand));
+        let results = tool_results(&state);
+        assert_eq!(results.len(), 1, "{name}");
+        assert_eq!(
+            results[0].content,
+            tools::PLUGIN_FOLDER_UNREACHABLE,
+            "{name}"
+        );
     }
+
+    let mut state = plugin_state();
+    assert!(
+        !run_file_tool(&mut state, "plugin_log", r#"{"name":"keys"}"#),
+        "plugin_log must defer rather than answer"
+    );
+    assert!(matches!(state.status, Status::AwaitingCommand));
+    assert!(tool_results(&state).is_empty());
 }
 
-/// The plugin is started once the host says the path may be loaded, and not before. A reload is fire-and-forget on the host, so a clean exit from the guard is where the
-/// plugin is *asked* to load - not where the tool answers. The answer waits for the pane.
+/// A reload whose file the host said is there: the load is asked for and the head stays
+/// pending, as `start_plugin_tool` leaves it.
+fn cleared_reload(state: &mut State, arguments: &str) {
+    state.pending = vec![ToolCall {
+        id: "mine".into(),
+        name: "plugin_reload".into(),
+        arguments: arguments.into(),
+    }]
+    .into();
+    assert!(
+        state.start_plugin_load(),
+        "a reload changes state rather than answering"
+    );
+}
+
+/// The plugin is started once the host says the file is there, and not before. A reload is
+/// fire-and-forget on the host, so that is where the plugin is *asked* to load - not where the
+/// tool answers. The answer waits for the pane.
 #[test]
 fn a_cleared_reload_waits_to_look_at_the_pane_before_answering() {
     let mut state = plugin_state();
-    command_result(
-        &mut state,
-        "plugin_reload",
-        r#"{"name":"keys"}"#,
-        0,
-        b"",
-        b"",
-    );
+    cleared_reload(&mut state, r#"{"name":"keys"}"#);
     assert!(tool_results(&state).is_empty(), "answered before looking");
     assert!(matches!(state.status, Status::AwaitingPluginLoad));
     assert_eq!(state.pending.len(), 1, "the head must stay pending");
@@ -206,14 +228,7 @@ fn a_cleared_reload_waits_to_look_at_the_pane_before_answering() {
 #[test]
 fn a_reload_awaited_by_a_parked_chat_is_still_answered() {
     let mut state = plugin_state();
-    command_result(
-        &mut state,
-        "plugin_reload",
-        r#"{"name":"keys"}"#,
-        0,
-        b"",
-        b"",
-    );
+    cleared_reload(&mut state, r#"{"name":"keys"}"#);
     assert!(matches!(state.status, Status::AwaitingPluginLoad));
 
     // `/history` moving to another conversation, which leaves an idle chat in front.
@@ -250,14 +265,7 @@ fn a_reload_awaited_by_a_parked_chat_is_still_answered() {
 #[test]
 fn an_awaited_plugin_load_can_be_aborted() {
     let mut state = plugin_state();
-    command_result(
-        &mut state,
-        "plugin_reload",
-        r#"{"name":"keys"}"#,
-        0,
-        b"",
-        b"",
-    );
+    cleared_reload(&mut state, r#"{"name":"keys"}"#);
     assert!(matches!(state.status, Status::AwaitingPluginLoad));
     state.abort_tools();
     assert!(matches!(state.status, Status::Idle));
@@ -298,27 +306,6 @@ fn log_lines_come_back_as_they_are() {
     assert_eq!(results[0].content, "INFO [lua:keys.lua] pressed t");
 }
 
-/// The point of making a reload wait for the host: a symlink in the plugin folder would
-/// otherwise be *run*, which is further than reading one.
-#[test]
-fn a_reload_of_a_symlink_is_refused_with_what_the_guard_said() {
-    let mut state = plugin_state();
-    command_result(
-        &mut state,
-        "plugin_reload",
-        r#"{"name":"keys"}"#,
-        1,
-        b"",
-        b"/home/someone/.config/zellij/plugins/keys.lua is a symlink; refusing",
-    );
-    let results = tool_results(&state);
-    assert!(
-        results[0].content.contains("symlink"),
-        "got {:?}",
-        results[0].content
-    );
-}
-
 /// Answer a plugin tool as if the host had come back with this.
 fn command_result(
     state: &mut State,
@@ -340,114 +327,5 @@ fn command_result(
         out,
         err,
         &BTreeMap::from([("tool_call_id".to_owned(), "mine".to_owned())]),
-    );
-}
-
-/// The `set -C` refusal, in both wordings: bash says "cannot overwrite existing file", dash says
-/// "cannot create <path>: File exists". Matched by text because the shell reports it as an
-/// ordinary non-zero exit, so getting either wrong turns a recoverable "pass overwrite=true"
-/// into a bare exit code the model cannot act on.
-#[test]
-fn a_refused_overwrite_says_how_to_proceed_whichever_shell_refused_it() {
-    for stderr in [
-        &b"sh: line 1: probe.lua: cannot overwrite existing file"[..],
-        &b"sh: 1: cannot create /home/x/.config/zellij/plugins/probe.lua: File exists"[..],
-    ] {
-        let mut state = plugin_state();
-        command_result(
-            &mut state,
-            "plugin_write",
-            r#"{"name":"probe","source":"x"}"#,
-            2,
-            b"",
-            stderr,
-        );
-        let results = tool_results(&state);
-        assert_eq!(results.len(), 1);
-        assert!(
-            results[0].content.contains("overwrite=true"),
-            "got {:?}",
-            results[0].content
-        );
-    }
-}
-
-/// The folder is made by the first write, so before then it is legitimately absent — which
-/// `find` reports as an error rather than as an empty list.
-#[test]
-fn listing_a_folder_that_does_not_exist_yet_is_not_an_error() {
-    let mut state = plugin_state();
-    command_result(
-        &mut state,
-        "plugin_list",
-        "{}",
-        1,
-        b"",
-        b"find: '/home/someone/.config/zellij/plugins': No such file or directory",
-    );
-    let results = tool_results(&state);
-    assert_eq!(results[0].content, "no plugins yet");
-}
-
-/// A listing answers in names, because a name is what every plugin tool takes back — handing
-/// over absolute paths would invite the model to send one and be refused.
-#[test]
-fn a_listing_comes_back_as_names_rather_than_paths() {
-    let mut state = plugin_state();
-    let dir = state.user_plugin_dir.clone();
-    command_result(
-        &mut state,
-        "plugin_list",
-        "{}",
-        0,
-        format!("{dir}/probe.lua\n{dir}/keys.lua\n").as_bytes(),
-        b"",
-    );
-    let results = tool_results(&state);
-    assert_eq!(results[0].content, "probe.lua\nkeys.lua");
-}
-
-#[test]
-fn a_successful_write_points_at_the_next_step() {
-    let mut state = plugin_state();
-    command_result(
-        &mut state,
-        "plugin_write",
-        r#"{"name":"probe","source":"x"}"#,
-        0,
-        b"",
-        b"",
-    );
-    let results = tool_results(&state);
-    assert!(
-        results[0].content.contains("plugin_reload"),
-        "got {:?}",
-        results[0].content
-    );
-    assert!(
-        !results[0].content.contains("granted"),
-        "{:?}",
-        results[0].content
-    );
-}
-
-/// A write whose source asks for permissions says they were granted, so the model does not
-/// go looking for a prompt that will never come.
-#[test]
-fn a_successful_write_says_what_it_granted() {
-    let mut state = plugin_state();
-    command_result(
-        &mut state,
-        "plugin_write",
-        r#"{"name":"probe","source":"zellij.request_permission { \"read_files\" }"}"#,
-        0,
-        b"",
-        b"",
-    );
-    let results = tool_results(&state);
-    assert!(
-        results[0].content.contains("granted it read_files"),
-        "got {:?}",
-        results[0].content
     );
 }
