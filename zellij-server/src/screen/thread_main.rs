@@ -3307,13 +3307,27 @@ pub(crate) fn screen_thread_main(
                 _completion_tx, // the action ends here, dropping this will release anything
                                 // waiting for it
             ) => {
+                let mut renamed = false;
                 if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
                     match tab.rename_pane(new_name, pane_id) {
-                        Ok(()) => drop(screen.render(None)),
+                        Ok(changed) => {
+                            renamed = changed;
+                            if changed {
+                                drop(screen.render(None));
+                            }
+                        },
                         Err(e) => log::error!("Failed to rename pane: {:?}", e),
                     }
                 }
-                screen.log_and_report_session_state()?;
+                // Nothing moved, so there is nothing to repaint and nothing new
+                // to tell the plugins. Reporting the session state anyway
+                // rebuilds every tab's pane manifest and pushes a
+                // `PaneUpdate`/`TabUpdate` at every subscribed plugin — real
+                // work, on the same threads and queues a keystroke has to cross.
+                // See `Tab::rename_pane`.
+                if renamed {
+                    screen.log_and_report_session_state()?;
+                }
             },
             ScreenInstruction::RenameActivePane(new_name, client_id, completion_tx) => {
                 if screen.has_no_client_to_act_for(client_id) {

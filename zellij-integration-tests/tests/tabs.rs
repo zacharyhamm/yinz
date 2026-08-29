@@ -423,8 +423,10 @@ fn move_tab_to_left() {
 
     zellij.send_stdin(&keys::alt('i'));
 
+    // See `move_tab_to_right`: the same race, and it only passes today by luck of scheduling.
     let grid_snapshot = zellij.wait_until("third tab moved one position left", |grid_snapshot| {
         tabs_in_order(grid_snapshot, &["Tab #1", "Tab #3", "Tab #2"])
+            && grid_snapshot.contains("LOCK")
     });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();
@@ -440,12 +442,12 @@ fn move_tab_to_right() {
     zellij.send_stdin(&keys::alt('h'));
     zellij.send_stdin(&keys::alt('o'));
 
-    // The status bar of the tab landed on by alt+h hears about Normal mode asynchronously (a
-    // tab's plugins only get mode updates while a client is on it, and a fresh one is sent on
-    // landing), so wait for its Normal-mode ribbon as well as the tab order.
+    // Wait for the landed tab's status bar to settle before snapshotting the moved order.
+    // `LOCK` avoids racing the TAB-mode help shown while opening the tabs.
     let grid_snapshot = zellij.wait_until("second tab moved one position right", |grid_snapshot| {
         tabs_in_order(grid_snapshot, &["Tab #1", "Tab #3", "Tab #2"])
             && grid_snapshot.status_bar_appears()
+            && grid_snapshot.contains("LOCK")
     });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();
