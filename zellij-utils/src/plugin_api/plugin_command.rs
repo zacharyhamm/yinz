@@ -2358,8 +2358,8 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::ChangeOverlayCoordinates) => match protobuf_plugin_command.payload {
                 Some(Payload::ChangeOverlayCoordinatesPayload(
                     change_overlay_coordinates_payload,
-                )) => Ok(PluginCommand::ChangeOverlayCoordinates(
-                    change_overlay_coordinates_payload
+                )) => Ok(PluginCommand::ChangeOverlayCoordinates {
+                    placements: change_overlay_coordinates_payload
                         .pane_ids_and_floating_panes_coordinates
                         .into_iter()
                         .filter_map(|p_id_a_fp| {
@@ -2369,7 +2369,9 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                             Some((pane_id, coordinates))
                         })
                         .collect(),
-                )),
+                    override_user_placement: change_overlay_coordinates_payload
+                        .override_user_placement,
+                }),
                 _ => Err("Mismatched payload for ChangeOverlayCoordinates"),
             },
             Some(CommandName::TogglePaneBorderless) => match protobuf_plugin_command.payload {
@@ -4638,26 +4640,26 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     },
                 )),
             }),
-            PluginCommand::ChangeOverlayCoordinates(pane_ids_and_coordinates) => {
-                Ok(ProtobufPluginCommand {
-                    name: CommandName::ChangeOverlayCoordinates as i32,
-                    payload: Some(Payload::ChangeOverlayCoordinatesPayload(
-                        ChangeOverlayCoordinatesPayload {
-                            pane_ids_and_floating_panes_coordinates: pane_ids_and_coordinates
-                                .into_iter()
-                                .filter_map(|(p_id, coordinates)| {
-                                    Some(PaneIdAndFloatingPaneCoordinates {
-                                        pane_id: Some(p_id.try_into().ok()?),
-                                        floating_pane_coordinates: Some(
-                                            coordinates.try_into().ok()?,
-                                        ),
-                                    })
+            PluginCommand::ChangeOverlayCoordinates {
+                placements,
+                override_user_placement,
+            } => Ok(ProtobufPluginCommand {
+                name: CommandName::ChangeOverlayCoordinates as i32,
+                payload: Some(Payload::ChangeOverlayCoordinatesPayload(
+                    ChangeOverlayCoordinatesPayload {
+                        override_user_placement,
+                        pane_ids_and_floating_panes_coordinates: placements
+                            .into_iter()
+                            .filter_map(|(p_id, coordinates)| {
+                                Some(PaneIdAndFloatingPaneCoordinates {
+                                    pane_id: Some(p_id.try_into().ok()?),
+                                    floating_pane_coordinates: Some(coordinates.try_into().ok()?),
                                 })
-                                .collect(),
-                        },
-                    )),
-                })
-            },
+                            })
+                            .collect(),
+                    },
+                )),
+            }),
             PluginCommand::TogglePaneBorderless(pane_id) => Ok(ProtobufPluginCommand {
                 name: CommandName::TogglePaneBorderless as i32,
                 payload: Some(Payload::TogglePaneBorderlessPayload(
@@ -7230,7 +7232,7 @@ mod tests {
                 | PluginCommand::SetFloatingPanePinned(..)
                 | PluginCommand::StackPanes(_)
                 | PluginCommand::ChangeFloatingPanesCoordinates(_)
-                | PluginCommand::ChangeOverlayCoordinates(_)
+                | PluginCommand::ChangeOverlayCoordinates { .. }
                 | PluginCommand::TogglePaneBorderless(_)
                 | PluginCommand::SetPaneBorderless(..)
                 | PluginCommand::OpenCommandPaneNearPlugin(..)

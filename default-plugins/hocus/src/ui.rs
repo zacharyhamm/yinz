@@ -1689,7 +1689,7 @@ fn help_line(state: &State) -> &'static str {
             "streaming…  <Ctrl c> cancel  <Esc> hide  <↑↓> scroll"
         },
         Status::Idle if state.is_planning() => "planning  read-only tools  <Esc> hide",
-        Status::Idle => "<Ctrl l> new chat  <Esc> hide",
+        Status::Idle => "<Ctrl l> new chat  <Ctrl o> move  <Esc> hide",
     }
 }
 
@@ -2337,6 +2337,15 @@ mod tests {
         state.plan = crate::Plan::AwaitingApproval;
         let help = help_line(&state);
         assert!(help.starts_with("</execute> run  </execute --clear> fresh  <n> refine"));
+    }
+
+    #[test]
+    fn idle_help_names_the_reposition_key() {
+        let state = State {
+            status: Status::Idle,
+            ..Default::default()
+        };
+        assert!(help_line(&state).contains("<Ctrl o> move"));
     }
 
     #[test]
