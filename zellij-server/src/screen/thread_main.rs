@@ -502,6 +502,9 @@ pub(crate) fn screen_thread_main(
                         }
                     },
                 };
+                // Before the replay: a pane that exited before the screen created it starts,
+                // and then exits, in that order.
+                screen.fire_agent_start_for_new_pane(pid);
                 if let Some(pending_events) = pending_events_waiting_for_pane.remove(&pid) {
                     for event in pending_events {
                         screen.bus.senders.send_to_screen(event).non_fatal();
@@ -1493,10 +1496,22 @@ pub(crate) fn screen_thread_main(
             ScreenInstruction::ClosePane(
                 id,
                 client_id,
-                _completion_tx, // the action ends here, dropping this will release anything
+                completion_tx, // the action ends here, dropping this will release anything
                 // waiting for it
                 exit_status,
             ) => {
+                // A command pane whose command exited without `hold_on_close` arrives here from
+                // the pty with no client and no completion; every other close - a user's, a
+                // plugin's `close_self` - carries one or the other. That is the `pane_exit`
+                // hook's moment for a pane that is not held.
+                if client_id.is_none() && completion_tx.is_none() {
+                    if let Some(run_command) = screen
+                        .tab_containing_pane(id)
+                        .and_then(|tab| tab.pane_run_command(id))
+                    {
+                        screen.fire_pane_exit_hook(id, exit_status, &run_command, false);
+                    }
+                }
                 // A menu opened over this pane is offering to act on something that is about to
                 // stop existing.
                 screen.close_context_menus_for_pane(id);
@@ -1563,6 +1578,9 @@ pub(crate) fn screen_thread_main(
                     }
                 }
                 if found {
+                    // The observer first, then the pane-replacing hook, so the plugin thread
+                    // hears of the exit before it covers the pane.
+                    screen.fire_pane_exit_hook(id, exit_status, &run_command, true);
                     screen.fire_agent_exit_hook(id, exit_status, &run_command, pane_is_agent);
                 }
                 if !found {
@@ -3758,6 +3776,8 @@ pub(crate) fn screen_thread_main(
                     close_replaced_pane,
                     client_id_tab_index_or_pane_id,
                 )?;
+                // A plugin can open an agent pane in place, the same as anywhere else.
+                screen.fire_agent_start_for_new_pane(new_pane_id);
 
                 screen.log_and_report_session_state()?;
             },
@@ -4103,13 +4123,19 @@ pub(crate) fn screen_thread_main(
                 screen.render(None)?;
             },
             ScreenInstruction::SetPaneAgent(pane_id, agent, _completion) => {
+                // Read before the write: which hooks a change fires is a question about the
+                // edge, and the pane only answers whether anything changed.
+                let previous = screen
+                    .tab_containing_pane(pane_id)
+                    .and_then(|tab| tab.pane_agent_info(pane_id));
                 let changed = screen
                     .tab_containing_pane_mut(pane_id)
-                    .map(|tab| tab.set_pane_agent(pane_id, agent))
+                    .map(|tab| tab.set_pane_agent(pane_id, agent.clone()))
                     .unwrap_or(false);
                 // A report that repeats itself costs nothing; a changed one is news to every
                 // reader of the manifest.
                 if changed {
+                    screen.fire_agent_state_hooks(pane_id, previous.as_ref(), agent.as_ref());
                     screen.log_and_report_session_state()?;
                 }
             },

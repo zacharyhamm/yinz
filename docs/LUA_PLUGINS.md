@@ -636,12 +636,23 @@ A `file:` path that is not there is looked for in the plugin folder, so a bare n
 written with `plugin_write name=my-agent-exit`. An absolute path works too, and means exactly
 what it says.
 
-The hook points so far:
+The hook points:
 
-| Point | When | The plugin is |
+| Point | When | Shape |
 |---|---|---|
 | `agent_exit` | an agent pane's command exited | opened **in place of** that pane |
-| `context_menu` | a right-click asked for a menu | run **headless** - it says what the menu contains, zellij draws it |
+| `agent_start` | a pane gained an agent record: spawned as an agent, or its agent reported for itself | headless, `hook` event |
+| `agent_waiting` | an agent's record moved to `waiting` - a permission prompt, a question | headless, `hook` event |
+| `pane_exit` | any command pane's command exited, held or not | headless, `hook` event |
+| `session_start` | the session's first client connected | headless, `hook` event |
+| `context_menu` | a right-click asked for a menu | headless, `context_menu_requested` event |
+
+A point has one of two shapes, and the shape is a fact about the point. `agent_exit` opens its
+plugin **in place of** the pane, once per firing, with the payload as the plugin's configuration.
+Every other point runs its plugin **headless**: one long-lived instance, loaded without a pane the
+first time the point fires, receives every later firing as an event.
+
+### The `agent_exit` hook
 
 The exited pane is *suppressed* behind the hook, not closed: its scrollback survives, and closing
 the hook pane is what brings it back. So a hook that wants to leave the pane alone just closes
@@ -657,6 +668,60 @@ empty:
 | `agent_cwd` | where the agent was working |
 | `agent_exit_code` | absent if the command was killed by a signal |
 | `agent_command` | the command that exited, for display |
+
+### Headless hooks
+
+`agent_start`, `agent_waiting`, `pane_exit` and `session_start` share one plugin shape. The plugin
+is loaded the first time its point fires and stays loaded; each firing is a `hook` event carrying
+the point's name and a string-to-string payload:
+
+```lua
+local zellij = require("zellij")
+local M = {}
+
+function M.load(config)
+  zellij.subscribe { "hook" }
+  zellij.request_permission { "change_application_state", "run_commands" }
+end
+
+zellij.on("hook", function(e)
+  if e.point == "agent_waiting" then
+    zellij.log("pane " .. e.payload.agent_pane_id .. " is waiting: " .. (e.payload.agent_detail or ""))
+  elseif e.point == "pane_exit" and e.payload.exit_code ~= "0" then
+    zellij.log(e.payload.exit_command .. " failed in pane " .. e.payload.exit_pane_id)
+  end
+end)
+
+return M
+```
+
+One plugin may be bound to several points; `e.point` tells them apart. The plugin has no pane,
+so `render` is never asked for and a permission prompt has nowhere to appear: request what you
+need in `load`, and the first grant is remembered.
+
+The payloads, every value a string:
+
+| Point | Keys |
+|---|---|
+| `agent_start`, `agent_waiting` | `agent_pane_id`, `agent_kind`, `agent_state` (`busy`/`waiting`/`idle`), `agent_previous_state` (absent for a first record), `agent_source` (`spawned`/`reported`), `agent_detail` (if any), `agent_cwd`, `agent_session_id` (if any), `agent_command` (if the pane is a command pane) |
+| `pane_exit` | `exit_pane_id`, `exit_code` (absent if killed by a signal), `exit_cwd`, `exit_command`, `exit_held` (`true` if the pane holds and can be re-run, `false` if it is closing) |
+| `session_start` | `session_name`, `client_id` |
+
+What fires `agent_start`: a pane created with an agent record (a plugin's `agent_spawn`), an
+agent record appearing on a pane that had none (`claude` typed at a shell, reporting through
+its hooks), a record whose last state was `exited` coming back (`RerunCommandPane`, the shipped
+`agent_exit` hook's Enter), and a new `session_id` in the same pane. `agent_waiting` fires on the
+edge into `waiting` only - a second `waiting` report with a new detail is the same wait.
+Clearing a record and moving to `exited` fire nothing; the exit is `agent_exit`'s and
+`pane_exit`'s. One gap: Enter typed into a held pane with **no** `agent_exit` hook bound restarts
+the command inside the pane, and the screen does not see that edge.
+
+For a pane that is both, `pane_exit` fires before `agent_exit`, so an observer hears of the exit
+before the pane is covered.
+
+`session_start` fires when the first client connects. The first tab may not exist yet - a hook
+that wants to open panes should subscribe to `tab_update` and act on the first one; the point is
+for registering state, timers and subscriptions.
 
 ### The `context_menu` hook
 

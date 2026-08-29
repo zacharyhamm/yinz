@@ -343,6 +343,22 @@ fn create_plugin_thread_with_user_plugin_dir(
     session_env_vars: Option<std::collections::BTreeMap<String, String>>,
     user_plugin_dir: Option<PathBuf>,
 ) -> PluginThreadHarness {
+    create_plugin_thread_with_hooks(
+        zellij_cwd,
+        session_env_vars,
+        user_plugin_dir,
+        Default::default(),
+    )
+}
+
+/// A thread whose `hooks { }` is `hooks` from the start - the only way to bind a hook before the
+/// thread fires `session_start`, which happens before it reads its first instruction.
+fn create_plugin_thread_with_hooks(
+    zellij_cwd: Option<PathBuf>,
+    session_env_vars: Option<std::collections::BTreeMap<String, String>>,
+    user_plugin_dir: Option<PathBuf>,
+    hooks: zellij_utils::input::hooks::Hooks,
+) -> PluginThreadHarness {
     let zellij_cwd = zellij_cwd.unwrap_or_else(|| PathBuf::from("."));
     let session_env_vars = session_env_vars.unwrap_or_else(|| std::env::vars().collect());
     let initiating_client_id = 1;
@@ -418,7 +434,7 @@ fn create_plugin_thread_with_user_plugin_dir(
                 InputMode::Normal,
                 Keybinds::default(),
                 Default::default(),
-                Default::default(), // hooks
+                hooks,
                 Default::default(), // context_menu
                 None,
                 initiating_client_id,

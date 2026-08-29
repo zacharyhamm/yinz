@@ -46,7 +46,9 @@ The builder covers the same sections as KDL:
 - `options`, `ui`, `web_client`, and `env` take tables.
 - `theme(name, palette)` adds or replaces a theme.
 - `plugin(alias, location, settings)`, `background_plugin(location, settings)`, and
-  `hook(name, location, settings)` configure plugins.
+  `hook(name, location, settings)` configure plugins. A hook `name` is any point in
+  `docs/LUA_PLUGINS.md`'s table: `agent_exit`, `agent_start`, `agent_waiting`, `pane_exit`,
+  `session_start`, `context_menu`.
 - `bind(mode, key, actions)` and `unbind(mode, key)` change keybindings.
 - `clear_options`, `clear_keybinds`, `clear_themes`, `clear_plugins`, `clear_hooks`, `clear_ui`,
   `clear_env`, `clear_web_client`, and `clear_background_plugins` discard inherited values.

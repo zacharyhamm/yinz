@@ -2869,6 +2869,10 @@ fn check_event_permission(
         | EventType::ConfigWasWrittenToDisk
         | EventType::ContextMenuRequested
         | EventType::ContextMenuItemSelected
+        // Never broadcast: `deliver_to_headless_hook` addresses it to the one instance of the
+        // plugin the user bound in `hooks { }`, and binding it is the consent. A headless plugin
+        // has no pane to show a permission prompt on, so gating this would mean silence.
+        | EventType::Hook
         | EventType::QueueJobStarted
         | EventType::QueueJobFinished
         // Paths and metadata under the host folder, not contents; see `ScanHostFolder` in

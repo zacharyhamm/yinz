@@ -2025,6 +2025,55 @@ fn describe_event(event: Event, body: &str) -> String {
     String::from_utf8(plugin.render(1, 200).unwrap()).unwrap()
 }
 
+/// `Event::Hook` is a struct variant, so its fields are merged into the event: `point` is the
+/// name the config spells, and `payload` the map the fire site built.
+#[test]
+fn a_hook_event_has_its_point_and_payload() {
+    use zellij_utils::input::hooks::HookPoint;
+    let event = Event::Hook {
+        point: HookPoint::AgentWaiting,
+        payload: BTreeMap::from([("agent_pane_id".to_owned(), "7".to_owned())]),
+    };
+    let out = describe_event(
+        event,
+        r#"return event.name .. "|" .. event.point .. "|" .. event.payload.agent_pane_id"#,
+    );
+    assert_eq!(out, "hook|agent_waiting|7");
+}
+
+#[test]
+fn a_hook_handler_registered_with_on_runs() {
+    use zellij_utils::input::hooks::HookPoint;
+    let mut plugin = load(
+        r#"
+        local zellij = require("zellij")
+        local M = { seen = {} }
+        zellij.on("hook", function(event)
+          table.insert(M.seen, event.point .. "=" .. (event.payload.session_name or "?"))
+        end)
+        function M.render() return table.concat(M.seen, ",") end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin
+        .update(&Event::Hook {
+            point: HookPoint::SessionStart,
+            payload: BTreeMap::from([("session_name".to_owned(), "main".to_owned())]),
+        })
+        .unwrap();
+    plugin
+        .update(&Event::Hook {
+            point: HookPoint::PaneExit,
+            payload: BTreeMap::new(),
+        })
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(plugin.render(1, 80).unwrap()).unwrap(),
+        "session_start=main,pane_exit=?"
+    );
+}
+
 /// A tuple variant arrives as a bare list, and `RunCommandResult`'s output as byte numbers.
 /// Both are named and decoded, and `value` still holds the list for anyone reading it.
 #[test]

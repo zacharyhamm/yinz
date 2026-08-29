@@ -2,6 +2,7 @@ use crate::home::default_layout_dir;
 use crate::input::actions::{Action, RunCommandAction};
 use crate::input::command::RunCommand;
 use crate::input::config::{ConversionError, KdlError};
+use crate::input::hooks::HookPoint;
 use crate::input::keybinds::Keybinds;
 use crate::input::layout::{
     FloatingPaneLayout, Layout, PercentOrFixed, Run, RunPlugin, RunPluginLocation,
@@ -1116,6 +1117,13 @@ pub enum Event {
         concurrency: usize,
         pending: Vec<QueueJobInfo>,
         running: Vec<QueueJobInfo>,
+    },
+    /// A hook point with a headless shape was reached. Sent only to the plugin bound to `point`
+    /// in `hooks { }`, which is loaded (without a pane) the first time it is needed and receives
+    /// every later firing. The payload keys are documented per point in `docs/LUA_PLUGINS.md`.
+    Hook {
+        point: HookPoint,
+        payload: BTreeMap<String, String>,
     },
 }
 

@@ -18,7 +18,7 @@ pub use super::generated_api::api::{
         CopyDestination as ProtobufCopyDestination, CwdChangedPayload as ProtobufCwdChangedPayload,
         Event as ProtobufEvent, EventNameList as ProtobufEventNameList,
         EventType as ProtobufEventType, FileMetadata as ProtobufFileMetadata,
-        HintTextPayload as ProtobufHintTextPayload,
+        HintTextPayload as ProtobufHintTextPayload, HookPayload as ProtobufHookPayload,
         HostTerminalThemeChangedPayload as ProtobufHostTerminalThemeChangedPayload,
         HostTerminalThemeIndication as ProtobufHostTerminalThemeIndication,
         InputModeKeybinds as ProtobufInputModeKeybinds, KdlError as ProtobufKdlError,
@@ -66,6 +66,7 @@ use crate::plugin_api::plugin_data::ProtobufRows as ProtobufDataRows;
 
 use crate::errors::prelude::*;
 use crate::input::actions::Action;
+use crate::input::hooks::HookPoint;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
@@ -688,6 +689,14 @@ impl TryFrom<ProtobufEvent> for Event {
                     })
                 },
                 _ => Err("Malformed payload for QueueJobStarted Event"),
+            },
+            Ok(ProtobufEventType::Hook) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::HookPayload(p)) => Ok(Event::Hook {
+                    point: HookPoint::from_str(&p.point)
+                        .map_err(|_| "Malformed hook point for Hook Event")?,
+                    payload: context_from_items(p.payload),
+                }),
+                _ => Err("Malformed payload for Hook Event"),
             },
             Ok(ProtobufEventType::QueueJobFinished) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::QueueJobFinishedPayload(p)) => {
@@ -1364,6 +1373,13 @@ impl TryFrom<Event> for ProtobufEvent {
                         context: context_to_items(context),
                     },
                 )),
+            }),
+            Event::Hook { point, payload } => Ok(ProtobufEvent {
+                name: ProtobufEventType::Hook as i32,
+                payload: Some(event::Payload::HookPayload(ProtobufHookPayload {
+                    point: point.as_str().to_owned(),
+                    payload: context_to_items(payload),
+                })),
             }),
             Event::QueueJobFinished {
                 queue,
@@ -2496,6 +2512,7 @@ impl TryFrom<ProtobufEventType> for EventType {
             ProtobufEventType::QueueJobStarted => EventType::QueueJobStarted,
             ProtobufEventType::QueueJobFinished => EventType::QueueJobFinished,
             ProtobufEventType::QueueChanged => EventType::QueueChanged,
+            ProtobufEventType::Hook => EventType::Hook,
         })
     }
 }
@@ -2561,6 +2578,7 @@ impl TryFrom<EventType> for ProtobufEventType {
             EventType::QueueJobStarted => ProtobufEventType::QueueJobStarted,
             EventType::QueueJobFinished => ProtobufEventType::QueueJobFinished,
             EventType::QueueChanged => ProtobufEventType::QueueChanged,
+            EventType::Hook => ProtobufEventType::Hook,
         })
     }
 }
@@ -2675,6 +2693,26 @@ fn serialize_mode_update_event() {
         mode_update_event, deserialized_event,
         "Event properly serialized/deserialized without change"
     );
+}
+
+#[test]
+fn serialize_hook_event() {
+    use prost::Message;
+    for point in HookPoint::ALL {
+        let hook_event = Event::Hook {
+            point: *point,
+            payload: BTreeMap::from([
+                ("agent_pane_id".to_owned(), "7".to_owned()),
+                ("agent_state".to_owned(), "waiting".to_owned()),
+            ]),
+        };
+        let protobuf_event: ProtobufEvent = hook_event.clone().try_into().unwrap();
+        let serialized_protobuf_event = protobuf_event.encode_to_vec();
+        let deserialized_protobuf_event: ProtobufEvent =
+            Message::decode(serialized_protobuf_event.as_slice()).unwrap();
+        let deserialized_event: Event = deserialized_protobuf_event.try_into().unwrap();
+        assert_eq!(hook_event, deserialized_event, "{point}");
+    }
 }
 
 #[test]
@@ -3906,7 +3944,11 @@ mod tests {
 
         #[hegel::composite]
         fn any_event(tc: &hegel::TestCase) -> Event {
-            match tc.draw(generators::integers::<u8>().max_value(35)) {
+            match tc.draw(generators::integers::<u8>().max_value(36)) {
+                36 => Event::Hook {
+                    point: tc.draw(generators::sampled_from(HookPoint::ALL.to_vec())),
+                    payload: context(tc),
+                },
                 34 => Event::ContextMenuRequested(Box::new(any_context_menu_context(tc))),
                 35 => Event::ContextMenuItemSelected {
                     label: strings(tc),

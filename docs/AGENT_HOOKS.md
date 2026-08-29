@@ -42,8 +42,11 @@ question with one answer: the spawn path, when a plugin opens a pane *as* an age
 `Busy` on re-run), and `PluginCommand::SetPaneAgent` / `zellij.set_pane_agent`, for a plugin
 speaking for an agent. A pane with a record fires the `agent_exit` hook when its command exits,
 however the record got there — `claude` typed at a shell becomes an agent pane the moment it
-reports for itself. `zellij action agent-report --state waiting --detail "y/n"` is the same
-road for a script of your own; `--clear` ends the record.
+reports for itself. The record's edges fire hooks of their own: `agent_start` when a record
+appears (or comes back after `exited`, or changes `session_id`), `agent_waiting` when it moves
+to `waiting`. Both go to a headless plugin as `Event::Hook` — see `docs/LUA_PLUGINS.md`,
+"Headless hooks". `zellij action agent-report --state waiting --detail "y/n"` is the same road
+for a script of your own; `--clear` ends the record and fires nothing.
 
 | Event | State | Why |
 |---|---|---|
@@ -115,7 +118,7 @@ says when the installed script is old.
 | The record, and who may write it | `zellij-utils/src/data.rs` (`AgentInfo`, `AgentState`, `AgentSource`, `PaneInfo::agent`) |
 | Event → record | `zellij-utils/src/agent.rs` (`HookEvent`, `hook_state`, `hook_detail`, `hook_outcome`) |
 | The action, and the installer | `zellij-utils/src/cli.rs` (`AgentReport`), `zellij-utils/src/input/actions.rs`, `src/hocus_hooks.rs` |
-| Carrying it on the pane | `zellij-server/src/panes/terminal_pane.rs` (`agent`, `agent_from_run`), `screen/thread_main.rs` (`SetPaneAgent`), `screen/mod.rs` (`fire_agent_exit_hook`) |
+| Carrying it on the pane | `zellij-server/src/panes/terminal_pane.rs` (`agent`, `agent_from_run`), `screen/thread_main.rs` (`SetPaneAgent`), `screen/mod.rs` (`fire_agent_exit_hook`, `fire_agent_state_hooks`, `agent_hook_edges`) |
 | What a row draws | `default-plugins/hocus-proto/src/agents.rs` (`HookFeed::from_agent`, `status_cell`, `waiting_marker`) |
 | The old pipe road | `default-plugins/hocus-agentd/src/main.rs` (`State::on_hook`) |
 

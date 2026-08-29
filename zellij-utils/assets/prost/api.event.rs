@@ -10,7 +10,7 @@ pub struct EventNameList {
 pub struct Event {
     #[prost(enumeration="EventType", tag="1")]
     pub name: i32,
-    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50")]
+    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51")]
     pub payload: ::core::option::Option<event::Payload>,
 }
 /// Nested message and enum types in `Event`.
@@ -114,7 +114,18 @@ pub mod event {
         ContextMenuRequestedPayload(super::ContextMenuRequestedPayload),
         #[prost(message, tag="50")]
         ContextMenuItemSelectedPayload(super::ContextMenuItemSelectedPayload),
+        #[prost(message, tag="51")]
+        HookPayload(super::HookPayload),
     }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct HookPayload {
+    /// The point's snake_case name, as `hooks { }` spells it
+    #[prost(string, tag="1")]
+    pub point: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag="2")]
+    pub payload: ::prost::alloc::vec::Vec<ContextItem>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1131,6 +1142,8 @@ pub enum EventType {
     ContextMenuRequested = 55,
     /// / A plugin-supplied context menu item was chosen
     ContextMenuItemSelected = 56,
+    /// / A headless hook point was reached; sent to the plugin bound to it
+    Hook = 57,
 }
 impl EventType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1194,6 +1207,7 @@ impl EventType {
             EventType::QueueChanged => "QueueChanged",
             EventType::ContextMenuRequested => "ContextMenuRequested",
             EventType::ContextMenuItemSelected => "ContextMenuItemSelected",
+            EventType::Hook => "Hook",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1254,6 +1268,7 @@ impl EventType {
             "QueueChanged" => Some(Self::QueueChanged),
             "ContextMenuRequested" => Some(Self::ContextMenuRequested),
             "ContextMenuItemSelected" => Some(Self::ContextMenuItemSelected),
+            "Hook" => Some(Self::Hook),
             _ => None,
         }
     }

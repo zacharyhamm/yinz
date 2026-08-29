@@ -1625,7 +1625,8 @@ pub enum CliAction {
         #[clap(long)]
         write: bool,
     },
-    /// Bind a hook point (agent_exit, context_menu) to a plugin, or unbind it with an empty url.
+    /// Bind a hook point (agent_exit, agent_start, agent_waiting, pane_exit, session_start,
+    /// context_menu) to a plugin, or unbind it with an empty url.
     /// The plugin is a url as the config spells it: file:my-hook.lua, zellij:agent-exit.
     SetHook {
         /// The hook point, eg. agent_exit
