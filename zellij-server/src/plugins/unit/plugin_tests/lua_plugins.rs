@@ -1276,3 +1276,122 @@ pub fn session_start_fires_for_the_initiating_client() {
         "the harness names its session zellij-test, got: {instructions:?}"
     );
 }
+
+/// Two firings within one load's time reach one instance, in order. Before the fix the second
+/// firing found no instance in the plugin map - the first was still loading - and loaded
+/// another, so a hook's firings were split across two plugins and neither saw them all.
+///
+/// Another plugin is loaded first because the lookup that decides this reads a cached copy of
+/// the plugin map, warmed on first use: with nothing loaded the copy stays empty, every lookup
+/// takes the map's lock instead, and the loader - which holds that lock for the whole load -
+/// makes the second firing wait until the instance is there. A session has its bar plugins,
+/// so the copy is warm and stale, and the second firing sees nothing.
+#[test]
+#[serial(plugin_tests)]
+pub fn a_firing_during_the_headless_hooks_load_reaches_the_loading_instance() {
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let cache_path = plugin_host_folder.join("permissions_test.kdl");
+    let user_plugin_dir = tempdir().unwrap();
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread(Some(plugin_host_folder), None);
+    let client_id = 1;
+
+    // Grants by the requesting plugin's id: the macro answers plugin 0, which is the other
+    // plugin here.
+    let received_screen_instructions = Watched::new(vec![]);
+    let screen_thread = std::thread::Builder::new()
+        .name("fake_screen_thread".to_string())
+        .spawn({
+            let log = received_screen_instructions.clone();
+            let plugin_thread_sender = plugin_thread_sender.clone();
+            let cache_path = cache_path.clone();
+            let mut renames = 0;
+            move || loop {
+                let (instruction, _err_ctx) = recv_from_fake_screen(&screen_receiver, renames, 2);
+                match instruction {
+                    ScreenInstruction::RequestPluginPermissions(plugin_id, plugin_permission) => {
+                        let _ =
+                            plugin_thread_sender.send(PluginInstruction::PermissionRequestResult(
+                                plugin_id,
+                                Some(client_id),
+                                plugin_permission.permissions,
+                                PermissionStatus::Granted,
+                                Some(cache_path.clone()),
+                            ));
+                    },
+                    ScreenInstruction::RenameTabWithId(..) => {
+                        renames += 1;
+                        log.lock().push(instruction);
+                        if renames == 2 {
+                            break;
+                        }
+                    },
+                    other => log.lock().push(other),
+                }
+            }
+        })
+        .unwrap();
+
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+    let _ = plugin_thread_sender.send(PluginInstruction::Load(
+        Some(false),
+        false,
+        false,
+        Some("some_other_plugin".to_owned()),
+        lua_run_plugin(BTreeMap::new()),
+        Some(1),
+        None,
+        client_id,
+        Size {
+            cols: 121,
+            rows: 20,
+        },
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        None,
+    ));
+    received_screen_instructions.wait_until(
+        "the other plugin to be in the plugin map",
+        zellij_test_support::default_timeout(),
+        |instructions| {
+            instructions
+                .iter()
+                .any(|instruction| matches!(instruction, ScreenInstruction::AddPlugin(..)))
+                .then_some(())
+        },
+    );
+
+    bind_hook(
+        &plugin_thread_sender,
+        HookPoint::PaneExit,
+        headless_hook_plugin(user_plugin_dir.path()),
+    );
+    // Back to back: the second is read off the queue while the first's load is in flight.
+    for pane_id in [7, 8] {
+        let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
+            point: HookPoint::PaneExit,
+            pane_id: Some(PaneId::Terminal(pane_id)),
+            payload: pane_exit_payload(pane_id),
+            client_id,
+        });
+    }
+    screen_thread.join().unwrap();
+    teardown();
+
+    let instructions = received_screen_instructions.lock();
+    assert_eq!(
+        tab_names_set(&instructions),
+        vec!["pane_exit:7".to_owned(), "pane_exit:8".to_owned()],
+        "both firings, in order, got: {instructions:?}"
+    );
+    assert_eq!(
+        suppressed_plugins_loaded(&instructions).len(),
+        1,
+        "one instance serves both firings, got: {instructions:?}"
+    );
+}

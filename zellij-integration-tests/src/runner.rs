@@ -356,7 +356,7 @@ pub struct CliClientHandle {
 }
 
 /// A `zellij events` client on this session. What it was sent is read off the fake client's
-/// message trail, where an `EventUpdate` is recorded with its event type.
+/// message trail, where an `EventUpdate` is recorded with its event type and its JSON.
 pub struct EventsClientHandle {
     // Kept so the client thread is owned by something; it ends with the process, since the
     // harness never ends a session.
@@ -367,11 +367,23 @@ pub struct EventsClientHandle {
 impl EventsClientHandle {
     /// Every event type streamed so far, in order.
     pub fn streamed_event_types(&self) -> Vec<String> {
+        self.streamed_events()
+            .into_iter()
+            .map(|(event_type, _)| event_type)
+            .collect()
+    }
+
+    /// Every event streamed so far, in order, as its type and the JSON it was sent as - what a
+    /// real `zellij events --json` prints, one event per line.
+    pub fn streamed_events(&self) -> Vec<(String, String)> {
         self.client
             .received_server_messages()
             .iter()
             .filter_map(|message| message.strip_prefix("EventUpdate: "))
-            .map(str::to_owned)
+            .map(|event| match event.split_once(' ') {
+                Some((event_type, event_json)) => (event_type.to_owned(), event_json.to_owned()),
+                None => (event.to_owned(), String::new()),
+            })
             .collect()
     }
 
@@ -668,6 +680,27 @@ impl TestSession {
     pub fn run_blocking_command(&self, command: &[&str]) -> CliClientHandle {
         let floating = false;
         let close_on_exit = true;
+        let block_until_exit = true;
+        CliClientHandle {
+            thread: self
+                .spawn_cli_client(new_pane_cli_action(
+                    command,
+                    floating,
+                    close_on_exit,
+                    false,
+                    block_until_exit,
+                ))
+                .0,
+        }
+    }
+
+    /// `zellij run --block-until-exit -- <command>` as the CLI spells it, with no
+    /// `--close-on-exit`: the pane holds when the command exits, so the exit reaches the hooks
+    /// (`pane_exit`, and `agent_exit` for an agent pane), while the client still returns with
+    /// the command's status. `run_blocking_command` is the same with the pane closing.
+    pub fn run_blocking_command_holding_on_exit(&self, command: &[&str]) -> CliClientHandle {
+        let floating = false;
+        let close_on_exit = false;
         let block_until_exit = true;
         CliClientHandle {
             thread: self

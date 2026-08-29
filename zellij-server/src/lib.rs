@@ -23,6 +23,7 @@ pub mod notifications;
 mod pane_groups;
 mod plugins;
 pub use plugins::check_lua_plugin;
+pub mod plugin_authoring;
 mod pty;
 #[cfg(unix)]
 pub mod pty_host;

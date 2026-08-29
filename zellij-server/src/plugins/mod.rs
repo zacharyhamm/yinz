@@ -1858,6 +1858,29 @@ fn deliver_to_headless_hook(
     let has_own_instance = !plugin_ids.is_empty()
         && (is_shared || plugin_ids.iter().any(|(_, cid)| *cid == Some(client_id)));
     if !has_own_instance {
+        // A load already in flight is the instance: the bridge holds an event addressed to a
+        // loading plugin and applies it, when the load completes, to every connected client's
+        // instance - the loader provisions one per connected client, so a connected client is
+        // served by the load in flight (and a shared hook serves everyone). Loading again here
+        // split one hook's firings across two plugins whenever a second point fired within the
+        // first load's time - `agent_start` and `agent_waiting` a hundred milliseconds apart
+        // was enough.
+        let in_flight = wasm_bridge.loading_plugin_ids_for_plugin_location(
+            &run_plugin.location,
+            &run_plugin.configuration,
+        );
+        if let Some(plugin_id) = in_flight
+            .first()
+            .filter(|_| is_shared || wasm_bridge.client_is_connected(&client_id))
+        {
+            wasm_bridge
+                .update_plugins(
+                    vec![(Some(*plugin_id), Some(client_id), event)],
+                    shutdown_send.clone(),
+                )
+                .non_fatal();
+            return true;
+        }
         let Some((plugin_id, loaded_client_id)) = load_background_plugin(
             run_plugin_or_alias.clone(),
             wasm_bridge,

@@ -673,7 +673,9 @@ empty:
 
 `agent_start`, `agent_waiting`, `pane_exit` and `session_start` share one plugin shape. The plugin
 is loaded the first time its point fires and stays loaded; each firing is a `hook` event carrying
-the point's name and a string-to-string payload:
+the point's name and a string-to-string payload. A firing that arrives while that first load is
+still under way is held for the loading instance and delivered once it is up, in order - two
+points firing within a few milliseconds of each other reach one plugin, not two:
 
 ```lua
 local zellij = require("zellij")
@@ -806,8 +808,10 @@ builtin and so is granted privileged commands unconditionally, and yours will no
 through hocus, that request is granted when the write is approved, so the hook never stops on a
 permission prompt.
 
-Zellij does not rewrite your config, so the `hooks { ... }` line above is yours to add; hocus can
-write the plugin but not bind it.
+Zellij does not rewrite your own config file, so the `hooks { ... }` block above is yours to add -
+or, from a shell, `zellij action set-hook agent_exit file:my-agent-exit.lua --write` binds the
+point at once and persists the binding in `config.d/zellij-managed.kdl` beside your config, which
+is loaded with it. hocus can write the plugin but not bind it.
 
 Three notes on writing one:
 
