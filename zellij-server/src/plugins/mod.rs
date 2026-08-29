@@ -587,7 +587,15 @@ pub(crate) fn plugin_thread_main(
                 wasm_bridge.resize_plugin(pid, new_columns, new_rows, shutdown_send.clone())?;
             },
             PluginInstruction::AddClient(client_id) => {
-                wasm_bridge.add_client(client_id)?;
+                let started_at = std::time::Instant::now();
+                log::info!("attach trace: plugin thread client_id={client_id} AddClient begin");
+                let result = wasm_bridge.add_client(client_id);
+                log::info!(
+                    "attach trace: plugin thread client_id={client_id} AddClient finished after {:?} ({})",
+                    started_at.elapsed(),
+                    if result.is_ok() { "ok" } else { "error" }
+                );
+                result?;
             },
             PluginInstruction::RemoveClient(client_id) => {
                 wasm_bridge.remove_client(client_id);
