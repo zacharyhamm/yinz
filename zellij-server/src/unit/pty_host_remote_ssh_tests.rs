@@ -350,6 +350,92 @@ fn a_pane_whose_forward_has_gone_stale_is_retried_through_a_fresh_one() {
     let _ = std::fs::remove_file(&local_socket);
 }
 
+/// A forward whose ssh is alive locally and dead on the wire accepts and then
+/// says nothing at all — no EOF, no reply, ever. The handshake used to wait for
+/// that reply with no bound of its own, which on the adopting side of a warp
+/// was the pty thread waiting; the fallback to a fresh forward was never
+/// reached. A resume through such a forward has to give up in bounded time.
+#[test]
+fn a_resume_through_a_forward_that_never_answers_gives_up_and_rebuilds() {
+    let host = "zellij-test-silent-forward.invalid";
+    let dir = std::env::temp_dir().join(format!("zellij-silent-forward-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("could not make a test dir");
+    let local_socket = dir.join("forward.sock");
+    let _ = std::fs::remove_file(&local_socket);
+
+    // Accepts everything and holds every connection open without a word,
+    // until told to stop.
+    let listener = std::os::unix::net::UnixListener::bind(&local_socket)
+        .expect("could not bind a fake forward");
+    listener
+        .set_nonblocking(true)
+        .expect("could not make the fake forward non-blocking");
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let holding = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((stream, _)) => held.push(stream),
+                    Err(_) => std::thread::sleep(Duration::from_millis(10)),
+                }
+            }
+        })
+    };
+    let ssh = Command::new("sleep")
+        .arg("60")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("could not stand in for the forward's ssh");
+
+    let hosts = Arc::new(RemoteHosts::new());
+    hosts.forwards.lock().unwrap().insert(
+        host.to_owned(),
+        Arc::new(HostForward {
+            host: host.to_owned(),
+            local_socket: local_socket.clone(),
+            ssh,
+        }),
+    );
+
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let resuming = hosts.clone();
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        let outcome = resuming.try_resume(host, "tok", 0).map(|_| ());
+        let _ = done_tx.send((outcome, started.elapsed()));
+    });
+    // Generous next to the bound under test, and a *test* failure rather than
+    // a hang if the bound is gone.
+    let (outcome, took) = done_rx
+        .recv_timeout(RESUME_REPLY_TIMEOUT * 4)
+        .expect("the resume never gave up on a forward that never answered");
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+
+    let msg = match outcome {
+        Err(err) => format!("{err:#}"),
+        Ok(()) => panic!("an unreachable host cannot resume a pane"),
+    };
+    assert!(
+        took >= RESUME_REPLY_TIMEOUT,
+        "the first attempt should have waited out its bound, not failed early: {took:?}"
+    );
+    assert!(
+        msg.contains("did not work either"),
+        "the retry through a fresh forward should have been reached: {msg}"
+    );
+    assert!(
+        !hosts.forwards.lock().unwrap().contains_key(host),
+        "the silent forward must not be left in the table for the next pane"
+    );
+
+    let _ = holding.join();
+    let _ = std::fs::remove_file(&local_socket);
+}
+
 /// This side's terminal and locale reach the far side on the `Spawn` itself,
 /// along with the pane's real id. Nothing else does: the rest of what a pane
 /// needs is recomputed over there, because the rest of it names a filesystem

@@ -54,6 +54,15 @@ const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(30);
 /// `ATTACH_RETRY_WINDOW`: it is the same situation, and the thing being waited
 /// for — a peer noticing its connection is over — is on the same timescale.
 const RESUME_RETRY_WINDOW: Duration = Duration::from_millis(1000);
+
+/// How long one reply in the resume handshake may take to arrive.
+///
+/// Two round trips over a forward that is already up, so seconds is generous —
+/// and a bound is the point rather than the number. Before there was one, a
+/// forward whose ssh was alive locally but dead on the wire held the first
+/// resume attempt until TCP itself gave up, and the fallback that rebuilds the
+/// forward was never reached. See `RemoteHosts::resume_through_forward`.
+const RESUME_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 const RESUME_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
 /// A refusal that says whether waiting could change the answer.
@@ -438,10 +447,26 @@ impl RemoteHosts {
         received: u64,
     ) -> Result<Reconnected> {
         let socket = self.connect(host)?;
+        // Bounded, because `connect` does not prove anything past the forward's
+        // local end. An ssh whose TCP session has silently died — the laptop
+        // slept, a NAT mapping expired — keeps accepting here, and the first
+        // thing to notice is this handshake, reading a reply that is never
+        // coming. Unbounded, that read lasts as long as the kernel's own
+        // retransmit patience, which is measured in minutes; on the adopting
+        // side of a warp it is the pty thread doing the waiting. The timeout is
+        // lifted again once the pane is resumed: the reader that takes the
+        // socket over drives it non-blocking, and a release later sets bounds
+        // of its own.
+        socket
+            .set_read_timeout(Some(RESUME_REPLY_TIMEOUT))
+            .context("failed to bound a remote pane's resume handshake")?;
         let read_socket = socket
             .try_clone()
             .context("failed to clone a reconnected pane's socket")?;
         let dropped = handshake_and_resume(&socket, host, pane_token, received)?;
+        socket
+            .set_read_timeout(None)
+            .context("failed to unbound a resumed pane's socket")?;
         Ok(Reconnected {
             write_socket: socket,
             read_socket,
