@@ -269,12 +269,14 @@ same `zellij_server::plugin_authoring::write` the command calls):
    `zellij run` exits with the child's status.
 5. `agent_exit` hook fires; `plugin_log` shows the hook's output.
 
-## Handoff (Phase 3 landed; next steps 1–2 landed)
+## Handoff (Phase 3 landed; next steps 1–5 landed)
 
-Everything through R16 is on `self-programming-vision`, committed, followed by next steps 1 and 2
+Everything through R16 is on `self-programming-vision`, committed, followed by next steps 1–5
 below (`0b419ed90` the end-to-end test and the in-flight-load fix it found, `2e89ec623` the
-`add_client` cache fix). The gate was green at `2e89ec623` apart from the environment noise
-listed here. What the next session needs to know without re-deriving it:
+`add_client` cache fix, `4862f8b8e` the shipped `agent-policy` hook, `38df593eb` jobs following
+their chat, `f37db6124` `ReadPluginLog`). The gate was green after `f37db6124` apart from the
+environment noise listed here (19 `web_client` timeouts; the known-red integration tests, and
+only those). What the next session needs to know without re-deriving it:
 
 **Where things are now.**
 
@@ -284,7 +286,8 @@ listed here. What the next session needs to know without re-deriving it:
 | Reporting it | `zellij action agent-report` (`cli.rs` `AgentReport` → `actions.rs`), `PluginCommand::SetPaneAgent`, hook script v3 in `src/hocus_hooks.rs`; agentd derives feeds from the manifest (`hocus-agentd/src/main.rs` `rebuild_panes`, `HookFeed::from_agent`) |
 | Event stream | `zellij events` (`cli_client.rs` `start_events_client`), `WasmBridge::forward_events_to_cli_subscribers`, `CLI_EVENTS_ONLY_TARGET` in `plugins/mod.rs`, `EventType::CLI_STREAMABLE` in `data.rs` |
 | Config | `Action::Reconfigure` → `ServerInstruction::ReconfigureAllClients` (`lib.rs`), `ConfigPersistence` + `update_new_saved_config`, `Config::with_overlay_dir` / `write_managed_fragment` / `merge_kdl_fragment` (`input/config.rs`), `home::get_config_overlay_dir` |
-| Plugin authoring | `zellij plugins …` (`src/commands.rs` `plugins`; the file work is `zellij_server::plugin_authoring` — `write`, `log_tail` — so the integration test runs the code the command runs), `zellij_utils::plugin_authoring::resolve_plugin_file`, `zellij_server::check_lua_plugin`, `/plugins` root + `AuthorPlugins` (`zellij_exports.rs` `fs_roots`, `resolve_fs_path_with_permission`), `ReloadPluginByUrl` |
+| Plugin authoring | `zellij plugins …` (`src/commands.rs` `plugins`; the file work is `zellij_server::plugin_authoring` — `write`, `log_tail` — so the integration test runs the code the command runs), `zellij_utils::plugin_authoring::resolve_plugin_file`, `zellij_server::check_lua_plugin`, `/plugins` root + `AuthorPlugins` (`zellij_exports.rs` `fs_roots`, `resolve_fs_path_with_permission`), `ReloadPluginByUrl`, `ReadPluginLog` (`zellij_exports::read_plugin_log` → `log_tail`; hocus `plugin_log` and `zellij.read_plugin_log`) |
+| Shipped Lua | `BUILTIN_LUA_PLUGINS` in `zellij-utils/src/consts.rs` (`agent-exit`, `context-menu`, `agent-policy`); a builtin's chunk name is its bare tag, so its log lines are `[lua:agent-policy]` and `log_tail` matches the stem as well as the file name |
 | Pipes | `PipeMessage.pane_id` (`data.rs`, `pipe_message.proto` field 8), set in `plugins/mod.rs` `CliPipe` arm |
 
 **Proto numbers in use** (next free): plugin `CommandName` 275 / payload field 216 (next 276 /
@@ -302,6 +305,10 @@ cargo x integration-test -- -j 16 -E 'binary(cli) | binary(/hocus_/) | binary(ne
 # the whole self-programming loop in one session, ~1.5s; loop it when touching hooks
 cargo x integration-test -- -j 16 -E 'test(a_written_hook)'
 ```
+
+The integration suite takes longer than ten minutes at `-j 16` on this machine; a foreground run
+under a ten-minute limit has to be chunked by binary, e.g. `-E 'binary(/^(scroll|search|…)$/)'`
+in three parts (about_pane…mouse, nested_*…resurrection, scroll…warp).
 
 Two things learned landing the loop test, for anyone touching hooks or plugin loading:
 
@@ -353,7 +360,7 @@ R16. What the next session should know:
   writes `.claude/settings.json` (committed) for hand-started ones.
 
 **Next steps, in order.** Each is independently landable; the first two made Phase 3
-trustworthy and are done, the rest are the loose ends it left — continue from 3.
+trustworthy, 3–5 closed the loose ends it left, and all five are done — continue from 6.
 
 1. **The end-to-end integration test** under "Verification" above. *(done —
    `hocus_plugin_authoring::a_written_hook_is_bound_and_fired_by_a_reporting_agent_end_to_end`:
