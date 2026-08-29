@@ -398,11 +398,45 @@ impl RemoteHosts {
     }
 
     /// One attempt at picking a pane back up. See `Reconnector::reconnect`.
+    ///
+    /// The forward this host already has is tried first, and only rebuilt if
+    /// that fails. Rebuilding unconditionally — which this used to do, on the
+    /// grounds that a pane's connection usually dies because its forward did —
+    /// is wrong for the case that is not a reconnect at all: adopting a warped
+    /// pane resumes through a forward that is perfectly healthy, and often busy
+    /// carrying other panes on the same host. Throwing it away bought a full
+    /// ssh handshake, unmultiplexed by design, in the middle of a warp whose
+    /// budget is counted in seconds.
+    ///
+    /// Nothing is lost by trying: `ensure_forward` already probes a cached
+    /// forward and rebuilds one that no longer accepts connections, and a
+    /// forward that is up but whose broker is not still reaches the rebuild
+    /// below, which restarts it.
     fn try_resume(&self, host: &str, pane_token: &str, received: u64) -> Result<Reconnected> {
-        // Drop the cached forward first. The usual reason a pane's connection
-        // died is that the forward did, and reusing a dead one would fail in a
-        // way that looks like the broker refusing us.
+        let first = match self.resume_through_forward(host, pane_token, received) {
+            Ok(resumed) => return Ok(resumed),
+            // The broker answered, and said no. A fresh forward reaches the same
+            // broker and gets the same answer, so retrying wastes the caller's
+            // budget — and `reconnect` above needs this error to arrive intact
+            // to decide whether waiting is worth it.
+            Err(e) if e.downcast_ref::<ResumeRefusedError>().is_some() => return Err(e),
+            Err(e) => e,
+        };
         self.forget_forward(host);
+        self.resume_through_forward(host, pane_token, received)
+            .with_context(|| {
+                format!("the forward this host already had did not work either: {first:#}")
+            })
+    }
+
+    /// Resume a pane through whatever forward this host currently has,
+    /// building one if it has none.
+    fn resume_through_forward(
+        &self,
+        host: &str,
+        pane_token: &str,
+        received: u64,
+    ) -> Result<Reconnected> {
         let socket = self.connect(host)?;
         let read_socket = socket
             .try_clone()

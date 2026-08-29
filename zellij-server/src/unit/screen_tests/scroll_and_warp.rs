@@ -1,6 +1,12 @@
 use super::*;
 use zellij_test_support::Watched;
 
+/// Far enough out that no test is racing it. The deadline's own effect — a
+/// release landing after the caller gave up — is asserted by the tests that
+/// pass one already in the past.
+fn warp_deadline() -> std::time::Instant {
+    std::time::Instant::now() + std::time::Duration::from_secs(30)
+}
 #[test]
 pub fn scroll_position_is_preserved_across_move_focus() {
     let size = Size { cols: 80, rows: 10 };
@@ -449,6 +455,92 @@ fn a_remote_pane_leaves_its_tab_like_any_other() {
 // the tab.
 
 #[test]
+fn a_tab_is_not_taken_apart_for_a_caller_that_has_already_given_up() {
+    // Serializing a tab is also what closes it, so a caller found to be gone
+    // *after* that has already cost this session the whole tab, with every
+    // process in it running unwatched and a log line as the only record. The
+    // question has to be asked first, and a tab whose caller has stopped
+    // waiting has to stay where it is — its panes held and told why, which is
+    // the one form of this the user can see and act on.
+    let mut mock_screen = MockScreen::new(Size { cols: 80, rows: 24 });
+    let pty_receiver = mock_screen.pty_receiver.take().unwrap();
+    let client_id = mock_screen.main_client_id;
+    let screen_thread = mock_screen.run(None, vec![]);
+    let (response_tx, response_rx) = crossbeam::channel::unbounded();
+
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::WarpTab {
+            tab_index: Some(0),
+            client_id,
+            response_channel: response_tx,
+            // Already past. No sleep needed and none wanted: what is being
+            // tested is the comparison, not the waiting.
+            deadline: std::time::Instant::now() - std::time::Duration::from_secs(1),
+        })
+        .unwrap();
+
+    let released = loop {
+        let (instruction, _) = pty_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("the warp should reach the pty thread");
+        if let PtyInstruction::ReleaseTerminalsForWarp { terminal_ids, .. } = instruction {
+            break terminal_ids;
+        }
+    };
+    assert!(
+        !released.is_empty(),
+        "the tab under test must have had a pane to release"
+    );
+
+    // Every supervisor really was handed over — this is the window the fix is
+    // about, not a release that failed.
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::TabReleasedForWarp {
+            tab_index: 0,
+            released: released
+                .iter()
+                .map(|terminal_id| {
+                    (
+                        *terminal_id,
+                        Ok(ReleasedPane::Local(ReleasedPtyHost {
+                            host_id: format!("host-{terminal_id}"),
+                            host_pid: 1,
+                            control_socket: Some(std::path::PathBuf::from("/tmp/warp-test.sock")),
+                        })),
+                    )
+                })
+                .collect(),
+        })
+        .unwrap();
+
+    let mut stranded = Vec::new();
+    while stranded.len() < released.len() {
+        let (instruction, _) = pty_receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("every released pane must be held and told what happened to it");
+        if let PtyInstruction::StrandPaneAfterWarp { terminal_id, .. } = instruction {
+            stranded.push(terminal_id);
+        }
+    }
+    stranded.sort_unstable();
+    let mut expected = released.clone();
+    expected.sort_unstable();
+    assert_eq!(
+        stranded, expected,
+        "a pane whose supervisor is gone must say so in the pane itself, not only in a log"
+    );
+
+    assert!(
+        response_rx.try_recv().is_err(),
+        "nothing should have been sent to a caller that stopped waiting"
+    );
+
+    mock_screen.teardown(vec![screen_thread]);
+}
+
+#[test]
 fn a_refused_duplicate_tab_warp_does_not_strand_the_still_attached_panes() {
     let mut mock_screen = MockScreen::new(Size { cols: 80, rows: 24 });
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
@@ -464,6 +556,7 @@ fn a_refused_duplicate_tab_warp_does_not_strand_the_still_attached_panes() {
                 tab_index: Some(0),
                 client_id,
                 response_channel,
+                deadline: warp_deadline(),
             })
             .unwrap();
     }
@@ -507,6 +600,7 @@ fn a_refused_duplicate_tab_warp_does_not_strand_the_still_attached_panes() {
             tab_index: Some(0),
             client_id,
             response_channel: crossbeam::channel::unbounded().0,
+            deadline: warp_deadline(),
         })
         .unwrap();
 
