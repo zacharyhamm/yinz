@@ -354,6 +354,8 @@ pub enum ScreenContext {
     ClearPaneFrameColorOverride,
     SetTabBellFlash,
     HostTerminalFocusChanged,
+    SetClientHostTerminalEnv,
+    ForwardDesktopNotifications,
     PreviousSwapLayout,
     NextSwapLayout,
     OverrideLayout,

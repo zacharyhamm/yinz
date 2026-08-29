@@ -886,6 +886,7 @@ fn a_reload_replaces_the_configured_menu() {
             DEFAULT_WORD_SEPARATORS.to_owned(),
             NestedSessionHandling::default(),
             false,
+            HostNotificationProtocol::default(),
             1,
         )
         .unwrap();

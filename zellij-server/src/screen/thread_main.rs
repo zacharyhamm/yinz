@@ -165,6 +165,9 @@ pub(crate) fn screen_thread_main(
     let dangerously_enable_paste_buffer_read = config_options
         .dangerously_enable_paste_buffer_read
         .unwrap_or(false);
+    let host_notification_protocol = config_options
+        .host_notification_protocol
+        .unwrap_or_default();
 
     let thread_senders = bus.senders.clone();
     let mut screen = Screen::new(
@@ -233,6 +236,7 @@ pub(crate) fn screen_thread_main(
     } else {
         screen.resolve_default_theme_mode().non_fatal();
     }
+    screen.set_host_notification_protocol(host_notification_protocol);
 
     let mut pending_tab_ids: HashSet<usize> = HashSet::new();
     let mut pending_tab_switches: HashSet<(usize, ClientId)> = HashSet::new(); // usize is the
@@ -2321,6 +2325,15 @@ pub(crate) fn screen_thread_main(
             ScreenInstruction::HostTerminalFocusChanged(client_id, focused) => {
                 screen.host_terminal_focus_changed(client_id, focused);
             },
+            ScreenInstruction::SetClientHostTerminalEnv(client_id, host_terminal_env) => {
+                screen.set_client_host_terminal_env(client_id, host_terminal_env);
+            },
+            ScreenInstruction::ForwardDesktopNotifications {
+                pane_id,
+                notifications,
+            } => {
+                screen.forward_desktop_notifications(notifications, pane_id);
+            },
             ScreenInstruction::SetTabBellFlash(tab_id, is_flashing) => {
                 if let Some(tab) = screen.tabs.values_mut().find(|t| t.id == tab_id) {
                     tab.tab_bell_flash = is_flashing;
@@ -3817,6 +3830,7 @@ pub(crate) fn screen_thread_main(
                 word_separators,
                 nested_session_handling,
                 dangerously_enable_paste_buffer_read,
+                host_notification_protocol,
             } => {
                 screen.host_theme_dark_styling = host_theme_dark;
                 screen.host_theme_light_styling = host_theme_light;
@@ -3850,6 +3864,7 @@ pub(crate) fn screen_thread_main(
                         word_separators,
                         nested_session_handling,
                         dangerously_enable_paste_buffer_read,
+                        host_notification_protocol,
                         client_id,
                     )
                     .non_fatal();

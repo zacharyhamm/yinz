@@ -15,7 +15,8 @@ use crate::input::layout::{
 };
 use crate::input::mouse::{MouseEvent, MouseEventType};
 use crate::input::options::{
-    Clipboard, NestedSessionHandling, NotificationPosition, OnForceClose, Options, PaneFrameStyle,
+    Clipboard, HostNotificationProtocol, NestedSessionHandling, NotificationPosition, OnForceClose,
+    Options, PaneFrameStyle,
 };
 use crate::ipc::{
     ClientToServerMsg, ColorRegister, ExitReason, MobileActivePanePayload, MobilePanePayload,
@@ -517,6 +518,9 @@ fn test_client_messages() {
             max_panes: Some(4),
             force_run_layout_commands: true,
             cwd: Some(PathBuf::from("/path/to/cwd")),
+            host_terminal_env: [("TERM".to_owned(), "xterm-kitty".to_owned())]
+                .into_iter()
+                .collect(),
         },
         is_web_client: true,
     });
@@ -533,6 +537,9 @@ fn test_client_messages() {
             max_panes: Some(4),
             force_run_layout_commands: true,
             cwd: Some(PathBuf::from("/path/to/cwd")),
+            host_terminal_env: [("TERM".to_owned(), "xterm-kitty".to_owned())]
+                .into_iter()
+                .collect(),
         },
         is_web_client: true,
     });
@@ -605,6 +612,7 @@ fn test_client_messages() {
                 context_menu_on_right_click: Some(true),
                 osc133_command_selection: Some(false),
                 word_separators: Some("[]{}<>():".to_owned()),
+                host_notification_protocol: Some(HostNotificationProtocol::Osc99),
                 nested_session_handling: Some(NestedSessionHandling::Fullscreen),
                 dangerously_enable_paste_buffer_read: Some(true),
             }),
@@ -615,6 +623,9 @@ fn test_client_messages() {
             max_panes: Some(4),
             force_run_layout_commands: true,
             cwd: Some(PathBuf::from("/path/to/cwd")),
+            host_terminal_env: [("TERM".to_owned(), "xterm-kitty".to_owned())]
+                .into_iter()
+                .collect(),
         },
         is_web_client: true,
     });
@@ -624,6 +635,9 @@ fn test_client_messages() {
                 default_mode: Some(InputMode::Normal),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -634,6 +648,9 @@ fn test_client_messages() {
                 default_mode: Some(InputMode::Locked),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -644,6 +661,9 @@ fn test_client_messages() {
                 default_mode: Some(InputMode::Resize),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -654,6 +674,9 @@ fn test_client_messages() {
                 default_mode: Some(InputMode::Pane),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -664,6 +687,9 @@ fn test_client_messages() {
                 default_mode: Some(InputMode::Tab),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -674,6 +700,9 @@ fn test_client_messages() {
                 default_mode: Some(InputMode::Scroll),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -684,6 +713,9 @@ fn test_client_messages() {
                 default_mode: Some(InputMode::EnterSearch),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -694,6 +726,9 @@ fn test_client_messages() {
                 default_mode: Some(InputMode::Search),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -704,6 +739,9 @@ fn test_client_messages() {
                 default_mode: Some(InputMode::RenameTab),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -714,6 +752,9 @@ fn test_client_messages() {
                 default_mode: Some(InputMode::RenamePane),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -724,6 +765,9 @@ fn test_client_messages() {
                 default_mode: Some(InputMode::Session),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -734,6 +778,9 @@ fn test_client_messages() {
                 default_mode: Some(InputMode::Move),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -744,6 +791,9 @@ fn test_client_messages() {
                 default_mode: Some(InputMode::Prompt),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -754,6 +804,9 @@ fn test_client_messages() {
                 default_mode: Some(InputMode::Tmux),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -764,6 +817,9 @@ fn test_client_messages() {
                 on_force_close: Some(OnForceClose::Detach),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -774,6 +830,9 @@ fn test_client_messages() {
                 copy_clipboard: Some(Clipboard::Primary),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -784,6 +843,9 @@ fn test_client_messages() {
                 web_sharing: Some(WebSharing::Off),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -794,6 +856,9 @@ fn test_client_messages() {
                 web_sharing: Some(WebSharing::Disabled),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -804,6 +869,9 @@ fn test_client_messages() {
                 nested_session_handling: Some(NestedSessionHandling::Ask),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -814,6 +882,9 @@ fn test_client_messages() {
                 nested_session_handling: Some(NestedSessionHandling::Fullscreen),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -824,6 +895,9 @@ fn test_client_messages() {
                 nested_session_handling: Some(NestedSessionHandling::Descend),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -834,6 +908,9 @@ fn test_client_messages() {
                 nested_session_handling: Some(NestedSessionHandling::Never),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         is_web_client: true,
@@ -874,6 +951,9 @@ fn test_client_messages() {
                 nested_session_handling: Some(NestedSessionHandling::Descend),
                 ..Default::default()
             }),
+            host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
+                .into_iter()
+                .collect(),
             ..Default::default()
         },
         tab_position_to_focus: None,

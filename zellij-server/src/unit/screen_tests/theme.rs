@@ -38,6 +38,7 @@ fn reconfigure_sends_a_plugin_pane_the_updated_client_mode_info_once() {
             DEFAULT_WORD_SEPARATORS.to_owned(),
             NestedSessionHandling::default(),
             false,
+            HostNotificationProtocol::default(),
             1,
         )
         .unwrap();

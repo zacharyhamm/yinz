@@ -1,6 +1,7 @@
 use zellij_utils::errors::prelude::*;
 
 use super::{GuestModalOutcome, HoldForCommand, InitialTitle, TabOverrideResult};
+use crate::panes::grid::PendingNotification;
 use crate::panes::PaneId;
 use crate::plugins::{DumpSessionLayoutResponse, PluginId, PluginRenderAsset};
 use crate::pty::{AdoptedTabPanes, ClientTabIndexOrPaneId, VteBytes};
@@ -30,7 +31,9 @@ use zellij_utils::input::layout::{
     TiledPaneLayout,
 };
 use zellij_utils::input::mouse::MouseEvent;
-use zellij_utils::input::options::{Clipboard, NestedSessionHandling, PaneFrameStyle};
+use zellij_utils::input::options::{
+    Clipboard, HostNotificationProtocol, NestedSessionHandling, PaneFrameStyle,
+};
 use zellij_utils::ipc::PixelDimensions;
 use zellij_utils::nested_session::NestedSessionMessage;
 use zellij_utils::pane_size::Size;
@@ -364,6 +367,15 @@ pub enum ScreenInstruction {
     SetTabBellFlash(usize, bool), // tab_id, is_flashing
     /// The host terminal of `ClientId` gained (`true`) or lost (`false`) keyboard focus.
     HostTerminalFocusChanged(ClientId, bool),
+    /// The whitelisted environment of a client's host terminal (`HOST_TERMINAL_ENV_VARS`), from
+    /// which the notification protocol the host speaks is resolved.
+    SetClientHostTerminalEnv(ClientId, BTreeMap<String, String>),
+    /// Desktop notifications a pane asked for, to be rendered per client in the protocol that
+    /// client's host speaks.
+    ForwardDesktopNotifications {
+        pane_id: u32,
+        notifications: Vec<PendingNotification>,
+    },
     PreviousSwapLayout(ClientId, Option<NotificationEnd>),
     NextSwapLayout(ClientId, Option<NotificationEnd>),
     OverrideLayout(
@@ -655,6 +667,7 @@ pub enum ScreenInstruction {
         word_separators: String,
         nested_session_handling: NestedSessionHandling,
         dangerously_enable_paste_buffer_read: bool,
+        host_notification_protocol: HostNotificationProtocol,
     },
     RerunCommandPane(u32, Option<NotificationEnd>), // u32 - terminal pane id
     ResizePaneWithId(ResizeStrategy, PaneId),

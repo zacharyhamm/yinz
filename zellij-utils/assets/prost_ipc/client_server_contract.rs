@@ -1397,6 +1397,8 @@ pub struct CliAssets {
     pub force_run_layout_commands: bool,
     #[prost(string, optional, tag="11")]
     pub cwd: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(map="string, string", tag="12")]
+    pub host_terminal_env: ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -2235,6 +2237,8 @@ pub struct Options {
     pub context_menu_on_right_click: ::core::option::Option<bool>,
     #[prost(enumeration="ThemeHue", optional, tag="69")]
     pub explicit_theme_hue: ::core::option::Option<i32>,
+    #[prost(string, optional, tag="67")]
+    pub host_notification_protocol: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// Pane-targeting action messages
 #[allow(clippy::derive_partial_eq_without_eq)]

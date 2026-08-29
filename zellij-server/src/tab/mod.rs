@@ -63,7 +63,7 @@ use crate::{
     os_input_output::ServerOsApi,
     output::{CharacterChunk, FloatingPanesStack, KittyImageChunk, Output, SixelImageChunk},
     panes::floating_panes::floating_pane_grid::half_size_middle_geom,
-    panes::grid::{namespace_notification_id, PendingNotification},
+    panes::grid::PendingNotification,
     panes::kitty_graphics::{KittyHostSupport, KittyImageStore},
     panes::nested_session_modal::GuestModalShortcuts,
     panes::sixel::SixelImageStore,
@@ -4712,8 +4712,13 @@ impl Tab {
                     .with_context(err_context)?;
             }
             if !desktop_notifications.is_empty() {
-                self.forward_desktop_notifications(desktop_notifications, pid)
-                    .with_context(err_context)?;
+                // The screen knows which protocol each client's host speaks.
+                let _ =
+                    self.senders
+                        .send_to_screen(ScreenInstruction::ForwardDesktopNotifications {
+                            pane_id: pid,
+                            notifications: desktop_notifications,
+                        });
             }
             if let Some(path) = osc7_cwd {
                 let _ = self
@@ -7458,59 +7463,6 @@ impl Tab {
             .context("failed to notify plugins about new clipboard event")
             .non_fatal();
 
-        Ok(())
-    }
-    fn forward_desktop_notifications(
-        &self,
-        notifications: Vec<PendingNotification>,
-        pane_id: u32,
-    ) -> Result<()> {
-        let err_context = || "failed to forward desktop notifications to host terminal".to_string();
-        let mut output = Output::default();
-        // Use all clients in the app, not just those viewing this tab —
-        // desktop notifications should reach the host terminal regardless
-        // of which tab is currently focused.
-        let all_clients: HashSet<ClientId> = {
-            self.connected_clients_in_app
-                .borrow()
-                .keys()
-                .copied()
-                .collect()
-        };
-        output.add_clients(&all_clients, self.link_handler.clone(), None);
-        for notification in notifications {
-            // Only kitty's protocol is forwarded as-is for now; the other protocols are
-            // rendered per host by the screen once it knows what each host speaks.
-            let PendingNotification::Osc99 {
-                payload,
-                terminator,
-                wants_report,
-                ..
-            } = notification
-            else {
-                continue;
-            };
-            // Apply identifier namespacing (Phase 3)
-            // The first semicolon-delimited part of payload is the metadata
-            let (metadata, rest) = match payload.find(';') {
-                Some(idx) => (
-                    payload.get(..idx).unwrap_or_default(),
-                    payload.get(idx..).unwrap_or_default(),
-                ),
-                None => (payload.as_str(), ""),
-            };
-            let namespaced_metadata = namespace_notification_id(metadata, pane_id, wants_report);
-            let raw = if rest.is_empty() {
-                format!("\x1b]99;{}{}", namespaced_metadata, terminator)
-            } else {
-                format!("\x1b]99;{}{}{}", namespaced_metadata, rest, terminator)
-            };
-            output.add_post_vte_instruction_to_multiple_clients(all_clients.iter().copied(), &raw);
-        }
-        let serialized_output = output.serialize().with_context(err_context)?;
-        self.senders
-            .send_to_server(ServerInstruction::Render(Some(serialized_output)))
-            .with_context(err_context)?;
         Ok(())
     }
     pub fn visible(&mut self, visible: bool) -> Result<()> {
