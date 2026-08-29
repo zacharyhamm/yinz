@@ -9,7 +9,9 @@ use crate::{
     data::SessionInfo,
     envs,
     input::layout::Layout,
-    ipc::{ClientToServerMsg, IpcReceiverWithContext, IpcSenderWithContext, ServerToClientMsg},
+    ipc::{
+        ClientToServerMsg, IpcReceiverWithContext, IpcRecv, IpcSenderWithContext, ServerToClientMsg,
+    },
 };
 use anyhow;
 use humantime::format_duration;
@@ -34,7 +36,11 @@ fn probe_sockets<T: Send + 'static>(candidates: Vec<(String, T)>) -> Vec<(String
         .into_iter()
         .map(|(name, extra)| {
             std::thread::spawn(move || {
-                if assert_socket(&name) {
+                // Only a server that answers is listed. An unresponsive one is
+                // not offered for attaching — attaching to it would hang — but
+                // it is not forgotten either: `session_status` still reports it,
+                // so nothing creates a new session over its socket.
+                if assert_socket(&name) == SessionProbe::Alive {
                     Some((name, extra))
                 } else {
                     None
@@ -189,12 +195,30 @@ pub fn get_sessions_sorted_by_mtime() -> anyhow::Result<Vec<String>> {
 /// margin is for a machine thrashing, not for a slow reply.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// What a liveness probe found behind a session socket.
+///
+/// Three answers, not two, because "did not answer" and "nobody there" call
+/// for opposite reactions: an absent server's name is free to reuse, while an
+/// unresponsive one is still running and still owns its socket — creating a
+/// session over it would unlink that socket and strand the live server with
+/// no way for any client to reach it again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionProbe {
+    /// The server answered the probe; it can take a client.
+    Alive,
+    /// A server accepted the connection but did not answer within
+    /// `PROBE_TIMEOUT` — it is running, but its main loop is not turning.
+    Unresponsive,
+    /// Nothing is listening on the socket.
+    Absent,
+}
+
 /// Probe a session socket to check if a server is alive.
 ///
 /// "Alive" here means *answering*, which is the property callers actually need —
 /// a server that cannot reply to `ConnStatus` cannot accept a client either.
 #[cfg(unix)]
-fn assert_socket(name: &str) -> bool {
+fn assert_socket(name: &str) -> SessionProbe {
     use crate::consts::ipc_connect;
     use interprocess::local_socket::prelude::*;
     let path = &*ZELLIJ_SOCK_DIR.join(name);
@@ -208,12 +232,7 @@ fn assert_socket(name: &str) -> bool {
                 IpcSenderWithContext::new(stream);
             let _ = sender.send_client_msg(ClientToServerMsg::ConnStatus);
             let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = sender.get_receiver();
-            // A timeout arrives here as `IpcRecv::Idle`, which `msg()` reports as
-            // `None` along with every other non-answer.
-            match receiver.recv_server_msg().msg() {
-                Some((ServerToClientMsg::Connected, _)) => true,
-                None | Some((_, _)) => false,
-            }
+            classify_probe_reply(receiver.recv_server_msg())
         },
         Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
             // Nobody is listening, so the socket outlived its server: clean it up.
@@ -221,15 +240,55 @@ fn assert_socket(name: &str) -> bool {
             // is still running, and deleting its socket would strand it with no
             // way for any client to ever find it again.
             drop(fs::remove_file(path));
-            false
+            SessionProbe::Absent
         },
-        Err(_) => false,
+        Err(_) => SessionProbe::Absent,
+    }
+}
+
+/// The connection was made; this is what came back over it.
+///
+/// Everything short of the expected answer counts as unresponsive rather than
+/// absent: the connect succeeded, so something is there. A timeout arrives as
+/// `IpcRecv::Idle`; a hangup mid-probe (`Eof`) or a garbage frame is a server
+/// in some trouble, and the safe reading of trouble is "do not build over it".
+pub(crate) fn classify_probe_reply(reply: IpcRecv<ServerToClientMsg>) -> SessionProbe {
+    match reply {
+        IpcRecv::Msg(ServerToClientMsg::Connected, _) => SessionProbe::Alive,
+        IpcRecv::Msg(..) | IpcRecv::Idle | IpcRecv::Eof | IpcRecv::Malformed => {
+            SessionProbe::Unresponsive
+        },
     }
 }
 
 #[cfg(not(unix))]
-fn assert_socket(_name: &str) -> bool {
-    true
+fn assert_socket(_name: &str) -> SessionProbe {
+    SessionProbe::Alive
+}
+
+/// Probe one named session directly, without sweeping the socket directory.
+///
+/// This is the check every create and attach path should make, because it is
+/// the only one that can say `Unresponsive`: `get_sessions` and everything
+/// built on it list answering servers only, so through them a wedged session
+/// is indistinguishable from no session at all.
+pub fn session_status(name: &str) -> Result<SessionProbe, io::ErrorKind> {
+    let path = ZELLIJ_SOCK_DIR.join(name);
+    match fs::metadata(&path) {
+        Ok(metadata) if is_ipc_socket(&metadata.file_type()) => Ok(assert_socket(name)),
+        Ok(_) => Ok(SessionProbe::Absent),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(SessionProbe::Absent),
+        Err(e) => Err(e.kind()),
+    }
+}
+
+/// What to tell a user who named a session whose server is not answering.
+pub fn unresponsive_session_message(name: &str) -> String {
+    format!(
+        "Session {name:?} exists but its server is not responding. It may be wedged; \
+         use `zellij kill-session {name}` or `zellij delete-session --force {name}` \
+         before reusing the name."
+    )
 }
 
 pub fn print_sessions(
@@ -419,12 +478,13 @@ pub fn match_session_name(prefix: &str) -> Result<SessionNameMatch, io::ErrorKin
     })
 }
 
+/// Whether a server by this name is up and answering.
+///
+/// `false` covers both an absent server and an unresponsive one; a caller about
+/// to create or resurrect a session must use `session_status` and refuse on
+/// `Unresponsive`, or it will spawn a second server over a live socket.
 pub fn session_exists(name: &str) -> Result<bool, io::ErrorKind> {
-    match match_session_name(name) {
-        Ok(SessionNameMatch::Exact(_)) => Ok(true),
-        Ok(_) => Ok(false),
-        Err(e) => Err(e),
-    }
+    session_status(name).map(|status| status == SessionProbe::Alive)
 }
 
 // if the session is resurrecable, the returned layout is the one to be used to resurrect it
@@ -459,21 +519,21 @@ pub fn resurrection_layout(session_name_to_resurrect: &str) -> Result<Option<Lay
 }
 
 pub fn assert_session(name: &str) {
-    match session_exists(name) {
-        Ok(result) => {
-            if result {
-                return;
-            } else {
-                println!("No session named {:?} found.", name);
-                if let Some(sugg) = get_sessions()
-                    .unwrap()
-                    .iter()
-                    .map(|s| s.0.clone())
-                    .collect::<Vec<_>>()
-                    .suggest(name)
-                {
-                    println!("  help: Did you mean `{}`?", sugg);
-                }
+    match session_status(name) {
+        Ok(SessionProbe::Alive) => return,
+        // Attaching would connect and then wait forever for a reply that is
+        // not coming; say so instead.
+        Ok(SessionProbe::Unresponsive) => eprintln!("{}", unresponsive_session_message(name)),
+        Ok(SessionProbe::Absent) => {
+            println!("No session named {:?} found.", name);
+            if let Some(sugg) = get_sessions()
+                .unwrap()
+                .iter()
+                .map(|s| s.0.clone())
+                .collect::<Vec<_>>()
+                .suggest(name)
+            {
+                println!("  help: Did you mean `{}`?", sugg);
             }
         },
         Err(e) => {
@@ -484,7 +544,9 @@ pub fn assert_session(name: &str) {
 }
 
 pub fn assert_dead_session(name: &str, force: bool) {
-    match session_exists(name) {
+    // An unresponsive server is still a running one: deleting under it needs
+    // `--force` just like deleting under a healthy one.
+    match session_status(name).map(|status| status != SessionProbe::Absent) {
         Ok(exists) => {
             if exists && !force {
                 println!(
@@ -526,8 +588,8 @@ pub fn assert_session_ne(name: &str) {
         process::exit(1);
     }
 
-    match session_exists(name) {
-        Ok(result) if !result => {
+    match session_status(name) {
+        Ok(SessionProbe::Absent) => {
             let resurrectable_sessions = get_resurrectable_session_names();
             if resurrectable_sessions.iter().find(|s| s == &name).is_some() {
                 println!("Session with name {:?} already exists, but is dead. Use the attach command to resurrect it or, the delete-session command to kill it or specify a different name.", name);
@@ -535,7 +597,10 @@ pub fn assert_session_ne(name: &str) {
                 return
             }
         }
-        Ok(_) => println!("Session with name {:?} already exists. Use attach command to connect to it or specify a different name.", name),
+        // Creating here would spawn a second server on the same socket path,
+        // which unlinks the live server's socket out from under it.
+        Ok(SessionProbe::Unresponsive) => eprintln!("{}", unresponsive_session_message(name)),
+        Ok(SessionProbe::Alive) => println!("Session with name {:?} already exists. Use attach command to connect to it or specify a different name.", name),
         Err(e) => eprintln!("Error occurred: {:?}", e),
     };
     process::exit(1);

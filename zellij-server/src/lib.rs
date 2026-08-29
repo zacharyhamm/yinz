@@ -51,6 +51,11 @@ use std::{
 /// Generous enough for a live client to drain, short enough that a wedged one
 /// cannot keep the server process alive.
 const CLIENT_WRITER_FLUSH_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// How long a freshly started server waits for its first client before giving
+/// up. Must exceed the client's own `CONNECT_TO_SERVER_TIMEOUT` (30s) with
+/// margin, so the server never leaves before a slow client finishes connecting.
+const FIRST_CLIENT_TIMEOUT: Duration = Duration::from_secs(60);
 use zellij_utils::envs;
 use zellij_utils::pane_size::Size;
 
@@ -117,6 +122,7 @@ pub enum ServerInstruction {
         ClientId,
     ),
     AttachWatcherClient(ClientId, Size, bool), // bool -> is_web_client
+    ConnStatus(ClientId),
     Log(Vec<String>, ClientId, Option<NotificationEnd>),
     LogError(Vec<String>, ClientId, Option<NotificationEnd>),
     SwitchSession(ConnectToSession, ClientId, Option<NotificationEnd>),
@@ -609,7 +615,7 @@ impl Drop for SessionMetaData {
 /// away while holding an in-flight forward leaves `Screen`'s
 /// `forward_in_flight` flag stuck — the flag is only released by
 /// replies, and no reply will ever come.
-pub(crate) fn remove_client_and_flush_forwards(
+fn remove_client_and_flush_forwards(
     client_id: ClientId,
     os_input: &mut Box<dyn ServerOsApi>,
     session_state: &Arc<RwLock<SessionState>>,
@@ -923,8 +929,30 @@ pub fn start_server_impl(
     // nothing in the log at all, and "the session died" is indistinguishable
     // from "the session was closed" after the fact.
     let exit_reason: &str;
+    // Until a first client has initialised the session, the wait is bounded by
+    // this one deadline. The client that spawned this server gives up on it
+    // after `CONNECT_TO_SERVER_TIMEOUT` (30s) and exits with no way to kill
+    // what it started; a server left like that would sit forever with a bound
+    // socket and no session state. A fixed deadline rather than a per-message
+    // timeout, so that probes from `zellij ls` — which arrive here too, and
+    // are answered without a session — cannot keep an orphan alive by turning
+    // up every so often. Once there is a session the loop waits without a
+    // deadline as before: a detached session is meant to outlive its clients.
+    let first_client_deadline = std::time::Instant::now() + FIRST_CLIENT_TIMEOUT;
     loop {
-        let (instruction, mut err_ctx) = server_receiver.recv().unwrap();
+        let recv = if session_data.read().unwrap().is_none() {
+            match server_receiver.recv_deadline(first_client_deadline) {
+                Ok(recv) => Ok(recv),
+                Err(channels::RecvTimeoutError::Timeout) => {
+                    exit_reason = "no client attached within the startup timeout";
+                    break;
+                },
+                Err(channels::RecvTimeoutError::Disconnected) => Err(channels::RecvError),
+            }
+        } else {
+            server_receiver.recv()
+        };
+        let (instruction, mut err_ctx) = recv.unwrap();
         err_ctx.add_call(ContextType::IPCServer((&instruction).into()));
         match instruction {
             ServerInstruction::FirstClientConnected(cli_assets, is_web_client, client_id) => {
@@ -1110,7 +1138,24 @@ pub fn start_server_impl(
                 client_id,
             ) => {
                 let mut rlock = session_data.write().unwrap();
-                let session_data = rlock.as_mut().unwrap();
+                let Some(session_data) = rlock.as_mut() else {
+                    // No first client ever initialised this session — the one
+                    // that spawned the server gave up before its first message
+                    // arrived. There is nothing to attach to; tell the client
+                    // rather than unwrap and take the whole server down.
+                    drop(rlock);
+                    let _ = os_input.send_to_client(
+                        client_id,
+                        ServerToClientMsg::Exit {
+                            exit_reason: ExitReason::Error(
+                                "the session was never initialised, nothing to attach to"
+                                    .to_owned(),
+                            ),
+                        },
+                    );
+                    remove_client!(client_id, os_input, session_state, session_data);
+                    continue;
+                };
                 let config = session_data.session_configuration.saved_config.clone();
                 let runtime_config_options = match cli_assets.configuration_options {
                     Some(configuration_options) => config.options.merge(configuration_options),
@@ -1539,6 +1584,16 @@ pub fn start_server_impl(
                 }
                 exit_reason = "a fatal error in the server";
                 break;
+            },
+            ServerInstruction::ConnStatus(client_id) => {
+                // A liveness probe from `assert_socket` in `sessions.rs`. It is
+                // answered from this loop on purpose: the probe has a receive
+                // deadline, so a loop that is parked — joining threads, stuck
+                // on a lock — does not answer in time and reads as unresponsive.
+                // That is the property callers rely on: a server that answers
+                // here can also take an `AttachClient` next.
+                let _ = os_input.send_to_client(client_id, ServerToClientMsg::Connected);
+                remove_client!(client_id, os_input, session_state, session_data);
             },
             ServerInstruction::Log(
                 lines_to_log,

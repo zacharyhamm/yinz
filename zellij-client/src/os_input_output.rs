@@ -145,9 +145,16 @@ const CONNECT_TO_SERVER_RETRY_INTERVAL: std::time::Duration = std::time::Duratio
 /// The server socket never became connectable.
 #[derive(Debug)]
 pub struct ConnectToServerError {
-    pub path: PathBuf,
-    pub waited: std::time::Duration,
-    pub last_error: io::Error,
+    path: PathBuf,
+    waited: std::time::Duration,
+    last_error: io::Error,
+}
+
+impl ConnectToServerError {
+    /// The error the final connect attempt failed with.
+    pub fn last_error(&self) -> &io::Error {
+        &self.last_error
+    }
 }
 
 impl std::fmt::Display for ConnectToServerError {
@@ -163,6 +170,36 @@ impl std::fmt::Display for ConnectToServerError {
 }
 
 impl std::error::Error for ConnectToServerError {}
+
+/// Connect to the server socket at `path`, retrying every `retry_interval`
+/// until `timeout` has passed.
+///
+/// The one retry policy for every client, real or test double: the server is
+/// usually spawned by the caller a moment earlier and only has to bind, so a
+/// connect that keeps failing past the deadline means a server that is not
+/// coming, and the caller gets an error naming the socket rather than a hang.
+pub fn connect_with_deadline(
+    path: &Path,
+    timeout: std::time::Duration,
+    retry_interval: std::time::Duration,
+) -> Result<interprocess::local_socket::Stream, ConnectToServerError> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match zellij_utils::consts::ipc_connect(path) {
+            Ok(socket) => return Ok(socket),
+            Err(last_error) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(ConnectToServerError {
+                        path: path.to_path_buf(),
+                        waited: timeout,
+                        last_error,
+                    });
+                }
+                std::thread::sleep(retry_interval);
+            },
+        }
+    }
+}
 
 /// The IPC link to the session's server process.
 pub trait ServerConnection {
@@ -340,22 +377,11 @@ impl ServerConnection for ClientOsInputOutput {
             .recv_server_msg()
     }
     fn connect_to_server(&self, path: &Path) -> Result<(), ConnectToServerError> {
-        let deadline = std::time::Instant::now() + CONNECT_TO_SERVER_TIMEOUT;
-        let socket = loop {
-            match zellij_utils::consts::ipc_connect(path) {
-                Ok(sock) => break sock,
-                Err(last_error) => {
-                    if std::time::Instant::now() >= deadline {
-                        return Err(ConnectToServerError {
-                            path: path.to_path_buf(),
-                            waited: CONNECT_TO_SERVER_TIMEOUT,
-                            last_error,
-                        });
-                    }
-                    std::thread::sleep(CONNECT_TO_SERVER_RETRY_INTERVAL);
-                },
-            }
-        };
+        let socket = connect_with_deadline(
+            path,
+            CONNECT_TO_SERVER_TIMEOUT,
+            CONNECT_TO_SERVER_RETRY_INTERVAL,
+        )?;
         let (sender, receiver) = setup_ipc(socket, path);
         *self.send_instructions_to_server.lock().unwrap() = Some(sender);
         *self.receive_instructions_from_server.lock().unwrap() = Some(receiver);
@@ -421,6 +447,38 @@ pub const DEFAULT_STDIN_POLL_TIMEOUT_MS: u64 = 10;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The branch nothing else exercises: a socket that never appears. The
+    /// error must name the socket and carry the connect failure, and the wait
+    /// must be bounded by the timeout, not by the retry loop's patience.
+    #[test]
+    fn connect_with_deadline_gives_up_at_the_deadline_with_a_named_socket() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("never-bound.sock");
+        let timeout = std::time::Duration::from_millis(50);
+
+        let started_at = std::time::Instant::now();
+        let Err(err) = connect_with_deadline(&path, timeout, std::time::Duration::from_millis(5))
+        else {
+            panic!("a socket that does not exist must not connect");
+        };
+        let waited = started_at.elapsed();
+
+        assert!(
+            waited >= timeout,
+            "gave up after {waited:?}, before the {timeout:?} deadline"
+        );
+        assert!(
+            waited < std::time::Duration::from_secs(1),
+            "kept retrying for {waited:?} past a {timeout:?} deadline"
+        );
+        assert_eq!(err.last_error().kind(), io::ErrorKind::NotFound);
+        let message = err.to_string();
+        assert!(
+            message.contains(&path.display().to_string()),
+            "the message should name the socket: {message}"
+        );
+    }
 
     #[test]
     fn get_terminal_size_returns_nonzero_or_fallback() {

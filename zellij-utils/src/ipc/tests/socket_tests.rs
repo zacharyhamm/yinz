@@ -429,11 +429,16 @@ fn a_peer_that_accepts_and_never_answers_times_out_as_idle() {
     let (_guard, name) = new_ipc();
     let listener = bind_listener(&name);
 
+    // The accept thread holds its stream until this end is dropped — after the
+    // assertions below, or on unwind if one of them fails. A sleep here would be
+    // a guess at how long the timed read takes, and a wrong guess on a loaded
+    // machine turns this into the Eof case.
+    let (release, released) = std::sync::mpsc::channel::<()>();
     let keep_accepting = std::thread::spawn(move || {
         // Accept and then sit on it. Holding the stream is the point: dropping
         // it would close the socket and turn this into the Eof case.
         let _stream = listener.incoming().next().unwrap().expect("accept failed");
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        let _ = released.recv();
     });
 
     let stream = connect_stream(&name);
@@ -460,5 +465,43 @@ fn a_peer_that_accepts_and_never_answers_times_out_as_idle() {
         "the read should have given up near its 100ms timeout, but it waited {waited:?}"
     );
 
+    drop(release);
     keep_accepting.join().expect("listener thread panicked");
+}
+
+/// What the probe makes of each thing a connected socket can hand back.
+///
+/// The one that matters is `Idle`, the receive timeout: it must read as a
+/// server that is *there and not answering*, never as one that is absent.
+/// "Absent" is the answer that lets `zellij -s <name>` and `zellij attach
+/// --create` spawn a new server on the same socket path, and a new server
+/// starts by unlinking that path — stranding the live, wedged one where no
+/// client can ever find it again.
+#[test]
+fn a_probe_timeout_is_an_unresponsive_server_not_an_absent_one() {
+    use crate::errors::ErrorContext;
+    use crate::sessions::{classify_probe_reply, SessionProbe};
+
+    assert_eq!(
+        classify_probe_reply(IpcRecv::Msg(
+            ServerToClientMsg::Connected,
+            ErrorContext::new()
+        )),
+        SessionProbe::Alive
+    );
+    assert_eq!(
+        classify_probe_reply(IpcRecv::Idle),
+        SessionProbe::Unresponsive,
+        "a timeout is a server that did not answer, not a missing one"
+    );
+    // A hangup or garbage after the connect succeeded is a server in some
+    // trouble; the safe reading of trouble is still "do not build over it".
+    assert_eq!(
+        classify_probe_reply(IpcRecv::Eof),
+        SessionProbe::Unresponsive
+    );
+    assert_eq!(
+        classify_probe_reply(IpcRecv::Malformed),
+        SessionProbe::Unresponsive
+    );
 }
