@@ -4,6 +4,10 @@ fn record(path: &str, body: &str) -> String {
     format!("\u{1}{path}\u{2}{body}\n")
 }
 
+fn disabled_record(path: &str, body: &str) -> String {
+    format!("\u{1}{path}\u{3}\u{2}{body}\n")
+}
+
 fn skill(name: &str, body: &str) -> Skill {
     Skill {
         name: name.to_owned(),
@@ -11,6 +15,7 @@ fn skill(name: &str, body: &str) -> Skill {
         body: body.to_owned(),
         path: format!("/p/.hocus/skills/{name}/SKILL.md"),
         source: Source::Project,
+        enabled: true,
         warnings: Vec::new(),
     }
 }
@@ -163,6 +168,29 @@ fn the_project_tier_shadows_the_user_tier_and_names_are_listed_once() {
 }
 
 #[test]
+fn disabling_a_project_skill_reveals_the_user_skill() {
+    let mut registry = Registry::default();
+    let reserved = BTreeSet::new();
+    registry.replace(
+        Source::User,
+        parse_listing(Source::User, &record("/u/bench/SKILL.md", "User.")),
+        &reserved,
+    );
+    registry.replace(
+        Source::Project,
+        parse_listing(
+            Source::Project,
+            &disabled_record("/p/bench/SKILL.md", "Project."),
+        ),
+        &reserved,
+    );
+
+    assert!(!registry.all()[0].enabled);
+    assert_eq!(registry.get("bench").unwrap().body, "User.");
+    assert_eq!(registry.names(), ["bench"]);
+}
+
+#[test]
 fn a_reserved_name_is_dropped_and_replacing_a_tier_keeps_the_other() {
     let mut registry = Registry::default();
     let reserved = BTreeSet::from(["close_pane".to_owned()]);
@@ -248,7 +276,8 @@ fn the_scan_is_one_shell_loop_over_the_roots() {
     assert_eq!(&argv[..2], ["sh", "-c"]);
     assert!(argv[2].contains("/*/SKILL.md"));
     assert!(argv[2].contains(&format!("head -c {}", MAX_SKILL_BYTES + 1)));
-    assert!(argv[2].contains("printf '\\001%s\\002'"));
+    assert!(argv[2].contains("printf '\\001%s'"));
+    assert!(argv[2].contains("/.disabled"));
     // A missing folder is an empty tier, but one that cannot be entered and a
     // file that cannot be read are failures, and the script has to say so.
     assert!(argv[2].contains("exit $status"), "{}", argv[2]);
@@ -259,4 +288,40 @@ fn the_scan_is_one_shell_loop_over_the_roots() {
     );
     assert!(argv[2].contains("if ! head -c"), "{}", argv[2]);
     assert_eq!(&argv[3..], ["sh", "/u/skills", "/p/.hocus/skills"]);
+}
+
+#[test]
+fn skill_tools_stay_below_the_tier_root_and_refresh_after_mutations() {
+    assert!(resolve_paths("/skills", Some("../escape")).is_err());
+    let (argv, env) = tool_argv(
+        "skill_write",
+        "/skills",
+        Some("bench"),
+        Some("Run it."),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        &argv[4..],
+        [
+            "/skills",
+            "/skills/bench",
+            "/skills/bench/SKILL.md",
+            "/skills/bench/.disabled"
+        ]
+    );
+    assert!(argv[2].contains("set -C"), "{}", argv[2]);
+    assert!(argv[2].contains("contains a symlink"), "{}", argv[2]);
+    assert!(argv[2].contains("/*/SKILL.md"), "mutation ends in a scan");
+    assert_eq!(env["HOCUS_SKILL_SOURCE"], "Run it.\n");
+
+    let (overwrite, _) = tool_argv(
+        "skill_write",
+        "/skills",
+        Some("bench"),
+        Some("Replace it."),
+        true,
+    )
+    .unwrap();
+    assert!(!overwrite[2].contains("set -C"));
 }

@@ -263,8 +263,15 @@ pub fn skills_listing(registry: &crate::skills::Registry, user_dir: &str) -> Str
             .unwrap_or_default();
         for skill in &loaded {
             let command = format!("/{}", skill.name);
+            let state = if !skill.enabled {
+                ", disabled"
+            } else if registry.is_shadowed(skill) {
+                ", shadowed"
+            } else {
+                ""
+            };
             out.push_str(&format!(
-                "{command:<width$}  {}  ({})\n",
+                "{command:<width$}  {}  ({}{state})\n",
                 skill.description,
                 skill.source.label()
             ));

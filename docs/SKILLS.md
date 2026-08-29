@@ -53,6 +53,16 @@ Focus on: $ARGUMENTS
   under "not loaded" with the reason. A skill is re-sent on every later turn of the
   conversation, like a tool result, so a long one is a standing cost.
 
+Hocus can author these files itself. Ask it to create or change a skill: `skill_write` writes the
+complete `SKILL.md`, defaults to the user tier, and refuses an existing file unless the write says
+to overwrite it. It can inspect first with `skill_list` and `skill_read`. Project writes require an
+active project; user writes use `skills_dir` or the default user folder above. Writes and
+enable-state changes show the normal confirmation.
+
+To disable a skill without deleting it, Hocus creates an empty `.disabled` file beside
+`SKILL.md`. Disabling a project copy reveals an enabled user copy of the same name. Remove the
+marker, ask Hocus to enable it, or type the command below to restore it.
+
 ## What the model sees
 
 ```
@@ -77,6 +87,8 @@ takes the rest of the line as its prompt — but `/plan …` and then `/bench �
 | `/<skill> [text]` | send the skill with `text` as its arguments |
 | `/skills` | list what is loaded, with its tier, then what was refused and why |
 | `/skills reload` | read both folders again and list the result |
+| `/skills disable <user\|project> <name>` | disable one exact copy without deleting it |
+| `/skills enable <user\|project> <name>` | enable one exact copy |
 | `/help` | the command list, with a `skills` row |
 | Tab | completes a skill name like a tool's |
 

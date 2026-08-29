@@ -57,7 +57,7 @@ fn request_body_adds_the_tool_first_policy_when_tools_are_enabled() {
 fn hocus_prompt_contract_keeps_global_routing_rules() {
     assert_eq!(
         TOOL_FIRST_PROMPT,
-        "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_tab`/`warp_pane` move current items out; `warp_tab_here`/`warp_pane_here` move listed items in. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` first, then `plugin_write` (its confirmation grants the permissions the source asks for), `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; `plugin_list`/`plugin_read` read the user's plugin folder. Make independent calls together."
+        "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_tab`/`warp_pane` move current items out; `warp_tab_here`/`warp_pane_here` move listed items in. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` first, then `plugin_write` (its confirmation grants the permissions the source asks for), `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; `plugin_list`/`plugin_read` read the user's plugin folder. Make independent calls together."
     );
 }
 
@@ -119,7 +119,7 @@ fn request_body_advertises_the_tools_when_they_are_enabled() {
     let mut cfg = test_config();
     cfg.tools = true;
     let body = body_value(&cfg, &[Message::user("hi")]);
-    assert_eq!(body["tools"].as_array().unwrap().len(), 66);
+    assert_eq!(body["tools"].as_array().unwrap().len(), 71);
 }
 
 #[test]
@@ -162,18 +162,19 @@ fn request_body_advertises_registered_extension_tools() {
 /// property descriptions were folded into the tool descriptions first, which bought back
 /// only ~200 of the ~1.5kb the five cost — the floor for a tool is its name, its schema
 /// keys and enough description to be usable, and five of them is simply that much. The new
-/// ceiling keeps ~1.4kb of headroom so it goes on measuring growth rather than forbidding it.
+/// ceiling kept ~1.4kb of headroom so it went on measuring growth rather than forbidding it.
 ///
 /// Raised again to 27kb when `agent_spawn` gained `env`, `permission_mode`, `resume` and
 /// `hooks` (R16): four arguments a launch genuinely needs, each already at the floor of a
 /// key and one short sentence.
+/// Raised to 28kb for the five skill-authoring tools after their schemas were kept minimal.
 #[test]
-fn hocus_prompt_contract_keeps_the_tool_payload_under_27_kb() {
+fn hocus_prompt_contract_keeps_the_tool_payload_under_28_kb() {
     let mut cfg = test_config();
     cfg.tools = true;
     let body = request_body(&cfg, &[Message::user("hi")], true);
     assert!(
-        body.len() < 27_000,
+        body.len() < 28_000,
         "tool payload grew to {} bytes",
         body.len()
     );
@@ -585,7 +586,7 @@ fn acting_sends_the_body_it_always_did() {
     let transcript = [Message::user("hi")];
     let body: serde_json::Value =
         serde_json::from_slice(&request_body(&cfg, &transcript, true)).unwrap();
-    assert_eq!(body["tools"].as_array().unwrap().len(), 66);
+    assert_eq!(body["tools"].as_array().unwrap().len(), 71);
     assert!(!body["messages"][0]["content"]
         .as_str()
         .unwrap()

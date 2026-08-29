@@ -1497,7 +1497,8 @@ impl State {
     fn project_exec_hint(&self, exit_code: Option<i32>, stderr: &[u8]) -> Option<String> {
         let head = self.pending.front()?;
         let is_project = tools::PROJECT_READ_TOOLS.contains(&head.name.as_str());
-        if !is_project || exit_code != Some(2) {
+        let is_skill = tools::SKILL_FILE_TOOLS.contains(&head.name.as_str());
+        if (!is_project && !is_skill) || exit_code != Some(2) {
             return None;
         }
         if !String::from_utf8_lossy(stderr).contains("os error 2") {
@@ -1508,6 +1509,7 @@ impl State {
             "find_files" | "search_files" => "rg",
             "git_log" | "git_show" => "git",
             "github_read" => "gh",
+            name if tools::SKILL_FILE_TOOLS.contains(&name) => "sh",
             _ => return None,
         };
         let install = if binary == "rg" {
@@ -1644,13 +1646,66 @@ impl State {
         result
     }
 
-    /// The deferred half of the Slack and file tools. The context map
-    /// round-tripped through the host, so it names the call this answers.
-    ///
-    /// Each stream is capped at `MAX_TOOL_OUTPUT`: a tool result stays in the
-    /// transcript, so it is re-sent and re-billed on every later turn of the
-    /// conversation. One `slack_read` of a busy channel would otherwise make
-    /// every subsequent message cost a full transcript.
+    /// Read one skill or apply the fresh tier scan returned by a mutation.
+    fn skill_tool_result(
+        &mut self,
+        head: &ToolCall,
+        exit_code: Option<i32>,
+        stdout: &[u8],
+        stderr: &[u8],
+        context: &BTreeMap<String, String>,
+    ) -> String {
+        let args = tools::Args::parse(&head.arguments).unwrap_or_default();
+        let name = args.name.as_deref().unwrap_or("the skill");
+        if exit_code == Some(0) {
+            if head.name == "skill_read" {
+                if stdout.len() > skills::MAX_SKILL_BYTES {
+                    return format!(
+                        "{name} is over {} bytes; shorten it before Hocus can read it",
+                        skills::MAX_SKILL_BYTES
+                    );
+                }
+                return String::from_utf8_lossy(stdout).into_owned();
+            }
+            let Some(source) = context
+                .get(skills::SOURCE_CONTEXT)
+                .and_then(|source| skills::Source::parse(source))
+            else {
+                return "the skill changed, but its tier could not be refreshed; use /skills reload"
+                    .to_owned();
+            };
+            let listing = skills::parse_listing(source, &String::from_utf8_lossy(stdout));
+            let reserved = self.reserved_command_names();
+            self.skills.replace(source, listing, &reserved);
+            let verb = match head.name.as_str() {
+                "skill_write" => "wrote",
+                "skill_enable" => "enabled",
+                _ => "disabled",
+            };
+            return format!("{verb} the {} skill {name}", source.label());
+        }
+        let stderr = String::from_utf8_lossy(stderr);
+        if head.name == "skill_write"
+            && (stderr.contains("cannot overwrite existing file")
+                || (stderr.contains("cannot create") && stderr.contains("File exists")))
+        {
+            return format!(
+                "{name} already exists; pass overwrite=true to replace it, or read it first with skill_read"
+            );
+        }
+        let stderr = stderr.trim();
+        format!(
+            "exit code: {}{}{}",
+            exit_code.unwrap_or(-1),
+            if stderr.is_empty() {
+                ""
+            } else {
+                "\n\nstderr:\n"
+            },
+            stderr
+        )
+    }
+
     pub(crate) fn on_command_result(
         &mut self,
         exit_code: Option<i32>,
@@ -1662,7 +1717,7 @@ impl State {
             return false;
         }
         // A result from a run we already aborted, or from someone else's call.
-        let Some(head) = self.pending.front() else {
+        let Some(head) = self.pending.front().cloned() else {
             return false;
         };
         if context.get("tool_call_id") != Some(&head.id) {
@@ -1680,7 +1735,10 @@ impl State {
         {
             Some(hint) => hint,
             None if tools::PROJECT_READ_TOOLS.contains(&head.name.as_str()) => {
-                Self::project_tool_result(head, exit_code, stdout, stderr)
+                Self::project_tool_result(&head, exit_code, stdout, stderr)
+            },
+            None if tools::SKILL_FILE_TOOLS.contains(&head.name.as_str()) => {
+                self.skill_tool_result(&head, exit_code, stdout, stderr, context)
             },
             None => {
                 let mut result = format!("exit code: {}", exit_code.unwrap_or(-1));

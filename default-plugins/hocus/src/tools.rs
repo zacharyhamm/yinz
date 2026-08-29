@@ -102,18 +102,21 @@ pub fn needs_confirmation(name: &str) -> bool {
             // reloads a plugin on a keypress - so confirming both would cost two prompts per
             // write-reload-fix iteration to say the same thing twice.
             | "plugin_write"
+            | "skill_write"
+            | "skill_enable"
+            | "skill_disable"
     )
 }
 
 /// The one-line transcript label for a call. Arguments are shown as the model
 /// wrote them, so a confirmation prompt says exactly what is about to happen.
 ///
-/// `plugin_write` is the exception: its arguments carry a whole Lua file, and showing them as
+/// Source-writing tools are the exception: their arguments carry a whole file, and showing them as
 /// written would paste the plugin into the conversation on the line that says it is being
 /// written. The source is still shown, in `confirmation_detail`, where there is room for it.
 pub fn summarize(call: &ToolCall) -> String {
     let arguments = call.arguments.trim();
-    if call.name == "plugin_write" {
+    if matches!(call.name.as_str(), "plugin_write" | "skill_write") {
         let args = Args::parse(&call.arguments).unwrap_or_default();
         let name = args.name.as_deref().unwrap_or("?");
         let lines = args
@@ -121,7 +124,7 @@ pub fn summarize(call: &ToolCall) -> String {
             .as_deref()
             .map(|s| s.lines().count())
             .unwrap_or(0);
-        return format!("plugin_write {name} ({lines} lines)");
+        return format!("{} {name} ({lines} lines)", call.name);
     }
     if arguments.is_empty() || arguments == "{}" {
         call.name.clone()
@@ -248,6 +251,20 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
                 ));
             }
             sentence
+        },
+        "skill_write" => {
+            let name = args.name.as_deref().unwrap_or("a skill");
+            let scope = args.scope.as_deref().unwrap_or("user");
+            match args.overwrite {
+                true => format!("replaces the {scope} skill {name}"),
+                false => format!("writes the {scope} skill {name}"),
+            }
+        },
+        "skill_enable" | "skill_disable" => {
+            let name = args.name.as_deref().unwrap_or("a skill");
+            let scope = args.scope.as_deref().unwrap_or("a tier");
+            let action = call.name.trim_start_matches("skill_");
+            format!("{action}s the {scope} skill {name}")
         },
         _ => return None,
     };
@@ -1360,6 +1377,63 @@ pub fn specs() -> Value {
                 },
             }),
         ),
+        tool(
+            "skill_list",
+            "List user and active-project skills, including disabled, shadowed and refused entries.",
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool(
+            "skill_read",
+            "Read a complete SKILL.md. Without `scope`, reads the effective enabled skill.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "scope": { "type": "string", "enum": ["user", "project"] },
+                },
+                "required": ["name"],
+            }),
+        ),
+        tool(
+            "skill_write",
+            "Author a skill yourself, never by spawning an agent. `source` is the complete \
+             SKILL.md, not a patch; user scope is the default, and `overwrite` is required to \
+             replace one that exists. Use $ARGUMENTS where the typed command's tail belongs.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "source": { "type": "string" },
+                    "scope": { "type": "string", "enum": ["user", "project"], "description": "Defaults to user." },
+                    "overwrite": { "type": "boolean" },
+                },
+                "required": ["name", "source"],
+            }),
+        ),
+        tool(
+            "skill_enable",
+            "Enable one user or project skill. A newly enabled project skill shadows its user copy.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "scope": { "type": "string", "enum": ["user", "project"] },
+                },
+                "required": ["name", "scope"],
+            }),
+        ),
+        tool(
+            "skill_disable",
+            "Disable one user or project skill without deleting it. Disabling a project copy reveals an enabled user copy.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "scope": { "type": "string", "enum": ["user", "project"] },
+                },
+                "required": ["name", "scope"],
+            }),
+        ),
         // Property descriptions are folded into the tool descriptions throughout: guidance
         // costs one copy per tool there, against one copy per property here. `name` is a bare
         // file name with an optional `.lua` for all three tools that take one.
@@ -1502,6 +1576,8 @@ pub const READ_ONLY: &[&str] = &[
     "plugin_list",
     "plugin_read",
     "plugin_log",
+    "skill_list",
+    "skill_read",
 ];
 
 /// The `tools` array as planning mode sends it: [`specs`] minus everything that
@@ -1817,6 +1893,8 @@ pub struct Args {
     pub source: Option<String>,
     pub overwrite: bool,
     pub section: Option<String>,
+    // Skill tier. Separate from `source`, which is the complete file text.
+    pub scope: Option<String>,
 }
 
 impl Args {
@@ -2132,6 +2210,17 @@ pub const PROJECT_READ_TOOLS: [&str; 6] = [
     "git_show",
     "github_read",
 ];
+
+pub const SKILL_TOOLS: [&str; 5] = [
+    "skill_list",
+    "skill_read",
+    "skill_write",
+    "skill_enable",
+    "skill_disable",
+];
+
+pub const SKILL_FILE_TOOLS: [&str; 4] =
+    ["skill_read", "skill_write", "skill_enable", "skill_disable"];
 
 /// The tools that read and write the user's own Zellij plugin folder.
 ///

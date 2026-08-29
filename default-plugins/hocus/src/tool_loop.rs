@@ -156,6 +156,9 @@ impl State {
         if tools::PROJECT_READ_TOOLS.contains(&call.name.as_str()) {
             return self.start_project_read(call);
         }
+        if tools::SKILL_TOOLS.contains(&call.name.as_str()) {
+            return self.start_skill_tool(call);
+        }
         // Same shape, rooted at the user's plugin folder rather than at a project: the path
         // comes from the host, and a wasm plugin cannot open a file in a config dir either.
         if tools::PLUGIN_TOOLS.contains(&call.name.as_str()) {
@@ -292,6 +295,13 @@ impl State {
         // until then.
         if line == "/skills" || line.starts_with("/skills ") {
             let tail = line["/skills".len()..].trim();
+            let words: Vec<&str> = tail.split_whitespace().collect();
+            if let [action @ ("enable" | "disable"), scope, name] = words.as_slice() {
+                return self.run_manual_call(
+                    format!("skill_{action}"),
+                    serde_json::json!({ "scope": scope, "name": name }).to_string(),
+                );
+            }
             return match tail {
                 "" => {
                     self.show_skills();
@@ -299,8 +309,9 @@ impl State {
                 },
                 "reload" => self.reload_skills(),
                 _ => {
-                    let error = "/skills lists the skills; /skills reload reads their folders \
-                                 again. To run one, type its name: /<skill> <text>";
+                    let error = "/skills lists skills; /skills reload rescans; /skills \
+                                 enable|disable <user|project> <name> changes one. To run one, \
+                                 type /<skill> <text>.";
                     self.messages.push(Message::error(error));
                     self.log("error", serde_json::json!({"error": error}));
                     true
@@ -346,15 +357,6 @@ impl State {
                 return self.run_skill(&skill, tail);
             }
         }
-        // A reply arriving is no reason to wait, but another *tool* is: the
-        // queue runs one call at a time, and its head owns the deferred result
-        // the host is about to deliver.
-        if self.tools_busy() {
-            let notice = "a tool is already running — <Ctrl c> aborts it";
-            self.messages.push(Message::notice(notice));
-            self.log("notice", serde_json::json!({"content": notice}));
-            return true;
-        }
         let (name, arguments) = match tools::parse_command(line) {
             Ok(parsed) => parsed,
             Err(error) => {
@@ -364,6 +366,16 @@ impl State {
                 return true;
             },
         };
+        self.run_manual_call(name, arguments)
+    }
+
+    fn run_manual_call(&mut self, name: String, arguments: String) -> bool {
+        if self.tools_busy() {
+            let notice = "a tool is already running — <Ctrl c> aborts it";
+            self.messages.push(Message::notice(notice));
+            self.log("notice", serde_json::json!({"content": notice}));
+            return true;
+        }
         // A name nothing answers to is a typo, and a typo is an error line,
         // not a call the model is then shown the failure of. Every `dispatch`
         // arm is in `tools::specs`, so this refuses nothing that would run.
@@ -732,6 +744,101 @@ impl State {
             // back to the call that made it.
             BTreeMap::from([("tool_call_id".to_owned(), call.id.clone())]),
             MAX_TOOL_OUTPUT,
+        );
+        self.status = Status::AwaitingCommand;
+        self.pin_to_bottom();
+        self.arm_timer(FRAME_SECONDS);
+        false
+    }
+
+    /// Run the skill tools against one of the two existing skill roots. The generated host
+    /// command owns path containment and returns a fresh tier scan after every mutation.
+    pub(crate) fn start_skill_tool(&mut self, call: &ToolCall) -> bool {
+        if call.name == "skill_list" {
+            self.finish_head(present::skills_listing(&self.skills, &self.skills_dir()));
+            return true;
+        }
+        let args = match tools::Args::parse(&call.arguments) {
+            Ok(args) => args,
+            Err(error) => {
+                self.finish_head(error);
+                return true;
+            },
+        };
+        let name = args.name.as_deref().unwrap_or_default();
+        let source = match args.scope.as_deref() {
+            Some(scope) => match skills::Source::parse(scope) {
+                Some(source) => source,
+                None => {
+                    self.finish_head("scope must be user or project");
+                    return true;
+                },
+            },
+            None if call.name == "skill_write" => skills::Source::User,
+            None if call.name == "skill_read" => match self.skills.get(name) {
+                Some(skill) => skill.source,
+                None => {
+                    self.finish_head(
+                        "no enabled skill with that name; pass scope=user or scope=project to read a disabled copy",
+                    );
+                    return true;
+                },
+            },
+            None => {
+                self.finish_head("scope is required: user or project");
+                return true;
+            },
+        };
+        if call.name == "skill_write" && self.reserved_command_names().contains(name) {
+            self.finish_head("the name is taken by a tool or command");
+            return true;
+        }
+        let root = match source {
+            skills::Source::User => {
+                let root = self.skills_dir();
+                if root.is_empty() {
+                    self.finish_head(
+                        "no user skill folder is configured; set skills_dir or user_plugin_dir",
+                    );
+                    return true;
+                }
+                root
+            },
+            skills::Source::Project => match self.project_target() {
+                Ok(project) => format!("{}/.hocus/skills", project.root.trim_end_matches('/')),
+                Err(error) => {
+                    self.finish_head(error);
+                    return true;
+                },
+            },
+        };
+        let (argv, env) = match skills::tool_argv(
+            &call.name,
+            &root,
+            args.name.as_deref(),
+            args.source.as_deref(),
+            args.overwrite,
+        ) {
+            Ok(command) => command,
+            Err(error) => {
+                self.finish_head(error);
+                return true;
+            },
+        };
+        let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+        run_command_with_output_limit(
+            &borrowed,
+            env,
+            std::path::PathBuf::from("."),
+            BTreeMap::from([
+                ("tool_call_id".to_owned(), call.id.clone()),
+                (skills::SOURCE_CONTEXT.to_owned(), source.label().to_owned()),
+            ]),
+            if call.name == "skill_read" {
+                skills::MAX_SKILL_BYTES + 1
+            } else {
+                skills::MAX_SCAN_OUTPUT
+            },
         );
         self.status = Status::AwaitingCommand;
         self.pin_to_bottom();
