@@ -356,9 +356,9 @@ R16. What the next session should know:
   `unschedule`, and `live_chat_ids()` (the `/history` `●`).
 - Proto numbers now in use: plugin `EventType` 57 (`Hook`), event payload field 51,
   `AgentSource` 2 / IPC `AGENT_SOURCE_REGISTERED` 3.
-- Left open by design: Enter in a held pane with no `agent_exit` bound restarts the command
-  without an `agent_start`; a per-project `hooks install` is unnecessary for spawned panes and still
-  writes `.claude/settings.json` (committed) for hand-started ones.
+- Two things once left open by design are closed under next steps 6 and 7 below: Enter in a
+  held pane fires `agent_start` through the screen, and a per-project `hooks install` writes
+  `settings.local.json`.
 
 **Next steps, in order.** Each is independently landable; the first two made Phase 3
 trustworthy, 3–5 closed the loose ends it left, and all five are done — continue from 6.
@@ -422,5 +422,13 @@ trustworthy, 3–5 closed the loose ends it left, and all five are done — cont
    against a temporary folder; `.claude/settings.local.json` is in the repo's `.gitignore`.)*
 7. **`agent_start` on Enter in a held pane** with no `agent_exit` bound
    (`tab/mod.rs` `ReRunCommandInThisPane`): route it through the screen so the edge is seen.
+   *(done — `TerminalPane::handle_held_run` no longer restarts the pane itself; it answers
+   `AdjustedInput::ReRunCommandInThisPane` (now a unit variant) and the tab sends the screen
+   `ScreenInstruction::RerunCommandPane`, so Enter and a plugin's `rerun_command_pane` are one
+   road through `Screen::rerun_command_pane_with_id`, which reads the record around
+   `Pane::rerun` and fires `agent_start`. The screen channel is unbounded, so a tab may send to it
+   from the screen thread; the instruction lands behind whatever is already queued.
+   `screen_tests::hooks::enter_in_a_held_agent_pane_fires_agent_start` pins it, and counts one
+   `ReRunCommandInPane` at the pty.)*
 8. **The three pre-existing red integration tests** listed under environment noise: bisect
    them on `main`, they predate this branch.

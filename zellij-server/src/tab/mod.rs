@@ -982,7 +982,10 @@ pub enum GuestChoiceIndicator {
 #[derive(Clone, Debug)]
 pub enum AdjustedInput {
     WriteBytesToTerminal(Vec<u8>),
-    ReRunCommandInThisPane(RunCommand),
+    /// The pane is held and was asked to run its command again. The tab hands this to the
+    /// screen (`ScreenInstruction::RerunCommandPane`) rather than to the pty: the screen's
+    /// re-run is the one that fires `agent_start` for an exited agent coming back.
+    ReRunCommandInThisPane,
     /// Send `SIGCONT` to a pane whose root process was stopped by `^Z`. Nothing
     /// inside the pane can do this: the process is stopped, and a command pane
     /// has no shell above it to run `fg`.
@@ -4924,12 +4927,14 @@ impl Tab {
                             ))
                             .with_context(err_context)?;
                     },
-                    Some(AdjustedInput::ReRunCommandInThisPane(command)) => {
-                        self.pids_waiting_resize.insert(active_terminal_id);
+                    Some(AdjustedInput::ReRunCommandInThisPane) => {
+                        // Through the screen, which re-runs it with
+                        // `rerun_terminal_pane_with_id` and reads the agent record around the
+                        // restart. The screen's channel is unbounded, so a tab may send to it
+                        // from the screen thread.
                         self.senders
-                            .send_to_pty(PtyInstruction::ReRunCommandInPane(
-                                PaneId::Terminal(active_terminal_id),
-                                command,
+                            .send_to_screen(ScreenInstruction::RerunCommandPane(
+                                active_terminal_id,
                                 completion_tx,
                             ))
                             .with_context(err_context)?;
