@@ -26,7 +26,8 @@ const TWO_TILED_PANES: &str = r#"layout {
 }
 "#;
 
-/// Open a plain command pane as an overlay, positioned over the tab's left-hand pane.
+/// Open a plain command pane as an overlay, in the bottom-right corner so that it covers none
+/// of the shell text the tests wait for (a shell prints at the top-left of its pane).
 fn open_overlay_pane(zellij: &TestSession) -> zellij_integration_tests::FakePtyHandle {
     zellij.run_cli_action(CliAction::NewPane {
         direction: None,
@@ -43,8 +44,8 @@ fn open_overlay_pane(zellij: &TestSession) -> zellij_integration_tests::FakePtyH
         start_suspended: false,
         configuration: None,
         skip_plugin_cache: false,
-        x: Some("0%".to_string()),
-        y: Some("0%".to_string()),
+        x: Some("75%".to_string()),
+        y: Some("75%".to_string()),
         width: Some("20%".to_string()),
         height: Some("20%".to_string()),
         pinned: None,

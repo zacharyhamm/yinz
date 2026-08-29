@@ -83,6 +83,15 @@ fn main() {
         std::process::exit(0);
     }
 
+    // Plugin authoring: local file work, plus one action sent to a session for `reload`.
+    if let Some(Command::Plugins(plugins)) = opts.command.clone() {
+        if let Err(e) = commands::plugins(plugins, &opts) {
+            eprintln!("Error: {e:#}");
+            std::process::exit(1);
+        }
+        std::process::exit(0);
+    }
+
     // Handle offline recordings command before client/server startup
     if let Some(Command::Recordings(rec)) = opts.command.clone() {
         let data_dir = opts
@@ -109,6 +118,10 @@ fn main() {
         }
         if let Some(Command::Subscribe(subscribe_cli)) = opts.command {
             commands::subscribe_to_session(subscribe_cli, opts.session, config);
+            std::process::exit(0);
+        }
+        if let Some(Command::Events(events_cli)) = opts.command {
+            commands::stream_session_events(events_cli, opts.session, config);
             std::process::exit(0);
         }
         if let Some(Command::Sessions(Sessions::Run {

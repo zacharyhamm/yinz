@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
+use zellij_utils::data::AgentInfo;
 use zellij_utils::data::{
     CommandOrPlugin, ContextMenuItem, Direction, EventType, FloatingPaneCoordinates,
     GetFocusedPaneInfoResponse, HostTerminalThemeMode, InputMode, KeyWithModifier, LayoutInfo,
@@ -792,6 +793,8 @@ pub enum ScreenInstruction {
     NotifyPaneClosedToSubscribers {
         pane_id: zellij_utils::data::PaneId,
     },
+    SetCliEventSubscribersPresent(bool),
+    SetPaneAgent(PaneId, Option<AgentInfo>, Option<NotificationEnd>),
     DesktopNotificationResponse(Vec<u8>, ClientId),
     UpdateBackgroundPluginSubscriptions(PluginId, ClientId, HashSet<EventType>),
     ClearHintTextCache,

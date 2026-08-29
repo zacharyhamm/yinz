@@ -9,7 +9,7 @@ use zellij_utils::input::layout::RunPluginLocation;
 use zellij_utils::input::plugins::PluginConfig;
 use zellij_utils::plugin_data_store::PluginDataStore;
 
-use super::load_lua_plugin;
+use super::{check_lua_plugin, load_lua_plugin};
 use crate::plugins::plugin_limits::PluginResourceLimits;
 use crate::plugins::plugin_map::{PluginEnv, ResponseSink};
 use crate::thread_bus::ThreadSenders;
@@ -674,6 +674,95 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
     );
 }
 
+/// The agent-policy hook is headless: a syntax error in it would surface the first time an agent
+/// stopped for a question, which is the moment its notification is for. So it is loaded and
+/// fired at here, and what is checked is its one visible act - the notification, addressed to
+/// the pane that is waiting - and that the other points it may be bound to stay quiet.
+#[test]
+fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
+    use crate::panes::PaneId;
+    use crate::screen::ScreenInstruction;
+    use zellij_utils::channels::SenderWithContext;
+    use zellij_utils::errors::ErrorContext;
+    use zellij_utils::input::hooks::HookPoint;
+
+    let source =
+        zellij_utils::consts::builtin_lua_plugin("agent-policy").expect("the hook is a builtin");
+    let (to_screen, screen_receiver) =
+        zellij_utils::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
+    let mut env = test_env();
+    env.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+
+    let mut plugin = load_lua_plugin(source, "agent-policy.lua", env).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+
+    let notifications =
+        |receiver: &zellij_utils::channels::Receiver<(ScreenInstruction, ErrorContext)>| {
+            receiver
+                .try_iter()
+                .filter_map(|(instruction, _)| match instruction {
+                    ScreenInstruction::Notify(text, pane_id, _) => Some((text, pane_id)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+    let payload = |state: &str, detail: Option<&str>| {
+        let mut payload = BTreeMap::from([
+            ("agent_pane_id".to_owned(), "7".to_owned()),
+            ("agent_kind".to_owned(), "claude".to_owned()),
+            ("agent_state".to_owned(), state.to_owned()),
+            ("agent_cwd".to_owned(), "/work".to_owned()),
+        ]);
+        if let Some(detail) = detail {
+            payload.insert("agent_detail".to_owned(), detail.to_owned());
+        }
+        payload
+    };
+
+    plugin
+        .update(&Event::Hook {
+            point: HookPoint::AgentStart,
+            payload: payload("busy", None),
+        })
+        .unwrap();
+    assert!(
+        notifications(&screen_receiver).is_empty(),
+        "an agent starting is logged, not announced"
+    );
+
+    plugin
+        .update(&Event::Hook {
+            point: HookPoint::AgentWaiting,
+            payload: payload("waiting", Some("Allow Bash(cargo test)?")),
+        })
+        .unwrap();
+    assert_eq!(
+        notifications(&screen_receiver),
+        vec![(
+            "claude in pane 7: Allow Bash(cargo test)?".to_owned(),
+            Some(PaneId::Terminal(7)),
+        )],
+        "a waiting agent is announced, and the toast focuses its pane"
+    );
+
+    plugin
+        .update(&Event::Hook {
+            point: HookPoint::AgentWaiting,
+            payload: payload("waiting", None),
+        })
+        .unwrap();
+    assert_eq!(
+        notifications(&screen_receiver),
+        vec![(
+            "claude in pane 7: is waiting for you".to_owned(),
+            Some(PaneId::Terminal(7)),
+        )],
+        "a wait with no detail still says who is waiting"
+    );
+}
+
 /// The context-menu hook has no `render`, so a load-and-draw check would prove nothing about it.
 /// What it does instead is transform an event into an answer, and that is what is exercised here:
 /// a syntax error, a bad field name or a broken filter would otherwise go unnoticed until somebody
@@ -1286,6 +1375,217 @@ fn the_user_plugin_dir_reaches_lua_as_a_string() {
     );
 }
 
+/// A `zellij pipe` run inside a pane arrives knowing which pane, as `message.pane_id`, so no
+/// integration has to hand-thread a `pane_id=` argument.
+#[test]
+fn a_cli_pipes_pane_reaches_lua_on_the_message() {
+    use zellij_utils::data::{PaneId, PipeMessage, PipeSource};
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = {}
+        function M.pipe(message)
+            M.seen = message.pane_id and message.pane_id.Terminal or "none"
+            return true
+        end
+        function M.render() return tostring(M.seen) end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    let mut message = PipeMessage::new(
+        PipeSource::Cli("p1".to_owned()),
+        "hello",
+        &None,
+        &None,
+        false,
+    );
+    message.pane_id = Some(PaneId::Terminal(7));
+    assert!(plugin.pipe(&message).unwrap());
+    assert_eq!(
+        String::from_utf8(plugin.render(1, 10).unwrap()).unwrap(),
+        "7"
+    );
+}
+
+/// `/plugins` is the user's plugin folder: readable with `ReadFiles`, writable only with
+/// `AuthorPlugins` on top of `WriteFiles`, and absent when the session has no such folder.
+#[test]
+fn the_plugin_folder_is_a_root_that_needs_author_plugins_to_write() {
+    let dirs = FsDirs::new();
+    let plugins = tempfile::tempdir().unwrap();
+    let load = |permissions: HashSet<PermissionType>| {
+        let mut env = test_env();
+        env.plugin_cwd = dirs.host.path().to_path_buf();
+        env.plugin_own_data_dir = dirs.data.path().to_path_buf();
+        env.plugin_own_cache_dir = dirs.cache.path().to_path_buf();
+        env.user_plugin_dir = Some(plugins.path().to_path_buf());
+        env.permissions = Arc::new(Mutex::new(Some(permissions)));
+        load_lua_plugin(
+            r#"
+            local zellij = require("zellij")
+            local M = {}
+            function M.render()
+                local ok, err = pcall(function() zellij.fs.write("/plugins/keys.lua", "return {}") end)
+                if not ok then return "refused: " .. tostring(err) end
+                return zellij.fs.read("/plugins/keys.lua")
+            end
+            return M
+            "#,
+            "test.lua",
+            env,
+        )
+    };
+    let render = |permissions: HashSet<PermissionType>| -> String {
+        let mut plugin = load(permissions).unwrap();
+        String::from_utf8(plugin.render(1, 200).unwrap()).unwrap()
+    };
+
+    let without = render(file_permissions().unwrap());
+    assert!(
+        without.contains("AuthorPlugins"),
+        "a write into the plugin folder names the permission it needs: {without}"
+    );
+    assert!(!plugins.path().join("keys.lua").exists());
+
+    let mut with = file_permissions().unwrap();
+    with.insert(PermissionType::AuthorPlugins);
+    assert_eq!(render(with), "return {}");
+    assert_eq!(
+        std::fs::read_to_string(plugins.path().join("keys.lua")).unwrap(),
+        "return {}",
+        "the write landed in the real plugin folder"
+    );
+}
+
+/// A reload by url is a plugin-thread instruction, not an action that opens a pane.
+#[test]
+fn reloading_a_plugin_by_url_asks_the_plugin_thread() {
+    use crate::plugins::PluginInstruction;
+    use zellij_utils::channels::SenderWithContext;
+    use zellij_utils::errors::ErrorContext;
+
+    let (to_plugin, plugin_receiver) =
+        zellij_utils::channels::unbounded::<(PluginInstruction, ErrorContext)>();
+    let mut env = test_env();
+    env.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+    let mut plugin = load_lua_plugin(
+        r#"
+        local zellij = require("zellij")
+        local M = {}
+        function M.load() zellij.reload_plugin_by_url("file:/somewhere/keys.lua") end
+        return M
+        "#,
+        "test.lua",
+        env,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    let reloads: Vec<String> = plugin_receiver
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::ReloadPluginByUrl(run_plugin) => Some(run_plugin.location_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reloads, vec!["file:/somewhere/keys.lua".to_owned()]);
+}
+
+/// The compile check is what a writer runs before a reload: it answers about a string, not a
+/// file, and it answers `nil` for a source that compiles rather than raising for one that does
+/// not — a failing check is the answer, not an error in the asker.
+#[test]
+fn check_lua_plugin_answers_nil_or_the_compile_error() {
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = {}
+        function M.load()
+            M.good = zellij.check_lua_plugin { name = "keys.lua", source = "return {}" }
+            M.bad = zellij.check_lua_plugin { name = "keys.lua", source = "return {" }
+        end
+        function M.render() return tostring(M.good) .. "|" .. tostring(M.bad) end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    let rendered = String::from_utf8(plugin.render(1, 200).unwrap()).unwrap();
+    let (good, bad) = rendered.split_once('|').unwrap();
+    assert_eq!(good, "nil", "a source that compiles answers nil");
+    assert!(
+        bad.contains("[string \"keys.lua\"]:1:"),
+        "the error names the chunk and line as a load error would: {bad}"
+    );
+}
+
+/// A plugin speaking for an agent - hocus's `agent_register`, a daemon relaying an old hook
+/// script - sets the pane's record whole, and the screen is what carries it from there.
+#[test]
+fn a_plugin_can_set_a_panes_agent_record() {
+    use crate::screen::ScreenInstruction;
+    use zellij_utils::channels::SenderWithContext;
+    use zellij_utils::data::{AgentInfo, AgentSource, AgentState};
+    use zellij_utils::errors::ErrorContext;
+
+    let (to_screen, screen_receiver) =
+        zellij_utils::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
+    let mut env = test_env();
+    env.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+    let mut plugin = load_lua_plugin(
+        r#"
+        local zellij = require("zellij")
+        local M = {}
+        function M.load()
+            zellij.set_pane_agent {
+                pane_id = zellij.terminal_pane(3),
+                agent = { kind = "codex", state = "Waiting", source = "Reported", detail = "y/n" },
+            }
+            zellij.set_pane_agent { pane_id = zellij.terminal_pane(3) }
+        end
+        return M
+        "#,
+        "agents.lua",
+        env,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+
+    let records: Vec<_> = screen_receiver
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            ScreenInstruction::SetPaneAgent(pane_id, agent, _) => Some((pane_id, agent)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(records.len(), 2, "{records:?}");
+    assert_eq!(records[0].0, crate::panes::PaneId::Terminal(3));
+    assert_eq!(
+        records[0].1,
+        Some(AgentInfo {
+            kind: "codex".to_owned(),
+            state: AgentState::Waiting,
+            source: AgentSource::Reported,
+            detail: Some("y/n".to_owned()),
+            cwd: None,
+            session_id: None,
+        })
+    );
+    assert_eq!(records[1].1, None, "leaving `agent` out clears the record");
+}
+
+#[test]
+fn the_compile_check_compiles_only() {
+    // A plugin that parses but fails when run, or returns no table, is the loader's to report:
+    // the check must not run the chunk, or a `load` with side effects would run twice.
+    assert_eq!(check_lua_plugin("error('boom')", "x.lua"), Ok(()));
+    assert_eq!(check_lua_plugin("return 1", "x.lua"), Ok(()));
+    assert!(check_lua_plugin("local = 1", "x.lua").is_err());
+}
+
 #[test]
 fn a_scalar_answer_arrives_as_a_scalar() {
     // Not every reply is a table: `get_zellij_version` answers with one string, and wrapping it
@@ -1658,6 +1958,45 @@ fn a_path_cannot_climb_out_of_its_root() {
     }
 }
 
+/// A plugin's log lines come from the server's own log, a file no root reaches, so the read is
+/// a command gated on `author_plugins` - `read_files` is not enough - and it answers whether or
+/// not the log is there yet: a missing log is the error, not an empty answer.
+#[test]
+fn reading_a_plugins_log_is_an_author_plugins_command() {
+    let dirs = FsDirs::new();
+    let body = r#"return zellij.read_plugin_log("keys", 5)"#;
+    let refused = format!(
+        "{:#}",
+        render_with_dirs(body, &dirs, file_permissions()).unwrap_err()
+    );
+    assert!(
+        refused.to_lowercase().contains("permission"),
+        "got: {refused}"
+    );
+
+    let authoring = Some([PermissionType::AuthorPlugins].into_iter().collect());
+    match render_with_dirs(body, &dirs, authoring) {
+        Ok(lines) => assert!(
+            lines.lines().all(|line| line.contains("keys")),
+            "only the plugin's own lines: {lines}"
+        ),
+        Err(e) => {
+            let e = format!("{e:#}");
+            assert!(e.contains("no zellij log at"), "got: {e}");
+        },
+    }
+    let bad_name = format!(
+        "{:#}",
+        render_with_dirs(
+            r#"return zellij.read_plugin_log("../keys", 5)"#,
+            &dirs,
+            Some([PermissionType::AuthorPlugins].into_iter().collect()),
+        )
+        .unwrap_err()
+    );
+    assert!(bad_name.contains("not a plugin name"), "got: {bad_name}");
+}
+
 #[test]
 fn a_symlink_out_of_a_root_is_followed_and_then_refused() {
     // Containment has to be checked after the link is resolved, not before: the path as written
@@ -1681,6 +2020,8 @@ fn a_symlink_out_of_a_root_is_followed_and_then_refused() {
         "got: {}",
         err
     );
+    // And it is named as a link: a plugin refused for `link.lua` should hear that it is one.
+    assert!(err.contains("is a symlink"), "got: {}", err);
 }
 
 #[test]
@@ -1812,6 +2153,55 @@ fn describe_event(event: Event, body: &str) -> String {
     let mut plugin = load(&source).unwrap();
     plugin.update(&event).unwrap();
     String::from_utf8(plugin.render(1, 200).unwrap()).unwrap()
+}
+
+/// `Event::Hook` is a struct variant, so its fields are merged into the event: `point` is the
+/// name the config spells, and `payload` the map the fire site built.
+#[test]
+fn a_hook_event_has_its_point_and_payload() {
+    use zellij_utils::input::hooks::HookPoint;
+    let event = Event::Hook {
+        point: HookPoint::AgentWaiting,
+        payload: BTreeMap::from([("agent_pane_id".to_owned(), "7".to_owned())]),
+    };
+    let out = describe_event(
+        event,
+        r#"return event.name .. "|" .. event.point .. "|" .. event.payload.agent_pane_id"#,
+    );
+    assert_eq!(out, "hook|agent_waiting|7");
+}
+
+#[test]
+fn a_hook_handler_registered_with_on_runs() {
+    use zellij_utils::input::hooks::HookPoint;
+    let mut plugin = load(
+        r#"
+        local zellij = require("zellij")
+        local M = { seen = {} }
+        zellij.on("hook", function(event)
+          table.insert(M.seen, event.point .. "=" .. (event.payload.session_name or "?"))
+        end)
+        function M.render() return table.concat(M.seen, ",") end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin
+        .update(&Event::Hook {
+            point: HookPoint::SessionStart,
+            payload: BTreeMap::from([("session_name".to_owned(), "main".to_owned())]),
+        })
+        .unwrap();
+    plugin
+        .update(&Event::Hook {
+            point: HookPoint::PaneExit,
+            payload: BTreeMap::new(),
+        })
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(plugin.render(1, 80).unwrap()).unwrap(),
+        "session_start=main,pane_exit=?"
+    );
 }
 
 /// A tuple variant arrives as a bare list, and `RunCommandResult`'s output as byte numbers.
@@ -2192,6 +2582,8 @@ fn require_without_a_folder_serves_only_zellij() {
 /// raw bytes is a regression, and one decoded here but absent from this list is a drift in the
 /// other direction. Add to this list when the shim gains a reply, and to `response.rs` with it.
 const REPLYING_COMMANDS: &[CommandType] = &[
+    CommandType::CheckLuaPlugin,
+    CommandType::ReadPluginLog,
     CommandType::GetPluginIds,
     CommandType::GetZellijVersion,
     CommandType::GenerateRandomName,

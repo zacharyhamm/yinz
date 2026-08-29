@@ -10,6 +10,8 @@ message PipeMessage {
     optional string payload = 5;
     repeated Arg args = 6;
     bool is_private = 7;
+    // The terminal pane a CLI pipe was run in, when known.
+    optional uint32 source_terminal_pane_id = 8;
 }
 
 enum PipeSource {

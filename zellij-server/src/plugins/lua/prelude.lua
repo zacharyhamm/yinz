@@ -286,6 +286,14 @@ function zellij.fs.read(path, max_bytes)
   return dispatch("fs_read", { path = path, max_bytes = max_bytes })
 end
 
+--- The last `lines` lines of zellij's own log about the plugin `name` - what it logged with
+--- `zellij.log`, and any loader error naming its file - as one string, the way
+--- `zellij plugins log <name>` shows them. The log is outside every root `zellij.fs` reaches,
+--- so this is a command of its own. Needs the `author_plugins` permission.
+function zellij.read_plugin_log(name, lines)
+  return dispatch("read_plugin_log", { name = name, lines = lines or 50 })
+end
+
 --- List a folder. Returns an array of `{ path = ..., metadata = ... }`, with each path spelled
 --- in the same root that was asked for, so it can be passed straight back to `read`.
 function zellij.fs.list(path)

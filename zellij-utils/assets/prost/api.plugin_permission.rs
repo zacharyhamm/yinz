@@ -23,6 +23,7 @@ pub enum PermissionType {
     SharedPluginData = 18,
     ReadFiles = 19,
     WriteFiles = 20,
+    AuthorPlugins = 21,
 }
 impl PermissionType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -52,6 +53,7 @@ impl PermissionType {
             PermissionType::SharedPluginData => "SharedPluginData",
             PermissionType::ReadFiles => "ReadFiles",
             PermissionType::WriteFiles => "WriteFiles",
+            PermissionType::AuthorPlugins => "AuthorPlugins",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -78,6 +80,7 @@ impl PermissionType {
             "SharedPluginData" => Some(Self::SharedPluginData),
             "ReadFiles" => Some(Self::ReadFiles),
             "WriteFiles" => Some(Self::WriteFiles),
+            "AuthorPlugins" => Some(Self::AuthorPlugins),
             _ => None,
         }
     }

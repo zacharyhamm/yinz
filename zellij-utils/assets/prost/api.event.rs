@@ -10,7 +10,7 @@ pub struct EventNameList {
 pub struct Event {
     #[prost(enumeration="EventType", tag="1")]
     pub name: i32,
-    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50")]
+    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51")]
     pub payload: ::core::option::Option<event::Payload>,
 }
 /// Nested message and enum types in `Event`.
@@ -114,7 +114,18 @@ pub mod event {
         ContextMenuRequestedPayload(super::ContextMenuRequestedPayload),
         #[prost(message, tag="50")]
         ContextMenuItemSelectedPayload(super::ContextMenuItemSelectedPayload),
+        #[prost(message, tag="51")]
+        HookPayload(super::HookPayload),
     }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct HookPayload {
+    /// The point's snake_case name, as `hooks { }` spells it
+    #[prost(string, tag="1")]
+    pub point: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag="2")]
+    pub payload: ::prost::alloc::vec::Vec<ContextItem>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -727,6 +738,24 @@ pub struct PaneInfo {
     /// the machine the pane runs on, unset for local panes
     #[prost(string, optional, tag="29")]
     pub host: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag="30")]
+    pub agent: ::core::option::Option<AgentInfo>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AgentInfo {
+    #[prost(string, tag="1")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(enumeration="AgentState", tag="2")]
+    pub state: i32,
+    #[prost(enumeration="AgentSource", tag="3")]
+    pub source: i32,
+    #[prost(string, optional, tag="4")]
+    pub detail: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="5")]
+    pub cwd: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="6")]
+    pub session_id: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1113,6 +1142,8 @@ pub enum EventType {
     ContextMenuRequested = 55,
     /// / A plugin-supplied context menu item was chosen
     ContextMenuItemSelected = 56,
+    /// / A headless hook point was reached; sent to the plugin bound to it
+    Hook = 57,
 }
 impl EventType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1176,6 +1207,7 @@ impl EventType {
             EventType::QueueChanged => "QueueChanged",
             EventType::ContextMenuRequested => "ContextMenuRequested",
             EventType::ContextMenuItemSelected => "ContextMenuItemSelected",
+            EventType::Hook => "Hook",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1236,6 +1268,7 @@ impl EventType {
             "QueueChanged" => Some(Self::QueueChanged),
             "ContextMenuRequested" => Some(Self::ContextMenuRequested),
             "ContextMenuItemSelected" => Some(Self::ContextMenuItemSelected),
+            "Hook" => Some(Self::Hook),
             _ => None,
         }
     }
@@ -1452,6 +1485,67 @@ impl MouseEventName {
             "MouseHover" => Some(Self::MouseHover),
             "MouseScrollLeft" => Some(Self::MouseScrollLeft),
             "MouseScrollRight" => Some(Self::MouseScrollRight),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum AgentState {
+    Busy = 0,
+    Waiting = 1,
+    Idle = 2,
+    Exited = 3,
+}
+impl AgentState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            AgentState::Busy => "Busy",
+            AgentState::Waiting => "Waiting",
+            AgentState::Idle => "Idle",
+            AgentState::Exited => "Exited",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "Busy" => Some(Self::Busy),
+            "Waiting" => Some(Self::Waiting),
+            "Idle" => Some(Self::Idle),
+            "Exited" => Some(Self::Exited),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum AgentSource {
+    Spawned = 0,
+    Reported = 1,
+    Registered = 2,
+}
+impl AgentSource {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            AgentSource::Spawned => "Spawned",
+            AgentSource::Reported => "Reported",
+            AgentSource::Registered => "Registered",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "Spawned" => Some(Self::Spawned),
+            "Reported" => Some(Self::Reported),
+            "Registered" => Some(Self::Registered),
             _ => None,
         }
     }

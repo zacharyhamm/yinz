@@ -19,6 +19,9 @@ pub mod prelude;
 pub mod shim;
 pub mod ui_components;
 
+/// The session's reading of a Claude Code hook event, for plugins that speak for an agent.
+pub use zellij_utils::agent;
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use zellij_utils::data::{Event, PipeMessage};

@@ -16,6 +16,9 @@ pub struct PipeMessage {
     pub args: ::prost::alloc::vec::Vec<Arg>,
     #[prost(bool, tag="7")]
     pub is_private: bool,
+    /// The terminal pane a CLI pipe was run in, when known.
+    #[prost(uint32, optional, tag="8")]
+    pub source_terminal_pane_id: ::core::option::Option<u32>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

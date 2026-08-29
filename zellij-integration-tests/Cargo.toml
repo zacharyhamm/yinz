@@ -29,3 +29,4 @@ vte = { workspace = true }
 [dev-dependencies]
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 tempfile = { workspace = true }
+serde_json = { workspace = true }

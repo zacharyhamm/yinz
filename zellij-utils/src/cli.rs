@@ -161,6 +161,42 @@ pub enum Recordings {
     },
 }
 
+/// Authoring Lua plugins in the user's plugin folder from a shell - what hocus's `plugin_*`
+/// tools do, for a person or an agent that is not hocus. `name` is `keys` or `folder/module`.
+#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
+pub enum Plugins {
+    /// Write a plugin from a file or stdin, after compiling it. Refuses to replace one that
+    /// exists unless --overwrite is given.
+    Write {
+        name: String,
+        /// The source; stdin when left out.
+        #[clap(short, long, value_parser)]
+        file: Option<PathBuf>,
+        #[clap(long)]
+        overwrite: bool,
+        /// Write even if the source does not compile.
+        #[clap(long)]
+        no_check: bool,
+    },
+    /// Compile a plugin - the one in the folder, or --file - without loading it.
+    Check {
+        name: Option<String>,
+        #[clap(short, long, value_parser, conflicts_with = "name")]
+        file: Option<PathBuf>,
+    },
+    /// Load or reload a plugin in the running session, opening it in a pane if it is not
+    /// running.
+    Reload { name: String },
+    /// The last lines the plugin logged with zellij.log or print.
+    Log {
+        name: String,
+        #[clap(short, long, default_value = "50")]
+        lines: usize,
+    },
+    /// Where plugins are written and read from.
+    Dir,
+}
+
 /// The hocus side of the CLI: things about the agent plugins that a person, or an
 /// agent's own hook, runs from a shell.
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
@@ -178,22 +214,32 @@ pub enum HocusHooks {
     /// Idempotent: running it again rewrites the script and replaces the entries it
     /// put there before, leaving everything else in the file alone.
     Install {
-        /// Install into this project's `.claude/settings.json` instead of
-        /// `~/.claude/settings.json`.
+        /// Install into this project's `.claude/settings.local.json` (not committed)
+        /// instead of `~/.claude/settings.json`.
         ///
         /// Claude Code merges hooks across both rather than one overriding the
-        /// other, so an install in each fires every hook twice.
+        /// other, so an install in each fires every hook twice. An older install in
+        /// the project's committed `settings.json` is moved out.
         #[clap(long)]
         project: bool,
+        /// The project folder to install for, instead of the current one. Implies
+        /// `--project`.
+        #[clap(long, value_name = "DIR")]
+        project_dir: Option<PathBuf>,
         /// Print what would be written, and write nothing.
         #[clap(long)]
         dry_run: bool,
     },
     /// Remove the hook entries and the script.
     Uninstall {
-        /// Uninstall from this project's `.claude/settings.json`.
+        /// Uninstall from this project's `.claude/settings.local.json` (and its
+        /// committed `settings.json`, if an older install is still in it).
         #[clap(long)]
         project: bool,
+        /// The project folder to uninstall from, instead of the current one. Implies
+        /// `--project`.
+        #[clap(long, value_name = "DIR")]
+        project_dir: Option<PathBuf>,
     },
     /// Say what is wired up, and what would stop it working.
     Status,
@@ -283,9 +329,19 @@ pub enum Command {
     ))]
     Subscribe(SubscribeCli),
 
+    /// Stream the session's state events as JSON lines: what plugins see as PaneUpdate,
+    /// TabUpdate, CommandPaneExited, CwdChanged and the rest. One object per line,
+    /// `{"event": <type>, "payload": <the event>}`, until the session ends.
+    #[clap(override_usage("zellij [--session <OTHER SESSION NAME>] events [--type <EVENT>]..."))]
+    Events(EventsCli),
+
     /// Read local terminal pane recordings.
     #[clap(subcommand)]
     Recordings(Recordings),
+
+    /// Write, check, reload and read the logs of Lua plugins in your plugin folder.
+    #[clap(subcommand)]
+    Plugins(Plugins),
 
     /// The hocus agent plugins.
     #[clap(subcommand)]
@@ -332,6 +388,14 @@ pub struct SubscribeCli {
 pub enum SubscribeFormat {
     Raw,
     Json,
+}
+
+#[derive(Debug, Parser, Clone, Serialize, Deserialize)]
+pub struct EventsCli {
+    /// Event type(s) to stream, as PaneUpdate or pane_update. Every streamable event when
+    /// none is given; an unknown or unstreamable name lists what is.
+    #[clap(short = 't', long = "type", num_args(1..))]
+    pub event_type: Vec<String>,
 }
 
 #[derive(Debug, Clone, Args, Serialize, Deserialize)]
@@ -1557,6 +1621,34 @@ pub enum CliAction {
     RenameSession {
         name: String,
     },
+    /// Apply a KDL config fragment to the running session: options, keybinds, hooks, plugins,
+    /// anything config.kdl takes. Give it as --kdl, --file, or on stdin. A fragment that does not
+    /// parse is refused here. With --write it is also persisted.
+    Reconfigure {
+        /// The fragment itself, eg. 'keybinds { normal { bind "Ctrl y" { NewPane; } } }'
+        #[clap(long, value_parser, conflicts_with = "file")]
+        kdl: Option<String>,
+        /// A file holding the fragment
+        #[clap(long, value_parser)]
+        file: Option<PathBuf>,
+        /// Persist the change as well as applying it
+        #[clap(long)]
+        write: bool,
+    },
+    /// Bind a hook point (agent_exit, agent_start, agent_waiting, pane_exit, session_start,
+    /// context_menu) to a plugin, or unbind it with an empty url.
+    /// The plugin is a url as the config spells it: file:my-hook.lua, zellij:agent-exit.
+    SetHook {
+        /// The hook point, eg. agent_exit
+        #[clap(value_parser)]
+        point: String,
+        /// The plugin url; empty, or left out, unbinds the point
+        #[clap(value_parser, default_value = "")]
+        url: String,
+        /// Persist the binding as well as applying it
+        #[clap(long)]
+        write: bool,
+    },
     /// Show a notification that dismisses itself after a timeout. Its corner and timeout come from
     /// the `notification_position` and `notification_timeout` config options.
     Notify {
@@ -1774,6 +1866,33 @@ tail -f /tmp/my-live-logfile | zellij action pipe --name logs --plugin https://e
         #[clap(short, long, value_parser)]
         cwd: Option<PathBuf>,
     },
+    /// Report what the agent running in a pane is doing. The session carries it on the pane
+    /// (PaneInfo.agent), so `zellij events`, plugins and the agents list all see it. Claude
+    /// Code's hooks call this with --hook-json and the hook's JSON on stdin.
+    AgentReport {
+        /// The pane the agent runs in, eg. terminal_1 or 3. Defaults to $ZELLIJ_PANE_ID.
+        #[clap(long, value_parser)]
+        pane_id: Option<String>,
+        /// What the agent is: claude, codex, ... Defaults to claude.
+        #[clap(long, value_parser)]
+        kind: Option<String>,
+        /// busy, waiting, idle or exited. Required unless --hook-json or --clear is given.
+        #[clap(long, value_parser, conflicts_with_all = ["hook_json", "clear"])]
+        state: Option<String>,
+        /// A few words on what it is doing, shown beside the state.
+        #[clap(long, value_parser)]
+        detail: Option<String>,
+        /// The folder the agent is working in, when it is not the pane's.
+        #[clap(long, value_parser)]
+        cwd: Option<PathBuf>,
+        /// Read a Claude Code hook event (JSON) from stdin and report what it means. An event
+        /// that says nothing about the agent's state reports nothing.
+        #[clap(long, conflicts_with = "clear")]
+        hook_json: bool,
+        /// The pane no longer runs an agent.
+        #[clap(long)]
+        clear: bool,
+    },
     /// Set the default foreground/background color of a pane
     SetPaneColor {
         /// The pane_id of the pane, eg. terminal_1, plugin_2 or 3 (equivalent to terminal_3).
@@ -1930,5 +2049,87 @@ mod tests {
     fn subscribe_requires_pane_id() {
         let result = try_parse_cli(["zellij", "subscribe"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn plugins_write_takes_a_name_a_file_and_the_two_flags() {
+        let parsed = try_parse_cli([
+            "zellij",
+            "plugins",
+            "write",
+            "keys",
+            "--file",
+            "/tmp/keys.lua",
+            "--overwrite",
+        ])
+        .unwrap();
+        match parsed.command {
+            Some(Command::Plugins(Plugins::Write {
+                name,
+                file,
+                overwrite,
+                no_check,
+            })) => {
+                assert_eq!(name, "keys");
+                assert_eq!(file, Some(PathBuf::from("/tmp/keys.lua")));
+                assert!(overwrite && !no_check);
+            },
+            other => panic!("expected plugins write, got {other:?}"),
+        }
+        assert!(try_parse_cli(["zellij", "plugins", "check"]).is_ok());
+        assert!(try_parse_cli(["zellij", "plugins", "log", "keys", "-l", "5"]).is_ok());
+        assert!(try_parse_cli(["zellij", "plugins", "dir"]).is_ok());
+        assert!(try_parse_cli(["zellij", "plugins", "write"]).is_err());
+    }
+
+    #[test]
+    fn events_takes_any_number_of_types() {
+        let parsed = try_parse_cli(["zellij", "events"]).unwrap();
+        match parsed.command {
+            Some(Command::Events(events)) => assert!(events.event_type.is_empty()),
+            other => panic!("expected Events, got {other:?}"),
+        }
+        let parsed = try_parse_cli([
+            "zellij",
+            "events",
+            "--type",
+            "PaneUpdate",
+            "cwd_changed",
+            "-t",
+            "TabUpdate",
+        ])
+        .unwrap();
+        match parsed.command {
+            Some(Command::Events(events)) => assert_eq!(
+                events.event_type,
+                vec!["PaneUpdate", "cwd_changed", "TabUpdate"]
+            ),
+            other => panic!("expected Events, got {other:?}"),
+        }
+    }
+
+    /// Both spellings name an event, and only a streamable one: a keystroke is one client's
+    /// input, not session state, however it is spelled.
+    #[test]
+    fn event_types_are_named_in_either_spelling_and_only_if_streamable() {
+        use crate::data::EventType;
+        assert_eq!(
+            EventType::from_cli_name("PaneUpdate"),
+            Some(EventType::PaneUpdate)
+        );
+        assert_eq!(
+            EventType::from_cli_name("pane_update"),
+            Some(EventType::PaneUpdate)
+        );
+        assert_eq!(
+            EventType::from_cli_name(" file_system_create "),
+            Some(EventType::FileSystemCreate)
+        );
+        assert_eq!(EventType::from_cli_name("Key"), None);
+        assert_eq!(EventType::from_cli_name("key"), None);
+        assert_eq!(EventType::from_cli_name("NotAnEvent"), None);
+        for name in EventType::cli_streamable_names() {
+            assert!(EventType::from_cli_name(&name).is_some(), "{name}");
+        }
     }
 }

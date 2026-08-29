@@ -2,9 +2,10 @@
 
 use insta::assert_snapshot;
 use zellij_integration_tests::{
-    claim_first_terminal_and_wait_for_prompt, col, keys, normalized, start_zellij, Size, PROMPT,
-    TERMINAL_SIZE,
+    claim_first_terminal_and_wait_for_prompt, col, keys, normalized,
+    split_right_and_wait_for_prompt, start_zellij, Size, TestRunner, PROMPT, TERMINAL_SIZE,
 };
+use zellij_utils::cli::CliAction;
 
 #[test]
 fn override_layout_from_default_to_compact() {
@@ -78,6 +79,217 @@ fn send_blocking_command_through_the_cli() {
         !grid_snapshot.contains("PIN") && grid_snapshot.cursor_is_at(col(2).row(1))
     });
     assert_snapshot!(normalized(&grid_snapshot));
+    zellij.quit();
+}
+
+/// The server broadcasts `UnblockInputThread` to every client whenever any pane closes, so a
+/// plain `--blocking` used to come back with 0 the moment an unrelated pane went away. It has to
+/// wait for its own command, and answer with that command's status.
+#[test]
+fn a_plain_blocking_command_outlives_an_unrelated_pane_closing() {
+    let mut zellij = start_zellij();
+    claim_first_terminal_and_wait_for_prompt(&zellij);
+    let unrelated = split_right_and_wait_for_prompt(&zellij);
+
+    let blocking_command = zellij.run_plain_blocking_command(&["blocking-command"]);
+    let command_terminal = zellij.expect_pty_spawn();
+    zellij.wait_until("blocking command pane appeared", |grid_snapshot| {
+        grid_snapshot.contains("blocking-command")
+    });
+
+    zellij.run_cli_action(CliAction::ClosePane {
+        pane_id: Some(format!("terminal_{}", unrelated.terminal_id())),
+    });
+    zellij.wait_until("unrelated pane closed", |grid_snapshot| {
+        !grid_snapshot.contains("Pane #2") && grid_snapshot.contains("blocking-command")
+    });
+    assert!(
+        !blocking_command.is_finished(),
+        "the blocking client returned on another pane's close"
+    );
+
+    command_terminal.exit(Some(7));
+    assert_eq!(blocking_command.wait_for_exit(), 7);
+    zellij.quit();
+}
+
+/// `zellij events` streams the session's state as it changes: a subscriber starts from the
+/// state as it stands, a new pane is a pane report and a tab report, and a filter keeps the
+/// rest out. (The stream's end with the session is not covered: the harness cannot end a
+/// session, since the quit-confirmation modal takes Ctrl+q.)
+#[test]
+fn events_stream_the_session_state() {
+    let mut zellij = start_zellij();
+    claim_first_terminal_and_wait_for_prompt(&zellij);
+
+    let everything = zellij.stream_events(&[]);
+    let only_panes = zellij.stream_events(&["pane_update"]);
+    // A new subscriber is sent the state as it stands.
+    everything.wait_for_event("PaneUpdate");
+    everything.wait_for_event("TabUpdate");
+    only_panes.wait_for_event("PaneUpdate");
+
+    let before = only_panes.streamed_event_types().len();
+    split_right_and_wait_for_prompt(&zellij);
+    zellij.wait_until("the split reached the subscribers", |_| {
+        only_panes.streamed_event_types().len() > before
+    });
+    assert!(
+        only_panes
+            .streamed_event_types()
+            .iter()
+            .all(|t| t == "PaneUpdate"),
+        "a filtered stream carries only what was asked for: {:?}",
+        only_panes.streamed_event_types()
+    );
+    assert!(
+        everything
+            .streamed_event_types()
+            .iter()
+            .any(|t| t == "TabUpdate"),
+        "{:?}",
+        everything.streamed_event_types()
+    );
+
+    zellij.quit();
+}
+
+/// `zellij action agent-report` is how an agent tells the session what it is doing; the record
+/// then rides on the pane for every reader, `list-panes --json` included, until it is cleared.
+#[test]
+fn an_agent_report_is_carried_on_the_pane() {
+    let mut zellij = start_zellij();
+    let terminal = claim_first_terminal_and_wait_for_prompt(&zellij);
+    let pane_id = format!("terminal_{}", terminal.terminal_id());
+    let list_panes = || CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: true,
+        geometry: false,
+        all: true,
+        json: true,
+    };
+
+    let (exit_code, _) = zellij.run_cli_action_reporting(CliAction::AgentReport {
+        pane_id: Some(pane_id.clone()),
+        kind: Some("codex".to_owned()),
+        state: Some("waiting".to_owned()),
+        detail: Some("y/n".to_owned()),
+        cwd: None,
+        hook_json: false,
+        clear: false,
+    });
+    assert_eq!(exit_code, 0);
+    let (_, listed) = zellij.run_cli_action_reporting(list_panes());
+    let panes: serde_json::Value = serde_json::from_str(&listed)
+        .unwrap_or_else(|e| panic!("list-panes --json did not answer with JSON: {e}\n{listed}"));
+    let reported = panes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pane| pane["id"] == terminal.terminal_id() && pane["is_plugin"] == false)
+        .unwrap_or_else(|| panic!("pane {pane_id} is not listed: {panes}"));
+    assert_eq!(reported["agent"]["kind"], "codex", "{reported}");
+    assert_eq!(reported["agent"]["state"], "Waiting", "{reported}");
+    assert_eq!(reported["agent"]["source"], "Reported", "{reported}");
+    assert_eq!(reported["agent"]["detail"], "y/n", "{reported}");
+
+    zellij.run_cli_action(CliAction::AgentReport {
+        pane_id: Some(pane_id.clone()),
+        kind: None,
+        state: None,
+        detail: None,
+        cwd: None,
+        hook_json: false,
+        clear: true,
+    });
+    let (_, listed) = zellij.run_cli_action_reporting(list_panes());
+    let panes: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    let cleared = panes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pane| pane["id"] == terminal.terminal_id() && pane["is_plugin"] == false)
+        .unwrap();
+    assert!(cleared["agent"].is_null(), "{cleared}");
+    zellij.quit();
+}
+
+/// `zellij action reconfigure` changes the running session: a keybind added from a shell is a
+/// keybind the next keypress honours.
+#[test]
+fn a_reconfigure_from_the_cli_takes_effect_at_once() {
+    let mut zellij = start_zellij();
+    claim_first_terminal_and_wait_for_prompt(&zellij);
+
+    let exit_code = zellij.run_cli_action(CliAction::Reconfigure {
+        kdl: Some(
+            "keybinds {\n    normal {\n        bind \"Ctrl y\" { NewPane; }\n    }\n}\n".to_owned(),
+        ),
+        file: None,
+        write: false,
+    });
+    assert_eq!(exit_code, 0);
+
+    zellij.send_stdin(&keys::ctrl('y'));
+    let new_pane = zellij.expect_pty_spawn();
+    new_pane.output(PROMPT);
+    zellij.wait_until("the bound key opened a pane", |grid_snapshot| {
+        grid_snapshot.contains("Pane #2")
+    });
+    zellij.quit();
+}
+
+/// `--write` persists into `config.d/zellij-managed.kdl` under the session's config dir, one
+/// block merged into the next, and never into the user's own config file.
+#[test]
+fn a_reconfigure_with_write_lands_in_the_managed_drop_in() {
+    let config_dir = zellij_integration_tests::test_env::init()
+        .join("config")
+        .join("managed-writes");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(config_dir.clone())
+        .start();
+    claim_first_terminal_and_wait_for_prompt(&zellij);
+
+    let fragment = "keybinds {\n    normal {\n        bind \"Ctrl y\" { NewPane; }\n    }\n}\n";
+    assert_eq!(
+        zellij.run_cli_action(CliAction::Reconfigure {
+            kdl: Some(fragment.to_owned()),
+            file: None,
+            write: true,
+        }),
+        0
+    );
+    assert_eq!(
+        zellij.run_cli_action(CliAction::SetHook {
+            point: "agent_exit".to_owned(),
+            url: String::new(),
+            write: true,
+        }),
+        0
+    );
+    let managed = config_dir.join("config.d").join("zellij-managed.kdl");
+    let text = std::fs::read_to_string(&managed)
+        .unwrap_or_else(|e| panic!("{} was not written: {e}", managed.display()));
+    assert!(text.contains("bind \"Ctrl y\""), "{text}");
+    assert!(text.contains("agent_exit \"\""), "{text}");
+    assert!(
+        std::fs::read_dir(&config_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .all(|e| e.file_name() == "config.d"),
+        "nothing but the drop-in folder was written to the config dir"
+    );
+
+    // And it is live, not just on disk.
+    zellij.send_stdin(&keys::ctrl('y'));
+    let new_pane = zellij.expect_pty_spawn();
+    new_pane.output(PROMPT);
+    zellij.wait_until("the persisted keybind opened a pane", |grid_snapshot| {
+        grid_snapshot.contains("Pane #2")
+    });
     zellij.quit();
 }
 

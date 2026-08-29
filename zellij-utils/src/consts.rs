@@ -143,6 +143,10 @@ pub const BUILTIN_LUA_PLUGINS: &[(&str, &str)] = &[
         "context-menu",
         include_str!("../assets/plugins/context-menu.lua"),
     ),
+    (
+        "agent-policy",
+        include_str!("../assets/plugins/agent-policy.lua"),
+    ),
 ];
 
 /// The source of a builtin Lua plugin, if `name` names one.
