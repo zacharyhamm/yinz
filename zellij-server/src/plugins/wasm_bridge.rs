@@ -28,8 +28,9 @@ use url::Url;
 use wasmi::{Engine, Module};
 use zellij_utils::consts::{ZELLIJ_CACHE_DIR, ZELLIJ_SESSION_CACHE_DIR, ZELLIJ_TMP_DIR};
 use zellij_utils::data::{
-    FloatingPaneCoordinates, InputMode, LayoutInfo, LayoutWithError, PaneContents,
-    PaneRenderReport, PermissionStatus, PermissionType, PipeMessage, PipeSource, QueueJobOutcome,
+    FloatingPaneCoordinates, HostTerminalThemeMode, InputMode, KeybindsVec, LayoutInfo,
+    LayoutWithError, PaneContents, PaneRenderReport, PermissionStatus, PermissionType, PipeMessage,
+    PipeSource, QueueJobOutcome,
 };
 use zellij_utils::downloader::Downloader;
 use zellij_utils::input::keybinds::Keybinds;
@@ -228,6 +229,10 @@ pub struct WasmBridge {
     base_modes: HashMap<ClientId, InputMode>,
     downloader: Downloader,
     previous_pane_render_report: Option<PaneRenderReport>,
+    /// The last `HostTerminalThemeChanged` broadcast to every plugin, replayed
+    /// to a plugin that subscribes to it after the fact so it does not wait
+    /// for the next host report to learn the session's hue.
+    last_host_terminal_theme_mode: Option<HostTerminalThemeMode>,
     pub last_session_save_time: Arc<Mutex<Option<u64>>>, // milliseconds since UNIX epoch
     /// The `plugins { }` block, for plugins asking what a *different* alias was
     /// configured with (`PluginCommand::GetPluginAliasConfiguration`).
@@ -311,6 +316,7 @@ impl WasmBridge {
             base_modes: HashMap::new(),
             downloader,
             previous_pane_render_report: None,
+            last_host_terminal_theme_mode: None,
             last_session_save_time: Arc::new(Mutex::new(None)),
             plugin_aliases: Arc::new(Mutex::new(plugin_aliases)),
         }
@@ -1030,6 +1036,17 @@ impl WasmBridge {
             new_plugins.insert(plugin_id);
         }
         for plugin_id in new_plugins {
+            // a plugin loaded before this client attached (eg. a background plugin loaded on
+            // startup, keyed under the initiating client's id) already has an instance for this
+            // client - loading another would instantiate it twice and drop the first
+            if self
+                .plugin_map
+                .lock()
+                .unwrap()
+                .contains(plugin_id, client_id)
+            {
+                continue;
+            }
             let Some(run_plugin) = self.run_plugin_of_plugin_id(plugin_id) else {
                 log::error!("Failed to find plugin with id: {}", plugin_id);
                 return Ok(());
@@ -1200,6 +1217,13 @@ impl WasmBridge {
         mut updates: Vec<(Option<PluginId>, Option<ClientId>, Event)>,
         shutdown_sender: Sender<()>,
     ) -> Result<()> {
+        for (plugin_id, client_id, event) in updates.iter() {
+            if plugin_id.is_none() && client_id.is_none() {
+                if let Event::HostTerminalThemeChanged(mode) = event {
+                    self.last_host_terminal_theme_mode = Some(*mode);
+                }
+            }
+        }
         let plugins_to_update: Vec<(
             PluginId,
             ClientId,
@@ -1700,6 +1724,27 @@ impl WasmBridge {
         }
     }
 
+    /// Replay the last broadcast `HostTerminalThemeChanged` to a plugin that
+    /// subscribed to it after the broadcast. Nothing is sent while the hue is
+    /// still unknown.
+    pub fn send_host_terminal_theme_mode_to_plugin(
+        &self,
+        plugin_id: PluginId,
+        client_id: ClientId,
+    ) {
+        let Some(mode) = self.last_host_terminal_theme_mode else {
+            return;
+        };
+        self.senders
+            .send_to_plugin(PluginInstruction::Update(vec![(
+                Some(plugin_id),
+                Some(client_id),
+                Event::HostTerminalThemeChanged(mode),
+            )]))
+            .context("failed to replay the host terminal theme mode to a late subscriber")
+            .non_fatal();
+    }
+
     pub fn send_initial_keybinds_to_plugin(&self, plugin_id: PluginId, client_id: ClientId) {
         let keybinds = {
             let mut plugin_map = self.plugin_map.lock().unwrap();
@@ -1710,12 +1755,21 @@ impl WasmBridge {
                 .map(|(_, _, rp, _)| rp.lock().unwrap().env().keybinds.to_keybinds_vec())
         };
         if let Some(keybinds) = keybinds {
-            let _ = self.senders.send_to_plugin(PluginInstruction::Update(vec![(
-                Some(plugin_id),
-                Some(client_id),
-                Event::InitialKeybinds(keybinds),
-            )]));
+            self.send_keybinds_payload_to_plugin(plugin_id, client_id, keybinds);
         }
+    }
+
+    fn send_keybinds_payload_to_plugin(
+        &self,
+        plugin_id: PluginId,
+        client_id: ClientId,
+        keybinds: KeybindsVec,
+    ) {
+        let _ = self.senders.send_to_plugin(PluginInstruction::Update(vec![(
+            Some(plugin_id),
+            Some(client_id),
+            Event::InitialKeybinds(keybinds),
+        )]));
     }
 
     pub fn cleanup(&mut self) {
@@ -1824,9 +1878,19 @@ impl WasmBridge {
                 }
             });
         }
-        // Send InitialKeybinds to subscribed plugins after reconfiguration
-        for plugin_id in plugins_subscribed_to_initial_keybinds {
-            self.send_initial_keybinds_to_plugin(plugin_id, client_id);
+        // Send InitialKeybinds to subscribed plugins after reconfiguration. The payload is built
+        // from the reconfigure request rather than read back from each plugin's env: the env is
+        // updated on the executor above, asynchronously, so reading it here could still see the
+        // old keybinds.
+        if let Some(keybinds) = keybinds.as_ref() {
+            let keybinds_payload = keybinds.to_keybinds_vec();
+            for plugin_id in plugins_subscribed_to_initial_keybinds {
+                self.send_keybinds_payload_to_plugin(
+                    plugin_id,
+                    client_id,
+                    keybinds_payload.clone(),
+                );
+            }
         }
         Ok(())
     }
@@ -2667,7 +2731,12 @@ pub fn apply_event_to_plugin(
         (PermissionStatus::Granted, _) => {
             let mut event = event.clone();
             if let Event::ModeUpdate(mode_info) = &mut event {
-                mode_info.base_mode = Some(running_plugin.env().default_mode);
+                // A ModeUpdate that already names its base mode (Screen::change_mode sets it
+                // when a keybinding preset switches) must keep it: the plugin's env is updated
+                // asynchronously on reconfigure and may still hold the previous default mode.
+                if mode_info.base_mode.is_none() {
+                    mode_info.base_mode = Some(running_plugin.env().default_mode);
+                }
                 if plugin_subscriptions.contains(&EventType::InitialKeybinds) {
                     // Plugin caches keybindings via InitialKeybinds — send lightweight ModeUpdate
                     mode_info.keybinds = vec![];

@@ -790,3 +790,37 @@ fn attach_after_first_tab_closed() {
     screen.remove_client(1).expect("TEST");
     screen.add_client(1, false).expect("TEST");
 }
+
+#[test]
+fn layout_metadata_lists_tabs_in_position_order() {
+    // Tabs are keyed by creation id, but a user who reorders them expects a
+    // dumped or resurrected layout to come back in the order they arranged.
+    let mut screen = create_fixed_size_screen();
+    new_tab(&mut screen, 1, 0);
+    screen.tabs.get_mut(&0).expect("TEST").name = "first".to_string();
+    new_tab(&mut screen, 2, 1);
+    screen.tabs.get_mut(&1).expect("TEST").name = "second".to_string();
+    new_tab(&mut screen, 3, 2);
+    screen.tabs.get_mut(&2).expect("TEST").name = "third".to_string();
+
+    // the active tab is the third one; moving it left makes the positions
+    // first, third, second while the ids stay 0, 1, 2
+    screen.move_active_tab_to_left(1).expect("TEST");
+    assert_eq!(screen.get_active_tab(1).unwrap().position, 1);
+
+    let layout_metadata = screen.get_layout_metadata(None, None).to_layout_metadata();
+    let tab_names: Vec<Option<String>> = layout_metadata
+        .tabs
+        .iter()
+        .map(|tab| tab.name.clone())
+        .collect();
+    assert_eq!(
+        tab_names,
+        vec![
+            Some("first".to_string()),
+            Some("third".to_string()),
+            Some("second".to_string()),
+        ],
+        "the dumped layout should follow tab positions, not creation order"
+    );
+}

@@ -283,6 +283,30 @@ impl TryFrom<ProtobufAction> for Action {
                 Some(_) => Err("ScrollToTop should not have a payload"),
                 None => Ok(Action::ScrollToTop),
             },
+            Some(ProtobufActionName::ScrollToPreviousPrompt) => {
+                match protobuf_action.optional_payload {
+                    Some(_) => Err("ScrollToPreviousPrompt should not have a payload"),
+                    None => Ok(Action::ScrollToPreviousPrompt),
+                }
+            },
+            Some(ProtobufActionName::ScrollToNextPrompt) => {
+                match protobuf_action.optional_payload {
+                    Some(_) => Err("ScrollToNextPrompt should not have a payload"),
+                    None => Ok(Action::ScrollToNextPrompt),
+                }
+            },
+            Some(ProtobufActionName::SelectCommandAtScrollPosition) => {
+                match protobuf_action.optional_payload {
+                    Some(_) => Err("SelectCommandAtScrollPosition should not have a payload"),
+                    None => Ok(Action::SelectCommandAtScrollPosition),
+                }
+            },
+            Some(ProtobufActionName::CopyLastCommandOutput) => {
+                match protobuf_action.optional_payload {
+                    Some(_) => Err("CopyLastCommandOutput should not have a payload"),
+                    None => Ok(Action::CopyLastCommandOutput),
+                }
+            },
             Some(ProtobufActionName::PageScrollUp) => match protobuf_action.optional_payload {
                 Some(_) => Err("PageScrollUp should not have a payload"),
                 None => Ok(Action::PageScrollUp),
@@ -1382,6 +1406,22 @@ impl TryFrom<Action> for ProtobufAction {
             }),
             Action::ScrollToTop => Ok(ProtobufAction {
                 name: ProtobufActionName::ScrollToTop as i32,
+                optional_payload: None,
+            }),
+            Action::ScrollToPreviousPrompt => Ok(ProtobufAction {
+                name: ProtobufActionName::ScrollToPreviousPrompt as i32,
+                optional_payload: None,
+            }),
+            Action::ScrollToNextPrompt => Ok(ProtobufAction {
+                name: ProtobufActionName::ScrollToNextPrompt as i32,
+                optional_payload: None,
+            }),
+            Action::SelectCommandAtScrollPosition => Ok(ProtobufAction {
+                name: ProtobufActionName::SelectCommandAtScrollPosition as i32,
+                optional_payload: None,
+            }),
+            Action::CopyLastCommandOutput => Ok(ProtobufAction {
+                name: ProtobufActionName::CopyLastCommandOutput as i32,
                 optional_payload: None,
             }),
             Action::PageScrollUp => Ok(ProtobufAction {
@@ -3451,6 +3491,20 @@ pub(crate) mod tests {
         }
     }
 
+    #[test]
+    fn osc133_actions_protobuf_round_trip() {
+        for original in [
+            Action::ScrollToPreviousPrompt,
+            Action::ScrollToNextPrompt,
+            Action::SelectCommandAtScrollPosition,
+            Action::CopyLastCommandOutput,
+        ] {
+            let protobuf: ProtobufAction = original.clone().try_into().expect("encode");
+            let decoded: Action = protobuf.try_into().expect("decode");
+            assert_eq!(original, decoded);
+        }
+    }
+
     pub(crate) mod props {
         use super::*;
         use crate::input::actions::ActionKind;
@@ -3586,6 +3640,10 @@ pub(crate) mod tests {
                 | Action::ScrollDownAt { .. }
                 | Action::ScrollToBottom
                 | Action::ScrollToTop
+                | Action::ScrollToPreviousPrompt
+                | Action::ScrollToNextPrompt
+                | Action::SelectCommandAtScrollPosition
+                | Action::CopyLastCommandOutput
                 | Action::PageScrollUp
                 | Action::PageScrollDown
                 | Action::HalfPageScrollUp

@@ -63,7 +63,7 @@ use crate::{
     os_input_output::ServerOsApi,
     output::{CharacterChunk, FloatingPanesStack, KittyImageChunk, Output, SixelImageChunk},
     panes::floating_panes::floating_pane_grid::half_size_middle_geom,
-    panes::grid::namespace_notification_id,
+    panes::grid::PendingNotification,
     panes::kitty_graphics::{KittyHostSupport, KittyImageStore},
     panes::nested_session_modal::GuestModalShortcuts,
     panes::sixel::SixelImageStore,
@@ -372,6 +372,9 @@ pub(crate) struct Tab {
     pub tab_has_pending_bell: bool,
     pub tab_bell_flash: bool, // currently in mid-notification-flash
     pub tab_bell_ring: bool,  // need to send ANSI BEL to the controlling terminal
+    /// What `visible` last said about this tab; floating-surface toggles only report their own
+    /// visibility to plugins while the tab itself is on screen.
+    tab_visible: bool,
 }
 
 // FIXME: Use a struct that has a pane_type enum, to reduce all of the duplication
@@ -460,6 +463,14 @@ pub trait Pane {
     fn scroll_down(&mut self, count: usize, client_id: ClientId);
     fn scroll_left(&mut self, _count: usize, _client_id: ClientId) {}
     fn scroll_right(&mut self, _count: usize, _client_id: ClientId) {}
+    fn scroll_to_previous_prompt(&mut self, _client_id: ClientId) {}
+    fn scroll_to_next_prompt(&mut self, _client_id: ClientId) {}
+    fn select_command_at_scroll_position(&mut self, _client_id: ClientId) {}
+    /// The output of the last completed OSC 133 command, also starting its feedback flash.
+    fn copy_last_command_output(&mut self) -> Option<String> {
+        None
+    }
+    fn clear_command_output_flash(&mut self) {}
     fn clear_scroll(&mut self);
     fn is_scrolled(&self) -> bool;
     fn active_at(&self) -> Instant;
@@ -637,7 +648,7 @@ pub trait Pane {
     fn drain_clipboard_update(&mut self) -> Option<String> {
         None
     }
-    fn drain_desktop_notifications(&mut self) -> Vec<(String, String)> {
+    fn drain_desktop_notifications(&mut self) -> Vec<PendingNotification> {
         vec![]
     }
     fn drain_osc7_cwd(&mut self) -> Option<std::path::PathBuf> {
@@ -1252,6 +1263,7 @@ impl Tab {
             tab_bell_flash: false,
             tab_bell_ring: false,
             dimmed_clients: HashSet::new(),
+            tab_visible: true,
         }
     }
 
@@ -2792,8 +2804,9 @@ impl Tab {
                 borderless,
             } => {
                 let is_vertical = direction == Direction::Left || direction == Direction::Right;
-                if should_focus_pane {
-                    if let Some(client_id) = client_id {
+                let focused_client_id = client_id.filter(|_| should_focus_pane);
+                match focused_client_id {
+                    Some(client_id) => {
                         if is_vertical {
                             self.vertical_split(
                                 pid,
@@ -2811,29 +2824,49 @@ impl Tab {
                                 borderless,
                             )?;
                         }
-                    }
-                } else if let Some(target_pane_id) =
-                    client_id.and_then(|client_id| self.tiled_panes.get_active_pane_id(client_id))
-                {
-                    if is_vertical {
-                        self.vertical_split_of_pane_id(
-                            pid,
-                            initial_pane_title,
-                            invoked_with,
-                            target_pane_id,
-                            blocking_notification,
-                            borderless,
-                        )?;
-                    } else {
-                        self.horizontal_split_of_pane_id(
-                            pid,
-                            initial_pane_title,
-                            invoked_with,
-                            target_pane_id,
-                            blocking_notification,
-                            borderless,
-                        )?;
-                    }
+                    },
+                    None => {
+                        // Nobody to focus for (e.g. `zellij action new-pane -d right` against a
+                        // session with no client attached): split the client's active pane if it
+                        // has one, else the first selectable pane, else just add a tiled pane.
+                        let target_pane_id = client_id
+                            .and_then(|client_id| self.tiled_panes.get_active_pane_id(client_id))
+                            .or_else(|| self.tiled_panes.first_selectable_pane_id());
+                        match target_pane_id {
+                            Some(target_pane_id) if is_vertical => {
+                                self.vertical_split_of_pane_id(
+                                    pid,
+                                    initial_pane_title,
+                                    invoked_with,
+                                    target_pane_id,
+                                    blocking_notification,
+                                    borderless,
+                                )?;
+                            },
+                            Some(target_pane_id) => {
+                                self.horizontal_split_of_pane_id(
+                                    pid,
+                                    initial_pane_title,
+                                    invoked_with,
+                                    target_pane_id,
+                                    blocking_notification,
+                                    borderless,
+                                )?;
+                            },
+                            None => {
+                                self.new_tiled_pane(
+                                    pid,
+                                    initial_pane_title,
+                                    invoked_with,
+                                    start_suppressed,
+                                    should_focus_pane,
+                                    client_id,
+                                    blocking_notification,
+                                    borderless,
+                                )?;
+                            },
+                        }
+                    },
                 }
                 return Ok(());
             },
@@ -4179,6 +4212,26 @@ impl Tab {
             None
         }
     }
+    /// Tells a terminal pane that the host terminal gained or lost focus, if the application in
+    /// it asked for focus events (DECSET 1004). Plugin panes are left alone.
+    pub fn send_host_focus_event_to_pane(&mut self, pane_id: PaneId, focused: bool) {
+        let PaneId::Terminal(terminal_id) = pane_id else {
+            return;
+        };
+        let focus_event = self.get_pane_with_id(pane_id).and_then(|pane| {
+            if focused {
+                pane.focus_event()
+            } else {
+                pane.unfocus_event()
+            }
+        });
+        if let Some(focus_event) = focus_event {
+            self.os_api
+                .write_to_tty_stdin(terminal_id, focus_event.as_bytes())
+                .with_context(|| format!("failed to send host focus event to pane {}", terminal_id))
+                .non_fatal();
+        }
+    }
     pub fn check_and_handle_bell_notifications(
         &mut self,
         is_active_tab: bool,
@@ -4659,7 +4712,12 @@ impl Tab {
                     .with_context(err_context)?;
             }
             if !desktop_notifications.is_empty() {
-                self.forward_desktop_notifications(desktop_notifications, pid)
+                // The screen knows which protocol each client's host speaks.
+                self.senders
+                    .send_to_screen(ScreenInstruction::ForwardDesktopNotifications {
+                        pane_id: pid,
+                        notifications: desktop_notifications,
+                    })
                     .with_context(err_context)?;
             }
             if let Some(path) = osc7_cwd {
@@ -5656,6 +5714,26 @@ impl Tab {
     pub fn has_selectable_tiled_panes(&self) -> bool {
         let selectable_tiled_panes = self.tiled_panes.get_panes().filter(|(_, p)| p.selectable());
         selectable_tiled_panes.count() > 0
+    }
+    /// Re-send every pane's pty size - tiled, floating, overlay and suppressed alike -
+    /// without changing any geometry. Used when the character cell size becomes known
+    /// after the ptys were created, so they get their pixel dimensions too.
+    pub fn resize_pty_all_panes(&mut self) -> Result<()> {
+        let err_context = || format!("failed to resize PTYs of all panes in tab {}", self.id);
+        self.tiled_panes
+            .resize_pty_all_panes()
+            .with_context(err_context)?;
+        self.floating_panes
+            .resize_pty_all_panes(&mut self.os_api)
+            .with_context(err_context)?;
+        self.overlay_panes
+            .resize_pty_all_panes()
+            .with_context(err_context)?;
+        for pane in self.suppressed_panes.values_mut().map(|s| &mut s.pane) {
+            resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
+                .with_context(err_context)?;
+        }
+        Ok(())
     }
     pub fn resize_whole_tab(&mut self, new_screen_size: Size) -> Result<()> {
         self.resize_whole_tab_to(new_screen_size)
@@ -7119,6 +7197,48 @@ impl Tab {
         }
     }
 
+    pub fn scroll_active_terminal_to_previous_prompt(&mut self, client_id: ClientId) {
+        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
+            active_pane.scroll_to_previous_prompt(client_id);
+        }
+    }
+
+    pub fn scroll_active_terminal_to_next_prompt(&mut self, client_id: ClientId) {
+        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
+            active_pane.scroll_to_next_prompt(client_id);
+        }
+    }
+
+    pub fn select_command_at_scroll_position(&mut self, client_id: ClientId) {
+        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
+            active_pane.select_command_at_scroll_position(client_id);
+        }
+    }
+
+    /// Copies the last completed command's output and schedules the end of its flash.
+    pub fn copy_last_command_output(&mut self, client_id: ClientId) -> Result<()> {
+        let err_context = || format!("failed to copy last command output for client {client_id}");
+        let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) else {
+            return Ok(());
+        };
+        let pane_id = active_pane.pid();
+        let Some(output) = active_pane.copy_last_command_output() else {
+            return Ok(());
+        };
+        self.copy_text_to_clipboard(&output)
+            .with_context(err_context)?;
+        self.senders
+            .send_to_background_jobs(BackgroundJob::ClearCommandOutputFlash { pane_id })
+            .with_context(err_context)?;
+        Ok(())
+    }
+
+    pub fn clear_command_output_flash(&mut self, pane_id: PaneId) {
+        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
+            pane.clear_command_output_flash();
+        }
+    }
+
     pub fn scroll_active_terminal_to_top(&mut self, client_id: ClientId) -> Result<()> {
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
             active_pane.clear_scroll();
@@ -7248,12 +7368,24 @@ impl Tab {
         }
     }
 
+    #[cfg(test)]
     pub fn handle_mouse_event(
         &mut self,
         event: &MouseEvent,
         client_id: ClientId,
     ) -> Result<MouseEffect> {
-        MouseHandler::handle_mouse_event(self, event, client_id)
+        MouseHandler::handle_mouse_event(self, event, client_id, None)
+    }
+
+    /// `passthrough_pane_id` is the pane the client is descended into, if any: alt+mouse over
+    /// it is written to the pane when it tracks the mouse, instead of grouping host panes.
+    pub fn handle_mouse_event_with_passthrough(
+        &mut self,
+        event: &MouseEvent,
+        client_id: ClientId,
+        passthrough_pane_id: Option<PaneId>,
+    ) -> Result<MouseEffect> {
+        MouseHandler::handle_mouse_event(self, event, client_id, passthrough_pane_id)
     }
 
     pub fn copy_selection(&self, client_id: ClientId) -> Result<()> {
@@ -7333,48 +7465,6 @@ impl Tab {
 
         Ok(())
     }
-    fn forward_desktop_notifications(
-        &self,
-        notifications: Vec<(String, String)>,
-        pane_id: u32,
-    ) -> Result<()> {
-        let err_context = || "failed to forward desktop notifications to host terminal".to_string();
-        let mut output = Output::default();
-        // Use all clients in the app, not just those viewing this tab —
-        // desktop notifications should reach the host terminal regardless
-        // of which tab is currently focused.
-        let all_clients: HashSet<ClientId> = {
-            self.connected_clients_in_app
-                .borrow()
-                .keys()
-                .copied()
-                .collect()
-        };
-        output.add_clients(&all_clients, self.link_handler.clone(), None);
-        for (payload, terminator) in notifications {
-            // Apply identifier namespacing (Phase 3)
-            // The first semicolon-delimited part of payload is the metadata
-            let (metadata, rest) = match payload.find(';') {
-                Some(idx) => (
-                    payload.get(..idx).unwrap_or_default(),
-                    payload.get(idx..).unwrap_or_default(),
-                ),
-                None => (payload.as_str(), ""),
-            };
-            let namespaced_metadata = namespace_notification_id(metadata, pane_id);
-            let raw = if rest.is_empty() {
-                format!("\x1b]99;{}{}", namespaced_metadata, terminator)
-            } else {
-                format!("\x1b]99;{}{}{}", namespaced_metadata, rest, terminator)
-            };
-            output.add_post_vte_instruction_to_multiple_clients(all_clients.iter().copied(), &raw);
-        }
-        let serialized_output = output.serialize().with_context(err_context)?;
-        self.senders
-            .send_to_server(ServerInstruction::Render(Some(serialized_output)))
-            .with_context(err_context)?;
-        Ok(())
-    }
     pub fn visible(&mut self, visible: bool) -> Result<()> {
         // Floating panes as well as tiled: a floating plugin goes off screen
         // with the tab exactly as a tiled one does, and for a transient popup
@@ -7385,20 +7475,28 @@ impl Tab {
         // screen to begin with. A hidden *overlay* is the same statement about
         // the same thing, so it is filtered here rather than extracted: hocus
         // set aside with Esc must not be told the tab it is not being drawn on
-        // just became visible.
+        // just became visible. The same goes for a floating plugin while the
+        // floating surface is down: it is told about the surface by
+        // `show_floating_panes`/`hide_floating_panes`, and a tab coming back
+        // with its surface hidden must not tell it that it is visible.
+        self.tab_visible = visible;
+        let floating_panes_are_shown = self.floating_panes.panes_are_shown();
         let visible_overlays: Vec<PaneId> = self.overlay_panes.stack_layer_ids();
-        let pids_in_this_tab = self
-            .tiled_panes
-            .pane_ids()
-            .chain(self.floating_panes.pane_ids())
-            .chain(visible_overlays.iter())
-            .filter_map(|p| match p {
-                PaneId::Plugin(pid) => Some(pid),
-                _ => None,
-            });
+        let tiled_pids = self.tiled_panes.pane_ids().filter_map(|p| match p {
+            PaneId::Plugin(pid) => Some(*pid),
+            _ => None,
+        });
+        let floating_pids = self.floating_panes.pane_ids().filter_map(|p| match p {
+            PaneId::Plugin(pid) if !visible || floating_panes_are_shown => Some(*pid),
+            _ => None,
+        });
+        let overlay_pids = visible_overlays.iter().filter_map(|p| match p {
+            PaneId::Plugin(pid) => Some(*pid),
+            _ => None,
+        });
         let mut plugin_updates = vec![];
-        for pid in pids_in_this_tab {
-            plugin_updates.push((Some(*pid), None, Event::Visible(visible)));
+        for pid in tiled_pids.chain(floating_pids).chain(overlay_pids) {
+            plugin_updates.push((Some(pid), None, Event::Visible(visible)));
         }
         self.senders
             .send_to_plugin(PluginInstruction::Update(plugin_updates))
@@ -7761,20 +7859,53 @@ impl Tab {
     }
     pub fn show_floating_panes(&mut self) {
         // this function is to be preferred to directly invoking floating_panes.toggle_show_panes(true)
+        let were_shown = self.floating_panes.panes_are_shown();
         self.floating_panes.toggle_show_panes(true);
         self.tiled_panes.unfocus_all_panes();
         self.set_force_render();
+        if !were_shown {
+            self.notify_floating_plugins_of_visibility(true);
+        }
     }
 
     pub fn hide_floating_panes(&mut self) {
         // this function is to be preferred to directly invoking
         // floating_panes.toggle_show_panes(false)
+        let were_shown = self.floating_panes.panes_are_shown();
         if self.floating_panes.fullscreen_is_active() {
             self.floating_panes.unset_fullscreen();
         }
         self.floating_panes.toggle_show_panes(false);
         self.tiled_panes.focus_all_panes();
         self.set_force_render();
+        if were_shown {
+            self.notify_floating_plugins_of_visibility(false);
+        }
+    }
+
+    /// Tell the plugins on the floating surface that the surface was raised or lowered. Only
+    /// the panes in `floating_panes` are concerned: overlays are drawn on their own layer and
+    /// suppressed panes are not on screen either way. Nothing is sent while the tab itself is
+    /// hidden - `visible(true)` reports the state the surface is in when the tab returns.
+    fn notify_floating_plugins_of_visibility(&self, visible: bool) {
+        if !self.tab_visible {
+            return;
+        }
+        let plugin_updates: Vec<_> = self
+            .floating_panes
+            .pane_ids()
+            .filter_map(|p| match p {
+                PaneId::Plugin(pid) => Some((Some(*pid), None, Event::Visible(visible))),
+                _ => None,
+            })
+            .collect();
+        if plugin_updates.is_empty() {
+            return;
+        }
+        self.senders
+            .send_to_plugin(PluginInstruction::Update(plugin_updates))
+            .with_context(|| format!("failed to set visibility of floating panes to {visible}"))
+            .non_fatal();
     }
 
     pub fn show_floating_panes_atomic(&mut self, mut completion: Option<NotificationEnd>) {
@@ -8784,14 +8915,18 @@ impl Tab {
         &mut self,
         pane_id: &PaneId,
         coordinates: FloatingPaneCoordinates,
+        override_user_placement: bool,
     ) -> Result<()> {
         if !self.overlay_panes.panes_contain(pane_id) {
             return Err(anyhow!(
                 "pane {pane_id:?} is not an overlay - use change_floating_pane_coordinates"
             ));
         }
-        self.overlay_panes
-            .change_pane_coordinates(*pane_id, coordinates)?;
+        self.overlay_panes.change_pane_coordinates(
+            *pane_id,
+            coordinates,
+            override_user_placement,
+        )?;
         self.set_force_render();
         Ok(())
     }
@@ -8813,8 +8948,11 @@ impl Tab {
     ) -> Result<()> {
         // already an overlay: coordinates change, overlay-ness does not
         if self.overlay_panes.panes_contain(pane_id) {
-            self.overlay_panes
-                .change_pane_coordinates(*pane_id, floating_pane_coordinates)?;
+            self.overlay_panes.change_pane_coordinates(
+                *pane_id,
+                floating_pane_coordinates,
+                false,
+            )?;
             self.set_force_render();
             return Ok(());
         }
@@ -8831,8 +8969,11 @@ impl Tab {
                 // `add_floating_pane` sends an overlay-by-configuration pane straight to the
                 // overlay collection, so it may already have landed there
                 if self.overlay_panes.panes_contain(pane_id) {
-                    self.overlay_panes
-                        .change_pane_coordinates(*pane_id, floating_pane_coordinates)?;
+                    self.overlay_panes.change_pane_coordinates(
+                        *pane_id,
+                        floating_pane_coordinates,
+                        false,
+                    )?;
                     self.set_force_render();
                     return Ok(());
                 }

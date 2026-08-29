@@ -149,6 +149,59 @@ fn nested_session_handling_kdl_round_trip_for_every_variant() {
 }
 
 #[test]
+fn host_notification_protocol_kdl_round_trip_for_every_variant() {
+    use crate::input::options::HostNotificationProtocol;
+    let cases = [
+        ("auto", HostNotificationProtocol::Auto),
+        ("osc9", HostNotificationProtocol::Osc9),
+        ("osc99", HostNotificationProtocol::Osc99),
+        ("bell", HostNotificationProtocol::Bell),
+        ("off", HostNotificationProtocol::Off),
+    ];
+    for (value, expected) in cases {
+        let fake_config = format!(
+            r##"
+                host_notification_protocol "{value}"
+            "##
+        );
+        let document: KdlDocument = fake_config.parse().unwrap();
+        let parsed = Options::from_kdl(&document).unwrap();
+        assert_eq!(
+            parsed.host_notification_protocol,
+            Some(expected),
+            "case: {value}"
+        );
+
+        let mut serialized = Options::to_kdl(&parsed, false);
+        let mut fake_document = KdlDocument::new();
+        fake_document.nodes_mut().append(&mut serialized);
+        let reparsed =
+            Options::from_kdl(&fake_document.to_string().parse::<KdlDocument>().unwrap()).unwrap();
+        assert_eq!(parsed, reparsed, "round-trip mismatch for {value}");
+    }
+}
+
+#[test]
+fn an_unknown_host_notification_protocol_is_a_config_error() {
+    let fake_config = r##"
+        host_notification_protocol "carrier-pigeon"
+    "##;
+    let document: KdlDocument = fake_config.parse().unwrap();
+    assert!(Options::from_kdl(&document).is_err());
+}
+
+#[test]
+fn an_unset_host_notification_protocol_parses_as_none() {
+    let document: KdlDocument = r##"
+        simplified_ui true
+    "##
+    .parse()
+    .unwrap();
+    let parsed = Options::from_kdl(&document).unwrap();
+    assert_eq!(parsed.host_notification_protocol, None);
+}
+
+#[test]
 fn config_options_to_string_with_some_options() {
     let fake_config = r##"
         default_layout "compact"
@@ -237,4 +290,52 @@ fn session_recording_options_kdl_roundtrip() {
         Options::from_kdl(&fake_document.to_string().parse::<KdlDocument>().unwrap()).unwrap();
     assert_eq!(reparsed.session_recording, Some(true));
     assert_eq!(reparsed.session_recording_input, Some(true));
+}
+
+#[test]
+fn explicit_theme_hue_from_kdl() {
+    let fake_config = r##"
+        explicit_theme_hue "light"
+    "##;
+    let document: KdlDocument = fake_config.parse().unwrap();
+    let deserialized = Options::from_kdl(&document).unwrap();
+    assert_eq!(deserialized.explicit_theme_hue, Some(ThemeHue::Light));
+
+    let empty_document: KdlDocument = "".parse().unwrap();
+    let deserialized_empty = Options::from_kdl(&empty_document).unwrap();
+    assert_eq!(
+        deserialized_empty.explicit_theme_hue, None,
+        "an unspecified explicit_theme_hue leaves the host terminal in charge"
+    );
+}
+
+#[test]
+fn explicit_theme_hue_rejects_unknown_values() {
+    let fake_config = r##"
+        explicit_theme_hue "sepia"
+    "##;
+    let document: KdlDocument = fake_config.parse().unwrap();
+    assert!(
+        Options::from_kdl(&document).is_err(),
+        "only 'dark' and 'light' are accepted"
+    );
+}
+
+#[test]
+fn explicit_theme_hue_round_trips_through_kdl() {
+    let fake_config = r##"
+        explicit_theme_hue "dark"
+    "##;
+    let document: KdlDocument = fake_config.parse().unwrap();
+    let deserialized = Options::from_kdl(&document).unwrap();
+    let mut serialized = Options::to_kdl(&deserialized, false);
+    let mut fake_document = KdlDocument::new();
+    fake_document.nodes_mut().append(&mut serialized);
+    let deserialized_from_serialized =
+        Options::from_kdl(&fake_document.to_string().parse::<KdlDocument>().unwrap()).unwrap();
+    assert_eq!(
+        deserialized_from_serialized.explicit_theme_hue,
+        Some(ThemeHue::Dark),
+        "explicit_theme_hue survives a serialize/parse round trip"
+    );
 }

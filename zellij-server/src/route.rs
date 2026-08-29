@@ -617,6 +617,38 @@ pub(crate) fn route_action(
                 ))
                 .with_context(err_context)?;
         },
+        Action::ScrollToPreviousPrompt => {
+            senders
+                .send_to_screen(ScreenInstruction::ScrollToPreviousPrompt(
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::ScrollToNextPrompt => {
+            senders
+                .send_to_screen(ScreenInstruction::ScrollToNextPrompt(
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::SelectCommandAtScrollPosition => {
+            senders
+                .send_to_screen(ScreenInstruction::SelectCommandAtScrollPosition(
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::CopyLastCommandOutput => {
+            senders
+                .send_to_screen(ScreenInstruction::CopyLastCommandOutput(
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
         Action::PageScrollUp => {
             senders
                 .send_to_screen(ScreenInstruction::PageScrollUp(
@@ -3041,6 +3073,14 @@ pub(crate) fn route_thread_main(
                                     single_pane,
                                     fit,
                                 },
+                                instruction,
+                                retry_queue
+                            );
+                        },
+                        ClientToServerMsg::HostTerminalFocusChanged { focused } => {
+                            let _ = send_to_screen_or_retry_queue!(
+                                senders,
+                                ScreenInstruction::HostTerminalFocusChanged(client_id, focused),
                                 instruction,
                                 retry_queue
                             );

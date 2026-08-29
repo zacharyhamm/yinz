@@ -130,3 +130,88 @@ fn attaching_web_watcher_follows_the_host_tab() {
         "watcher client mirrors the host tab"
     );
 }
+
+#[test]
+fn reattaching_the_only_client_tells_the_tab_plugins_they_are_visible_again() {
+    // A tab whose last client leaves tells its plugins nobody is looking; a client
+    // arriving in that tab has to tell them the opposite, otherwise a plugin that
+    // went quiet on `Visible(false)` never wakes up again after a reattach.
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let (mut screen, capture) = create_new_screen_with_theme_capture(size);
+    new_tab(&mut screen, 1, 0);
+    add_pane_to_tab(&mut screen, 0, PaneId::Plugin(2), false);
+    let _ = capture.drain_plugin_updates();
+
+    screen.remove_client(1).expect("TEST");
+    screen.add_client(1, false).expect("TEST");
+
+    let visibility_events: Vec<bool> = capture
+        .drain_plugin_updates()
+        .into_iter()
+        .filter_map(|(pid, _cid, event)| match (pid, event) {
+            (Some(2), Event::Visible(is_visible)) => Some(is_visible),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        visibility_events,
+        vec![false, true],
+        "the plugin should be told the tab went off screen and then came back"
+    );
+}
+
+#[test]
+fn reattaching_a_client_restores_floating_pane_visibility_notifications() {
+    // While a tab has no clients its floating plugins are not told about the surface
+    // being lowered; `add_client` marks the tab visible again, and from then on they
+    // must be, otherwise a plugin idling on a timer keeps working while off screen.
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let (mut screen, capture) = create_new_screen_with_theme_capture(size);
+    new_tab(&mut screen, 1, 0);
+    // focused, so that the floating surface actually comes up with the pane
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .new_pane(
+            PaneId::Plugin(2),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Floating(None),
+            Some(1),
+            None,
+        )
+        .unwrap();
+    assert!(
+        screen
+            .get_active_tab_mut(1)
+            .unwrap()
+            .are_floating_panes_visible(),
+        "precondition: the floating surface is up"
+    );
+
+    screen.remove_client(1).expect("TEST");
+    screen.add_client(1, false).expect("TEST");
+    let _ = capture.drain_plugin_updates();
+    screen.get_active_tab_mut(1).unwrap().hide_floating_panes();
+
+    let visibility_events: Vec<(Option<u32>, bool)> = capture
+        .drain_plugin_updates()
+        .into_iter()
+        .filter_map(|(pid, _cid, event)| match event {
+            Event::Visible(is_visible) => Some((pid, is_visible)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        visibility_events.contains(&(Some(2), false)),
+        "a floating plugin must still be told when its surface is hidden after a reattach, got {visibility_events:?}"
+    );
+}

@@ -1,5 +1,6 @@
 ---
 source: zellij-utils/src/setup.rs
+assertion_line: 782
 expression: "format!(\"{:#?}\", config)"
 ---
 Config {
@@ -94,6 +95,7 @@ Config {
         theme: None,
         theme_dark: None,
         theme_light: None,
+        explicit_theme_hue: None,
         default_mode: None,
         default_shell: None,
         default_cwd: None,
@@ -144,6 +146,7 @@ Config {
         context_menu_on_right_click: None,
         osc133_command_selection: None,
         word_separators: None,
+        host_notification_protocol: None,
         web_server_ip: None,
         web_server_port: None,
         web_server_cert: None,

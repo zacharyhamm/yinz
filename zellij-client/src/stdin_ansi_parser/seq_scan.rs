@@ -22,7 +22,18 @@ pub(super) const PASTE_END_MARKER: &[u8] = b"\x1b[201~";
 pub enum PendingPartial {
     None,
     LoneEsc,
+    BareIntroducer,
     ReplyInProgress,
+}
+
+impl PendingPartial {
+    /// Only a reply that is genuinely in progress is worth holding back for the
+    /// `PARTIAL_REPLY_FLUSH_GUARD`; a lone ESC or a bare `ESC [` / `ESC ]`
+    /// introducer is almost always a key (Esc, Alt+[, Alt+]) and flushes on
+    /// the first idle tick.
+    pub fn uses_reply_flush_guard(&self) -> bool {
+        matches!(self, PendingPartial::ReplyInProgress)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

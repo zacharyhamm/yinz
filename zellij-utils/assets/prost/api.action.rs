@@ -1162,6 +1162,10 @@ pub enum ActionName {
     ToggleHostFullscreen = 108,
     FocusGuestSession = 109,
     Notify = 111,
+    ScrollToPreviousPrompt = 112,
+    ScrollToNextPrompt = 113,
+    SelectCommandAtScrollPosition = 114,
+    CopyLastCommandOutput = 115,
 }
 impl ActionName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1278,6 +1282,10 @@ impl ActionName {
             ActionName::ToggleHostFullscreen => "ToggleHostFullscreen",
             ActionName::FocusGuestSession => "FocusGuestSession",
             ActionName::Notify => "Notify",
+            ActionName::ScrollToPreviousPrompt => "ScrollToPreviousPrompt",
+            ActionName::ScrollToNextPrompt => "ScrollToNextPrompt",
+            ActionName::SelectCommandAtScrollPosition => "SelectCommandAtScrollPosition",
+            ActionName::CopyLastCommandOutput => "CopyLastCommandOutput",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1391,6 +1399,10 @@ impl ActionName {
             "ToggleHostFullscreen" => Some(Self::ToggleHostFullscreen),
             "FocusGuestSession" => Some(Self::FocusGuestSession),
             "Notify" => Some(Self::Notify),
+            "ScrollToPreviousPrompt" => Some(Self::ScrollToPreviousPrompt),
+            "ScrollToNextPrompt" => Some(Self::ScrollToNextPrompt),
+            "SelectCommandAtScrollPosition" => Some(Self::SelectCommandAtScrollPosition),
+            "CopyLastCommandOutput" => Some(Self::CopyLastCommandOutput),
             _ => None,
         }
     }

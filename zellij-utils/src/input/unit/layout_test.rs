@@ -1828,6 +1828,71 @@ fn tab_cwd_prepended_to_panes_with_cwd() {
     assert_snapshot!(normalize_layout_debug(format!("{:#?}", layout)));
 }
 
+fn floating_pane_cwds(floating_panes: &[FloatingPaneLayout]) -> Vec<Option<PathBuf>> {
+    floating_panes
+        .iter()
+        .map(|floating_pane| match &floating_pane.run {
+            Some(Run::Cwd(cwd)) => Some(cwd.clone()),
+            Some(Run::Command(run_command)) => run_command.cwd.clone(),
+            other => panic!("unexpected run for floating pane: {:?}", other),
+        })
+        .collect()
+}
+
+#[test]
+fn global_cwd_and_tab_cwd_prepended_to_floating_panes_with_and_without_cwd() {
+    let kdl_layout = r#"
+        layout {
+            cwd "/tmp"
+            tab cwd="./foo" {
+                pane
+                floating_panes {
+                    pane // should have /tmp/foo
+                    pane cwd="./bar" // should have /tmp/foo/bar
+                    pane command="tail" cwd="./bar" // should have /tmp/foo/bar
+                }
+            }
+        }
+    "#;
+    let layout = Layout::from_kdl(kdl_layout, Some("layout_file_name".into()), None, None).unwrap();
+    let (_, _, floating_panes) = &layout.tabs[0];
+    assert_eq!(
+        floating_pane_cwds(floating_panes),
+        vec![
+            Some(PathBuf::from("/tmp/foo")),
+            Some(PathBuf::from("/tmp/foo/bar")),
+            Some(PathBuf::from("/tmp/foo/bar")),
+        ],
+        "the tab cwd composes between the global cwd and the floating pane cwd"
+    );
+}
+
+#[test]
+fn global_cwd_prepended_to_swap_floating_layout_panes() {
+    let kdl_layout = r#"
+        layout {
+            cwd "/tmp"
+            pane
+            swap_floating_layout {
+                floating_panes max_panes=2 {
+                    pane // should have /tmp
+                    pane cwd="./bar" // should have /tmp/bar
+                }
+            }
+        }
+    "#;
+    let layout = Layout::from_kdl(kdl_layout, Some("layout_file_name".into()), None, None).unwrap();
+    let (swap_floating_layout, _name) = &layout.swap_floating_layouts[0];
+    let floating_panes = swap_floating_layout
+        .get(&LayoutConstraint::MaxPanes(2))
+        .expect("the max_panes=2 swap layout");
+    assert_eq!(
+        floating_pane_cwds(floating_panes),
+        vec![Some(PathBuf::from("/tmp")), Some(PathBuf::from("/tmp/bar")),],
+        "swap floating layouts have no tab cwd, so they get the global cwd alone"
+    );
+}
+
 #[test]
 fn global_cwd_and_tab_cwd_prepended_to_panes_with_and_without_cwd() {
     let kdl_layout = r#"

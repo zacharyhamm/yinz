@@ -105,6 +105,8 @@ pub fn create_first_message(
             max_panes: None,
             force_run_layout_commands: false,
             cwd: None,
+            // A browser is not a terminal: there is no host environment to report.
+            host_terminal_env: Default::default(),
         };
 
         ClientToServerMsg::FirstClientConnected {
@@ -124,6 +126,8 @@ pub fn create_first_message(
             max_panes: None,
             force_run_layout_commands: false,
             cwd: None,
+            // A browser is not a terminal: there is no host environment to report.
+            host_terminal_env: Default::default(),
         };
         let is_web_client = true;
 

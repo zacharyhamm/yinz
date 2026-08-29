@@ -45,7 +45,7 @@ use std::sync::OnceLock;
 
 use crate::terminal_escapes::{
     announce_nested, enter_terminal, say_bye, write_seqs, ClientTeardown, CLEAR_SCREEN,
-    ENABLE_BRACKETED_PASTE,
+    ENABLE_BRACKETED_PASTE, ENABLE_FOCUS_REPORTING,
 };
 
 /// Spawn an async runtime for this client instance.
@@ -437,6 +437,8 @@ pub(crate) enum InputInstruction {
         reply_bytes: Vec<u8>,
     },
     NestedSessionFrameFromHost(Vec<u8>),
+    /// The host terminal gained (`true`) or lost (`false`) keyboard focus.
+    HostTerminalFocusChanged(bool),
     Exit,
 }
 
@@ -454,7 +456,6 @@ pub fn start_remote_client(
 ) -> Result<Option<ConnectToSession>, RemoteClientError> {
     info!("Starting Zellij client!");
 
-    let is_nested_inside_zellij_pane = os_input.env_variable("ZELLIJ").is_some();
     let remote_session_name = remote_session_url
         .trim_end_matches('/')
         .rsplit('/')
@@ -485,10 +486,15 @@ pub fn start_remote_client(
     let full_screen_ws = os_input.get_terminal_size();
 
     os_input.set_raw_mode();
-    write_seqs(&*os_input, &[ENABLE_BRACKETED_PASTE]);
-    if is_nested_inside_zellij_pane {
-        announce_nested(&*os_input, &remote_session_name);
-    }
+    write_seqs(
+        &*os_input,
+        &[ENABLE_BRACKETED_PASTE, ENABLE_FOCUS_REPORTING],
+    );
+    // Announce unconditionally: whether there is a Zellij host on the other
+    // side of the terminal is learnt from it answering, not from the
+    // environment (which a remote pane, for one, does not carry over).
+    announce_nested(&*os_input, &remote_session_name);
+    let host_contacted = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     std::panic::set_hook({
         use zellij_utils::errors::handle_panic;
@@ -503,18 +509,14 @@ pub fn start_remote_client(
 
     let teardown = ClientTeardown::new(full_screen_ws.rows, true);
 
-    let nested_session_name = if is_nested_inside_zellij_pane {
-        Some(remote_session_name.clone())
-    } else {
-        None
-    };
     runtime.block_on(run_remote_client_terminal_loop(
         os_input.clone(),
         connections,
-        nested_session_name,
+        Some(remote_session_name.clone()),
+        host_contacted.clone(),
     ))?;
 
-    if is_nested_inside_zellij_pane {
+    if host_contacted.load(std::sync::atomic::Ordering::Relaxed) {
         say_bye(&*os_input);
     }
 
@@ -547,7 +549,6 @@ pub fn start_client(
     }
     info!("Starting Zellij client!");
 
-    let is_nested_inside_zellij_pane = os_input.env_variable("ZELLIJ").is_some();
     let own_session_name = info.get_session_name().to_owned();
 
     let explicitly_disable_kitty_keyboard_protocol = config_options
@@ -602,16 +603,19 @@ pub fn start_client(
     let mut command_is_executing = CommandIsExecuting::new();
 
     os_input.set_raw_mode();
-    write_seqs(&*os_input, &[ENABLE_BRACKETED_PASTE]);
-    let nested_reannounce = if is_nested_inside_zellij_pane {
-        announce_nested(&*os_input, &own_session_name);
-        Some(crate::nested_reannounce::NestedReannounce::spawn(
-            os_input.clone(),
-            own_session_name.clone(),
-        ))
-    } else {
-        None
-    };
+    write_seqs(
+        &*os_input,
+        &[ENABLE_BRACKETED_PASTE, ENABLE_FOCUS_REPORTING],
+    );
+    // Announce unconditionally: whether there is a Zellij host on the other
+    // side of the terminal is learnt from it answering, not from the
+    // environment (which a remote pane, for one, does not carry over). The
+    // reannounce thread gives up after a few unanswered tries.
+    announce_nested(&*os_input, &own_session_name);
+    let nested_reannounce = crate::nested_reannounce::NestedReannounce::spawn(
+        os_input.clone(),
+        own_session_name.clone(),
+    );
 
     let (send_client_instructions, receive_client_instructions): ChannelWithContext<
         ClientInstruction,
@@ -743,8 +747,7 @@ pub fn start_client(
         command_is_executing: &mut command_is_executing,
         stdin_ansi_parser: &stdin_ansi_parser,
         send_input_instructions: &send_input_instructions,
-        nested_reannounce: nested_reannounce.as_ref(),
-        is_nested_inside_zellij_pane,
+        nested_reannounce: &nested_reannounce,
         web_server_address: crate::client_loop::WebServerAddress {
             ip: web_server_ip,
             port: web_server_port,
@@ -763,7 +766,7 @@ pub fn start_client(
 
     router_thread.join().unwrap();
 
-    if is_nested_inside_zellij_pane {
+    if nested_reannounce.host_contacted() {
         say_bye(&*os_input);
     }
 
