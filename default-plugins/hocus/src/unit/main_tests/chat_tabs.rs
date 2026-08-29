@@ -119,6 +119,64 @@ fn enter_switches_to_the_highlighted_chat_and_the_bar_keeps_its_order() {
 }
 
 #[test]
+fn clicking_a_tab_switches_to_it() {
+    let mut state = three_tabs();
+    state.chat_tab_width = 40;
+    let first = ui::chat_tabs(&state, state.chat_tab_width)
+        .into_iter()
+        .find(|cell| cell.target == ui::TabTarget::Tab(0))
+        .unwrap();
+
+    assert!(state.on_mouse(Mouse::LeftClick(0, first.x + 1)));
+    assert_eq!(state.chat_id, Some(1));
+    assert_eq!(state.chat_tab, 0);
+}
+
+#[test]
+fn clicking_an_overflow_arrow_reveals_tabs_without_switching() {
+    let mut state = three_tabs();
+    state.chat_tab_width = 12;
+    let right = ui::chat_tabs(&state, state.chat_tab_width)
+        .into_iter()
+        .find(|cell| cell.target == ui::TabTarget::Reveal(2))
+        .unwrap();
+
+    assert!(state.on_mouse(Mouse::LeftClick(0, right.x)));
+    assert_eq!(state.chat_id, Some(2), "the active chat did not change");
+    assert_eq!(state.chat_tab_view, Some(2));
+    assert!(ui::chat_tabs(&state, state.chat_tab_width)
+        .iter()
+        .any(|cell| cell.target == ui::TabTarget::Tab(2)));
+}
+
+#[test]
+fn clicks_outside_the_tab_bar_do_nothing() {
+    let mut state = three_tabs();
+    state.chat_tab_width = 20;
+
+    assert!(!state.on_mouse(Mouse::LeftClick(1, 0)));
+    assert!(!state.on_mouse(Mouse::LeftClick(0, 30)));
+    assert_eq!(state.chat_id, Some(2));
+}
+
+#[test]
+fn changing_tabs_resets_the_scrolled_view() {
+    let mut state = three_tabs();
+    state.chat_tab_view = Some(2);
+
+    state.switch_to_tab(0);
+    assert_eq!(state.chat_tab_view, None);
+
+    state.chat_tab_view = Some(2);
+    state.close_tab(2);
+    assert_eq!(state.chat_tab_view, None);
+
+    state.chat_tab_view = Some(1);
+    state.open_tab(Chat::default());
+    assert_eq!(state.chat_tab_view, None);
+}
+
+#[test]
 fn the_draft_follows_its_chat() {
     let mut state = three_tabs();
     state.input.set_text("half a thou".to_owned());

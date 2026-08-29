@@ -737,6 +737,24 @@ impl State {
         match mouse {
             Mouse::ScrollUp(lines) => self.scroll_up(lines.max(1)),
             Mouse::ScrollDown(lines) => self.scroll_down(lines.max(1)),
+            Mouse::LeftClick(0, column) => {
+                let target = ui::chat_tabs(self, self.chat_tab_width)
+                    .into_iter()
+                    .find(|cell| column >= cell.x && column < cell.x + cell.width)
+                    .map(|cell| cell.target);
+                match target {
+                    Some(ui::TabTarget::Tab(tab)) => {
+                        self.chat_tab_view = None;
+                        self.switch_to_tab(tab);
+                        true
+                    },
+                    Some(ui::TabTarget::Reveal(tab)) => {
+                        self.chat_tab_view = Some(tab);
+                        true
+                    },
+                    None => false,
+                }
+            },
             _ => false,
         }
     }

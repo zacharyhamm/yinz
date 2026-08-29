@@ -387,6 +387,10 @@ pub struct State {
     /// The bar position under the highlight while Shift+Tab has the bar
     /// focused. Modal while `Some`, the way `picker` is.
     chat_tab_focus: Option<usize>,
+    /// The tab the overflow controls keep visible without switching chats.
+    chat_tab_view: Option<usize>,
+    /// Width used by the last rendered tab bar, for exact mouse hit-testing.
+    chat_tab_width: usize,
     /// The archive or model browser, when it is open.
     pub picker: Option<Picker>,
     /// The agent strip as last pushed to the hocus-agents pane, so a snapshot
@@ -689,6 +693,8 @@ impl Default for State {
             parked: Vec::new(),
             chat_tab: 0,
             chat_tab_focus: None,
+            chat_tab_view: None,
+            chat_tab_width: 0,
             picker: None,
             last_strip: agents::Strip::default(),
             jobs: Vec::new(),
