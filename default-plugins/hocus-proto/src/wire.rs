@@ -78,6 +78,13 @@ pub const AGENT_SELECTION: &str = "agent_selection";
 pub const STORE_MUTATE: &str = "store_mutate";
 /// hocus/CLI → store: read something without a subscription.
 pub const STORE_QUERY: &str = "store_query";
+/// The `--args` key naming the agent a hook fired in.
+///
+/// The payload is the agent's own JSON and says nothing about which agent wrote it, so a
+/// reader that writes a record of its own has nothing else to name it with. Absent - a hook
+/// script old enough to only pipe - it is a `claude`, which is what every such script was
+/// installed for.
+pub use zellij_tile::agent::AGENT_HOOK_KIND_ARG as HOOK_KIND;
 /// The `--args` key naming the pane a hook fired in.
 ///
 /// A `zellij pipe` carries the pane it was run in on the message itself
@@ -85,7 +92,7 @@ pub const STORE_QUERY: &str = "store_query";
 /// but a broadcast has no pane of its own - only a `CliPipe` does - so `agent-report` names it
 /// here, and so does a hook script from before either.
 pub use zellij_tile::agent::AGENT_HOOK_PANE_ID_ARG as HOOK_PANE_ID;
-/// A Claude Code hook → agentd: one lifecycle event from a pane running claude.
+/// An agent hook → agentd: one lifecycle event from a pane running an agent.
 ///
 /// The one message here a *shell* sends rather than a plugin. It is broadcast —
 /// no `--plugin` — for the same reason the store's two pipes are: a bare

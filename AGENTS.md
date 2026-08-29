@@ -208,12 +208,12 @@ through coding agents - the goal, what landed where, proto numbers in use, and t
 lessons. Read it before touching agent records, `zellij events`, `config.d`, hooks or plugin
 authoring.
 
-## Agent state from Claude Code hooks
+## Agent state from coding-agent hooks
 
-A `claude` running in a pane can report its own busy/waiting/idle state instead of being
-guessed at from its screen — `zellij hocus hooks install` wires Claude Code's hooks to
+A `claude` or a `codex` running in a pane can report its own busy/waiting/idle state instead of
+being guessed at from its screen — `zellij hocus hooks install` wires both agents' hooks to
 `zellij action agent-report`, which sets the pane's agent record (`PaneInfo.agent`) for every
-reader of the manifest. See `docs/AGENT_HOOKS.md`. Unrelated to the `hooks { … }` config block
+reader of the manifest and broadcasts the event itself to the plugins. See `docs/AGENT_HOOKS.md`. Unrelated to the `hooks { … }` config block
 (`zellij-utils/src/input/hooks.rs`), which binds a plugin to a moment in the session.
 
 ## Lua plugins

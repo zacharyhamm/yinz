@@ -1,4 +1,4 @@
-//! `zellij hocus hooks` — wiring Claude Code's hooks to the agent plugins.
+//! `zellij hocus hooks` — wiring coding-agent hooks to the agent plugins.
 //!
 //! `hocus-agentd` decides whether an agent pane is busy, idle or blocked on the user
 //! by reading its screen every five seconds and hashing what it finds, and — for the
@@ -6,31 +6,34 @@
 //! thing that works for an agent which says nothing about itself, and it is a guess
 //! bought with about fifteen seconds and an HTTP round trip.
 //!
-//! Claude Code says. This command installs a small script as a Claude Code hook so
-//! that a `claude` running in a zellij pane reports its own state, and the daemon
+//! Claude Code and Codex say. This command installs a small script as an agent hook so
+//! that an agent running in a zellij pane reports its own state, and the daemon
 //! stops guessing about that pane. Everything here is local file work: it writes a
 //! script and merges some entries into a settings file, and never needs a session.
 //!
 //! The two halves that must agree with something else are marked where they appear:
 //! the pipe's name and its argument, which are `hocus_proto::wire`'s, and the shape
-//! of the settings block, which is Claude Code's.
+//! of the settings block, which both agents share.
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
-use zellij_utils::cli::{Hocus, HocusHooks};
+use zellij_utils::cli::{Hocus, HocusHookAgent, HocusHooks};
 
 /// The events, the timeout and the handler shape live in `zellij_utils::agent`, so that this
 /// installer and a spawned Claude Code pane's inline `--settings` cannot wire different events.
 ///
-/// `pub(crate)` because the CLI tests count against the table rather than against a literal:
-/// it has grown once already, and a number here goes stale silently the next time it does.
-pub(crate) const EVENTS: &[&str] = zellij_utils::agent::CLAUDE_HOOK_EVENTS;
+/// `pub(crate)` on the Claude table because the CLI tests count against it rather than against
+/// a literal: it has grown once already, and a number here goes stale silently the next time
+/// it does.
+pub(crate) const CLAUDE_EVENTS: &[&str] = zellij_utils::agent::CLAUDE_HOOK_EVENTS;
+const CODEX_EVENTS: &[&str] = zellij_utils::agent::CODEX_HOOK_EVENTS;
 
 /// Bumped whenever [`script`] changes, or whenever the set of events wired around it does, so
-/// `status` can say the installed copy is old. v4 is the seventeen-event table.
-const SCRIPT_VERSION: u32 = 4;
+/// `status` can say the installed copy is old. v4 was the seventeen-event table; v5 is the one
+/// that names the agent it was written for.
+const SCRIPT_VERSION: u32 = 5;
 
 /// What marks an entry in the settings file as ours, and nothing else as ours.
 ///
@@ -42,71 +45,126 @@ pub(crate) fn hocus(command: Hocus) -> Result<()> {
     let Hocus::Hooks(hooks) = command;
     match hooks {
         HocusHooks::Install {
+            agent,
             project,
             project_dir,
             dry_run,
         } => {
-            let files = Files::resolve(project, project_dir)?;
             let zellij = std::env::current_exe().context("cannot find this zellij binary")?;
-            install(&files, &zellij, dry_run)
+            for agent in selected_agents(agent, project || project_dir.is_some())? {
+                install(
+                    &Files::resolve(agent, project, project_dir.clone())?,
+                    &zellij,
+                    dry_run,
+                )?;
+            }
+            Ok(())
         },
         HocusHooks::Uninstall {
+            agent,
             project,
             project_dir,
-        } => uninstall(&Files::resolve(project, project_dir)?),
-        // The project column is the current folder's; a shell with no cwd still gets the
-        // user's.
-        HocusHooks::Status => {
-            status(&Files::resolve(true, None).or_else(|_| Files::resolve(false, None))?)
+        } => {
+            for agent in selected_agents(agent, project || project_dir.is_some())? {
+                uninstall(&Files::resolve(agent, project, project_dir.clone())?)?;
+            }
+            Ok(())
+        },
+        HocusHooks::Status { agent } => {
+            for agent in selected_agents(agent, false)? {
+                let files = if agent == HocusHookAgent::Claude {
+                    Files::resolve(agent, true, None)
+                        .or_else(|_| Files::resolve(agent, false, None))?
+                } else {
+                    Files::resolve(agent, false, None)?
+                };
+                status(&files)?;
+            }
+            Ok(())
         },
     }
 }
 
-/// The script Claude Code runs, with this binary's own path baked in.
+fn selected_agents(agent: Option<HocusHookAgent>, project: bool) -> Result<Vec<HocusHookAgent>> {
+    let agent = agent.unwrap_or(if project {
+        HocusHookAgent::Claude
+    } else {
+        HocusHookAgent::All
+    });
+    if project && agent != HocusHookAgent::Claude {
+        return Err(anyhow!(
+            "Codex hooks are user-level only; use --agent claude with --project"
+        ));
+    }
+    Ok(match agent {
+        HocusHookAgent::Claude => vec![HocusHookAgent::Claude],
+        HocusHookAgent::Codex => vec![HocusHookAgent::Codex],
+        HocusHookAgent::All => vec![HocusHookAgent::Claude, HocusHookAgent::Codex],
+    })
+}
+
+/// The script an agent runs, with this binary's own path baked in.
 ///
 /// Baked rather than looked up because a hook inherits the environment `claude` was
 /// started with, which is not always one where `zellij` is on the path — a desktop
 /// launcher, a login shell that sets the path in a file an interactive shell reads.
 /// The lookup stays as the fallback for the case the baked path stops existing,
 /// which is what an upgrade that moves the binary looks like.
-fn script(zellij: &Path) -> String {
+fn script(agent: HocusHookAgent, zellij: &Path) -> String {
     let zellij = zellij.display();
+    let (name, kind, no_pane, output, output_rule) = match agent {
+        HocusHookAgent::Claude => (
+            "Claude Code",
+            "",
+            "exit 0",
+            "",
+            "it never writes to stdout, which some events inject into context",
+        ),
+        HocusHookAgent::Codex => (
+            "Codex",
+            " --kind codex",
+            "printf '{}\\n'; exit 0",
+            "printf '{}\\n'",
+            "it writes only neutral JSON, which Codex requires from Stop hooks",
+        ),
+        HocusHookAgent::All => unreachable!("all is expanded before a script is generated"),
+    };
     format!(
         r#"#!/bin/sh
 # hocus-hook v{SCRIPT_VERSION} - generated by `zellij hocus hooks install`. Do not edit;
 # `zellij hocus hooks install` rewrites this file, and `--uninstall` removes it.
 #
-# Claude Code runs this on each wired hook event, with that event's JSON on stdin.
+# {name} runs this on each wired hook event, with that event's JSON on stdin.
 # It hands the JSON to the session, which carries what it means on the pane and
-# broadcasts the event itself to the plugins (`zellij action agent-report`): a Claude
+# broadcasts the event itself to the plugins (`zellij action agent-report`): the
 # pane reports its own busy/waiting/idle state instead of being guessed at from its
 # screen, and what a record has no room for - the agent's own last message, the prompt
 # behind it - reaches whoever wants it.
 #
 # Two rules this file keeps, both of which matter:
-#   - it never writes to stdout. On UserPromptSubmit and SessionStart, an exit-0
-#     hook's stdout is injected verbatim into Claude's context.
+#   - {output_rule}.
 #   - it always exits 0. A hook that fails must not interfere with the agent it is
 #     only reporting on.
 
 # Not in a zellij pane, so there is no pane for the daemon to attach this to.
-[ -n "$ZELLIJ_PANE_ID" ] || exit 0
+[ -n "$ZELLIJ_PANE_ID" ] || {{ {no_pane}; }}
 
 ZELLIJ_BIN='{zellij}'
 [ -x "$ZELLIJ_BIN" ] || ZELLIJ_BIN=zellij
 
 # The event travels on stdin rather than as an argument, clear of execve's per-argument
 # limit; the pane is $ZELLIJ_PANE_ID, which the action reads itself.
-"$ZELLIJ_BIN" action agent-report --hook-json >/dev/null 2>&1
+"$ZELLIJ_BIN" action agent-report --hook-json{kind} >/dev/null 2>&1
+{output}
 
 exit 0
 "#
     )
 }
 
-/// One handler entry, as Claude Code's settings spell it.
-fn handler(command: &str) -> Value {
-    zellij_utils::agent::claude_hook_handler(command)
+/// One handler entry, as both agents' settings spell it.
+fn handler(command: &str, timeout: u64) -> Value {
+    zellij_utils::agent::hook_handler(command, timeout)
 }
 
 /// Whether one handler entry is one we wrote.
@@ -123,7 +181,22 @@ fn is_ours(handler: &Value) -> bool {
 /// entry per event rather than two. Nothing else in the file is touched — it is parsed
 /// as a whole `Value` and handed back with the same keys it arrived with, so a setting
 /// this binary has never heard of survives the round trip.
+#[cfg(test)]
 pub(crate) fn install_into(settings: Value, command: &str) -> Result<Value> {
+    install_events_into(
+        settings,
+        command,
+        CLAUDE_EVENTS,
+        zellij_utils::agent::CLAUDE_HOOK_TIMEOUT_SECONDS,
+    )
+}
+
+fn install_events_into(
+    settings: Value,
+    command: &str,
+    events: &[&str],
+    timeout: u64,
+) -> Result<Value> {
     let mut settings = uninstall_from(settings);
     let root = settings
         .as_object_mut()
@@ -134,7 +207,7 @@ pub(crate) fn install_into(settings: Value, command: &str) -> Result<Value> {
     let hooks = hooks
         .as_object_mut()
         .ok_or_else(|| anyhow!("settings hooks must be an object"))?;
-    for event in EVENTS {
+    for event in events {
         let groups = hooks
             .entry(*event)
             .or_insert_with(|| Value::Array(Vec::new()));
@@ -142,8 +215,8 @@ pub(crate) fn install_into(settings: Value, command: &str) -> Result<Value> {
             .as_array_mut()
             .ok_or_else(|| anyhow!("settings hooks.{event} must be an array"))?;
         // No `matcher`: an entry without one fires on every occurrence of the
-        // event, which is what we want for every one of them. See `EVENTS`.
-        groups.push(json!({ "hooks": [handler(command)] }));
+        // event, which is what every one of them and both reporting feeds want.
+        groups.push(json!({ "hooks": [handler(command, timeout)] }));
     }
     Ok(settings)
 }
@@ -219,15 +292,35 @@ pub(crate) fn installed_events(settings: &Value) -> Vec<String> {
 fn home() -> Result<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
-        .ok_or_else(|| anyhow!("HOME is not set, so there is no ~/.claude to install into"))
+        .ok_or_else(|| anyhow!("HOME is not set, so there is no agent config to install into"))
+}
+
+fn agent_root(
+    agent: HocusHookAgent,
+    codex_home: Option<PathBuf>,
+    home: impl FnOnce() -> Result<PathBuf>,
+) -> Result<PathBuf> {
+    Ok(match agent {
+        HocusHookAgent::Claude => home()?.join(".claude"),
+        HocusHookAgent::Codex => match codex_home {
+            Some(root) => root,
+            None => home()?.join(".codex"),
+        },
+        HocusHookAgent::All => unreachable!("all is expanded before resolving files"),
+    })
+}
+
+fn shell_quote(path: &Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
 }
 
 /// The files a command touches, resolved once from the flags and the environment so that
 /// everything below is plain path work - and runs against a temporary folder in a test.
 pub(crate) struct Files {
-    /// `~/.claude/hocus/hocus-hook.sh`, shared by every install on the machine.
+    pub(crate) agent: HocusHookAgent,
+    /// The provider-local generated script, shared by its user and project installs.
     pub(crate) script: PathBuf,
-    /// `~/.claude/settings.json`.
+    /// The provider's user-level hooks/settings document.
     pub(crate) user_settings: PathBuf,
     /// The project folder, when the command is about one rather than the user.
     pub(crate) project: Option<PathBuf>,
@@ -237,8 +330,14 @@ impl Files {
     /// `--project-dir` names the folder; a bare `--project` means the current one, which is
     /// what a person at a shell wants and what a plugin - whose cwd is the server's, not the
     /// project's - cannot use.
-    fn resolve(project: bool, project_dir: Option<PathBuf>) -> Result<Files> {
-        let home = home()?;
+    fn resolve(
+        agent: HocusHookAgent,
+        project: bool,
+        project_dir: Option<PathBuf>,
+    ) -> Result<Files> {
+        if agent == HocusHookAgent::Codex && (project || project_dir.is_some()) {
+            return Err(anyhow!("Codex hooks are user-level only"));
+        }
         let project = match project_dir {
             Some(dir) => Some(dir),
             None if project => {
@@ -246,9 +345,20 @@ impl Files {
             },
             None => None,
         };
+        let root = agent_root(
+            agent,
+            std::env::var_os("CODEX_HOME").map(PathBuf::from),
+            home,
+        )?;
+        let user_settings = match agent {
+            HocusHookAgent::Claude => root.join("settings.json"),
+            HocusHookAgent::Codex => root.join("hooks.json"),
+            HocusHookAgent::All => unreachable!("all is expanded before resolving files"),
+        };
         Ok(Files {
-            script: home.join(".claude").join("hocus").join(MARKER),
-            user_settings: home.join(".claude").join("settings.json"),
+            agent,
+            script: root.join("hocus").join(MARKER),
+            user_settings,
             project,
         })
     }
@@ -262,16 +372,44 @@ impl Files {
     /// both the user's and a project's fires everything twice - `status` says so when it sees it.
     fn settings(&self) -> PathBuf {
         match &self.project {
-            Some(dir) => dir.join(".claude").join("settings.local.json"),
+            Some(dir) => {
+                debug_assert_eq!(self.agent, HocusHookAgent::Claude);
+                dir.join(".claude").join("settings.local.json")
+            },
             None => self.user_settings.clone(),
         }
     }
 
     /// The committed `.claude/settings.json` an older zellij wrote a project install into.
     fn legacy_project_settings(&self) -> Option<PathBuf> {
-        self.project
-            .as_ref()
+        (self.agent == HocusHookAgent::Claude)
+            .then_some(self.project.as_ref())
+            .flatten()
             .map(|dir| dir.join(".claude").join("settings.json"))
+    }
+
+    fn events(&self) -> &'static [&'static str] {
+        match self.agent {
+            HocusHookAgent::Claude => CLAUDE_EVENTS,
+            HocusHookAgent::Codex => CODEX_EVENTS,
+            HocusHookAgent::All => unreachable!("all is expanded before resolving files"),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self.agent {
+            HocusHookAgent::Claude => "Claude Code",
+            HocusHookAgent::Codex => "Codex",
+            HocusHookAgent::All => unreachable!("all is expanded before resolving files"),
+        }
+    }
+
+    fn timeout(&self) -> u64 {
+        match self.agent {
+            HocusHookAgent::Claude => zellij_utils::agent::CLAUDE_HOOK_TIMEOUT_SECONDS,
+            HocusHookAgent::Codex => zellij_utils::agent::CODEX_HOOK_TIMEOUT_SECONDS,
+            HocusHookAgent::All => unreachable!("all is expanded before resolving files"),
+        }
     }
 
     /// The legacy file with our entries still in it, if there is one to move out of.
@@ -325,11 +463,11 @@ fn write_settings(path: &Path, settings: &Value) -> Result<bool> {
 }
 
 pub(crate) fn install(files: &Files, zellij: &Path, dry_run: bool) -> Result<()> {
-    let script = script(zellij);
+    let script = script(files.agent, zellij);
     let settings_path = files.settings();
     let settings = read_settings(&settings_path)?;
-    let command = files.script.display().to_string();
-    let updated = install_into(settings, &command)?;
+    let command = shell_quote(&files.script);
+    let updated = install_events_into(settings, &command, files.events(), files.timeout())?;
     // A project install used to land in the committed file. Moving it out here is what makes
     // re-running `install --project` the upgrade path, rather than a second copy that fires
     // every event twice.
@@ -367,7 +505,7 @@ pub(crate) fn install(files: &Files, zellij: &Path, dry_run: bool) -> Result<()>
     println!("wrote {}", files.script.display());
     println!(
         "wired {} events in {}",
-        EVENTS.len(),
+        files.events().len(),
         settings_path.display()
     );
     if backed_up {
@@ -388,7 +526,12 @@ pub(crate) fn install(files: &Files, zellij: &Path, dry_run: bool) -> Result<()>
     // come back in sorted order. Nothing about the settings changes, but a file under
     // version control will show a diff that is mostly not ours.
     println!("(settings are rewritten from a parse, so key order may change)");
-    println!("run `zellij hocus hooks status` to check, or `/hooks` inside Claude Code");
+    println!("run `zellij hocus hooks status` to check");
+    if files.agent == HocusHookAgent::Codex {
+        println!("open `/hooks` inside Codex to review and trust the installed hooks");
+    } else {
+        println!("open `/hooks` inside Claude Code to inspect the installed hooks");
+    }
     Ok(())
 }
 
@@ -437,6 +580,7 @@ pub(crate) fn uninstall(files: &Files) -> Result<()> {
 
 /// What is wired, and the things that would quietly stop it working.
 fn status(files: &Files) -> Result<()> {
+    println!("{}:", files.name());
     match std::fs::read_to_string(&files.script) {
         Ok(text) if text.contains(&format!("hocus-hook v{SCRIPT_VERSION} ")) => {
             println!("script:  {} (current)", files.script.display());
@@ -472,7 +616,7 @@ fn status(files: &Files) -> Result<()> {
             "{heading:<9}{} - {} of {} events wired",
             path.display(),
             events.len(),
-            EVENTS.len()
+            files.events().len()
         );
         if label == "legacy" {
             println!(
@@ -483,7 +627,8 @@ fn status(files: &Files) -> Result<()> {
         // One line rather than one per event: an upgrade that wires new events leaves a
         // working install several short, and a column of them reads as a list of faults
         // rather than as the one instruction it is.
-        let missing: Vec<&str> = EVENTS
+        let missing: Vec<&str> = files
+            .events()
             .iter()
             .copied()
             .filter(|event| !events.iter().any(|wired| wired == event))
@@ -507,10 +652,14 @@ fn status(files: &Files) -> Result<()> {
         );
     }
 
+    if files.agent == HocusHookAgent::Codex && wired_anywhere > 0 {
+        println!("trust:   review the installed hooks with `/hooks` inside Codex");
+    }
+
     match std::env::var("ZELLIJ_PANE_ID") {
         Ok(pane_id) => println!("pane:    this shell is zellij pane {pane_id}"),
         Err(_) => println!(
-            "pane:    this shell is not in a zellij pane, so a claude started here \
+            "pane:    this shell is not in a zellij pane, so an agent started here \
              would report nothing"
         ),
     }
@@ -546,14 +695,14 @@ mod tests {
         let once = install_into(json!({}), command).expect("installed");
         let mut wired = installed_events(&once);
         wired.sort();
-        let mut expected: Vec<String> = EVENTS.iter().map(|e| (*e).to_owned()).collect();
+        let mut expected: Vec<String> = CLAUDE_EVENTS.iter().map(|e| (*e).to_owned()).collect();
         expected.sort();
         assert_eq!(wired, expected);
 
         // The three the summary and the toast now hang off, named rather than merely
         // counted: dropping one would leave a feed stuck on `busy` or a question silent.
         for event in ["Stop", "StopFailure", "PermissionRequest"] {
-            assert!(EVENTS.contains(&event), "{event}");
+            assert!(CLAUDE_EVENTS.contains(&event), "{event}");
         }
 
         let twice = install_into(once.clone(), command).expect("installed again");
@@ -573,7 +722,7 @@ mod tests {
         )
         .unwrap();
         make_executable(&fake_zellij).unwrap();
-        std::fs::write(&hook, script(&fake_zellij)).unwrap();
+        std::fs::write(&hook, script(HocusHookAgent::Claude, &fake_zellij)).unwrap();
         make_executable(&hook).unwrap();
 
         let payload = vec![b'x'; 200 * 1024];
@@ -589,6 +738,49 @@ mod tests {
 
         assert_eq!(std::fs::read(captured).unwrap(), payload);
         assert_eq!(std::fs::read_to_string(argc).unwrap(), "3");
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn generated_codex_script_names_codex_and_returns_neutral_json() {
+        let temp = temp_dir("codex-payload");
+        let fake_zellij = temp.join("zellij");
+        let captured = temp.join("payload");
+        let argc = temp.join("argc");
+        std::fs::write(
+            &fake_zellij,
+            "#!/bin/sh\nprintf '%s' \"$#\" > \"$ARGC\"\ncat > \"$CAPTURE\"\n",
+        )
+        .unwrap();
+        make_executable(&fake_zellij).unwrap();
+        let hook = temp.join("hocus-hook.sh");
+        std::fs::write(&hook, script(HocusHookAgent::Codex, &fake_zellij)).unwrap();
+        make_executable(&hook).unwrap();
+
+        let output = Command::new(&hook)
+            .env("ZELLIJ_PANE_ID", "7")
+            .env("CAPTURE", &captured)
+            .env("ARGC", &argc)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(b"{\"hook_event_name\":\"Stop\"}")?;
+                child.wait_with_output()
+            })
+            .unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"{}\n");
+        assert_eq!(std::fs::read_to_string(argc).unwrap(), "5");
+        assert_eq!(
+            std::fs::read_to_string(captured).unwrap(),
+            "{\"hook_event_name\":\"Stop\"}"
+        );
         std::fs::remove_dir_all(temp).unwrap();
     }
 
@@ -614,9 +806,19 @@ mod tests {
 
     fn project_files(temp: &Path) -> Files {
         Files {
+            agent: HocusHookAgent::Claude,
             script: temp.join("home/.claude/hocus").join(MARKER),
             user_settings: temp.join("home/.claude/settings.json"),
             project: Some(temp.join("project")),
+        }
+    }
+
+    fn codex_files(temp: &Path) -> Files {
+        Files {
+            agent: HocusHookAgent::Codex,
+            script: temp.join("home/.codex/hocus").join(MARKER),
+            user_settings: temp.join("home/.codex/hooks.json"),
+            project: None,
         }
     }
 
@@ -631,7 +833,7 @@ mod tests {
         install(&files, &fake_zellij(&temp), false).unwrap();
 
         let local = temp.join("project/.claude/settings.local.json");
-        assert_eq!(events_in(&local).len(), EVENTS.len());
+        assert_eq!(events_in(&local).len(), CLAUDE_EVENTS.len());
         assert!(
             !temp.join("project/.claude/settings.json").exists(),
             "the committed file is not ours to write"
@@ -639,6 +841,57 @@ mod tests {
         assert!(!files.user_settings.exists());
         assert!(files.script.exists());
         std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn a_codex_install_lands_in_the_user_hooks_file() {
+        let temp = temp_dir("codex user's home");
+        let files = codex_files(&temp);
+        install(&files, &fake_zellij(&temp), false).unwrap();
+
+        assert_eq!(events_in(&files.user_settings).len(), CODEX_EVENTS.len());
+        assert!(files.script.exists());
+        assert!(!temp.join("home/.claude").exists());
+
+        let settings = read_settings(&files.user_settings).unwrap();
+        let command = settings["hooks"][CODEX_EVENTS[0]][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .env("ZELLIJ_PANE_ID", "7")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"{}\n");
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn a_custom_codex_home_does_not_require_home() {
+        let codex_home = PathBuf::from("/custom/codex");
+        assert_eq!(
+            agent_root(HocusHookAgent::Codex, Some(codex_home.clone()), || {
+                Err(anyhow!("HOME is unavailable"))
+            })
+            .unwrap(),
+            codex_home
+        );
+    }
+
+    #[test]
+    fn user_commands_default_to_both_agents_but_project_commands_to_claude() {
+        assert_eq!(
+            selected_agents(None, false).unwrap(),
+            vec![HocusHookAgent::Claude, HocusHookAgent::Codex]
+        );
+        assert_eq!(
+            selected_agents(None, true).unwrap(),
+            vec![HocusHookAgent::Claude]
+        );
+        assert!(selected_agents(Some(HocusHookAgent::Codex), true).is_err());
+        assert!(selected_agents(Some(HocusHookAgent::All), true).is_err());
     }
 
     #[test]
@@ -659,7 +912,7 @@ mod tests {
         assert_eq!(read_settings(&legacy).unwrap()["model"], "opus");
         assert_eq!(
             events_in(&temp.join("project/.claude/settings.local.json")).len(),
-            EVENTS.len()
+            CLAUDE_EVENTS.len()
         );
         std::fs::remove_dir_all(temp).unwrap();
     }
@@ -678,7 +931,7 @@ mod tests {
 
         uninstall(&project).unwrap();
         assert!(events_in(&project.settings()).is_empty());
-        assert_eq!(events_in(&user.user_settings).len(), EVENTS.len());
+        assert_eq!(events_in(&user.user_settings).len(), CLAUDE_EVENTS.len());
         assert!(
             project.script.exists(),
             "the user install still points at it"

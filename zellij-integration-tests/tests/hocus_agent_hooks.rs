@@ -43,7 +43,7 @@ load_plugins clear-defaults=true {
 /// is enough to make it an agent for the daemon, and a pane that only sleeps cannot
 /// print anything that would muddle the transcript below.
 const HOCUS_LAYOUT: &str = r#"layout {
-    pane focus=true {
+    pane focus=true size="70%" {
         plugin location="hocus"
     }
     pane name="claude" command="sleep" {

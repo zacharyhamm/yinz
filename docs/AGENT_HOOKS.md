@@ -1,4 +1,4 @@
-# Claude Code hooks → the pane's agent record
+# Coding-agent hooks → the pane's agent record
 
 `hocus-agentd` normally works out what an agent pane is doing by *looking at it*: every
 five seconds it reads the pane's scrollback, hashes the word sequence, and calls the
@@ -7,20 +7,30 @@ at all — after three unchanged polls (~15s) the daemon sends 120 lines of pane
 model and asks. The same tail, and the same wait, is what an idle summary is made of.
 
 That is the only thing that works for an agent which says nothing about itself, and it
-is a guess bought with fifteen seconds and a round trip. Claude Code says. Install its
-hooks and a `claude` pane reports its own state instead:
+is a guess bought with fifteen seconds and a round trip. Claude Code and Codex say. Install
+their hooks and a `claude` or a `codex` pane reports its own state instead:
 
 ```sh
-zellij hocus hooks install     # ~/.claude/settings.json
-zellij hocus hooks status      # what is wired, and what would stop it working
+zellij hocus hooks install                  # both, user-level
+zellij hocus hooks install --agent codex    # one of them
+zellij hocus hooks status                   # what is wired, and what would stop it working
 zellij hocus hooks uninstall
 ```
+
+A user-level command with no `--agent` does both. Claude Code's install lands in
+`~/.claude/settings.json`; Codex's in `~/.codex/hooks.json`, or `$CODEX_HOME/hooks.json` where
+that is set. **Codex will not run a hook it has not been told to trust**, so open `/hooks`
+inside Codex afterwards and approve what the installer wrote; nothing reports until you do.
 
 `--project` writes to `<cwd>/.claude/settings.local.json` instead - the file Claude Code
 reads beside a project's committed `settings.json` and keeps out of git, so the install (which
 carries this machine's path to the binary) never lands in the project's history.
 `--project-dir <dir>` names the folder, for a plugin or a script installing for a project it is
-not sitting in. Do **not** install into both the user's file and a project's: Claude Code
+not sitting in. Both are Claude Code's alone, and a project command defaults to `--agent
+claude` rather than to both: Codex's project file, `<repo>/.codex/hooks.json`, is one that gets
+committed, and what this installs is a path that means nothing on anybody else's machine.
+
+Do **not** install into both the user's file and a project's: Claude Code
 merges hooks across settings files rather than one overriding the other, so every event
 would fire twice. `status` says so if it sees it. An older zellij wrote a project install into
 the committed `settings.json`; `install --project` moves those entries out, and `status` lists
@@ -28,15 +38,17 @@ that file as `legacy:` while they are still there.
 
 ## What is wired
 
-The installer writes `~/.claude/hocus/hocus-hook.sh` and registers it, with no matcher,
-against seventeen events. The script hands each event's JSON to the session:
+The installer writes one small script per agent - `~/.claude/hocus/hocus-hook.sh`,
+`~/.codex/hocus/hocus-hook.sh` - and registers it, with no matcher, against seventeen events
+for Claude Code and eight for Codex. The script hands each event's JSON to the session:
 
 ```sh
-zellij action agent-report --hook-json < "$payload"
+zellij action agent-report --hook-json < "$payload"              # a claude
+zellij action agent-report --hook-json --kind codex < "$payload" # a codex
 ```
 
 `agent-report` reads the event, works out what it means (`zellij-utils/src/agent.rs`,
-`hook_outcome`) and sets the pane's **agent record** — `PaneInfo.agent`: the kind (`claude`),
+`hook_outcome`) and sets the pane's **agent record** — `PaneInfo.agent`: the kind,
 the state, the tool it is running, what it is blocked on, its folder and its session id. The
 pane is `$ZELLIJ_PANE_ID`, which the action reads itself. Every reader of the pane manifest
 then sees the same answer: plugins on `PaneUpdate`, `zellij events`, `zellij action list-panes
@@ -49,7 +61,9 @@ those belong on a manifest that every plugin is handed on every pane update, and
 what an idle summary and a well-judged interruption are made of. So one process spawn does
 both, and a plugin that wants more than a record holds subscribes to the pipe. It is a
 broadcast without a pipe id, so nothing waits to be unblocked and a hook cannot stall the turn
-it fired in.
+it fired in. The `--args` name the pane it fired in and the agent it came from: the payload is
+the agent's own JSON and never says which agent wrote it, and the daemon writes a record of its
+own from what arrives there.
 
 "Whole" has one bound on it, `agent::HOOK_BROADCAST_MAX_BYTES` (64 KiB). Two of the fields
 Claude Code sends have no size limit in its own schema — `tool_input`, so a `Write` of a
@@ -75,29 +89,39 @@ to `waiting`. Both go to a headless plugin as `Event::Hook` — see `docs/LUA_PL
 "Headless hooks". `zellij action agent-report --state waiting --detail "y/n"` is the same road
 for a script of your own; `--clear` ends the record and fires nothing.
 
-A pane hocus spawns needs none of this: `agent_spawn` (and the `hocus-new-agent` modal) hands
-`claude` the same hook wiring inline as `--settings`, built from the one event list in
+A `claude` hocus spawns needs none of this: `agent_spawn` (and the `hocus-new-agent` modal)
+hands it the same hook wiring inline as `--settings`, built from the one event list in
 `zellij_utils::agent`. A user-level install on top double-reports harmlessly — an equal record
-is a no-op on the pane. Pass `hooks: false` to spawn without it.
+is a no-op on the pane. Pass `hooks: false` to spawn without it. A spawned `codex` has no
+equivalent and uses the user-level install: its hooks are a file it has been asked to trust,
+and handing them in on a command line would be going round exactly the check that makes them
+safe to run.
 
-| Event | State | Why |
-|---|---|---|
-| `SessionStart` | idle | Starts the feed, and proves the pane runs Claude Code |
-| `UserPromptSubmit` | busy | Carries `prompt`, kept for the summary at the end of the turn |
-| `PreToolUse` | busy | Names the tool: `busy · Bash cargo` |
-| `PostToolUse` | busy | Clears the tool name |
-| `PostToolUseFailure` | busy | A tool that failed is still the agent working |
-| `PreToolUse` (`AskUserQuestion`, `ExitPlanMode`) | **waiting** | These two tools *are* the question |
-| `PermissionRequest` | **waiting** | Fires as the prompt goes up |
-| `PermissionDenied` | busy | Auto mode refused a call; the agent carries on |
-| `Elicitation` | **waiting** | An MCP server asking for input |
-| `ElicitationResult` | busy | The answer came back |
-| `Notification` | **waiting** | Backstop; see below |
-| `SubagentStart` / `SubagentStop` | busy | A worker under an agent that is working anyway |
-| `PreCompact` / `PostCompact` | busy | Work the user did not ask for and is waiting on |
-| `Stop` | idle | Every turn end. **Carries `last_assistant_message`** |
-| `StopFailure` | idle | The turn died on an API error — the only thing that says so |
-| `SessionEnd` | — | Clears the record, and ends the feed |
+| Event | Agent | State | Why |
+|---|---|---|---|
+| `SessionStart` | both | idle | Starts the feed, and proves the pane runs an agent |
+| `UserPromptSubmit` | both | busy | Carries `prompt`, kept for the summary at the end of the turn |
+| `PreToolUse` | both | busy | Names the tool: `busy · Bash cargo` |
+| `PostToolUse` | both | busy | Clears the tool name |
+| `PostToolUseFailure` | claude | busy | A tool that failed is still the agent working |
+| `PreToolUse` (`AskUserQuestion`, `ExitPlanMode`, `request_user_input`) | both | **waiting** | These tools *are* the question - the third is Codex's |
+| `PermissionRequest` | both | **waiting** | Fires as the prompt goes up |
+| `PermissionDenied` | claude | busy | Auto mode refused a call; the agent carries on |
+| `Elicitation` | claude | **waiting** | An MCP server asking for input |
+| `ElicitationResult` | claude | busy | The answer came back |
+| `Notification` | claude | **waiting** | Backstop; see below |
+| `SubagentStart` / `SubagentStop` | claude | busy | A worker under an agent that is working anyway |
+| `PreCompact` / `PostCompact` | claude | busy | Work the user did not ask for and is waiting on |
+| `Stop` | both | idle | Every turn end. **Carries `last_assistant_message`** |
+| `StopFailure` | claude | idle | The turn died on an API error — the only thing that says so |
+| `Interrupt` | codex | idle | A turn the user cancelled, which ends it just as flatly |
+| `SessionEnd` | both | — | Clears the record, and ends the feed |
+
+The reading is by event and tool name, never by agent: one function answers for both, because
+the record `agent-report` writes and the feed hocus draws are two different readers of it, and
+a mapping only one of them knew would have the second overwrite the first. What Codex does not
+send it simply never sends - it has no `Notification`, no `Elicitation` and no subagents, and
+its question goes up as an ordinary tool call.
 
 `PermissionRequest` is the primary waiting signal and `Notification` the backstop: the
 notification only fires after ~6s of the prompt going unanswered, which is most of what
@@ -117,14 +141,17 @@ source the finish notification does not: the foreground dialog map, which raises
 teammate setup, a Slack-connect dialog and an offline file sync. Those are this session,
 blocked, with a person to tell.
 
-Two rules the generated script keeps, both of which matter:
+Rules the generated scripts keep, all of which matter:
 
-- **It never writes to stdout.** On `UserPromptSubmit` and `SessionStart`, an exit-0
-  hook's stdout is injected verbatim into Claude's context.
-- **It always exits 0.** A hook that fails must not interfere with the agent it is
+- **The Claude Code script never writes to stdout.** On `UserPromptSubmit` and
+  `SessionStart`, an exit-0 hook's stdout is injected verbatim into Claude's context.
+- **The Codex script writes `{}` and nothing else.** Codex wants JSON back from a `Stop`
+  hook; a neutral object is the answer that decides nothing.
+- **Both always exit 0.** A hook that fails must not interfere with the agent it is
   only reporting on.
 
-Each entry carries an explicit `"timeout": 5`. The default is ten minutes and a hook
+Each entry carries an explicit timeout — five seconds for Claude Code, three for Codex, which
+caps a `SessionEnd` hook at that anyway. Claude Code's default is ten minutes, and a hook
 blocks the turn.
 
 ## What the feed changes
@@ -148,9 +175,10 @@ Either way a pane with a feed is read off it and nothing else:
   model is no longer asked whether an agent is blocked on the user; where it answers
   anyway, `finish_summary_with` overwrites it. `agent_list` also carries `hooks: true`
   and `waiting_on`.
-- The pane stays classified as an agent while Claude shells out to `git` — a hook
-  firing in a pane is better evidence than its foreground command, which stops naming
-  the agent the moment a tool runs.
+- The pane stays classified as an agent while it shells out to `git` — a hook firing in a
+  pane is better evidence than its foreground command, which stops naming the agent the
+  moment a tool runs. The kind it is latched as is the one the broadcast named, so a codex
+  stays a `codex`.
 - The agent's `cwd` comes from the hook, which is the only thing that reports an agent
   told to work in a folder the shell under it never entered.
 
@@ -182,6 +210,10 @@ the idle summary no longer comes from the screen at all:
   sentences, drops fenced blocks and markdown markers, and gives no title — so the pane
   keeps its name. Before the feed there was nothing to fall back *to*: a screen tail is
   not a summary of anything.
+- **A `Stop` carrying no final message buys nothing, and costs nothing.** The turn still
+  lands as `idle` the moment it ends; there is simply no sentence to make one out of. An
+  `Interrupt` is the same, and deliberately makes no request at all: a turn the user
+  cancelled has nothing to describe.
 
 ### A waiting agent interrupts
 
@@ -248,20 +280,23 @@ added. `zellij hocus hooks status` says when the installed script is old.
 | Piece | File |
 |---|---|
 | The record, and who may write it | `zellij-utils/src/data.rs` (`AgentInfo`, `AgentState`, `AgentSource`, `PaneInfo::agent`) |
-| Event → record, and every rule for reading one | `zellij-utils/src/agent.rs` (`HookEvent`, `hook_state`, `hook_detail`, `waiting_detail`, `waiting_needs_a_person`, `hook_outcome`, `CLAUDE_HOOK_EVENTS`, `AGENT_HOOK_PIPE`) |
+| Event → record, and every rule for reading one | `zellij-utils/src/agent.rs` (`HookEvent`, `hook_state`, `hook_detail`, `waiting_detail`, `waiting_needs_a_person`, `hook_outcome`, `WAITING_TOOLS`, `CLAUDE_HOOK_EVENTS`, `CODEX_HOOK_EVENTS`, `AGENT_HOOK_PIPE`) |
 | The action, the fan-out, and the installer | `zellij-utils/src/cli.rs` (`AgentReport`), `zellij-utils/src/input/actions.rs`, `src/hocus_hooks.rs` |
 | Carrying it on the pane | `zellij-server/src/panes/terminal_pane.rs` (`agent`, `agent_from_run`), `screen/thread_main.rs` (`SetPaneAgent`), `screen/mod.rs` (`fire_agent_exit_hook`, `fire_agent_state_hooks`, `agent_hook_edges`) |
 | What a row draws | `default-plugins/hocus-proto/src/agents.rs` (`HookFeed::from_agent`, `status_cell`, `waiting_marker`, `kind_cell`, `HOOK_MARKER`) |
 | What a wait says, and the summary | same (`waiting_toast`, `turn_summary_request_body`, `local_summary`) |
 | Receiving the broadcast, publishing, toasting | `default-plugins/hocus-agentd/src/main.rs` (`on_hook_with`, `on_turn_end_with`, `finish_local_summary_with`) |
 
-The pipe's name and the pane argument are spelled once, in `zellij_utils::agent`;
-`hocus_proto::wire` re-exports both, so the two ends of a broadcast that is silent when it
-does not match cannot drift.
+The pipe's name and its two arguments — the pane, and the kind — are spelled once, in
+`zellij_utils::agent`; `hocus_proto::wire` re-exports all three, so the two ends of a broadcast
+that is silent when it does not match cannot drift. A broadcast that names no kind is read as a
+`claude`, which is what every script old enough to omit it was installed for.
 
 The event payloads are pinned against Claude Code's own shipped schemas rather than
 against its documentation. `strings` on the binary finds them: they are Zod definitions,
-one per `hook_event_name`, and they are the authority on which fields are optional.
+one per `hook_event_name`, and they are the authority on which fields are optional. Codex's
+are not pinned that way, which is why nothing is read out of a `request_user_input`'s
+arguments: its wait says "a question" rather than risking the wrong key read as the right one.
 
 Note: `zellij hocus hooks` is unrelated to the `hooks { … }` block in zellij's own
 config, which binds a plugin to a moment in the session's life

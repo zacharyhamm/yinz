@@ -2,9 +2,9 @@
 //!
 //! A pane's agent record (`PaneInfo::agent`) is written by three roads: the spawn path, for a
 //! pane a plugin opened as an agent pane; a plugin, through `PluginCommand::SetPaneAgent`; and
-//! the agent's own hooks, through `zellij action agent-report --hook-json`. This module is the
-//! reading of a Claude Code hook event that the third road needs, kept here so the binary and
-//! the plugins that draw the result cannot drift apart.
+//! the agent's own hooks, through `zellij action agent-report --hook-json`. This module reads
+//! the common Claude Code/Codex hook shape so the binary and the plugins that draw the result
+//! cannot drift apart.
 
 use crate::data::{AgentInfo, AgentSource, AgentState};
 use serde::{Deserialize, Serialize};
@@ -64,6 +64,22 @@ pub const CLAUDE_HOOK_EVENTS: &[&str] = &[
     "SessionEnd",
 ];
 
+/// The Codex hook events used to report a pane's state.
+///
+/// Codex has no `Notification` hook. Its question goes up as an ordinary `PreToolUse` for
+/// `request_user_input`, which is named in [`WAITING_TOOLS`] beside Claude Code's two and read
+/// as the equivalent waiting signal.
+pub const CODEX_HOOK_EVENTS: &[&str] = &[
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "PermissionRequest",
+    "Interrupt",
+    "Stop",
+    "SessionEnd",
+];
+
 /// Seconds a hook may take before Claude Code abandons it.
 ///
 /// Explicit because the default is ten minutes and a hook blocks the turn: a report against a
@@ -73,28 +89,38 @@ pub const CLAUDE_HOOK_EVENTS: &[&str] = &[
 /// waiting a moment for.
 pub const CLAUDE_HOOK_TIMEOUT_SECONDS: u64 = 5;
 
+/// Codex caps `SessionEnd` hook timeouts at three seconds, so every reporting hook uses that
+/// same short bound.
+pub const CODEX_HOOK_TIMEOUT_SECONDS: u64 = 3;
+
 /// The command a spawned Claude Code pane's hooks run, with no script in between: the pane
 /// inherits `ZELLIJ_PANE_ID`, which the action reads itself, and `zellij` is on the path the
 /// pane's shell found it on.
 pub const CLAUDE_HOOK_REPORT_COMMAND: &str = "zellij action agent-report --hook-json";
 
-/// The pipe the raw event is broadcast on beside the record, and the `--args` key naming the
-/// pane it fired in.
+/// The pipe the raw event is broadcast on beside the record, and the `--args` keys naming the
+/// pane it fired in and the agent it came from.
 ///
 /// `agent-report --hook-json` sets the pane's record *and* hands the event itself to whatever
 /// plugin wants more than a record holds - hocus's daemon reads `last_assistant_message` off a
 /// `Stop` to make a summary, and `permission_mode` off a `PermissionRequest` to decide whether
 /// a wait is worth interrupting somebody over. Spelled here rather than in the plugin crate so
 /// the two ends cannot drift: a pipe name that does not match is silent.
+///
+/// The kind travels because the payload cannot carry it: a hook event is the agent's own JSON
+/// and says nothing about which agent wrote it, and the daemon writes a record of its own from
+/// what arrives here. Absent - an old script that only pipes - it is a `claude`, which is what
+/// every such script was installed for.
 pub const AGENT_HOOK_PIPE: &str = "agent_hook";
 pub const AGENT_HOOK_PANE_ID_ARG: &str = "pane_id";
+pub const AGENT_HOOK_KIND_ARG: &str = "kind";
 
-/// One handler entry, as Claude Code's settings spell it.
-pub fn claude_hook_handler(command: &str) -> Value {
+/// One command handler entry, as Claude Code and Codex spell it.
+pub fn hook_handler(command: &str, timeout: u64) -> Value {
     json!({
         "type": "command",
         "command": command,
-        "timeout": CLAUDE_HOOK_TIMEOUT_SECONDS,
+        "timeout": timeout,
     })
 }
 
@@ -103,13 +129,24 @@ pub fn claude_hook_handler(command: &str) -> Value {
 /// spawned pane is handed whole as `--settings`; the two cannot disagree about the events
 /// because this is the one place they are listed.
 pub fn claude_hook_settings(command: &str) -> Value {
-    let hooks: serde_json::Map<String, Value> = CLAUDE_HOOK_EVENTS
+    hook_settings(CLAUDE_HOOK_EVENTS, command, CLAUDE_HOOK_TIMEOUT_SECONDS)
+}
+
+/// A Codex `hooks.json` document wiring every event in [`CODEX_HOOK_EVENTS`].
+pub fn codex_hook_settings(command: &str) -> Value {
+    hook_settings(CODEX_HOOK_EVENTS, command, CODEX_HOOK_TIMEOUT_SECONDS)
+}
+
+/// A hook settings document for one event list. Claude Code and Codex deliberately use the
+/// same handler shape, so configuration generation needs no provider abstraction beyond this.
+pub fn hook_settings(events: &[&str], command: &str, timeout: u64) -> Value {
+    let hooks: serde_json::Map<String, Value> = events
         .iter()
         // No `matcher`: an entry without one fires on every occurrence of the event.
         .map(|event| {
             (
                 (*event).to_owned(),
-                json!([{ "hooks": [claude_hook_handler(command)] }]),
+                json!([{ "hooks": [hook_handler(command, timeout)] }]),
             )
         })
         .collect();
@@ -179,10 +216,16 @@ pub const WAITING_NOTIFICATIONS: &[&str] = &[
 
 /// The tools whose `PreToolUse` *is* the question going up.
 ///
-/// Every other tool starting is work, but these two do nothing except put a prompt in front of
-/// the user and wait. Their `PostToolUse` is ordinary work again, which is what clears the wait
-/// - so a tool named here needs no special case on the way out.
-pub const WAITING_TOOLS: &[&str] = &["AskUserQuestion", "ExitPlanMode"];
+/// Every other tool starting is work, but these three do nothing except put a prompt in front
+/// of the user and wait. Their `PostToolUse` is ordinary work again, which is what clears the
+/// wait - so a tool named here needs no special case on the way out.
+///
+/// Read by tool name and not by agent, deliberately. `request_user_input` is Codex's, which has
+/// no `AskUserQuestion` and no `Notification` either, but the list is what *every* road that
+/// reads an event consults - the record `agent-report` writes, and `hocus_proto`'s `hook_phase`,
+/// which the daemon draws its feed from. A mapping keyed on the agent's kind would reach only
+/// the first of them, and the second would then overwrite it with `busy`.
+pub const WAITING_TOOLS: &[&str] = &["AskUserQuestion", "ExitPlanMode", "request_user_input"];
 
 /// The permission modes that answer a permission prompt without a person.
 ///
@@ -416,9 +459,10 @@ pub fn hook_state(event: &HookEvent) -> Option<AgentState> {
         // A turn that died on an API error ends just as surely as one that finished, and
         // `StopFailure` is the only event that says so. Without it the record sits on `busy`
         // until the user types again — the worst case for a record that, by design, expires on
-        // nothing.
-        "Stop" | "StopFailure" => Some(AgentState::Idle),
-        // The two tools that are themselves a question. Everything else starting is work; see
+        // nothing. `Interrupt` is Codex's word for a turn the user cancelled, which ends it
+        // just as flatly.
+        "Stop" | "StopFailure" | "Interrupt" => Some(AgentState::Idle),
+        // The tools that are themselves a question. Everything else starting is work; see
         // [`WAITING_TOOLS`]. This arm must precede the general `PreToolUse` one below.
         "PreToolUse"
             if event
@@ -560,6 +604,11 @@ pub fn waiting_detail(event: &HookEvent) -> Option<String> {
                 })
                 .or_else(|| Some("a question".to_owned())),
             Some("ExitPlanMode") => Some("approve the plan".to_owned()),
+            // Codex's question. Nothing is read out of its `tool_input`: the shape of that
+            // one is not pinned here the way Claude Code's shipped schemas pin the rest, and
+            // a wrong key read defensively is a wait with no words rather than the wrong
+            // ones. The same fallback `AskUserQuestion` lands on when its arguments move.
+            Some("request_user_input") => Some("a question".to_owned()),
             _ => None,
         },
         // The tool it wants to run is the whole of what is being asked. No fallback:
@@ -690,6 +739,20 @@ mod tests {
                 "{event} fires on every occurrence"
             );
         }
+
+        let command = "zellij action agent-report --kind codex --hook-json";
+        let codex = codex_hook_settings(command);
+        let hooks = codex["hooks"].as_object().unwrap();
+        assert_eq!(hooks.len(), CODEX_HOOK_EVENTS.len());
+        for event in CODEX_HOOK_EVENTS {
+            assert_eq!(hooks[*event][0]["hooks"][0]["command"], command, "{event}");
+            assert_eq!(
+                hooks[*event][0]["hooks"][0]["timeout"], CODEX_HOOK_TIMEOUT_SECONDS,
+                "{event}"
+            );
+        }
+        assert!(hooks.get("Interrupt").is_some());
+        assert!(hooks.get("Notification").is_none());
     }
 
     #[test]
@@ -745,6 +808,7 @@ mod tests {
         assert_eq!(hook_state(&start("clear")), None, "a clear is mid-turn");
         assert_eq!(hook_state(&event("SessionStart")), None);
         assert_eq!(hook_state(&event("Stop")), Some(AgentState::Idle));
+        assert_eq!(hook_state(&event("Interrupt")), Some(AgentState::Idle));
         assert_eq!(
             hook_state(&event("UserPromptSubmit")),
             Some(AgentState::Busy)
@@ -1016,6 +1080,23 @@ mod tests {
             },
             other => panic!("{other:?}"),
         }
+
+        // Codex's question, which is a tool call and not an event of its own.
+        let question = HookEvent {
+            tool_name: Some("request_user_input".to_owned()),
+            ..event("PreToolUse")
+        };
+        match hook_outcome("codex", &question) {
+            HookOutcome::Reported(info) => {
+                assert_eq!(info.kind, "codex");
+                assert_eq!(info.state, AgentState::Waiting);
+                assert_eq!(info.waiting_on.as_deref(), Some("a question"));
+            },
+            other => panic!("{other:?}"),
+        }
+        // And read the same way whoever asks, because every road that reads an event reads
+        // this one function: a kind-keyed answer would reach the record and not the feed.
+        assert_eq!(hook_state(&question), Some(AgentState::Waiting));
     }
 
     /// A record that says `idle` and carries a question is a record that disagrees with

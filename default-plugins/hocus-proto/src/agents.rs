@@ -379,7 +379,7 @@ pub use zellij_tile::agent::{
 };
 use zellij_tile::prelude::{AgentInfo, AgentSource, AgentState};
 
-/// What a Claude Code pane says it is doing, in the three states a row can draw.
+/// What an agent pane says it is doing, in the three states a row can draw.
 ///
 /// The session's `AgentState` minus `Exited`, which a row draws from the pane's own status
 /// rather than from a feed: the feed is what the agent *says*, and an exited agent says nothing.
@@ -430,7 +430,7 @@ pub struct HookFeed {
     /// a `PostToolUse` clearing a question it knows nothing about.
     #[serde(default)]
     pub waiting_on: Option<String>,
-    /// Claude Code's own session id, so a session restarted in the same pane can be
+    /// The agent's own session id, so a session restarted in the same pane can be
     /// told from one that merely went quiet.
     #[serde(default)]
     pub session_id: String,
@@ -1748,8 +1748,7 @@ mod tests {
         }
     }
 
-    /// A session where nothing reports for itself, which is every pane that is not
-    /// a Claude Code one with the hooks installed.
+    /// A session where nothing reports for itself.
     fn no_hooks() -> HookFeeds {
         HookFeeds::new()
     }

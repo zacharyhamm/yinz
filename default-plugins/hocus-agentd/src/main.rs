@@ -457,12 +457,23 @@ impl ZellijPlugin for State {
                     .get(wire::HOOK_PANE_ID)
                     .and_then(|id| id.parse::<u32>().ok()),
             };
+            // Which agent it came from. The payload is the agent's own JSON and never says,
+            // and this daemon writes a record of its own from it - so without this every
+            // pane that reports for itself would be a `claude`. Normalised the way
+            // `agent-report` normalises its `--kind`; absent, it is what every script old
+            // enough to omit it was installed for.
+            let kind = pipe_message
+                .args
+                .get(wire::HOOK_KIND)
+                .map(|kind| kind.trim().to_lowercase())
+                .filter(|kind| !kind.is_empty())
+                .unwrap_or_else(|| CLAUDE.to_owned());
             let event = pipe_message
                 .payload
                 .as_deref()
                 .and_then(|json| serde_json::from_str::<wire::HookEvent>(json).ok());
             if let (Some(pane_id), Some(event)) = (pane_id, event) {
-                self.on_hook(pane_id, &event);
+                self.on_hook_of(pane_id, &kind, &event);
             }
             return false;
         }
@@ -607,7 +618,7 @@ impl State {
         self.resolve_repositories();
     }
 
-    /// One Claude Code hook, from the pane it fired in.
+    /// One agent hook, from the pane it fired in and the agent that sent it.
     ///
     /// Publishes whenever an event changes the feed, and that is the whole point of
     /// the feed: a state change reaches the strip in the milliseconds it took the pipe
@@ -630,22 +641,30 @@ impl State {
     /// `activity` is what `status_cell` counts minutes with, on both paths, so a
     /// hook-fed pane's `idle 3m` reads the same as everyone else's. What it no longer does
     /// for them is buy summaries — see `observe_activity_with`.
-    fn on_hook(&mut self, pane_id: u32, event: &wire::HookEvent) {
+    fn on_hook_of(&mut self, pane_id: u32, kind: &str, event: &wire::HookEvent) {
         self.on_hook_with(
             pane_id,
+            kind,
             event,
             |pane_id, text| notify_with_pane_id(text, PaneId::Terminal(pane_id)),
             Self::on_turn_end,
         );
     }
 
-    /// The body of [`on_hook`], with the two host-facing halves injected so the tests can
+    /// The same for a `claude`, which is what all but one of the tests below are about.
+    #[cfg(test)]
+    fn on_hook(&mut self, pane_id: u32, event: &wire::HookEvent) {
+        self.on_hook_of(pane_id, CLAUDE, event);
+    }
+
+    /// The body of [`on_hook_of`], with the two host-facing halves injected so the tests can
     /// watch them — the same shape `observe_activity_with` and `finish_summary_with`
     /// already take. `turn` is what a `Stop` runs; it reaches the network, and the tests
     /// need its endpoint handed to it rather than read off a host that is not there.
     fn on_hook_with(
         &mut self,
         pane_id: u32,
+        kind: &str,
         event: &wire::HookEvent,
         toast: impl FnOnce(u32, &str),
         turn: impl FnOnce(&mut Self, u32, &wire::HookEvent),
@@ -653,7 +672,7 @@ impl State {
         // The session carries the record, and `zellij action agent-report --hook-json` sets it
         // in the same breath as it broadcasts this event - so this write is a no-op beside it,
         // and the road for a hook script from before that, which only ever piped.
-        match hocus_proto::agent::hook_outcome(CLAUDE, event) {
+        match hocus_proto::agent::hook_outcome(kind, event) {
             hocus_proto::agent::HookOutcome::Ended => report_agent(pane_id, None),
             hocus_proto::agent::HookOutcome::Reported(agent) => report_agent(pane_id, Some(agent)),
             hocus_proto::agent::HookOutcome::Nothing => {},
@@ -683,12 +702,13 @@ impl State {
         if !pane_is_agent {
             return;
         }
-        // A hook fired in this pane is that pane demonstrably running Claude Code:
-        // better evidence than the foreground command, which stops naming the agent
+        // A hook fired in this pane is that pane demonstrably running the agent that sent
+        // it: better evidence than the foreground command, which stops naming the agent
         // the moment it shells out. Latched through the same map the command sniff
         // uses, so it is released by the same confirmed verdict and cannot become a
-        // second thing to keep in step.
-        self.latched.insert(pane_id, CLAUDE.to_owned());
+        // second thing to keep in step. The kind is the broadcast's own, not one read back
+        // out of `classify` - which consults this very map.
+        self.latched.insert(pane_id, kind.to_owned());
         self.pending_release.remove(&pane_id);
         let cwd_moved = match &event.cwd {
             Some(cwd) => {
@@ -3974,6 +3994,34 @@ mod tests {
         assert_eq!(state.seq, seq, "an ignored event publishes nothing");
     }
 
+    /// A pane that is not a `claude`, said by the broadcast rather than guessed at.
+    ///
+    /// The payload is the agent's own JSON and names no agent, so without the `kind=`
+    /// argument this daemon would write `claude` over the record `agent-report` had just
+    /// written correctly, and latch the pane as one besides. Codex's question is an ordinary
+    /// tool call, which is why the wait below needs no rule of its own here.
+    #[test]
+    fn a_hook_that_names_its_agent_is_latched_and_recorded_as_that_agent() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "codex", "/work")]),
+            ..State::default()
+        };
+
+        state.on_hook_of(
+            7,
+            "codex",
+            &wire::HookEvent {
+                tool_name: Some("request_user_input".to_owned()),
+                ..hook("PreToolUse")
+            },
+        );
+
+        assert_eq!(state.latched.get(&7).map(String::as_str), Some("codex"));
+        assert_eq!(state.hooks[&7].phase, agents::HookPhase::Waiting);
+        assert_eq!(state.hooks[&7].waiting_on.as_deref(), Some("a question"));
+        assert_eq!(cell(&state, 7), "waiting · a question");
+    }
+
     #[test]
     fn a_hook_only_latches_a_pane_the_snapshot_already_calls_an_agent() {
         let mut state = State {
@@ -4165,6 +4213,7 @@ mod tests {
         let mut sent = Vec::new();
         state.on_hook_with(
             pane_id,
+            CLAUDE,
             event,
             |pane_id, text| toasts.borrow_mut().push((pane_id, text.to_owned())),
             |state, pane_id, event| {
