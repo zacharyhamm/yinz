@@ -1020,12 +1020,27 @@ impl WasmBridge {
         Ok(())
     }
     pub fn add_client(&mut self, client_id: ClientId) -> Result<()> {
+        let started_at = std::time::Instant::now();
+        log::info!(
+            "attach trace: WasmBridge::add_client client_id={client_id} connected-client check begin"
+        );
         if self.client_is_connected(&client_id) {
+            log::info!(
+                "attach trace: WasmBridge::add_client client_id={client_id} already connected"
+            );
             return Ok(());
         }
 
         let mut new_plugins = HashSet::new();
+        log::info!(
+            "attach trace: WasmBridge::add_client client_id={client_id} waiting for plugin_map lock"
+        );
         let existing_plugin_ids = self.plugin_map.lock().unwrap().plugin_ids();
+        log::info!(
+            "attach trace: WasmBridge::add_client client_id={client_id} plugin_map read complete plugins={} after {:?}",
+            existing_plugin_ids.len(),
+            started_at.elapsed()
+        );
         for plugin_id in existing_plugin_ids {
             if self.shared_plugin_ids.contains(&plugin_id) {
                 // a shared plugin has one instance for the whole session - we don't load another
@@ -1036,6 +1051,9 @@ impl WasmBridge {
             new_plugins.insert(plugin_id);
         }
         for plugin_id in new_plugins {
+            log::info!(
+                "attach trace: WasmBridge::add_client client_id={client_id} plugin_id={plugin_id} instance check begin"
+            );
             // a plugin loaded before this client attached (eg. a background plugin loaded on
             // startup, keyed under the initiating client's id) already has an instance for this
             // client - loading another would instantiate it twice and drop the first
@@ -1045,6 +1063,9 @@ impl WasmBridge {
                 .unwrap()
                 .contains(plugin_id, client_id)
             {
+                log::info!(
+                    "attach trace: WasmBridge::add_client client_id={client_id} plugin_id={plugin_id} already instantiated"
+                );
                 continue;
             }
             let Some(run_plugin) = self.run_plugin_of_plugin_id(plugin_id) else {
@@ -1093,11 +1114,22 @@ impl WasmBridge {
                 size,
             );
 
+            log::info!(
+                "attach trace: WasmBridge::add_client client_id={client_id} plugin_id={plugin_id} executor enqueue begin"
+            );
             plugin_executor.execute_for_plugin(
                 plugin_id,
                 move |senders, plugin_map, connected_clients, plugin_cache, engine| {
                     let skip_cache = false;
+                    let load_started_at = std::time::Instant::now();
+                    log::info!(
+                        "attach trace: plugin executor client_id={client_id} plugin_id={plugin_id} waiting for plugin_map lock"
+                    );
                     let mut plugin_map = plugin_map.lock().unwrap();
+                    log::info!(
+                        "attach trace: plugin executor client_id={client_id} plugin_id={plugin_id} acquired plugin_map lock after {:?}; plugin load begin",
+                        load_started_at.elapsed()
+                    );
                     match PluginLoader::new(
                         skip_cache,
                         loading_context,
@@ -1111,6 +1143,10 @@ impl WasmBridge {
                     .start_plugin()
                     {
                         Ok(_) => {
+                            log::info!(
+                                "attach trace: plugin executor client_id={client_id} plugin_id={plugin_id} plugin load complete after {:?}",
+                                load_started_at.elapsed()
+                            );
                             let _ = senders
                                 .send_to_screen(ScreenInstruction::RequestStateUpdateForPlugins);
                             let _ = senders.send_to_background_jobs(
@@ -1122,13 +1158,28 @@ impl WasmBridge {
                             });
                         },
                         Err(e) => {
+                            log::info!(
+                                "attach trace: plugin executor client_id={client_id} plugin_id={plugin_id} plugin load failed after {:?}",
+                                load_started_at.elapsed()
+                            );
                             log::error!("Failed to load plugin for new client: {}", e);
                         },
                     }
                 },
-            )
+            );
+            log::info!(
+                "attach trace: WasmBridge::add_client client_id={client_id} plugin_id={plugin_id} executor enqueue complete after {:?}",
+                started_at.elapsed()
+            );
         }
+        log::info!(
+            "attach trace: WasmBridge::add_client client_id={client_id} connected_clients lock begin"
+        );
         self.connected_clients.lock().unwrap().push(client_id);
+        log::info!(
+            "attach trace: WasmBridge::add_client client_id={client_id} complete after {:?}",
+            started_at.elapsed()
+        );
         Ok(())
     }
     pub fn resize_plugin(

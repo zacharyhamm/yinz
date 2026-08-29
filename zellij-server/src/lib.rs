@@ -865,6 +865,8 @@ pub fn start_server_impl(
     let to_server = SenderWithContext::new(to_server);
     let session_data: Arc<RwLock<Option<SessionMetaData>>> = Arc::new(RwLock::new(None));
     let session_state = Arc::new(RwLock::new(SessionState::new()));
+    let mut attach_traces_waiting_for_first_render: HashMap<ClientId, std::time::Instant> =
+        HashMap::new();
 
     if install_panic_hook {
         std::panic::set_hook({
@@ -901,9 +903,22 @@ pub fn start_server_impl(
                     match stream {
                         Ok(stream) => {
                             let mut os_input = os_input.clone();
+                            let accepted_at = std::time::Instant::now();
+                            log::info!(
+                                "attach trace: server pid={} listener accepted socket; waiting for session_state write lock",
+                                std::process::id()
+                            );
                             let client_id = session_state.write().unwrap().new_client();
+                            log::info!(
+                                "attach trace: server listener allocated client_id={client_id} after {:?}; registering IPC client",
+                                accepted_at.elapsed()
+                            );
 
                             let receiver = os_input.new_client(client_id, stream).unwrap();
+                            log::info!(
+                                "attach trace: server listener registered IPC client_id={client_id} after {:?}; spawning router",
+                                accepted_at.elapsed()
+                            );
 
                             let session_data = session_data.clone();
                             let session_state = session_state.clone();
@@ -922,6 +937,10 @@ pub fn start_server_impl(
                                     .fatal()
                                 })
                                 .unwrap();
+                            log::info!(
+                                "attach trace: server listener router spawned client_id={client_id} after {:?}",
+                                accepted_at.elapsed()
+                            );
                         },
                         Err(err) => {
                             panic!("err {:?}", err);
@@ -961,6 +980,15 @@ pub fn start_server_impl(
         };
         let (instruction, mut err_ctx) = recv.unwrap();
         err_ctx.add_call(ContextType::IPCServer((&instruction).into()));
+        match &instruction {
+            ServerInstruction::AttachClient(_, _, _, _, client_id) => log::info!(
+                "attach trace: server main loop received AttachClient client_id={client_id}"
+            ),
+            ServerInstruction::ConnStatus(client_id) => log::info!(
+                "attach trace: server main loop received ConnStatus client_id={client_id}"
+            ),
+            _ => {},
+        }
         match instruction {
             ServerInstruction::FirstClientConnected(cli_assets, is_web_client, client_id) => {
                 let host_terminal_env = cli_assets.host_terminal_env.clone();
@@ -1152,7 +1180,16 @@ pub fn start_server_impl(
                 is_web_client,
                 client_id,
             ) => {
+                let attach_started_at = std::time::Instant::now();
+                attach_traces_waiting_for_first_render.insert(client_id, attach_started_at);
+                log::info!(
+                    "attach trace: server main client_id={client_id} waiting for session_data write lock"
+                );
                 let mut rlock = session_data.write().unwrap();
+                log::info!(
+                    "attach trace: server main client_id={client_id} acquired session_data write lock after {:?}",
+                    attach_started_at.elapsed()
+                );
                 let Some(session_data) = rlock.as_mut() else {
                     // No first client ever initialised this session — the one
                     // that spawned the server gave up before its first message
@@ -1169,6 +1206,7 @@ pub fn start_server_impl(
                         },
                     );
                     remove_client!(client_id, os_input, session_state, session_data);
+                    attach_traces_waiting_for_first_render.remove(&client_id);
                     continue;
                 };
                 let config = session_data.session_configuration.saved_config.clone();
@@ -1200,11 +1238,21 @@ pub fn start_server_impl(
                     .current_input_modes
                     .insert(client_id, default_input_mode);
 
+                log::info!(
+                    "attach trace: server main client_id={client_id} waiting for session_state write lock"
+                );
                 session_state
                     .write()
                     .unwrap()
                     .set_client_is_web(client_id, is_web_client);
+                log::info!(
+                    "attach trace: server main client_id={client_id} session state updated after {:?}",
+                    attach_started_at.elapsed()
+                );
 
+                log::info!(
+                    "attach trace: server main client_id={client_id} enqueue SetClientHostTerminalEnv"
+                );
                 session_data
                     .senders
                     .send_to_screen(ScreenInstruction::SetClientHostTerminalEnv(
@@ -1212,6 +1260,7 @@ pub fn start_server_impl(
                         host_terminal_env,
                     ))
                     .unwrap();
+                log::info!("attach trace: server main client_id={client_id} enqueue AddClient");
                 session_data
                     .senders
                     .send_to_screen(ScreenInstruction::AddClient(
@@ -1222,6 +1271,9 @@ pub fn start_server_impl(
                         pane_id_to_focus,
                     ))
                     .unwrap();
+                log::info!(
+                    "attach trace: server main client_id={client_id} enqueue Plugin AddClient"
+                );
                 session_data
                     .senders
                     .send_to_plugin(PluginInstruction::AddClient(client_id))
@@ -1229,6 +1281,7 @@ pub fn start_server_impl(
                 let default_mode = config.options.default_mode.unwrap_or_default();
                 // ModeUpdate broadcast is handled by the screen thread via
                 // change_mode() -> update_input_modes()
+                log::info!("attach trace: server main client_id={client_id} enqueue ChangeMode");
                 session_data
                     .senders
                     .send_to_screen(ScreenInstruction::ChangeMode(
@@ -1238,6 +1291,10 @@ pub fn start_server_impl(
                         None,
                     ))
                     .unwrap();
+                log::info!(
+                    "attach trace: server main client_id={client_id} attach dispatch complete after {:?}",
+                    attach_started_at.elapsed()
+                );
             },
             ServerInstruction::AttachWatcherClient(client_id, terminal_size, is_web_client) => {
                 // the client_id was inserted into clients upon ipc tunnel initialization
@@ -1339,6 +1396,7 @@ pub fn start_server_impl(
                 }
             },
             ServerInstruction::ClientExit(client_id, completion_tx) => {
+                attach_traces_waiting_for_first_render.remove(&client_id);
                 let _ = os_input.send_to_client(
                     client_id,
                     ServerToClientMsg::Exit {
@@ -1426,6 +1484,7 @@ pub fn start_server_impl(
                 }
             },
             ServerInstruction::RemoveClient(client_id) => {
+                attach_traces_waiting_for_first_render.remove(&client_id);
                 // Check if this is a watcher
                 let is_watcher = session_state.read().unwrap().is_watcher(&client_id);
                 if is_watcher {
@@ -1551,6 +1610,16 @@ pub fn start_server_impl(
                 // If `None`- Send an exit instruction. This is the case when a user closes the last Tab/Pane.
                 if let Some(output) = &serialized_output {
                     for (client_id, client_render_instruction) in output.iter() {
+                        let attach_started_at = attach_traces_waiting_for_first_render
+                            .get(client_id)
+                            .copied();
+                        if let Some(started_at) = attach_started_at {
+                            log::info!(
+                                "attach trace: server main client_id={client_id} received first Render bytes={} after {:?}; client queue begin",
+                                client_render_instruction.len(),
+                                started_at.elapsed()
+                            );
+                        }
                         send_to_client!(
                             *client_id,
                             os_input,
@@ -1560,6 +1629,13 @@ pub fn start_server_impl(
                             session_state,
                             session_data
                         );
+                        if let Some(started_at) = attach_started_at {
+                            log::info!(
+                                "attach trace: server main client_id={client_id} first Render queued after {:?}",
+                                started_at.elapsed()
+                            );
+                            attach_traces_waiting_for_first_render.remove(client_id);
+                        }
                     }
                 } else {
                     // Session is exiting - disconnect all regular clients
@@ -1615,7 +1691,16 @@ pub fn start_server_impl(
                 // on a lock — does not answer in time and reads as unresponsive.
                 // That is the property callers rely on: a server that answers
                 // here can also take an `AttachClient` next.
-                let _ = os_input.send_to_client(client_id, ServerToClientMsg::Connected);
+                let started_at = std::time::Instant::now();
+                log::info!(
+                    "attach trace: server main client_id={client_id} ConnStatus reply queue begin"
+                );
+                let result = os_input.send_to_client(client_id, ServerToClientMsg::Connected);
+                log::info!(
+                    "attach trace: server main client_id={client_id} ConnStatus reply queued after {:?} ({})",
+                    started_at.elapsed(),
+                    if result.is_ok() { "ok" } else { "error" }
+                );
                 remove_client!(client_id, os_input, session_state, session_data);
             },
             ServerInstruction::Log(

@@ -34,9 +34,17 @@ impl Screen {
     }
 
     pub fn render_to_clients(&mut self) -> Result<()> {
+        self.render_to_clients_traced(false)
+    }
+
+    pub(crate) fn render_to_clients_traced(&mut self, trace_attach: bool) -> Result<()> {
         // this method does the actual rendering and is triggered by a debounced BackgroundJob (see
         // the render method for more details)
         let err_context = "failed to render screen";
+        let trace_started_at = std::time::Instant::now();
+        if trace_attach {
+            log::info!("attach trace: render frame setup begin");
+        }
 
         // One instant for the whole frame. Every animation is *sampled* here rather than advanced
         // on the clock tick, so there is no skew between "advance" and "paint" and every frame -
@@ -63,6 +71,12 @@ impl Screen {
                 tab.set_force_render();
             }
         }
+        if trace_attach {
+            log::info!(
+                "attach trace: render frame setup and tab sizing complete after {:?}",
+                trace_started_at.elapsed()
+            );
+        }
 
         // Separate rendering for regular clients and watchers
         let has_regular_clients = self
@@ -79,6 +93,9 @@ impl Screen {
 
         // === PHASE 1: Render for regular clients ===
         if has_regular_clients {
+            if trace_attach {
+                log::info!("attach trace: render regular-client pane rendering begin");
+            }
             let mut output = Output::new(
                 self.sixel_image_store.clone(),
                 self.character_cell_size.clone(),
@@ -157,6 +174,12 @@ impl Screen {
                 } else if !tab.is_pending() {
                     tabs_to_close.push(*tab_index);
                 }
+            }
+            if trace_attach {
+                log::info!(
+                    "attach trace: render regular-client panes complete after {:?}",
+                    trace_started_at.elapsed()
+                );
             }
 
             // notifications paint over the panes, so they're emitted once every tab has rendered
@@ -259,13 +282,33 @@ impl Screen {
             }
 
             if non_watcher_output_was_dirty || has_bell {
+                if trace_attach {
+                    log::info!("attach trace: render output serialization begin");
+                }
                 let serialized_output = output.serialize().context(err_context)?;
+                if trace_attach {
+                    log::info!(
+                        "attach trace: render output serialization complete clients={} bytes={} after {:?}",
+                        serialized_output.len(),
+                        serialized_output.values().map(String::len).sum::<usize>(),
+                        trace_started_at.elapsed()
+                    );
+                }
                 if !serialized_output.is_empty() {
+                    if trace_attach {
+                        log::info!("attach trace: render enqueue to server main loop begin");
+                    }
                     let _ = self
                         .bus
                         .senders
                         .send_to_server(ServerInstruction::Render(Some(serialized_output)))
                         .context(err_context);
+                    if trace_attach {
+                        log::info!(
+                            "attach trace: render enqueue to server main loop complete after {:?}",
+                            trace_started_at.elapsed()
+                        );
+                    }
                 }
             }
 
@@ -392,6 +435,13 @@ impl Screen {
             self.close_tab_by_id(tab_index)
                 .context(err_context)
                 .non_fatal();
+        }
+
+        if trace_attach {
+            log::info!(
+                "attach trace: render frame complete after {:?}",
+                trace_started_at.elapsed()
+            );
         }
 
         Ok(())
