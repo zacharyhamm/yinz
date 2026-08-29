@@ -1772,6 +1772,23 @@ mod config_test {
     }
 
     #[test]
+    fn every_hook_point_binds_from_kdl_and_survives_serialization() {
+        // The KDL surface is generic over `HookPoint::ALL`, and this is what keeps it so: a
+        // point that can be named can be bound, and comes back bound.
+        for point in HookPoint::ALL {
+            let kdl = format!("hooks {{\n {point} \"file:/tmp/{point}.lua\"\n}}");
+            let config = Config::from_kdl(&kdl, None).unwrap_or_else(|e| panic!("{point}: {e:?}"));
+            assert_eq!(
+                config.hooks.get(*point).map(|p| p.location_string()),
+                Some(format!("file:/tmp/{point}.lua")),
+                "{point}"
+            );
+            let round_tripped = Config::from_kdl(&config.to_string(false), None).unwrap();
+            assert_eq!(round_tripped.hooks, config.hooks, "{point}");
+        }
+    }
+
+    #[test]
     fn hooks_survive_serialization() {
         // Both directions matter: a bound point must come back bound, and an unbound one must
         // stay unbound rather than falling back to the default.

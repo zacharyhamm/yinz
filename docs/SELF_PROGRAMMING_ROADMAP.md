@@ -24,7 +24,7 @@ The fork is further along than its docs admit. Things that look missing but are 
 | In-session LLM control plane with 65 tools, incl. `agent_spawn/send/control/list`, `plugin_write/reload/read/log/docs`, `schedule` | `default-plugins/hocus/src/tools.rs:556`, `tool_loop.rs` |
 | Single agent-launch planner (kind → binary, `--model`, prompt, branch/worktree) | `default-plugins/hocus-proto/src/launch.rs:94` |
 | Agent state daemon: 5 s scrollback fingerprinting + Claude Code hook feed (`zellij hocus hooks install`) | `default-plugins/hocus-agentd/src/main.rs`, `hocus-proto/src/agents.rs`, `src/hocus_hooks.rs`, `docs/AGENT_HOOKS.md` |
-| `agent_exit` hook: pane-replacing Lua plugin fired by the server | `zellij-server/src/screen/mod.rs:2660`, `plugins/mod.rs:1564`, `zellij-utils/src/input/hooks.rs` |
+| Hooks: `agent_exit` (pane-replacing) and the headless points `agent_start`, `agent_waiting`, `pane_exit`, `session_start`, `context_menu` | `zellij-server/src/screen/mod.rs` (`fire_*_hook`), `plugins/mod.rs` (`run_hook`, `deliver_to_headless_hook`), `zellij-utils/src/input/hooks.rs` |
 | Lua plugins reach the **whole** `PluginCommand` surface (~243 variants, 96 replying) via one `from_value` | `zellij-server/src/plugins/lua/command.rs`, `lua/response.rs` (TECH_DEBT B2 is done; the doc is stale) |
 | SQLite plugin data store with watches, shared namespaces | `zellij-utils/src/plugin_data_store/`, `hocus-proto/src/store.rs` |
 | Work queues (headless plugin jobs, per-queue concurrency) | `zellij-server/src/plugins/queues.rs` |
@@ -57,8 +57,8 @@ The fork is further along than its docs admit. Things that look missing but are 
 5. **Config self-write is KDL-only and refused under Lua config** (`lib.rs:2519`). There is no
    CLI for `Reconfigure`/`RebindKeys`/hook binding at all — binding a `hooks {}` entry
    programmatically requires being a wasm plugin.
-6. **Hook points are one shape, two points.** `RunHook` means "replace this pane with a plugin"
-   (`plugins/mod.rs:1564`); `context_menu` is the one headless exception. No `agent_start`,
+6. **Hook points are one shape, two points.** *(closed by R14)* `RunHook` meant "replace this
+   pane with a plugin"; `context_menu` was the one headless exception. No `agent_start`,
    `agent_waiting`, `session_start`.
 7. **Permission gating fails open** in both maps: `command_permission`'s `_ => return None`
    (`zellij_exports.rs:7186`) and event delivery's `_ => Granted` (`wasm_bridge.rs:2601`). Any new
@@ -194,7 +194,7 @@ consistency, not authentication — the env var is as trustworthy as the process
 
 ### Phase 3 — Generalize hooks, persist the orchestrator
 
-**R14. A headless hook shape and new hook points.**
+**R14. A headless hook shape and new hook points.** *(done — `HookPoint::shape()` is `ReplacePane` for `agent_exit` and `Headless` for everything else; `RunHook.pane_id` is optional; `deliver_to_headless_hook` in `plugins/mod.rs` is the find-or-load-then-`update_plugins` path both `context_menu` and `Event::Hook { point, payload }` use. `agent_start`/`agent_waiting` fire off `agent_hook_edges` in `screen/mod.rs` (SetPaneAgent, pane creation, re-run); `pane_exit` from `HoldPane` and the pty's `ClosePane`; `session_start` from the plugin thread's first `AddClient` — not thread start, because `add_client` re-instantiates every plugin loaded before it. Payloads and the one known gap (Enter in a held pane with no `agent_exit` bound) are in `docs/LUA_PLUGINS.md`.)*
 `HookPoint` (`hooks.rs:35`) gains `AgentStart`, `AgentWaiting`, `SessionStart`, `PaneExit`
 (any command pane). `PluginInstruction::RunHook` gains a `shape`: `ReplacePane` (today's
 `agent_exit`) or `Headless` (the `context_menu` load path at `plugins/mod.rs:1627`, but delivering

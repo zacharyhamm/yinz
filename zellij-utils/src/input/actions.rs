@@ -3876,6 +3876,19 @@ mod tests {
             .contains("Reconfigure"));
         let refused = set_hook("on_coffee", "file:x.lua").unwrap_err();
         assert!(refused.contains("agent_exit"), "{refused}");
+        // Every point the config knows, the CLI accepts - and the near miss is refused.
+        for point in crate::input::hooks::HookPoint::ALL {
+            let actions = set_hook(point.as_str(), "file:x.lua").unwrap();
+            assert_eq!(
+                actions,
+                vec![Action::Reconfigure {
+                    config: format!("hooks {{\n    {point} \"file:x.lua\"\n}}\n"),
+                    write_to_disk: false,
+                }]
+            );
+        }
+        let refused = set_hook("agent_started", "file:x.lua").unwrap_err();
+        assert!(refused.contains("agent_start,"), "{refused}");
     }
 
     /// `agent-report` is what an agent's hooks call: a state names the record, `--clear` ends

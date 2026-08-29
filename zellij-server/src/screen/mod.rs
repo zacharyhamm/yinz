@@ -71,10 +71,10 @@ use crate::route::NotificationEnd;
 
 use log::{debug, warn};
 use zellij_utils::data::{
-    ContextMenuContext, ContextMenuItem, Direction, EventType, FloatingPaneCoordinates,
-    HostTerminalThemeMode, KeyWithModifier, LayoutInfo, LayoutWithError, NotificationInfo,
-    PaneInfo, RemotePaneHandoff, ResizeStrategy, SessionInfo, Styling, TabInfo, ThemeHue,
-    WarpedPane, WarpedTab, WebSharing, HOCUS_AGENT_PANE_CONTEXT,
+    AgentInfo, AgentState, ContextMenuContext, ContextMenuItem, Direction, EventType,
+    FloatingPaneCoordinates, HostTerminalThemeMode, KeyWithModifier, LayoutInfo, LayoutWithError,
+    NotificationInfo, PaneInfo, RemotePaneHandoff, ResizeStrategy, SessionInfo, Styling, TabInfo,
+    ThemeHue, WarpedPane, WarpedTab, WebSharing, HOCUS_AGENT_PANE_CONTEXT,
 };
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::command::{RunCommand, TerminalAction};
@@ -2792,20 +2792,46 @@ impl Screen {
         self.log_and_report_session_state()?;
         Ok(())
     }
+    /// Ask the plugin thread to run the plugin bound to `point`.
+    ///
+    /// Fired unconditionally by every hook site - whether a hook is bound is the plugin
+    /// thread's question, so that the answer lives in one place.
+    fn fire_hook(
+        &self,
+        point: HookPoint,
+        pane_id: Option<PaneId>,
+        payload: BTreeMap<String, String>,
+        client_id: ClientId,
+    ) {
+        self.bus
+            .senders
+            .send_to_plugin(PluginInstruction::RunHook {
+                point,
+                pane_id,
+                payload,
+                client_id,
+            })
+            .non_fatal();
+    }
+    /// The client a hook about a pane is run for: the one that spawned the pane, or the first
+    /// one where nobody did. `None` when there is no client at all, which is no one to run a
+    /// hook for.
+    fn hook_client_id(&self, run_command: Option<&RunCommand>) -> Option<ClientId> {
+        run_command
+            .and_then(|run_command| run_command.originating_plugin.as_ref())
+            .map(|plugin| plugin.client_id)
+            .or_else(|| self.get_first_client_id())
+    }
     /// Hand an exited agent pane to the `agent_exit` hook.
     ///
     /// This is what used to be a branch in the terminal emulator: `TerminalPane::hold` painted a
     /// fixed question over the pane and `adjust_input_to_terminal` implemented its two answers.
     /// Now the pane just holds, and the plugin bound to the hook point is opened in its place.
     ///
-    /// Fired unconditionally when the pane is an agent pane - whether a hook is bound is the
-    /// plugin thread's question, so that the answer lives in one place.
-    ///
     /// An agent pane is one whose record says so (`pane_is_agent`, read off the pane's
     /// `AgentInfo`, however it got there: the spawn path, a plugin, or the agent's own hooks),
     /// or - for a pane spawned by an older plugin - one whose originating context carries the
-    /// marker. The hook is opened for the client that spawned the pane, or the first one where
-    /// nobody did.
+    /// marker.
     fn fire_agent_exit_hook(
         &self,
         pane_id: PaneId,
@@ -2819,10 +2845,7 @@ impl Screen {
         if !(pane_is_agent || context_says_agent) {
             return;
         }
-        let Some(client_id) = originating_plugin
-            .map(|plugin| plugin.client_id)
-            .or_else(|| self.get_first_client_id())
-        else {
+        let Some(client_id) = self.hook_client_id(Some(run_command)) else {
             return;
         };
         let PaneId::Terminal(terminal_pane_id) = pane_id else {
@@ -2850,28 +2873,139 @@ impl Screen {
                 .unwrap_or_default(),
         );
         payload.insert("agent_command".to_owned(), run_command.to_string());
-        self.bus
-            .senders
-            .send_to_plugin(PluginInstruction::RunHook {
-                point: HookPoint::AgentExit,
-                pane_id,
-                payload,
-                client_id,
-            })
-            .non_fatal();
+        self.fire_hook(HookPoint::AgentExit, Some(pane_id), payload, client_id);
+    }
+    /// Hand any command pane's exit to the `pane_exit` hook, held or not.
+    ///
+    /// Fired before `agent_exit` for a pane that is both, so the observer hears of the exit
+    /// before the pane is replaced. The keys carry an `exit_` prefix for the same reason
+    /// `agent_exit`'s carry `agent_`: one vocabulary across the hook payloads.
+    fn fire_pane_exit_hook(
+        &self,
+        pane_id: PaneId,
+        exit_status: Option<i32>,
+        run_command: &RunCommand,
+        held: bool,
+    ) {
+        let Some(client_id) = self.hook_client_id(Some(run_command)) else {
+            return;
+        };
+        let PaneId::Terminal(terminal_pane_id) = pane_id else {
+            return;
+        };
+        let mut payload = BTreeMap::new();
+        payload.insert("exit_pane_id".to_owned(), terminal_pane_id.to_string());
+        if let Some(exit_status) = exit_status {
+            payload.insert("exit_code".to_owned(), exit_status.to_string());
+        }
+        payload.insert(
+            "exit_cwd".to_owned(),
+            run_command
+                .cwd
+                .as_ref()
+                .map(|cwd| cwd.display().to_string())
+                .unwrap_or_default(),
+        );
+        payload.insert("exit_command".to_owned(), run_command.to_string());
+        // Whether the pane is still there to be re-run, or is closing with its command.
+        payload.insert("exit_held".to_owned(), held.to_string());
+        self.fire_hook(HookPoint::PaneExit, Some(pane_id), payload, client_id);
+    }
+    /// Fire the hooks an agent record's change calls for: `agent_start` and `agent_waiting`,
+    /// as [`agent_hook_edges`] reads them off the record before and after.
+    fn fire_agent_state_hooks(
+        &self,
+        pane_id: PaneId,
+        previous: Option<&AgentInfo>,
+        current: Option<&AgentInfo>,
+    ) {
+        let edges = agent_hook_edges(previous, current);
+        if edges.is_empty() {
+            return;
+        }
+        let Some(current) = current else {
+            return;
+        };
+        let PaneId::Terminal(terminal_pane_id) = pane_id else {
+            return;
+        };
+        let run_command = self
+            .tab_containing_pane(pane_id)
+            .and_then(|tab| tab.pane_run_command(pane_id));
+        let Some(client_id) = self.hook_client_id(run_command.as_ref()) else {
+            return;
+        };
+        let mut payload = BTreeMap::new();
+        payload.insert("agent_pane_id".to_owned(), terminal_pane_id.to_string());
+        payload.insert("agent_kind".to_owned(), current.kind.clone());
+        payload.insert(
+            "agent_state".to_owned(),
+            current.state.to_string().to_lowercase(),
+        );
+        if let Some(previous) = previous {
+            payload.insert(
+                "agent_previous_state".to_owned(),
+                previous.state.to_string().to_lowercase(),
+            );
+        }
+        payload.insert(
+            "agent_source".to_owned(),
+            current.source.to_string().to_lowercase(),
+        );
+        if let Some(detail) = current.detail.as_ref() {
+            payload.insert("agent_detail".to_owned(), detail.clone());
+        }
+        let cwd = current.cwd.clone().or_else(|| {
+            run_command
+                .as_ref()
+                .and_then(|run_command| run_command.cwd.as_ref())
+                .map(|cwd| cwd.display().to_string())
+        });
+        payload.insert("agent_cwd".to_owned(), cwd.unwrap_or_default());
+        if let Some(session_id) = current.session_id.as_ref() {
+            payload.insert("agent_session_id".to_owned(), session_id.clone());
+        }
+        if let Some(run_command) = run_command.as_ref() {
+            payload.insert("agent_command".to_owned(), run_command.to_string());
+        }
+        for point in edges {
+            self.fire_hook(point, Some(pane_id), payload.clone(), client_id);
+        }
+    }
+    /// A pane that was born with an agent record - the spawn path wrote it - has started.
+    fn fire_agent_start_for_new_pane(&self, pane_id: PaneId) {
+        let agent = self
+            .tab_containing_pane(pane_id)
+            .and_then(|tab| tab.pane_agent_info(pane_id));
+        if let Some(agent) = agent {
+            self.fire_agent_state_hooks(pane_id, None, Some(&agent));
+        }
     }
     pub fn rerun_command_pane_with_id(
         &mut self,
         terminal_pane_id: u32,
         completion_tx: Option<NotificationEnd>,
     ) {
-        match self.tab_containing_pane_mut(PaneId::Terminal(terminal_pane_id)) {
+        let pane_id = PaneId::Terminal(terminal_pane_id);
+        // Read around the re-run rather than inside it: the pane resets its own record to
+        // `busy` when it restarts, and an exited agent coming back is an `agent_start`.
+        let previous = self
+            .tab_containing_pane(pane_id)
+            .and_then(|tab| tab.pane_agent_info(pane_id));
+        match self.tab_containing_pane_mut(pane_id) {
             Some(tab) => tab.rerun_terminal_pane_with_id(terminal_pane_id, completion_tx),
-            None => log::error!(
-                "Failed to find terminal pane with id: {} to run",
-                terminal_pane_id
-            ),
+            None => {
+                log::error!(
+                    "Failed to find terminal pane with id: {} to run",
+                    terminal_pane_id
+                );
+                return;
+            },
         }
+        let current = self
+            .tab_containing_pane(pane_id)
+            .and_then(|tab| tab.pane_agent_info(pane_id));
+        self.fire_agent_state_hooks(pane_id, previous.as_ref(), current.as_ref());
     }
     pub fn resize_pane_with_id(&mut self, resize: ResizeStrategy, pane_id: PaneId) -> Result<()> {
         match self.tab_containing_pane_mut(pane_id) {
@@ -4140,6 +4274,45 @@ impl Screen {
     }
 }
 
+/// The hook points a change of agent record fires, in the order they fire.
+///
+/// `agent_start` is a record appearing where there was none, or where the last one had exited,
+/// or a new session id in the same pane (an agent restarted where another one had been: the
+/// record's `session_id` exists so that a restart can be told from a pane that merely went
+/// quiet). `agent_waiting` is the record moving to `waiting` from anything else - a second
+/// report of `waiting` with a new detail is the same wait, not a new one. Clearing the record
+/// and moving to `exited` fire nothing here: exit is `agent_exit`'s.
+pub(crate) fn agent_hook_edges(
+    previous: Option<&AgentInfo>,
+    current: Option<&AgentInfo>,
+) -> Vec<HookPoint> {
+    let Some(current) = current else {
+        return vec![];
+    };
+    let mut edges = vec![];
+    if current.state != AgentState::Exited {
+        let started = match previous {
+            None => true,
+            Some(previous) => {
+                previous.state == AgentState::Exited
+                    || matches!(
+                        (previous.session_id.as_ref(), current.session_id.as_ref()),
+                        (Some(before), Some(after)) if before != after
+                    )
+            },
+        };
+        if started {
+            edges.push(HookPoint::AgentStart);
+        }
+    }
+    if current.state == AgentState::Waiting
+        && previous.map(|previous| previous.state) != Some(AgentState::Waiting)
+    {
+        edges.push(HookPoint::AgentWaiting);
+    }
+    edges
+}
+
 #[cfg(not(test))]
 fn get_default_editor() -> Option<PathBuf> {
     std::env::var("EDITOR")
@@ -4239,7 +4412,17 @@ fn replay_pending_plugin_events(
                 }
                 screen.render(None)?;
             },
-            ScreenInstruction::ClosePane(pane_id, _, _, exit_status) => {
+            ScreenInstruction::ClosePane(pane_id, client_id, completion_tx, exit_status) => {
+                // Buffered only by the pty's "the child exited" road, which is the one that
+                // means a command pane's exit; the guard is the same as the live handler's.
+                if client_id.is_none() && completion_tx.is_none() {
+                    if let Some(run_command) = screen
+                        .tab_containing_pane(pane_id)
+                        .and_then(|tab| tab.pane_run_command(pane_id))
+                    {
+                        screen.fire_pane_exit_hook(pane_id, exit_status, &run_command, false);
+                    }
+                }
                 let mut found = false;
                 for tab in screen.tabs.values_mut() {
                     if tab.get_all_pane_ids().contains(&pane_id) {
@@ -4275,6 +4458,7 @@ fn replay_pending_plugin_events(
                     }
                 }
                 if found {
+                    screen.fire_pane_exit_hook(pane_id, exit_status, &run_command, true);
                     screen.fire_agent_exit_hook(pane_id, exit_status, &run_command, pane_is_agent);
                 }
                 if !found {

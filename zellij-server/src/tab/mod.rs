@@ -4373,12 +4373,30 @@ impl Tab {
     }
     /// Whether `pane_id` has an agent record, whoever wrote it.
     pub fn pane_is_agent(&self, pane_id: PaneId) -> bool {
+        self.pane_agent_info(pane_id).is_some()
+    }
+    /// `pane_id`'s agent record, wherever the pane is - the screen reads it before a change so
+    /// that a hook can be told what the record moved from.
+    pub fn pane_agent_info(&self, pane_id: PaneId) -> Option<AgentInfo> {
         self.floating_panes
             .get(&pane_id)
             .or_else(|| self.overlay_panes.get(&pane_id))
             .or_else(|| self.tiled_panes.get_pane(pane_id))
             .or_else(|| self.suppressed_panes.get(&pane_id).map(|p| &p.pane))
-            .is_some_and(|pane| pane.agent_info().is_some())
+            .and_then(|pane| pane.agent_info().cloned())
+    }
+    /// The command `pane_id` runs, for a command pane; `None` for a shell, an editor or a
+    /// plugin pane. What tells a command pane's exit apart from any other close.
+    pub fn pane_run_command(&self, pane_id: PaneId) -> Option<RunCommand> {
+        self.floating_panes
+            .get(&pane_id)
+            .or_else(|| self.overlay_panes.get(&pane_id))
+            .or_else(|| self.tiled_panes.get_pane(pane_id))
+            .or_else(|| self.suppressed_panes.get(&pane_id).map(|p| &p.pane))
+            .and_then(|pane| match pane.invoked_with() {
+                Some(Run::Command(run_command)) => Some(run_command.clone()),
+                _ => None,
+            })
     }
     pub fn has_pane_with_pid(&self, pid: &PaneId) -> bool {
         self.tiled_panes.panes_contain(pid)

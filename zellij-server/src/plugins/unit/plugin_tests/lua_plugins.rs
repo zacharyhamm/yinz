@@ -752,7 +752,7 @@ pub fn the_agent_exit_hook_opens_a_pane_in_place_of_the_one_that_exited() {
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
     let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
         point: HookPoint::AgentExit,
-        pane_id: PaneId::Terminal(7),
+        pane_id: Some(PaneId::Terminal(7)),
         payload: agent_exit_payload(),
         client_id,
     });
@@ -797,7 +797,7 @@ pub fn the_agent_exit_hook_opens_again_after_the_first_one_is_closed() {
     let fire = || {
         let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
             point: HookPoint::AgentExit,
-            pane_id: PaneId::Terminal(7),
+            pane_id: Some(PaneId::Terminal(7)),
             payload: agent_exit_payload(),
             client_id,
         });
@@ -985,5 +985,294 @@ pub fn the_agent_exit_hook_closes_the_pane_on_escape() {
         closed_in_screen,
         "expected Esc to close pane 7 in the screen too, got: {:?}",
         received_screen_instructions.lock()
+    );
+}
+
+/// A headless hook: names every hook it is handed after a tab, once it may.
+///
+/// The rename needs `change_application_state`, which a `file:` plugin has to ask for, and the
+/// first firing can reach the plugin before the grant does - the event is held through the load
+/// and delivered the moment it completes, while the grant round-trips through the screen. So the
+/// plugin queues until `permission_request_result` and then speaks; the second firing, after the
+/// grant, speaks at once. Either way the count is exact.
+const HEADLESS_HOOK_LUA: &str = r#"
+local zellij = require("zellij")
+local M = { granted = false, queued = {} }
+local function say(e)
+  local subject = e.payload.exit_pane_id or e.payload.session_name or ""
+  zellij.rename_tab_with_id { 1, e.point .. ":" .. subject }
+end
+function M.load(config)
+  zellij.subscribe { "hook", "permission_request_result" }
+  zellij.request_permission { "change_application_state" }
+end
+zellij.on("permission_request_result", function()
+  M.granted = true
+  for _, e in ipairs(M.queued) do say(e) end
+  M.queued = {}
+end)
+zellij.on("hook", function(e)
+  if M.granted then say(e) else table.insert(M.queued, e) end
+end)
+function M.render() return "" end
+return M
+"#;
+
+/// Every tab rename the hook asked for, as the name it gave.
+fn tab_names_set(instructions: &[ScreenInstruction]) -> Vec<String> {
+    instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            ScreenInstruction::RenameTabWithId(_, name, _) => {
+                Some(String::from_utf8_lossy(name).to_string())
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+/// The `AddPlugin`s that opened nothing on screen, as plugin ids: a headless hook's loads.
+fn suppressed_plugins_loaded(instructions: &[ScreenInstruction]) -> Vec<PluginId> {
+    instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            ScreenInstruction::AddPlugin(_, _, _, _, _, _, plugin_id, _, _, true, ..) => {
+                Some(*plugin_id)
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+fn headless_hook_plugin(user_plugin_dir: &std::path::Path) -> RunPluginOrAlias {
+    std::fs::write(user_plugin_dir.join("hook.lua"), HEADLESS_HOOK_LUA).unwrap();
+    RunPluginOrAlias::RunPlugin(
+        RunPlugin::from_url(&format!(
+            "file:{}",
+            user_plugin_dir.join("hook.lua").display()
+        ))
+        .unwrap(),
+    )
+}
+
+fn bind_hook(
+    plugin_thread_sender: &SenderWithContext<PluginInstruction>,
+    point: HookPoint,
+    plugin: RunPluginOrAlias,
+) {
+    let _ = plugin_thread_sender.send(PluginInstruction::Reconfigure {
+        client_id: 1,
+        keybinds: None,
+        default_mode: None,
+        default_shell: None,
+        layout_dir: None,
+        user_plugin_dir: None,
+        builtin_plugins_dir: None,
+        hooks: zellij_utils::input::hooks::Hooks::from_data(BTreeMap::from([(point, plugin)])),
+        context_menu: Default::default(),
+        was_written_to_disk: false,
+    });
+}
+
+fn pane_exit_payload(pane_id: u32) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("exit_pane_id".to_owned(), pane_id.to_string()),
+        ("exit_code".to_owned(), "0".to_owned()),
+        ("exit_held".to_owned(), "true".to_owned()),
+    ])
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn a_headless_hook_is_loaded_on_first_fire_and_receives_the_event() {
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let cache_path = plugin_host_folder.join("permissions_test.kdl");
+    let user_plugin_dir = tempdir().unwrap();
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread(Some(plugin_host_folder), None);
+    let client_id = 1;
+
+    let received_screen_instructions = Watched::new(vec![]);
+    let screen_thread = grant_permissions_and_log_actions_in_thread!(
+        received_screen_instructions,
+        ScreenInstruction::RenameTabWithId,
+        screen_receiver,
+        1,
+        &PermissionType::ChangeApplicationState,
+        cache_path,
+        plugin_thread_sender,
+        client_id
+    );
+
+    bind_hook(
+        &plugin_thread_sender,
+        HookPoint::PaneExit,
+        headless_hook_plugin(user_plugin_dir.path()),
+    );
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+    let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
+        point: HookPoint::PaneExit,
+        pane_id: Some(PaneId::Terminal(7)),
+        payload: pane_exit_payload(7),
+        client_id,
+    });
+    screen_thread.join().unwrap();
+    teardown();
+
+    let instructions = received_screen_instructions.lock();
+    assert_eq!(
+        tab_names_set(&instructions),
+        vec!["pane_exit:7".to_owned()],
+        "got: {instructions:?}"
+    );
+    assert_eq!(
+        suppressed_plugins_loaded(&instructions).len(),
+        1,
+        "the hook is loaded headless, once, got: {instructions:?}"
+    );
+    assert!(
+        hook_panes_opened(&instructions).is_empty(),
+        "a headless hook opens nothing in place of the pane, got: {instructions:?}"
+    );
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn a_second_firing_reuses_the_headless_hook_instance() {
+    // The opposite of the pane-replacing shape: the instance is found by its configured
+    // identity, so a different payload is the same plugin hearing again.
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let cache_path = plugin_host_folder.join("permissions_test.kdl");
+    let user_plugin_dir = tempdir().unwrap();
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread(Some(plugin_host_folder), None);
+    let client_id = 1;
+
+    let received_screen_instructions = Watched::new(vec![]);
+    let screen_thread = grant_permissions_and_log_actions_in_thread!(
+        received_screen_instructions,
+        ScreenInstruction::RenameTabWithId,
+        screen_receiver,
+        2,
+        &PermissionType::ChangeApplicationState,
+        cache_path,
+        plugin_thread_sender,
+        client_id
+    );
+
+    bind_hook(
+        &plugin_thread_sender,
+        HookPoint::PaneExit,
+        headless_hook_plugin(user_plugin_dir.path()),
+    );
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+    let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
+        point: HookPoint::PaneExit,
+        pane_id: Some(PaneId::Terminal(7)),
+        payload: pane_exit_payload(7),
+        client_id,
+    });
+    // Once the first firing has been answered the plugin is up and granted; the second one
+    // must reach the same instance rather than load another.
+    received_screen_instructions.wait_until(
+        "the first firing to be named",
+        zellij_test_support::default_timeout(),
+        |instructions| (!tab_names_set(instructions).is_empty()).then_some(()),
+    );
+    let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
+        point: HookPoint::PaneExit,
+        pane_id: Some(PaneId::Terminal(8)),
+        payload: pane_exit_payload(8),
+        client_id,
+    });
+    screen_thread.join().unwrap();
+    teardown();
+
+    let instructions = received_screen_instructions.lock();
+    assert_eq!(
+        tab_names_set(&instructions),
+        vec!["pane_exit:7".to_owned(), "pane_exit:8".to_owned()],
+        "got: {instructions:?}"
+    );
+    assert_eq!(
+        suppressed_plugins_loaded(&instructions).len(),
+        1,
+        "one instance for every firing, got: {instructions:?}"
+    );
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn a_replace_pane_hook_without_a_pane_opens_nothing() {
+    // `agent_exit` replaces a pane; fired with none there is nothing to replace, and it must not
+    // open its plugin somewhere else instead.
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread(Some(plugin_host_folder), None);
+    let client_id = 1;
+
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+    let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
+        point: HookPoint::AgentExit,
+        pane_id: None,
+        payload: agent_exit_payload(),
+        client_id,
+    });
+    // The thread drains its instructions in order and `teardown` joins it, so everything it
+    // was ever going to send the screen has been sent.
+    teardown();
+
+    let instructions: Vec<ScreenInstruction> = screen_receiver
+        .try_iter()
+        .map(|(instruction, _)| instruction)
+        .collect();
+    assert!(
+        !instructions
+            .iter()
+            .any(|i| matches!(i, ScreenInstruction::AddPlugin(..))),
+        "got: {instructions:?}"
+    );
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn session_start_fires_for_the_initiating_client() {
+    // Bound from the start, as a config binding is: the point fires when the first client is
+    // added, which in a real session is before any reconfigure could land.
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let cache_path = plugin_host_folder.join("permissions_test.kdl");
+    let user_plugin_dir = tempdir().unwrap();
+    let hooks = zellij_utils::input::hooks::Hooks::from_data(BTreeMap::from([(
+        HookPoint::SessionStart,
+        headless_hook_plugin(user_plugin_dir.path()),
+    )]));
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread_with_hooks(Some(plugin_host_folder), None, None, hooks);
+    let client_id = 1;
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+
+    let received_screen_instructions = Watched::new(vec![]);
+    let screen_thread = grant_permissions_and_log_actions_in_thread!(
+        received_screen_instructions,
+        ScreenInstruction::RenameTabWithId,
+        screen_receiver,
+        1,
+        &PermissionType::ChangeApplicationState,
+        cache_path,
+        plugin_thread_sender,
+        client_id
+    );
+    screen_thread.join().unwrap();
+    teardown();
+
+    let instructions = received_screen_instructions.lock();
+    assert_eq!(
+        tab_names_set(&instructions),
+        vec!["session_start:zellij-test".to_owned()],
+        "the harness names its session zellij-test, got: {instructions:?}"
     );
 }
