@@ -1277,6 +1277,84 @@ pub fn session_start_fires_for_the_initiating_client() {
     );
 }
 
+/// A client attaching while a headless hook is still pending - here, waiting on the permission
+/// prompt its `load` raised - used to lose the hook's first firing: `add_client` provisions an
+/// instance for the new client and started the plugin's event cache afresh, throwing away the
+/// firing that had loaded the hook. The cache is kept across that now, and the firing reaches
+/// the hook once the permission is granted.
+#[test]
+#[serial(plugin_tests)]
+pub fn a_client_attaching_while_a_hook_waits_on_its_permission_does_not_lose_the_firing() {
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let cache_path = plugin_host_folder.join("permissions_test.kdl");
+    let user_plugin_dir = tempdir().unwrap();
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread(Some(plugin_host_folder), None);
+
+    let received_screen_instructions = Watched::new(vec![]);
+    let screen_thread = std::thread::Builder::new()
+        .name("fake_screen_thread".to_string())
+        .spawn({
+            let log = received_screen_instructions.clone();
+            let plugin_thread_sender = plugin_thread_sender.clone();
+            let cache_path = cache_path.clone();
+            let mut permission_requests = 0;
+            move || loop {
+                let (instruction, _err_ctx) =
+                    recv_from_fake_screen(&screen_receiver, "the hook's rename", "1");
+                match instruction {
+                    ScreenInstruction::RequestPluginPermissions(plugin_id, plugin_permission) => {
+                        permission_requests += 1;
+                        if permission_requests == 1 {
+                            // A second client attaches while the hook is on its prompt: the
+                            // hook is in the plugin map, so `add_client` provisions an
+                            // instance for the newcomer - and, before the fix, reset the cache
+                            // holding the firing below.
+                            let _ = plugin_thread_sender.send(PluginInstruction::AddClient(2));
+                        }
+                        let _ =
+                            plugin_thread_sender.send(PluginInstruction::PermissionRequestResult(
+                                plugin_id,
+                                Some(1),
+                                plugin_permission.permissions,
+                                PermissionStatus::Granted,
+                                Some(cache_path.clone()),
+                            ));
+                    },
+                    ScreenInstruction::RenameTabWithId(..) => {
+                        log.lock().push(instruction);
+                        break;
+                    },
+                    other => log.lock().push(other),
+                }
+            }
+        })
+        .unwrap();
+
+    bind_hook(
+        &plugin_thread_sender,
+        HookPoint::PaneExit,
+        headless_hook_plugin(user_plugin_dir.path()),
+    );
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(1));
+    let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
+        point: HookPoint::PaneExit,
+        pane_id: Some(PaneId::Terminal(7)),
+        payload: pane_exit_payload(7),
+        client_id: 1,
+    });
+    screen_thread.join().unwrap();
+    teardown();
+
+    let instructions = received_screen_instructions.lock();
+    assert!(
+        tab_names_set(&instructions).contains(&"pane_exit:7".to_owned()),
+        "the firing that loaded the hook must survive a client attaching mid-load, got: \
+         {instructions:?}"
+    );
+}
+
 /// Two firings within one load's time reach one instance, in order. Before the fix the second
 /// firing found no instance in the plugin map - the first was still loading - and loaded
 /// another, so a hook's firings were split across two plugins and neither saw them all.

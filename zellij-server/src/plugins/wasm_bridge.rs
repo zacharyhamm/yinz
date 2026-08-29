@@ -1100,8 +1100,14 @@ impl WasmBridge {
             };
 
             let (rows, columns) = self.size_of_plugin_id(plugin_id).unwrap_or((0, 0));
+            // Started, not reset: a plugin that is already pending - still loading for its
+            // first client, or waiting on its permission prompt - has events cached that are
+            // owed to it, and a client attaching in that window used to wipe them, so a
+            // lazily-loaded hook lost the very firing that loaded it. The cache now holds until
+            // the plugin is ready, and is then applied to every client's instance.
             self.cached_events_for_pending_plugins
-                .insert(plugin_id, vec![]);
+                .entry(plugin_id)
+                .or_default();
             self.cached_resizes_for_pending_plugins
                 .insert(plugin_id, (rows, columns));
 
