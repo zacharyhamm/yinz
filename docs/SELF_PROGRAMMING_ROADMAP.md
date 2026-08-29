@@ -258,7 +258,7 @@ and R11–R12 (they cross screen/plugin/client).
 End-to-end scenario to script as an integration test once Phase 2 lands (uses
 `write_git_repository`/`write_git_worktree` from `zellij-integration-tests/src/test_env.rs`):
 
-1. From a pane, `zellij plugin write my-agent-start < hook.lua` → `zellij plugin check` passes.
+1. From a pane, `zellij plugins write my-agent-start < hook.lua` → `zellij plugins check` passes.
 2. `zellij action set-hook agent_start file:my-agent-start.lua --write` → `config.d` updated,
    `PluginInstruction::Reconfigure` observed.
 3. `zellij run --block-until-exit -- claude ...` (a shell script standing in) with the hook
@@ -267,9 +267,9 @@ End-to-end scenario to script as an integration test once Phase 2 lands (uses
    `zellij run` exits with the child's status.
 5. `agent_exit` hook fires; `plugin_log` shows the hook's output.
 
-## Handoff for Phase 3
+## Handoff (Phase 3 landed)
 
-Everything above R14 is on `self-programming-vision`, committed. What the next session needs to
+Everything through R16 is on `self-programming-vision`, committed. What the next session needs to
 know without re-deriving it:
 
 **Where things are now.**
@@ -293,7 +293,8 @@ know without re-deriving it:
 cargo x test -p zellij-utils -p zellij-server -p zellij -p hocus -p hocus-agentd \
   -E 'test(/agent/) | test(/events/) | test(/reconfigure/) | test(/set_hook/) | test(/overlay/) \
       | test(/plugin_authoring/) | test(/lua/) | test(/pipe/) | test(/hook/)'
-cargo x integration-test -E 'binary(cli) | binary(hocus_plugin_authoring) | binary(hocus_agent_hooks)'
+# nextest flags go after `--`; `-E` before it is refused by xtask
+cargo x integration-test -- -j 16 -E 'binary(cli) | binary(/hocus_/) | binary(new_agent_modal) | binary(plugins)'
 ```
 
 Known environment noise: the 19 `zellij-client web_client_tests` time out on this machine at
@@ -327,5 +328,34 @@ R16. What the next session should know:
   `agent_start`; a per-project `hooks install` is unnecessary for spawned panes and still
   writes `.claude/settings.json` (committed) for hand-started ones.
 
-**What's next** is the end-to-end scenario under "Verification" as an integration test, and
-the items under "Explicitly not recommended now" as they come due.
+**Next steps, in order.** Each is independently landable; the first two are the ones that
+make Phase 3 trustworthy, the rest are the loose ends it left.
+
+1. **The end-to-end integration test** under "Verification" above: write a headless
+   `agent_start` hook with `zellij plugins write`, bind it with `zellij action set-hook
+   agent_start … --write`, run a stand-in agent with `zellij run --block-until-exit` whose
+   script calls `zellij action agent-report`, and assert the hook's `zellij.log` line and the
+   `agent_start → agent_waiting → pane_exit → agent_exit` order through `zellij events`. Lives in
+   `zellij-integration-tests/tests/hocus_plugin_authoring.rs`'s harness; `write_git_repository`
+   in `test_env.rs` gives it a checkout. Everything it needs exists; nothing yet proves the loop
+   end to end in one session.
+2. **`WasmBridge::add_client` and pending plugins** (`wasm_bridge.rs`, `add_client`): a client
+   attaching while a plugin is still loading resets that plugin's
+   `cached_events_for_pending_plugins`, so a lazily-loaded hook can miss its first firing under
+   multi-client use. Keep the cached events across the re-instantiation (or replay them to the
+   new instance). Pre-existing; found while landing `session_start`.
+3. **A shipped headless hook**, so the feature has a worked example: `zellij-utils/assets/
+   plugins/agent-policy.lua` (or `example-plugins/`) that logs every `hook` firing and, on
+   `agent_waiting`, notifies — then a `docs/LUA_PLUGINS.md` quickstart pointing at it.
+4. **Restored jobs follow their chat**: `job.chat_id` is stored but every restored job lands in
+   the foreground (`State::restore_persisted`). When `/history` reopens a chat, move its jobs
+   over; when a chat is archived for good, delete them.
+5. **`plugin_log` without a shell**: the one plugin tool still on `run_command`. Either a `/log`
+   fs root (read-only, `ReadFiles`) or a `PluginCommand::ReadPluginLog { name, lines }` that
+   greps server-side — the latter is the nine-file transcription TECH_DEBT describes.
+6. **`hooks install --project`** writes `.claude/settings.json` (committed) — switch it to
+   `settings.local.json`, and take a `--project-dir` so a plugin can call it for a folder.
+7. **`agent_start` on Enter in a held pane** with no `agent_exit` bound
+   (`tab/mod.rs` `ReRunCommandInThisPane`): route it through the screen so the edge is seen.
+8. **The three pre-existing red integration tests** listed under environment noise: bisect
+   them on `main`, they predate this branch.
