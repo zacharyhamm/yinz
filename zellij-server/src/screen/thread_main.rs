@@ -246,6 +246,7 @@ pub(crate) fn screen_thread_main(
     let mut pending_events_waiting_for_client: Vec<ScreenInstruction> = vec![];
     let mut pending_events_waiting_for_pane: HashMap<PaneId, Vec<ScreenInstruction>> =
         HashMap::new();
+    let mut attach_traces_waiting_for_first_render: HashMap<ClientId, Instant> = HashMap::new();
     let mut keybind_intercepts = HashMap::new();
     loop {
         let (event, mut err_ctx) = screen
@@ -305,8 +306,43 @@ pub(crate) fn screen_thread_main(
                 // (only those waiting for a new tab layout to be applied!) have been rendered or
                 // that a 100ms timeout has been reached (more info in the RenderBlocker comment)
                 if screen.render_blocker.can_render() {
-                    screen.render_to_clients()?;
+                    let tracing_attach = !attach_traces_waiting_for_first_render.is_empty();
+                    let render_started_at = Instant::now();
+                    if tracing_attach {
+                        log::info!(
+                            "attach trace: screen first render begin clients={:?}",
+                            attach_traces_waiting_for_first_render
+                                .keys()
+                                .copied()
+                                .collect::<Vec<_>>()
+                        );
+                    }
+                    let result = if tracing_attach {
+                        screen.render_to_clients_traced(true)
+                    } else {
+                        screen.render_to_clients()
+                    };
+                    if tracing_attach {
+                        log::info!(
+                            "attach trace: screen first render finished after {:?} ({})",
+                            render_started_at.elapsed(),
+                            if result.is_ok() { "ok" } else { "error" }
+                        );
+                        if result.is_ok() {
+                            attach_traces_waiting_for_first_render.clear();
+                        }
+                    }
+                    result?;
                 } else {
+                    if !attach_traces_waiting_for_first_render.is_empty() {
+                        log::info!(
+                            "attach trace: screen first render deferred by render blocker clients={:?}",
+                            attach_traces_waiting_for_first_render
+                                .keys()
+                                .copied()
+                                .collect::<Vec<_>>()
+                        );
+                    }
                     screen.render(None)?;
                 }
             },
@@ -2093,7 +2129,22 @@ pub(crate) fn screen_thread_main(
                 _completion_tx, // the action ends here, dropping this will release anything
                                 // waiting for it
             ) => {
+                let trace_started_at = attach_traces_waiting_for_first_render
+                    .get(&client_id)
+                    .copied();
+                if let Some(started_at) = trace_started_at {
+                    log::info!(
+                        "attach trace: screen client_id={client_id} attach ChangeMode begin after {:?}",
+                        started_at.elapsed()
+                    );
+                }
                 screen.change_mode(input_mode, base_mode, client_id)?;
+                if let Some(started_at) = trace_started_at {
+                    log::info!(
+                        "attach trace: screen client_id={client_id} attach ChangeMode complete after {:?}",
+                        started_at.elapsed()
+                    );
+                }
                 screen.render(None)?;
             },
             ScreenInstruction::ChangeModeForAllClients(
@@ -2152,14 +2203,38 @@ pub(crate) fn screen_thread_main(
                 tab_position_to_focus,
                 pane_id_to_focus,
             ) => {
+                let attach_started_at = Instant::now();
+                attach_traces_waiting_for_first_render.insert(client_id, attach_started_at);
+                log::info!(
+                    "attach trace: screen client_id={client_id} AddClient begin size={client_size:?}"
+                );
                 screen.set_client_size(client_id, client_size);
+                log::info!(
+                    "attach trace: screen client_id={client_id} client size recorded after {:?}; Screen::add_client begin",
+                    attach_started_at.elapsed()
+                );
                 // the new client can shrink the shared surface, so every tab is reflowed - but
                 // only the reflow: this handler reports and renders on its own way out.
                 // Reject a client whose size leaves nothing to lay out: keeping its size in the
                 // shared minimum would make every later render fail for all clients.
-                let attach_result = screen
-                    .add_client(client_id, is_web_client)
-                    .and_then(|_| screen.reflow_all_tabs());
+                let attach_result = screen.add_client(client_id, is_web_client);
+                log::info!(
+                    "attach trace: screen client_id={client_id} Screen::add_client finished after {:?} ({})",
+                    attach_started_at.elapsed(),
+                    if attach_result.is_ok() { "ok" } else { "error" }
+                );
+                let attach_result = attach_result.and_then(|_| {
+                    log::info!(
+                        "attach trace: screen client_id={client_id} reflow_all_tabs begin"
+                    );
+                    let result = screen.reflow_all_tabs();
+                    log::info!(
+                        "attach trace: screen client_id={client_id} reflow_all_tabs finished after {:?} ({})",
+                        attach_started_at.elapsed(),
+                        if result.is_ok() { "ok" } else { "error" }
+                    );
+                    result
+                });
                 if let Err(error) = attach_result {
                     Err::<(), _>(error)
                         .context("failed to attach client at its reported size")
@@ -2171,6 +2246,7 @@ pub(crate) fn screen_thread_main(
                         .senders
                         .send_to_server(ServerInstruction::ClientExit(client_id, None))
                         .non_fatal();
+                    attach_traces_waiting_for_first_render.remove(&client_id);
                     continue;
                 }
                 let pane_id = pane_id_to_focus.map(|(pane_id, is_plugin)| {
@@ -2181,24 +2257,53 @@ pub(crate) fn screen_thread_main(
                     }
                 });
                 if let Some(pane_id) = pane_id {
+                    log::info!(
+                        "attach trace: screen client_id={client_id} restoring pane focus {pane_id:?}"
+                    );
                     screen.focus_pane_with_id(pane_id, true, false, client_id)?;
                 } else if let Some(tab_position_to_focus) = tab_position_to_focus {
+                    log::info!(
+                        "attach trace: screen client_id={client_id} restoring tab focus position={tab_position_to_focus}"
+                    );
                     screen.go_to_tab(tab_position_to_focus, client_id)?;
                 }
+                log::info!(
+                    "attach trace: screen client_id={client_id} focus restoration complete after {:?}",
+                    attach_started_at.elapsed()
+                );
                 screen.show_guest_modals_for_new_client(client_id);
                 let focused_pane_id = screen.get_active_pane_id(&client_id);
                 if let Some(focused) = focused_pane_id {
                     screen.report_key_passthrough_state(client_id, focused, focused);
                 }
+                log::info!(
+                    "attach trace: screen client_id={client_id} sync_scroll_mode_on_focus begin"
+                );
                 screen.sync_scroll_mode_on_focus(client_id)?;
+                log::info!(
+                    "attach trace: screen client_id={client_id} pending events drain begin after {:?}",
+                    attach_started_at.elapsed()
+                );
                 for event in pending_events_waiting_for_client.drain(..) {
                     screen.bus.senders.send_to_screen(event).non_fatal();
                 }
+                log::info!(
+                    "attach trace: screen client_id={client_id} log_and_report_session_state begin"
+                );
                 screen.log_and_report_session_state()?;
 
+                log::info!(
+                    "attach trace: screen client_id={client_id} scheduling first render after {:?}",
+                    attach_started_at.elapsed()
+                );
                 screen.render(None)?;
+                log::info!(
+                    "attach trace: screen client_id={client_id} AddClient handler complete after {:?}",
+                    attach_started_at.elapsed()
+                );
             },
             ScreenInstruction::RemoveClient(client_id) => {
+                attach_traces_waiting_for_first_render.remove(&client_id);
                 screen.remove_client(client_id).non_fatal();
                 // the departing client may have been the one constraining the screen size
                 screen.resize_to_clients().non_fatal();

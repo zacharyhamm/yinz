@@ -2816,13 +2816,22 @@ pub(crate) fn route_thread_main(
                             pane_to_focus: pane_id_to_focus,
                             is_web_client,
                         } => {
-                            let allow_web_connections = session_data
-                                .read()
-                                .ok()
+                            let started_at = std::time::Instant::now();
+                            log::info!(
+                                "attach trace: server router client_id={client_id} received AttachClient; waiting for session_data read lock"
+                            );
+                            let session_data_guard = session_data.read().ok();
+                            log::info!(
+                                "attach trace: server router client_id={client_id} acquired session_data read lock after {:?}",
+                                started_at.elapsed()
+                            );
+                            let allow_web_connections = session_data_guard
+                                .as_ref()
                                 .and_then(|s| {
                                     s.as_ref().map(|s| s.web_sharing.web_clients_allowed())
                                 })
                                 .unwrap_or(false);
+                            drop(session_data_guard);
                             let should_allow_connection = !is_web_client || allow_web_connections;
                             if should_allow_connection {
                                 let attach_client_instruction = ServerInstruction::AttachClient(
@@ -2832,9 +2841,16 @@ pub(crate) fn route_thread_main(
                                     is_web_client,
                                     client_id,
                                 );
+                                log::info!(
+                                    "attach trace: server router client_id={client_id} main-loop enqueue begin"
+                                );
                                 to_server
                                     .send(attach_client_instruction)
                                     .with_context(err_context)?;
+                                log::info!(
+                                    "attach trace: server router client_id={client_id} main-loop enqueue complete after {:?}",
+                                    started_at.elapsed()
+                                );
                             } else {
                                 let error = "This session does not allow web connections.";
                                 let _ = to_server.send(ServerInstruction::LogError(
@@ -2897,7 +2913,16 @@ pub(crate) fn route_thread_main(
                             // unresponsive. Answering from this thread would only
                             // prove that the accept path works, and a wedged
                             // server would pass as alive.
-                            let _ = to_server.send(ServerInstruction::ConnStatus(client_id));
+                            let started_at = std::time::Instant::now();
+                            log::info!(
+                                "attach trace: server router client_id={client_id} received ConnStatus; main-loop enqueue begin"
+                            );
+                            let result = to_server.send(ServerInstruction::ConnStatus(client_id));
+                            log::info!(
+                                "attach trace: server router client_id={client_id} ConnStatus enqueue finished after {:?} ({})",
+                                started_at.elapsed(),
+                                if result.is_ok() { "ok" } else { "error" }
+                            );
                             should_break = true;
                         },
                         ClientToServerMsg::DetachSession { client_ids } => {

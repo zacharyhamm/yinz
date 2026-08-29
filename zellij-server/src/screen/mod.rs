@@ -1883,9 +1883,11 @@ impl Screen {
     }
 
     pub fn add_client(&mut self, client_id: ClientId, is_web_client: bool) -> Result<()> {
+        let attach_started_at = std::time::Instant::now();
         let err_context = |tab_index| {
             format!("failed to attach client {client_id} to tab with index {tab_index}")
         };
+        log::info!("attach trace: Screen::add_client client_id={client_id} state setup begin");
 
         // Set followed_client_id to the first regular client if not already set
         if self.followed_client_id.is_none() && !self.watcher_clients.contains_key(&client_id) {
@@ -1949,19 +1951,40 @@ impl Screen {
         // `remove_client` tells a tab's plugins nobody is looking (`visible(false)`) once
         // the last client leaves; a client arriving in an empty tab is the other half.
         let tab_was_empty = tab.has_no_connected_clients();
+        log::info!(
+            "attach trace: Screen::add_client client_id={client_id} tab={tab_index} Tab::add_client begin empty={tab_was_empty}"
+        );
         tab.add_client(client_id, None)
             .with_context(|| err_context(tab_index))?;
+        log::info!(
+            "attach trace: Screen::add_client client_id={client_id} tab={tab_index} Tab::add_client complete after {:?}",
+            attach_started_at.elapsed()
+        );
         if tab_was_empty {
+            log::info!(
+                "attach trace: Screen::add_client client_id={client_id} tab={tab_index} visible(true) begin"
+            );
             tab.visible(true).with_context(|| err_context(tab_index))?;
+            log::info!(
+                "attach trace: Screen::add_client client_id={client_id} tab={tab_index} visible(true) complete after {:?}",
+                attach_started_at.elapsed()
+            );
         }
         if attach_to_first_tab_on_tiled_surface && tab.are_floating_panes_visible() {
             tab.hide_floating_panes();
         }
+        log::info!(
+            "attach trace: Screen::add_client client_id={client_id} tab={tab_index} recompute_tab_size begin"
+        );
         self.recompute_tab_size(tab_index)
             .with_context(|| err_context(tab_index))?;
         if !self.nested_ancestry.is_empty() || !self.host_descend_keys.is_empty() {
             self.update_all_clients_nesting_mode_info();
         }
+        log::info!(
+            "attach trace: Screen::add_client client_id={client_id} complete after {:?}",
+            attach_started_at.elapsed()
+        );
         Ok(())
     }
 

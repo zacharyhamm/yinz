@@ -550,6 +550,13 @@ pub fn start_client(
     info!("Starting Zellij client!");
 
     let own_session_name = info.get_session_name().to_owned();
+    let tracing_attach = matches!(&info, ClientInfo::Attach(..));
+    if tracing_attach {
+        log::info!(
+            "attach trace: client pid={} session={own_session_name:?} startup begin",
+            std::process::id()
+        );
+    }
 
     let explicitly_disable_kitty_keyboard_protocol = config_options
         .support_kitty_keyboard_protocol
@@ -559,12 +566,24 @@ pub fn start_client(
         .support_kitty_graphics_protocol
         .unwrap_or(true);
     let should_start_web_server = config_options.web_server.unwrap_or(false);
+    if tracing_attach {
+        log::info!(
+            "attach trace: client pid={} terminal preparation begin",
+            std::process::id()
+        );
+    }
     os_input.unset_raw_mode().unwrap();
 
     if !is_a_reconnect {
         // we don't do this for a reconnect because our controlling terminal already has the
         // attributes we want from it, and some terminals don't treat these atomically.
         enter_terminal(&*os_input, !explicitly_disable_kitty_keyboard_protocol);
+    }
+    if tracing_attach {
+        log::info!(
+            "attach trace: client pid={} terminal preparation complete",
+            std::process::id()
+        );
     }
     envs::set_zellij("0".to_string());
     config.env.set_vars();
@@ -588,6 +607,12 @@ pub fn start_client(
         terminal_teardown,
         should_start_web_server,
     );
+    if tracing_attach {
+        log::info!(
+            "attach trace: client pid={} preparing AttachClient message",
+            std::process::id()
+        );
+    }
     let (first_msg, ipc_pipe) = startup.first_message(
         &mut os_input,
         info,
@@ -597,13 +622,35 @@ pub fn start_client(
         },
     );
 
+    let connect_started_at = std::time::Instant::now();
+    if tracing_attach {
+        log::info!(
+            "attach trace: client pid={} socket connect begin path={}",
+            std::process::id(),
+            ipc_pipe.display()
+        );
+    }
     if let Err(e) = os_input.connect_to_server(&ipc_pipe) {
         // The terminal is already on the alternate screen with the kitty
         // keyboard protocol pushed; a bare `exit` here would leave the shell
         // there, with the message gone along with the screen it was printed on.
         ClientTeardown::exit_after_startup_error(startup.teardown, e.to_string());
     }
+    if tracing_attach {
+        log::info!(
+            "attach trace: client pid={} socket connected after {:?}; AttachClient send begin",
+            std::process::id(),
+            connect_started_at.elapsed()
+        );
+    }
     os_input.send_to_server(first_msg);
+    if tracing_attach {
+        log::info!(
+            "attach trace: client pid={} AttachClient send call complete after {:?}",
+            std::process::id(),
+            connect_started_at.elapsed()
+        );
+    }
 
     let mut command_is_executing = CommandIsExecuting::new();
 

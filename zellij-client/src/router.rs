@@ -7,7 +7,7 @@
 use crate::os_input_output::ClientOsApi;
 use crate::ClientInstruction;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use zellij_utils::{
     channels::SenderWithContext, errors::ErrorContext, ipc::IpcRecv, ipc::ServerToClientMsg,
 };
@@ -48,15 +48,86 @@ pub(crate) fn route(
     send_client_instructions: SenderWithContext<ClientInstruction>,
 ) {
     let mut consecutive_malformed_messages_received = 0;
+    let started_at = Instant::now();
+    let mut waiting_for_first_message = true;
+    let mut waiting_for_first_render = true;
+    log::info!(
+        "attach trace: client pid={} router started; waiting for first server message",
+        std::process::id()
+    );
     loop {
         match os_input.recv_from_server() {
             IpcRecv::Msg(instruction, err_ctx) => {
                 consecutive_malformed_messages_received = 0;
-                if forward(&send_client_instructions, instruction, err_ctx) {
+                let tracing_first_message = waiting_for_first_message;
+                let tracing_first_render = waiting_for_first_render
+                    && matches!(&instruction, ServerToClientMsg::Render { .. });
+                if waiting_for_first_message {
+                    let kind = match &instruction {
+                        ServerToClientMsg::Render { content } => {
+                            format!("Render(bytes={})", content.len())
+                        },
+                        ServerToClientMsg::Connected => "Connected".to_owned(),
+                        ServerToClientMsg::Exit { .. } => "Exit".to_owned(),
+                        _ => "other".to_owned(),
+                    };
+                    log::info!(
+                        "attach trace: client pid={} first server message={kind} after {:?}",
+                        std::process::id(),
+                        started_at.elapsed()
+                    );
+                    waiting_for_first_message = false;
+                }
+                if tracing_first_render && !tracing_first_message {
+                    let bytes = match &instruction {
+                        ServerToClientMsg::Render { content } => content.len(),
+                        _ => 0,
+                    };
+                    log::info!(
+                        "attach trace: client pid={} first Render arrived from server bytes={bytes} after {:?}",
+                        std::process::id(),
+                        started_at.elapsed()
+                    );
+                }
+                if tracing_first_message || tracing_first_render {
+                    log::info!(
+                        "attach trace: client pid={} forwarding {} to client loop",
+                        std::process::id(),
+                        if tracing_first_render {
+                            "first Render"
+                        } else {
+                            "first server message"
+                        }
+                    );
+                }
+                let should_exit = forward(&send_client_instructions, instruction, err_ctx);
+                if tracing_first_message || tracing_first_render {
+                    log::info!(
+                        "attach trace: client pid={} {} reached client-loop queue after {:?}",
+                        std::process::id(),
+                        if tracing_first_render {
+                            "first Render"
+                        } else {
+                            "first server message"
+                        },
+                        started_at.elapsed()
+                    );
+                }
+                if tracing_first_render {
+                    waiting_for_first_render = false;
+                }
+                if should_exit {
                     break;
                 }
             },
             IpcRecv::Eof => {
+                if waiting_for_first_message {
+                    log::warn!(
+                        "attach trace: client pid={} server connection closed before first message after {:?}",
+                        std::process::id(),
+                        started_at.elapsed()
+                    );
+                }
                 // Terminal: every further read returns this immediately. Say so
                 // once and leave, rather than spinning until a counter runs out
                 // and then blaming an empty message.
