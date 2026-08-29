@@ -11,7 +11,7 @@ use crate::screen::agent_hook_edges;
 use std::collections::BTreeMap;
 use zellij_utils::data::OriginatingPlugin;
 use zellij_utils::data::HOCUS_AGENT_PANE_CONTEXT;
-use zellij_utils::data::{AgentInfo, AgentSource, AgentState};
+use zellij_utils::data::{AgentInfo, AgentSource, AgentState, BareKey, KeyWithModifier};
 use zellij_utils::input::hooks::HookPoint;
 
 type Fired = (HookPoint, Option<PaneId>, BTreeMap<String, String>);
@@ -399,6 +399,83 @@ fn rerunning_an_exited_agent_pane_fires_agent_start() {
         fired[3].2.get("agent_previous_state").map(String::as_str),
         Some("exited")
     );
+}
+
+#[test]
+fn enter_in_a_held_agent_pane_fires_agent_start() {
+    // Enter typed into a held pane is the same road as `RerunCommandPane`: the tab asks the
+    // screen, and the screen sees exited -> busy. Before, the pane restarted itself and the
+    // edge was never read.
+    let size = Size { cols: 80, rows: 20 };
+    let mut mock_screen = MockScreen::new(size);
+    let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
+    let pty_receiver = mock_screen.pty_receiver.take().unwrap();
+    let client_id = mock_screen.main_client_id;
+    let screen_thread = mock_screen.run(None, vec![]);
+    for step in [
+        new_pane(2, Some(Run::Command(agent_command("/work")))),
+        hold(2, agent_command("/work")),
+        ScreenInstruction::WriteCharacter(
+            Some(KeyWithModifier::new(BareKey::Enter)),
+            b"\r".to_vec(),
+            false,
+            client_id,
+            None,
+        ),
+    ] {
+        let _ = mock_screen.to_screen.send(step);
+    }
+    // The tab answers Enter by sending the screen an instruction of its own, which lands
+    // behind anything already queued - teardown's exit included - so wait for the re-run to
+    // reach the pty before ending the screen.
+    let is_rerun = |instruction: &PtyInstruction| {
+        matches!(
+            instruction,
+            PtyInstruction::ReRunCommandInPane(PaneId::Terminal(2), _, _)
+        )
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut reruns = 0;
+    while reruns == 0 && std::time::Instant::now() < deadline {
+        match pty_receiver.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok((instruction, _)) if is_rerun(&instruction) => reruns += 1,
+            Ok(_) | Err(zellij_utils::channels::RecvTimeoutError::Timeout) => {},
+            Err(zellij_utils::channels::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    mock_screen.teardown(vec![screen_thread]);
+    reruns += pty_receiver
+        .try_iter()
+        .filter(|(instruction, _)| is_rerun(instruction))
+        .count();
+
+    let fired: Vec<Fired> = plugin_receiver
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::RunHook {
+                point,
+                pane_id,
+                payload,
+                ..
+            } => Some((point, pane_id, payload)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        points(&fired),
+        vec![
+            HookPoint::AgentStart,
+            HookPoint::PaneExit,
+            HookPoint::AgentExit,
+            HookPoint::AgentStart
+        ],
+        "got: {fired:?}"
+    );
+    assert_eq!(
+        fired[3].2.get("agent_previous_state").map(String::as_str),
+        Some("exited")
+    );
+    assert_eq!(reruns, 1, "the command is restarted once, by the screen");
 }
 
 #[test]

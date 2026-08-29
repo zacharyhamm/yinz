@@ -739,8 +739,9 @@ its hooks), a record whose last state was `exited` coming back (`RerunCommandPan
 `agent_exit` hook's Enter), and a new `session_id` in the same pane. `agent_waiting` fires on the
 edge into `waiting` only - a second `waiting` report with a new detail is the same wait.
 Clearing a record and moving to `exited` fire nothing; the exit is `agent_exit`'s and
-`pane_exit`'s. One gap: Enter typed into a held pane with **no** `agent_exit` hook bound restarts
-the command inside the pane, and the screen does not see that edge.
+`pane_exit`'s. Enter typed into a held pane is the same road as `RerunCommandPane` - the tab
+asks the screen to re-run it - so an agent restarted by hand fires `agent_start` whether or not
+an `agent_exit` hook is bound.
 
 For a pane that is both, `pane_exit` fires before `agent_exit`, so an observer hears of the exit
 before the pane is covered.

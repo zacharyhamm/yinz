@@ -1831,18 +1831,14 @@ impl TerminalPane {
             Some(AdjustedInput::WriteBytesToTerminal(raw_input_bytes))
         }
     }
-    fn handle_held_run(&mut self) -> Option<AdjustedInput> {
-        self.is_held.take().map(|(_, _, run_command)| {
-            self.is_held = None;
-            self.suspended = false;
-            if let Some(agent) = self.agent.as_mut() {
-                agent.state = AgentState::Busy;
-            }
-            self.grid.reset_terminal_state();
-            self.set_should_render(true);
-            self.remove_banner();
-            AdjustedInput::ReRunCommandInThisPane(run_command.clone())
-        })
+    /// Enter on a held pane asks for a re-run rather than doing one here. The restart itself
+    /// is [`Pane::rerun`], and it runs under the screen's `rerun_command_pane_with_id` -
+    /// the one place that reads the agent record around the restart, so an exited agent
+    /// coming back is an `agent_start` whichever road asked for it.
+    fn handle_held_run(&self) -> Option<AdjustedInput> {
+        self.is_held
+            .as_ref()
+            .map(|_| AdjustedInput::ReRunCommandInThisPane)
     }
     fn handle_held_drop_to_shell(&mut self) -> Option<AdjustedInput> {
         self.is_held.take().map(|(_, _, run_command)| {
