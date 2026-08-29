@@ -9,3 +9,4 @@ target/
 mutants.out/
 mutants.out.*/
 .claude/worktrees
+.claude/settings.local.json

@@ -412,6 +412,14 @@ trustworthy, 3–5 closed the loose ends it left, and all five are done — cont
    `lua::unit_tests::reading_a_plugins_log_is_an_author_plugins_command` pins the gate.)*
 6. **`hooks install --project`** writes `.claude/settings.json` (committed) — switch it to
    `settings.local.json`, and take a `--project-dir` so a plugin can call it for a folder.
+   *(done — `src/hocus_hooks.rs` resolves a `Files` once (`script`, `user_settings`, the project
+   folder) and everything below is path work; a project install lands in
+   `<dir>/.claude/settings.local.json`, `--project-dir <dir>` names the folder and implies
+   `--project`, and both `install` and `uninstall --project` move an older install out of the
+   committed `settings.json`, which `status` lists as `legacy:` while it is still there. A
+   project uninstall keeps the shared `hocus-hook.sh` while the user-level file still points at
+   it - before, it removed it regardless. Tests in `hocus_hooks::tests` run `install`/`uninstall`
+   against a temporary folder; `.claude/settings.local.json` is in the repo's `.gitignore`.)*
 7. **`agent_start` on Enter in a held pane** with no `agent_exit` bound
    (`tab/mod.rs` `ReRunCommandInThisPane`): route it through the screen so the edge is seen.
 8. **The three pre-existing red integration tests** listed under environment noise: bisect

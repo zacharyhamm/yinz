@@ -37,9 +37,24 @@ const MARKER: &str = "hocus-hook.sh";
 pub(crate) fn hocus(command: Hocus) -> Result<()> {
     let Hocus::Hooks(hooks) = command;
     match hooks {
-        HocusHooks::Install { project, dry_run } => install(project, dry_run),
-        HocusHooks::Uninstall { project } => uninstall(project),
-        HocusHooks::Status => status(),
+        HocusHooks::Install {
+            project,
+            project_dir,
+            dry_run,
+        } => {
+            let files = Files::resolve(project, project_dir)?;
+            let zellij = std::env::current_exe().context("cannot find this zellij binary")?;
+            install(&files, &zellij, dry_run)
+        },
+        HocusHooks::Uninstall {
+            project,
+            project_dir,
+        } => uninstall(&Files::resolve(project, project_dir)?),
+        // The project column is the current folder's; a shell with no cwd still gets the
+        // user's.
+        HocusHooks::Status => {
+            status(&Files::resolve(true, None).or_else(|_| Files::resolve(false, None))?)
+        },
     }
 }
 
@@ -201,21 +216,66 @@ fn home() -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("HOME is not set, so there is no ~/.claude to install into"))
 }
 
-fn script_path() -> Result<PathBuf> {
-    Ok(home()?.join(".claude").join("hocus").join(MARKER))
+/// The files a command touches, resolved once from the flags and the environment so that
+/// everything below is plain path work - and runs against a temporary folder in a test.
+pub(crate) struct Files {
+    /// `~/.claude/hocus/hocus-hook.sh`, shared by every install on the machine.
+    pub(crate) script: PathBuf,
+    /// `~/.claude/settings.json`.
+    pub(crate) user_settings: PathBuf,
+    /// The project folder, when the command is about one rather than the user.
+    pub(crate) project: Option<PathBuf>,
 }
 
-/// Which settings file to write. Claude Code *merges* hooks across the two rather
-/// than one overriding the other, which is why installing into both fires everything
-/// twice — `status` says so when it sees it.
-fn settings_path(project: bool) -> Result<PathBuf> {
-    if project {
-        return Ok(std::env::current_dir()
-            .context("cannot tell which project this is")?
-            .join(".claude")
-            .join("settings.json"));
+impl Files {
+    /// `--project-dir` names the folder; a bare `--project` means the current one, which is
+    /// what a person at a shell wants and what a plugin - whose cwd is the server's, not the
+    /// project's - cannot use.
+    fn resolve(project: bool, project_dir: Option<PathBuf>) -> Result<Files> {
+        let home = home()?;
+        let project = match project_dir {
+            Some(dir) => Some(dir),
+            None if project => {
+                Some(std::env::current_dir().context("cannot tell which project this is")?)
+            },
+            None => None,
+        };
+        Ok(Files {
+            script: home.join(".claude").join("hocus").join(MARKER),
+            user_settings: home.join(".claude").join("settings.json"),
+            project,
+        })
     }
-    Ok(home()?.join(".claude").join("settings.json"))
+
+    /// The settings file this command writes.
+    ///
+    /// A project's is `settings.local.json`: Claude Code reads it beside the committed
+    /// `settings.json` and keeps it out of git, so a per-project install does not land in the
+    /// project's history with this machine's binary path in it. Claude Code *merges* hooks
+    /// across settings files rather than one overriding the other, which is why installing into
+    /// both the user's and a project's fires everything twice - `status` says so when it sees it.
+    fn settings(&self) -> PathBuf {
+        match &self.project {
+            Some(dir) => dir.join(".claude").join("settings.local.json"),
+            None => self.user_settings.clone(),
+        }
+    }
+
+    /// The committed `.claude/settings.json` an older zellij wrote a project install into.
+    fn legacy_project_settings(&self) -> Option<PathBuf> {
+        self.project
+            .as_ref()
+            .map(|dir| dir.join(".claude").join("settings.json"))
+    }
+
+    /// The legacy file with our entries still in it, if there is one to move out of.
+    fn wired_legacy_project_settings(&self) -> Result<Option<(PathBuf, Value)>> {
+        let Some(path) = self.legacy_project_settings() else {
+            return Ok(None);
+        };
+        let settings = read_settings(&path)?;
+        Ok((!installed_events(&settings).is_empty()).then_some((path, settings)))
+    }
 }
 
 /// A settings file as a `Value`. A file that is not there is an empty object; one that
@@ -258,17 +318,19 @@ fn write_settings(path: &Path, settings: &Value) -> Result<bool> {
     Ok(backed_up)
 }
 
-fn install(project: bool, dry_run: bool) -> Result<()> {
-    let zellij = std::env::current_exe().context("cannot find this zellij binary")?;
-    let script_path = script_path()?;
-    let script = script(&zellij);
-    let settings_path = settings_path(project)?;
+pub(crate) fn install(files: &Files, zellij: &Path, dry_run: bool) -> Result<()> {
+    let script = script(zellij);
+    let settings_path = files.settings();
     let settings = read_settings(&settings_path)?;
-    let command = script_path.display().to_string();
+    let command = files.script.display().to_string();
     let updated = install_into(settings, &command)?;
+    // A project install used to land in the committed file. Moving it out here is what makes
+    // re-running `install --project` the upgrade path, rather than a second copy that fires
+    // every event twice.
+    let legacy = files.wired_legacy_project_settings()?;
 
     if dry_run {
-        println!("would write {}:\n", script_path.display());
+        println!("would write {}:\n", files.script.display());
         println!("{script}");
         println!(
             "would merge into {} (everything else in it is left as it is):\n",
@@ -278,18 +340,25 @@ fn install(project: bool, dry_run: bool) -> Result<()> {
             "{}",
             serde_json::to_string_pretty(updated.get("hooks").unwrap_or(&Value::Null))?
         );
+        if let Some((path, settings)) = legacy {
+            println!(
+                "\nwould move {} events out of {}",
+                installed_events(&settings).len(),
+                path.display()
+            );
+        }
         return Ok(());
     }
 
-    let folder = script_path.parent().expect("the script is in a folder");
+    let folder = files.script.parent().expect("the script is in a folder");
     std::fs::create_dir_all(folder)
         .with_context(|| format!("cannot create {}", folder.display()))?;
-    std::fs::write(&script_path, &script)
-        .with_context(|| format!("cannot write {}", script_path.display()))?;
-    make_executable(&script_path)?;
+    std::fs::write(&files.script, &script)
+        .with_context(|| format!("cannot write {}", files.script.display()))?;
+    make_executable(&files.script)?;
     let backed_up = write_settings(&settings_path, &updated)?;
 
-    println!("wrote {}", script_path.display());
+    println!("wrote {}", files.script.display());
     println!(
         "wired {} events in {}",
         EVENTS.len(),
@@ -299,6 +368,14 @@ fn install(project: bool, dry_run: bool) -> Result<()> {
         println!(
             "kept the previous settings as {}",
             settings_path.with_extension("json.bak").display()
+        );
+    }
+    if let Some((path, settings)) = legacy {
+        let moved = installed_events(&settings).len();
+        write_settings(&path, &uninstall_from(settings))?;
+        println!(
+            "moved {moved} events out of {} - a project install lives in settings.local.json now",
+            path.display()
         );
     }
     // Said rather than hidden: the file is re-serialized from a parse, so its keys
@@ -316,46 +393,66 @@ fn make_executable(path: &Path) -> Result<()> {
         .with_context(|| format!("cannot make {} executable", path.display()))
 }
 
-fn uninstall(project: bool) -> Result<()> {
-    let settings_path = settings_path(project)?;
+pub(crate) fn uninstall(files: &Files) -> Result<()> {
+    let settings_path = files.settings();
     let settings = read_settings(&settings_path)?;
     let removed = installed_events(&settings).len();
     if removed > 0 {
         write_settings(&settings_path, &uninstall_from(settings))?;
     }
     println!("removed {removed} events from {}", settings_path.display());
+    if let Some((path, settings)) = files.wired_legacy_project_settings()? {
+        let removed = installed_events(&settings).len();
+        write_settings(&path, &uninstall_from(settings))?;
+        println!("removed {removed} events from {}", path.display());
+    }
 
-    let script_path = script_path()?;
-    match std::fs::remove_file(&script_path) {
-        Ok(()) => println!("removed {}", script_path.display()),
+    // The script is one file for the whole machine: a project uninstall leaves it to the
+    // user-level install that still points at it.
+    if files.project.is_some()
+        && !installed_events(&read_settings(&files.user_settings)?).is_empty()
+    {
+        println!(
+            "kept {} - {} still uses it",
+            files.script.display(),
+            files.user_settings.display()
+        );
+        return Ok(());
+    }
+    match std::fs::remove_file(&files.script) {
+        Ok(()) => println!("removed {}", files.script.display()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
         Err(error) => {
-            return Err(error).with_context(|| format!("cannot remove {}", script_path.display()))
+            return Err(error).with_context(|| format!("cannot remove {}", files.script.display()))
         },
     }
     Ok(())
 }
 
 /// What is wired, and the things that would quietly stop it working.
-fn status() -> Result<()> {
-    let script_path = script_path()?;
-    match std::fs::read_to_string(&script_path) {
+fn status(files: &Files) -> Result<()> {
+    match std::fs::read_to_string(&files.script) {
         Ok(text) if text.contains(&format!("hocus-hook v{SCRIPT_VERSION} ")) => {
-            println!("script:  {} (current)", script_path.display());
+            println!("script:  {} (current)", files.script.display());
         },
         Ok(_) => println!(
             "script:  {} (older than this zellij - run `install` again)",
-            script_path.display()
+            files.script.display()
         ),
-        Err(_) => println!("script:  {} (missing)", script_path.display()),
+        Err(_) => println!("script:  {} (missing)", files.script.display()),
     }
 
+    let mut checks = vec![("user", files.user_settings.clone())];
+    if files.project.is_some() {
+        checks.push(("project", files.settings()));
+        // The committed file is only worth a line when an older install is still in it.
+        if let Ok(Some((legacy, _))) = files.wired_legacy_project_settings() {
+            checks.push(("legacy", legacy));
+        }
+    }
     let mut wired_anywhere = 0usize;
-    for (label, project) in [("user", false), ("project", true)] {
+    for (label, path) in checks {
         let heading = format!("{label}:");
-        let Ok(path) = settings_path(project) else {
-            continue;
-        };
         let settings = match read_settings(&path) {
             Ok(settings) => settings,
             Err(error) => {
@@ -371,6 +468,12 @@ fn status() -> Result<()> {
             events.len(),
             EVENTS.len()
         );
+        if label == "legacy" {
+            println!(
+                "            an older project install; `install --project` moves it to \
+                 settings.local.json"
+            );
+        }
         for missing in EVENTS
             .iter()
             .filter(|event| !events.iter().any(|wired| wired == *event))
@@ -389,7 +492,7 @@ fn status() -> Result<()> {
     }
     if wired_anywhere > 1 {
         println!(
-            "note:    wired in both files. Claude Code merges hooks rather than \
+            "note:    wired in more than one file. Claude Code merges hooks rather than \
              overriding, so every event fires twice"
         );
     }
@@ -466,6 +569,90 @@ mod tests {
 
         assert!(write_settings(&settings, &json!({ "model": "sonnet" })).unwrap());
         assert!(settings.with_extension("json.bak").exists());
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    fn fake_zellij(temp: &Path) -> PathBuf {
+        let fake = temp.join("zellij");
+        std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
+        make_executable(&fake).unwrap();
+        fake
+    }
+
+    fn project_files(temp: &Path) -> Files {
+        Files {
+            script: temp.join("home/.claude/hocus").join(MARKER),
+            user_settings: temp.join("home/.claude/settings.json"),
+            project: Some(temp.join("project")),
+        }
+    }
+
+    fn events_in(path: &Path) -> Vec<String> {
+        installed_events(&read_settings(path).unwrap())
+    }
+
+    #[test]
+    fn a_project_install_lands_in_settings_local_json() {
+        let temp = temp_dir("local");
+        let files = project_files(&temp);
+        install(&files, &fake_zellij(&temp), false).unwrap();
+
+        let local = temp.join("project/.claude/settings.local.json");
+        assert_eq!(events_in(&local).len(), EVENTS.len());
+        assert!(
+            !temp.join("project/.claude/settings.json").exists(),
+            "the committed file is not ours to write"
+        );
+        assert!(!files.user_settings.exists());
+        assert!(files.script.exists());
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn a_project_install_moves_entries_out_of_the_committed_file() {
+        let temp = temp_dir("legacy");
+        let files = project_files(&temp);
+        let legacy = temp.join("project/.claude/settings.json");
+        let command = files.script.display().to_string();
+        let old = install_into(json!({ "model": "opus" }), &command).unwrap();
+        write_settings(&legacy, &old).unwrap();
+
+        install(&files, &fake_zellij(&temp), false).unwrap();
+
+        assert!(
+            events_in(&legacy).is_empty(),
+            "the old install is gone from the committed file"
+        );
+        assert_eq!(read_settings(&legacy).unwrap()["model"], "opus");
+        assert_eq!(
+            events_in(&temp.join("project/.claude/settings.local.json")).len(),
+            EVENTS.len()
+        );
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn a_project_uninstall_keeps_the_script_a_user_install_uses() {
+        let temp = temp_dir("shared-script");
+        let zellij = fake_zellij(&temp);
+        let project = project_files(&temp);
+        let user = Files {
+            project: None,
+            ..project_files(&temp)
+        };
+        install(&user, &zellij, false).unwrap();
+        install(&project, &zellij, false).unwrap();
+
+        uninstall(&project).unwrap();
+        assert!(events_in(&project.settings()).is_empty());
+        assert_eq!(events_in(&user.user_settings).len(), EVENTS.len());
+        assert!(
+            project.script.exists(),
+            "the user install still points at it"
+        );
+
+        uninstall(&user).unwrap();
+        assert!(!user.script.exists());
         std::fs::remove_dir_all(temp).unwrap();
     }
 }
