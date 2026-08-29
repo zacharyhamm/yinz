@@ -77,7 +77,10 @@ fn a_search_with_no_query_is_answered_rather_than_sent() {
 #[test]
 fn a_stream_response_is_not_mistaken_for_a_search_result() {
     let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
-    state.job_auto_confirm = true;
+    state.scheduled_run = Some(ScheduledRun {
+        job_id: 1,
+        auto_confirm: true,
+    });
     state.on_response(
         401,
         br#"{"error":{"message":"bad key"}}"#,
@@ -86,5 +89,5 @@ fn a_stream_response_is_not_mistaken_for_a_search_result() {
 
     assert_eq!(state.messages[1].role, Role::Error);
     assert!(state.stream.as_ref().is_some_and(|s| s.finishing));
-    assert!(!state.job_auto_confirm);
+    assert!(state.scheduled_run.is_none());
 }

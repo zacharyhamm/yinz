@@ -364,3 +364,40 @@ fn a_prompt_and_a_model_reach_the_agent_as_its_own_arguments() {
     assert_eq!(command.path, std::path::PathBuf::from("claude"));
     assert_eq!(command.args, ["--model", "opus", "fix it"]);
 }
+
+/// A kind set by hand outlives the hocus that set it, as long as the pane does.
+#[test]
+fn a_registered_kind_survives_open_store() {
+    let mut state = state_with_panes();
+    state.run_local(&agent_call(
+        "agent_register",
+        r#"{"pane_id":4,"kind":"reviewer"}"#,
+    ));
+    let rows = state
+        .store()
+        .fetch(&FetchRequest::entity(agents::rows::LATCH_ENTITY))
+        .expect("fetched");
+    assert_eq!(
+        agents::rows::latches_from_rows(&rows),
+        BTreeMap::from([(4, "reviewer".to_owned())])
+    );
+
+    let mut restarted = State::default();
+    restarted
+        .store()
+        .apply(vec![agents::rows::latch_mutation(4, "reviewer")])
+        .expect("copied");
+    restarted.open_store();
+    assert_eq!(
+        restarted.manual_kinds.get(&4).map(String::as_str),
+        Some("reviewer")
+    );
+
+    // And the pane closing forgets the row, as it forgets the kind.
+    state.set_panes(Vec::new());
+    let rows = state
+        .store()
+        .fetch(&FetchRequest::entity(agents::rows::LATCH_ENTITY))
+        .expect("fetched");
+    assert!(agents::rows::latches_from_rows(&rows).is_empty());
+}

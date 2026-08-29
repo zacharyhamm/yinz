@@ -846,7 +846,7 @@ impl State {
         }
 
         let content = text.clone();
-        self.job_auto_confirm = false;
+        self.scheduled_run = None;
         self.messages.push(Message::user(text));
         self.log(
             "user_input",
@@ -996,7 +996,7 @@ impl State {
                 "error": log::truncate(&err),
             }),
         );
-        self.job_auto_confirm = false;
+        self.scheduled_run = None;
         self.stream = Some(StreamState {
             id: stream_id,
             finishing: true,
@@ -1022,7 +1022,7 @@ impl State {
                 self.stream = None;
                 self.reply_at = None;
                 self.tool_calls.take();
-                self.job_auto_confirm = false;
+                self.scheduled_run = None;
             }
             return done;
         }
@@ -1048,7 +1048,7 @@ impl State {
                         }),
                     );
                     self.tool_calls.take();
-                    self.job_auto_confirm = false;
+                    self.scheduled_run = None;
                     self.stream = Some(StreamState {
                         id: stream_id.to_owned(),
                         finishing: true,
@@ -1245,7 +1245,7 @@ impl State {
             // a typed tool pushes from here on is its own message.
             self.reply_at = None;
             if !self.is_in_flight() {
-                self.job_auto_confirm = false;
+                self.scheduled_run = None;
             }
         }
         // Only the terminal chunk renders. Mid-stream chunks arrive once per

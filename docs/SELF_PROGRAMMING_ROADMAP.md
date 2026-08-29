@@ -64,8 +64,8 @@ The fork is further along than its docs admit. Things that look missing but are 
    (`zellij_exports.rs:7186`) and event delivery's `_ => Granted` (`wasm_bridge.rs:2601`). Any new
    command or event is ungated by default — the wrong default for a system about to hand plugins
    authoring authority.
-8. **Nothing persists** in the orchestration layer: hocus jobs, latches, feeds, summaries are
-   in-memory (`transitions.rs:775` ponytail; `agents.rs:414`).
+8. **Nothing persists** in the orchestration layer. *(closed by R15 for jobs, latches and
+   summaries; hook feeds are derived from the pane manifest since R4 and need no store.)*
 
 ---
 
@@ -203,7 +203,7 @@ re-loaded with the payload as config). Config surface is already generic over `H
 (`kdl/mod.rs:6005`; `config.lua` `hook` builder). `agent_start` is where "spawn the next agent
 on branch X when Y starts" and "auto-answer this permission prompt" policies live, in user Lua.
 
-**R15. Persist hocus jobs, latches and agent state in `shared:hocus`.**
+**R15. Persist hocus jobs, latches and agent state in `shared:hocus`.** *(done — `job`, `agent_latch` and `agent_summary` entities in `store::shared_defs()`, row code in `hocus-proto/src/jobs.rs` and `agents::rows`; written as each change lands (`persist_job` on arm and fire, `forget_jobs`, `persist_latch`/`forget_latches`, `persist_summaries` diff-only) and read back once in `State::restore_persisted` from `open_store`. Every restored job lands in the foreground chat. `job_auto_confirm: bool` became `scheduled_run: Option<ScheduledRun { job_id, auto_confirm }>`, and `pump_tools` answers a confirmation-gated call on a scheduled run without `auto_confirm` with a decline instead of parking.)*
 `Job` (`message.rs:159`), `manual_kinds`/latches, and summaries go through `hocus-proto/src/store.rs`
 defs (constructor-only, `Backend` trait, `Local` for tests) so a plugin reload or session restart
 restores them. R4 already moves live agent state to the pane manifest; this covers what is

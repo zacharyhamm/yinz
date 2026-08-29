@@ -565,6 +565,112 @@ pub struct Summary {
 /// Pane id → what the model last said about it.
 pub type Summaries = BTreeMap<u32, Summary>;
 
+/// The `agent_latch` and `agent_summary` rows in `shared:hocus`: what `agent_register` set by
+/// hand, and what the daemon last said about each idle pane, so a hocus reload keeps both.
+/// hocus is the only writer; see `store::agent_latch_def` and `store::agent_summary_def`.
+pub mod rows {
+    use super::{Summaries, Summary};
+    use std::collections::BTreeMap;
+    use zellij_tile::prelude::{DataRows, DataValue, Mutation, Pred};
+
+    pub const LATCH_ENTITY: &str = "agent_latch";
+    pub const SUMMARY_ENTITY: &str = "agent_summary";
+
+    fn pane_id_at(rows: &DataRows, row: &[DataValue]) -> Option<u32> {
+        match rows.get(row, "pane_id") {
+            Some(DataValue::Int(id)) => u32::try_from(*id).ok(),
+            _ => None,
+        }
+    }
+
+    fn text_at(rows: &DataRows, row: &[DataValue], column: &str) -> String {
+        match rows.get(row, column) {
+            Some(DataValue::Text(text)) => text.clone(),
+            _ => String::new(),
+        }
+    }
+
+    pub fn latch_mutation(pane_id: u32, kind: &str) -> Mutation {
+        Mutation::put(LATCH_ENTITY)
+            .uid(pane_id.to_string())
+            .set("pane_id", pane_id)
+            .set("kind", kind)
+            .build()
+    }
+
+    pub fn latch_delete_mutation(pane_ids: impl IntoIterator<Item = u32>) -> Mutation {
+        Mutation::delete(LATCH_ENTITY, Pred::is_in("pane_id", pane_ids))
+    }
+
+    pub fn latches_from_rows(rows: &DataRows) -> BTreeMap<u32, String> {
+        rows.rows
+            .iter()
+            .filter_map(|row| {
+                let kind = text_at(rows, row, "kind");
+                if kind.is_empty() {
+                    return None;
+                }
+                Some((pane_id_at(rows, row)?, kind))
+            })
+            .collect()
+    }
+
+    pub fn summary_mutation(pane_id: u32, summary: &Summary) -> Mutation {
+        Mutation::put(SUMMARY_ENTITY)
+            .uid(pane_id.to_string())
+            .set("pane_id", pane_id)
+            .set("text", summary.text.clone())
+            .set("title", summary.title.clone())
+            .set("awaiting", summary.awaiting)
+            .build()
+    }
+
+    pub fn summary_delete_mutation(pane_ids: impl IntoIterator<Item = u32>) -> Mutation {
+        Mutation::delete(SUMMARY_ENTITY, Pred::is_in("pane_id", pane_ids))
+    }
+
+    /// The summaries these rows describe, with no activity hash: the hash is a fact about a
+    /// run, and a restored summary is refreshed by the daemon on its own schedule.
+    pub fn summaries_from_rows(rows: &DataRows) -> Summaries {
+        rows.rows
+            .iter()
+            .filter_map(|row| {
+                Some((
+                    pane_id_at(rows, row)?,
+                    Summary {
+                        text: text_at(rows, row, "text"),
+                        title: text_at(rows, row, "title"),
+                        awaiting: matches!(rows.get(row, "awaiting"), Some(DataValue::Bool(true))),
+                        hash: 0,
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    /// The writes that turn `before` into `after`, ignoring the hash: an unchanged summary
+    /// produces no write, so a poll that changes nothing is silent.
+    pub fn summary_diff_mutations(before: &Summaries, after: &Summaries) -> Vec<Mutation> {
+        let same = |a: &Summary, b: &Summary| {
+            a.text == b.text && a.title == b.title && a.awaiting == b.awaiting
+        };
+        let mut mutations: Vec<Mutation> = after
+            .iter()
+            .filter(|(pane_id, summary)| !before.get(pane_id).is_some_and(|b| same(b, summary)))
+            .map(|(pane_id, summary)| summary_mutation(*pane_id, summary))
+            .collect();
+        let gone: Vec<u32> = before
+            .keys()
+            .filter(|pane_id| !after.contains_key(pane_id))
+            .copied()
+            .collect();
+        if !gone.is_empty() {
+            mutations.push(summary_delete_mutation(gone));
+        }
+        mutations
+    }
+}
+
 /// The name to give the pane this summary describes, or `None` when there is none worth
 /// giving. One rule, so the daemon and its tests cannot disagree about what an empty title
 /// means.

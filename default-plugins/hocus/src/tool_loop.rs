@@ -44,7 +44,31 @@ impl State {
                 continue;
             }
             let needs_confirmation = self.call_needs_confirmation(&call);
-            if needs_confirmation && !self.job_auto_confirm {
+            // A scheduled run with no authority of its own does not park: nobody
+            // may be there to press `y`, and a parked run would hold every other
+            // job in this chat behind it. The call is answered, not silently
+            // dropped - the model must see a reply for every call it made.
+            if let (true, Some(run)) = (needs_confirmation, self.scheduled_run) {
+                if !run.auto_confirm {
+                    self.log(
+                        "tool_confirm",
+                        serde_json::json!({
+                            "tool_call_id": call.id,
+                            "tool_name": call.name,
+                            "decision": "scheduled_decline",
+                            "job_id": run.job_id,
+                        }),
+                    );
+                    self.finish_head(format!(
+                        "declined: `{}` needs confirmation and this is a scheduled run, which \
+                         cannot ask. Schedule the job with auto_confirm to allow it, or leave \
+                         this for the user.",
+                        call.name
+                    ));
+                    continue;
+                }
+            }
+            if needs_confirmation && self.scheduled_run.is_none() {
                 self.status = Status::ConfirmingTool;
                 self.pin_to_bottom();
                 // The prompt renders into hocus's own pane, which is very
@@ -82,7 +106,7 @@ impl State {
         }
 
         let Ok(cfg) = self.cfg.clone() else {
-            self.job_auto_confirm = false;
+            self.scheduled_run = None;
             return;
         };
         // Tool results make a valid boundary for steering: every call from the
@@ -98,7 +122,7 @@ impl State {
         self.tool_rounds += 1;
         let budget = self.max_tool_rounds();
         if self.tool_rounds > budget {
-            self.job_auto_confirm = false;
+            self.scheduled_run = None;
             let err = format!("stopped after {budget} rounds of tool calls without a reply");
             self.messages.push(Message::error(err.clone()));
             self.log("error", serde_json::json!({"error": log::truncate(&err)}));
@@ -1365,10 +1389,16 @@ impl State {
             .retain(|id| !self.panes.iter().any(|pane| pane.pane_id == *id));
         // A pane that closed is a registration that no longer names anything. A
         // newly spawned pane is the exception until its first snapshot arrives.
+        let mut gone = Vec::new();
         self.manual_kinds.retain(|id, _| {
-            self.pending_agent_panes.contains(id)
-                || self.panes.iter().any(|pane| pane.pane_id == *id)
+            let keep = self.pending_agent_panes.contains(id)
+                || self.panes.iter().any(|pane| pane.pane_id == *id);
+            if !keep {
+                gone.push(*id);
+            }
+            keep
         });
+        self.forget_latches(gone);
         self.activity
             .retain(|id, _| self.panes.iter().any(|pane| pane.pane_id == *id));
         self.manual_kinds.len() != before
@@ -1391,6 +1421,7 @@ impl State {
             return format!("pane {pane_id} is not available");
         }
         self.manual_kinds.insert(pane_id, kind.to_owned());
+        self.persist_latch(pane_id, kind);
         // hocus stays authoritative for the overrides; the daemon holds a copy
         // only to classify with, so it needs the new one before its next poll.
         self.send_manual_kinds();
@@ -1646,7 +1677,8 @@ impl State {
         focused: Option<u32>,
     ) {
         self.activity = activity;
-        self.summaries = summaries;
+        let before = std::mem::replace(&mut self.summaries, summaries);
+        self.persist_summaries(&before);
         self.hooks = hooks;
         let kinds_pruned = self.set_panes(panes);
         self.note_focus(focused);
@@ -1682,14 +1714,17 @@ impl State {
         let id = self.job_seq;
         let prompt_clone = prompt.clone();
         let show = args.show;
-        self.jobs.push(Job {
+        let job = Job {
             id,
             every,
             due_in: every,
             prompt,
             show,
             auto_confirm: args.auto_confirm,
-        });
+        };
+        let row = transitions::job_row(&job, self.chat_id, transitions::now_secs());
+        self.jobs.push(job);
+        self.persist_job(row);
         self.arm_timer(JOB_SECONDS);
         self.log(
             "job_schedule",
@@ -1719,14 +1754,17 @@ impl State {
                 if self.job_count() == before {
                     format!("no job {id}")
                 } else {
+                    self.forget_jobs(vec![id]);
                     format!("cancelled job {id}")
                 }
             },
             None => {
                 let count = self.job_count();
+                let mut gone = Vec::new();
                 for jobs in self.all_jobs_mut() {
-                    jobs.clear();
+                    gone.extend(jobs.drain(..).map(|job| job.id));
                 }
+                self.forget_jobs(gone);
                 format!("cancelled {count} scheduled job(s)")
             },
         };
@@ -1966,7 +2004,7 @@ impl State {
         // The model asked, but it is not getting an answer — the results are
         // recorded for the transcript's sake, not to be sent back.
         self.owes_reply = false;
-        self.job_auto_confirm = false;
+        self.scheduled_run = None;
         while !self.pending.is_empty() {
             self.finish_head("aborted by the user");
         }
