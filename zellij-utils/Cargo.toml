@@ -72,5 +72,4 @@ hegeltest = "0.29.3"
 
 [features]
 unstable = []
-web_server_capability = []
 vendored_curl = ["isahc/static-curl", "dep:openssl-sys", "dep:curl-sys"]

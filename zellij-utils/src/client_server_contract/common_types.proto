@@ -1060,13 +1060,13 @@ message PaneIdWithPlugin {
 }
 
 enum ExitReason {
+  reserved 6;
   EXIT_REASON_UNSPECIFIED = 0;
   EXIT_REASON_NORMAL = 1;
   EXIT_REASON_NORMAL_DETACHED = 2;
   EXIT_REASON_FORCE_DETACHED = 3;
   EXIT_REASON_CANNOT_ATTACH = 4;
   EXIT_REASON_DISCONNECT = 5;
-  EXIT_REASON_WEB_CLIENTS_FORBIDDEN = 6;
   EXIT_REASON_ERROR = 7;
   EXIT_REASON_CUSTOM_EXIT_STATUS = 8;
   EXIT_REASON_KICKED_BY_HOST = 9;
@@ -1334,6 +1334,7 @@ message RunEditFileAction {
 // Config Options message - comprehensive configuration structure
 
 message Options {
+  reserved 28, 29, 34, 35, 36, 37, 38, 42;
   optional bool simplified_ui = 1;
   optional string theme = 2;
   optional InputMode default_mode = 3;
@@ -1363,21 +1364,13 @@ message Options {
   optional uint64 serialization_interval = 25;
   optional bool disable_session_metadata = 26;
   optional bool support_kitty_keyboard_protocol = 27;
-  optional bool web_server = 28;
-  optional WebSharing web_sharing = 29;
   optional bool stacked_resize = 30;
   optional bool show_startup_tips = 31;
   optional bool show_release_notes = 32;
   optional bool advanced_mouse_actions = 33;
-  optional string web_server_ip = 34;
-  optional uint32 web_server_port = 35;
-  optional string web_server_cert = 36;
-  optional string web_server_key = 37;
-  optional bool enforce_https_for_localhost = 38;
   optional string post_command_discovery_hook = 39;
   optional bool osc8_hyperlinks = 40;
   optional bool mouse_hover_effects = 41;
-  optional uint64 client_async_worker_tasks = 42;
   optional bool visual_bell = 43;
   optional bool focus_follows_mouse = 44;
   optional bool mouse_click_through = 45;
@@ -1417,13 +1410,6 @@ enum StackDirection {
   STACK_DIRECTION_UNSPECIFIED = 0;
   STACK_DIRECTION_HORIZONTAL = 1;
   STACK_DIRECTION_VERTICAL = 2;
-}
-
-enum WebSharing {
-  WEB_SHARING_UNSPECIFIED = 0;
-  WEB_SHARING_ON = 1;
-  WEB_SHARING_OFF = 2;
-  WEB_SHARING_DISABLED = 3;
 }
 
 enum NestedSessionHandling {

@@ -20,7 +20,6 @@ use crate::tab::Tab;
 use crate::thread_bus::Bus;
 use crate::{ClientId, ServerInstruction};
 use std::collections::{HashMap, HashSet};
-use std::net::{IpAddr, Ipv4Addr};
 #[cfg(test)]
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -28,7 +27,7 @@ use zellij_utils::consts::{session_info_folder_for_session, ZELLIJ_SOCK_DIR};
 use zellij_utils::data::{
     Direction, Event, GetFocusedPaneInfoResponse, HostTerminalThemeMode, InputMode,
     NewPanePlacement, NotificationInfo, OverlayPlacement, PaneScrollbackResponse,
-    PluginCapabilities, SessionInfo, WebSharing,
+    PluginCapabilities, SessionInfo,
 };
 use zellij_utils::envs::set_session_name;
 use zellij_utils::errors::ContextType;
@@ -127,10 +126,6 @@ pub(crate) fn screen_thread_main(
         config_options.copy_clipboard.unwrap_or_default(),
         config_options.copy_on_select.unwrap_or(true),
     );
-    let web_server_ip = config_options
-        .web_server_ip
-        .unwrap_or_else(|| IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
-    let web_server_port = config_options.web_server_port.unwrap_or(8082);
     let styled_underlines = config_options.styled_underlines.unwrap_or(true);
     let osc8_hyperlinks = config_options.osc8_hyperlinks.unwrap_or(true);
     let explicitly_disable_kitty_keyboard_protocol = config_options
@@ -145,11 +140,6 @@ pub(crate) fn screen_thread_main(
         .unwrap_or(true);
     let stacked_resize = config_options.stacked_resize.unwrap_or(true);
     let stacked_pane_list = config_options.stacked_pane_list.unwrap_or(true);
-    let web_clients_allowed = config_options
-        .web_sharing
-        .map(|s| s.web_clients_allowed())
-        .unwrap_or(false);
-    let web_sharing = config_options.web_sharing.unwrap_or_else(Default::default);
     let advanced_mouse_actions = config_options.advanced_mouse_actions.unwrap_or(true);
     let osc133_command_selection = config_options.osc133_command_selection.unwrap_or(true);
     let word_separators = config_options
@@ -206,8 +196,6 @@ pub(crate) fn screen_thread_main(
         stacked_resize,
         stacked_pane_list,
         default_editor,
-        web_clients_allowed,
-        web_sharing,
         advanced_mouse_actions,
         osc133_command_selection,
         word_separators,
@@ -218,8 +206,6 @@ pub(crate) fn screen_thread_main(
         mouse_click_through,
         context_menu_on_right_click,
         context_menu,
-        web_server_ip,
-        web_server_port,
         nested_session_handling,
         notification_position,
         notification_timeout_secs,
@@ -1753,7 +1739,7 @@ pub(crate) fn screen_thread_main(
                 initial_panes,
                 block_on_first_terminal,
                 should_change_focus_to_new_tab,
-                (client_id, is_web_client),
+                client_id,
                 completion_tx,
             ) => {
                 let tab_index = screen.get_new_tab_id();
@@ -1763,10 +1749,6 @@ pub(crate) fn screen_thread_main(
                 } else {
                     None
                 };
-                // `is_web_client` may be a placeholder when the NewTab action was
-                // initiated over the web control channel (which cannot carry the
-                // flag); resolve it from the actual connected-client status.
-                let is_web_client = is_web_client || screen.client_is_web(client_id);
                 let resolved_swap_layouts = (
                     swap_tiled_layouts
                         .unwrap_or_else(|| screen.default_layout.swap_tiled_layouts.clone()),
@@ -1791,7 +1773,7 @@ pub(crate) fn screen_thread_main(
                         initial_panes,
                         block_on_first_terminal,
                         should_change_focus_to_new_tab,
-                        (client_id, is_web_client),
+                        client_id,
                         completion_tx,
                     ))?;
             },
@@ -1803,7 +1785,7 @@ pub(crate) fn screen_thread_main(
                 new_plugin_ids,
                 tab_id,
                 should_change_focus_to_new_tab,
-                (client_id, is_web_client),
+                client_id,
                 mut completion_tx,
                 blocking_terminal,
             ) => {
@@ -1835,7 +1817,7 @@ pub(crate) fn screen_thread_main(
                     new_plugin_ids.clone(),
                     tab_id,
                     should_change_focus_to_new_tab,
-                    (client_id, is_web_client),
+                    client_id,
                     blocking_terminal,
                 )?;
                 pending_tab_ids.remove(&tab_id);
@@ -1944,12 +1926,6 @@ pub(crate) fn screen_thread_main(
                     screen.active_tab_ids.keys().next().copied()
                 };
                 if let Some(client_id) = client_id {
-                    let is_web_client = screen
-                        .connected_clients
-                        .borrow()
-                        .get(&client_id)
-                        .copied()
-                        .unwrap_or(false);
                     if let Ok(tab_exists) = screen.go_to_tab_name(tab_name.clone(), client_id) {
                         screen.render(None)?;
                         if tab_exists {
@@ -1983,7 +1959,7 @@ pub(crate) fn screen_thread_main(
                                     None,  // initial_panes
                                     false, // block_on_first_terminal
                                     should_change_focus_to_new_tab,
-                                    (client_id, is_web_client),
+                                    client_id,
                                     completion_tx,
                                 ))?;
                             continue; // so we don't get to the completion signalling below
@@ -2218,7 +2194,6 @@ pub(crate) fn screen_thread_main(
             },
             ScreenInstruction::AddClient(
                 client_id,
-                is_web_client,
                 client_size,
                 tab_position_to_focus,
                 pane_id_to_focus,
@@ -2237,7 +2212,7 @@ pub(crate) fn screen_thread_main(
                 // only the reflow: this handler reports and renders on its own way out.
                 // Reject a client whose size leaves nothing to lay out: keeping its size in the
                 // shared minimum would make every later render fail for all clients.
-                let attach_result = screen.add_client(client_id, is_web_client);
+                let attach_result = screen.add_client(client_id);
                 log::info!(
                     "attach trace: screen client_id={client_id} Screen::add_client finished after {:?} ({})",
                     attach_started_at.elapsed(),
@@ -3321,7 +3296,6 @@ pub(crate) fn screen_thread_main(
                             client_id,
                         )?;
                         screen.clear_bell_for_pane_id(pane_id, client_id);
-                        screen.reconcile_single_pane_focus(client_id);
                         screen.sync_scroll_mode_on_focus(client_id)?;
                         screen.log_and_report_session_state()?;
                     }
@@ -3817,13 +3791,6 @@ pub(crate) fn screen_thread_main(
                     connected_clients: screen.active_tab_ids.keys().len(),
                     is_current_session: true,
                     available_layouts,
-                    web_clients_allowed: screen.web_sharing.web_clients_allowed(),
-                    web_client_count: screen
-                        .connected_clients
-                        .borrow()
-                        .iter()
-                        .filter(|(_client_id, is_web_client)| **is_web_client)
-                        .count(),
                     plugins: Default::default(),
                     tab_history: screen.tab_history.clone(),
                     pane_history: screen
@@ -4288,14 +4255,6 @@ pub(crate) fn screen_thread_main(
                 }
                 screen.render(None)?;
             },
-            ScreenInstruction::SetMobileRenderPreferences {
-                client_id,
-                single_pane,
-                fit,
-            } => {
-                screen.set_mobile_render_preferences(client_id, single_pane, fit)?;
-                screen.log_and_report_session_state()?;
-            },
             ScreenInstruction::TogglePaneEmbedOrEjectForPaneId(pane_id) => {
                 if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
                     tab.toggle_pane_embed_or_floating_for_pane_id(pane_id, None)
@@ -4458,19 +4417,6 @@ pub(crate) fn screen_thread_main(
                                 // waiting for it
             ) => {
                 screen.toggle_group_marking(client_id).non_fatal();
-            },
-            ScreenInstruction::SessionSharingStatusChange(web_sharing) => {
-                if web_sharing {
-                    screen.web_sharing = WebSharing::On;
-                } else {
-                    screen.web_sharing = WebSharing::Off;
-                }
-
-                for tab in screen.tabs.values_mut() {
-                    tab.update_web_sharing(screen.web_sharing);
-                }
-                let _ = screen.log_and_report_session_state();
-                let _ = screen.render(None);
             },
             ScreenInstruction::HighlightAndUnhighlightPanes(
                 pane_ids_to_highlight,
@@ -4953,12 +4899,6 @@ pub(crate) fn screen_thread_main(
                         direction,
                         _completion_tx,
                     ));
-                }
-            },
-            ScreenInstruction::SetSoftKeyboard { client_id, on } => {
-                if let Some(os_input) = &screen.bus.os_input {
-                    let _ = os_input
-                        .send_to_client(client_id, ServerToClientMsg::SetSoftKeyboard { on });
                 }
             },
             ScreenInstruction::FocusHostSession(client_id, _completion_tx) => {

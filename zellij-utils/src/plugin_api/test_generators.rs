@@ -1797,10 +1797,6 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             optional_floating_pane_coordinates(tc),
             context(tc),
         ),
-        CommandType::StartWebServer => PluginCommand::StartWebServer,
-        CommandType::StopWebServer => PluginCommand::StopWebServer,
-        CommandType::ShareCurrentSession => PluginCommand::ShareCurrentSession,
-        CommandType::StopSharingCurrentSession => PluginCommand::StopSharingCurrentSession,
         CommandType::OpenFileInPlaceOfPlugin => {
             PluginCommand::OpenFileInPlaceOfPlugin(files_to_open(tc), booleans(tc), context(tc))
         },
@@ -1816,18 +1812,8 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::CloseMultiplePanes => PluginCommand::CloseMultiplePanes(pane_ids(tc)),
         CommandType::FloatMultiplePanes => PluginCommand::FloatMultiplePanes(pane_ids(tc)),
         CommandType::EmbedMultiplePanes => PluginCommand::EmbedMultiplePanes(pane_ids(tc)),
-        CommandType::QueryWebServerStatus => PluginCommand::QueryWebServerStatus,
         CommandType::SetSelfMouseSelectionSupport => {
             PluginCommand::SetSelfMouseSelectionSupport(booleans(tc))
-        },
-        CommandType::GenerateWebLoginToken => {
-            PluginCommand::GenerateWebLoginToken(optional_strings(tc), booleans(tc))
-        },
-        CommandType::RevokeWebLoginToken => PluginCommand::RevokeWebLoginToken(strings(tc)),
-        CommandType::ListWebLoginTokens => PluginCommand::ListWebLoginTokens,
-        CommandType::RevokeAllWebLoginTokens => PluginCommand::RevokeAllWebLoginTokens,
-        CommandType::RenameWebLoginToken => {
-            PluginCommand::RenameWebLoginToken(strings(tc), strings(tc))
         },
         CommandType::InterceptKeyPresses => PluginCommand::InterceptKeyPresses,
         CommandType::ClearKeyPressesIntercepts => PluginCommand::ClearKeyPressesIntercepts,
@@ -1943,7 +1929,6 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             PluginCommand::DeleteDeadSessionAndReply(strings(tc))
         },
         CommandType::DeleteAllDeadSessionsAndReply => PluginCommand::DeleteAllDeadSessionsAndReply,
-        CommandType::SetSoftKeyboard => PluginCommand::SetSoftKeyboard(booleans(tc)),
         CommandType::FocusHostSession => PluginCommand::FocusHostSession,
         CommandType::ListRecordings => PluginCommand::ListRecordings,
         CommandType::ListNotifications => PluginCommand::ListNotifications,

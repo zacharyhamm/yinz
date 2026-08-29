@@ -43,7 +43,7 @@ return config
 
 The builder covers the same sections as KDL:
 
-- `options`, `ui`, `web_client`, and `env` take tables.
+- `options`, `ui`, and `env` take tables.
 - `theme(name, palette)` adds or replaces a theme.
 - `plugin(alias, location, settings)`, `background_plugin(location, settings)`, and
   `hook(name, location, settings)` configure plugins. A hook `name` is any point in
@@ -51,7 +51,7 @@ The builder covers the same sections as KDL:
   `session_start`, `context_menu`.
 - `bind(mode, key, actions)` and `unbind(mode, key)` change keybindings.
 - `clear_options`, `clear_keybinds`, `clear_themes`, `clear_plugins`, `clear_hooks`, `clear_ui`,
-  `clear_env`, `clear_web_client`, and `clear_background_plugins` discard inherited values.
+  `clear_env`, and `clear_background_plugins` discard inherited values.
 
 An action with positional KDL arguments uses `config.action("SwitchToMode", "Pane")`. A table is
 read as KDL properties. For an action needing all forms, use

@@ -1,5 +1,6 @@
 ---
 source: zellij-utils/src/kdl/./unit/config_options.rs
+assertion_line: 47
 expression: fake_document.to_string()
 ---
 simplified_ui true
@@ -31,5 +32,3 @@ styled_underlines false
 serialization_interval 1
 disable_session_metadata true
 support_kitty_keyboard_protocol false
-web_server true
-web_sharing "disabled"

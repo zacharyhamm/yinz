@@ -9,12 +9,11 @@ use crate::{
 use zellij_test_support::Watched;
 
 use insta::assert_snapshot;
-use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use zellij_utils::cli::CliAction;
 use zellij_utils::data::WarpedPane;
 use zellij_utils::data::{
-    Event, EventType, Mouse, OverlayKind, OverlayPlacement, Resize, Style, Styling, WebSharing,
+    Event, EventType, Mouse, OverlayKind, OverlayPlacement, Resize, Style, Styling,
 };
 use zellij_utils::errors::{prelude::*, ErrorContext};
 use zellij_utils::input::actions::Action;
@@ -392,9 +391,6 @@ fn create_new_screen_with_capture(
     let arrow_fonts = true;
     let explicitly_disable_kitty_keyboard_protocol = false;
     let stacked_resize = true;
-    let web_sharing = WebSharing::Off;
-    let web_server_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let web_server_port = 8080;
     let visual_bell = true;
     let mouse_scroll_resize = true;
     let screen = Screen::new(
@@ -423,8 +419,6 @@ fn create_new_screen_with_capture(
         stacked_resize,
         false,
         None,
-        false,
-        web_sharing,
         advanced_mouse_actions,
         true,
         DEFAULT_WORD_SEPARATORS.to_owned(),
@@ -435,8 +429,6 @@ fn create_new_screen_with_capture(
         false, // mouse_click_through
         false, // context_menu_on_right_click
         ContextMenu::default(),
-        web_server_ip,
-        web_server_port,
         NestedSessionHandling::default(),
         NotificationPosition::default(),
         DEFAULT_NOTIFICATION_TIMEOUT_SECS,
@@ -550,7 +542,7 @@ impl MockScreen {
             None,                         // initial_panes
             false,
             should_change_focus_to_new_tab,
-            (self.main_client_id, false),
+            self.main_client_id,
             None,
         ));
         let _ = self.to_screen.send(ScreenInstruction::ApplyLayout(
@@ -561,7 +553,7 @@ impl MockScreen {
             plugin_ids,
             tab_index,
             true,
-            (self.main_client_id, false),
+            self.main_client_id,
             None,
             None,
         ));
@@ -643,7 +635,7 @@ impl MockScreen {
             None,                         // initial_panes
             false,
             should_change_focus_to_new_tab,
-            (self.main_client_id, false),
+            self.main_client_id,
             None,
         ));
         let _ = self.to_screen.send(ScreenInstruction::ApplyLayout(
@@ -654,7 +646,7 @@ impl MockScreen {
             plugin_ids,
             tab_index,
             true,
-            (self.main_client_id, false),
+            self.main_client_id,
             None,
             None,
         ));
@@ -682,7 +674,7 @@ impl MockScreen {
             None,                         // initial_panes
             false,
             should_change_focus_to_new_tab,
-            (self.main_client_id, false),
+            self.main_client_id,
             None,
         ));
         let _ = self.to_screen.send(ScreenInstruction::ApplyLayout(
@@ -693,7 +685,7 @@ impl MockScreen {
             plugin_ids,
             0,
             true,
-            (self.main_client_id, false),
+            self.main_client_id,
             None,
             None,
         ));
@@ -731,7 +723,7 @@ impl MockScreen {
             None,                         // initial_panes
             false,
             should_change_focus_to_new_tab,
-            (self.main_client_id, false),
+            self.main_client_id,
             None,
         ));
         let _ = self.to_screen.send(ScreenInstruction::ApplyLayout(
@@ -742,7 +734,7 @@ impl MockScreen {
             plugin_ids,
             tab_index,
             true,
-            (self.main_client_id, false),
+            self.main_client_id,
             None,
             None,
         ));
@@ -783,7 +775,6 @@ impl MockScreen {
             session_recorder_thread: None,
             session_configuration: self.session_metadata.session_configuration.clone(),
             current_input_modes: self.session_metadata.current_input_modes.clone(),
-            web_sharing: WebSharing::Off,
             config_file_path: self.session_metadata.config_file_path.clone(),
             config_dir: self.session_metadata.config_dir.clone(),
             key_passthrough_clients: self.session_metadata.key_passthrough_clients.clone(),
@@ -840,7 +831,6 @@ impl MockScreen {
             session_recorder_thread: None,
             session_configuration: Default::default(),
             current_input_modes: HashMap::new(),
-            web_sharing: WebSharing::Off,
             config_file_path: None,
             config_dir: None,
             key_passthrough_clients: Default::default(),
@@ -975,7 +965,7 @@ fn new_tab(screen: &mut Screen, pid: u32, tab_index: usize) {
             new_plugin_ids,
             tab_index,
             true,
-            (client_id, false),
+            client_id,
             None,
         )
         .expect("TEST");
@@ -1028,9 +1018,6 @@ fn create_new_screen_with_message_capture(
     let arrow_fonts = true;
     let explicitly_disable_kitty_keyboard_protocol = false;
     let stacked_resize = true;
-    let web_sharing = WebSharing::Off;
-    let web_server_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let web_server_port = 8080;
     let visual_bell = true;
     let screen = Screen::new(
         bus,
@@ -1058,8 +1045,6 @@ fn create_new_screen_with_message_capture(
         stacked_resize,
         false,
         None,
-        false,
-        web_sharing,
         true,
         true,
         DEFAULT_WORD_SEPARATORS.to_owned(),
@@ -1070,8 +1055,6 @@ fn create_new_screen_with_message_capture(
         false, // mouse_click_through
         false, // context_menu_on_right_click
         ContextMenu::default(),
-        web_server_ip,
-        web_server_port,
         NestedSessionHandling::default(),
         NotificationPosition::default(),
         DEFAULT_NOTIFICATION_TIMEOUT_SECS,
@@ -1181,9 +1164,6 @@ fn create_new_screen_with_forward_capture(size: Size) -> (Screen, ForwardCapture
     let arrow_fonts = true;
     let explicitly_disable_kitty_keyboard_protocol = false;
     let stacked_resize = true;
-    let web_sharing = WebSharing::Off;
-    let web_server_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let web_server_port = 8080;
     let visual_bell = true;
     let screen = Screen::new(
         bus,
@@ -1211,8 +1191,6 @@ fn create_new_screen_with_forward_capture(size: Size) -> (Screen, ForwardCapture
         stacked_resize,
         false,
         None,
-        false,
-        web_sharing,
         true,
         true,
         DEFAULT_WORD_SEPARATORS.to_owned(),
@@ -1223,8 +1201,6 @@ fn create_new_screen_with_forward_capture(size: Size) -> (Screen, ForwardCapture
         false, // mouse_click_through
         false, // context_menu_on_right_click
         ContextMenu::default(),
-        web_server_ip,
-        web_server_port,
         NestedSessionHandling::default(),
         NotificationPosition::default(),
         DEFAULT_NOTIFICATION_TIMEOUT_SECS,
@@ -1333,9 +1309,6 @@ fn create_new_screen_with_theme_capture(size: Size) -> (Screen, ThemeCapture) {
     let copy_options = CopyOptions::default();
     let default_layout = Box::new(Layout::default());
     let default_shell = PathBuf::from("my_default_shell");
-    let web_sharing = WebSharing::Off;
-    let web_server_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let web_server_port = 8080;
     let screen = Screen::new(
         bus,
         &client_attributes,
@@ -1362,8 +1335,6 @@ fn create_new_screen_with_theme_capture(size: Size) -> (Screen, ThemeCapture) {
         true,
         false,
         None,
-        false,
-        web_sharing,
         true,
         true,
         DEFAULT_WORD_SEPARATORS.to_owned(),
@@ -1374,8 +1345,6 @@ fn create_new_screen_with_theme_capture(size: Size) -> (Screen, ThemeCapture) {
         false,
         false, // context_menu_on_right_click
         ContextMenu::default(),
-        web_server_ip,
-        web_server_port,
         NestedSessionHandling::default(),
         NotificationPosition::default(),
         DEFAULT_NOTIFICATION_TIMEOUT_SECS,
@@ -1496,8 +1465,6 @@ fn create_non_mirrored_screen(size: Size) -> Screen {
         true,  // stacked_resize
         false,
         None,
-        false,
-        WebSharing::Off,
         true, // advanced_mouse_actions
         true,
         DEFAULT_WORD_SEPARATORS.to_owned(),
@@ -1508,29 +1475,11 @@ fn create_non_mirrored_screen(size: Size) -> Screen {
         false, // mouse_click_through
         false, // context_menu_on_right_click
         ContextMenu::default(),
-        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-        8080,
         NestedSessionHandling::default(),
         NotificationPosition::default(),
         DEFAULT_NOTIFICATION_TIMEOUT_SECS,
     );
     seed_first_client_size(screen, size)
-}
-
-fn add_second_pane_to_active_tab(screen: &mut Screen, pid: u32) {
-    let active_tab = screen.get_active_tab_mut(1).unwrap();
-    active_tab
-        .new_pane(
-            PaneId::Terminal(pid),
-            None,
-            None,
-            false,
-            true,
-            NewPanePlacement::default(),
-            Some(1),
-            None,
-        )
-        .unwrap();
 }
 
 fn decode_nested_frame(bytes: &[u8]) -> Option<zellij_utils::nested_session::NestedSessionMessage> {
@@ -2137,7 +2086,6 @@ mod pane_state;
 mod plugin_broadcasts;
 mod reveal_pane;
 mod scroll_and_warp;
-mod single_pane_and_fit;
 mod sizing;
 mod subscribers;
 mod tab_projects;

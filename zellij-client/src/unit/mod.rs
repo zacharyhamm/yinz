@@ -2,5 +2,3 @@
 // here do not repeat that gate.
 mod router_tests;
 mod teardown_tests;
-#[cfg(feature = "web_server_capability")]
-mod terminal_loop_tests;

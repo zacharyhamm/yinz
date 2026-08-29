@@ -17,7 +17,6 @@ pub mod tab;
 pub mod background_jobs;
 mod global_async_runtime;
 mod logging_pipe;
-mod mobile_web;
 pub mod nested_guest;
 pub mod notifications;
 mod pane_groups;
@@ -43,7 +42,6 @@ use pty_writer::{pty_writer_main, PtyWriteInstruction};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
 use std::{
-    net::{IpAddr, Ipv4Addr},
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
     thread,
@@ -82,8 +80,7 @@ use zellij_utils::{
         DEFAULT_SCROLL_BUFFER_SIZE, SCROLL_BUFFER_SIZE, ZELLIJ_SEEN_RELEASE_NOTES_CACHE_FILE,
     },
     data::{
-        ConnectToSession, Direction, InputMode, KeyWithModifier, LayoutInfo, LayoutWithError,
-        Style, WebSharing,
+        ConnectToSession, Direction, InputMode, KeyWithModifier, LayoutInfo, LayoutWithError, Style,
     },
     errors::{prelude::*, ContextType, ErrorInstruction, FatalError, ServerContext},
     home::{default_layout_dir, get_default_data_dir, user_plugin_dir_or_default},
@@ -97,7 +94,7 @@ use zellij_utils::{
         plugins::PluginAliases,
     },
     ipc::{ClientAttributes, ExitReason, ServerToClientMsg},
-    shared::{default_palette, web_server_base_url},
+    shared::default_palette,
 };
 
 pub type ClientId = u16;
@@ -105,11 +102,7 @@ pub type ClientId = u16;
 /// Instructions related to server-side application
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum ServerInstruction {
-    FirstClientConnected(
-        CliAssets,
-        bool, // is_web_client
-        ClientId,
-    ),
+    FirstClientConnected(CliAssets, ClientId),
     Render(Option<HashMap<ClientId, String>>),
     UnblockInputThread,
     ClientExit(ClientId, Option<NotificationEnd>),
@@ -121,10 +114,9 @@ pub enum ServerInstruction {
         CliAssets,
         Option<usize>,       // tab position to focus
         Option<(u32, bool)>, // (pane_id, is_plugin) => pane_id to focus
-        bool,                // is_web_client
         ClientId,
     ),
-    AttachWatcherClient(ClientId, Size, bool), // bool -> is_web_client
+    AttachWatcherClient(ClientId, Size),
     ConnStatus(ClientId),
     Log(Vec<String>, ClientId, Option<NotificationEnd>),
     LogError(Vec<String>, ClientId, Option<NotificationEnd>),
@@ -161,12 +153,6 @@ pub enum ServerInstruction {
         write_config_to_disk: bool,
         plugin_id: Option<u32>,
     },
-    StartWebServer(ClientId),
-    ShareCurrentSession(ClientId),
-    StopSharingCurrentSession(ClientId),
-    SendWebClientsForbidden(ClientId),
-    WebServerStarted(String), // String -> base_url
-    FailedToStartWebServer(String),
     ClearMouseHelpText(ClientId),
     ClearCommandOutputFlash(PaneId),
     /// Relay a forwarded-query dispatch from Screen to the server main
@@ -386,10 +372,6 @@ pub(crate) struct SessionMetaData {
     pub current_input_modes: HashMap<ClientId, InputMode>,
     pub session_configuration: SessionConfiguration,
     pub key_passthrough_clients: HashMap<ClientId, PaneId>,
-    pub web_sharing: WebSharing, // this is a special attribute explicitly set on session
-    // initialization because we don't want it to be overridden by
-    // configuration changes, the only way it can be overwritten is by
-    // explicit plugin action
     screen_thread: Option<thread::JoinHandle<()>>,
     pty_thread: Option<thread::JoinHandle<()>>,
     plugin_thread: Option<thread::JoinHandle<()>>,
@@ -667,13 +649,6 @@ macro_rules! remove_client {
     };
 }
 
-macro_rules! remove_watcher {
-    ($client_id:expr, $os_input:expr, $session_state:expr) => {
-        $os_input.remove_client($client_id).unwrap();
-        $session_state.write().unwrap().remove_watcher($client_id);
-    };
-}
-
 macro_rules! send_to_client {
     ($client_id:expr, $os_input:expr, $msg:expr, $session_state:expr, $session_data:expr) => {
         let send_to_client_res = $os_input.send_to_client($client_id, $msg);
@@ -700,9 +675,9 @@ macro_rules! send_to_client {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SessionState {
-    clients: HashMap<ClientId, Option<bool>>, // bool -> is_web_client
-    pipes: HashMap<String, ClientId>,         // String => pipe_id
-    watchers: HashMap<ClientId, bool>, // watcher clients (read-only observers) bool -> is_web_client
+    clients: HashSet<ClientId>,
+    pipes: HashMap<String, ClientId>,     // String => pipe_id
+    watchers: HashSet<ClientId>,          // watcher clients (read-only observers)
     last_active_client: Option<ClientId>, // last client that sent a Key message
     /// Host-query forward tokens that have been dispatched to a
     /// specific client and are waiting for a reply. Used to clean up
@@ -716,9 +691,9 @@ pub(crate) struct SessionState {
 impl SessionState {
     pub fn new() -> Self {
         SessionState {
-            clients: HashMap::new(),
+            clients: HashSet::new(),
             pipes: HashMap::new(),
-            watchers: HashMap::new(),
+            watchers: HashSet::new(),
             last_active_client: None,
             forwards_in_flight: HashMap::new(),
         }
@@ -726,9 +701,9 @@ impl SessionState {
     pub fn new_client(&mut self) -> ClientId {
         let all_ids: HashSet<ClientId> = self
             .clients
-            .keys()
+            .iter()
             .copied()
-            .chain(self.watchers.keys().copied())
+            .chain(self.watchers.iter().copied())
             .collect();
 
         let mut next_client_id = 1;
@@ -739,7 +714,7 @@ impl SessionState {
                 break;
             }
         }
-        self.clients.insert(next_client_id, None);
+        self.clients.insert(next_client_id);
         next_client_id
     }
     pub fn associate_pipe_with_client(&mut self, pipe_id: String, client_id: ClientId) {
@@ -765,34 +740,11 @@ impl SessionState {
         }
         stuck
     }
-    pub fn set_client_is_web(&mut self, client_id: ClientId, is_web_client: bool) {
-        self.clients.insert(client_id, Some(is_web_client));
-    }
     pub fn client_ids(&self) -> Vec<ClientId> {
-        self.clients.keys().copied().collect()
+        self.clients.iter().copied().collect()
     }
     pub fn watcher_client_ids(&self) -> Vec<ClientId> {
-        self.watchers.keys().copied().collect()
-    }
-    pub fn web_client_ids(&self) -> Vec<ClientId> {
-        self.clients
-            .iter()
-            .filter_map(|(c_id, is_web_client)| is_web_client.unwrap_or(false).then_some(*c_id))
-            .collect()
-    }
-    pub fn web_watcher_client_ids(&self) -> Vec<ClientId> {
-        self.watchers
-            .iter()
-            .filter_map(
-                |(&c_id, &is_web_client)| {
-                    if is_web_client {
-                        Some(c_id)
-                    } else {
-                        None
-                    }
-                },
-            )
-            .collect()
+        self.watchers.iter().copied().collect()
     }
     pub fn get_pipe(&self, pipe_name: &str) -> Option<ClientId> {
         self.pipes.get(pipe_name).copied()
@@ -800,7 +752,7 @@ impl SessionState {
     pub fn active_clients_are_connected(&self) -> bool {
         let ids_of_pipe_clients: HashSet<ClientId> = self.pipes.values().copied().collect();
         let mut active_clients_connected = false;
-        for client_id in self.clients.keys() {
+        for client_id in &self.clients {
             if ids_of_pipe_clients.contains(client_id) {
                 continue;
             }
@@ -808,12 +760,12 @@ impl SessionState {
         }
         active_clients_connected
     }
-    pub fn convert_client_to_watcher(&mut self, client_id: ClientId, is_web_client: bool) {
+    pub fn convert_client_to_watcher(&mut self, client_id: ClientId) {
         self.clients.remove(&client_id);
-        self.watchers.insert(client_id, is_web_client);
+        self.watchers.insert(client_id);
     }
     pub fn is_watcher(&self, client_id: &ClientId) -> bool {
-        self.watchers.contains_key(client_id)
+        self.watchers.contains(client_id)
     }
     pub fn remove_watcher(&mut self, client_id: ClientId) {
         self.watchers.remove(&client_id);
@@ -841,11 +793,11 @@ impl SessionState {
     /// only when no regular client is connected.
     pub fn pick_forward_target(&self) -> Option<ClientId> {
         if let Some(candidate) = self.last_active_client {
-            if self.clients.contains_key(&candidate) {
+            if self.clients.contains(&candidate) {
                 return Some(candidate);
             }
         }
-        self.clients.keys().copied().next()
+        self.clients.iter().copied().next()
     }
 }
 
@@ -992,7 +944,7 @@ pub fn start_server_impl(
         let (instruction, mut err_ctx) = recv.unwrap();
         err_ctx.add_call(ContextType::IPCServer((&instruction).into()));
         match &instruction {
-            ServerInstruction::AttachClient(_, _, _, _, client_id) => log::info!(
+            ServerInstruction::AttachClient(_, _, _, client_id) => log::info!(
                 "attach trace: server main loop received AttachClient client_id={client_id}"
             ),
             ServerInstruction::ConnStatus(client_id) => log::info!(
@@ -1001,7 +953,7 @@ pub fn start_server_impl(
             _ => {},
         }
         match instruction {
-            ServerInstruction::FirstClientConnected(cli_assets, is_web_client, client_id) => {
+            ServerInstruction::FirstClientConnected(cli_assets, client_id) => {
                 let host_terminal_env = cli_assets.host_terminal_env.clone();
                 let (config, layout) = cli_assets.load_config_and_layout();
                 let layout_is_welcome_screen = cli_assets.layout
@@ -1065,11 +1017,6 @@ pub fn start_server_impl(
                     .insert(client_id, default_input_mode);
 
                 *session_data.write().unwrap() = Some(session);
-                session_state
-                    .write()
-                    .unwrap()
-                    .set_client_is_web(client_id, is_web_client);
-
                 session_data
                     .read()
                     .unwrap()
@@ -1113,7 +1060,7 @@ pub fn start_server_impl(
                             None,  // initial_panes
                             false, // block_on_first_terminal
                             should_focus_tab,
-                            (client_id, is_web_client),
+                            client_id,
                             None,
                         ))
                         .unwrap()
@@ -1188,7 +1135,6 @@ pub fn start_server_impl(
                 cli_assets,
                 tab_position_to_focus,
                 pane_id_to_focus,
-                is_web_client,
                 client_id,
             ) => {
                 let attach_started_at = std::time::Instant::now();
@@ -1252,10 +1198,6 @@ pub fn start_server_impl(
                 log::info!(
                     "attach trace: server main client_id={client_id} waiting for session_state write lock"
                 );
-                session_state
-                    .write()
-                    .unwrap()
-                    .set_client_is_web(client_id, is_web_client);
                 log::info!(
                     "attach trace: server main client_id={client_id} session state updated after {:?}",
                     attach_started_at.elapsed()
@@ -1276,7 +1218,6 @@ pub fn start_server_impl(
                     .senders
                     .send_to_screen(ScreenInstruction::AddClient(
                         client_id,
-                        is_web_client,
                         client_attributes.size,
                         tab_position_to_focus,
                         pane_id_to_focus,
@@ -1307,7 +1248,7 @@ pub fn start_server_impl(
                     attach_started_at.elapsed()
                 );
             },
-            ServerInstruction::AttachWatcherClient(client_id, terminal_size, is_web_client) => {
+            ServerInstruction::AttachWatcherClient(client_id, terminal_size) => {
                 // the client_id was inserted into clients upon ipc tunnel initialization
                 // now that it identified itself as a watcher, we need to convert it
 
@@ -1315,7 +1256,7 @@ pub fn start_server_impl(
                 session_state
                     .write()
                     .unwrap()
-                    .convert_client_to_watcher(client_id, is_web_client);
+                    .convert_client_to_watcher(client_id);
 
                 // Also notify Screen to add this as a watcher client (for rendering) with the terminal size
                 session_data
@@ -1482,7 +1423,7 @@ pub fn start_server_impl(
                             .read()
                             .unwrap()
                             .clients
-                            .keys()
+                            .iter()
                             .copied()
                             .collect();
                         // these are just the pipes
@@ -1545,15 +1486,6 @@ pub fn start_server_impl(
                         .send_to_plugin(PluginInstruction::RemoveClient(client_id))
                         .unwrap();
                 }
-            },
-            ServerInstruction::SendWebClientsForbidden(client_id) => {
-                let _ = os_input.send_to_client(
-                    client_id,
-                    ServerToClientMsg::Exit {
-                        exit_reason: ExitReason::WebClientsForbidden,
-                    },
-                );
-                remove_client!(client_id, os_input, session_state, session_data);
             },
             ServerInstruction::KillSession => {
                 let client_ids = session_state.read().unwrap().client_ids();
@@ -1677,7 +1609,7 @@ pub fn start_server_impl(
                         .read()
                         .unwrap()
                         .watchers
-                        .keys()
+                        .iter()
                         .copied()
                         .collect();
                     for watcher_id in watcher_ids {
@@ -1984,110 +1916,6 @@ pub fn start_server_impl(
                     client_id,
                 );
             },
-            ServerInstruction::StartWebServer(client_id) => {
-                if cfg!(feature = "web_server_capability") {
-                    send_to_client!(
-                        client_id,
-                        os_input,
-                        ServerToClientMsg::StartWebServer,
-                        session_state,
-                        session_data
-                    );
-                } else {
-                    // TODO: test this
-                    log::error!("Cannot start web server: this instance of Zellij was compiled without web_server_capability");
-                }
-            },
-            ServerInstruction::ShareCurrentSession(_client_id) => {
-                if cfg!(feature = "web_server_capability") {
-                    let successfully_changed = session_data
-                        .write()
-                        .ok()
-                        .and_then(|mut s| s.as_mut().map(|s| s.web_sharing.set_sharing()))
-                        .unwrap_or(false);
-                    if successfully_changed {
-                        session_data
-                            .write()
-                            .unwrap()
-                            .as_ref()
-                            .unwrap()
-                            .senders
-                            .send_to_screen(ScreenInstruction::SessionSharingStatusChange(true))
-                            .unwrap();
-                    }
-                } else {
-                    log::error!("Cannot share session: this instance of Zellij was compiled without web_server_capability");
-                }
-            },
-            ServerInstruction::StopSharingCurrentSession(_client_id) => {
-                if cfg!(feature = "web_server_capability") {
-                    let successfully_changed = session_data
-                        .write()
-                        .ok()
-                        .and_then(|mut s| s.as_mut().map(|s| s.web_sharing.set_not_sharing()))
-                        .unwrap_or(false);
-                    if successfully_changed {
-                        // disconnect existing web clients
-                        let web_client_ids: Vec<ClientId> =
-                            session_state.read().unwrap().web_client_ids().to_vec();
-                        for client_id in web_client_ids {
-                            let _ = os_input.send_to_client(
-                                client_id,
-                                ServerToClientMsg::Exit {
-                                    exit_reason: ExitReason::WebClientsForbidden,
-                                },
-                            );
-                            remove_client!(client_id, os_input, session_state, session_data);
-                        }
-                        let web_watcher_client_ids: Vec<ClientId> = session_state
-                            .read()
-                            .unwrap()
-                            .web_watcher_client_ids()
-                            .to_vec();
-                        for client_id in web_watcher_client_ids {
-                            let _ = os_input.send_to_client(
-                                client_id,
-                                ServerToClientMsg::Exit {
-                                    exit_reason: ExitReason::WebClientsForbidden,
-                                },
-                            );
-                            remove_watcher!(client_id, os_input, session_state);
-                        }
-
-                        session_data
-                            .write()
-                            .unwrap()
-                            .as_ref()
-                            .unwrap()
-                            .senders
-                            .send_to_screen(ScreenInstruction::SessionSharingStatusChange(false))
-                            .unwrap();
-                    }
-                } else {
-                    // TODO: test this
-                    log::error!("Cannot start web server: this instance of Zellij was compiled without web_server_capability");
-                }
-            },
-            ServerInstruction::WebServerStarted(base_url) => {
-                session_data
-                    .write()
-                    .unwrap()
-                    .as_ref()
-                    .unwrap()
-                    .senders
-                    .send_to_plugin(PluginInstruction::WebServerStarted(base_url))
-                    .unwrap();
-            },
-            ServerInstruction::FailedToStartWebServer(error) => {
-                session_data
-                    .write()
-                    .unwrap()
-                    .as_ref()
-                    .unwrap()
-                    .senders
-                    .send_to_plugin(PluginInstruction::FailedToStartWebServer(error))
-                    .unwrap();
-            },
             ServerInstruction::ClearMouseHelpText(client_id) => {
                 session_data
                     .write()
@@ -2339,13 +2167,6 @@ fn init_session(
 
     let serialization_interval = config_options.serialization_interval;
     let disable_session_metadata = config_options.disable_session_metadata.unwrap_or(false);
-    let web_server_ip = config_options
-        .web_server_ip
-        .unwrap_or_else(|| IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
-    let web_server_port = config_options.web_server_port.unwrap_or(8082);
-    let has_certificate =
-        config_options.web_server_cert.is_some() && config_options.web_server_key.is_some();
-    let enforce_https_for_localhost = config_options.enforce_https_for_localhost.unwrap_or(false);
 
     // Config only exists once a client has connected, long after the pty backend
     // was built, so this is the first point at which we can know. It is safe to
@@ -2548,18 +2369,11 @@ fn init_session(
             if let Some(handle) = session_recorder_handle.clone() {
                 background_jobs_bus.senders.session_recorder = Some(handle);
             }
-            let web_server_base_url = web_server_base_url(
-                web_server_ip,
-                web_server_port,
-                has_certificate,
-                enforce_https_for_localhost,
-            );
             move || {
                 background_jobs_main(
                     background_jobs_bus,
                     serialization_interval,
                     disable_session_metadata,
-                    web_server_base_url,
                 )
                 .fatal()
             }
@@ -2610,10 +2424,6 @@ fn init_session(
         pty_writer_thread: Some(pty_writer_thread),
         background_jobs_thread: Some(background_jobs_thread),
         session_recorder_thread,
-        #[cfg(feature = "web_server_capability")]
-        web_sharing: config.options.web_sharing.unwrap_or(WebSharing::Off),
-        #[cfg(not(feature = "web_server_capability"))]
-        web_sharing: WebSharing::Disabled,
         key_passthrough_clients: HashMap::new(),
         config_file_path: cli_assets.config_file_path,
         config_dir: cli_assets.config_dir,
@@ -2954,15 +2764,15 @@ mod session_state_tests {
 
     fn with_client(id: ClientId) -> SessionState {
         let mut s = SessionState::new();
-        s.clients.insert(id, None);
+        s.clients.insert(id);
         s
     }
 
     #[test]
     fn pick_forward_target_prefers_last_active_when_still_connected() {
         let mut s = SessionState::new();
-        s.clients.insert(1, None);
-        s.clients.insert(2, None);
+        s.clients.insert(1);
+        s.clients.insert(2);
         s.set_last_active_client(2);
         assert_eq!(s.pick_forward_target(), Some(2));
     }
@@ -3045,8 +2855,8 @@ mod session_state_tests {
     #[test]
     fn pick_forward_target_falls_back_when_last_active_disconnected() {
         let mut s = SessionState::new();
-        s.clients.insert(1, None);
-        s.clients.insert(2, None);
+        s.clients.insert(1);
+        s.clients.insert(2);
         // Client 3 was last active but has since disconnected — not in
         // `clients` map anymore. Must fall through to any connected
         // client rather than returning None.
@@ -3070,7 +2880,7 @@ mod session_state_tests {
         s.mark_forward_in_flight(11, 1);
         // A forward dispatched to a *different* client — must not be
         // returned when we remove client 1.
-        s.clients.insert(2, None);
+        s.clients.insert(2);
         s.mark_forward_in_flight(12, 2);
 
         let mut stuck = s.remove_client(1);

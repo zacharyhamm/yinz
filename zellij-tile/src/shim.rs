@@ -17,21 +17,20 @@ use zellij_utils::plugin_api::plugin_command::{
     dump_layout_response, dump_session_layout_response, fs_list_response, fs_metadata_response,
     fs_mutate_response, fs_read_response, get_focused_pane_info_response, get_pane_cwd_response,
     get_pane_git_probe_response, get_pane_running_command_response, get_session_list_response,
-    parse_layout_response, read_plugin_log_response, CreateTokenResponse, ListTokensResponse,
-    ProtobufBreakPanesToNewTabResponse, ProtobufBreakPanesToTabWithIdResponse,
-    ProtobufBreakPanesToTabWithIndexResponse, ProtobufCheckLuaPluginResponse,
-    ProtobufCurrentSessionLastSavedTimeResponse, ProtobufDataApplyResponse,
-    ProtobufDataCountResponse, ProtobufDataDefineResponse, ProtobufDataFetchResponse,
-    ProtobufDataUnwatchResponse, ProtobufDataWatchResponse, ProtobufDeleteAllDeadSessionsResponse,
-    ProtobufDeleteDeadSessionResponse, ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse,
-    ProtobufDumpSessionLayoutResponse, ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse,
-    ProtobufFocusOrCreateTabResponse, ProtobufFsListResponse, ProtobufFsMetadataResponse,
-    ProtobufFsMutateResponse, ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse,
-    ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse,
-    ProtobufGetPaneGitProbeResponse, ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
-    ProtobufGetPaneRunningCommandResponse, ProtobufGetPluginAliasConfigurationResponse,
-    ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
-    ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
+    parse_layout_response, read_plugin_log_response, ProtobufBreakPanesToNewTabResponse,
+    ProtobufBreakPanesToTabWithIdResponse, ProtobufBreakPanesToTabWithIndexResponse,
+    ProtobufCheckLuaPluginResponse, ProtobufCurrentSessionLastSavedTimeResponse,
+    ProtobufDataApplyResponse, ProtobufDataCountResponse, ProtobufDataDefineResponse,
+    ProtobufDataFetchResponse, ProtobufDataUnwatchResponse, ProtobufDataWatchResponse,
+    ProtobufDeleteAllDeadSessionsResponse, ProtobufDeleteDeadSessionResponse,
+    ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse, ProtobufDumpSessionLayoutResponse,
+    ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse, ProtobufFocusOrCreateTabResponse,
+    ProtobufFsListResponse, ProtobufFsMetadataResponse, ProtobufFsMutateResponse,
+    ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse, ProtobufGetFocusedPaneInfoResponse,
+    ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneGitProbeResponse,
+    ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
+    ProtobufGetPluginAliasConfigurationResponse, ProtobufGetSessionEnvironmentVariablesResponse,
+    ProtobufGetSessionListResponse, ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
     ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
     ProtobufListNotificationsResponse, ProtobufListOrphanedPanesResponse,
     ProtobufListRecordingsResponse, ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse,
@@ -51,8 +50,7 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufOpenTerminalResponse, ProtobufParseLayoutResponse, ProtobufPluginCommand,
     ProtobufQueueStatusResponse, ProtobufReadPluginLogResponse, ProtobufRenameLayoutResponse,
     ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse, ProtobufSearchRecordingsResponse,
-    ProtobufShowFloatingPanesResponse, ProtobufWarpPaneResponse, RenameWebTokenResponse,
-    RevokeAllWebTokensResponse, RevokeTokenResponse,
+    ProtobufShowFloatingPanesResponse, ProtobufWarpPaneResponse,
 };
 use zellij_utils::plugin_api::plugin_ids::{ProtobufPluginIds, ProtobufZellijVersion};
 
@@ -2330,13 +2328,6 @@ pub fn scan_host_folder<S: AsRef<Path>>(folder_to_scan: &S) {
     unsafe { host_run_plugin_command() };
 }
 
-pub fn set_soft_keyboard(on: bool) {
-    let plugin_command = PluginCommand::SetSoftKeyboard(on);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-}
-
 /// Start watching the host folder for filesystem changes (Note: somewhat unstable at the time
 /// being)
 pub fn watch_filesystem() {
@@ -3630,41 +3621,6 @@ pub fn set_pane_color(pane_id: PaneId, fg: Option<String>, bg: Option<String>) {
     unsafe { host_run_plugin_command() };
 }
 
-pub fn start_web_server() {
-    let plugin_command = PluginCommand::StartWebServer;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-}
-
-pub fn stop_web_server() {
-    let plugin_command = PluginCommand::StopWebServer;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-}
-
-pub fn query_web_server_status() {
-    let plugin_command = PluginCommand::QueryWebServerStatus;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-}
-
-pub fn share_current_session() {
-    let plugin_command = PluginCommand::ShareCurrentSession;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-}
-
-pub fn stop_sharing_current_session() {
-    let plugin_command = PluginCommand::StopSharingCurrentSession;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-}
-
 pub fn group_and_ungroup_panes(
     pane_ids_to_group: Vec<PaneId>,
     pane_ids_to_ungroup: Vec<PaneId>,
@@ -3736,91 +3692,6 @@ pub fn set_self_mouse_selection_support(selection_support: bool) {
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
     unsafe { host_run_plugin_command() };
-}
-
-pub fn generate_web_login_token(
-    token_label: Option<String>,
-    read_only: bool,
-) -> Result<String, String> {
-    let plugin_command = PluginCommand::GenerateWebLoginToken(token_label, read_only);
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-    let create_token_response =
-        CreateTokenResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    if let Some(error) = create_token_response.error {
-        Err(error)
-    } else if let Some(token) = create_token_response.token {
-        Ok(token)
-    } else {
-        Err("Received empty response".to_owned())
-    }
-}
-
-pub fn revoke_web_login_token(token_label: &str) -> Result<(), String> {
-    let plugin_command = PluginCommand::RevokeWebLoginToken(token_label.to_owned());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-    let revoke_token_response =
-        RevokeTokenResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    if let Some(error) = revoke_token_response.error {
-        Err(error)
-    } else {
-        Ok(())
-    }
-}
-
-pub fn list_web_login_tokens() -> Result<Vec<(String, String, bool)>, String> {
-    // (name, created_at, read_only)
-    let plugin_command = PluginCommand::ListWebLoginTokens;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-    let list_tokens_response =
-        ListTokensResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-
-    if let Some(error) = list_tokens_response.error {
-        Err(error)
-    } else {
-        let tokens_with_info = list_tokens_response
-            .tokens
-            .iter()
-            .zip(list_tokens_response.creation_times.iter())
-            .zip(list_tokens_response.read_only_flags.iter())
-            .map(|((name, created_at), read_only)| (name.clone(), created_at.clone(), *read_only))
-            .collect();
-        Ok(tokens_with_info)
-    }
-}
-
-pub fn revoke_all_web_tokens() -> Result<(), String> {
-    let plugin_command = PluginCommand::RevokeAllWebLoginTokens;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-    let revoke_all_web_tokens_response =
-        RevokeAllWebTokensResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    if let Some(error) = revoke_all_web_tokens_response.error {
-        Err(error)
-    } else {
-        Ok(())
-    }
-}
-
-pub fn rename_web_token(old_name: &str, new_name: &str) -> Result<(), String> {
-    let plugin_command =
-        PluginCommand::RenameWebLoginToken(old_name.to_owned(), new_name.to_owned());
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-    let rename_web_token_response =
-        RenameWebTokenResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-    if let Some(error) = rename_web_token_response.error {
-        Err(error)
-    } else {
-        Ok(())
-    }
 }
 
 pub fn intercept_key_presses() {

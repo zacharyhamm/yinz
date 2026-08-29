@@ -174,8 +174,8 @@ pub enum PtyInstruction {
         Option<Vec<CommandOrPlugin>>,        // initial_panes
         bool,                                // block_on_first_terminal
         bool,                                // should change focus to new tab
-        (ClientId, bool),                    // bool -> is_web_client
-        Option<NotificationEnd>,             // completion signal
+        ClientId,
+        Option<NotificationEnd>, // completion signal
     ), // the String is the tab name
     OverrideLayout(
         Option<PathBuf>,                                           // CWD
@@ -681,7 +681,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 initial_panes,
                 block_on_first_terminal,
                 should_change_focus_to_new_tab,
-                client_id_and_is_web_client,
+                client_id,
                 completion_tx,
             ) => {
                 let err_context = || "failed to open new tab";
@@ -705,7 +705,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     tab_index,
                     block_on_first_terminal,
                     should_change_focus_to_new_tab,
-                    client_id_and_is_web_client,
+                    client_id,
                     completion_tx,
                 )
                 .with_context(err_context)?;
@@ -1482,14 +1482,13 @@ impl Pty {
         tab_index: usize,
         block_on_first_terminal: bool,
         should_change_focus_to_new_tab: bool,
-        client_id_and_is_web_client: (ClientId, bool),
+        client_id: ClientId,
         completion_tx: Option<NotificationEnd>,
     ) -> Result<()> {
         let err_context = || "failed to spawn terminals for layout for".to_string();
 
         let mut default_shell =
             default_shell.unwrap_or_else(|| self.get_default_terminal(cwd, None));
-        let (client_id, is_web_client) = client_id_and_is_web_client;
         self.fill_cwd(&mut default_shell, client_id);
 
         // Match initial_panes commands to empty slots in the layout
@@ -1655,7 +1654,7 @@ impl Pty {
                 plugin_ids,
                 tab_index,
                 should_change_focus_to_new_tab,
-                (client_id, is_web_client),
+                client_id,
                 direct_completion_tx,
                 blocking_terminal,
             ))

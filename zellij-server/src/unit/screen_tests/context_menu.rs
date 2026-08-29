@@ -525,7 +525,7 @@ fn a_menu_covering_the_cursor_hides_it_until_it_closes() {
 fn one_clients_menu_does_not_hide_another_clients_cursor() {
     let size = Size { cols: 80, rows: 20 };
     let mut screen = screen_with_menu_configured();
-    screen.add_client(2, false).expect("TEST");
+    screen.add_client(2).expect("TEST");
     let server_receiver = screen_wired_to_server(&mut screen);
 
     screen

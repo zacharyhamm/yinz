@@ -20,7 +20,6 @@ use super::layout::RunPluginOrAlias;
 use super::options::Options;
 use super::plugins::{PluginAliases, PluginsConfigError};
 use super::theme::{Themes, UiConfig};
-use super::web_client::WebClientConfig;
 use crate::cli::{CliArgs, Command};
 use crate::envs::EnvironmentVariables;
 use crate::{home, setup};
@@ -45,7 +44,6 @@ pub struct Config {
     /// Whether the config opted out of the built-in background plugins, so that
     /// serializing and re-parsing doesn't silently restore them.
     pub background_plugins_cleared: bool,
-    pub web_client: WebClientConfig,
     /// The plugin bound to each hook point. Defaults to the shipped `agent_exit` screen; see
     /// `input::hooks`.
     pub hooks: Hooks,

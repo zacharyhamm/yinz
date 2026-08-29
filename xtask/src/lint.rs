@@ -28,15 +28,7 @@ pub fn lint(sh: &Shell, flags: flags::Lint) -> anyhow::Result<()> {
     for excluded in crate::test::EXCLUDED {
         cmd = cmd.args(["--exclude", excluded]);
     }
-    cmd = if flags.no_web {
-        cmd.args([
-            "--no-default-features",
-            "--features",
-            crate::test::NO_WEB_FEATURES,
-        ])
-    } else {
-        cmd.arg("--all-features")
-    };
+    cmd = cmd.arg("--all-features");
     if flags.fix {
         cmd = cmd.args(["--fix", "--allow-dirty", "--allow-staged"]);
     }

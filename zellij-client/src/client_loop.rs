@@ -10,14 +10,11 @@ use crate::stdin_ansi_parser::{ForwardKind, StdinAnsiParser, SyncOutput};
 use crate::terminal_escapes::{write_synchronised, ClientTeardown};
 use crate::{
     command_is_executing::CommandIsExecuting, nested_reannounce::NestedReannounce,
-    spawn_web_server, stdin_ansi_parser, ClientInstruction, InputInstruction,
+    stdin_ansi_parser, ClientInstruction, InputInstruction,
 };
 use std::io::Write;
-use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use zellij_utils::cli::CliArgs;
-use zellij_utils::shared::web_server_base_url;
 use zellij_utils::{
     channels::SenderWithContext,
     data::ConnectToSession,
@@ -25,26 +22,6 @@ use zellij_utils::{
     ipc::{ClientToServerMsg, ExitReason},
     nested_session,
 };
-
-/// Where the web server would be reachable, if this client is asked to start
-/// one. Resolved from config up front so the loop doesn't have to.
-pub(crate) struct WebServerAddress {
-    pub ip: IpAddr,
-    pub port: u16,
-    pub has_certificate: bool,
-    pub enforce_https_for_localhost: bool,
-}
-
-impl WebServerAddress {
-    fn base_url(&self) -> String {
-        web_server_base_url(
-            self.ip,
-            self.port,
-            self.has_certificate,
-            self.enforce_https_for_localhost,
-        )
-    }
-}
 
 /// Why the loop stopped, and what the caller should do next.
 pub(crate) struct LoopOutcome {
@@ -57,14 +34,12 @@ pub(crate) struct LoopOutcome {
 
 pub(crate) struct ClientLoop<'a> {
     pub os_input: &'a dyn ClientOsApi,
-    pub cli_args: &'a CliArgs,
     pub command_is_executing: &'a mut CommandIsExecuting,
     pub stdin_ansi_parser: &'a Arc<Mutex<StdinAnsiParser>>,
     pub send_input_instructions: &'a SenderWithContext<InputInstruction>,
     /// Re-announces this client to its Zellij host, and knows whether one has
     /// ever answered — which is how the client learns it is nested at all.
     pub nested_reannounce: &'a NestedReannounce,
-    pub web_server_address: WebServerAddress,
     /// How to hand the terminal back when an instruction turns out to be
     /// fatal. Errors do not return through `LoopOutcome` — they exit.
     pub teardown: ClientTeardown,
@@ -175,7 +150,6 @@ impl ClientLoop<'_> {
                         new_size: self.os_input.get_terminal_size(),
                     });
             },
-            ClientInstruction::StartWebServer => self.start_web_server(),
             ClientInstruction::ForwardQueryToHost {
                 token,
                 query_bytes,
@@ -205,22 +179,6 @@ impl ClientLoop<'_> {
     /// Restore the terminal, report `message`, and exit non-zero.
     fn fail(&self, message: String) -> ! {
         self.teardown.tear_down(self.os_input, message, 1)
-    }
-
-    fn start_web_server(&self) {
-        match spawn_web_server(self.cli_args) {
-            Ok(_) => {
-                self.os_input
-                    .send_to_server(ClientToServerMsg::WebServerStarted {
-                        base_url: self.web_server_address.base_url(),
-                    });
-            },
-            Err(e) => {
-                log::error!("Failed to start web_server: {}", e);
-                self.os_input
-                    .send_to_server(ClientToServerMsg::FailedToStartWebServer { error: e });
-            },
-        }
     }
 
     /// Forward a query to the host terminal and arrange for its reply to

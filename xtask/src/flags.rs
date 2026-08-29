@@ -28,30 +28,18 @@ xflags::xflags! {
             cmd cross {
                 /// Target-triple to compile the application for
                 required triple: OsString
-                /// Compile without web server support
-                optional --no-web
             }
 
-            /// The pre-handoff gate: format --check, lint, assets --check, test
+            /// The pre-handoff gate: format --check, lint, test
             cmd check {
-                /// Check without web server support
-                optional --no-web
             }
 
             /// Native release build (plugins + binary, no cross-compilation)
             cmd build-release {
-                /// Compile without web server support
-                optional --no-web
             }
         }
 
         cmd proto {}
-
-        /// Bundle the web client frontend assets
-        cmd assets {
-            /// Verify the checked-in assets are up to date instead of writing them
-            optional --check
-        }
 
         /// Publish zellij and all the sub-crates
         cmd publish {
@@ -71,15 +59,11 @@ xflags::xflags! {
             optional -r, --release
             /// Clean project before building
             optional -c, --clean
-            /// Compile without web server support
-            optional --no-web
         }
 
         /// Generate a runnable `zellij` executable with plugins bundled
         cmd install {
             required destination: PathBuf
-            /// Compile without web server support
-            optional --no-web
             /// Extra arguments appended to the native `cargo build` invocation
             /// (e.g. `--no-default-features`, `--features ...`, `--offline`, `--locked`, `-j N`).
             /// Not applied to the wasm plugin build.
@@ -92,8 +76,6 @@ xflags::xflags! {
             optional --quick-run
             /// Take plugins from here, skip building plugins. Passed to zellij verbatim
             optional --data-dir path: PathBuf
-            /// Compile without web server support
-            optional --no-web
             /// Arguments to pass after `cargo run --`
             repeated args: OsString
         }
@@ -108,16 +90,12 @@ xflags::xflags! {
         cmd lint {
             /// Apply clippy's automatic suggestions instead of only reporting them
             optional --fix
-            /// Lint without web server support
-            optional --no-web
             /// Arguments to pass after `cargo clippy --`
             repeated args: OsString
         }
 
         /// Run application tests
         cmd test {
-            /// Compile without web server support
-            optional --no-web
             /// Arguments to pass after `cargo test --`
             repeated args: OsString
         }
@@ -157,8 +135,6 @@ xflags::xflags! {
             optional -p, --plugins-only
             /// Build everything except the plugins
             optional --no-plugins
-            /// Compile without web support
-            optional --no-web
             /// Extra arguments appended to the native `cargo build` invocation
             /// (e.g. `--no-default-features`, `--features ...`, `--offline`, `--locked`, `-j N`).
             /// Not applied to the wasm plugin build.
@@ -179,7 +155,6 @@ pub enum XtaskCmd {
     Deprecated(Deprecated),
     Ci(Ci),
     Proto(Proto),
-    Assets(Assets),
     Publish(Publish),
     Make(Make),
     Install(Install),
@@ -222,27 +197,16 @@ pub struct E2e {
 #[derive(Debug)]
 pub struct Cross {
     pub triple: OsString,
-
-    pub no_web: bool,
 }
 
 #[derive(Debug)]
-pub struct Check {
-    pub no_web: bool,
-}
+pub struct Check;
 
 #[derive(Debug)]
-pub struct BuildRelease {
-    pub no_web: bool,
-}
+pub struct BuildRelease;
 
 #[derive(Debug)]
 pub struct Proto;
-
-#[derive(Debug)]
-pub struct Assets {
-    pub check: bool,
-}
 
 #[derive(Debug)]
 pub struct Publish {
@@ -256,15 +220,12 @@ pub struct Publish {
 pub struct Make {
     pub release: bool,
     pub clean: bool,
-    pub no_web: bool,
 }
 
 #[derive(Debug)]
 pub struct Install {
     pub destination: PathBuf,
     pub args: Vec<OsString>,
-
-    pub no_web: bool,
 }
 
 #[derive(Debug)]
@@ -273,7 +234,6 @@ pub struct Run {
 
     pub quick_run: bool,
     pub data_dir: Option<PathBuf>,
-    pub no_web: bool,
 }
 
 #[derive(Debug)]
@@ -286,14 +246,11 @@ pub struct Lint {
     pub args: Vec<OsString>,
 
     pub fix: bool,
-    pub no_web: bool,
 }
 
 #[derive(Debug)]
 pub struct Test {
     pub args: Vec<OsString>,
-
-    pub no_web: bool,
 }
 
 #[derive(Debug)]
@@ -324,7 +281,6 @@ pub struct Build {
     pub release: bool,
     pub plugins_only: bool,
     pub no_plugins: bool,
-    pub no_web: bool,
 }
 
 impl Xtask {

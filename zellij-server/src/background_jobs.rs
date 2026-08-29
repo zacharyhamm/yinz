@@ -1,22 +1,12 @@
-#[allow(unused_imports)] // some imports used only with web_server_capability feature
 use zellij_utils::consts::{
     session_info_cache_file_name, session_info_folder_for_session, session_layout_cache_file_name,
-    VERSION, ZELLIJ_SESSION_INFO_CACHE_DIR, ZELLIJ_SOCK_DIR,
+    ZELLIJ_SESSION_INFO_CACHE_DIR, ZELLIJ_SOCK_DIR,
 };
 
 use std::str::FromStr;
-#[allow(unused_imports)]
-use zellij_utils::data::{Event, HttpVerb, LayoutInfo, SessionInfo, WebServerStatus};
+use zellij_utils::data::{Event, HttpVerb, LayoutInfo, SessionInfo};
 use zellij_utils::errors::{prelude::*, BackgroundJobContext, ContextType};
 use zellij_utils::input::layout::RunPlugin;
-#[allow(unused_imports)]
-use zellij_utils::shared::parse_base_url;
-
-#[cfg(feature = "web_server_capability")]
-use zellij_utils::web_server_commands::{
-    discover_webserver_sockets, query_webserver_with_response, InstructionForWebServer,
-    WebServerResponse,
-};
 
 use futures_lite::io::AsyncReadExt;
 use isahc::prelude::*;
@@ -177,7 +167,6 @@ pub enum BackgroundJob {
     /// (request id, client id, timeout in milliseconds)
     ContextMenuTimeout(u64, ClientId, u64),
     RenderToClients,
-    QueryZellijWebServerStatus,
     ClearHelpText {
         client_id: ClientId,
     },
@@ -242,12 +231,10 @@ pub fn session_scan_state() -> Option<&'static SessionScanState> {
     SESSION_SCAN_STATE.get()
 }
 
-#[allow(unused_variables)] // web_server_base_url used only with web_server_capability feature
 pub(crate) fn background_jobs_main(
     bus: Bus<BackgroundJob>,
     serialization_interval: Option<u64>,
     disable_session_metadata: bool,
-    web_server_base_url: String,
 ) -> Result<()> {
     let err_context = || "failed to write to pty".to_string();
     let mut running_jobs: HashMap<BackgroundJob, Instant> = HashMap::new();
@@ -265,7 +252,6 @@ pub(crate) fn background_jobs_main(
         current_session_info: current_session_info.clone(),
         current_session_plugin_list: current_session_plugin_list.clone(),
     });
-    let last_serialization_time = Arc::new(Mutex::new(Instant::now()));
     let serialization_interval = serialization_interval.map(|s| s * 1000); // convert to
                                                                            // milliseconds
     let last_render_request: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
@@ -614,24 +600,6 @@ pub(crate) fn background_jobs_main(
                     Some(generation),
                     error,
                 );
-            },
-            BackgroundJob::QueryZellijWebServerStatus => {
-                #[cfg(feature = "web_server_capability")]
-                {
-                    let status = query_webserver_via_ipc(&web_server_base_url)
-                        .unwrap_or(WebServerStatus::Offline);
-                    runtime.spawn({
-                        let senders = bus.senders.clone();
-                        let _web_server_base_url = web_server_base_url.clone();
-                        async move {
-                            let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                                None,
-                                None,
-                                Event::WebServerStatus(status),
-                            )]));
-                        }
-                    });
-                }
             },
             BackgroundJob::RenderToClients => {
                 // last_render_request being Some() represents a render request that is pending
@@ -1308,42 +1276,6 @@ fn find_resurrectable_sessions(
             BTreeMap::new()
         },
     }
-}
-
-#[cfg(feature = "web_server_capability")]
-fn query_webserver_via_ipc(web_server_base_url: &str) -> Result<WebServerStatus> {
-    let expected_addr =
-        parse_base_url(web_server_base_url).context("Failed to parse web server base URL")?;
-
-    let sockets = discover_webserver_sockets().context("Failed to discover web server sockets")?;
-
-    if sockets.is_empty() {
-        return Ok(WebServerStatus::Offline);
-    }
-
-    for socket_path in sockets {
-        let path_str = socket_path.to_str().unwrap_or("");
-
-        match query_webserver_with_response(path_str, InstructionForWebServer::QueryVersion, 500) {
-            Ok(WebServerResponse::Version(info)) => {
-                let matches_expected =
-                    info.ip == expected_addr.ip && info.port == expected_addr.port;
-
-                if !matches_expected {
-                    continue;
-                }
-
-                if info.version == VERSION {
-                    return Ok(WebServerStatus::Online(web_server_base_url.to_string()));
-                } else {
-                    return Ok(WebServerStatus::DifferentVersion(info.version));
-                }
-            },
-            Err(_) => continue,
-        }
-    }
-
-    Ok(WebServerStatus::Offline)
 }
 
 #[cfg(test)]

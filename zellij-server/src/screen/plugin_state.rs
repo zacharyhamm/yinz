@@ -2,12 +2,11 @@ use zellij_utils::errors::prelude::*;
 
 use super::Screen;
 use crate::background_jobs::BackgroundJob;
-use crate::panes::PaneId;
 use crate::plugins::{PluginInstruction, CLI_EVENTS_ONLY_TARGET};
 use crate::tab::Tab;
 use crate::ClientId;
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::time::{Duration, Instant};
+use std::collections::{BTreeMap, HashMap};
+use std::time::Duration;
 use zellij_utils::consts::ZELLIJ_SOCK_DIR;
 use zellij_utils::data::{
     Event, EventType, LayoutInfo, LayoutWithError, ListPanesResponse, ListTabsResponse, PaneInfo,
@@ -15,10 +14,6 @@ use zellij_utils::data::{
 };
 #[cfg(not(test))]
 use zellij_utils::input::layout::Layout;
-use zellij_utils::ipc::{
-    MobileActivePanePayload, MobilePanePayload, MobileSessionPayload, MobileSizePayload,
-    MobileStatePayload, MobileTabPayload, ServerToClientMsg,
-};
 
 impl Screen {
     pub fn generate_and_report_tab_state(&mut self) -> Result<Vec<TabInfo>> {
@@ -352,9 +347,6 @@ impl Screen {
         let err_context = || "Failed to log and report session state".to_string();
 
         self.update_active_pane_ids();
-        self.revert_fit_disabled_without_reference_client()
-            .with_context(err_context)?;
-        self.reconcile_all_single_pane_focus();
         // generate own session info
         let pane_manifest = self.generate_and_report_pane_state()?;
         let tab_infos = self.generate_and_report_tab_state()?;
@@ -401,13 +393,6 @@ impl Screen {
             connected_clients: self.active_tab_ids.keys().len(),
             is_current_session: true,
             available_layouts,
-            web_clients_allowed: self.web_sharing.web_clients_allowed(),
-            web_client_count: self
-                .connected_clients
-                .borrow()
-                .iter()
-                .filter(|(_client_id, is_web_client)| **is_web_client)
-                .count(),
             plugins: Default::default(), // these are filled in by the wasm thread
             tab_history: self.tab_history.clone(),
             pane_history: self
@@ -446,181 +431,7 @@ impl Screen {
             )]))
             .with_context(err_context)?;
 
-        self.bus
-            .senders
-            .send_to_background_jobs(BackgroundJob::QueryZellijWebServerStatus)
-            .with_context(err_context)?;
-
-        self.report_mobile_state();
         Ok(())
-    }
-    fn report_mobile_state(&mut self) {
-        let web_client_ids: Vec<ClientId> = self
-            .connected_clients
-            .borrow()
-            .iter()
-            .filter(|(_client_id, is_web_client)| **is_web_client)
-            .map(|(client_id, _)| *client_id)
-            .collect();
-        if web_client_ids.is_empty() {
-            self.last_mobile_state_sent
-                .retain(|client_id, _| self.connected_clients.borrow().contains_key(client_id));
-            return;
-        }
-
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-
-        let now = Instant::now();
-        let mut tabs: Vec<MobileTabPayload> = Vec::new();
-        let mut panes: Vec<MobilePanePayload> = Vec::new();
-        for tab in self.tabs.values() {
-            tabs.push(MobileTabPayload {
-                position: tab.position,
-                name: tab.name.clone(),
-                active: self.active_tab_ids.values().any(|i| i == &tab.id),
-            });
-            let activity = tab.pane_last_activity();
-            for pane_info in tab.pane_infos() {
-                if pane_info.is_suppressed || !pane_info.is_selectable {
-                    continue;
-                }
-                let pane_id = if pane_info.is_plugin {
-                    PaneId::Plugin(pane_info.id)
-                } else {
-                    PaneId::Terminal(pane_info.id)
-                };
-                let last_activity_secs_ago = self
-                    .pane_output_activity
-                    .get(&pane_id)
-                    .map(|instant| now.saturating_duration_since(*instant).as_secs())
-                    .or_else(|| activity.get(&pane_id).copied())
-                    .unwrap_or_default();
-                panes.push(MobilePanePayload {
-                    tab_position: tab.position,
-                    pane_id: pane_info.id,
-                    is_plugin: pane_info.is_plugin,
-                    title: pane_info.title.clone(),
-                    is_floating: pane_info.is_floating,
-                    last_activity_secs_ago,
-                });
-            }
-        }
-        tabs.sort_by_key(|t| t.position);
-
-        {
-            let live_pane_ids: HashSet<PaneId> = self
-                .tabs
-                .values()
-                .flat_map(|tab| tab.get_all_pane_ids())
-                .collect();
-            self.pane_output_activity
-                .retain(|pane_id, _| live_pane_ids.contains(pane_id));
-        }
-
-        let sessions: Vec<MobileSessionPayload> = self
-            .peer_sessions_cache
-            .values()
-            .map(|info| MobileSessionPayload {
-                name: info.name.clone(),
-                web_clients_allowed: info.web_clients_allowed,
-                tab_count: info.tabs.len(),
-                pane_count: info.panes.panes.values().map(|p| p.len()).sum(),
-                connected_clients: info.connected_clients,
-                creation_secs_ago: info.creation_time.as_secs(),
-            })
-            .collect();
-
-        for client_id in web_client_ids {
-            let active_pane = self
-                .get_active_tab(client_id)
-                .ok()
-                .and_then(|tab| {
-                    tab.get_active_pane_id_or_first_selectable(client_id)
-                        .map(|pane_id| (tab.position, pane_id))
-                })
-                .map(|(tab_position, pane_id)| {
-                    let (id, is_plugin) = match pane_id {
-                        PaneId::Terminal(id) => (id, false),
-                        PaneId::Plugin(id) => (id, true),
-                    };
-                    MobileActivePanePayload {
-                        pane_id: id,
-                        is_plugin,
-                        tab_position,
-                    }
-                });
-
-            let is_welcome_screen = active_pane
-                .as_ref()
-                .map(|ap| {
-                    ap.is_plugin
-                        && panes
-                            .iter()
-                            .find(|p| p.pane_id == ap.pane_id && p.is_plugin)
-                            .map(|p| p.title == "welcome-screen")
-                            .unwrap_or(false)
-                })
-                .unwrap_or(false);
-
-            let prefs = self.mobile_web_prefs.get(&client_id).copied();
-            let active_pane_is_fullscreen = self
-                .get_active_tab(client_id)
-                .ok()
-                .map(|tab| tab.is_fullscreen_active())
-                .unwrap_or(false);
-            // Defaults must describe what the server has actually applied: a client that never
-            // sent preferences has nothing fullscreened, and participates in the tab min-size
-            // rule. Reporting an unapplied `single_pane` desynchronises the browser, which then
-            // asserts the stale value on its next unrelated preference change.
-            let render_prefs = zellij_utils::ipc::MobileRenderPrefsPayload {
-                single_pane: prefs.map(|p| p.single_pane).unwrap_or(false),
-                fit: prefs.map(|p| p.fit).unwrap_or(true),
-                active_pane_is_fullscreen,
-            };
-
-            let desktop_client_connected = self.has_reference_client(client_id);
-            let desktop_size =
-                self.reference_size_for_client(client_id)
-                    .map(|s| MobileSizePayload {
-                        cols: s.cols,
-                        rows: s.rows,
-                    });
-
-            let payload = MobileStatePayload {
-                session_name: self.session_name.clone(),
-                now_secs,
-                is_welcome_screen,
-                desktop_client_connected,
-                desktop_size,
-                active_pane,
-                tabs: tabs.clone(),
-                panes: panes.clone(),
-                sessions: sessions.clone(),
-                render_prefs,
-            };
-
-            let mut comparable = payload.clone();
-            comparable.now_secs = 0;
-            for pane in comparable.panes.iter_mut() {
-                pane.last_activity_secs_ago = 0;
-            }
-            if self.last_mobile_state_sent.get(&client_id) == Some(&comparable) {
-                continue;
-            }
-
-            if let Some(os_input) = &self.bus.os_input {
-                let _ =
-                    os_input.send_to_client(client_id, ServerToClientMsg::MobileState { payload });
-            }
-            self.last_mobile_state_sent.insert(client_id, comparable);
-        }
-
-        let connected = self.connected_clients.borrow();
-        self.last_mobile_state_sent
-            .retain(|client_id, _| connected.contains_key(client_id));
     }
     pub(super) fn dump_layout_to_hd(&mut self) -> Result<()> {
         let err_context = || "Failed to log and report session state".to_string();
@@ -654,7 +465,6 @@ impl Screen {
                 ),
             )]))
             .context("failed to update session info")?;
-        self.report_mobile_state();
         Ok(())
     }
 

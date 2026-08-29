@@ -8,7 +8,6 @@ local config = {
   __hooks = {},
   __ui = {},
   __env = {},
-  __web_client = {},
   __raw = {},
 }
 
@@ -55,7 +54,6 @@ end
 
 function config.options(values) merge(config.__options, values) end
 function config.ui(values) merge(config.__ui, values) end
-function config.web_client(values) merge(config.__web_client, values) end
 function config.env(values) merge(config.__env, values) end
 
 function config.theme(theme_name, values) config.__themes[theme_name] = values end
@@ -101,7 +99,7 @@ end
 
 function config.raw(kdl) config.__raw[#config.__raw + 1] = kdl end
 
-for _, section in ipairs({ "options", "keybinds", "themes", "plugins", "hooks", "ui", "env", "web_client" }) do
+for _, section in ipairs({ "options", "keybinds", "themes", "plugins", "hooks", "ui", "env" }) do
   config["clear_" .. section] = function() config.__cleared[section] = true end
 end
 
@@ -171,7 +169,6 @@ function config.__render(self)
   if #hooks > 0 then out[#out + 1] = "hooks { " .. table.concat(hooks, "; ") .. "; }" end
   if next(self.__ui) then out[#out + 1] = node("ui", self.__ui) end
   if next(self.__env) then out[#out + 1] = node("env", self.__env) end
-  if next(self.__web_client) then out[#out + 1] = node("web_client", self.__web_client) end
   for _, raw in ipairs(self.__raw) do out[#out + 1] = raw end
   return table.concat(out, "\n")
 end

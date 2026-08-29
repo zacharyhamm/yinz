@@ -112,7 +112,6 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "configuration",
     "plugin-manager",
     "about",
-    "share",
     "multiple-select",
     "layout-manager",
     "link",
@@ -242,7 +241,6 @@ mod unix_only {
             ipc_dir.push(CLIENT_SERVER_CONTRACT_DIR.clone());
             ipc_dir
         };
-        pub static ref WEBSERVER_SOCKET_PATH: PathBuf = ZELLIJ_SOCK_DIR.join("web_server_bus");
     }
 }
 
@@ -282,6 +280,5 @@ mod not_unix {
             ipc_dir.push(CLIENT_SERVER_CONTRACT_DIR.clone());
             ipc_dir
         };
-        pub static ref WEBSERVER_SOCKET_PATH: PathBuf = ZELLIJ_SOCK_DIR.join("web_server_bus");
     }
 }

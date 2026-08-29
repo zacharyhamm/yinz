@@ -1,5 +1,6 @@
 ---
 source: zellij-server/src/screen/../unit/screen_tests/cli_layouts_and_rename.rs
+assertion_line: 110
 expression: output
 ---
 NewTab(
@@ -101,10 +102,7 @@ NewTab(
     None,
     false,
     true,
-    (
-        10,
-        false,
-    ),
+    10,
     Some(
         NotificationEnd {
             channel: None,

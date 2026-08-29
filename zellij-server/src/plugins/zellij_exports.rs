@@ -69,12 +69,6 @@ use zellij_utils::input::permission::PermissionCache;
 use zellij_utils::ipc::{ClientToServerMsg, IpcSenderWithContext};
 use zellij_utils::plugin_data_store;
 use zellij_utils::sessions::generate_random_name as generate_random_name_impl;
-#[cfg(feature = "web_server_capability")]
-use zellij_utils::web_authentication_tokens::{
-    create_token, list_tokens, rename_token, revoke_all_tokens, revoke_token,
-};
-#[cfg(feature = "web_server_capability")]
-use zellij_utils::web_server_commands::shutdown_all_webserver_instances;
 
 use crate::{panes::PaneId, screen::ScreenInstruction};
 use kdl::KdlDocument;
@@ -147,12 +141,6 @@ use zellij_utils::{
         },
         plugin_ids::{ProtobufPluginIds, ProtobufZellijVersion},
     },
-};
-
-#[cfg(feature = "web_server_capability")]
-use zellij_utils::plugin_api::plugin_command::{
-    CreateTokenResponse, ListTokensResponse, RenameWebTokenResponse, RevokeAllWebTokensResponse,
-    RevokeTokenResponse,
 };
 
 macro_rules! apply_action {
@@ -558,7 +546,6 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::FsRename { from, to } => fs_rename(env, from, to),
             PluginCommand::WatchFilesystem => watch_filesystem(env),
             PluginCommand::GetSessionList => get_session_list(env),
-            PluginCommand::SetSoftKeyboard(on) => set_soft_keyboard(env, on),
             PluginCommand::DumpSessionLayout { tab_index } => dump_session_layout(env, tab_index),
             PluginCommand::CloseSelf => close_self(env),
             PluginCommand::EnqueueQueueJob {
@@ -781,28 +768,8 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::EmbedMultiplePanes(pane_ids) => {
                 embed_multiple_panes(env, pane_ids.into_iter().map(|p| p.into()).collect())
             },
-            PluginCommand::StartWebServer => start_web_server(env),
-            PluginCommand::StopWebServer => stop_web_server(env),
-            PluginCommand::QueryWebServerStatus => query_web_server_status(env),
-            PluginCommand::ShareCurrentSession => share_current_session(env),
-            PluginCommand::StopSharingCurrentSession => stop_sharing_current_session(env),
             PluginCommand::SetSelfMouseSelectionSupport(selection_support) => {
                 set_self_mouse_selection_support(env, selection_support);
-            },
-            PluginCommand::GenerateWebLoginToken(token_label, read_only) => {
-                generate_web_login_token(env, token_label, read_only);
-            },
-            PluginCommand::RevokeWebLoginToken(label) => {
-                revoke_web_login_token(env, label);
-            },
-            PluginCommand::ListWebLoginTokens => {
-                list_web_login_tokens(env);
-            },
-            PluginCommand::RevokeAllWebLoginTokens => {
-                revoke_all_web_login_tokens(env);
-            },
-            PluginCommand::RenameWebLoginToken(old_name, new_name) => {
-                rename_web_login_token(env, old_name, new_name);
             },
             PluginCommand::InterceptKeyPresses => intercept_key_presses(env),
             PluginCommand::ClearKeyPressesIntercepts => clear_key_presses_intercepts(env),
@@ -5621,21 +5588,6 @@ fn scan_host_folder(env: &PluginEnv, folder_to_scan: PathBuf) {
     }
 }
 
-fn set_soft_keyboard(env: &PluginEnv, on: bool) {
-    env.senders
-        .send_to_screen(ScreenInstruction::SetSoftKeyboard {
-            client_id: env.client_id,
-            on,
-        })
-        .with_context(|| {
-            format!(
-                "failed to dispatch SetSoftKeyboard for plugin {}",
-                env.plugin_id
-            )
-        })
-        .non_fatal();
-}
-
 fn resize_pane_with_id(env: &PluginEnv, resize: ResizeStrategy, pane_id: PaneId) {
     let _ = env
         .senders
@@ -6651,37 +6603,6 @@ fn load_new_plugin(
     }
 }
 
-fn start_web_server(env: &PluginEnv) {
-    let _ = env
-        .senders
-        .send_to_server(ServerInstruction::StartWebServer(env.client_id));
-}
-
-fn stop_web_server(_env: &PluginEnv) {
-    #[cfg(feature = "web_server_capability")]
-    let _ = shutdown_all_webserver_instances();
-    #[cfg(not(feature = "web_server_capability"))]
-    log::error!("This instance of Zellij was compiled without web server capabilities");
-}
-
-fn query_web_server_status(env: &PluginEnv) {
-    let _ = env
-        .senders
-        .send_to_background_jobs(BackgroundJob::QueryZellijWebServerStatus);
-}
-
-fn share_current_session(env: &PluginEnv) {
-    let _ = env
-        .senders
-        .send_to_server(ServerInstruction::ShareCurrentSession(env.client_id));
-}
-
-fn stop_sharing_current_session(env: &PluginEnv) {
-    let _ = env
-        .senders
-        .send_to_server(ServerInstruction::StopSharingCurrentSession(env.client_id));
-}
-
 fn group_and_ungroup_panes(
     env: &PluginEnv,
     panes_to_group: Vec<PaneId>,
@@ -6757,126 +6678,6 @@ fn embed_multiple_panes(env: &PluginEnv, pane_ids: Vec<PaneId>) {
             pane_ids,
             env.client_id,
         ));
-}
-
-#[cfg(feature = "web_server_capability")]
-fn generate_web_login_token(env: &mut PluginEnv, token_label: Option<String>, read_only: bool) {
-    let serialized = match create_token(token_label, read_only) {
-        Ok((token, token_label)) => CreateTokenResponse {
-            token: Some(token),
-            token_label: Some(token_label),
-            error: None,
-        },
-        Err(e) => CreateTokenResponse {
-            token: None,
-            token_label: None,
-            error: Some(e.to_string()),
-        },
-    };
-    let _ = wasi_write_object(env, &serialized.encode_to_vec());
-}
-
-#[cfg(not(feature = "web_server_capability"))]
-fn generate_web_login_token(env: &mut PluginEnv, _token_label: Option<String>, _read_only: bool) {
-    log::error!("This version of Zellij was compiled without the web server capabilities!");
-    let empty_vec: Vec<&str> = vec![];
-    let _ = wasi_write_object(env, &empty_vec);
-}
-
-#[cfg(feature = "web_server_capability")]
-fn revoke_web_login_token(env: &mut PluginEnv, token_label: String) {
-    let serialized = match revoke_token(&token_label) {
-        Ok(true) => RevokeTokenResponse {
-            successfully_revoked: true,
-            error: None,
-        },
-        Ok(false) => RevokeTokenResponse {
-            successfully_revoked: false,
-            error: Some(format!("Token with label {} not found", token_label)),
-        },
-        Err(e) => RevokeTokenResponse {
-            successfully_revoked: false,
-            error: Some(e.to_string()),
-        },
-    };
-    let _ = wasi_write_object(env, &serialized.encode_to_vec());
-}
-
-#[cfg(not(feature = "web_server_capability"))]
-fn revoke_web_login_token(env: &mut PluginEnv, _token_label: String) {
-    log::error!("This version of Zellij was compiled without the web server capabilities!");
-    let empty_vec: Vec<&str> = vec![];
-    let _ = wasi_write_object(env, &empty_vec);
-}
-
-#[cfg(feature = "web_server_capability")]
-fn revoke_all_web_login_tokens(env: &mut PluginEnv) {
-    let serialized = match revoke_all_tokens() {
-        Ok(_) => RevokeAllWebTokensResponse {
-            successfully_revoked: true,
-            error: None,
-        },
-        Err(e) => RevokeAllWebTokensResponse {
-            successfully_revoked: false,
-            error: Some(e.to_string()),
-        },
-    };
-    let _ = wasi_write_object(env, &serialized.encode_to_vec());
-}
-
-#[cfg(not(feature = "web_server_capability"))]
-fn revoke_all_web_login_tokens(env: &mut PluginEnv) {
-    log::error!("This version of Zellij was compiled without the web server capabilities!");
-    let empty_vec: Vec<&str> = vec![];
-    let _ = wasi_write_object(env, &empty_vec);
-}
-
-#[cfg(feature = "web_server_capability")]
-fn rename_web_login_token(env: &mut PluginEnv, old_name: String, new_name: String) {
-    let serialized = match rename_token(&old_name, &new_name) {
-        Ok(_) => RenameWebTokenResponse {
-            successfully_renamed: true,
-            error: None,
-        },
-        Err(e) => RenameWebTokenResponse {
-            successfully_renamed: false,
-            error: Some(e.to_string()),
-        },
-    };
-    let _ = wasi_write_object(env, &serialized.encode_to_vec());
-}
-
-#[cfg(not(feature = "web_server_capability"))]
-fn rename_web_login_token(env: &mut PluginEnv, _old_name: String, _new_name: String) {
-    log::error!("This version of Zellij was compiled without the web server capabilities!");
-    let empty_vec: Vec<&str> = vec![];
-    let _ = wasi_write_object(env, &empty_vec);
-}
-
-#[cfg(feature = "web_server_capability")]
-fn list_web_login_tokens(env: &mut PluginEnv) {
-    let serialized = match list_tokens() {
-        Ok(token_list) => ListTokensResponse {
-            tokens: token_list.iter().map(|t| t.name.clone()).collect(),
-            creation_times: token_list.iter().map(|t| t.created_at.clone()).collect(),
-            read_only_flags: token_list.iter().map(|t| t.read_only).collect(),
-            error: None,
-        },
-        Err(e) => ListTokensResponse {
-            tokens: vec![],
-            creation_times: vec![],
-            read_only_flags: vec![],
-            error: Some(e.to_string()),
-        },
-    };
-    let _ = wasi_write_object(env, &serialized.encode_to_vec());
-}
-
-#[cfg(not(feature = "web_server_capability"))]
-fn list_web_login_tokens(env: &mut PluginEnv) {
-    log::error!("This version of Zellij was compiled without the web server capabilities!");
-    let empty_vec: Vec<&str> = vec![];
-    let _ = wasi_write_object(env, &empty_vec);
 }
 
 fn set_self_mouse_selection_support(env: &PluginEnv, selection_support: bool) {
@@ -7247,7 +7048,6 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::HideFloatingPanes
         | CommandType::SetPaneRegexHighlights
         | CommandType::ClearPaneHighlights
-        | CommandType::SetSoftKeyboard
         | CommandType::WarpPaneToSession
         | CommandType::WarpPaneFromSession
         | CommandType::WarpTabToSession
@@ -7299,16 +7099,6 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::FsRemove
         | CommandType::FsCreateDir
         | CommandType::FsRename => PermissionType::WriteFiles,
-        CommandType::ShareCurrentSession
-        | CommandType::StopSharingCurrentSession
-        | CommandType::StopWebServer
-        | CommandType::QueryWebServerStatus
-        | CommandType::GenerateWebLoginToken
-        | CommandType::RevokeWebLoginToken
-        | CommandType::RevokeAllWebLoginTokens
-        | CommandType::RenameWebLoginToken
-        | CommandType::ListWebLoginTokens
-        | CommandType::StartWebServer => PermissionType::StartWebServer,
         CommandType::InterceptKeyPresses | CommandType::ClearKeyPressesIntercepts => {
             PermissionType::InterceptInput
         },

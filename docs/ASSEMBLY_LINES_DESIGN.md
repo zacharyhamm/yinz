@@ -418,4 +418,4 @@ Each is independently shippable and independently testable.
   worktree, `zellij assembly-line validate merge-queue`, `zellij assembly-line run merge-queue
   --set worktree=… --set branch=… --set repo_root=…`, watch it in the `assembly-lines` plugin pane,
   and confirm with `zellij assembly-line log <run>` that the journal shows the conflict loop.
-- `cargo x format` and `cargo x assets` (new builtin plugin/gate wasm) before calling it done.
+- `cargo x format` before calling it done.

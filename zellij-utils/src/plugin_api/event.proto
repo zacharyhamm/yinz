@@ -9,7 +9,7 @@ import "plugin_data.proto";
 package api.event;
 
 enum EventType {
-    reserved 43;
+    reserved 31, 34, 43, 47;
     /// The input mode or relevant metadata changed
     ModeUpdate = 0;
     /// The tab state in the app was changed
@@ -56,9 +56,7 @@ enum EventType {
     FailedToChangeHostFolder = 28;
     PastedText = 29;
     ConfigWasWrittenToDisk = 30;
-    WebServerStatus = 31;
     BeforeClose = 32;
-    FailedToStartWebServer = 34;
     InterceptedKeyPress = 35;
     PaneRenderReport = 36;
     UserAction = 37;
@@ -70,7 +68,6 @@ enum EventType {
     InitialKeybinds = 44;
     CommandChanged = 45;
     HostTerminalThemeChanged = 46;
-    SoftKeyboardVisibilityChanged = 47;
     HintText = 48;
     ActivePaneScroll = 49;
     WebRequestStreamChunk = 50;
@@ -95,7 +92,7 @@ message EventNameList {
 }
 
 message Event {
-  reserved 37;
+  reserved 27, 28, 37, 41;
   EventType name = 1;
   oneof payload {
     ModeUpdatePayload mode_update_payload = 2;
@@ -123,8 +120,6 @@ message Event {
     HostFolderChangedPayload host_folder_changed_payload = 24;
     FailedToChangeHostFolderPayload failed_to_change_host_folder_payload = 25;
     PastedTextPayload pasted_text_payload = 26;
-    WebServerStatusPayload web_server_status_payload = 27;
-    FailedToStartWebServerPayload failed_to_start_web_server_payload = 28;
     key.Key intercepted_key_payload = 29;
     PaneRenderReportPayload pane_render_report_payload = 30;
     UserActionPayload user_action_payload = 31;
@@ -136,7 +131,6 @@ message Event {
     InitialKeybindsPayload initial_keybinds_payload = 38;
     CommandChangedPayload command_changed_payload = 39;
     HostTerminalThemeChangedPayload host_terminal_theme_changed_payload = 40;
-    SoftKeyboardVisibilityChangedPayload soft_keyboard_visibility_changed_payload = 41;
     HintTextPayload hint_text_payload = 42;
     ActivePaneScrollPayload active_pane_scroll_payload = 43;
     WebRequestStreamChunkPayload web_request_stream_chunk_payload = 44;
@@ -235,10 +229,6 @@ message HostTerminalThemeChangedPayload {
   HostTerminalThemeIndication mode = 1;
 }
 
-message SoftKeyboardVisibilityChangedPayload {
-  bool visible = 1;
-}
-
 enum HostTerminalThemeIndication {
   Dark = 0;
   Light = 1;
@@ -257,23 +247,8 @@ message CommandChangedPayload {
   repeated uint32 focused_client_ids = 4;
 }
 
-message FailedToStartWebServerPayload {
-  string error = 1;
-}
-
 message PastedTextPayload {
   string pasted_text = 1;
-}
-
-enum WebServerStatusIndication {
-  Online = 0;
-  Offline = 1;
-  DifferentVersion = 2;
-}
-
-message WebServerStatusPayload {
-  WebServerStatusIndication web_server_status_indication = 1;
-  optional string payload = 2;
 }
 
 message FailedToChangeHostFolderPayload {
@@ -448,6 +423,7 @@ message PaneManifest {
 }
 
 message SessionManifest {
+  reserved 8, 9, 13;
   string name = 1;
   repeated TabInfo tabs = 2;
   repeated PaneManifest panes = 3;
@@ -455,12 +431,9 @@ message SessionManifest {
   bool is_current_session = 5;
   repeated LayoutInfo available_layouts = 6;
   repeated PluginInfo plugins = 7;
-  bool web_clients_allowed = 8;
-  uint32 web_client_count = 9;
   repeated ClientTabHistory tab_history = 10;
   repeated ClientPaneHistory pane_history = 11;
   uint64 creation_time = 12;
-  reserved 13;
 }
 
 message ClientTabHistory {
@@ -620,6 +593,7 @@ message TabInfo {
 }
 
 message ModeUpdatePayload {
+  reserved 9, 10, 12, 13, 14, 15;
   input_mode.InputMode current_mode = 1;
   repeated InputModeKeybinds keybinds = 2;
   style.Style style = 3;
@@ -628,13 +602,7 @@ message ModeUpdatePayload {
   optional input_mode.InputMode base_mode = 6;
   optional string editor = 7;
   optional string shell = 8;
-  optional bool web_clients_allowed = 9;
-  optional WebSharing web_sharing = 10;
   optional bool currently_marking_pane_group = 11;
-  optional bool is_web_client = 12;
-  optional string web_server_ip = 13;
-  optional uint32 web_server_port = 14;
-  optional bool web_server_capability = 15;
   optional PaneFrameStyle pane_frame_style = 16;
   optional bool session_dimmed = 17;
   repeated string ancestry = 18;
@@ -642,12 +610,6 @@ message ModeUpdatePayload {
   repeated string nested_ascend_keys = 20;
   optional bool session_ascended = 21;
   repeated string nested_descend_keys = 22;
-}
-
-enum WebSharing {
-    On = 0;
-    Off = 1;
-    Disabled = 2;
 }
 
 enum PaneFrameStyle {

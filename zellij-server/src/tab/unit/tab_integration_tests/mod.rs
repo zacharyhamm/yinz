@@ -9,14 +9,12 @@ use crate::{
 };
 use zellij_utils::input::options::PaneFrameStyle;
 
-use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use zellij_utils::channels::Receiver;
 use zellij_utils::data::Direction;
 use zellij_utils::data::Resize;
 use zellij_utils::data::ResizeStrategy;
-use zellij_utils::data::WebSharing;
 use zellij_utils::envs::set_session_name;
 use zellij_utils::errors::{prelude::*, ErrorContext};
 use zellij_utils::input::layout::{
@@ -28,7 +26,7 @@ use crate::os_input_output::AsyncReader;
 use crate::pty_writer::PtyWriteInstruction;
 use interprocess::local_socket::Stream as LocalSocketStream;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 use zellij_utils::channels::{self, ChannelWithContext, SenderWithContext};
 use zellij_utils::input::mouse::MouseEvent;
@@ -215,8 +213,8 @@ fn create_new_tab(size: Size, default_mode: ModeInfo) -> Tab {
     let auto_layout = true;
     let client_id = 1;
     let session_is_mirrored = true;
-    let mut connected_clients = HashMap::new();
-    connected_clients.insert(client_id, false);
+    let mut connected_clients = HashSet::new();
+    connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let character_cell_info = Rc::new(RefCell::new(None));
     let stacked_resize = Rc::new(RefCell::new(true));
@@ -233,9 +231,6 @@ fn create_new_tab(size: Size, default_mode: ModeInfo) -> Tab {
     let explicitly_disable_kitty_keyboard_protocol = false;
     let advanced_mouse_actions = true;
     let mouse_scroll_resize = true;
-    let web_sharing = WebSharing::Off;
-    let web_server_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let web_server_port = 8080;
     let mut tab = Tab::new(
         index,
         position,
@@ -267,8 +262,6 @@ fn create_new_tab(size: Size, default_mode: ModeInfo) -> Tab {
         osc8_hyperlinks,
         explicitly_disable_kitty_keyboard_protocol,
         None,
-        false,
-        web_sharing,
         current_group,
         currently_marking_pane_group,
         advanced_mouse_actions,
@@ -277,8 +270,6 @@ fn create_new_tab(size: Size, default_mode: ModeInfo) -> Tab {
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
-        web_server_ip,
-        web_server_port,
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
@@ -312,8 +303,8 @@ fn create_new_tab_with_stacked_pane_list(
     let auto_layout = true;
     let client_id = 1;
     let session_is_mirrored = true;
-    let mut connected_clients = HashMap::new();
-    connected_clients.insert(client_id, false);
+    let mut connected_clients = HashSet::new();
+    connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let character_cell_info = Rc::new(RefCell::new(None));
     let stacked_resize = Rc::new(RefCell::new(true));
@@ -331,9 +322,6 @@ fn create_new_tab_with_stacked_pane_list(
     let explicitly_disable_kitty_keyboard_protocol = false;
     let advanced_mouse_actions = true;
     let mouse_scroll_resize = true;
-    let web_sharing = WebSharing::Off;
-    let web_server_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let web_server_port = 8080;
     let mut tab = Tab::new(
         index,
         position,
@@ -365,8 +353,6 @@ fn create_new_tab_with_stacked_pane_list(
         osc8_hyperlinks,
         explicitly_disable_kitty_keyboard_protocol,
         None,
-        false,
-        web_sharing,
         current_group,
         currently_marking_pane_group,
         advanced_mouse_actions,
@@ -375,8 +361,6 @@ fn create_new_tab_with_stacked_pane_list(
         false,
         false,
         false, // context_menu_on_right_click
-        web_server_ip,
-        web_server_port,
     );
     let (base_layout, new_terminal_ids) =
         base_layout_and_ids.unwrap_or_else(|| (TiledPaneLayout::default(), vec![(1, None)]));
@@ -407,8 +391,8 @@ fn create_new_tab_without_pane_frames(size: Size, default_mode: ModeInfo) -> Tab
     let auto_layout = true;
     let client_id = 1;
     let session_is_mirrored = true;
-    let mut connected_clients = HashMap::new();
-    connected_clients.insert(client_id, false);
+    let mut connected_clients = HashSet::new();
+    connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let character_cell_info = Rc::new(RefCell::new(None));
     let stacked_resize = Rc::new(RefCell::new(true));
@@ -425,9 +409,6 @@ fn create_new_tab_without_pane_frames(size: Size, default_mode: ModeInfo) -> Tab
     let explicitly_disable_kitty_keyboard_protocol = false;
     let advanced_mouse_actions = true;
     let mouse_scroll_resize = true;
-    let web_sharing = WebSharing::Off;
-    let web_server_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let web_server_port = 8080;
     let mut tab = Tab::new(
         index,
         position,
@@ -459,8 +440,6 @@ fn create_new_tab_without_pane_frames(size: Size, default_mode: ModeInfo) -> Tab
         osc8_hyperlinks,
         explicitly_disable_kitty_keyboard_protocol,
         None,
-        false,
-        web_sharing,
         current_group,
         currently_marking_pane_group,
         advanced_mouse_actions,
@@ -469,8 +448,6 @@ fn create_new_tab_without_pane_frames(size: Size, default_mode: ModeInfo) -> Tab
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
-        web_server_ip,
-        web_server_port,
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
@@ -514,8 +491,8 @@ fn create_new_tab_with_swap_layouts(
     let auto_layout = true;
     let client_id = 1;
     let session_is_mirrored = true;
-    let mut connected_clients = HashMap::new();
-    connected_clients.insert(client_id, false);
+    let mut connected_clients = HashSet::new();
+    connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let character_cell_info = Rc::new(RefCell::new(None));
     let stacked_resize = Rc::new(RefCell::new(stacked_resize));
@@ -532,9 +509,6 @@ fn create_new_tab_with_swap_layouts(
     let explicitly_disable_kitty_keyboard_protocol = false;
     let advanced_mouse_actions = true;
     let mouse_scroll_resize = true;
-    let web_sharing = WebSharing::Off;
-    let web_server_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let web_server_port = 8080;
     let mut tab = Tab::new(
         index,
         position,
@@ -570,8 +544,6 @@ fn create_new_tab_with_swap_layouts(
         osc8_hyperlinks,
         explicitly_disable_kitty_keyboard_protocol,
         None,
-        false,
-        web_sharing,
         current_group,
         currently_marking_pane_group,
         advanced_mouse_actions,
@@ -580,8 +552,6 @@ fn create_new_tab_with_swap_layouts(
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
-        web_server_ip,
-        web_server_port,
     );
     let (
         base_layout,
@@ -626,8 +596,8 @@ fn create_new_tab_with_os_api(
     let auto_layout = true;
     let client_id = 1;
     let session_is_mirrored = true;
-    let mut connected_clients = HashMap::new();
-    connected_clients.insert(client_id, false);
+    let mut connected_clients = HashSet::new();
+    connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let character_cell_info = Rc::new(RefCell::new(None));
     let stacked_resize = Rc::new(RefCell::new(true));
@@ -644,9 +614,6 @@ fn create_new_tab_with_os_api(
     let explicitly_disable_kitty_keyboard_protocol = false;
     let advanced_mouse_actions = true;
     let mouse_scroll_resize = true;
-    let web_sharing = WebSharing::Off;
-    let web_server_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let web_server_port = 8080;
     let mut tab = Tab::new(
         index,
         position,
@@ -678,8 +645,6 @@ fn create_new_tab_with_os_api(
         osc8_hyperlinks,
         explicitly_disable_kitty_keyboard_protocol,
         None,
-        false,
-        web_sharing,
         current_group,
         currently_marking_pane_group,
         advanced_mouse_actions,
@@ -688,8 +653,6 @@ fn create_new_tab_with_os_api(
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
-        web_server_ip,
-        web_server_port,
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
@@ -718,8 +681,8 @@ fn create_new_tab_with_layout(size: Size, default_mode: ModeInfo, layout: &str) 
     let auto_layout = true;
     let client_id = 1;
     let session_is_mirrored = true;
-    let mut connected_clients = HashMap::new();
-    connected_clients.insert(client_id, false);
+    let mut connected_clients = HashSet::new();
+    connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let character_cell_info = Rc::new(RefCell::new(None));
     let stacked_resize = Rc::new(RefCell::new(true));
@@ -738,9 +701,6 @@ fn create_new_tab_with_layout(size: Size, default_mode: ModeInfo, layout: &str) 
     let explicitly_disable_kitty_keyboard_protocol = false;
     let advanced_mouse_actions = true;
     let mouse_scroll_resize = true;
-    let web_sharing = WebSharing::Off;
-    let web_server_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let web_server_port = 8080;
     let mut tab = Tab::new(
         index,
         position,
@@ -772,8 +732,6 @@ fn create_new_tab_with_layout(size: Size, default_mode: ModeInfo, layout: &str) 
         osc8_hyperlinks,
         explicitly_disable_kitty_keyboard_protocol,
         None,
-        false,
-        web_sharing,
         current_group,
         currently_marking_pane_group,
         advanced_mouse_actions,
@@ -782,8 +740,6 @@ fn create_new_tab_with_layout(size: Size, default_mode: ModeInfo, layout: &str) 
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
-        web_server_ip,
-        web_server_port,
     );
     let pane_ids = tab_layout
         .extract_run_instructions()
@@ -828,8 +784,8 @@ fn create_new_tab_with_mock_pty_writer(
     let auto_layout = true;
     let client_id = 1;
     let session_is_mirrored = true;
-    let mut connected_clients = HashMap::new();
-    connected_clients.insert(client_id, false);
+    let mut connected_clients = HashSet::new();
+    connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let character_cell_info = Rc::new(RefCell::new(None));
     let stacked_resize = Rc::new(RefCell::new(true));
@@ -846,9 +802,6 @@ fn create_new_tab_with_mock_pty_writer(
     let explicitly_disable_kitty_keyboard_protocol = false;
     let advanced_mouse_actions = true;
     let mouse_scroll_resize = true;
-    let web_sharing = WebSharing::Off;
-    let web_server_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let web_server_port = 8080;
     let mut tab = Tab::new(
         index,
         position,
@@ -880,8 +833,6 @@ fn create_new_tab_with_mock_pty_writer(
         osc8_hyperlinks,
         explicitly_disable_kitty_keyboard_protocol,
         None,
-        false,
-        web_sharing,
         current_group,
         currently_marking_pane_group,
         advanced_mouse_actions,
@@ -890,8 +841,6 @@ fn create_new_tab_with_mock_pty_writer(
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
-        web_server_ip,
-        web_server_port,
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
@@ -925,8 +874,8 @@ fn create_new_tab_with_sixel_support(
     let auto_layout = true;
     let client_id = 1;
     let session_is_mirrored = true;
-    let mut connected_clients = HashMap::new();
-    connected_clients.insert(client_id, false);
+    let mut connected_clients = HashSet::new();
+    connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let character_cell_size = Rc::new(RefCell::new(Some(SizeInPixels {
         width: 8,
@@ -945,9 +894,6 @@ fn create_new_tab_with_sixel_support(
     let explicitly_disable_kitty_keyboard_protocol = false;
     let advanced_mouse_actions = true;
     let mouse_scroll_resize = true;
-    let web_sharing = WebSharing::Off;
-    let web_server_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let web_server_port = 8080;
     let mut tab = Tab::new(
         index,
         position,
@@ -979,8 +925,6 @@ fn create_new_tab_with_sixel_support(
         osc8_hyperlinks,
         explicitly_disable_kitty_keyboard_protocol,
         None,
-        false,
-        web_sharing,
         current_group,
         currently_marking_pane_group,
         advanced_mouse_actions,
@@ -989,8 +933,6 @@ fn create_new_tab_with_sixel_support(
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
-        web_server_ip,
-        web_server_port,
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
@@ -1223,8 +1165,8 @@ fn create_new_tab_with_plugin_receiver(
     let auto_layout = true;
     let client_id = 1;
     let session_is_mirrored = true;
-    let mut connected_clients = HashMap::new();
-    connected_clients.insert(client_id, false);
+    let mut connected_clients = HashSet::new();
+    connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let character_cell_info = Rc::new(RefCell::new(None));
     let stacked_resize = Rc::new(RefCell::new(true));
@@ -1241,9 +1183,6 @@ fn create_new_tab_with_plugin_receiver(
     let explicitly_disable_kitty_keyboard_protocol = false;
     let advanced_mouse_actions = true;
     let mouse_scroll_resize = true;
-    let web_sharing = WebSharing::Off;
-    let web_server_ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let web_server_port = 8080;
     let mut tab = Tab::new(
         index,
         position,
@@ -1275,8 +1214,6 @@ fn create_new_tab_with_plugin_receiver(
         osc8_hyperlinks,
         explicitly_disable_kitty_keyboard_protocol,
         None,
-        false,
-        web_sharing,
         current_group,
         currently_marking_pane_group,
         advanced_mouse_actions,
@@ -1285,8 +1222,6 @@ fn create_new_tab_with_plugin_receiver(
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
-        web_server_ip,
-        web_server_port,
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
@@ -1326,8 +1261,8 @@ fn create_new_tab_with_screen_receiver(
 
     let max_panes = None;
     let client_id = 1;
-    let mut connected_clients = HashMap::new();
-    connected_clients.insert(client_id, false);
+    let mut connected_clients = HashSet::new();
+    connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let character_cell_info = Rc::new(RefCell::new(None));
     let stacked_resize = Rc::new(RefCell::new(true));
@@ -1368,8 +1303,6 @@ fn create_new_tab_with_screen_receiver(
         true,  // osc8_hyperlinks
         false, // explicitly_disable_kitty_keyboard_protocol
         None,
-        false,
-        WebSharing::Off,
         current_group,
         currently_marking_pane_group,
         true,  // advanced_mouse_actions
@@ -1378,8 +1311,6 @@ fn create_new_tab_with_screen_receiver(
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
-        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-        8080,
     );
     tab.apply_layout(
         TiledPaneLayout::default(),

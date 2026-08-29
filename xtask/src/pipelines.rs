@@ -1,7 +1,7 @@
 //! Composite pipelines for the build system.
 //!
 //! Defines multiple "pipelines" that run specific individual steps in sequence.
-use crate::{build, format, metadata, test};
+use crate::{build, format, test};
 use crate::{flags, WorkspaceMember};
 use anyhow::Context;
 use xshell::{cmd, Shell};
@@ -30,20 +30,11 @@ pub fn make(sh: &Shell, flags: flags::Make) -> anyhow::Result<()> {
                     release: flags.release,
                     no_plugins: false,
                     plugins_only: false,
-                    no_web: flags.no_web,
                     args: vec![],
                 },
             )
         })
-        .and_then(|_| {
-            test::test(
-                sh,
-                flags::Test {
-                    args: vec![],
-                    no_web: flags.no_web,
-                },
-            )
-        })
+        .and_then(|_| test::test(sh, flags::Test { args: vec![] }))
         .with_context(err_context)
 }
 
@@ -64,7 +55,6 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
             release: true,
             no_plugins: false,
             plugins_only: true,
-            no_web: flags.no_web,
             args: vec![],
         },
     )
@@ -76,7 +66,6 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
                 release: true,
                 no_plugins: true,
                 plugins_only: false,
-                no_web: flags.no_web,
                 args: flags.args.clone(),
             },
         )
@@ -122,20 +111,12 @@ pub fn run(sh: &Shell, mut flags: flags::Run) -> anyhow::Result<()> {
 
     if let Some(ref data_dir) = flags.data_dir {
         let data_dir = sh.current_dir().join(data_dir);
-        let features = if flags.no_web {
-            ""
-        } else {
-            "web_server_capability"
-        };
-
         build::ensure_plugin_assets(sh).with_context(|| err_context(&flags))?;
 
         crate::cargo()
             .and_then(|cargo| {
                 cmd!(sh, "{cargo} run")
                     .args(["--package", "zellij"])
-                    .arg("--no-default-features")
-                    .args(["--features", features])
                     .args(["--", "--data-dir", &format!("{}", data_dir.display())])
                     .args(&flags.args)
                     .run()
@@ -149,45 +130,16 @@ pub fn run(sh: &Shell, mut flags: flags::Run) -> anyhow::Result<()> {
                 release: false,
                 no_plugins: false,
                 plugins_only: true,
-                no_web: flags.no_web,
                 args: vec![],
             },
         )
         .and_then(|_| crate::cargo())
         .and_then(|cargo| {
-            if flags.no_web {
-                // Use dynamic metadata approach to get the correct features
-                match metadata::get_no_web_features(sh, ".")
-                    .context("Failed to check web features for main crate")?
-                {
-                    Some(features) => {
-                        let mut cmd = cmd!(sh, "{cargo} run").args(["--no-default-features"]);
-
-                        if !features.is_empty() {
-                            cmd = cmd.args(["--features", &features]);
-                        }
-
-                        cmd.args(["--"])
-                            .args(&flags.args)
-                            .run()
-                            .map_err(anyhow::Error::new)
-                    },
-                    None => {
-                        // Main crate doesn't have web_server_capability, run normally
-                        cmd!(sh, "{cargo} run")
-                            .args(["--"])
-                            .args(&flags.args)
-                            .run()
-                            .map_err(anyhow::Error::new)
-                    },
-                }
-            } else {
-                cmd!(sh, "{cargo} run")
-                    .args(["--"])
-                    .args(&flags.args)
-                    .run()
-                    .map_err(anyhow::Error::new)
-            }
+            cmd!(sh, "{cargo} run")
+                .args(["--"])
+                .args(&flags.args)
+                .run()
+                .map_err(anyhow::Error::new)
         })
         .with_context(|| err_context(&flags))
     }
@@ -291,7 +243,6 @@ pub fn publish(sh: &Shell, flags: flags::Publish) -> anyhow::Result<()> {
                 release: true,
                 no_plugins: false,
                 plugins_only: true,
-                no_web: false,
                 args: vec![],
             },
         )

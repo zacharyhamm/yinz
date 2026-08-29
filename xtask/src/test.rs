@@ -10,13 +10,6 @@ use xshell::{cmd, Shell};
 /// 46 heavyweight binaries to the gate.
 pub const EXCLUDED: &[&str] = &["zellij-integration-tests"];
 
-/// The feature set standing in for "everything except the web server".
-///
-/// The root crate is the only workspace member with a `default` list, so `--no-default-features`
-/// is a no-op everywhere else; `vendored_curl` is the one default worth keeping, and enabling it
-/// on the root propagates it to `zellij-utils`.
-pub const NO_WEB_FEATURES: &str = "zellij/vendored_curl";
-
 pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
     let err_context = "failed to run task 'test'";
 
@@ -29,7 +22,6 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
             release: false,
             no_plugins: false,
             plugins_only: true,
-            no_web: flags.no_web,
             args: vec![],
         },
     )
@@ -48,10 +40,8 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
     // Cargo reads config from the invocation directory upward and this runs from the project
     // root, so that pin never applies here and they build for the host.
     //
-    // Features are left at their defaults on purpose. The root crate's `default` already turns on
-    // `web_server_capability` and `vendored_curl` for the whole graph, and `unstable` is dead, so
-    // the defaults cover everything `--all-features` would - while keeping this graph identical
-    // to the one `x build` produces, which is what lets the two share artifacts.
+    // Features are left at their defaults on purpose, keeping this graph identical to the one
+    // `x build` produces so the two share artifacts.
     let mut failed: Vec<&str> = Vec::new();
     let use_nextest = nextest_available(sh, &cargo);
 
@@ -76,9 +66,6 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
         for excluded in EXCLUDED {
             cmd = cmd.args(["--exclude", excluded]);
         }
-    }
-    if flags.no_web {
-        cmd = cmd.args(["--no-default-features", "--features", NO_WEB_FEATURES]);
     }
     // nextest takes its own flags directly; libtest's live after `--`.
     if !use_nextest {
@@ -121,9 +108,6 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
                         doc = doc.args(extra_excludes);
                     },
                     Selection::Skip => unreachable!("handled above"),
-                }
-                if flags.no_web {
-                    doc = doc.args(["--no-default-features", "--features", NO_WEB_FEATURES]);
                 }
                 if doc.run().is_err() {
                     failed.push("doctests");

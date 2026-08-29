@@ -40,13 +40,10 @@ pub use super::generated_api::api::{
         QueueJobStartedPayload as ProtobufQueueJobStartedPayload,
         QueueJobState as ProtobufQueueJobState, QueueSnapshot as ProtobufQueueSnapshot,
         ResurrectableSession as ProtobufResurrectableSession, SelectedText as ProtobufSelectedText,
-        SessionManifest as ProtobufSessionManifest,
-        SoftKeyboardVisibilityChangedPayload as ProtobufSoftKeyboardVisibilityChangedPayload,
-        StyledText as ProtobufStyledText, StyledTextIndices as ProtobufStyledTextIndices,
-        SyntaxError as ProtobufSyntaxError, TabInfo as ProtobufTabInfo,
-        TabMetadata as ProtobufTabMetadata, UserActionPayload as ProtobufUserActionPayload,
-        WebServerStatusPayload as ProtobufWebServerStatusPayload, WebSharing as ProtobufWebSharing,
-        *,
+        SessionManifest as ProtobufSessionManifest, StyledText as ProtobufStyledText,
+        StyledTextIndices as ProtobufStyledTextIndices, SyntaxError as ProtobufSyntaxError,
+        TabInfo as ProtobufTabInfo, TabMetadata as ProtobufTabMetadata,
+        UserActionPayload as ProtobufUserActionPayload, *,
     },
     input_mode::InputMode as ProtobufInputMode,
     key::Key as ProtobufKey,
@@ -60,7 +57,6 @@ use crate::data::{
     PaneContents, PaneId, PaneInfo, PaneManifest, PaneMetadata, PaneScrollbackResponse,
     PermissionStatus, PluginCapabilities, PluginInfo, QueueJobInfo, QueueJobOutcome, QueueJobState,
     QueueSnapshot, SelectedText, SessionInfo, Style, StyledText, TabInfo, TabMetadata,
-    WebServerStatus, WebSharing,
 };
 use crate::plugin_api::plugin_data::ProtobufRows as ProtobufDataRows;
 
@@ -70,7 +66,6 @@ use crate::input::hooks::HookPoint;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
-use std::net::IpAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
@@ -411,23 +406,9 @@ impl TryFrom<ProtobufEvent> for Event {
                 None => Ok(Event::ConfigWasWrittenToDisk),
                 _ => Err("Malformed payload for the ConfigWasWrittenToDisk Event"),
             },
-            Ok(ProtobufEventType::WebServerStatus) => match protobuf_event.payload {
-                Some(ProtobufEventPayload::WebServerStatusPayload(web_server_status)) => {
-                    Ok(Event::WebServerStatus(web_server_status.try_into()?))
-                },
-                _ => Err("Malformed payload for the WebServerStatus Event"),
-            },
             Ok(ProtobufEventType::BeforeClose) => match protobuf_event.payload {
                 None => Ok(Event::BeforeClose),
                 _ => Err("Malformed payload for the BeforeClose Event"),
-            },
-            Ok(ProtobufEventType::FailedToStartWebServer) => match protobuf_event.payload {
-                Some(ProtobufEventPayload::FailedToStartWebServerPayload(
-                    failed_to_start_web_server_payload,
-                )) => Ok(Event::FailedToStartWebServer(
-                    failed_to_start_web_server_payload.error,
-                )),
-                _ => Err("Malformed payload for the FailedToStartWebServer Event"),
             },
             Ok(ProtobufEventType::InterceptedKeyPress) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::KeyPayload(protobuf_key)) => {
@@ -638,12 +619,6 @@ impl TryFrom<ProtobufEvent> for Event {
                     Ok(Event::HostTerminalThemeChanged(mode.into()))
                 },
                 _ => Err("Malformed payload for HostTerminalThemeChanged Event"),
-            },
-            Ok(ProtobufEventType::SoftKeyboardVisibilityChanged) => match protobuf_event.payload {
-                Some(ProtobufEventPayload::SoftKeyboardVisibilityChangedPayload(p)) => {
-                    Ok(Event::SoftKeyboardVisibilityChanged(p.visible))
-                },
-                _ => Err("Malformed payload for SoftKeyboardVisibilityChanged Event"),
             },
             Ok(ProtobufEventType::HintText) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::HintTextPayload(p)) => {
@@ -1120,21 +1095,9 @@ impl TryFrom<Event> for ProtobufEvent {
                 name: ProtobufEventType::ConfigWasWrittenToDisk as i32,
                 payload: None,
             }),
-            Event::WebServerStatus(web_server_status) => Ok(ProtobufEvent {
-                name: ProtobufEventType::WebServerStatus as i32,
-                payload: Some(event::Payload::WebServerStatusPayload(
-                    ProtobufWebServerStatusPayload::try_from(web_server_status)?,
-                )),
-            }),
             Event::BeforeClose => Ok(ProtobufEvent {
                 name: ProtobufEventType::BeforeClose as i32,
                 payload: None,
-            }),
-            Event::FailedToStartWebServer(error) => Ok(ProtobufEvent {
-                name: ProtobufEventType::FailedToStartWebServer as i32,
-                payload: Some(event::Payload::FailedToStartWebServerPayload(
-                    FailedToStartWebServerPayload { error },
-                )),
             }),
             Event::InterceptedKeyPress(key) => Ok(ProtobufEvent {
                 name: ProtobufEventType::InterceptedKeyPress as i32,
@@ -1304,15 +1267,6 @@ impl TryFrom<Event> for ProtobufEvent {
                 Ok(ProtobufEvent {
                     name: ProtobufEventType::HostTerminalThemeChanged as i32,
                     payload: Some(event::Payload::HostTerminalThemeChangedPayload(payload)),
-                })
-            },
-            Event::SoftKeyboardVisibilityChanged(visible) => {
-                let payload = ProtobufSoftKeyboardVisibilityChangedPayload { visible };
-                Ok(ProtobufEvent {
-                    name: ProtobufEventType::SoftKeyboardVisibilityChanged as i32,
-                    payload: Some(event::Payload::SoftKeyboardVisibilityChangedPayload(
-                        payload,
-                    )),
                 })
             },
             Event::HintText(hint_text) => {
@@ -1485,8 +1439,6 @@ impl TryFrom<SessionInfo> for ProtobufSessionManifest {
                 .into_iter()
                 .map(ProtobufPluginInfo::from)
                 .collect(),
-            web_clients_allowed: session_info.web_clients_allowed,
-            web_client_count: session_info.web_client_count as u32,
             tab_history: session_info
                 .tab_history
                 .into_iter()
@@ -1604,8 +1556,6 @@ impl TryFrom<ProtobufSessionManifest> for SessionInfo {
                 .filter_map(|l| LayoutInfo::try_from(l).ok())
                 .collect(),
             plugins,
-            web_clients_allowed: protobuf_session_manifest.web_clients_allowed,
-            web_client_count: protobuf_session_manifest.web_client_count as usize,
             tab_history,
             pane_history,
             creation_time: Duration::from_secs(protobuf_session_manifest.creation_time),
@@ -2259,29 +2209,11 @@ impl TryFrom<ProtobufModeUpdatePayload> for ModeInfo {
         let session_name = protobuf_mode_update_payload.session_name;
         let editor = protobuf_mode_update_payload.editor.map(PathBuf::from);
         let shell = protobuf_mode_update_payload.shell.map(PathBuf::from);
-        let web_clients_allowed = protobuf_mode_update_payload.web_clients_allowed;
-        let web_sharing = protobuf_mode_update_payload
-            .web_sharing
-            .and_then(|w| ProtobufWebSharing::try_from(w).ok())
-            .map(|w| w.into());
         let capabilities = PluginCapabilities {
             arrow_fonts: protobuf_mode_update_payload.arrow_fonts_support,
         };
         let currently_marking_pane_group =
             protobuf_mode_update_payload.currently_marking_pane_group;
-        let is_web_client = protobuf_mode_update_payload.is_web_client;
-
-        let web_server_ip = protobuf_mode_update_payload
-            .web_server_ip
-            .as_ref()
-            .and_then(|web_server_ip| IpAddr::from_str(web_server_ip).ok());
-
-        let web_server_port = protobuf_mode_update_payload
-            .web_server_port
-            .map(|w| w as u16);
-
-        let web_server_capability = protobuf_mode_update_payload.web_server_capability;
-
         let pane_frame_style = protobuf_mode_update_payload
             .pane_frame_style
             .and_then(|p| ProtobufPaneFrameStyle::try_from(p).ok())
@@ -2316,13 +2248,7 @@ impl TryFrom<ProtobufModeUpdatePayload> for ModeInfo {
             base_mode,
             editor,
             shell,
-            web_clients_allowed,
-            web_sharing,
             currently_marking_pane_group,
-            is_web_client,
-            web_server_ip,
-            web_server_port,
-            web_server_capability,
             pane_frame_style,
             session_dimmed,
             session_ancestry,
@@ -2347,13 +2273,7 @@ impl TryFrom<ModeInfo> for ProtobufModeUpdatePayload {
         let session_name = mode_info.session_name;
         let editor = mode_info.editor.map(|e| e.display().to_string());
         let shell = mode_info.shell.map(|s| s.display().to_string());
-        let web_clients_allowed = mode_info.web_clients_allowed;
-        let web_sharing = mode_info.web_sharing.map(|w| w as i32);
         let currently_marking_pane_group = mode_info.currently_marking_pane_group;
-        let is_web_client = mode_info.is_web_client;
-        let web_server_ip = mode_info.web_server_ip.map(|i| format!("{}", i));
-        let web_server_port = mode_info.web_server_port.map(|p| p as u32);
-        let web_server_capability = mode_info.web_server_capability;
         let pane_frame_style = mode_info.pane_frame_style.map(|p| {
             let protobuf_pane_frame_style: ProtobufPaneFrameStyle = p.into();
             protobuf_pane_frame_style as i32
@@ -2405,13 +2325,7 @@ impl TryFrom<ModeInfo> for ProtobufModeUpdatePayload {
             base_mode: base_mode.map(|b_m| b_m as i32),
             editor,
             shell,
-            web_clients_allowed,
-            web_sharing,
             currently_marking_pane_group,
-            is_web_client,
-            web_server_ip,
-            web_server_port,
-            web_server_capability,
             pane_frame_style,
             session_dimmed,
             ancestry: session_ancestry,
@@ -2488,9 +2402,7 @@ impl TryFrom<ProtobufEventType> for EventType {
             ProtobufEventType::FailedToChangeHostFolder => EventType::FailedToChangeHostFolder,
             ProtobufEventType::PastedText => EventType::PastedText,
             ProtobufEventType::ConfigWasWrittenToDisk => EventType::ConfigWasWrittenToDisk,
-            ProtobufEventType::WebServerStatus => EventType::WebServerStatus,
             ProtobufEventType::BeforeClose => EventType::BeforeClose,
-            ProtobufEventType::FailedToStartWebServer => EventType::FailedToStartWebServer,
             ProtobufEventType::InterceptedKeyPress => EventType::InterceptedKeyPress,
             ProtobufEventType::PaneRenderReport => EventType::PaneRenderReport,
             ProtobufEventType::UserAction => EventType::UserAction,
@@ -2504,9 +2416,6 @@ impl TryFrom<ProtobufEventType> for EventType {
             ProtobufEventType::ContextMenuItemSelected => EventType::ContextMenuItemSelected,
             ProtobufEventType::InitialKeybinds => EventType::InitialKeybinds,
             ProtobufEventType::HostTerminalThemeChanged => EventType::HostTerminalThemeChanged,
-            ProtobufEventType::SoftKeyboardVisibilityChanged => {
-                EventType::SoftKeyboardVisibilityChanged
-            },
             ProtobufEventType::HintText => EventType::HintText,
             ProtobufEventType::ActivePaneScroll => EventType::ActivePaneScroll,
             ProtobufEventType::PluginDataChanged => EventType::PluginDataChanged,
@@ -2554,9 +2463,7 @@ impl TryFrom<EventType> for ProtobufEventType {
             EventType::FailedToChangeHostFolder => ProtobufEventType::FailedToChangeHostFolder,
             EventType::PastedText => ProtobufEventType::PastedText,
             EventType::ConfigWasWrittenToDisk => ProtobufEventType::ConfigWasWrittenToDisk,
-            EventType::WebServerStatus => ProtobufEventType::WebServerStatus,
             EventType::BeforeClose => ProtobufEventType::BeforeClose,
-            EventType::FailedToStartWebServer => ProtobufEventType::FailedToStartWebServer,
             EventType::InterceptedKeyPress => ProtobufEventType::InterceptedKeyPress,
             EventType::PaneRenderReport => ProtobufEventType::PaneRenderReport,
             EventType::UserAction => ProtobufEventType::UserAction,
@@ -2570,9 +2477,6 @@ impl TryFrom<EventType> for ProtobufEventType {
             EventType::ContextMenuItemSelected => ProtobufEventType::ContextMenuItemSelected,
             EventType::InitialKeybinds => ProtobufEventType::InitialKeybinds,
             EventType::HostTerminalThemeChanged => ProtobufEventType::HostTerminalThemeChanged,
-            EventType::SoftKeyboardVisibilityChanged => {
-                ProtobufEventType::SoftKeyboardVisibilityChanged
-            },
             EventType::HintText => ProtobufEventType::HintText,
             EventType::ActivePaneScroll => ProtobufEventType::ActivePaneScroll,
             EventType::PluginDataChanged => ProtobufEventType::PluginDataChanged,
@@ -2799,13 +2703,7 @@ fn serialize_mode_update_event_with_non_default_values() {
         base_mode: Some(InputMode::Locked),
         editor: Some(PathBuf::from("my_awesome_editor")),
         shell: Some(PathBuf::from("my_awesome_shell")),
-        web_clients_allowed: Some(true),
-        web_sharing: Some(WebSharing::default()),
         currently_marking_pane_group: Some(false),
-        is_web_client: Some(false),
-        web_server_ip: IpAddr::from_str("127.0.0.1").ok(),
-        web_server_port: Some(8082),
-        web_server_capability: Some(true),
         pane_frame_style: Some(crate::input::options::PaneFrameStyle::Titles),
         session_dimmed: Some(true),
         session_ancestry: vec!["work".to_owned(), "prod".to_owned()],
@@ -3219,8 +3117,6 @@ fn serialize_session_update_event_with_non_default_values() {
             ),
         ],
         plugins,
-        web_clients_allowed: false,
-        web_client_count: 1,
         tab_history,
         pane_history: Default::default(),
         creation_time: Duration::from_secs(100),
@@ -3253,8 +3149,6 @@ fn serialize_session_update_event_with_non_default_values() {
             ),
         ],
         plugins: Default::default(),
-        web_clients_allowed: false,
-        web_client_count: 0,
         tab_history: Default::default(),
         pane_history: Default::default(),
         creation_time: Duration::from_secs(200),
@@ -3308,28 +3202,6 @@ impl TryFrom<PaneId> for ProtobufPaneId {
 }
 
 #[allow(clippy::from_over_into)]
-impl Into<ProtobufWebSharing> for WebSharing {
-    fn into(self) -> ProtobufWebSharing {
-        match self {
-            WebSharing::On => ProtobufWebSharing::On,
-            WebSharing::Off => ProtobufWebSharing::Off,
-            WebSharing::Disabled => ProtobufWebSharing::Disabled,
-        }
-    }
-}
-
-#[allow(clippy::from_over_into)]
-impl Into<WebSharing> for ProtobufWebSharing {
-    fn into(self) -> WebSharing {
-        match self {
-            ProtobufWebSharing::On => WebSharing::On,
-            ProtobufWebSharing::Off => WebSharing::Off,
-            ProtobufWebSharing::Disabled => WebSharing::Disabled,
-        }
-    }
-}
-
-#[allow(clippy::from_over_into)]
 impl Into<ProtobufPaneFrameStyle> for crate::input::options::PaneFrameStyle {
     fn into(self) -> ProtobufPaneFrameStyle {
         match self {
@@ -3347,52 +3219,6 @@ impl Into<crate::input::options::PaneFrameStyle> for ProtobufPaneFrameStyle {
             ProtobufPaneFrameStyle::Full => crate::input::options::PaneFrameStyle::Full,
             ProtobufPaneFrameStyle::Titles => crate::input::options::PaneFrameStyle::Titles,
             ProtobufPaneFrameStyle::None => crate::input::options::PaneFrameStyle::None,
-        }
-    }
-}
-
-impl TryFrom<WebServerStatus> for ProtobufWebServerStatusPayload {
-    type Error = &'static str;
-    fn try_from(web_server_status: WebServerStatus) -> Result<Self, &'static str> {
-        match web_server_status {
-            WebServerStatus::Online(url) => Ok(ProtobufWebServerStatusPayload {
-                web_server_status_indication: WebServerStatusIndication::Online as i32,
-                payload: Some(url),
-            }),
-            WebServerStatus::DifferentVersion(version) => Ok(ProtobufWebServerStatusPayload {
-                web_server_status_indication: WebServerStatusIndication::DifferentVersion as i32,
-                payload: Some(version.to_string()),
-            }),
-            WebServerStatus::Offline => Ok(ProtobufWebServerStatusPayload {
-                web_server_status_indication: WebServerStatusIndication::Offline as i32,
-                payload: None,
-            }),
-        }
-    }
-}
-
-impl TryFrom<ProtobufWebServerStatusPayload> for WebServerStatus {
-    type Error = &'static str;
-    fn try_from(
-        protobuf_web_server_status: ProtobufWebServerStatusPayload,
-    ) -> Result<Self, &'static str> {
-        match WebServerStatusIndication::try_from(
-            protobuf_web_server_status.web_server_status_indication,
-        ) {
-            Ok(WebServerStatusIndication::Online) => {
-                let payload = protobuf_web_server_status
-                    .payload
-                    .ok_or("payload_not_found")?;
-                Ok(WebServerStatus::Online(payload))
-            },
-            Ok(WebServerStatusIndication::DifferentVersion) => {
-                let payload = protobuf_web_server_status
-                    .payload
-                    .ok_or("payload_not_found")?;
-                Ok(WebServerStatus::DifferentVersion(payload))
-            },
-            Ok(WebServerStatusIndication::Offline) => Ok(WebServerStatus::Offline),
-            Err(_) => Err("Unknown status"),
         }
     }
 }
@@ -3857,9 +3683,7 @@ mod tests {
 
     mod props {
         use super::*;
-        use crate::data::{
-            CopyDestination, HostTerminalThemeMode, PermissionStatus, WebServerStatus,
-        };
+        use crate::data::{CopyDestination, HostTerminalThemeMode, PermissionStatus};
         use crate::plugin_api::test_generators::{
             bytes, context, pane_id, paths_with_metadata, strings,
         };
@@ -4053,16 +3877,9 @@ mod tests {
                     tc.draw(generators::optional(generators::text())),
                 ),
                 25 => Event::PastedText(strings(tc)),
-                26 => Event::FailedToStartWebServer(strings(tc)),
+                26 => Event::PluginConfigurationChanged(context(tc)),
                 27 => Event::PluginConfigurationChanged(context(tc)),
-                28 => Event::SoftKeyboardVisibilityChanged(tc.draw(generators::booleans())),
-                29 => Event::WebServerStatus(
-                    match tc.draw(generators::integers::<u8>().max_value(2)) {
-                        0 => WebServerStatus::Online(strings(tc)),
-                        1 => WebServerStatus::Offline,
-                        _ => WebServerStatus::DifferentVersion(strings(tc)),
-                    },
-                ),
+                28 | 29 => Event::PluginConfigurationChanged(context(tc)),
                 _ => Event::HostTerminalThemeChanged(tc.draw(generators::sampled_from(vec![
                     HostTerminalThemeMode::Dark,
                     HostTerminalThemeMode::Light,

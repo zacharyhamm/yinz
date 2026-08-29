@@ -10,7 +10,7 @@ pub struct EventNameList {
 pub struct Event {
     #[prost(enumeration="EventType", tag="1")]
     pub name: i32,
-    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51")]
+    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51")]
     pub payload: ::core::option::Option<event::Payload>,
 }
 /// Nested message and enum types in `Event`.
@@ -68,10 +68,6 @@ pub mod event {
         FailedToChangeHostFolderPayload(super::FailedToChangeHostFolderPayload),
         #[prost(message, tag="26")]
         PastedTextPayload(super::PastedTextPayload),
-        #[prost(message, tag="27")]
-        WebServerStatusPayload(super::WebServerStatusPayload),
-        #[prost(message, tag="28")]
-        FailedToStartWebServerPayload(super::FailedToStartWebServerPayload),
         #[prost(message, tag="29")]
         InterceptedKeyPayload(super::super::key::Key),
         #[prost(message, tag="30")]
@@ -94,8 +90,6 @@ pub mod event {
         CommandChangedPayload(super::CommandChangedPayload),
         #[prost(message, tag="40")]
         HostTerminalThemeChangedPayload(super::HostTerminalThemeChangedPayload),
-        #[prost(message, tag="41")]
-        SoftKeyboardVisibilityChangedPayload(super::SoftKeyboardVisibilityChangedPayload),
         #[prost(message, tag="42")]
         HintTextPayload(super::HintTextPayload),
         #[prost(message, tag="43")]
@@ -241,12 +235,6 @@ pub struct HostTerminalThemeChangedPayload {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SoftKeyboardVisibilityChangedPayload {
-    #[prost(bool, tag="1")]
-    pub visible: bool,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CwdChangedPayload {
     #[prost(message, optional, tag="1")]
     pub pane_id: ::core::option::Option<PaneId>,
@@ -269,23 +257,9 @@ pub struct CommandChangedPayload {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct FailedToStartWebServerPayload {
-    #[prost(string, tag="1")]
-    pub error: ::prost::alloc::string::String,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PastedTextPayload {
     #[prost(string, tag="1")]
     pub pasted_text: ::prost::alloc::string::String,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct WebServerStatusPayload {
-    #[prost(enumeration="WebServerStatusIndication", tag="1")]
-    pub web_server_status_indication: i32,
-    #[prost(string, optional, tag="2")]
-    pub payload: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -545,10 +519,6 @@ pub struct SessionManifest {
     pub available_layouts: ::prost::alloc::vec::Vec<LayoutInfo>,
     #[prost(message, repeated, tag="7")]
     pub plugins: ::prost::alloc::vec::Vec<PluginInfo>,
-    #[prost(bool, tag="8")]
-    pub web_clients_allowed: bool,
-    #[prost(uint32, tag="9")]
-    pub web_client_count: u32,
     #[prost(message, repeated, tag="10")]
     pub tab_history: ::prost::alloc::vec::Vec<ClientTabHistory>,
     #[prost(message, repeated, tag="11")]
@@ -826,20 +796,8 @@ pub struct ModeUpdatePayload {
     pub editor: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="8")]
     pub shell: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(bool, optional, tag="9")]
-    pub web_clients_allowed: ::core::option::Option<bool>,
-    #[prost(enumeration="WebSharing", optional, tag="10")]
-    pub web_sharing: ::core::option::Option<i32>,
     #[prost(bool, optional, tag="11")]
     pub currently_marking_pane_group: ::core::option::Option<bool>,
-    #[prost(bool, optional, tag="12")]
-    pub is_web_client: ::core::option::Option<bool>,
-    #[prost(string, optional, tag="13")]
-    pub web_server_ip: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(uint32, optional, tag="14")]
-    pub web_server_port: ::core::option::Option<u32>,
-    #[prost(bool, optional, tag="15")]
-    pub web_server_capability: ::core::option::Option<bool>,
     #[prost(enumeration="PaneFrameStyle", optional, tag="16")]
     pub pane_frame_style: ::core::option::Option<i32>,
     #[prost(bool, optional, tag="17")]
@@ -1112,9 +1070,7 @@ pub enum EventType {
     FailedToChangeHostFolder = 28,
     PastedText = 29,
     ConfigWasWrittenToDisk = 30,
-    WebServerStatus = 31,
     BeforeClose = 32,
-    FailedToStartWebServer = 34,
     InterceptedKeyPress = 35,
     PaneRenderReport = 36,
     UserAction = 37,
@@ -1126,7 +1082,6 @@ pub enum EventType {
     InitialKeybinds = 44,
     CommandChanged = 45,
     HostTerminalThemeChanged = 46,
-    SoftKeyboardVisibilityChanged = 47,
     HintText = 48,
     ActivePaneScroll = 49,
     WebRequestStreamChunk = 50,
@@ -1183,9 +1138,7 @@ impl EventType {
             EventType::FailedToChangeHostFolder => "FailedToChangeHostFolder",
             EventType::PastedText => "PastedText",
             EventType::ConfigWasWrittenToDisk => "ConfigWasWrittenToDisk",
-            EventType::WebServerStatus => "WebServerStatus",
             EventType::BeforeClose => "BeforeClose",
-            EventType::FailedToStartWebServer => "FailedToStartWebServer",
             EventType::InterceptedKeyPress => "InterceptedKeyPress",
             EventType::PaneRenderReport => "PaneRenderReport",
             EventType::UserAction => "UserAction",
@@ -1197,7 +1150,6 @@ impl EventType {
             EventType::InitialKeybinds => "InitialKeybinds",
             EventType::CommandChanged => "CommandChanged",
             EventType::HostTerminalThemeChanged => "HostTerminalThemeChanged",
-            EventType::SoftKeyboardVisibilityChanged => "SoftKeyboardVisibilityChanged",
             EventType::HintText => "HintText",
             EventType::ActivePaneScroll => "ActivePaneScroll",
             EventType::WebRequestStreamChunk => "WebRequestStreamChunk",
@@ -1244,9 +1196,7 @@ impl EventType {
             "FailedToChangeHostFolder" => Some(Self::FailedToChangeHostFolder),
             "PastedText" => Some(Self::PastedText),
             "ConfigWasWrittenToDisk" => Some(Self::ConfigWasWrittenToDisk),
-            "WebServerStatus" => Some(Self::WebServerStatus),
             "BeforeClose" => Some(Self::BeforeClose),
-            "FailedToStartWebServer" => Some(Self::FailedToStartWebServer),
             "InterceptedKeyPress" => Some(Self::InterceptedKeyPress),
             "PaneRenderReport" => Some(Self::PaneRenderReport),
             "UserAction" => Some(Self::UserAction),
@@ -1258,7 +1208,6 @@ impl EventType {
             "InitialKeybinds" => Some(Self::InitialKeybinds),
             "CommandChanged" => Some(Self::CommandChanged),
             "HostTerminalThemeChanged" => Some(Self::HostTerminalThemeChanged),
-            "SoftKeyboardVisibilityChanged" => Some(Self::SoftKeyboardVisibilityChanged),
             "HintText" => Some(Self::HintText),
             "ActivePaneScroll" => Some(Self::ActivePaneScroll),
             "WebRequestStreamChunk" => Some(Self::WebRequestStreamChunk),
@@ -1353,35 +1302,6 @@ impl HostTerminalThemeIndication {
         match value {
             "Dark" => Some(Self::Dark),
             "Light" => Some(Self::Light),
-            _ => None,
-        }
-    }
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum WebServerStatusIndication {
-    Online = 0,
-    Offline = 1,
-    DifferentVersion = 2,
-}
-impl WebServerStatusIndication {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            WebServerStatusIndication::Online => "Online",
-            WebServerStatusIndication::Offline => "Offline",
-            WebServerStatusIndication::DifferentVersion => "DifferentVersion",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "Online" => Some(Self::Online),
-            "Offline" => Some(Self::Offline),
-            "DifferentVersion" => Some(Self::DifferentVersion),
             _ => None,
         }
     }
@@ -1546,35 +1466,6 @@ impl AgentSource {
             "Spawned" => Some(Self::Spawned),
             "Reported" => Some(Self::Reported),
             "Registered" => Some(Self::Registered),
-            _ => None,
-        }
-    }
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum WebSharing {
-    On = 0,
-    Off = 1,
-    Disabled = 2,
-}
-impl WebSharing {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            WebSharing::On => "On",
-            WebSharing::Off => "Off",
-            WebSharing::Disabled => "Disabled",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "On" => Some(Self::On),
-            "Off" => Some(Self::Off),
-            "Disabled" => Some(Self::Disabled),
             _ => None,
         }
     }

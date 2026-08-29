@@ -60,7 +60,6 @@ use crate::ui::loading_indication::DOT_PERIOD;
 use crate::ui::notification::{ENTER_DURATION, ENTER_EASING};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::net::IpAddr;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::str;
@@ -74,7 +73,7 @@ use zellij_utils::data::{
     AgentInfo, AgentState, ContextMenuContext, ContextMenuItem, Direction, EventType,
     FloatingPaneCoordinates, HostTerminalThemeMode, KeyWithModifier, LayoutInfo, LayoutWithError,
     NotificationInfo, PaneInfo, RemotePaneHandoff, ResizeStrategy, SessionInfo, Styling, TabInfo,
-    ThemeHue, WarpedPane, WarpedTab, WebSharing, HOCUS_AGENT_PANE_CONTEXT,
+    ThemeHue, WarpedPane, WarpedTab, HOCUS_AGENT_PANE_CONTEXT,
 };
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::command::{RunCommand, TerminalAction};
@@ -89,7 +88,6 @@ use zellij_utils::input::options::{
     Clipboard, HostNotificationProtocol, NestedSessionHandling, NotificationPosition,
     PaneFrameStyle,
 };
-use zellij_utils::ipc::MobileStatePayload;
 use zellij_utils::pane_size::{Size, SizeInPixels};
 use zellij_utils::position::Position;
 use zellij_utils::shared::clean_string_from_control_and_linebreak;
@@ -121,8 +119,6 @@ use zellij_utils::{
     data::{Event, InputMode, ModeInfo, Palette, Style},
     ipc::{ClientAttributes, PixelDimensions},
 };
-
-use crate::mobile_web::MobileWebPrefs;
 
 mod break_panes;
 mod capabilities;
@@ -671,7 +667,7 @@ pub(crate) struct Screen {
     client_kitty_host_state: Rc<RefCell<HashMap<ClientId, HostKittyState>>>,
     terminal_emulator_colors: Rc<RefCell<Palette>>,
     terminal_emulator_color_codes: Rc<RefCell<HashMap<usize, String>>>,
-    connected_clients: Rc<RefCell<HashMap<ClientId, bool>>>, // bool -> is_web_client
+    connected_clients: Rc<RefCell<HashSet<ClientId>>>,
     /// The indices of this [`Screen`]'s active [`Tab`]s.
     active_tab_ids: BTreeMap<ClientId, usize>,
     client_sizes: HashMap<ClientId, Size>,
@@ -802,8 +798,6 @@ pub(crate) struct Screen {
     explicitly_disable_kitty_keyboard_protocol: bool,
     support_kitty_graphics_protocol: bool,
     default_editor: Option<PathBuf>,
-    web_clients_allowed: bool,
-    web_sharing: WebSharing,
     current_pane_group: Rc<RefCell<PaneGroups>>,
     advanced_mouse_actions: bool,
     osc133_command_selection: bool,
@@ -815,10 +809,6 @@ pub(crate) struct Screen {
     mouse_click_through: bool,
     context_menu_on_right_click: bool,
     currently_marking_pane_group: Rc<RefCell<HashMap<ClientId, bool>>>,
-    // the below are the configured values - the ones that will be set if and when the web server
-    // is brought online
-    web_server_ip: IpAddr,
-    web_server_port: u16,
     render_blocker: RenderBlocker,
     watcher_clients: HashMap<ClientId, WatcherState>,
     followed_client_id: Option<ClientId>,
@@ -861,9 +851,7 @@ pub(crate) struct Screen {
     host_theme_dark_styling: Option<Styling>,
     host_theme_light_styling: Option<Styling>,
     nested_session_handling: NestedSessionHandling,
-    last_mobile_state_sent: HashMap<ClientId, MobileStatePayload>,
     pane_output_activity: HashMap<PaneId, Instant>,
-    mobile_web_prefs: HashMap<ClientId, MobileWebPrefs>,
     /// Whether each client's host terminal currently has keyboard focus, as reported through
     /// DECSET 1004. A client that never reported counts as focused.
     client_host_focused: HashMap<ClientId, bool>,
@@ -1193,8 +1181,6 @@ impl Screen {
         stacked_resize: bool,
         stacked_pane_list: bool,
         default_editor: Option<PathBuf>,
-        web_clients_allowed: bool,
-        web_sharing: WebSharing,
         advanced_mouse_actions: bool,
         osc133_command_selection: bool,
         word_separators: String,
@@ -1205,8 +1191,6 @@ impl Screen {
         mouse_click_through: bool,
         context_menu_on_right_click: bool,
         context_menu: ContextMenu,
-        web_server_ip: IpAddr,
-        web_server_port: u16,
         nested_session_handling: NestedSessionHandling,
         notification_position: NotificationPosition,
         notification_timeout_secs: u64,
@@ -1231,7 +1215,7 @@ impl Screen {
             sixel_host_capabilities: Rc::new(RefCell::new(HashMap::new())),
             client_kitty_host_state: Rc::new(RefCell::new(HashMap::new())),
             style: client_attributes.style,
-            connected_clients: Rc::new(RefCell::new(HashMap::new())),
+            connected_clients: Rc::new(RefCell::new(HashSet::new())),
             active_tab_ids: BTreeMap::new(),
             client_sizes: HashMap::new(),
             last_surface_size: client_attributes.size,
@@ -1285,8 +1269,6 @@ impl Screen {
             explicitly_disable_kitty_keyboard_protocol,
             support_kitty_graphics_protocol,
             default_editor,
-            web_clients_allowed,
-            web_sharing,
             current_pane_group: Rc::new(RefCell::new(current_pane_group)),
             currently_marking_pane_group: Rc::new(RefCell::new(HashMap::new())),
             advanced_mouse_actions,
@@ -1298,8 +1280,6 @@ impl Screen {
             focus_follows_mouse,
             mouse_click_through,
             context_menu_on_right_click,
-            web_server_ip,
-            web_server_port,
             render_blocker: RenderBlocker::new(100),
             watcher_clients: HashMap::new(),
             followed_client_id: None,
@@ -1335,9 +1315,7 @@ impl Screen {
             host_theme_dark_styling: None,
             host_theme_light_styling: None,
             nested_session_handling,
-            last_mobile_state_sent: HashMap::new(),
             pane_output_activity: HashMap::new(),
-            mobile_web_prefs: HashMap::new(),
             client_host_focused: HashMap::new(),
             client_notification_protocols: HashMap::new(),
             host_notification_protocol: HostNotificationProtocol::default(),
@@ -1345,14 +1323,6 @@ impl Screen {
             #[cfg(test)]
             pinned_now: None,
         }
-    }
-
-    fn client_is_web(&self, client_id: ClientId) -> bool {
-        self.connected_clients
-            .borrow()
-            .get(&client_id)
-            .copied()
-            .unwrap_or(false)
     }
 
     fn write_to_pane_id(
@@ -1699,8 +1669,6 @@ impl Screen {
             self.osc8_hyperlinks,
             self.explicitly_disable_kitty_keyboard_protocol,
             self.default_editor.clone(),
-            self.web_clients_allowed,
-            self.web_sharing,
             self.current_pane_group.clone(),
             self.currently_marking_pane_group.clone(),
             self.advanced_mouse_actions,
@@ -1709,8 +1677,6 @@ impl Screen {
             self.focus_follows_mouse,
             self.mouse_click_through,
             self.context_menu_on_right_click,
-            self.web_server_ip,
-            self.web_server_port,
         );
         for (client_id, mode_info) in &self.mode_info {
             tab.change_mode_info(mode_info.clone(), *client_id);
@@ -1737,7 +1703,7 @@ impl Screen {
         new_plugin_ids: HashMap<RunPluginOrAlias, Vec<u32>>,
         tab_id: usize,
         should_change_client_focus: bool,
-        client_id_and_is_web_client: (ClientId, bool),
+        client_id: ClientId,
         blocking_terminal: Option<(u32, NotificationEnd)>,
     ) -> Result<()> {
         if !self.tabs.contains_key(&tab_id) {
@@ -1746,20 +1712,9 @@ impl Screen {
             log::error!("Tab with index {tab_id} not found. Cannot apply layout!");
             return Ok(());
         }
-        let (client_id, mut is_web_client) = client_id_and_is_web_client;
         let client_id = if self.get_active_tab(client_id).is_ok() {
-            if let Some(connected_client_is_web_client) =
-                self.connected_clients.borrow().get(&client_id)
-            {
-                is_web_client = *connected_client_is_web_client;
-            }
             client_id
         } else if let Some(first_client_id) = self.get_first_client_id() {
-            if let Some(first_client_is_web_client) =
-                self.connected_clients.borrow().get(&first_client_id)
-            {
-                is_web_client = *first_client_is_web_client;
-            }
             first_client_id
         } else {
             client_id
@@ -1768,11 +1723,7 @@ impl Screen {
 
         let passthrough_affected_client_ids: Vec<ClientId> = if should_change_client_focus {
             if self.session_is_mirrored {
-                self.connected_clients
-                    .borrow()
-                    .iter()
-                    .map(|(c, _i)| *c)
-                    .collect()
+                self.connected_clients.borrow().iter().copied().collect()
             } else {
                 vec![client_id]
             }
@@ -1802,12 +1753,8 @@ impl Screen {
                 } else {
                     None
                 };
-                let all_connected_clients: Vec<ClientId> = self
-                    .connected_clients
-                    .borrow()
-                    .iter()
-                    .map(|(c, _i)| *c)
-                    .collect();
+                let all_connected_clients: Vec<ClientId> =
+                    self.connected_clients.borrow().iter().copied().collect();
                 for client_id in all_connected_clients {
                     self.update_client_tab_focus(client_id, tab_id);
                 }
@@ -1831,9 +1778,7 @@ impl Screen {
         };
 
         if !self.active_tab_ids.contains_key(&client_id) {
-            self.connected_clients
-                .borrow_mut()
-                .insert(client_id, is_web_client);
+            self.connected_clients.borrow_mut().insert(client_id);
         }
 
         // apply the layout to the new tab
@@ -1868,8 +1813,7 @@ impl Screen {
 
         if !self.active_tab_ids.contains_key(&client_id) {
             // this means this is a new client and we need to add it to our state properly
-            self.add_client(client_id, is_web_client)
-                .with_context(err_context)?;
+            self.add_client(client_id).with_context(err_context)?;
         }
 
         self.recompute_tab_size(tab_id).with_context(err_context)?;
@@ -1886,7 +1830,7 @@ impl Screen {
             .with_context(err_context)
     }
 
-    pub fn add_client(&mut self, client_id: ClientId, is_web_client: bool) -> Result<()> {
+    pub fn add_client(&mut self, client_id: ClientId) -> Result<()> {
         let attach_started_at = std::time::Instant::now();
         let err_context = |tab_index| {
             format!("failed to attach client {client_id} to tab with index {tab_index}")
@@ -1903,19 +1847,7 @@ impl Screen {
             tab_history = first_tab_history.clone();
         }
 
-        let is_watcher = self.watcher_clients.contains_key(&client_id);
-        let attach_to_first_tab_on_tiled_surface = is_web_client && !is_watcher;
-        let first_tab_index = self
-            .tabs
-            .iter()
-            .min_by_key(|(_tab_index, tab)| tab.position)
-            .map(|(tab_index, _tab)| *tab_index);
-
-        let tab_index = if let Some(first_tab_index) =
-            first_tab_index.filter(|_| attach_to_first_tab_on_tiled_surface)
-        {
-            first_tab_index
-        } else if let Some((_first_client, first_active_tab_index)) =
+        let tab_index = if let Some((_first_client, first_active_tab_index)) =
             self.active_tab_ids.iter().next()
         {
             *first_active_tab_index
@@ -1934,19 +1866,7 @@ impl Screen {
         self.unowned_strip_fill.remove(&client_id);
         self.last_notification_fill.remove(&client_id);
         self.client_kitty_host_state.borrow_mut().remove(&client_id);
-        self.connected_clients
-            .borrow_mut()
-            .insert(client_id, is_web_client);
-        if is_web_client {
-            self.kitty_host_capabilities
-                .borrow_mut()
-                .insert(client_id, false);
-            self.push_kitty_host_support_to_tabs();
-            self.sixel_host_capabilities
-                .borrow_mut()
-                .insert(client_id, false);
-            self.push_sixel_host_support_to_tabs();
-        }
+        self.connected_clients.borrow_mut().insert(client_id);
         self.tab_history.insert(client_id, tab_history);
         let tab = self
             .tabs
@@ -1973,9 +1893,6 @@ impl Screen {
                 "attach trace: Screen::add_client client_id={client_id} tab={tab_index} visible(true) complete after {:?}",
                 attach_started_at.elapsed()
             );
-        }
-        if attach_to_first_tab_on_tiled_surface && tab.are_floating_panes_visible() {
-            tab.hide_floating_panes();
         }
         log::info!(
             "attach trace: Screen::add_client client_id={client_id} tab={tab_index} recompute_tab_size begin"
@@ -2029,7 +1946,7 @@ impl Screen {
             self.followed_client_id = self
                 .connected_clients
                 .borrow()
-                .keys()
+                .iter()
                 .copied()
                 .find(|id| !self.watcher_clients.contains_key(id) && id != &client_id);
 
@@ -2037,12 +1954,6 @@ impl Screen {
             // for terminal rendering (plugins will use their last state)
             if self.followed_client_id.is_none() && !self.watcher_clients.is_empty() {
                 self.followed_client_id = Some(client_id); // Keep the disconnected client's ID
-            }
-        }
-
-        if let Some(prefs) = self.mobile_web_prefs.remove(&client_id) {
-            if let Some(pane_id) = prefs.fullscreened_pane {
-                self.unset_pane_no_ui_fullscreen(pane_id);
             }
         }
 
@@ -2086,8 +1997,6 @@ impl Screen {
         self.client_host_focused.remove(&client_id);
         self.client_notification_protocols.remove(&client_id);
         self.client_host_terminal_env.remove(&client_id);
-        self.revert_fit_disabled_without_reference_client()
-            .with_context(err_context)?;
         if let Some(prev_tab_id) = previously_active_tab_id {
             self.recompute_tab_size(prev_tab_id)
                 .with_context(err_context)?;
@@ -3723,7 +3632,7 @@ impl Screen {
                 .connected_clients
                 .borrow()
                 .iter()
-                .map(|(c, _i)| *c)
+                .copied()
                 .filter(|c| self.active_tab_ids.get(&c) == Some(&tab_index))
                 .collect();
 
@@ -3929,7 +3838,7 @@ impl Screen {
         false
     }
     fn connected_clients_contains(&self, client_id: &ClientId) -> bool {
-        self.connected_clients.borrow().contains_key(client_id)
+        self.connected_clients.borrow().contains(client_id)
     }
     fn get_client_pane_group(&self, client_id: &ClientId) -> HashSet<PaneId> {
         self.current_pane_group
@@ -4076,7 +3985,7 @@ impl Screen {
         notifications: Vec<PendingNotification>,
         pane_id: u32,
     ) {
-        let all_clients: Vec<ClientId> = self.connected_clients.borrow().keys().copied().collect();
+        let all_clients: Vec<ClientId> = self.connected_clients.borrow().iter().copied().collect();
         if all_clients.is_empty() || notifications.is_empty() {
             return;
         }
@@ -4262,7 +4171,7 @@ impl Screen {
     }
     fn update_active_pane_ids(&mut self) {
         let connected_clients: Vec<ClientId> =
-            self.connected_clients.borrow().keys().copied().collect();
+            self.connected_clients.borrow().iter().copied().collect();
         for client_id in connected_clients {
             if let Some(active_pane_id) = self.get_active_pane_id(&client_id) {
                 let active_pane_id: PaneId = active_pane_id;

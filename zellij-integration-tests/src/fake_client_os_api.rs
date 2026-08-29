@@ -29,15 +29,12 @@ fn server_message_name(msg: &ServerToClientMsg) -> String {
         ServerToClientMsg::UnblockCliPipeInput { .. } => "UnblockCliPipeInput",
         ServerToClientMsg::CliPipeOutput { .. } => "CliPipeOutput",
         ServerToClientMsg::QueryTerminalSize => "QueryTerminalSize",
-        ServerToClientMsg::SetSoftKeyboard { .. } => "SetSoftKeyboard",
-        ServerToClientMsg::StartWebServer => "StartWebServer",
         ServerToClientMsg::RenamedSession { .. } => "RenamedSession",
         ServerToClientMsg::ConfigFileUpdated => "ConfigFileUpdated",
         ServerToClientMsg::PaneRenderUpdate { .. } => "PaneRenderUpdate",
         ServerToClientMsg::SubscribedPaneClosed { .. } => "SubscribedPaneClosed",
         ServerToClientMsg::EventUpdate { .. } => "EventUpdate",
         ServerToClientMsg::ForwardQueryToHost { .. } => "ForwardQueryToHost",
-        ServerToClientMsg::MobileState { .. } => "MobileState",
         ServerToClientMsg::EmitNestedSessionFrame { .. } => "EmitNestedSessionFrame",
     }
     .to_string()

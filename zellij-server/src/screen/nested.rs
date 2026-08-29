@@ -142,7 +142,7 @@ impl Screen {
                 .retain(|(_, choice_pane_id), _| *choice_pane_id != pane_id);
         }
         let connected_client_ids: Vec<ClientId> =
-            self.connected_clients.borrow().keys().copied().collect();
+            self.connected_clients.borrow().iter().copied().collect();
         let guest_modal_shortcuts = self.guest_modal_shortcuts();
         let should_ask = self.nested_session_handling == NestedSessionHandling::Ask;
         match self.tab_containing_pane_mut(pane_id) {
@@ -224,7 +224,7 @@ impl Screen {
     fn revive_nested_guest(&mut self, pane_id: PaneId) {
         self.broadcast_ancestry_update_to_guests();
         self.sync_nested_guest_fullscreen_state();
-        let client_ids: Vec<ClientId> = self.connected_clients.borrow().keys().copied().collect();
+        let client_ids: Vec<ClientId> = self.connected_clients.borrow().iter().copied().collect();
         for client_id in client_ids {
             self.sync_guest_choice_indicator(client_id, pane_id);
             if self.get_active_pane_id(&client_id) == Some(pane_id) {
@@ -680,7 +680,7 @@ impl Screen {
         self.default_mode_info.session_ascended = session_ascended;
         self.default_mode_info.nested_descend_keys = descend_keys.clone();
         let mut client_ids: Vec<ClientId> = self.mode_info.keys().copied().collect();
-        for connected_client_id in self.connected_clients.borrow().keys() {
+        for connected_client_id in self.connected_clients.borrow().iter() {
             if !client_ids.contains(connected_client_id) {
                 client_ids.push(*connected_client_id);
             }

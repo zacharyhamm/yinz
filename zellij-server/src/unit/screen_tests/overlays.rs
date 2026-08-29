@@ -169,7 +169,7 @@ fn an_overlay_that_awaits_placement_is_not_painted_until_it_is_placed() {
         screen.terminal_emulator_color_codes.clone(),
         Rc::new(RefCell::new(LinkHandler::new())),
         screen.character_cell_size.clone(),
-        screen.connected_clients.borrow().keys().copied().collect(),
+        screen.connected_clients.borrow().iter().copied().collect(),
         screen.style,
         Some(Run::Plugin(run_plugin)),
         screen.debug,
@@ -237,7 +237,7 @@ fn open_overlay_plugin(
         screen.terminal_emulator_color_codes.clone(),
         Rc::new(RefCell::new(LinkHandler::new())),
         screen.character_cell_size.clone(),
-        screen.connected_clients.borrow().keys().copied().collect(),
+        screen.connected_clients.borrow().iter().copied().collect(),
         screen.style,
         Some(Run::Plugin(run_plugin.clone())),
         screen.debug,
@@ -490,7 +490,7 @@ fn add_modal_plugin_overlay(screen: &mut Screen, plugin_id: u32) -> PaneId {
         screen.terminal_emulator_color_codes.clone(),
         Rc::new(RefCell::new(LinkHandler::new())),
         screen.character_cell_size.clone(),
-        screen.connected_clients.borrow().keys().copied().collect(),
+        screen.connected_clients.borrow().iter().copied().collect(),
         screen.style,
         Some(Run::Plugin(run_plugin)),
         screen.debug,
@@ -990,7 +990,7 @@ fn a_modal_masks_each_client_s_tiled_focus_until_it_closes() {
     let size = Size { cols: 80, rows: 20 };
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, 0);
-    screen.add_client(2, false).expect("TEST");
+    screen.add_client(2).expect("TEST");
 
     screen
         .get_active_tab_mut(1)
@@ -1445,7 +1445,7 @@ fn a_client_joining_while_a_modal_is_open_lands_on_the_modal() {
     new_tab(&mut screen, 1, 0);
 
     let modal_id = add_modal_plugin_overlay(&mut screen, 7);
-    screen.add_client(2, false).expect("TEST");
+    screen.add_client(2).expect("TEST");
 
     let tab = screen.get_active_tab_mut(2).unwrap();
     assert_eq!(
@@ -1469,7 +1469,7 @@ fn a_client_switching_into_a_tab_with_a_modal_lands_on_it() {
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, 0);
     new_tab(&mut screen, 2, 1);
-    screen.add_client(2, false).expect("TEST");
+    screen.add_client(2).expect("TEST");
     screen.switch_active_tab(1, None, true, 2).expect("TEST");
     screen.switch_active_tab(0, None, true, 1).expect("TEST");
 
@@ -1513,7 +1513,7 @@ fn a_joining_client_does_not_pick_up_a_dismissible_overlay_that_gave_up_focus() 
         "the popup gave the keyboard up to the pane the user asked for"
     );
 
-    screen.add_client(2, false).expect("TEST");
+    screen.add_client(2).expect("TEST");
 
     let tab = screen.get_active_tab_mut(2).unwrap();
     assert_eq!(
@@ -2999,7 +2999,7 @@ fn focusing_a_pane_by_id_under_a_dismissible_overlay_takes_the_keyboard_from_it(
     let size = Size { cols: 80, rows: 20 };
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, 0);
-    screen.add_client(2, false).expect("TEST");
+    screen.add_client(2).expect("TEST");
     screen
         .get_active_tab_mut(1)
         .expect("TEST")
@@ -3732,7 +3732,7 @@ fn an_overlay_in_a_background_tab_is_still_a_broadcast_target() {
         screen.terminal_emulator_color_codes.clone(),
         Rc::new(RefCell::new(LinkHandler::new())),
         screen.character_cell_size.clone(),
-        screen.connected_clients.borrow().keys().copied().collect(),
+        screen.connected_clients.borrow().iter().copied().collect(),
         screen.style,
         None,
         screen.debug,

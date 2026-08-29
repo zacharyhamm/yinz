@@ -1,8 +1,0 @@
----
-source: zellij-client/src/web_protocol/./unit/web_protocol_tests.rs
-expression: "serde_json::to_string_pretty(&request).unwrap()"
----
-{
-  "auth_token": "token",
-  "remember_me": false
-}

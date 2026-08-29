@@ -130,8 +130,6 @@ fn serialize_and_deserialize_session_info_with_data() {
             LayoutInfo::File("layout3".to_owned(), LayoutMetadata::default()),
         ],
         plugins: Default::default(),
-        web_client_count: 2,
-        web_clients_allowed: true,
         tab_history: Default::default(),
         pane_history: Default::default(),
         creation_time: Duration::from_secs(300),

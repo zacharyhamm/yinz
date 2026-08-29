@@ -52,9 +52,7 @@ gates=()
 [[ $skip_build -eq 0 ]] && gates+=("build	cargo x build")
 gates+=(
   "test	cargo x test"
-  "test-no-web	cargo x test --no-web"
   "integration-test	cargo x integration-test"
-  "assets-check	cargo x assets --check"
   "format-check	cargo x format --check"
   "xtask	cargo test -p xtask"
 )
@@ -137,7 +135,7 @@ fi
 
 # Two suites are known to flake under parallel load and pass on a rerun. Worth
 # checking before chasing either as a real break.
-printf '\nKnown flaky: zellij-client web-client websocket tests, zellij-server scroll snapshots.\n' \
+printf '\nKnown flaky: zellij-server scroll snapshots.\n' \
   | tee -a "$summary"
 printf 'Logs: %s\n' "$log_dir" | tee -a "$summary"
 

@@ -1,6 +1,5 @@
 ---
 source: zellij-integration-tests/tests/about_plugin.rs
-assertion_line: 79
 expression: normalized(&grid)
 ---
  Zellij (test)  Tab #1  + 
@@ -14,13 +13,13 @@ $
                │       1. Nested Sessions                                                               │
                │       2. Kitty Graphics Protocol                                                       │
                │       3. Scroll By Command                                                             │
-               │       4. Mobile Web UI                                                                 │
-               │       5. New UI                                                                        │
-               │       6. Focus Last Pane and Fullscreen Floating Panes                                 │
+               │       4. New UI                                                                        │
+               │       5. Focus Last Pane and Fullscreen Floating Panes                                 │
                │                                                                                        │
                │       Full Changelog: https://github.com/zellij-org/zellij/releases/tag/v0.45.0        │
                │                                                                                        │
                │       Please support the Zellij developer <3: https://github.com/sponsors/imsnif       │
+               │                                                                                        │
                │                                                                                        │
                │                                                                                        │
                │Help: <↓↑> - Navigate, <ESC> - Dismiss                                                  │
