@@ -25,7 +25,7 @@ pub fn bench(sh: &Shell, flags: flags::Bench) -> anyhow::Result<()> {
     crate::status(msg);
     println!("{}", msg);
 
-    // No `ensure_plugin_assets` here: the benchmarks drive the server's render pipeline directly
+    // No plugin build here: the benchmarks drive the server's render pipeline directly
     // and never load a wasm plugin. The hocus one measures its transcript wrapping natively for
     // the same reason - it is a relative figure for comparing revisions, not a real frame time.
     //

@@ -63,6 +63,10 @@ You can also install (compile) with `cargo`:
 cargo install --locked zellij
 ```
 
+In this fork, build from a checkout with `cargo x install /path/to/zellij` instead: the
+builtin plugins are not bundled with the crate, and `cargo x install` puts them where the
+binary looks (see CONTRIBUTING.md).
+
 #### Try Zellij without installing
 
 bash/zsh:

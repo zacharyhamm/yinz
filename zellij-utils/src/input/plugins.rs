@@ -8,8 +8,10 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use super::layout::{PluginUserConfiguration, RunPlugin, RunPluginLocation};
+#[cfg(all(not(target_family = "wasm"), debug_assertions))]
+use crate::consts::BUILTIN_PLUGIN_DEBUG_DIR;
 #[cfg(not(target_family = "wasm"))]
-use crate::consts::BUILTIN_PLUGIN_DEV_DIRS;
+use crate::consts::BUILTIN_PLUGIN_RELEASE_DIR;
 use crate::consts::{builtin_lua_plugin, BUILTIN_PLUGIN_NAMES};
 pub use crate::data::PluginTag;
 use crate::errors::prelude::*;
@@ -139,92 +141,137 @@ impl PluginConfig {
             }),
         }
     }
-    /// Resolve wasm plugin bytes for the plugin path and given plugin directory.
+    /// A representative builtin, for callers that want to show where builtins are looked for
+    /// (`zellij setup --check`) without caring which one.
+    pub fn builtin_lookup_example() -> PluginConfig {
+        PluginConfig {
+            path: PathBuf::from("tab-bar"),
+            _allow_exec_host_cmd: false,
+            location: RunPluginLocation::Zellij(PluginTag::new("tab-bar")),
+            initial_userspace_configuration: Default::default(),
+            initial_cwd: None,
+            relative_path: None,
+        }
+    }
+
+    /// The path a builtin would be read from under the configured `builtin_plugins_dir`, if
+    /// this is a builtin and the option is set.
+    fn configured_builtin_path(&self, builtin_plugins_dir: Option<&Path>) -> Option<PathBuf> {
+        if !self.is_builtin() {
+            return None;
+        }
+        builtin_plugins_dir.map(|dir| dir.join(&self.path).with_extension("wasm"))
+    }
+
+    /// Every path `resolve_wasm_bytes` would try, in order, given the session's data dir. The
+    /// first entry is the `builtin_plugins_dir` candidate when there is one; the rest is the
+    /// chain documented on `resolve_wasm_bytes`. Pure, so the order can be tested and so that
+    /// `zellij setup --check` prints the very same list rather than a hand-maintained copy.
+    pub fn wasm_lookup_paths(
+        &self,
+        data_dir: &Path,
+        builtin_plugins_dir: Option<&Path>,
+    ) -> Vec<PathBuf> {
+        let plugin_dir = data_dir.join("plugins");
+        // The folder lookups join `relative_path` when there is one, for the reason spelled out
+        // on `resolve_lua_source`: `path` has had the cwd joined onto it, and joining an
+        // absolute path onto a folder is a no-op, so `file:tab-bar.wasm` would otherwise never
+        // be looked for in a plugin folder at all.
+        let lookup_name = self.relative_path.as_ref().unwrap_or(&self.path);
+        let mut paths: Vec<PathBuf> = self
+            .configured_builtin_path(builtin_plugins_dir)
+            .into_iter()
+            .collect();
+        paths.push(self.path.clone());
+        paths.push(self.path.with_extension("wasm"));
+        paths.push(plugin_dir.join(lookup_name).with_extension("wasm"));
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let builtin_name = self.path.with_extension("wasm");
+            if self.is_builtin() {
+                // Fresh debug plugins first, so a checkout on the same VERSION as an install
+                // sees what it just built.
+                #[cfg(debug_assertions)]
+                paths.push(Path::new(BUILTIN_PLUGIN_DEBUG_DIR).join(&builtin_name));
+                // What `cargo x install` wrote - for the user, then system-wide. These two sit
+                // next to each other so that `dedup` below collapses them when the default data
+                // dir fell back to the system one.
+                paths.push(crate::home::builtin_plugin_dir(data_dir).join(&builtin_name));
+                paths.push(crate::home::system_builtin_plugin_dir().join(&builtin_name));
+            }
+            paths.push(
+                crate::home::system_data_dir()
+                    .join("plugins")
+                    .join(lookup_name)
+                    .with_extension("wasm"),
+            );
+            if self.is_builtin() {
+                paths.push(Path::new(BUILTIN_PLUGIN_RELEASE_DIR).join(&builtin_name));
+            }
+        }
+        // Throw out dupes, because it's confusing to read that zellij checked the same plugin
+        // location multiple times. Do NOT sort the vector here, because it will break the lookup!
+        paths.dedup();
+        paths
+    }
+
+    /// Resolve wasm plugin bytes for the plugin path, given the session's data directory.
     ///
     /// Nothing is embedded in the binary - plugin wasm always comes from disk.
     ///
-    /// If `builtin_plugins_dir` is set, builtin plugins (starting with 'zellij:' in the layout
-    /// file) are loaded from that directory when present. Otherwise we attempt to resolve the
-    /// plugin path as an absolute path, then with a ".wasm" extension appended, then the plugin
-    /// directory joined with the path plus ".wasm", then the system data directory joined with
-    /// "plugins" and the same file name. Builtin plugins finally fall back to
-    /// `BUILTIN_PLUGIN_DEV_DIRS`, the in-checkout locations baked in at compile time, so a dev
-    /// build or `cargo test` works with no configuration.
+    /// If `builtin_plugins_dir` is set, builtin plugins (`zellij:` URLs) are loaded from that
+    /// directory when present. Otherwise the plugin path is tried as given, then with a
+    /// `.wasm` extension, then in the data dir's `plugins` folder. Builtins then go through
+    /// the checkout's debug plugins (debug binaries only), the builtins that `cargo x install`
+    /// put under the data dir and under the system data dir for this `VERSION`, the system
+    /// `plugins` folder, and finally the checkout's release plugins - the last two baked in
+    /// at compile time so a dev build or `cargo test` works with no configuration, and
+    /// harmlessly absent on an installed system.
     ///
-    /// So if our path is "tab-bar" and the given plugin dir is
-    /// "/home/bob/.local/share/zellij/plugins" the lookup chain will be this:
+    /// So if our path is "tab-bar" and the data dir is "/home/bob/.local/share/zellij", the
+    /// lookup chain of a debug binary is:
     ///
     /// ```bash
     ///   tab-bar
     ///   tab-bar.wasm
     ///   /home/bob/.local/share/zellij/plugins/tab-bar.wasm
+    ///   <checkout>/target/wasm32-wasip1/debug/tab-bar.wasm         (debug builds only)
+    ///   /home/bob/.local/share/zellij/builtins/<VERSION>/tab-bar.wasm
+    ///   /usr/share/zellij/builtins/<VERSION>/tab-bar.wasm
     ///   /usr/share/zellij/plugins/tab-bar.wasm
-    ///   <checkout>/target/wasm32-wasip1/debug/tab-bar.wasm  (debug builds only)
-    ///   <checkout>/zellij-utils/assets/plugins/tab-bar.wasm
+    ///   <checkout>/target/wasm32-wasip1/release/tab-bar.wasm
     /// ```
     ///
     pub fn resolve_wasm_bytes(
         &self,
-        plugin_dir: &Path,
+        data_dir: &Path,
         builtin_plugins_dir: Option<&Path>,
     ) -> Result<Vec<u8>> {
         let err_context =
             |err: std::io::Error, path: &PathBuf| format!("{}: '{}'", err, path.display());
 
-        if self.is_builtin() {
-            if let Some(builtin_plugins_dir) = builtin_plugins_dir {
-                let builtin_plugin_path =
-                    builtin_plugins_dir.join(&self.path).with_extension("wasm");
-                match fs::read(&builtin_plugin_path) {
-                    Ok(bytes) => {
-                        log::debug!(
-                            "Loaded builtin plugin '{}' from disk",
+        // The configured folder is the one place where anything other than "not there" is an
+        // error worth stopping for: the user pointed at it on purpose.
+        if let Some(builtin_plugin_path) = self.configured_builtin_path(builtin_plugins_dir) {
+            match fs::read(&builtin_plugin_path) {
+                Ok(bytes) => {
+                    log::info!(
+                        "Loaded builtin plugin '{}' from disk",
+                        builtin_plugin_path.display()
+                    );
+                    return Ok(bytes);
+                },
+                Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(anyhow!("{}", err)).with_context(|| {
+                        format!(
+                            "failed to load builtin plugin from '{}'",
                             builtin_plugin_path.display()
-                        );
-                        return Ok(bytes);
-                    },
-                    Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
-                        return Err(anyhow!("{}", err)).with_context(|| {
-                            format!(
-                                "failed to load builtin plugin from '{}'",
-                                builtin_plugin_path.display()
-                            )
-                        });
-                    },
-                    Err(_) => {},
-                }
+                        )
+                    });
+                },
+                Err(_) => {},
             }
         }
-
-        // Locations we check for valid plugins. The folder lookups join `relative_path` when
-        // there is one, for the reason spelled out on `resolve_lua_source`: `path` has had the
-        // cwd joined onto it, and joining an absolute path onto a folder is a no-op, so
-        // `file:tab-bar.wasm` would otherwise never be looked for in a plugin folder at all.
-        let lookup_name = self.relative_path.as_ref().unwrap_or(&self.path);
-        #[allow(unused_mut)]
-        let mut paths: Vec<PathBuf> = vec![
-            self.path.clone(),
-            self.path.with_extension("wasm"),
-            plugin_dir.join(lookup_name).with_extension("wasm"),
-        ];
-        #[cfg(not(target_family = "wasm"))]
-        paths.push(
-            crate::home::system_data_dir()
-                .join("plugins")
-                .join(lookup_name)
-                .with_extension("wasm"),
-        );
-        #[cfg(not(target_family = "wasm"))]
-        if self.is_builtin() {
-            paths.extend(
-                BUILTIN_PLUGIN_DEV_DIRS
-                    .iter()
-                    .map(|dir| Path::new(dir).join(&self.path).with_extension("wasm")),
-            );
-        }
-        // Throw out dupes, because it's confusing to read that zellij checked the same plugin
-        // location multiple times. Do NOT sort the vector here, because it will break the lookup!
-        paths.dedup();
 
         // This looks weird and usually we would handle errors like this differently, but in this
         // case it's helpful for users and developers alike. This way we preserve all the lookup
@@ -232,11 +279,14 @@ impl PluginConfig {
         // and since the user will only get to see it when loading a plugin failed, we may as well
         // spell it out right here.
         let mut last_err: Result<Vec<u8>> = Err(anyhow!("failed to load plugin from disk"));
-        for path in paths {
+        // `None` here: the configured folder was already tried above, with stricter errors.
+        for path in self.wasm_lookup_paths(data_dir, None) {
             // Try to read from disk
             match fs::read(&path) {
                 Ok(val) => {
-                    log::debug!("Loaded plugin '{}' from disk", path.display());
+                    // Info, not debug: which of the lookup folders won is the one thing worth
+                    // knowing when an install and a checkout both hold a copy.
+                    log::info!("Loaded plugin '{}' from disk", path.display());
                     return Ok(val);
                 },
                 Err(err) => {
@@ -250,11 +300,12 @@ impl PluginConfig {
         if self.is_builtin() {
             // Layout requested a builtin plugin that wasn't found
             let plugin_path = self.path.with_extension("wasm");
+            let plugin_dir = data_dir.join("plugins");
 
             if self.is_builtin_name() {
                 return Err(ZellijError::BuiltinPluginMissing {
                     plugin_path,
-                    plugin_dir: plugin_dir.to_owned(),
+                    plugin_dir,
                     source: last_err.unwrap_err(),
                 })
                 .context("failed to load a plugin");
@@ -383,6 +434,7 @@ pub enum PluginsConfigError {
 mod tests {
     use super::{PluginConfig, PluginTag, RunPlugin, RunPluginLocation};
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     fn builtin_plugin(name: &str) -> PluginConfig {
@@ -593,7 +645,7 @@ mod tests {
 
     #[test]
     fn configured_builtin_plugin_directory_takes_precedence() {
-        let plugin_dir = tempdir().unwrap();
+        let data_dir = tempdir().unwrap();
         let builtin_plugins_dir = tempdir().unwrap();
         let plugin_path = builtin_plugins_dir.path().join("tab-bar.wasm");
         fs::write(&plugin_path, b"override").unwrap();
@@ -601,48 +653,154 @@ mod tests {
         let plugin = builtin_plugin("tab-bar");
         assert_eq!(
             plugin
-                .resolve_wasm_bytes(plugin_dir.path(), Some(builtin_plugins_dir.path()))
+                .resolve_wasm_bytes(data_dir.path(), Some(builtin_plugins_dir.path()))
                 .unwrap(),
             b"override"
         );
     }
 
     #[test]
-    fn missing_configured_builtin_plugin_falls_back_to_repo_assets_dir() {
-        let plugin_dir = tempdir().unwrap();
+    fn missing_configured_builtin_plugin_falls_back_to_the_checkout() {
+        let data_dir = tempdir().unwrap();
         let builtin_plugins_dir = tempdir().unwrap();
         let plugin = builtin_plugin("tab-bar");
 
         assert!(!plugin
-            .resolve_wasm_bytes(plugin_dir.path(), Some(builtin_plugins_dir.path()))
+            .resolve_wasm_bytes(data_dir.path(), Some(builtin_plugins_dir.path()))
             .unwrap()
             .is_empty());
     }
 
-    // The plugin dir comes from `--data-dir`, which is how the e2e suite supplies builtin
+    // `<data dir>/plugins` comes from `--data-dir`, which is how the e2e suite supplies builtin
     // plugins. Unique content proves it wins over the in-checkout dev dirs rather than just
     // happening to resolve.
     #[test]
-    fn plugin_dir_takes_precedence_over_the_checkout() {
-        let plugin_dir = tempdir().unwrap();
-        fs::write(plugin_dir.path().join("tab-bar.wasm"), b"from-data-dir").unwrap();
+    fn the_data_dir_plugins_folder_takes_precedence_over_the_checkout() {
+        let data_dir = tempdir().unwrap();
+        let plugin_dir = data_dir.path().join("plugins");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        fs::write(plugin_dir.join("tab-bar.wasm"), b"from-data-dir").unwrap();
 
         let plugin = builtin_plugin("tab-bar");
         assert_eq!(
-            plugin.resolve_wasm_bytes(plugin_dir.path(), None).unwrap(),
+            plugin.resolve_wasm_bytes(data_dir.path(), None).unwrap(),
             b"from-data-dir"
         );
     }
 
+    /// What `cargo x install` writes. Found under the data dir handed in, so a `--data-dir`
+    /// carries its own builtins and a test never sees the developer's real install.
+    #[test]
+    fn an_installed_builtin_is_found_under_the_data_dir() {
+        let data_dir = tempdir().unwrap();
+        let installed = crate::home::builtin_plugin_dir(data_dir.path());
+        fs::create_dir_all(&installed).unwrap();
+        fs::write(installed.join("tab-bar.wasm"), b"installed").unwrap();
+
+        // A release build has no debug dir to shadow the install; a debug build (this test)
+        // does, which is the point of the debug dir - so tell them apart by whether the
+        // checkout's debug wasm exists.
+        #[cfg(debug_assertions)]
+        let debug_copy = std::path::Path::new(super::BUILTIN_PLUGIN_DEBUG_DIR).join("tab-bar.wasm");
+        #[cfg(not(debug_assertions))]
+        let debug_copy = PathBuf::from("/nonexistent/tab-bar.wasm");
+        let bytes = builtin_plugin("tab-bar")
+            .resolve_wasm_bytes(data_dir.path(), None)
+            .unwrap();
+        if debug_copy.is_file() {
+            assert_eq!(bytes, fs::read(debug_copy).unwrap());
+        } else {
+            assert_eq!(bytes, b"installed");
+        }
+    }
+
+    #[test]
+    fn the_data_dir_plugins_folder_beats_the_installed_builtin() {
+        let data_dir = tempdir().unwrap();
+        let plugin_dir = data_dir.path().join("plugins");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        fs::write(plugin_dir.join("tab-bar.wasm"), b"from-data-dir").unwrap();
+        let installed = crate::home::builtin_plugin_dir(data_dir.path());
+        fs::create_dir_all(&installed).unwrap();
+        fs::write(installed.join("tab-bar.wasm"), b"installed").unwrap();
+
+        assert_eq!(
+            builtin_plugin("tab-bar")
+                .resolve_wasm_bytes(data_dir.path(), None)
+                .unwrap(),
+            b"from-data-dir"
+        );
+    }
+
+    /// The whole reason the install dir is versioned: another version's wasm must never be
+    /// picked up. The fall-through lands wherever the checkout has a plugin, which may well
+    /// succeed - so the assertion is "not those bytes", not "an error".
+    #[test]
+    fn an_installed_builtin_of_another_version_is_ignored() {
+        let data_dir = tempdir().unwrap();
+        let other_version = data_dir.path().join("builtins").join("0.0.0");
+        fs::create_dir_all(&other_version).unwrap();
+        fs::write(other_version.join("tab-bar.wasm"), b"stale").unwrap();
+
+        let bytes = builtin_plugin("tab-bar")
+            .resolve_wasm_bytes(data_dir.path(), None)
+            .ok();
+        assert_ne!(bytes.as_deref(), Some(&b"stale"[..]));
+    }
+
+    /// The documented order, which `zellij setup --check` prints verbatim.
+    #[test]
+    fn the_lookup_order_is_stable() {
+        let data_dir = std::path::Path::new("/data");
+        let configured = std::path::Path::new("/configured");
+        let paths = builtin_plugin("tab-bar").wasm_lookup_paths(data_dir, Some(configured));
+
+        let mut expected = vec![
+            PathBuf::from("/configured/tab-bar.wasm"),
+            PathBuf::from("tab-bar"),
+            PathBuf::from("tab-bar.wasm"),
+            PathBuf::from("/data/plugins/tab-bar.wasm"),
+        ];
+        #[cfg(debug_assertions)]
+        expected.push(std::path::Path::new(super::BUILTIN_PLUGIN_DEBUG_DIR).join("tab-bar.wasm"));
+        expected.push(crate::home::builtin_plugin_dir(data_dir).join("tab-bar.wasm"));
+        expected.push(crate::home::system_builtin_plugin_dir().join("tab-bar.wasm"));
+        expected.push(
+            crate::home::system_data_dir()
+                .join("plugins")
+                .join("tab-bar.wasm"),
+        );
+        expected.push(std::path::Path::new(super::BUILTIN_PLUGIN_RELEASE_DIR).join("tab-bar.wasm"));
+        assert_eq!(paths, expected);
+    }
+
+    /// A `file:` plugin is not a builtin and must not be looked for in the builtin folders.
+    #[test]
+    fn a_file_plugin_skips_the_builtin_folders() {
+        let paths = file_plugin("/elsewhere/mine.wasm").wasm_lookup_paths(
+            std::path::Path::new("/data"),
+            Some(std::path::Path::new("/c")),
+        );
+        assert!(
+            paths
+                .iter()
+                .all(|path| !path.to_string_lossy().contains("builtins")
+                    && !path.starts_with("/c")
+                    && !path.to_string_lossy().contains("wasm32-wasip1")),
+            "{paths:?}"
+        );
+    }
+
     // This is the check that fails if the compile-time dev dirs stop resolving, which is what
-    // keeps a plain `cargo test`/`cargo run` in a checkout working with no configuration at all.
+    // keeps a `cargo x test`/`cargo x run` in a checkout working with no configuration at all.
+    // It needs the plugins built - `cargo x build -p` - which `cargo x test` does first.
     #[test]
     fn builtin_plugin_resolves_from_checkout_with_no_configuration() {
-        let plugin_dir = tempdir().unwrap();
+        let data_dir = tempdir().unwrap();
         let plugin = builtin_plugin("tab-bar");
 
         assert!(!plugin
-            .resolve_wasm_bytes(plugin_dir.path(), None)
+            .resolve_wasm_bytes(data_dir.path(), None)
             .unwrap()
             .is_empty());
     }

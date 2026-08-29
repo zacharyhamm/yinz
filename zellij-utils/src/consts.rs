@@ -11,6 +11,10 @@ pub const ZELLIJ_CONFIG_FILE_ENV: &str = "ZELLIJ_CONFIG_FILE";
 pub const ZELLIJ_CONFIG_DIR_ENV: &str = "ZELLIJ_CONFIG_DIR";
 pub const ZELLIJ_LAYOUT_DIR_ENV: &str = "ZELLIJ_LAYOUT_DIR";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The folder under a data dir that holds the installed builtin plugin wasm, one
+/// subfolder per `VERSION`: `<data dir>/builtins/<VERSION>/<name>.wasm`. See
+/// `home::builtin_plugin_dir`. `xtask install` writes it; `resolve_wasm_bytes` reads it.
+pub const BUILTIN_PLUGIN_DIR_NAME: &str = "builtins";
 pub const DEFAULT_SCROLL_BUFFER_SIZE: usize = 10_000;
 pub static SCROLL_BUFFER_SIZE: OnceLock<usize> = OnceLock::new();
 pub static DEBUG_MODE: OnceLock<bool> = OnceLock::new();
@@ -96,7 +100,6 @@ lazy_static! {
     pub static ref ZELLIJ_SESSION_INFO_CACHE_DIR: PathBuf = ZELLIJ_CACHE_DIR
         .join(CLIENT_SERVER_CONTRACT_DIR.clone())
         .join("session_info");
-    pub static ref ZELLIJ_PLUGIN_ARTIFACT_DIR: PathBuf = ZELLIJ_CACHE_DIR.join(VERSION);
     pub static ref ZELLIJ_SEEN_RELEASE_NOTES_CACHE_FILE: PathBuf =
         ZELLIJ_CACHE_DIR.join(VERSION).join("seen_release_notes");
 }
@@ -127,7 +130,7 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
 
 /// Builtin plugins written in Lua, as (name, source).
 ///
-/// A wasm builtin is found by name on disk or in the embedded asset table; a Lua plugin has
+/// A wasm builtin is found by name on disk (see `resolve_wasm_bytes`); a Lua plugin has
 /// no build step and no bytes to look up, so its source is simply compiled in here. Being in
 /// this table is what makes `zellij:<name>` resolve to Lua - see `PluginConfig::runtime`.
 ///
@@ -156,21 +159,24 @@ pub fn builtin_lua_plugin(name: &str) -> Option<&'static str> {
         .map(|(_, source)| *source)
 }
 
-/// Directories searched for builtin plugin wasm as a last resort, so that dev builds and
-/// `cargo test` find the plugins in a checkout without any configuration.
-///
-/// These are baked at compile time from this crate's manifest dir. On an installed system they
-/// simply do not exist and are skipped, which is why they can be probed unconditionally.
+/// The checkout's freshly built debug plugins, baked in at compile time from this crate's
+/// manifest dir. Searched *before* any installed copy: a `cargo x run` or `cargo test` on the
+/// same `VERSION` as an installed zellij must see the plugins it just built, not last week's
+/// install. Only debug binaries look here; on an installed system the folder does not exist
+/// and is skipped.
+#[cfg(all(not(target_family = "wasm"), debug_assertions))]
+pub const BUILTIN_PLUGIN_DEBUG_DIR: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../target/wasm32-wasip1/debug");
+
+/// The checkout's release plugins, the last resort for a binary run straight out of `target/`
+/// without a `cargo x install`. Baked in at compile time like the debug dir, and skipped in
+/// the same way where it does not exist. Note that a same-`VERSION` install is preferred over
+/// this folder - see `PluginConfig::resolve_wasm_bytes` for the whole order.
 #[cfg(not(target_family = "wasm"))]
-pub const BUILTIN_PLUGIN_DEV_DIRS: &[&str] = &[
-    // What `cargo x build`/`cargo x test` produce - prefer freshly built debug plugins when
-    // running a debug binary. Missing under a non-default CARGO_TARGET_DIR, which just falls
-    // through to the committed assets below.
-    #[cfg(debug_assertions)]
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../target/wasm32-wasip1/debug"),
-    // The committed assets, refreshed by `cargo x build --plugins-only --release`.
-    concat!(env!("CARGO_MANIFEST_DIR"), "/assets/plugins"),
-];
+pub const BUILTIN_PLUGIN_RELEASE_DIR: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../target/wasm32-wasip1/release"
+);
 
 #[cfg(unix)]
 pub fn is_ipc_socket(file_type: &std::fs::FileType) -> bool {

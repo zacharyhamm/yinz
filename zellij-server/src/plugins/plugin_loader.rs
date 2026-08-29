@@ -85,7 +85,6 @@ pub struct PluginLoader<'a> {
     builtin_plugins_dir: Option<PathBuf>,
     default_mode: InputMode,
     keybinds: Keybinds,
-    plugin_dir: PathBuf,
     zellij_data_dir: PathBuf,
     plugin_data_store: Arc<PluginDataStore>,
     queues: Arc<Mutex<Queues>>,
@@ -132,7 +131,6 @@ impl<'a> PluginLoader<'a> {
             builtin_plugins_dir: loading_context.builtin_plugins_dir,
             default_mode: loading_context.default_mode,
             keybinds: loading_context.keybinds,
-            plugin_dir: loading_context.plugin_dir,
             zellij_data_dir: loading_context.zellij_data_dir,
             plugin_data_store: loading_context.plugin_data_store,
             queues: loading_context.queues,
@@ -227,7 +225,7 @@ impl<'a> PluginLoader<'a> {
         self.loading_indication.override_previous_error();
         let wasm_bytes = self
             .plugin_config
-            .resolve_wasm_bytes(&self.plugin_dir, self.builtin_plugins_dir.as_deref())?;
+            .resolve_wasm_bytes(&self.zellij_data_dir, self.builtin_plugins_dir.as_deref())?;
         let timer = std::time::Instant::now();
         let module = Module::new(&self.engine, &wasm_bytes)?;
         log::info!(

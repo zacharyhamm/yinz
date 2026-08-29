@@ -125,3 +125,9 @@
 - Decision: Skip (deferred)
 - Reason: Tests only, ~1,400 LOC to port into the fork's split test modules and diverged integration harness, with 9 snapshots to regenerate. No production change. Deferred behind the production adaptations of the same review.
 - Reconsider only if: The user wants the extra coverage, or the user reopens this decision.
+
+## 2026-08-29 — Builtin plugin wasm is no longer checked in (standing note)
+
+- Decision: `zellij-utils/assets/plugins/*.wasm` is gitignored; the wasm lives under `target/wasm32-wasip1/` and is installed by `cargo x install`.
+- Consequence for syncs: an upstream commit that touches `assets/plugins/*.wasm` now merges as a modify/delete conflict. Resolve with `git rm zellij-utils/assets/plugins/<name>.wasm`; the plugin sources are what get adapted.
+- Reconsider only if: The user reopens this decision.

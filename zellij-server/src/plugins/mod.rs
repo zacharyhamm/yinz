@@ -372,9 +372,8 @@ pub(crate) fn plugin_thread_main(
     initiating_client_id: ClientId,
 ) -> Result<()> {
     info!("Wasm main thread starts");
-    let plugin_dir = data_dir.join("plugins/");
     let zellij_data_dir = data_dir.clone();
-    let plugin_global_data_dir = plugin_dir.join("data");
+    let plugin_global_data_dir = data_dir.join("plugins").join("data");
     layout.populate_plugin_aliases_in_layout(&plugin_aliases);
 
     // use this channel to ensure that tasks spawned from this thread terminate before exiting
@@ -384,7 +383,6 @@ pub(crate) fn plugin_thread_main(
     let mut wasm_bridge = WasmBridge::new(
         bus.senders.clone(),
         engine,
-        plugin_dir,
         zellij_data_dir,
         path_to_default_shell,
         zellij_cwd.clone(),

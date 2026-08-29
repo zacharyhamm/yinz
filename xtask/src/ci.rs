@@ -59,32 +59,18 @@ fn e2e_build(sh: &Shell) -> anyhow::Result<()> {
     )
     .context(err_context)?;
 
-    // Copy plugins to e2e data-dir
-    let plugin_dir = crate::asset_dir().join("plugins");
+    // Copy plugins to e2e data-dir. The test plugins are included: the e2e fixture configs
+    // load `fixture-plugin-for-tests`.
     let project_root = crate::project_root();
     let data_dir = crate::target_dir().join("e2e-data");
-    let plugins: Vec<_> = std::fs::read_dir(plugin_dir)
-        .context(err_context)?
-        .filter_map(|dir_entry| {
-            if let Ok(entry) = dir_entry {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .ends_with(".wasm")
-                    .then_some(entry.path())
-            } else {
-                None
-            }
-        })
-        .collect();
 
     sh.remove_path(&data_dir)
         .and_then(|_| sh.create_dir(&data_dir))
         .and_then(|_| sh.create_dir(data_dir.join("plugins")))
         .context(err_context)?;
 
-    for plugin in plugins {
-        sh.copy_file(plugin, data_dir.join("plugins"))
+    for name in build::plugin_names() {
+        sh.copy_file(build::release_plugin_path(name), data_dir.join("plugins"))
             .context(err_context)?;
     }
 

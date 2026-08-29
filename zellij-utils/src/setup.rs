@@ -11,6 +11,7 @@ use crate::{
         config::{Config, ConfigError},
         layout::Layout,
         options::Options,
+        plugins::PluginConfig,
     },
 };
 use clap::{Args, CommandFactory};
@@ -235,6 +236,12 @@ pub struct Setup {
     /// Generates auto-start script for the specified shell
     #[clap(long, value_name = "SHELL", value_parser)]
     pub generate_auto_start: Option<String>,
+
+    /// Print where this binary looks for its installed builtin plugins, as `user=<dir>` and
+    /// `system=<dir>` lines. For `cargo x install`, which asks the binary it just built rather
+    /// than recomputing the XDG and `PREFIX` answers itself.
+    #[clap(long, value_parser, hide = true)]
+    pub print_builtin_plugin_dir: bool,
 }
 
 impl Setup {
@@ -346,6 +353,12 @@ impl Setup {
             std::process::exit(0);
         }
 
+        if self.print_builtin_plugin_dir {
+            println!("user={}", user_builtin_plugin_dir().display());
+            println!("system={}", system_builtin_plugin_dir().display());
+            std::process::exit(0);
+        }
+
         Ok(())
     }
 
@@ -427,24 +440,42 @@ impl Setup {
         writeln!(&mut message, "[CACHE DIR]: {}", ZELLIJ_CACHE_DIR.display()).unwrap();
         writeln!(&mut message, "[DATA DIR]: \"{}\"", data_dir.display()).unwrap();
         writeln!(&mut message, "[PLUGIN DIR]: \"{}\"", plugin_dir.display()).unwrap();
-        message.push_str(" Builtin plugins are loaded from disk, in this order:\n");
-        if let Some(builtin_plugins_dir) = &config_options.builtin_plugins_dir {
-            writeln!(
-                &mut message,
-                "  \"{}\" (from the 'builtin_plugins_dir' option)",
-                builtin_plugins_dir.display()
-            )
-            .unwrap();
-        } else {
-            message.push_str("  the 'builtin_plugins_dir' option (not set)\n");
-        }
-        writeln!(&mut message, "  \"{}\"", plugin_dir.display()).unwrap();
+        let builtin_plugin_dir = builtin_plugin_dir(&data_dir);
         writeln!(
             &mut message,
-            "  \"{}\"",
-            system_data_dir.join("plugins").display()
+            "[BUILTIN PLUGIN DIR]: \"{}\" ({})",
+            builtin_plugin_dir.display(),
+            if builtin_plugin_dir.is_dir() {
+                "installed"
+            } else {
+                "not installed - `cargo x install` puts the builtins here"
+            }
         )
         .unwrap();
+        message.push_str(
+            " Builtin plugins are loaded from disk, from the first of these to hold them:\n",
+        );
+        if config_options.builtin_plugins_dir.is_none() {
+            message.push_str("  the 'builtin_plugins_dir' option (not set)\n");
+        }
+        // The very list the loader walks, so this can never disagree with it. Shown as folders:
+        // the file name is the plugin's, and the same for every builtin.
+        let mut shown = Vec::new();
+        for path in PluginConfig::builtin_lookup_example()
+            .wasm_lookup_paths(&data_dir, config_options.builtin_plugins_dir.as_deref())
+        {
+            let Some(folder) = path
+                .parent()
+                .filter(|folder| !folder.as_os_str().is_empty())
+            else {
+                continue;
+            };
+            let folder = folder.to_path_buf();
+            if !shown.contains(&folder) {
+                writeln!(&mut message, "  \"{}\"", folder.display()).unwrap();
+                shown.push(folder);
+            }
+        }
         if let Some(layout_dir) = layout_dir {
             writeln!(&mut message, "[LAYOUT DIR]: \"{}\"", layout_dir.display()).unwrap();
         } else {

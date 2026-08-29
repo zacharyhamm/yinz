@@ -736,9 +736,9 @@ fn create_plugin_thread_with_background_jobs_receiver(
 /// Locates the fixture plugin's wasm blob.
 ///
 /// Prefers the debug artifact, which `cargo x test` guarantees is present and fresh because it
-/// builds the plugins before running any tests. Falls back to the checked-in asset so that a bare
-/// `cargo test -p zellij-server` works too, at the cost of the blob being as old as the last
-/// `cargo x assets`.
+/// builds the plugins before running any tests. Falls back to the release artifact so that a bare
+/// `cargo test -p zellij-server` works after a `cargo x build --release` too, at the cost of the
+/// blob being as old as that build.
 fn plugin_fixture_path() -> PathBuf {
     let repo_root = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo"),
@@ -747,7 +747,7 @@ fn plugin_fixture_path() -> PathBuf {
 
     let candidates = [
         repo_root.join("target/wasm32-wasip1/debug/fixture-plugin-for-tests.wasm"),
-        repo_root.join("zellij-utils/assets/plugins/fixture-plugin-for-tests.wasm"),
+        repo_root.join("target/wasm32-wasip1/release/fixture-plugin-for-tests.wasm"),
     ];
 
     candidates

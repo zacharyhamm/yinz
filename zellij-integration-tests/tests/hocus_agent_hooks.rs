@@ -159,7 +159,7 @@ fn agent_pane_id(screen: &str) -> u32 {
         .lines()
         .find_map(|line| {
             let rest = line.trim().strip_prefix('\u{2022}')?;
-            rest.trim().split_whitespace().next()?.parse().ok()
+            rest.split_whitespace().next()?.parse().ok()
         })
         .unwrap_or_else(|| panic!("agent_list listed no pane:\n{screen}"))
 }

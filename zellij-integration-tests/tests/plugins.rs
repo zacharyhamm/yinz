@@ -5,13 +5,10 @@ use zellij_integration_tests::{normalized, TestRunner, TERMINAL_SIZE};
 use zellij_utils::cli::CliAction;
 
 fn load_background_plugin_config() -> String {
-    let plugin_path = format!(
-        "{}/../zellij-utils/assets/plugins/fixture-plugin-for-tests.wasm",
-        env!("CARGO_MANIFEST_DIR")
-    );
+    let plugin_path = zellij_integration_tests::test_env::fixture_plugin_path();
     format!(
         "plugins {{\n  permission-requester location=\"file:{}\"\n}}\nload_plugins clear-defaults=true {{\n  \"permission-requester\"\n}}\n",
-        plugin_path
+        plugin_path.display()
     )
 }
 

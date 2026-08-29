@@ -52,54 +52,75 @@ To run `test`, you will need the package `pkg-config` and a version of `openssl`
 ### How builtin plugins are found
 
 Builtin plugins (`status-bar`, `tab-bar`, ...) are `.wasm` files loaded from disk on
-demand - nothing is embedded in the binary. At runtime they are looked up in this order:
+demand - nothing is embedded in the binary, and nothing is checked in: they are built to
+`target/wasm32-wasip1/{debug,release}/` and installed by `cargo x install`. At runtime a
+builtin is looked up in this order (`PluginConfig::resolve_wasm_bytes`):
 
 1. the `builtin_plugins_dir` config option, if set
 2. the configured plugin directory (`<data dir>/plugins`)
-3. `$PREFIX/share/zellij/plugins`
-4. `<repository>/target/wasm32-wasip1/debug` (debug builds only)
-5. `<repository>/zellij-utils/assets/plugins`
+3. `<repository>/target/wasm32-wasip1/debug` (debug builds only)
+4. `<data dir>/builtins/<version>` - what `cargo x install` writes for the user
+5. `$PREFIX/share/zellij/builtins/<version>` - what `PREFIX=... cargo x install` writes
+6. `$PREFIX/share/zellij/plugins`
+7. `<repository>/target/wasm32-wasip1/release`
 
-`zellij setup --check` prints the first three. The last two are baked in at compile time
-from `CARGO_MANIFEST_DIR`, so a build run out of a checkout - `cargo run`, `cargo test`,
-`cargo x run` - finds the plugins with no configuration at all. They do not exist on an
-installed system and are simply skipped there.
+`zellij setup --check` prints all of them. Steps 3 and 7 are baked in at compile time from
+`CARGO_MANIFEST_DIR`, so a build run out of a checkout - `cargo x run`, `cargo x test` -
+finds the plugins with no configuration at all; they do not exist on an installed system and
+are simply skipped there. A debug binary looks in its own debug dir *before* any install, so
+`cargo x run` always sees the plugins it just built; a release binary run straight out of
+`target/` prefers an install of the same version (steps 4-5) over its own tree (step 7) - pass
+`--data-dir` or set `builtin_plugins_dir` to pin it.
+
+The install dir is versioned so that a binary never loads another version's wasm. After
+bumping the version, run `cargo x install` again; it lists the old `builtins/<version>`
+folders and leaves them for you to delete.
+
+`cargo test` needs the plugins built once - `cargo x build -p` - because there is no
+checked-in copy to fall back on; `cargo x test` does that itself.
 
 ### The cargo target directory
 
-`.cargo/config.toml` pins `build.target-dir` to `target` so that lookup step 4 above
-resolves for debug builds. Pointing cargo elsewhere (a global `target-dir` in
-`~/.cargo/config.toml`, or the `CARGO_TARGET_DIR` environment variable) is no longer fatal
-- the lookup falls through to the committed assets in step 5 - but you will silently get
-the last plugins built by `cargo x build --release` instead of your debug ones. To share
-compilation artifacts between projects, symlink the folder instead:
+`.cargo/config.toml` pins `build.target-dir` to `target` so that lookup steps 3 and 7 above
+resolve. Pointing cargo elsewhere (a global `target-dir` in `~/.cargo/config.toml`, or the
+`CARGO_TARGET_DIR` environment variable) leaves a checkout binary with no builtins unless
+you have run `cargo x install`. To share compilation artifacts between projects, symlink the
+folder instead:
 
 ```sh
 ln -s /path/to/shared/target /path/to/zellij/target
 ```
 
-## Packaging Zellij for a distribution
+## Installing and packaging Zellij
 
-Pre-built plugin copies live in `zellij-utils/assets/plugins` so that `cargo install
-zellij` works without further tooling. Distributions that forbid pre-built binaries in
-source packages can strip that folder and build the plugins from source instead:
+`cargo x install /path/to/zellij` builds everything in release mode, copies the binary, and
+installs the builtin plugins to `<data dir>/builtins/<version>` (`~/.local/share/zellij/...`
+on Linux). With `PREFIX` set it installs them to `$PREFIX/share/zellij/builtins/<version>`
+instead, matching the `PREFIX` the binary bakes in:
 
 ```sh
-# 1. build the plugins from source (repeat for every plugin, or use `cargo x build --release`)
-cargo build --release --target wasm32-wasip1 \
-  -p status-bar -p tab-bar -p compact-bar -p strider -p session-manager \
-  -p configuration -p plugin-manager -p about -p share -p multiple-select \
-  -p layout-manager -p link
+PREFIX=/usr cargo x install /usr/bin/zellij     # as root, with `sudo -E` to keep PREFIX
+```
 
-# 2. install the resulting artifacts from <target-dir>/wasm32-wasip1/release/*.wasm
-#    into $PREFIX/share/zellij/plugins/
+`--builtins-dir <dir>` puts the plugins somewhere else (and prunes nothing there);
+`--no-builtins` installs the binary only.
+
+Distributions that package the plugins themselves can build them from source and put them
+in the unversioned system folder (lookup step 6):
+
+```sh
+# 1. build every plugin crate under default-plugins/ (what `cargo x build -p --release` does)
+cargo x build -p --release
+
+# 2. install <target-dir>/wasm32-wasip1/release/*.wasm into $PREFIX/share/zellij/plugins/
 
 # 3. build zellij
 PREFIX=/usr cargo build --release --bin zellij
 ```
 
 No feature flags are involved: the binary never carries plugins, so the plugins must be
-installed into one of the lookup locations above.
+installed into one of the lookup locations above. A plain `cargo install --path .` yields a
+binary with no builtins; use `cargo x install`.
 
 `protoc` is required to regenerate the protobuf definitions in `zellij-utils/assets/prost*`
 via `cargo x proto`. The `vendored_curl` feature is optional and may be dropped with

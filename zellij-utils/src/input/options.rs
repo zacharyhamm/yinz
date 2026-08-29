@@ -251,7 +251,7 @@ pub struct Options {
     /// subdirectory of config dir
     #[clap(long, value_parser)]
     pub layout_dir: Option<PathBuf>,
-    /// Set the directory from which builtin plugins are loaded before falling back to embedded assets
+    /// Set the directory from which builtin plugins are loaded before the installed builtins are tried
     #[clap(long, value_parser)]
     pub builtin_plugins_dir: Option<PathBuf>,
     /// Set the theme_dir, defaults to
