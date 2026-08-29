@@ -4251,7 +4251,7 @@ fn warp_pane_from_session(
         &from_session,
         pane_id,
         placement,
-        crate::warp::PLUGIN_WARP_TIMEOUT,
+        crate::warp::WARP_PULL_TIMEOUT,
     );
     write_warp_response(env, result);
 }
@@ -4275,7 +4275,7 @@ fn warp_tab_from_session(env: &mut PluginEnv, tab_index: usize, from_session: St
         &crate::warp::current_session_name(),
         &from_session,
         tab_index,
-        crate::warp::PLUGIN_WARP_TIMEOUT,
+        crate::warp::WARP_PULL_TIMEOUT,
     );
     write_warp_response(env, result);
 }

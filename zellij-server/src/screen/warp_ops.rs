@@ -19,6 +19,28 @@ use zellij_utils::input::layout::Run;
 use zellij_utils::session_serialization::PaneLayoutManifest;
 use zellij_utils::warped_tab::layout_for_warped_tab;
 
+/// What Screen keeps back from a tab warp's budget for its own work.
+///
+/// Once the pty thread reports the release, this thread still has to serialize
+/// every pane in the tab — up to 32 MiB of scrollback across the lot, see
+/// [`Screen::warp_budget_per_pane`] — build the payload and close the tab, all
+/// before the caller's `recv_timeout` fires. Handing the pty thread the caller's
+/// whole deadline would mean a release that finished exactly on time still
+/// answered too late, and a tab released into a channel nobody is reading is the
+/// one outcome this feature must never produce.
+///
+/// Generous rather than measured: the cost of reserving too much is a warp
+/// refused a little early, and the cost of reserving too little is a tab full of
+/// orphaned processes.
+pub(super) const TAB_WARP_SCREEN_RESERVE: std::time::Duration =
+    std::time::Duration::from_millis(1500);
+
+/// The single-pane version of [`TAB_WARP_SCREEN_RESERVE`], and smaller for the
+/// obvious reason: one pane's scrollback is capped at
+/// [`Screen::WARP_CONTENTS_BUDGET`] rather than a whole tab's worth.
+pub(super) const PANE_WARP_SCREEN_RESERVE: std::time::Duration =
+    std::time::Duration::from_millis(500);
+
 impl Screen {
     /// Keep a warped pane's screen dump inside something a message bus should be
     /// asked to carry.

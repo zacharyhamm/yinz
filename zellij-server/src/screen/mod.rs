@@ -710,11 +710,18 @@ pub(crate) struct Screen {
     /// because a tab's release is answered once for the whole tab — and carrying
     /// the arrangement, which was worked out before the release so that a tab
     /// that could not be rebuilt was never taken apart.
+    ///
+    /// The `Instant` is when the caller stops waiting. It is kept because
+    /// serializing the tab is also what *closes* it: by the time a send could
+    /// report that nobody is listening, the tab is already gone and every
+    /// process in it unwatched. Comparing against this before starting is the
+    /// only chance to notice in time.
     pending_tab_warps: HashMap<
         usize,
         (
             crossbeam::channel::Sender<Result<Box<WarpedTab>, String>>,
             PreparedTabWarp,
+            std::time::Instant,
         ),
     >,
     session_is_mirrored: bool,

@@ -11,7 +11,7 @@ use crate::ClientId;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use zellij_utils::data::{
     CommandOrPlugin, ContextMenuItem, Direction, EventType, FloatingPaneCoordinates,
     GetFocusedPaneInfoResponse, HostTerminalThemeMode, InputMode, KeyWithModifier, LayoutInfo,
@@ -494,6 +494,8 @@ pub enum ScreenInstruction {
         placement: WarpPlacement,
         client_id: ClientId,
         response_channel: crossbeam::channel::Sender<Result<Box<WarpedPane>, String>>,
+        /// When the caller stops waiting. See [`WarpTab`](Self::WarpTab).
+        deadline: Instant,
     },
     /// The pty thread has let a pane's supervisor go. Serializing the pane *here*
     /// rather than when the warp was requested is what makes the screen that
@@ -525,6 +527,13 @@ pub enum ScreenInstruction {
         tab_index: Option<usize>,
         client_id: ClientId,
         response_channel: crossbeam::channel::Sender<Result<Box<WarpedTab>, String>>,
+        /// The moment the caller stops waiting for `response_channel`.
+        ///
+        /// Passed down to the pty thread rather than kept here, because the
+        /// part of a warp that can outrun the caller is the release, not
+        /// anything Screen does. What Screen keeps back is a slice of it for
+        /// its own serialization work — see `TAB_WARP_SCREEN_RESERVE`.
+        deadline: Instant,
     },
     /// The pty thread has let go of every supervisor in a tab. Serializing the
     /// tab happens here for the same reason it does for a single pane: by now

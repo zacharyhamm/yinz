@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use interprocess::local_socket::Stream as LocalSocketStream;
 use zellij_server::os_input_output::{AdoptedTerminal, AsyncReader, ServerOsApi};
@@ -290,7 +291,11 @@ impl ServerOsApi for FakeServerOsApi {
             .check_can_be_warped(terminal_id)
             .map_err(|e| anyhow!("{e}"))
     }
-    fn release_terminal_for_warp(&self, terminal_id: u32) -> Result<ReleasedPane> {
+    fn release_terminal_for_warp(
+        &self,
+        terminal_id: u32,
+        _budget: Duration,
+    ) -> Result<ReleasedPane> {
         // A release rigged to fail models the one case the pre-flight check
         // cannot rule out: a broker that says yes to being asked and then does
         // not confirm the handoff.

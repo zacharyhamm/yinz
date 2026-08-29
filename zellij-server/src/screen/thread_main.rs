@@ -1,5 +1,6 @@
 use zellij_utils::errors::prelude::*;
 
+use super::warp_ops::{PANE_WARP_SCREEN_RESERVE, TAB_WARP_SCREEN_RESERVE};
 use super::{
     active_tab, active_tab_and_connected_client_id,
     active_tab_and_connected_client_id_with_first_tab_fallback, denormalize_notification_response,
@@ -3282,6 +3283,7 @@ pub(crate) fn screen_thread_main(
                 placement,
                 client_id,
                 response_channel,
+                deadline,
             } => {
                 // Every check that can fail happens before the pty thread is asked
                 // for anything: a warp that is going to be refused must leave the
@@ -3297,6 +3299,17 @@ pub(crate) fn screen_thread_main(
                                 to_session,
                                 placement,
                                 client_id,
+                                // Minus what this thread needs to serialize the
+                                // pane once the release lands, so the answer
+                                // still beats the caller's clock. `checked_sub`
+                                // because `Instant - Duration` panics rather
+                                // than saturating, and a panic here would take
+                                // the screen thread with it; a deadline that
+                                // has already passed is the honest answer for a
+                                // caller with nothing left to spend.
+                                deadline: deadline
+                                    .checked_sub(PANE_WARP_SCREEN_RESERVE)
+                                    .unwrap_or_else(Instant::now),
                             })?;
                     },
                     Err(e) => {
@@ -3358,6 +3371,7 @@ pub(crate) fn screen_thread_main(
                 tab_index,
                 client_id,
                 response_channel,
+                deadline,
             } => {
                 // Every check that can fail happens before the pty thread is
                 // asked for anything, so a tab whose warp is going to be refused
@@ -3366,11 +3380,21 @@ pub(crate) fn screen_thread_main(
                     Ok((tab_index, terminal_ids, prepared)) => {
                         screen
                             .pending_tab_warps
-                            .insert(tab_index, (response_channel, prepared));
+                            .insert(tab_index, (response_channel, prepared, deadline));
                         screen.bus.senders.send_to_pty(
                             PtyInstruction::ReleaseTerminalsForWarp {
                                 tab_index,
                                 terminal_ids,
+                                // The pty thread gets the caller's deadline
+                                // less what this thread will need afterwards:
+                                // `take_released_tab_for_warp` serializes every
+                                // pane's scrollback, and a release that used
+                                // the whole budget would leave no time to do it
+                                // in. `checked_sub` for the reason given in
+                                // `WarpPane` above.
+                                deadline: deadline
+                                    .checked_sub(TAB_WARP_SCREEN_RESERVE)
+                                    .unwrap_or_else(Instant::now),
                             },
                         )?;
                     },
@@ -3383,9 +3407,29 @@ pub(crate) fn screen_thread_main(
                 tab_index,
                 released,
             } => {
-                if let Some((response_channel, prepared)) =
-                    screen.pending_tab_warps.remove(&tab_index)
-                {
+                // Asked before the tab is taken apart rather than after.
+                // `take_released_tab_for_warp` is what closes the tab, so a
+                // caller found to be gone on the far side of it has already
+                // cost this session the whole tab, with every process in it
+                // running unwatched and a log line as the only record. A caller
+                // whose deadline has passed is a caller that has stopped
+                // waiting, so the tab stays where it is and its panes are held
+                // and told why — visible, and recoverable — below.
+                let still_waiting =
+                    screen
+                        .pending_tab_warps
+                        .remove(&tab_index)
+                        .filter(|(_, _, deadline)| {
+                            let waiting = Instant::now() < *deadline;
+                            if !waiting {
+                                log::error!(
+                                "tab {tab_index}'s panes were released for a warp whose caller \
+                                 had already given up; the tab was kept and its panes held"
+                            );
+                            }
+                            waiting
+                        });
+                if let Some((response_channel, prepared, _)) = still_waiting {
                     let result = screen.take_released_tab_for_warp(tab_index, released, prepared);
                     if let Err(crossbeam::channel::SendError(Ok(payload))) =
                         response_channel.send(result)

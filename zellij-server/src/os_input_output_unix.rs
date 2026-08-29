@@ -50,12 +50,17 @@ use crate::pty_host::{
 
 pub use async_trait::async_trait;
 
-/// How long to wait for a broker to confirm it has let a pane go.
+/// The longest one round trip to a broker may take, whatever budget is left.
 ///
 /// Shorter than `warp::WARP_TIMEOUT`, and deliberately: this is one leg of a
 /// warp that the pty thread is blocked on, and the leg after it — the far
 /// session attaching — needs budget left over. A broker that has not answered in
 /// this long is not about to.
+///
+/// A ceiling only. What a release actually gets is the smaller of this and what
+/// remains of the caller's deadline, which is the number that matters when a
+/// tab is releasing several panes at once — see
+/// `Self::release_remote_terminal_for_warp`.
 const REMOTE_RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// An `AsyncReader` that wraps a `RawFd` using epoll via `AsyncFd`.
@@ -924,7 +929,11 @@ impl UnixPtyBackend {
     /// task's `RawFdAsyncReader`, which closes it when the caller aborts that
     /// task. Closing it here as well would race that drop into a double close of
     /// a descriptor another pane may by then have been given.
-    pub fn release_terminal_for_warp(&self, terminal_id: u32) -> Result<ReleasedPane> {
+    pub fn release_terminal_for_warp(
+        &self,
+        terminal_id: u32,
+        budget: Duration,
+    ) -> Result<ReleasedPane> {
         // A remote pane is asked about first, because the miss below is not the
         // truth about one: its supervisor exists, it is simply on the far side
         // of a broker and was never going to be in this map.
@@ -936,7 +945,7 @@ impl UnixPtyBackend {
             .and_then(|transport| transport.remote())
             .cloned()
         {
-            return self.release_remote_terminal_for_warp(terminal_id, conn);
+            return self.release_remote_terminal_for_warp(terminal_id, conn, budget);
         }
 
         let handle = self
@@ -969,20 +978,35 @@ impl UnixPtyBackend {
     /// left to talk to. Asked here it costs the user an error message and nothing
     /// more.
     ///
-    /// A remote pane can only answer yes. Its supervisor is on the far side of a
-    /// broker reached by ssh and a token, and whether that broker will confirm
-    /// the handoff is not knowable without asking it — which is the release
-    /// itself. That residual case is why callers still have to cope with a
-    /// release that fails.
+    /// A remote pane mostly can only answer yes. Its supervisor is on the far
+    /// side of a broker reached by ssh and a token, and whether that broker will
+    /// confirm the handoff is not knowable without asking it — which is the
+    /// release itself. That residual case is why callers still have to cope with
+    /// a release that fails.
+    ///
+    /// The one thing that *is* knowable here is whether there is currently a
+    /// path to that broker at all. A pane whose transport has been lost is being
+    /// reconnected by its reader right now, and the release would abort that
+    /// reader — killing a recovery that was working — only to fail on the same
+    /// broken socket a moment later, leaving the pane stranded. Refusing while
+    /// the pane is still whole costs the user a message and a retry; not
+    /// refusing costs them the pane.
     pub fn check_terminal_can_be_warped(&self, terminal_id: u32) -> Result<()> {
-        let is_remote = self
+        let remote = self
             .terminal_id_to_transport
             .lock()
             .to_anyhow()?
             .get(&terminal_id)
             .and_then(|transport| transport.remote())
-            .is_some();
-        if is_remote {
+            .cloned();
+        if let Some(conn) = remote {
+            if conn.transport_lost() {
+                return Err(anyhow!(
+                    "the connection to {} is down and this pane is reconnecting, so it cannot \
+                     be moved yet — try again once it is back",
+                    conn.host()
+                ));
+            }
             return Ok(());
         }
 
@@ -1023,10 +1047,15 @@ impl UnixPtyBackend {
         &self,
         terminal_id: u32,
         conn: Arc<RemoteConn>,
+        budget: Duration,
     ) -> Result<ReleasedPane> {
         let received = conn.received();
+        // Whichever is shorter. `REMOTE_RELEASE_TIMEOUT` is what one round trip
+        // to a broker should ever need; the budget is what the caller is still
+        // prepared to wait. Spending longer than the second would answer a
+        // question nobody is listening for any more.
         let released = conn
-            .release_for_warp(REMOTE_RELEASE_TIMEOUT)
+            .release_for_warp(budget.min(REMOTE_RELEASE_TIMEOUT))
             .with_context(|| format!("failed to hand remote pane {terminal_id} over"));
         self.terminal_id_to_transport
             .lock()

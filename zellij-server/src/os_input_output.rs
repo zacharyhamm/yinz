@@ -741,7 +741,17 @@ pub trait ServerOsApi: Send + Sync {
     /// take the running process. Defaulted to an error rather than a no-op: a
     /// backend that cannot do this must refuse the warp, not silently succeed and
     /// lose the pane.
-    fn release_terminal_for_warp(&self, _terminal_id: u32) -> Result<ReleasedPane> {
+    ///
+    /// `budget` is how long this may block. It is not advisory: it is what is
+    /// left of the warp caller's own timeout, and a release that runs past it
+    /// completes into a channel nobody is reading, leaving the pane's process
+    /// running with nothing watching it. A backend that cannot finish inside the
+    /// budget must return an error saying so rather than take longer.
+    fn release_terminal_for_warp(
+        &self,
+        _terminal_id: u32,
+        _budget: Duration,
+    ) -> Result<ReleasedPane> {
         Err(anyhow!(
             "this backend does not support moving panes between sessions"
         ))
@@ -1115,8 +1125,13 @@ impl ServerOsApi for ServerOsInputOutput {
         }
     }
     #[cfg(not(windows))]
-    fn release_terminal_for_warp(&self, terminal_id: u32) -> Result<ReleasedPane> {
-        self.pty_backend.release_terminal_for_warp(terminal_id)
+    fn release_terminal_for_warp(
+        &self,
+        terminal_id: u32,
+        budget: Duration,
+    ) -> Result<ReleasedPane> {
+        self.pty_backend
+            .release_terminal_for_warp(terminal_id, budget)
     }
     #[cfg(not(windows))]
     fn check_terminal_can_be_warped(&self, terminal_id: u32) -> Result<()> {
