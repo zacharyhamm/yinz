@@ -269,14 +269,21 @@ same `zellij_server::plugin_authoring::write` the command calls):
    `zellij run` exits with the child's status.
 5. `agent_exit` hook fires; `plugin_log` shows the hook's output.
 
-## Handoff (Phase 3 landed; next steps 1–5 landed)
+## Handoff (Phase 3 landed; next steps 1–8 landed; `main` merged)
 
-Everything through R16 is on `self-programming-vision`, committed, followed by next steps 1–5
+Everything through R16 is on `self-programming-vision`, committed, followed by next steps 1–8
 below (`0b419ed90` the end-to-end test and the in-flight-load fix it found, `2e89ec623` the
 `add_client` cache fix, `4862f8b8e` the shipped `agent-policy` hook, `38df593eb` jobs following
-their chat, `f37db6124` `ReadPluginLog`). The gate was green after `f37db6124` apart from the
-environment noise listed here (19 `web_client` timeouts; the known-red integration tests, and
-only those). What the next session needs to know without re-deriving it:
+their chat, `f37db6124` `ReadPluginLog`, `36f107e72` `hooks install --project` →
+`settings.local.json` + `--project-dir`, `4b2c90d5c` Enter in a held pane through the screen,
+`513e074cd` the merge of `main` at `9463b399a`, `369b9887b` the two overlay-covered tests).
+The merge renumbered this branch's IPC entries (below) and taught `main`'s round-trip
+properties (`plugin_api/test_generators.rs`, exhaustive by `match`) and its exhaustive
+`zellij_exports::command_permission` about the branch's variants; `docs/TECH_DEBT.md` is gone
+with `main` (`1c19598ce`), so the mentions of it above are history. The gate was green after
+`513e074cd` apart from three `web_client` tests that are `main`'s own (below), and again after
+`369b9887b` - see "Gate state" at the end. What the next session needs to know
+without re-deriving it:
 
 **Where things are now.**
 
@@ -289,10 +296,14 @@ only those). What the next session needs to know without re-deriving it:
 | Plugin authoring | `zellij plugins …` (`src/commands.rs` `plugins`; the file work is `zellij_server::plugin_authoring` — `write`, `log_tail` — so the integration test runs the code the command runs), `zellij_utils::plugin_authoring::resolve_plugin_file`, `zellij_server::check_lua_plugin`, `/plugins` root + `AuthorPlugins` (`zellij_exports.rs` `fs_roots`, `resolve_fs_path_with_permission`), `ReloadPluginByUrl`, `ReadPluginLog` (`zellij_exports::read_plugin_log` → `log_tail`; hocus `plugin_log` and `zellij.read_plugin_log`) |
 | Shipped Lua | `BUILTIN_LUA_PLUGINS` in `zellij-utils/src/consts.rs` (`agent-exit`, `context-menu`, `agent-policy`); a builtin's chunk name is its bare tag, so its log lines are `[lua:agent-policy]` and `log_tail` matches the stem as well as the file name |
 | Pipes | `PipeMessage.pane_id` (`data.rs`, `pipe_message.proto` field 8), set in `plugins/mod.rs` `CliPipe` arm |
+| Hooks install | `src/hocus_hooks.rs` (`Files` - script, user settings, project folder; `install`/`uninstall`/`status` are path work over it), `zellij_utils::agent::{CLAUDE_HOOK_EVENTS, claude_hook_handler, claude_hook_settings}` (one event list for the installer and a spawned pane's `--settings`) |
+| Re-run | `Screen::rerun_command_pane_with_id` (`screen/mod.rs`) is the one road: `RerunCommandPane` from a plugin, and Enter in a held pane via `AdjustedInput::ReRunCommandInThisPane` → the tab's `send_to_screen` |
 
 **Proto numbers in use** (next free): plugin `CommandName` 275 / payload field 216 (next 276 /
-217); IPC `Action` oneof 156 (next 157); IPC `ClientToServerMsg` 27, `ServerToClientMsg` 20;
-`PermissionType` 21; `PaneInfo` field 30; `PipeMessage` field 8.
+217); IPC `Action` oneof 160 (`set_pane_agent` 159, `reconfigure` 160; `main` holds 155–158;
+next 161); IPC `ClientToServerMsg` 28 (`subscribe_to_events`; `main`'s
+`host_terminal_focus_changed` is 27), `ServerToClientMsg` 20; `PermissionType` 21; `PaneInfo`
+field 30; `PipeMessage` field 8.
 
 **Test recipes that cover the new surface.**
 
@@ -308,8 +319,14 @@ cargo x integration-test -- -j 16 -E 'test(a_written_hook)'
 ```
 
 The integration suite takes longer than ten minutes at `-j 16` on this machine; a foreground run
-under a ten-minute limit has to be chunked by binary, e.g. `-E 'binary(/^(scroll|search|…)$/)'`
-in three parts (about_pane…mouse, nested_*…resurrection, scroll…warp).
+under a ten-minute limit has to be chunked by binary, in three parts (the binary list as of the
+merge - `ls zellij-integration-tests/tests` is the source of truth):
+
+```sh
+cargo x integration-test -- -j 16 -E 'binary(/^(about_pane|about_plugin|app|basic|cli|clients|cold_attach|file_finder|floating_pane_overlay|focus_last_pane|hocus_agent_hooks|hocus_agent_picker|hocus_file_tools|hocus_plugin_authoring|hocus_store|hocus_tab_projects|input_fragmentation|keybind_presets|kitty_graphics|kitty_graphics_spec|misc|modes|mouse)$/)'
+cargo x integration-test -- -j 16 -E 'binary(/^(nested_fullscreen|nested_guest_modal|nested_hardening|nested_session_handling_config|nested_sessions|nested_status_hints|new_agent_modal|no_focus|no_ui_fullscreen|notifications|osc133_navigation|panes|plugins|resize|resurrection)$/)'
+cargo x integration-test -- -j 16 -E 'binary(/^(scroll|search|session|set_pane_frame_style|single_pane_tab_title|stacked_pane_list|startup_host_query|tabs|title_frame_hints|title_frame_mouse|title_frame_scroll|warp)$/)'
+```
 
 Two things learned landing the loop test, for anyone touching hooks or plugin loading:
 
@@ -327,9 +344,14 @@ Two things learned landing the loop test, for anyone touching hooks or plugin lo
   the request's own `plugin_id` (`RequestPluginPermissions(plugin_id, _)`); both new
   `lua_plugins` tests do.
 
-Known environment noise: the 19 `zellij-client web_client_tests` time out in a full `cargo x
-test` on this machine **on `main` as well** (verified in a control worktree) and pass 97/97
-when `cargo x test -p zellij-client` runs alone, so they are load-sensitive rather than broken.
+Known environment noise: the `zellij-client web_client_tests` used to time out under a full
+`cargo x test` (19 of them, load-sensitive, green alone). Since the merge, three of them fail
+deterministically - `test_full_session_flow` ("Terminal input message was not received by mock
+OS API"), `test_regular_token_uses_first_client_connected_for_new_session`,
+`test_read_only_token_uses_watcher_message_type` - **on `main` at `9463b399a` as well**
+(verified in a detached control worktree with `cargo test -p zellij-client --all-features
+web_client_tests`: 29 passed, the same 3 failed), so they are `main`'s to fix, not this
+branch's; the branch's whole diff to the web client is two `EventUpdate` arms.
 The three integration tests that were red before this branch (`hocus_tab_projects`,
 `floating_pane_overlay`'s tab-close test, `modes::switch_to_agent_mode`) are fixed under next
 step 8 below. `cli::send_command_through_the_cli` failed its snapshot once in a 12-test run
@@ -360,7 +382,9 @@ R16. What the next session should know:
   `settings.local.json`.
 
 **Next steps, in order.** Each is independently landable; the first two made Phase 3
-trustworthy, 3–5 closed the loose ends it left, and all five are done — continue from 6.
+trustworthy, 3–5 closed the loose ends it left, 6–8 the ones this handoff had recorded, and all
+eight are done — the list is empty. What is left is the roadmap's own "not recommended now"
+section and the ~580 `sleep()` calls CLAUDE.md describes; nothing here is blocking.
 
 1. **The end-to-end integration test** under "Verification" above. *(done —
    `hocus_plugin_authoring::a_written_hook_is_bound_and_fired_by_a_reporting_agent_end_to_end`:
@@ -439,3 +463,23 @@ trustworthy, 3–5 closed the loose ends it left, and all five are done — cont
    `y=0` is the screen's top row, tab bar included), and the 20%×20% overlay at `0%,0%` covered
    the "first tab shell" text the overlay test waits for. Both overlays moved off those rows;
    each binary passes whole, and the two tests 3/3 in a loop.)*
+
+**Gate state at handoff.** `cargo x ci check` after `1cf04195d`: format, lint and assets clean;
+`cargo x test` 5660/5663, the three red being `main`'s `web_client_tests` above. The
+integration suite in the three chunks above at `-j 16`, 335 tests: chunk 1 99/101, chunk 2
+128/145, chunk 3 87/89, and every red is accounted for:
+
+- the known-red list in CLAUDE.md: `misc::quit_with_keybinding`, the 17 `nested_*` tests,
+  `stacked_pane_list::a_stack_list_survives_session_resurrection`;
+- `cli::send_command_through_the_cli` - its fake command's exit banner sometimes lands in the
+  snapshot before the assertion under load; 3/3 alone;
+- `tabs::move_tab_to_right` - the status bar still shows Tab-mode hints in the snapshot. Red
+  on `main` at `9463b399a` too (control worktree, same diff), green at this branch's pre-merge
+  tip `4b2c90d5c`, and green on `main` at `ea7738dd8`, so it is `main`'s and it came in with
+  the merge. The seven `main` commits after `9463b399a` (`ea7738dd8`, a merge of
+  `investigate-intermittent-hang`: attach tracing, a plugin mouse-click fix, hocus chat-tab
+  work) landed while this session ran and are **not** merged here; `git merge-tree` says a
+  second merge conflicts only in `zellij-server/src/plugins/mod.rs`.
+
+Anything red beyond that: run the named test alone before believing it - a sibling worktree
+was running its own gate through most of this session.
