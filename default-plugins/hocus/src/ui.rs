@@ -1011,7 +1011,10 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
 
     // History and models take the top half and leave the conversation visible.
     if let Some(picker) = &state.picker {
-        let picker_rows = (body_rows / 2).max(1);
+        // Leave the chat enough room for both input rules and one text row.
+        let picker_rows = (body_rows / 2)
+            .max(1)
+            .min(body_rows.saturating_sub(3).max(1));
         let ruled = picker_rows > 1;
         render_picker(picker, body_y, picker_rows - usize::from(ruled), cols, true);
         if ruled {
@@ -1053,11 +1056,11 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
 }
 
 /// How the conversation lays out in the rows below the title: the transcript on
-/// top, a blank row, and the input box at the bottom.
+/// top, and the input box between two rules at the bottom.
 struct ChatLayout {
-    /// The tail of the wrapped input, one entry per row of the box. Each row
-    /// carries where it starts in the wrapped string, which is how the cursor
-    /// finds the cell it belongs in.
+    /// The visible window of the wrapped input, one entry per row of the box.
+    /// Each row carries where it starts in the wrapped string, which is how the
+    /// cursor finds the cell it belongs in.
     input_lines: Vec<WrappedLine>,
     transcript_rows: usize,
 }
@@ -1074,16 +1077,20 @@ fn chat_layout(state: &State, height: usize, cols: usize) -> ChatLayout {
     let all_input_lines = wrap_input(&input_text, cols);
     // Cap against the rows actually available, not just INPUT_MAX_ROWS: in a
     // minimum-height body a tall input would otherwise be laid out past the
-    // last row. The row held back is the blank one above the box.
-    let room_for_input = height.saturating_sub(1).max(1);
+    // last row. The two held back rows are the rules around the box.
+    let room_for_input = height.saturating_sub(2).max(1);
     let input_rows = all_input_lines
         .len()
         .clamp(1, INPUT_MAX_ROWS.min(room_for_input));
+    let cursor = prompt(state).chars().count() + state.input.get_cursor_position();
+    let cursor_row = all_input_lines
+        .iter()
+        .rposition(|line| line.start <= cursor)
+        .unwrap_or(0);
+    let end = (cursor_row + 1).max(input_rows).min(all_input_lines.len());
     ChatLayout {
-        // Show the tail so the box follows the cursor on a long multi-line
-        // message.
-        input_lines: all_input_lines[all_input_lines.len() - input_rows..].to_vec(),
-        transcript_rows: height.saturating_sub(1 + input_rows),
+        input_lines: all_input_lines[end - input_rows..end].to_vec(),
+        transcript_rows: height.saturating_sub(2 + input_rows),
     }
 }
 
@@ -1098,6 +1105,14 @@ fn render_chat(state: &mut State, y: usize, cols: usize, layout: &ChatLayout) {
     }
 
     let input_y = layout.input_y(y);
+    let rule = "─".repeat(cols);
+    print_text_with_coordinates(
+        Text::new(&rule).dim_range(..),
+        0,
+        input_y - 1,
+        Some(cols),
+        None,
+    );
     for (index, line) in layout.input_lines.iter().enumerate() {
         // `opaque()` paints the theme's unselected background across the whole
         // width the coordinates give, which is what makes the box read as a box
@@ -1110,6 +1125,13 @@ fn render_chat(state: &mut State, y: usize, cols: usize, layout: &ChatLayout) {
             None,
         );
     }
+    print_text_with_coordinates(
+        Text::new(&rule).dim_range(..),
+        0,
+        input_y + layout.input_lines.len(),
+        Some(cols),
+        None,
+    );
 }
 
 /// The top row: the tab bar on the left, one cell per open chat, and the status
@@ -1729,8 +1751,8 @@ fn place_cursor(state: &State, layout: &ChatLayout, input_y: usize) {
     }
 }
 
-/// The (column, row) `cursor` occupies in `lines`, or `None` when it falls above
-/// them - the box shows only its last `INPUT_MAX_ROWS` rows.
+/// The (column, row) `cursor` occupies in `lines`, or `None` when it falls outside
+/// the visible `INPUT_MAX_ROWS`-row window.
 ///
 /// The row is the last one starting at or before the cursor: one sitting exactly
 /// on a boundary belongs to the later row, which is where the next keystroke
@@ -1969,11 +1991,37 @@ mod tests {
     }
 
     #[test]
-    fn the_cursor_hides_when_it_scrolls_off_the_top_of_the_box() {
-        let lines = wrap_input("> aaa bbb ccc", 8);
-        // Only the tail is drawn, so a cursor in a row above it has no cell.
-        let tail = &lines[lines.len() - 1..];
-        assert_eq!(cursor_cell(tail, 0), None);
+    fn a_long_input_window_follows_the_cursor() {
+        let mut state = State::default();
+        state.input.set_text(
+            (0..10)
+                .map(|index| format!("line {index}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+
+        let tail = chat_layout(&state, 8, 24);
+        assert_eq!(tail.input_lines.first().unwrap().text, "line 5");
+        assert!(cursor_cell(
+            &tail.input_lines,
+            PROMPT.chars().count() + state.input.get_cursor_position()
+        )
+        .is_some());
+
+        state.input.move_to_start();
+        let head = chat_layout(&state, 8, 24);
+        assert_eq!(head.input_lines.first().unwrap().text, "> line 0");
+        assert_eq!(
+            cursor_cell(&head.input_lines, PROMPT.chars().count()),
+            Some((2, 0))
+        );
+    }
+
+    #[test]
+    fn the_input_rules_fit_inside_the_chat_layout() {
+        let layout = chat_layout(&State::default(), 4, 24);
+
+        assert_eq!(layout.transcript_rows + layout.input_lines.len() + 2, 4);
     }
 
     // -- transcript_lines ---------------------------------------------------
