@@ -4793,6 +4793,18 @@ pub enum PluginCommand {
     /// plugin that is not running this does nothing; `StartOrReloadPlugin` is the one that opens
     /// a pane. Fires `BeforeClose` on the old instance first, for state worth keeping.
     ReloadPluginByUrl(String),
+    /// The last `lines` lines of zellij's own log about the plugin `name`: what its
+    /// `zellij.log`/`print` wrote, tagged `[lua:<file>]`, and any loader error naming its file.
+    /// `name` is a plugin name as `plugin_write` spells it (`keys`, `hocus/weather`), resolved in
+    /// the user's plugin folder the way `zellij plugins log` resolves it, or a builtin's tag.
+    ///
+    /// Answers synchronously with the lines, or the reason there are none. The log file is
+    /// outside every root a plugin can read, and the server holds the only copy of its path,
+    /// which is why this is a command and not a file a plugin greps for itself.
+    ReadPluginLog {
+        name: String,
+        lines: usize,
+    },
 }
 
 /// The job id handed back by `EnqueueQueueJob`.

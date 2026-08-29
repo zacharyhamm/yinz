@@ -1199,6 +1199,7 @@ fn agent_infos(tc: &hegel::TestCase) -> AgentInfo {
         ])),
         source: tc.draw(generators::sampled_from(vec![
             AgentSource::Spawned,
+            AgentSource::Registered,
             AgentSource::Reported,
         ])),
         detail: optional_strings(tc),
@@ -1466,6 +1467,10 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             agent: optional_agent_infos(tc),
         },
         CommandType::ReloadPluginByUrl => PluginCommand::ReloadPluginByUrl(strings(tc)),
+        CommandType::ReadPluginLog => PluginCommand::ReadPluginLog {
+            name: strings(tc),
+            lines: tc.draw(generators::integers::<usize>()),
+        },
         CommandType::OpenFile => PluginCommand::OpenFile(files_to_open(tc), context(tc)),
         CommandType::OpenFileFloating => PluginCommand::OpenFileFloating(
             files_to_open(tc),

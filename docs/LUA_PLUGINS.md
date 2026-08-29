@@ -888,6 +888,10 @@ wasm plugin has preopened:
 | `/tmp` | zellij's temp folder, **shared with every other plugin and session** |
 | `/plugins` | the user's plugin folder - this guide's `~/.config/zellij/plugins/` - when the session has one |
 
+Zellij's own log, where `zellij.log` writes, is outside every root; `zellij.read_plugin_log(name,
+lines)` answers with a plugin's last `lines` lines of it - the same lines `zellij plugins log
+<name>` prints - and needs `author_plugins` rather than `read_files`.
+
 ```lua
 function M.load()
   zellij.request_permission { "read_files", "write_files" }

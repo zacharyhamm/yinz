@@ -1291,8 +1291,7 @@ impl State {
     fn project_exec_hint(&self, exit_code: Option<i32>, stderr: &[u8]) -> Option<String> {
         let head = self.pending.front()?;
         let is_project = tools::PROJECT_READ_TOOLS.contains(&head.name.as_str());
-        let is_plugin = tools::PLUGIN_FILE_TOOLS.contains(&head.name.as_str());
-        if (!is_project && !is_plugin) || exit_code != Some(2) {
+        if !is_project || exit_code != Some(2) {
             return None;
         }
         if !String::from_utf8_lossy(stderr).contains("os error 2") {
@@ -1303,8 +1302,6 @@ impl State {
             "find_files" | "search_files" => "rg",
             "git_log" | "git_show" => "git",
             "github_read" => "gh",
-            // Runs as `sh -c`, so `sh` is what failed to spawn.
-            "plugin_log" => "sh",
             _ => return None,
         };
         let install = if binary == "rg" {
@@ -1371,46 +1368,6 @@ impl State {
         self.status = Status::AwaitingPluginLoad;
         self.arm_timer(FRAME_SECONDS);
         true
-    }
-
-    /// The deferred half of `plugin_log`, the one plugin tool that still shells out: an empty
-    /// grep is the ordinary first answer for a plugin that has not logged yet, and the model
-    /// should be told how to make it say something rather than shown nothing.
-    fn plugin_tool_result(
-        head: &ToolCall,
-        exit_code: Option<i32>,
-        stdout: &[u8],
-        stderr: &[u8],
-    ) -> String {
-        let stdout = String::from_utf8_lossy(stdout);
-        let stdout = stdout.trim_end_matches('\n');
-        let stderr = String::from_utf8_lossy(stderr);
-        let stderr = stderr.trim();
-        let name = tools::Args::parse(&head.arguments)
-            .ok()
-            .and_then(|args| args.name)
-            .unwrap_or_else(|| "the plugin".to_owned());
-        let name = name.trim_end_matches(".lua").to_owned();
-
-        if exit_code == Some(0) && stdout.trim().is_empty() {
-            return format!(
-                "no log lines from {name}.lua yet. A plugin writes one with zellij.log(...) or \
-                 print(...); a load or runtime error is shown in its pane, not here."
-            );
-        }
-
-        if exit_code != Some(0) {
-            let mut result = format!("exit code: {}", exit_code.unwrap_or(-1));
-            if !stderr.is_empty() {
-                result.push_str(&format!(
-                    "\n\n{}",
-                    log::truncate_str(stderr, MAX_TOOL_OUTPUT)
-                ));
-            }
-            return result;
-        }
-
-        log::truncate_str(stdout, MAX_TOOL_OUTPUT)
     }
 
     fn project_tool_result(
@@ -1518,9 +1475,6 @@ impl State {
             Some(hint) => hint,
             None if tools::PROJECT_READ_TOOLS.contains(&head.name.as_str()) => {
                 Self::project_tool_result(head, exit_code, stdout, stderr)
-            },
-            None if tools::PLUGIN_FILE_TOOLS.contains(&head.name.as_str()) => {
-                Self::plugin_tool_result(head, exit_code, stdout, stderr)
             },
             None => {
                 let mut result = format!("exit code: {}", exit_code.unwrap_or(-1));

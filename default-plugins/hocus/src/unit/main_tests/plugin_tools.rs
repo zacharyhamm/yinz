@@ -133,15 +133,17 @@ fn a_plugin_tool_refuses_a_name_that_is_a_path() {
     }
 }
 
-/// The four that touch the plugin folder go through the host's file commands and answer at
-/// once - off wasm, with the stub's own sentence. Only `plugin_log` still shells out and waits.
+/// The four that touch the plugin folder go through the host's file commands, and the log
+/// through the host's read of its own log; all answer at once - off wasm, with the stub's own
+/// sentence.
 #[test]
-fn the_file_tools_answer_at_once_and_only_the_log_defers() {
+fn the_file_tools_and_the_log_answer_at_once() {
     for (name, arguments) in [
         ("plugin_list", "{}"),
         ("plugin_read", r#"{"name":"keys"}"#),
         ("plugin_write", r#"{"name":"keys","source":"local M = {}"}"#),
         ("plugin_reload", r#"{"name":"keys"}"#),
+        ("plugin_log", r#"{"name":"keys"}"#),
     ] {
         let mut state = plugin_state();
         assert!(
@@ -157,14 +159,6 @@ fn the_file_tools_answer_at_once_and_only_the_log_defers() {
             "{name}"
         );
     }
-
-    let mut state = plugin_state();
-    assert!(
-        !run_file_tool(&mut state, "plugin_log", r#"{"name":"keys"}"#),
-        "plugin_log must defer rather than answer"
-    );
-    assert!(matches!(state.status, Status::AwaitingCommand));
-    assert!(tool_results(&state).is_empty());
 }
 
 /// A reload whose file the host said is there: the load is asked for and the head stays
@@ -275,57 +269,4 @@ fn an_awaited_plugin_load_can_be_aborted() {
     state.timer_armed = false;
     state.on_timer(1.0);
     assert_eq!(tool_results(&state).len(), 1);
-}
-
-/// An empty grep is the ordinary first answer for a plugin that has not logged yet, and the
-/// model should be told how to make it say something rather than shown nothing.
-#[test]
-fn an_empty_log_says_how_a_plugin_writes_to_it() {
-    let mut state = plugin_state();
-    command_result(&mut state, "plugin_log", r#"{"name":"keys"}"#, 0, b"", b"");
-    let results = tool_results(&state);
-    assert!(
-        results[0].content.contains("zellij.log"),
-        "{:?}",
-        results[0].content
-    );
-}
-
-#[test]
-fn log_lines_come_back_as_they_are() {
-    let mut state = plugin_state();
-    command_result(
-        &mut state,
-        "plugin_log",
-        r#"{"name":"keys"}"#,
-        0,
-        b"INFO [lua:keys.lua] pressed t\n",
-        b"",
-    );
-    let results = tool_results(&state);
-    assert_eq!(results[0].content, "INFO [lua:keys.lua] pressed t");
-}
-
-/// Answer a plugin tool as if the host had come back with this.
-fn command_result(
-    state: &mut State,
-    name: &str,
-    arguments: &str,
-    exit: i32,
-    out: &[u8],
-    err: &[u8],
-) {
-    state.status = Status::AwaitingCommand;
-    state.pending = vec![ToolCall {
-        id: "mine".into(),
-        name: name.into(),
-        arguments: arguments.into(),
-    }]
-    .into();
-    state.on_command_result(
-        Some(exit),
-        out,
-        err,
-        &BTreeMap::from([("tool_call_id".to_owned(), "mine".to_owned())]),
-    );
 }

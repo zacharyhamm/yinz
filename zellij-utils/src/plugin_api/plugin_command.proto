@@ -262,6 +262,7 @@ enum CommandName {
   CheckLuaPlugin = 272;
   SetPaneAgent = 273;
   ReloadPluginByUrl = 274;
+  ReadPluginLog = 275;
 }
 
 message PluginCommand {
@@ -464,6 +465,7 @@ message PluginCommand {
     CheckLuaPluginPayload check_lua_plugin_payload = 213;
     SetPaneAgentPayload set_pane_agent_payload = 214;
     string reload_plugin_by_url_payload = 215;
+    ReadPluginLogPayload read_plugin_log_payload = 216;
   }
 }
 
@@ -515,6 +517,20 @@ message GrantPluginPermissionsPayload {
 message FsReadResponse {
   oneof result {
     bytes contents = 1;
+    string error = 2;
+  }
+}
+
+// The plugin's lines from zellij's own log, which is outside every root a plugin can read.
+
+message ReadPluginLogPayload {
+  string name = 1;
+  uint64 lines = 2;
+}
+
+message ReadPluginLogResponse {
+  oneof result {
+    string lines = 1;
     string error = 2;
   }
 }
