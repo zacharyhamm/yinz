@@ -148,7 +148,7 @@ line an agent in a pane runs to wait for a sibling agent to go `waiting` or `exi
 
 ### Phase 2 — The self-programming loop
 
-**R8. `/plugins` as a fifth plugin fs root + `AuthorPlugins` permission.** *(done — root and WASI preopen; writes under it need `AuthorPlugins`. hocus still writes through its shell path; switching it to `fs_write` is left, see R15c.)*
+**R8. `/plugins` as a fifth plugin fs root + `AuthorPlugins` permission.** *(done — root and WASI preopen; writes under it need `AuthorPlugins`. hocus writes through it since R15c.)*
 Add the user plugin dir (`get_user_plugin_dir`) to the preopens / `resolve_fs_path_with_permission`
 roots (`zellij_exports.rs:5139-5225`) as `/plugins`. Reading it needs `ReadFiles`; writing it needs
 a new `PermissionType::AuthorPlugins` (proto `plugin_permission.proto`, `data.rs:1172` list),
@@ -212,10 +212,7 @@ hocus-owned. Fix the `transitions.rs:775` stall at the same time: scheduled runs
 
 **R15b. hocus `agent_register` writes the record.** *(done — `agents::registered_agent` builds an `AgentSource::Registered` record (new variant, `idle` placeholder state) that `agent_register` writes through `set_pane_agent`; `manual_kinds` and its latch row stay, for the daemon's classifier.)*
 
-**R15c. hocus `plugin_write` on `fs_write`.** With the `/plugins` root in place, `plugin_write`
-can drop its shell script, the 64 KB argv cap and the hand-rolled symlink guard. Needs `fs_*`
-wrappers in `zellij-tile/src/shim.rs`, which do not exist yet (the `Fs*` commands are Lua-only
-today). Not done.
+**R15c. hocus `plugin_write` on `fs_write`.** *(done — `zellij-tile` gained `fs_read`/`fs_list`/`fs_metadata`/`fs_write`/`fs_remove`/`fs_create_dir`/`fs_rename` (and `data::FsEntry`); hocus's `plugin_write`, `plugin_read`, `plugin_list`, `plugin_reload` and its startup extension scan go through them against `/plugins` and answer synchronously. The shell script, the 64 KB argv cap and the hand-rolled symlink guard are gone; the host's root resolution is the containment. `plugin_log` still shells out - the log file is outside every plugin root.)*
 
 **R16. Richer launch specs.**
 `launch::Spec` (`launch.rs:46`) gains `env`, `permission_mode`, `resume`/`session_id`, and a

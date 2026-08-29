@@ -940,6 +940,15 @@ pub struct FileMetadata {
     pub len: u64,
 }
 
+/// One entry of an `FsList` answer: the entry's path as the plugin would name it, and its
+/// metadata - `None` when the entry exists but could not be stat'ed, which is an answer and
+/// not an error.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsEntry {
+    pub path: String,
+    pub metadata: Option<FileMetadata>,
+}
+
 impl From<Metadata> for FileMetadata {
     fn from(metadata: Metadata) -> Self {
         FileMetadata {
