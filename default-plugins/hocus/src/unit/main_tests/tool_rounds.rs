@@ -56,7 +56,16 @@ fn thinking_that_preceded_a_tool_call_survives_onto_the_message_and_the_wire() {
     state.on_chunk("hocus-1", &frame, false, None);
     state.on_chunk("hocus-1", b"", true, None);
 
-    assert!(state.transcript_cache.is_none(), "the prose cache is stale");
+    // The swap rewrites the last message in place without moving the count, so
+    // the render memo has to have been told about it by hand: the cache now
+    // covers less than the whole transcript.
+    assert!(
+        state
+            .transcript_cache
+            .as_ref()
+            .is_none_or(|cache| cache.len() < state.messages.len()),
+        "the prose cache is stale"
+    );
     assert_ne!(state.saved, state.fingerprint(), "the archive row is dirty");
     state.status = Status::Idle;
     state.autosave();

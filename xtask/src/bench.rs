@@ -13,17 +13,28 @@ pub fn bench(sh: &Shell, flags: flags::Bench) -> anyhow::Result<()> {
     println!("{}", msg);
 
     // No `ensure_plugin_assets` here: the benchmarks drive the server's render pipeline directly
-    // and never load a wasm plugin.
+    // and never load a wasm plugin. The hocus one measures its transcript wrapping natively for
+    // the same reason - it is a relative figure for comparing revisions, not a real frame time.
     //
     // The trailing `--` is what makes `cargo x bench -- --save-baseline main` reach criterion
     // rather than cargo, which rejects criterion's flags as its own.
-    cmd!(
+    //
+    // Both run even if the first fails, so one red bench does not hide the other.
+    let server = cmd!(
         sh,
         "{cargo} bench -p zellij-server --bench multi_pane_render --"
     )
     .args(&flags.args)
     .run()
-    .context(err_context)?;
+    .context(err_context);
+
+    let hocus = cmd!(sh, "{cargo} bench -p hocus --bench transcript --")
+        .args(&flags.args)
+        .run()
+        .context(err_context);
+
+    server?;
+    hocus?;
 
     Ok(())
 }

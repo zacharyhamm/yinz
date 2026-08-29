@@ -7532,7 +7532,15 @@ impl Tab {
         Ok(())
     }
 
-    pub fn rename_pane(&mut self, buf: Vec<u8>, pane_id: PaneId) -> Result<()> {
+    /// Rename a pane, reporting whether the name actually moved.
+    ///
+    /// The `bool` is what lets the caller skip the repaint and the session-state
+    /// report for a rename that changes nothing. A plugin that reasserts its own
+    /// title every render — hocus did, ten times a second while streaming a
+    /// reply — would otherwise have the screen rebuild every tab's pane manifest
+    /// and push `PaneUpdate`/`TabUpdate` at every subscribed plugin each time,
+    /// landing that traffic in the same queues the user's keystrokes travel.
+    pub fn rename_pane(&mut self, buf: Vec<u8>, pane_id: PaneId) -> Result<bool> {
         let err_context = || {
             format!(
                 "failed to update name of active pane to '{buf:?}' for pane_id {:?}",
@@ -7542,8 +7550,14 @@ impl Tab {
         let pane = self
             .get_pane_with_id_mut(pane_id)
             .with_context(err_context)?;
+        // `custom_title` is empty for a pane carrying no name of its own, which
+        // is also what an empty `buf` asks for — so this covers undoing a rename
+        // as well as restating one.
+        if pane.custom_title().unwrap_or_default().as_bytes() == buf.as_slice() {
+            return Ok(false);
+        }
         pane.rename(buf);
-        Ok(())
+        Ok(true)
     }
 
     pub fn rename_active_pane(&mut self, buf: Vec<u8>, client_id: ClientId) -> Result<()> {
