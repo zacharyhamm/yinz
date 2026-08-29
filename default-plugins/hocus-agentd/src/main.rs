@@ -687,6 +687,23 @@ impl State {
             },
             None => false,
         };
+        let previous = self.hooks.get(&pane_id).cloned();
+        // A session restarted in the same pane is a different session: its predecessor's
+        // summary describes work the user cannot get back to, and its baseline describes
+        // a screen that is gone. Checked before the feed is replaced, because the feed is
+        // the only thing that carries the old id — and swept before anything from the
+        // current event is recorded, because the first event of the new session is
+        // usually its `UserPromptSubmit`, and cleanup meant for the session that ended
+        // must not carry off the question the new one just asked.
+        let restarted = previous
+            .as_ref()
+            .is_some_and(|feed| !feed.session_id.is_empty() && feed.session_id != event.session_id);
+        if restarted {
+            self.summaries.remove(&pane_id);
+            self.summary_requests.remove(&pane_id);
+            self.summary_baselines.remove(&pane_id);
+            self.prompts.remove(&pane_id);
+        }
         // What the user asked for, kept for the summary made at the end of the turn.
         // Set on a `UserPromptSubmit` and cleared by nothing: the next prompt replaces
         // it, and a turn with no prompt behind it — a resumed session, a hook-driven
@@ -707,7 +724,6 @@ impl State {
                 },
             }
         }
-        let previous = self.hooks.get(&pane_id).cloned();
         let previous_wait = previous
             .as_ref()
             .filter(|was| was.phase == agents::HookPhase::Waiting)
@@ -734,19 +750,6 @@ impl State {
             session_id: event.session_id.clone(),
             cwd: event.cwd.clone(),
         };
-        // A session restarted in the same pane is a different session: its predecessor's
-        // summary describes work the user cannot get back to, and its baseline describes
-        // a screen that is gone. Checked before the feed is replaced, because the feed is
-        // the only thing that carries the old id.
-        let restarted = previous
-            .as_ref()
-            .is_some_and(|feed| !feed.session_id.is_empty() && feed.session_id != event.session_id);
-        if restarted {
-            self.summaries.remove(&pane_id);
-            self.summary_requests.remove(&pane_id);
-            self.summary_baselines.remove(&pane_id);
-            self.prompts.remove(&pane_id);
-        }
         let changed = previous.as_ref() != Some(&feed);
         if changed {
             self.hooks.insert(pane_id, feed.clone());
@@ -4506,6 +4509,46 @@ mod tests {
             &context(7, id),
         );
         assert!(state.summaries.is_empty());
+    }
+
+    /// But the restart takes only the old session with it. `/clear` mints a new id and
+    /// the first thing the new session says is its `UserPromptSubmit`, so the cleanup
+    /// and the question arrive in the same event — and the question is the new
+    /// session's, not the dead one's.
+    #[test]
+    fn a_restarted_sessions_own_prompt_survives_the_cleanup() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        let asked = |session: &str, prompt: &str| wire::HookEvent {
+            session_id: session.to_owned(),
+            prompt: Some(prompt.to_owned()),
+            ..hook("UserPromptSubmit")
+        };
+
+        feed(
+            &mut state,
+            7,
+            &asked("cc-session-1", "port the parser"),
+            None,
+        );
+        assert_eq!(
+            state.prompts.get(&7).map(String::as_str),
+            Some("port the parser")
+        );
+
+        feed(
+            &mut state,
+            7,
+            &asked("cc-session-2", "now write the docs"),
+            None,
+        );
+        assert_eq!(
+            state.prompts.get(&7).map(String::as_str),
+            Some("now write the docs"),
+            "the new session asked it, so the summary of its first turn must have it"
+        );
     }
 
     /// The screen must not buy a second summary for a turn the feed already described:
