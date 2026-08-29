@@ -306,6 +306,9 @@ impl State {
         }
         let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
         self.skills_scans_pending += 1;
+        self.skills_scan_seq += 1;
+        let scan_id = self.skills_scan_seq;
+        self.skills_scan_latest.insert(source, scan_id);
         run_command_with_output_limit(
             &borrowed,
             BTreeMap::new(),
@@ -313,20 +316,42 @@ impl State {
             BTreeMap::from([
                 (skills::SCAN_CONTEXT.to_owned(), "true".to_owned()),
                 (skills::SOURCE_CONTEXT.to_owned(), source.label().to_owned()),
+                (skills::SCAN_ID_CONTEXT.to_owned(), scan_id.to_string()),
             ]),
             skills::MAX_SCAN_OUTPUT,
         );
     }
 
+    /// The id of the newest scan asked for on `source`, which is the only one
+    /// whose result is applied.
+    pub(crate) fn current_scan_id(&self, source: skills::Source) -> u64 {
+        self.skills_scan_latest.get(&source).copied().unwrap_or(0)
+    }
+
     pub(crate) fn on_skill_scan_result(
         &mut self,
         source: skills::Source,
+        scan_id: u64,
         exit_code: Option<i32>,
         stdout: &[u8],
         stderr: &[u8],
     ) -> bool {
         self.skills_scans_pending = self.skills_scans_pending.saturating_sub(1);
-        if exit_code == Some(0) {
+        // A scan overtaken by a later one for the same tier answers about a
+        // folder nobody is looking at any more — the project just left, or the
+        // previous `skills_dir`. It still counted against the pending scans, so
+        // `/skills reload` is still answered once the last of them lands.
+        let stale = self.current_scan_id(source) != scan_id;
+        if stale {
+            self.log(
+                "skills_scan_stale",
+                serde_json::json!({
+                    "source": source.label(),
+                    "scan_id": scan_id,
+                    "current": self.current_scan_id(source),
+                }),
+            );
+        } else if exit_code == Some(0) {
             let listing = skills::parse_listing(source, &String::from_utf8_lossy(stdout));
             let reserved = self.reserved_command_names();
             self.skills.replace(source, listing, &reserved);
@@ -343,14 +368,16 @@ impl State {
                 ),
             );
         }
-        self.log(
-            "skills_scan",
-            serde_json::json!({
-                "source": source.label(),
-                "exit_code": exit_code,
-                "loaded": self.skills.names(),
-            }),
-        );
+        if !stale {
+            self.log(
+                "skills_scan",
+                serde_json::json!({
+                    "source": source.label(),
+                    "exit_code": exit_code,
+                    "loaded": self.skills.names(),
+                }),
+            );
+        }
         // `/skills reload` is answered once, when the last scan it started
         // has landed.
         if self.skills_announce && self.skills_scans_pending == 0 {

@@ -311,6 +311,11 @@ pub struct State {
     /// (`/skills reload`) is owed the listing when the last one lands.
     skills_scans_pending: usize,
     skills_announce: bool,
+    /// The id of the newest scan asked for, per tier, and the counter they are
+    /// drawn from. A scan answering with anything else is stale — two scans of
+    /// one tier can be out at once and answer in either order — and is dropped.
+    skills_scan_latest: BTreeMap<skills::Source, u64>,
+    skills_scan_seq: u64,
     /// The argv of the last skill scan asked for. Test-only, for the reason
     /// `last_placement` is: the host call has no reply off wasm.
     #[cfg(test)]
@@ -705,6 +710,8 @@ impl Default for State {
             skills_project_root: None,
             skills_scans_pending: 0,
             skills_announce: false,
+            skills_scan_latest: BTreeMap::new(),
+            skills_scan_seq: 0,
             #[cfg(test)]
             last_skill_scan: None,
             messages: Vec::new(),
@@ -1048,14 +1055,17 @@ impl State {
                 // Host state, like the extension scan: answered on the
                 // foreground whatever chat is up.
                 if context.contains_key(skills::SCAN_CONTEXT) {
-                    return match context
+                    let source = context
                         .get(skills::SOURCE_CONTEXT)
-                        .and_then(|label| skills::Source::parse(label))
-                    {
-                        Some(source) => {
-                            self.on_skill_scan_result(source, exit_code, &stdout, &stderr)
+                        .and_then(|label| skills::Source::parse(label));
+                    let scan_id = context
+                        .get(skills::SCAN_ID_CONTEXT)
+                        .and_then(|id| id.parse::<u64>().ok());
+                    return match (source, scan_id) {
+                        (Some(source), Some(scan_id)) => {
+                            self.on_skill_scan_result(source, scan_id, exit_code, &stdout, &stderr)
                         },
-                        None => false,
+                        _ => false,
                     };
                 }
                 match self.owner_of(&context) {
