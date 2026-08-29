@@ -2137,8 +2137,8 @@ pub const PROJECT_READ_TOOLS: [&str; 6] = [
 ///
 /// Intercepted in `run_head` for the same reason the file tools are: they need the plugin
 /// folder, which the host exposes as the `/plugins` root (and names through
-/// `get_user_plugin_dir`, for the reload URL and the permission grant). `plugin_log` alone
-/// answers later, on the host's `RunCommandResult`.
+/// `get_user_plugin_dir`, for the reload URL and the permission grant). Every one answers at
+/// once; none runs a command.
 pub const PLUGIN_TOOLS: [&str; 7] = [
     "plugin_docs",
     "plugin_check",
@@ -2148,11 +2148,6 @@ pub const PLUGIN_TOOLS: [&str; 7] = [
     "plugin_reload",
     "plugin_log",
 ];
-
-/// The one plugin tool that still shells out: `plugin_log` greps zellij's own log, a file
-/// outside every root a plugin can reach. The others go through the host's `fs_*` commands
-/// against the `/plugins` root and answer at once.
-pub const PLUGIN_FILE_TOOLS: [&str; 1] = ["plugin_log"];
 
 /// Compile `source` as the plugin `name` would be loaded, answering the compile error.
 ///
@@ -2212,11 +2207,21 @@ pub fn uncompilable_write(call: &ToolCall) -> Option<String> {
 /// How many log lines `plugin_log` shows unless asked otherwise.
 pub const PLUGIN_LOG_LINES: usize = 50;
 
-/// Where zellij's own log is: `ZELLIJ_TMP_LOG_FILE` in `zellij-utils`, spelled for a shell.
-///
-/// A plugin cannot ask the host for this path and its WASI preopens do not reach it, so the
-/// shell computes it from the same two inputs the server does - the temp folder and the uid.
-const ZELLIJ_LOG_FILE: &str = "${TMPDIR:-/tmp}/zellij-$(id -u)/zellij-log/zellij.log";
+/// What `plugin_log` says for the host's answer. An empty answer is the ordinary first one
+/// for a plugin that has not logged yet, and the model should be told how to make it say
+/// something rather than shown nothing; the host's own error - no log yet, no plugin folder -
+/// is passed on as it is.
+pub fn plugin_log_answer(name: &str, lines: Result<String, String>) -> String {
+    let name = name.trim_end_matches(".lua");
+    match lines {
+        Ok(lines) if lines.trim().is_empty() => format!(
+            "no log lines from {name}.lua yet. A plugin writes one with zellij.log(...) or \
+             print(...); a load or runtime error is shown in its pane, not here."
+        ),
+        Ok(lines) => lines.trim_end_matches('\n').to_owned(),
+        Err(error) => error,
+    }
+}
 
 /// The longest plugin name accepted, so a name cannot be used to build an unreasonable path.
 const MAX_PLUGIN_NAME_LEN: usize = 64;
@@ -2306,46 +2311,6 @@ pub fn resolve_plugin_file(dir: &str, name: Option<&str>) -> Result<String, Stri
         return Err(format!("{name:?} is not a plugin name"));
     }
     Ok(path)
-}
-
-/// The argv and environment of the one plugin tool that shells out.
-///
-/// `target` is the path `resolve_plugin_file` already checked. Nothing else here comes from the
-/// model without landing in an argument of its own.
-pub fn plugin_argv(
-    name: &str,
-    args: &Args,
-    target: &str,
-) -> Result<(Vec<String>, BTreeMap<String, String>), String> {
-    match name {
-        // The lines tagged with this plugin's file. The runtime tags a plugin's `zellij.log`
-        // and `print` output `[lua:<path>]`, and its loader errors name the path, so matching
-        // on `<name>.lua]` finds the former whether the path was given absolute or bare, and
-        // a second, looser pass on the bare file name picks up the latter.
-        "plugin_log" => {
-            let file = std::path::Path::new(target)
-                .file_name()
-                .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or_else(|| target.to_owned());
-            let lines = args.line_count.unwrap_or(PLUGIN_LOG_LINES).max(1);
-            Ok((
-                vec![
-                    "sh".to_owned(),
-                    "-c".to_owned(),
-                    format!(
-                        "f=\"{ZELLIJ_LOG_FILE}\"\nif [ ! -f \"$f\" ]; then printf '%s\\n' \"no \
-                         zellij log at $f\" >&2; exit 1; fi\nexec grep -F -- \"$1\" \"$f\" | tail \
-                         -n \"$2\""
-                    ),
-                    "sh".to_owned(),
-                    file,
-                    lines.to_string(),
-                ],
-                BTreeMap::new(),
-            ))
-        },
-        other => Err(format!("no such tool: {other}")),
-    }
 }
 
 /// The source a `plugin_write` carries, with exactly one trailing newline so the file is
@@ -2909,6 +2874,12 @@ mod host {
     /// Whether the plugin at `path` under `/plugins` is there to be loaded.
     pub fn plugin_fs_exists(path: &str) -> Result<bool, String> {
         Ok(zellij_tile::shim::fs_metadata(std::path::Path::new(path))?.is_some())
+    }
+
+    /// The last `lines` lines of zellij's log about the plugin `name`, read by the host: the
+    /// log is outside every root a plugin can reach, and the host holds its path.
+    pub fn plugin_log_tail(name: &str, lines: usize) -> Result<String, String> {
+        zellij_tile::shim::read_plugin_log(name, lines)
     }
 
     pub fn dispatch(call: &ToolCall) -> String {
@@ -3755,8 +3726,8 @@ mod host {
 #[cfg(target_arch = "wasm32")]
 pub use host::{
     dispatch, grant_permissions, new_pane_with_context, observe_plugin, plugin_fs_exists,
-    plugin_fs_list, plugin_fs_read, plugin_fs_write, reload_plugin, report_pane_agent,
-    spawn_in_checkout,
+    plugin_fs_list, plugin_fs_read, plugin_fs_write, plugin_log_tail, reload_plugin,
+    report_pane_agent, spawn_in_checkout,
 };
 
 /// What a `plugin_reload` found when it went to look: the plugin's pane, and its text.
@@ -3836,6 +3807,11 @@ pub fn plugin_fs_list(_root: &str) -> Result<Vec<zellij_tile::prelude::FsEntry>,
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn plugin_fs_exists(_path: &str) -> Result<bool, String> {
+    Err(PLUGIN_FOLDER_UNREACHABLE.to_owned())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn plugin_log_tail(_name: &str, _lines: usize) -> Result<String, String> {
     Err(PLUGIN_FOLDER_UNREACHABLE.to_owned())
 }
 

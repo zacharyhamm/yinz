@@ -43,7 +43,7 @@ fn only_a_complete_plugin_write_is_candidate_for_a_compile_refusal() {
     assert_eq!(
         uncompilable_write(&call("plugin_write", r#"{"name":"keys"}"#)),
         None,
-        "a missing source is plugin_argv's refusal, not a compile error"
+        "a missing source is plugin_source's refusal, not a compile error"
     );
     assert_eq!(
         uncompilable_write(&call("plugin_reload", r#"{"name":"keys"}"#)),
@@ -53,15 +53,6 @@ fn only_a_complete_plugin_write_is_candidate_for_a_compile_refusal() {
         compile_report("keys", "return {}").unwrap(),
         "keys.lua compiles"
     );
-}
-
-fn plugin_argv_for(
-    name: &str,
-    arguments: &str,
-) -> Result<(Vec<String>, BTreeMap<String, String>), String> {
-    let args = Args::parse(arguments).unwrap();
-    let target = resolve_plugin_file(DIR, args.name.as_deref())?;
-    plugin_argv(name, &args, &target)
 }
 
 fn args(arguments: &str) -> Args {
@@ -187,23 +178,23 @@ fn a_missing_name_or_folder_says_which_is_missing() {
     assert!(no_folder.contains("user_plugin_dir"), "{no_folder}");
 }
 
-/// The log tool greps zellij's own log for the plugin's tag. The file is the one the server
-/// writes to (`ZELLIJ_TMP_LOG_FILE`), the match is the bare file name so a plugin loaded by
-/// name and one loaded by absolute path are both found, and the count is the last argument.
+/// What the model reads from `plugin_log`: the host's lines as they are, a pointer at
+/// `zellij.log` when there are none yet, and the host's own reason when it could not look.
 #[test]
-fn the_log_tool_greps_zellijs_log_for_the_plugins_tag() {
-    let (argv, env) = plugin_argv_for("plugin_log", r#"{"name":"keys"}"#).unwrap();
-    assert_eq!(argv[0], "sh");
-    assert_eq!(argv[1], "-c");
-    assert!(argv[2].contains("zellij-log/zellij.log"), "{}", argv[2]);
-    assert!(argv[2].contains("grep -F -- \"$1\""), "{}", argv[2]);
-    assert!(argv[2].contains("tail -n \"$2\""), "{}", argv[2]);
-    assert_eq!(argv[4], "keys.lua");
-    assert_eq!(argv[5], PLUGIN_LOG_LINES.to_string());
-    assert!(env.is_empty());
-
-    let (argv, _) = plugin_argv_for("plugin_log", r#"{"name":"keys","line_count":5}"#).unwrap();
-    assert_eq!(argv[5], "5");
+fn the_log_tool_passes_lines_on_and_explains_an_empty_log() {
+    assert_eq!(
+        plugin_log_answer("keys", Ok("INFO [lua:keys.lua] pressed t\n".to_owned())),
+        "INFO [lua:keys.lua] pressed t"
+    );
+    let empty = plugin_log_answer("keys.lua", Ok(String::new()));
+    assert!(
+        empty.starts_with("no log lines from keys.lua yet") && empty.contains("zellij.log"),
+        "{empty}"
+    );
+    assert_eq!(
+        plugin_log_answer("keys", Err("no zellij log at /tmp/zellij.log".to_owned())),
+        "no zellij log at /tmp/zellij.log"
+    );
 }
 
 /// What the model reads after a reload. A pane that is not there is not a success; a pane

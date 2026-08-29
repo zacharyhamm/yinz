@@ -103,17 +103,18 @@ use zellij_utils::{
         plugin_command::{
             dump_layout_response, dump_session_layout_response, fs_list_response,
             fs_metadata_response, fs_mutate_response, fs_read_response,
-            hide_floating_panes_response, parse_layout_response, save_session_response,
-            show_floating_panes_response, ProtobufBreakPanesToNewTabResponse,
-            ProtobufBreakPanesToTabWithIdResponse, ProtobufBreakPanesToTabWithIndexResponse,
-            ProtobufCheckLuaPluginResponse, ProtobufDataApplyResponse, ProtobufDataCountResponse,
-            ProtobufDataDefineResponse, ProtobufDataFetchResponse, ProtobufDataUnwatchResponse,
-            ProtobufDataWatchResponse, ProtobufDeleteAllDeadSessionsResponse,
-            ProtobufDeleteDeadSessionResponse, ProtobufDeleteLayoutResponse,
-            ProtobufDumpLayoutResponse, ProtobufDumpSessionLayoutResponse,
-            ProtobufEditLayoutResponse, ProtobufFocusOrCreateTabResponse, ProtobufFsEntry,
-            ProtobufFsEntryList, ProtobufFsListResponse, ProtobufFsMetadataResponse,
-            ProtobufFsMutateResponse, ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse,
+            hide_floating_panes_response, parse_layout_response, read_plugin_log_response,
+            save_session_response, show_floating_panes_response,
+            ProtobufBreakPanesToNewTabResponse, ProtobufBreakPanesToTabWithIdResponse,
+            ProtobufBreakPanesToTabWithIndexResponse, ProtobufCheckLuaPluginResponse,
+            ProtobufDataApplyResponse, ProtobufDataCountResponse, ProtobufDataDefineResponse,
+            ProtobufDataFetchResponse, ProtobufDataUnwatchResponse, ProtobufDataWatchResponse,
+            ProtobufDeleteAllDeadSessionsResponse, ProtobufDeleteDeadSessionResponse,
+            ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse,
+            ProtobufDumpSessionLayoutResponse, ProtobufEditLayoutResponse,
+            ProtobufFocusOrCreateTabResponse, ProtobufFsEntry, ProtobufFsEntryList,
+            ProtobufFsListResponse, ProtobufFsMetadataResponse, ProtobufFsMutateResponse,
+            ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse,
             ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse,
             ProtobufGetPaneCwdResponse, ProtobufGetPaneGitProbeResponse,
             ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
@@ -139,8 +140,8 @@ use zellij_utils::{
             ProtobufOpenTerminalInPlaceOfPluginResponse, ProtobufOpenTerminalInPlaceResponse,
             ProtobufOpenTerminalNearPluginResponse,
             ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse, ProtobufOpenTerminalResponse,
-            ProtobufParseLayoutResponse, ProtobufPluginCommand, ProtobufRenameLayoutResponse,
-            ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse,
+            ProtobufParseLayoutResponse, ProtobufPluginCommand, ProtobufReadPluginLogResponse,
+            ProtobufRenameLayoutResponse, ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse,
             ProtobufSearchRecordingsResponse, ProtobufShowFloatingPanesResponse,
             ProtobufWarpPaneResponse,
         },
@@ -236,6 +237,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::CheckLuaPlugin { name, source } => check_lua_plugin(env, name, source),
             PluginCommand::SetPaneAgent { pane_id, agent } => set_pane_agent(env, pane_id, agent),
             PluginCommand::ReloadPluginByUrl(url) => reload_plugin_by_url(env, url)?,
+            PluginCommand::ReadPluginLog { name, lines } => read_plugin_log(env, name, lines),
             PluginCommand::GetLayoutDir => get_layout_dir(env),
             PluginCommand::GetUserPluginDir => get_user_plugin_dir(env),
             PluginCommand::GetFocusedPaneInfo => get_focused_pane_info(env),
@@ -1525,6 +1527,41 @@ fn check_lua_plugin(env: &mut PluginEnv, name: String, source: String) {
                 env.name()
             )
         })
+        .non_fatal();
+}
+
+/// The plugin `name`'s lines from zellij's own log, the way `zellij plugins log` reads them:
+/// `name` resolves in the user's plugin folder (a builtin's bare tag resolves the same way and
+/// is matched by `log_tail` on its stem), and the answer is the last `lines` matching lines.
+/// A folder that cannot be found, a name that is not a plugin name, or a log that is not there
+/// yet all come back as the error rather than as an empty answer, so "no lines yet" stays
+/// distinguishable from "could not look".
+fn read_plugin_log(env: &mut PluginEnv, name: String, lines: usize) {
+    let result = env
+        .user_plugin_dir
+        .clone()
+        .or_else(default_user_plugin_dir)
+        .ok_or_else(|| {
+            anyhow!("no plugin folder is configured; set `user_plugin_dir` in the Zellij config")
+        })
+        .and_then(|dir| {
+            zellij_utils::plugin_authoring::resolve_plugin_file(&dir, &name).map_err(|e| anyhow!(e))
+        })
+        .and_then(|path| {
+            crate::plugin_authoring::log_tail(
+                &zellij_utils::consts::ZELLIJ_TMP_LOG_FILE,
+                &path,
+                lines,
+            )
+        });
+    let response = ProtobufReadPluginLogResponse {
+        result: Some(match result {
+            Ok(lines) => read_plugin_log_response::Result::Lines(lines),
+            Err(e) => read_plugin_log_response::Result::Error(format!("{:#}", e)),
+        }),
+    };
+    wasi_write_object(env, &response.encode_to_vec())
+        .with_context(|| format!("failed to send log lines to plugin {}", env.name()))
         .non_fatal();
 }
 
@@ -7304,6 +7341,9 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         CommandType::CheckLuaPlugin => return None,
         // Reloading a plugin someone wrote is the second half of writing it.
         CommandType::ReloadPluginByUrl => PermissionType::AuthorPlugins,
+        // Reading a plugin's log lines is the authoring loop's "what did it say" step, the same
+        // act as `zellij plugins log`; it is the log of the whole server, so not `ReadFiles`.
+        CommandType::ReadPluginLog => PermissionType::AuthorPlugins,
     })
 }
 

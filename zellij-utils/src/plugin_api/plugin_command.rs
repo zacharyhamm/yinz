@@ -20,9 +20,10 @@ pub use super::generated_api::api::{
         hide_floating_panes_response, highlight_style::Style as ProtobufHighlightStyleVariant,
         list_orphaned_panes_response, new_tab_response, new_tab_unfocused_response,
         open_command_pane_in_git_checkout_payload, open_command_pane_in_git_checkout_response,
-        parse_layout_response, plugin_command::Payload, rename_layout_response,
-        save_layout_response, save_session_response, show_floating_panes_response,
-        warp_pane_response, AdoptOrphanedPanePayload, BreakPanesToNewTabPayload,
+        parse_layout_response, plugin_command::Payload, read_plugin_log_response,
+        rename_layout_response, save_layout_response, save_session_response,
+        show_floating_panes_response, warp_pane_response, AdoptOrphanedPanePayload,
+        BreakPanesToNewTabPayload,
         BreakPanesToNewTabResponse as ProtobufBreakPanesToNewTabResponse,
         BreakPanesToTabWithIdPayload,
         BreakPanesToTabWithIdResponse as ProtobufBreakPanesToTabWithIdResponse,
@@ -149,9 +150,10 @@ pub use super::generated_api::api::{
         PaneIdAndFloatingPaneCoordinates, PaneType as ProtobufPaneType, ParseLayoutPayload,
         ParseLayoutResponse as ProtobufParseLayoutResponse, PluginCommand as ProtobufPluginCommand,
         PluginMessagePayload, QueueStatusPayload,
-        QueueStatusResponse as ProtobufQueueStatusResponse, RebindKeysPayload, ReconfigurePayload,
-        RecordingSummary as ProtobufRecordingSummary, RegexHighlight as ProtobufRegexHighlight,
-        ReloadPluginPayload, RenameLayoutPayload,
+        QueueStatusResponse as ProtobufQueueStatusResponse, ReadPluginLogPayload,
+        ReadPluginLogResponse as ProtobufReadPluginLogResponse, RebindKeysPayload,
+        ReconfigurePayload, RecordingSummary as ProtobufRecordingSummary,
+        RegexHighlight as ProtobufRegexHighlight, ReloadPluginPayload, RenameLayoutPayload,
         RenameLayoutResponse as ProtobufRenameLayoutResponse, RenameTabWithIdPayload,
         RenameWebLoginTokenPayload, RenameWebTokenResponse, ReplacePaneWithExistingPanePayload,
         RequestPluginPermissionPayload, RerunCommandPanePayload, ResizePaneIdWithDirectionPayload,
@@ -2823,6 +2825,13 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for ReloadPluginByUrl"),
             },
+            Some(CommandName::ReadPluginLog) => match protobuf_plugin_command.payload {
+                Some(Payload::ReadPluginLogPayload(payload)) => Ok(PluginCommand::ReadPluginLog {
+                    name: payload.name,
+                    lines: payload.lines as usize,
+                }),
+                _ => Err("Mismatched payload for ReadPluginLog"),
+            },
             Some(CommandName::SetPaneAgent) => match protobuf_plugin_command.payload {
                 Some(Payload::SetPaneAgentPayload(payload)) => Ok(PluginCommand::SetPaneAgent {
                     pane_id: payload
@@ -5047,6 +5056,13 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 name: CommandName::ReloadPluginByUrl as i32,
                 payload: Some(Payload::ReloadPluginByUrlPayload(url)),
             }),
+            PluginCommand::ReadPluginLog { name, lines } => Ok(ProtobufPluginCommand {
+                name: CommandName::ReadPluginLog as i32,
+                payload: Some(Payload::ReadPluginLogPayload(ReadPluginLogPayload {
+                    name,
+                    lines: lines as u64,
+                })),
+            }),
             PluginCommand::SetPaneAgent { pane_id, agent } => Ok(ProtobufPluginCommand {
                 name: CommandName::SetPaneAgent as i32,
                 payload: Some(Payload::SetPaneAgentPayload(SetPaneAgentPayload {
@@ -7134,6 +7150,7 @@ mod tests {
                 | PluginCommand::CheckLuaPlugin { .. }
                 | PluginCommand::SetPaneAgent { .. }
                 | PluginCommand::ReloadPluginByUrl(_)
+                | PluginCommand::ReadPluginLog { .. }
                 | PluginCommand::Unsubscribe(_)
                 | PluginCommand::SetSelectable(_)
                 | PluginCommand::GetPluginIds

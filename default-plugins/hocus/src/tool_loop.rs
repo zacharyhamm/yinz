@@ -639,10 +639,10 @@ impl State {
 
     /// Run one of the plugin-authoring tools.
     ///
-    /// Six of the seven answer here and now: `plugin_docs` from compiled-in text, `plugin_check`
-    /// from the host's compiler, and the four that touch the plugin folder through the host's
-    /// `fs_*` commands against the `/plugins` root, which answer synchronously. `plugin_log`
-    /// alone shells out and answers later on `RunCommandResult`, exactly as the file tools do.
+    /// Every one answers here and now: `plugin_docs` from compiled-in text, `plugin_check` from
+    /// the host's compiler, `plugin_log` from the host's read of its own log, and the four that
+    /// touch the plugin folder through the host's `fs_*` commands against the `/plugins` root,
+    /// which answer synchronously.
     /// A cleared `plugin_reload` is the one that changes state rather than answering: the load
     /// is fire-and-forget, so the head stays pending until the pane has had time to show what
     /// happened.
@@ -764,29 +764,15 @@ impl State {
                     true
                 },
             },
-            _ => {
-                let (argv, env) = match tools::plugin_argv(&call.name, &args, &target) {
-                    Ok(argv) => argv,
-                    Err(error) => {
-                        self.finish_head(error);
-                        return true;
-                    },
-                };
-                let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
-                run_command_with_output_limit(
-                    &borrowed,
-                    env,
-                    // `.` for the reason spelled out in `start_project_read`: the host rewrites
-                    // a cwd under `/tmp`, `/host`, `/data` or `/cache` into the plugin's own
-                    // folder of that name, and every path in the argv is absolute anyway.
-                    std::path::PathBuf::from("."),
-                    BTreeMap::from([("tool_call_id".to_owned(), call.id.clone())]),
-                    MAX_TOOL_OUTPUT,
-                );
-                self.status = Status::AwaitingCommand;
-                self.pin_to_bottom();
-                self.arm_timer(FRAME_SECONDS);
-                false
+            "plugin_log" => {
+                let lines = args.line_count.unwrap_or(tools::PLUGIN_LOG_LINES).max(1);
+                let answer = tools::plugin_log_answer(&name, tools::plugin_log_tail(&name, lines));
+                self.finish_head(log::truncate_str(&answer, MAX_TOOL_OUTPUT));
+                true
+            },
+            other => {
+                self.finish_head(format!("no such tool: {other}"));
+                true
             },
         }
     }

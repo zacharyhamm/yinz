@@ -212,7 +212,7 @@ hocus-owned. Fix the `transitions.rs:775` stall at the same time: scheduled runs
 
 **R15b. hocus `agent_register` writes the record.** *(done — `agents::registered_agent` builds an `AgentSource::Registered` record (new variant, `idle` placeholder state) that `agent_register` writes through `set_pane_agent`; `manual_kinds` and its latch row stay, for the daemon's classifier.)*
 
-**R15c. hocus `plugin_write` on `fs_write`.** *(done — `zellij-tile` gained `fs_read`/`fs_list`/`fs_metadata`/`fs_write`/`fs_remove`/`fs_create_dir`/`fs_rename` (and `data::FsEntry`); hocus's `plugin_write`, `plugin_read`, `plugin_list`, `plugin_reload` and its startup extension scan go through them against `/plugins` and answer synchronously. The shell script, the 64 KB argv cap and the hand-rolled symlink guard are gone; the host's root resolution is the containment. `plugin_log` still shells out - the log file is outside every plugin root.)*
+**R15c. hocus `plugin_write` on `fs_write`.** *(done — `zellij-tile` gained `fs_read`/`fs_list`/`fs_metadata`/`fs_write`/`fs_remove`/`fs_create_dir`/`fs_rename` (and `data::FsEntry`); hocus's `plugin_write`, `plugin_read`, `plugin_list`, `plugin_reload` and its startup extension scan go through them against `/plugins` and answer synchronously. The shell script, the 64 KB argv cap and the hand-rolled symlink guard are gone; the host's root resolution is the containment. `plugin_log` followed under next step 5: `PluginCommand::ReadPluginLog`, the server's `log_tail`.)*
 
 **R16. Richer launch specs.** *(done — `Spec` gains `env`, `permission_mode`, `resume` and `hooks`; `launch::shape_args` is the per-kind table (claude `--permission-mode`/`--dangerously-skip-permissions`, `--resume`/`--continue`; codex `--ask-for-approval`/`--full-auto`/`--dangerously-bypass-approvals-and-sandbox`, `resume` as a leading subcommand; cursor `--force`, `--resume`/`resume`), an unknown mode being an error that names the accepted ones. `env` is an `env(1)` wrapper in the command, and `zellij_utils::agent::agent_kind_of` looks through it so the pane's record is named for the agent. A `claude` spawn is handed the hook wiring inline as `--settings`, built by `zellij_utils::agent::claude_hook_settings` — the same list `zellij hocus hooks install` writes — so a spawned pane reports its state with nothing installed.)*
 `launch::Spec` (`launch.rs:46`) gains `env`, `permission_mode`, `resume`/`session_id`, and a
@@ -287,8 +287,8 @@ listed here. What the next session needs to know without re-deriving it:
 | Plugin authoring | `zellij plugins …` (`src/commands.rs` `plugins`; the file work is `zellij_server::plugin_authoring` — `write`, `log_tail` — so the integration test runs the code the command runs), `zellij_utils::plugin_authoring::resolve_plugin_file`, `zellij_server::check_lua_plugin`, `/plugins` root + `AuthorPlugins` (`zellij_exports.rs` `fs_roots`, `resolve_fs_path_with_permission`), `ReloadPluginByUrl` |
 | Pipes | `PipeMessage.pane_id` (`data.rs`, `pipe_message.proto` field 8), set in `plugins/mod.rs` `CliPipe` arm |
 
-**Proto numbers in use** (next free): plugin `CommandName` 274 / payload field 215 (next 275 /
-216); IPC `Action` oneof 156 (next 157); IPC `ClientToServerMsg` 27, `ServerToClientMsg` 20;
+**Proto numbers in use** (next free): plugin `CommandName` 275 / payload field 216 (next 276 /
+217); IPC `Action` oneof 156 (next 157); IPC `ClientToServerMsg` 27, `ServerToClientMsg` 20;
 `PermissionType` 21; `PaneInfo` field 30; `PipeMessage` field 8.
 
 **Test recipes that cover the new surface.**
@@ -348,9 +348,8 @@ R16. What the next session should know:
   `unschedule`, and `live_chat_ids()` (the `/history` `●`).
 - Proto numbers now in use: plugin `EventType` 57 (`Hook`), event payload field 51,
   `AgentSource` 2 / IPC `AGENT_SOURCE_REGISTERED` 3.
-- Left open by design: `plugin_log` still shells out (the log file is outside every plugin
-  root); Enter in a held pane with no `agent_exit` bound restarts the command without an
-  `agent_start`; a per-project `hooks install` is unnecessary for spawned panes and still
+- Left open by design: Enter in a held pane with no `agent_exit` bound restarts the command
+  without an `agent_start`; a per-project `hooks install` is unnecessary for spawned panes and still
   writes `.claude/settings.json` (committed) for hand-started ones.
 
 **Next steps, in order.** Each is independently landable; the first two made Phase 3
@@ -394,9 +393,15 @@ trustworthy and are done, the rest are the loose ends it left — continue from 
    Tests in `main_tests::jobs`: `a_restored_job_waits_for_its_chat`,
    `reopening_a_chat_brings_its_jobs_with_it`, `closing_a_chat_tab_forgets_its_jobs`,
    `stop_jobs_clears_held_jobs_too`.)*
-5. **`plugin_log` without a shell**: the one plugin tool still on `run_command`. Either a `/log`
-   fs root (read-only, `ReadFiles`) or a `PluginCommand::ReadPluginLog { name, lines }` that
-   greps server-side — the latter is the nine-file transcription TECH_DEBT describes.
+5. **`plugin_log` without a shell**. *(done — `PluginCommand::ReadPluginLog { name, lines }`
+   (proto 275 / payload 216, `AuthorPlugins`), answered by `zellij_exports::read_plugin_log`
+   through `zellij_utils::plugin_authoring::resolve_plugin_file` and the server's
+   `plugin_authoring::log_tail`, so hocus's tool and `zellij plugins log` are one code path;
+   `zellij_tile::shim::read_plugin_log` and `zellij.read_plugin_log(name, lines)` for Lua. Chosen
+   over a `/log` fs root because `fs_read` refuses anything over 8 MiB while the log rotates at
+   16 MiB. hocus's `plugin_argv`, `PLUGIN_FILE_TOOLS`, the shell-spelt log path and the
+   `RunCommandResult` half of the tool are gone; every plugin tool answers synchronously.
+   `lua::unit_tests::reading_a_plugins_log_is_an_author_plugins_command` pins the gate.)*
 6. **`hooks install --project`** writes `.claude/settings.json` (committed) — switch it to
    `settings.local.json`, and take a `--project-dir` so a plugin can call it for a folder.
 7. **`agent_start` on Enter in a held pane** with no `agent_exit` bound

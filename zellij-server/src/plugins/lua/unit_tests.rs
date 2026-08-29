@@ -1958,6 +1958,45 @@ fn a_path_cannot_climb_out_of_its_root() {
     }
 }
 
+/// A plugin's log lines come from the server's own log, a file no root reaches, so the read is
+/// a command gated on `author_plugins` - `read_files` is not enough - and it answers whether or
+/// not the log is there yet: a missing log is the error, not an empty answer.
+#[test]
+fn reading_a_plugins_log_is_an_author_plugins_command() {
+    let dirs = FsDirs::new();
+    let body = r#"return zellij.read_plugin_log("keys", 5)"#;
+    let refused = format!(
+        "{:#}",
+        render_with_dirs(body, &dirs, file_permissions()).unwrap_err()
+    );
+    assert!(
+        refused.to_lowercase().contains("permission"),
+        "got: {refused}"
+    );
+
+    let authoring = Some([PermissionType::AuthorPlugins].into_iter().collect());
+    match render_with_dirs(body, &dirs, authoring) {
+        Ok(lines) => assert!(
+            lines.lines().all(|line| line.contains("keys")),
+            "only the plugin's own lines: {lines}"
+        ),
+        Err(e) => {
+            let e = format!("{e:#}");
+            assert!(e.contains("no zellij log at"), "got: {e}");
+        },
+    }
+    let bad_name = format!(
+        "{:#}",
+        render_with_dirs(
+            r#"return zellij.read_plugin_log("../keys", 5)"#,
+            &dirs,
+            Some([PermissionType::AuthorPlugins].into_iter().collect()),
+        )
+        .unwrap_err()
+    );
+    assert!(bad_name.contains("not a plugin name"), "got: {bad_name}");
+}
+
 #[test]
 fn a_symlink_out_of_a_root_is_followed_and_then_refused() {
     // Containment has to be checked after the link is resolved, not before: the path as written
@@ -2544,6 +2583,7 @@ fn require_without_a_folder_serves_only_zellij() {
 /// other direction. Add to this list when the shim gains a reply, and to `response.rs` with it.
 const REPLYING_COMMANDS: &[CommandType] = &[
     CommandType::CheckLuaPlugin,
+    CommandType::ReadPluginLog,
     CommandType::GetPluginIds,
     CommandType::GetZellijVersion,
     CommandType::GenerateRandomName,

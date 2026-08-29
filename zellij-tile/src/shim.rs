@@ -17,7 +17,7 @@ use zellij_utils::plugin_api::plugin_command::{
     dump_layout_response, dump_session_layout_response, fs_list_response, fs_metadata_response,
     fs_mutate_response, fs_read_response, get_focused_pane_info_response, get_pane_cwd_response,
     get_pane_git_probe_response, get_pane_running_command_response, get_session_list_response,
-    parse_layout_response, CreateTokenResponse, ListTokensResponse,
+    parse_layout_response, read_plugin_log_response, CreateTokenResponse, ListTokensResponse,
     ProtobufBreakPanesToNewTabResponse, ProtobufBreakPanesToTabWithIdResponse,
     ProtobufBreakPanesToTabWithIndexResponse, ProtobufCheckLuaPluginResponse,
     ProtobufCurrentSessionLastSavedTimeResponse, ProtobufDataApplyResponse,
@@ -49,8 +49,8 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufOpenTerminalInPlaceOfPluginResponse, ProtobufOpenTerminalInPlaceResponse,
     ProtobufOpenTerminalNearPluginResponse, ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse,
     ProtobufOpenTerminalResponse, ProtobufParseLayoutResponse, ProtobufPluginCommand,
-    ProtobufQueueStatusResponse, ProtobufRenameLayoutResponse, ProtobufSaveLayoutResponse,
-    ProtobufSaveSessionResponse, ProtobufSearchRecordingsResponse,
+    ProtobufQueueStatusResponse, ProtobufReadPluginLogResponse, ProtobufRenameLayoutResponse,
+    ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse, ProtobufSearchRecordingsResponse,
     ProtobufShowFloatingPanesResponse, ProtobufWarpPaneResponse, RenameWebTokenResponse,
     RevokeAllWebTokensResponse, RevokeTokenResponse,
 };
@@ -2434,6 +2434,22 @@ fn fs_mutate(plugin_command: PluginCommand) -> Result<(), String> {
     match response.result {
         Some(fs_mutate_response::Result::Success(_)) => Ok(()),
         Some(fs_mutate_response::Result::Error(error)) => Err(error),
+        None => Err("zellij answered with nothing".to_owned()),
+    }
+}
+
+/// The last `lines` lines of zellij's own log about the plugin `name` - what it logged, and
+/// any loader error naming its file - the way `zellij plugins log` reads them. Empty when the
+/// plugin has not logged yet; an error when the log or the plugin folder cannot be found.
+pub fn read_plugin_log(name: &str, lines: usize) -> Result<String, String> {
+    let response: ProtobufReadPluginLogResponse =
+        fs_command_response(PluginCommand::ReadPluginLog {
+            name: name.to_owned(),
+            lines,
+        })?;
+    match response.result {
+        Some(read_plugin_log_response::Result::Lines(lines)) => Ok(lines),
+        Some(read_plugin_log_response::Result::Error(error)) => Err(error),
         None => Err("zellij answered with nothing".to_owned()),
     }
 }
