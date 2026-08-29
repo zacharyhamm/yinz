@@ -249,5 +249,14 @@ fn the_scan_is_one_shell_loop_over_the_roots() {
     assert!(argv[2].contains("/*/SKILL.md"));
     assert!(argv[2].contains(&format!("head -c {}", MAX_SKILL_BYTES + 1)));
     assert!(argv[2].contains("printf '\\001%s\\002'"));
+    // A missing folder is an empty tier, but one that cannot be entered and a
+    // file that cannot be read are failures, and the script has to say so.
+    assert!(argv[2].contains("exit $status"), "{}", argv[2]);
+    assert!(
+        argv[2].contains("[ ! -r \"$root\" ] || [ ! -x \"$root\" ]"),
+        "{}",
+        argv[2]
+    );
+    assert!(argv[2].contains("if ! head -c"), "{}", argv[2]);
     assert_eq!(&argv[3..], ["sh", "/u/skills", "/p/.hocus/skills"]);
 }

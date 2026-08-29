@@ -471,17 +471,40 @@ fn slash_skills_reload_reads_both_folders_and_answers_when_both_have_landed() {
 
     let user_listing = b"\x01/plugins/hocus/skills/hello/SKILL.md\x02Say hello.\n";
     assert!(
-        !state.on_skill_scan_result(skills::Source::User, Some(0), user_listing, b""),
+        !state.on_skill_scan_result(
+            skills::Source::User,
+            state.current_scan_id(skills::Source::User),
+            Some(0),
+            user_listing,
+            b""
+        ),
         "one scan is still out"
     );
-    assert!(state.on_skill_scan_result(skills::Source::Project, Some(0), b"", b""));
+    assert!(state.on_skill_scan_result(
+        skills::Source::Project,
+        state.current_scan_id(skills::Source::Project),
+        Some(0),
+        b"",
+        b""
+    ));
     let listing = &state.messages.last().unwrap().content;
     assert!(listing.contains("/hello  Say hello.  (user)"), "{listing}");
     assert_eq!(state.skills_scans_pending, 0);
 
-    // A folder that could not be read keeps what was loaded and says why.
-    state.on_skill_scan_result(skills::Source::User, Some(2), b"", b"sh: boom\n");
+    // A folder that could not be read keeps what was loaded and says why, even
+    // when the failed scan managed to print part of a listing first.
+    state.on_skill_scan_result(
+        skills::Source::User,
+        state.current_scan_id(skills::Source::User),
+        Some(2),
+        b"\x01/plugins/hocus/skills/half/SKILL.md\x02Half.\n",
+        b"sh: boom\n",
+    );
     assert!(state.skills.get("hello").is_some());
+    assert!(
+        state.skills.get("half").is_none(),
+        "a failed scan's partial output is not loaded"
+    );
     state.run_manual("/skills");
     let listing = &state.messages.last().unwrap().content;
     assert!(
@@ -556,6 +579,69 @@ fn a_project_switch_rereads_the_project_folder_and_drops_the_old_skills() {
     state.sync_project_skills();
     assert!(state.skills.get("gone").is_none());
     assert!(state.last_skill_scan.is_none(), "nothing to read");
+}
+
+/// Two scans of one tier can be out at once, and the host may answer them in
+/// either order. Only the newest one's listing is applied: the one it overtook
+/// describes a folder nobody is looking at any more.
+#[test]
+fn a_scan_overtaken_by_a_later_one_is_ignored() {
+    let mut state = project_state();
+    settle(&mut state);
+    state.granted = true;
+
+    // The first project's scan.
+    state.sync_project_skills();
+    let first = state.current_scan_id(skills::Source::Project);
+
+    // A switch to another project starts a second one.
+    state.projects.insert(
+        "other".to_owned(),
+        projects::Project {
+            name: "other".to_owned(),
+            root: "/work/other".to_owned(),
+            remote: None,
+            worktree_status: None,
+            common_dir: None,
+            discovered: false,
+        },
+    );
+    state.active_project = Some("other".to_owned());
+    state.sync_project_skills();
+    let second = state.current_scan_id(skills::Source::Project);
+    assert_ne!(first, second);
+    assert_eq!(state.skills_scans_pending, 2);
+
+    // The second answers first, then the first lands.
+    state.on_skill_scan_result(
+        skills::Source::Project,
+        second,
+        Some(0),
+        b"\x01/work/other/.hocus/skills/new/SKILL.md\x02New.\n",
+        b"",
+    );
+    state.on_skill_scan_result(
+        skills::Source::Project,
+        first,
+        Some(0),
+        b"\x01/work/hocus/.hocus/skills/old/SKILL.md\x02Old.\n",
+        b"",
+    );
+    assert!(state.skills.get("new").is_some(), "the newest scan stands");
+    assert!(
+        state.skills.get("old").is_none(),
+        "the stale scan is dropped"
+    );
+    assert_eq!(state.skills_scans_pending, 0);
+
+    // A stale *failure* does not report an error against the live tier either.
+    state.on_skill_scan_result(skills::Source::Project, first, Some(2), b"", b"sh: boom\n");
+    assert!(
+        state.skills.errors().is_empty(),
+        "{:?}",
+        state.skills.errors()
+    );
+    assert!(state.skills.get("new").is_some());
 }
 
 /// A chat opened by a skill is titled by the line that was typed.

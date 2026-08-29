@@ -28,6 +28,11 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const SCAN_CONTEXT: &str = "hocus_skill_scan";
 /// Context key naming which tier the scan was for.
 pub const SOURCE_CONTEXT: &str = "hocus_skill_source";
+/// Context key carrying the id of the scan being answered. Two scans of the
+/// same tier can be out at once — a project switch starts one before the last
+/// has landed — and they may answer in either order, so a result names the
+/// request it belongs to and a result for anything but the newest is dropped.
+pub const SCAN_ID_CONTEXT: &str = "hocus_skill_scan_id";
 
 /// The most a body may be. A skill is re-sent on every later turn of the
 /// conversation, the same as a tool result, so a long one is a standing cost.
@@ -196,12 +201,30 @@ impl Registry {
 /// The record framing is `\x01<path>\x02<body>\n`; `head -c` one past the cap
 /// is what lets "too long" be told from "exactly at the limit" without the
 /// host reading an enormous file whole. Missing folders match nothing, which
-/// is the right answer, not an error.
+/// is the right answer, not an error — but a folder that is there and cannot be
+/// entered, or a file that cannot be read, exits non-zero, because those are the
+/// cases where an empty listing would otherwise look like an emptied folder and
+/// unload the tier.
 pub fn scan_argv(roots: &[String]) -> Vec<String> {
     let script = format!(
-        "for root in \"$@\"; do\n  for f in \"$root\"/*/SKILL.md; do\n    [ -f \"$f\" ] || \
-         continue\n    printf '\\001%s\\002' \"$f\"\n    head -c {} -- \"$f\"\n    printf \
-         '\\n'\n  done\ndone",
+        r#"status=0
+for root in "$@"; do
+  if [ -d "$root" ] && {{ [ ! -r "$root" ] || [ ! -x "$root" ]; }}; then
+    printf '%s: the folder could not be read\n' "$root" >&2
+    status=1
+    continue
+  fi
+  for f in "$root"/*/SKILL.md; do
+    [ -f "$f" ] || continue
+    printf '\001%s\002' "$f"
+    if ! head -c {} -- "$f"; then
+      printf '%s: the file could not be read\n' "$f" >&2
+      status=1
+    fi
+    printf '\n'
+  done
+done
+exit $status"#,
         MAX_SKILL_BYTES + 1
     );
     let mut argv = vec!["sh".to_owned(), "-c".to_owned(), script, "sh".to_owned()];
