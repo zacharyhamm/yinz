@@ -4402,27 +4402,15 @@ pub(crate) fn screen_thread_main(
                 screen.render(None)?;
             },
             ScreenInstruction::DesktopNotificationResponse(raw_bytes, client_id) => {
-                if let Some((terminal_id, app_wants_report, is_query, rewritten_bytes)) =
-                    denormalize_notification_response(&raw_bytes)
-                {
-                    let pane_id = PaneId::Terminal(terminal_id);
-                    // Write response to the pane if the app expects it:
-                    // capability query answers (q flag) or activation reports (r flag)
-                    if app_wants_report || is_query {
+                if let Some(response) = denormalize_notification_response(&raw_bytes) {
+                    let pane_id = PaneId::Terminal(response.terminal_id);
+                    if response.forward_to_pane {
                         if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
-                            tab.write_to_pane_id(
-                                &None,
-                                rewritten_bytes,
-                                false,
-                                pane_id,
-                                None,
-                                None,
-                            )
-                            .non_fatal();
+                            tab.write_to_pane_id(&None, response.bytes, false, pane_id, None, None)
+                                .non_fatal();
                         }
                     }
-                    // Focus the pane on activation click (not on query responses)
-                    if !is_query {
+                    if response.focus_pane {
                         screen
                             .focus_pane_with_id(pane_id, false, false, client_id)
                             .non_fatal();

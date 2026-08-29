@@ -268,19 +268,22 @@ fn osc99_namespace_denormalize_roundtrip() {
     );
 
     // Simulate a response with the namespaced ID
-    let response_payload = "i=p42r.mynotif:p=close;activated".to_string();
+    let response_payload = "i=p42r.mynotif;activated".to_string();
     let result = denormalize_notification_response(response_payload.as_bytes());
     assert!(result.is_some(), "Should successfully denormalize");
 
-    let (terminal_id, app_wants_report, is_query, response_bytes) = result.unwrap();
-    assert_eq!(terminal_id, 42, "Should extract pane_id 42");
+    let response = result.unwrap();
+    assert_eq!(response.terminal_id, 42, "Should extract pane_id 42");
     assert!(
-        app_wants_report,
-        "'r' flag in i=p42r.mynotif means app_wants_report should be true"
+        response.forward_to_pane,
+        "'r' flag in i=p42r.mynotif means the response goes back to the app"
     );
-    assert!(!is_query, "No 'q' flag means is_query should be false");
+    assert!(
+        response.focus_pane,
+        "an activation report focuses the originating pane"
+    );
 
-    let response_str = String::from_utf8_lossy(&response_bytes);
+    let response_str = String::from_utf8_lossy(&response.bytes);
     assert!(
         response_str.contains("i=mynotif"),
         "Should restore original i=mynotif, got: {:?}",
@@ -412,10 +415,12 @@ fn osc99_report_flag_roundtrip() {
         namespaced
     );
     let response = "i=p5r.myid;activated".to_string();
-    let (pane_id, wants_report, _is_query, _bytes) =
-        denormalize_notification_response(response.as_bytes()).unwrap();
-    assert_eq!(pane_id, 5);
-    assert!(wants_report, "Should detect 'r' flag as app_wants_report");
+    let response = denormalize_notification_response(response.as_bytes()).unwrap();
+    assert_eq!(response.terminal_id, 5);
+    assert!(
+        response.forward_to_pane,
+        "Should detect 'r' flag and hand the report to the app"
+    );
 
     // App sends a=focus (no report) → namespaced without 'r' flag → denormalize returns false
     let namespaced = namespace_notification_id("i=myid:p=title:a=focus", 5, false);
@@ -430,10 +435,91 @@ fn osc99_report_flag_roundtrip() {
         namespaced
     );
     let response = "i=p5.myid;activated".to_string();
-    let (pane_id, wants_report, _is_query, _bytes) =
-        denormalize_notification_response(response.as_bytes()).unwrap();
-    assert_eq!(pane_id, 5);
-    assert!(!wants_report, "No 'r' flag means app did not want report");
+    let response = denormalize_notification_response(response.as_bytes()).unwrap();
+    assert_eq!(response.terminal_id, 5);
+    assert!(
+        !response.forward_to_pane,
+        "No 'r' flag means the app is not handed a report it never asked for"
+    );
+    assert!(
+        response.focus_pane,
+        "the pane is still focused when the notification is clicked"
+    );
+}
+
+#[test]
+fn osc99_query_response_is_handed_to_the_pane_without_focusing_it() {
+    use crate::panes::grid::namespace_notification_id;
+    use crate::screen::denormalize_notification_response;
+
+    let namespaced = namespace_notification_id("i=qid:p=?", 3, false);
+    assert_eq!(
+        namespaced, "i=p3.qid:p=?",
+        "a query is namespaced and otherwise left alone"
+    );
+    let response = "i=p3.qid:p=?;a=focus,report:p=title,body".to_string();
+    let response = denormalize_notification_response(response.as_bytes()).unwrap();
+    assert_eq!(response.terminal_id, 3);
+    assert!(
+        response.forward_to_pane,
+        "the app is waiting for the answer to its query"
+    );
+    assert!(
+        !response.focus_pane,
+        "answering a query is not the user clicking a notification"
+    );
+    assert!(
+        String::from_utf8_lossy(&response.bytes).contains("i=qid:p=?"),
+        "the app's own identifier is restored, got: {:?}",
+        String::from_utf8_lossy(&response.bytes)
+    );
+}
+
+#[test]
+fn osc99_close_report_does_not_steal_focus() {
+    use crate::screen::denormalize_notification_response;
+
+    let response = denormalize_notification_response(b"i=p3.myid:p=close;").unwrap();
+    assert_eq!(response.terminal_id, 3);
+    assert!(
+        response.forward_to_pane,
+        "close events only arrive when the app asked for them with c=1"
+    );
+    assert!(
+        !response.focus_pane,
+        "dismissing a notification is not activating it"
+    );
+}
+
+#[test]
+fn osc99_liveness_answer_is_restricted_to_the_asking_pane() {
+    use crate::screen::denormalize_notification_response;
+
+    let response =
+        denormalize_notification_response(b"i=p3.myid:p=alive;p3.one,p4r.other,p3r.two").unwrap();
+    let restored = String::from_utf8_lossy(&response.bytes).to_string();
+    assert!(
+        restored.contains(";one,two"),
+        "the pane's own identifiers are restored, got: {:?}",
+        restored
+    );
+    assert!(
+        !restored.contains("other"),
+        "identifiers belonging to other panes are not disclosed, got: {:?}",
+        restored
+    );
+}
+
+#[test]
+fn osc99_response_to_an_unidentified_notification_uses_the_protocol_default() {
+    use crate::screen::denormalize_notification_response;
+
+    let response = denormalize_notification_response(b"i=p3r.;activated").unwrap();
+    assert!(
+        String::from_utf8_lossy(&response.bytes).contains("i=0"),
+        "an app that sent no identifier is answered with i=0, got: {:?}",
+        String::from_utf8_lossy(&response.bytes)
+    );
 }
 
 #[test]
