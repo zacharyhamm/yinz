@@ -266,6 +266,10 @@ impl PluginMap {
             .map(|((plugin_id, client_id), _)| (*plugin_id, *client_id))
             .collect()
     }
+    /// Whether this plugin already has an instance owned by this client.
+    pub fn contains(&self, plugin_id: PluginId, client_id: ClientId) -> bool {
+        self.plugin_assets.contains_key(&(plugin_id, client_id))
+    }
     pub fn insert(
         &mut self,
         plugin_id: PluginId,

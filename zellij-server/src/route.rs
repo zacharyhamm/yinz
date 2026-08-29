@@ -90,7 +90,22 @@ pub fn wait_for_action_completion(
             .block_on(async { tokio::time::timeout(ACTION_COMPLETION_TIMEOUT, receiver).await })
         {
             Ok(Ok(result)) => result,
-            Err(_) | Ok(Err(_)) => {
+            // The sender was dropped rather than signalled. That is not a
+            // failure and emphatically not a timeout: an action that does its
+            // own waiting — every warp does, on a budget of its own — drops the
+            // completion channel on purpose, because the thing worth waiting
+            // for is not the one this channel reports. Logging it as a timeout
+            // put an `Action WarpTab did not complete within 1s timeout` on top
+            // of every warp, successful ones included, directly over the signal
+            // anyone debugging a warp is looking for.
+            Ok(Err(_)) => ActionCompletionResult {
+                exit_status: None,
+                affected_pane_id: None,
+                affected_tab_id: None,
+                error_message: None,
+                stdout_message: None,
+            },
+            Err(_) => {
                 log::error!(
                     "Action {} did not complete within {:?} timeout",
                     action_name,
@@ -597,6 +612,38 @@ pub(crate) fn route_action(
         Action::ScrollToTop => {
             senders
                 .send_to_screen(ScreenInstruction::ScrollToTop(
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::ScrollToPreviousPrompt => {
+            senders
+                .send_to_screen(ScreenInstruction::ScrollToPreviousPrompt(
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::ScrollToNextPrompt => {
+            senders
+                .send_to_screen(ScreenInstruction::ScrollToNextPrompt(
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::SelectCommandAtScrollPosition => {
+            senders
+                .send_to_screen(ScreenInstruction::SelectCommandAtScrollPosition(
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::CopyLastCommandOutput => {
+            senders
+                .send_to_screen(ScreenInstruction::CopyLastCommandOutput(
                     client_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -1319,7 +1366,7 @@ pub(crate) fn route_action(
                 &crate::warp::current_session_name(),
                 &from_session,
                 tab_index,
-                crate::warp::WARP_TIMEOUT,
+                crate::warp::WARP_PULL_TIMEOUT,
             ) {
                 Ok(message) => {
                     send_output_to_client(cli_client_id, os_input.as_ref(), vec![message])
@@ -3034,6 +3081,14 @@ pub(crate) fn route_thread_main(
                                     single_pane,
                                     fit,
                                 },
+                                instruction,
+                                retry_queue
+                            );
+                        },
+                        ClientToServerMsg::HostTerminalFocusChanged { focused } => {
+                            let _ = send_to_screen_or_retry_queue!(
+                                senders,
+                                ScreenInstruction::HostTerminalFocusChanged(client_id, focused),
                                 instruction,
                                 retry_queue
                             );

@@ -17,13 +17,19 @@ use crate::web_protocol::control_message::{
 use crate::{remote_attach, RemoteClientError};
 use futures_util::{SinkExt, StreamExt};
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio_tungstenite::tungstenite::Message;
 use zellij_utils::{data::ConnectToSession, nested_session, pane_size::Size};
 
+/// `host_contacted` is set once a Zellij host on the other side of the
+/// terminal sends us any frame — the caller reads it after the loop to decide
+/// whether there is a host to say goodbye to.
 pub async fn run_remote_client_terminal_loop(
     os_input: Box<dyn ClientOsApi>,
     mut connections: remote_attach::WebSocketConnections,
     nested_session_name: Option<String>,
+    host_contacted: Arc<AtomicBool>,
 ) -> Result<Option<ConnectToSession>, RemoteClientError> {
     let synchronised_output = match os_input.env_variable("TERM").as_deref() {
         Some("alacritty") => Some(SyncOutput::DCS),
@@ -57,7 +63,8 @@ pub async fn run_remote_client_terminal_loop(
     }
 
     let mut nested_frame_extractor = nested_session::NestedFrameExtractor::new();
-    let mut last_heard_from_host = std::time::Instant::now();
+    let mut reannounce_scheduler =
+        nested_session::ReannounceScheduler::new(std::time::Instant::now());
     let mut reannounce_check = tokio::time::interval(std::time::Duration::from_millis(
         nested_session::reannounce_check_interval_ms(),
     ));
@@ -71,7 +78,8 @@ pub async fn run_remote_client_terminal_loop(
                     Ok(buf) if !buf.is_empty() => {
                         let (cleaned, nested_frames) = nested_frame_extractor.extract(&buf);
                         for payload_bytes in nested_frames {
-                            last_heard_from_host = std::time::Instant::now();
+                            reannounce_scheduler.note_host_contact(std::time::Instant::now());
+                            host_contacted.store(true, Ordering::Relaxed);
                             match nested_session::decode_payload(&payload_bytes) {
                                 Some(nested_session::NestedSessionMessage::Ping) => {
                                     let mut stdout = os_input.get_stdout_writer();
@@ -118,9 +126,7 @@ pub async fn run_remote_client_terminal_loop(
 
             _ = reannounce_check.tick() => {
                 if let Some(session_name) = &nested_session_name {
-                    if last_heard_from_host.elapsed()
-                        >= std::time::Duration::from_millis(nested_session::reannounce_silence_ms())
-                    {
+                    if reannounce_scheduler.on_tick(std::time::Instant::now()) {
                         announce_nested(&*os_input, session_name);
                     }
                 }

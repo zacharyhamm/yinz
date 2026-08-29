@@ -1345,11 +1345,54 @@ pub enum InputMode {
     Agent,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default, ValueEnum)]
 pub enum ThemeHue {
+    #[serde(alias = "light")]
     Light,
     #[default]
+    #[serde(alias = "dark")]
     Dark,
+}
+
+impl FromStr for ThemeHue {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            "light" => Ok(ThemeHue::Light),
+            "dark" => Ok(ThemeHue::Dark),
+            e => Err(format!(
+                "Unknown theme hue: '{}' (expected 'dark' or 'light')",
+                e
+            )),
+        }
+    }
+}
+
+impl fmt::Display for ThemeHue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ThemeHue::Light => write!(f, "light"),
+            ThemeHue::Dark => write!(f, "dark"),
+        }
+    }
+}
+
+impl From<ThemeHue> for HostTerminalThemeMode {
+    fn from(hue: ThemeHue) -> Self {
+        match hue {
+            ThemeHue::Light => HostTerminalThemeMode::Light,
+            ThemeHue::Dark => HostTerminalThemeMode::Dark,
+        }
+    }
+}
+
+impl From<HostTerminalThemeMode> for ThemeHue {
+    fn from(mode: HostTerminalThemeMode) -> Self {
+        match mode {
+            HostTerminalThemeMode::Light => ThemeHue::Light,
+            HostTerminalThemeMode::Dark => ThemeHue::Dark,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -2521,9 +2564,9 @@ pub struct TabInfo {
     pub active_swap_layout_name: Option<String>,
     /// Whether the user manually changed the layout, moving out of the swap layout scheme
     pub is_swap_layout_dirty: bool,
-    /// Row count in the viewport (including all non-ui panes, eg. will excluse the status bar)
+    /// Row count in the viewport (including all non-ui panes, eg. will exclude the status bar)
     pub viewport_rows: usize,
-    /// Column count in the viewport (including all non-ui panes, eg. will excluse the status bar)
+    /// Column count in the viewport (including all non-ui panes, eg. will exclude the status bar)
     pub viewport_columns: usize,
     /// Row count in the display area (including all panes, will typically be larger than the
     /// viewport)
@@ -4317,7 +4360,13 @@ pub enum PluginCommand {
     ChangeFloatingPanesCoordinates(Vec<(PaneId, FloatingPaneCoordinates)>),
     /// Move or resize an overlay on the session surface. The overlay's kind was decided when it
     /// was born and is not touched here.
-    ChangeOverlayCoordinates(Vec<(PaneId, FloatingPaneCoordinates)>),
+    ChangeOverlayCoordinates {
+        placements: Vec<(PaneId, FloatingPaneCoordinates)>,
+        /// The placement is a user gesture made through the plugin, so it may reclaim a position
+        /// the user dragged and a size they resized (`OverlayCarry::position_is_user_stated` /
+        /// `size_is_user_stated` on the server) rather than being overruled by them.
+        override_user_placement: bool,
+    },
     TogglePaneBorderless(PaneId),
     SetPaneBorderless(PaneId, bool),
     OpenCommandPaneNearPlugin(CommandToRun, Context),

@@ -382,6 +382,10 @@ impl StdinAnsiParser {
                     if payload.starts_with(b"99;") {
                         out.desktop_notifications
                             .push(payload.get(3..).unwrap_or_default().to_vec());
+                        // The response is consumed here; it must not also
+                        // land in an open forwarding slot, where the pane
+                        // that asked for some other reply would see it.
+                        continue;
                     } else if let Some(reply) = HostReply::from_osc_payload(&payload) {
                         out.replies.push(reply);
                     }
@@ -486,26 +490,30 @@ impl StdinAnsiParser {
             PendingPartial::None
         } else if self.partial_csi.is_empty() && self.partial_osc == [0x1b] {
             PendingPartial::LoneEsc
+        } else if (self.partial_csi.is_empty() && self.partial_osc == [0x1b, b']'])
+            || (self.partial_osc.is_empty() && self.partial_csi == [0x1b, b'['])
+        {
+            PendingPartial::BareIntroducer
         } else {
             PendingPartial::ReplyInProgress
         }
     }
 
-    pub fn finalize_lone_esc(&mut self) -> Vec<u8> {
-        if self.partial_csi.is_empty()
-            && self.partial_paste.is_empty()
-            && self.partial_osc.is_empty()
-            && self.nested_frame_extractor.partial_bytes() == [0x1b]
-        {
-            self.nested_frame_extractor.take_partial()
-        } else if self.partial_csi.is_empty()
-            && self.partial_paste.is_empty()
-            && self.nested_frame_extractor.partial_bytes().is_empty()
-            && self.partial_osc == [0x1b]
-        {
-            std::mem::take(&mut self.partial_osc)
-        } else {
-            Vec::new()
+    /// Drains a partial that should not wait for the reply flush guard: a lone
+    /// ESC or a bare `ESC [` / `ESC ]` introducer, from whichever buffer holds it.
+    /// The nested-frame extractor keeps priority, as in `pending_partial`.
+    pub fn finalize_fast_partial(&mut self) -> Vec<u8> {
+        match self.pending_partial() {
+            PendingPartial::LoneEsc | PendingPartial::BareIntroducer => {
+                if !self.nested_frame_extractor.partial_bytes().is_empty() {
+                    self.nested_frame_extractor.take_partial()
+                } else if !self.partial_osc.is_empty() {
+                    std::mem::take(&mut self.partial_osc)
+                } else {
+                    std::mem::take(&mut self.partial_csi)
+                }
+            },
+            PendingPartial::None | PendingPartial::ReplyInProgress => Vec::new(),
         }
     }
 

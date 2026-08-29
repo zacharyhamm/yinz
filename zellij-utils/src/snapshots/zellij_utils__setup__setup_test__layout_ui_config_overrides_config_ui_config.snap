@@ -1,5 +1,6 @@
 ---
 source: zellij-utils/src/setup.rs
+assertion_line: 750
 expression: "format!(\"{:#?}\", config)"
 ---
 Config {
@@ -1047,6 +1048,14 @@ Config {
                     resize: Decrease,
                     direction: None,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    ';',
+                ),
+                key_modifiers: {},
+            }: [
+                FocusLastPane,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -2345,11 +2354,27 @@ Config {
                 bare_key: Char(
                     '[',
                 ),
+                key_modifiers: {},
+            }: [
+                ScrollToPreviousPrompt,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    '[',
+                ),
                 key_modifiers: {
                     Alt,
                 },
             }: [
                 PreviousSwapLayout,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    ']',
+                ),
+                key_modifiers: {},
+            }: [
+                ScrollToNextPrompt,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -2370,6 +2395,17 @@ Config {
                 },
             }: [
                 PageScrollUp,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'c',
+                ),
+                key_modifiers: {},
+            }: [
+                CopyLastCommandOutput,
+                SwitchToMode {
+                    input_mode: Normal,
+                },
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -2583,6 +2619,14 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'm',
+                ),
+                key_modifiers: {},
+            }: [
+                SelectCommandAtScrollPosition,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -3256,11 +3300,27 @@ Config {
                 bare_key: Char(
                     '[',
                 ),
+                key_modifiers: {},
+            }: [
+                ScrollToPreviousPrompt,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    '[',
+                ),
                 key_modifiers: {
                     Alt,
                 },
             }: [
                 PreviousSwapLayout,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    ']',
+                ),
+                key_modifiers: {},
+            }: [
+                ScrollToNextPrompt,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -3491,6 +3551,14 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'm',
+                ),
+                key_modifiers: {},
+            }: [
+                SelectCommandAtScrollPosition,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -7109,6 +7177,7 @@ Config {
         theme: None,
         theme_dark: None,
         theme_light: None,
+        explicit_theme_hue: None,
         default_mode: None,
         default_shell: None,
         default_cwd: None,
@@ -7159,6 +7228,7 @@ Config {
         context_menu_on_right_click: None,
         osc133_command_selection: None,
         word_separators: None,
+        host_notification_protocol: None,
         web_server_ip: None,
         web_server_port: None,
         web_server_cert: None,

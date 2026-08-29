@@ -73,8 +73,8 @@ use log::{debug, warn};
 use zellij_utils::data::{
     ContextMenuContext, ContextMenuItem, Direction, EventType, FloatingPaneCoordinates,
     HostTerminalThemeMode, KeyWithModifier, LayoutInfo, LayoutWithError, NotificationInfo,
-    PaneInfo, RemotePaneHandoff, ResizeStrategy, SessionInfo, Styling, TabInfo, WarpedPane,
-    WarpedTab, WebSharing, HOCUS_AGENT_PANE_CONTEXT,
+    PaneInfo, RemotePaneHandoff, ResizeStrategy, SessionInfo, Styling, TabInfo, ThemeHue,
+    WarpedPane, WarpedTab, WebSharing, HOCUS_AGENT_PANE_CONTEXT,
 };
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::command::{RunCommand, TerminalAction};
@@ -86,7 +86,8 @@ use zellij_utils::input::layout::{
     TiledPaneLayout,
 };
 use zellij_utils::input::options::{
-    Clipboard, NestedSessionHandling, NotificationPosition, PaneFrameStyle,
+    Clipboard, HostNotificationProtocol, NestedSessionHandling, NotificationPosition,
+    PaneFrameStyle,
 };
 use zellij_utils::ipc::MobileStatePayload;
 use zellij_utils::pane_size::{Size, SizeInPixels};
@@ -94,7 +95,11 @@ use zellij_utils::position::Position;
 use zellij_utils::shared::clean_string_from_control_and_linebreak;
 
 use crate::background_jobs::BackgroundJob;
+use crate::notifications::NotificationProtocol;
+use crate::output::Output;
 use crate::pane_groups::PaneGroups;
+use crate::panes::grid::{namespace_notification_id, Osc99PayloadType, PendingNotification};
+use crate::panes::link_handler::LinkHandler;
 use crate::panes::terminal_pane::{BRACKETED_PASTE_BEGIN, BRACKETED_PASTE_END};
 use crate::session_layout_metadata::{PaneLayoutMetadata, SessionLayoutMetadata};
 
@@ -140,25 +145,30 @@ mod warp_ops;
 pub use instruction::ScreenInstruction;
 pub(crate) use thread_main::screen_thread_main;
 
-/// Parses a namespaced OSC 99 response and extracts the original pane ID
-/// and un-namespaced response bytes.
-///
-/// Input bytes (the termwiz OperatingSystemCommand payload after stripping "99;"):
-/// e.g. b"i=p42.mynotif" or b"i=p42.mynotif:p=close;some_data"
-///
-/// Returns Some((terminal_id, full_osc_bytes)) where full_osc_bytes is
-/// the complete reconstructed OSC 99 sequence with original identifier,
-/// ready to write to the pane's PTY.
+/// What the screen does with a host terminal's answer to a forwarded OSC 99 notification.
+pub(crate) struct NotificationResponse {
+    /// The terminal pane that sent the notification.
+    pub terminal_id: u32,
+    /// Whether the answer is written to that pane's pty: control requests (`p=?`, `close`,
+    /// `alive`) are always answered, an activation report only if the app asked for one.
+    pub forward_to_pane: bool,
+    /// Whether the pane is focused: an activation (the user clicked the notification) focuses
+    /// it, an answer to a control request does not.
+    pub focus_pane: bool,
+    /// The complete OSC 99 sequence with the app's own identifier restored.
+    pub bytes: Vec<u8>,
+}
+
 /// Denormalizes a namespaced OSC 99 response.
 ///
-/// Parses the namespaced `i=p<N>[r][q].<original_id>` format and returns:
-/// - `pane_id`: the terminal pane that originated the notification
-/// - `app_wants_report`: `r` flag — app originally requested `a=report`
-/// - `is_query`: `q` flag — this was a capability query (`p=?`)
-/// - `restored_response_bytes`: the response with the original `i=` value restored
-pub(crate) fn denormalize_notification_response(
-    payload: &[u8],
-) -> Option<(u32, bool, bool, Vec<u8>)> {
+/// Input bytes (the termwiz OperatingSystemCommand payload after stripping "99;"):
+/// e.g. b"i=p42.mynotif" or b"i=p42r.mynotif:p=close;some_data"
+///
+/// Parses the namespaced `i=p<N>[r].<original_id>` format (`r`: the app asked for
+/// `a=report`), restores the original identifier (`i=0`, the protocol's default, when the app
+/// never sent one) and, for a `p=alive` answer, keeps only the identifiers that belong to the
+/// asking pane, un-namespaced.
+pub(crate) fn denormalize_notification_response(payload: &[u8]) -> Option<NotificationResponse> {
     let payload_str = str::from_utf8(payload).ok()?;
 
     // Split into metadata and response payload on first ';'
@@ -173,42 +183,62 @@ pub(crate) fn denormalize_notification_response(
     // Find the i= key in colon-separated metadata
     let mut terminal_id = None;
     let mut app_wants_report = false;
-    let mut is_query = false;
+    let mut payload_type = Osc99PayloadType::Other;
     let mut restored_parts = Vec::new();
 
     for kv in metadata.split(':') {
         if let Some(namespaced_value) = kv.strip_prefix("i=p") {
-            // Parse "p<N>[r][q].<original_id>"
             if let Some(dot_pos) = namespaced_value.find('.') {
                 let flags_part = namespaced_value.get(..dot_pos).unwrap_or_default();
                 let original_id = namespaced_value.get(dot_pos + 1..).unwrap_or_default();
-                let pane_id_str = flags_part.trim_end_matches(['r', 'q']);
-                let flag_chars = flags_part.get(pane_id_str.len()..).unwrap_or_default();
+                let digits = flags_part
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(flags_part.len());
+                let pane_id_str = flags_part.get(..digits).unwrap_or_default();
+                let flag_chars = flags_part.get(digits..).unwrap_or_default();
                 if let Ok(pid) = pane_id_str.parse::<u32>() {
                     terminal_id = Some(pid);
                     app_wants_report = flag_chars.contains('r');
-                    is_query = flag_chars.contains('q');
-                    // Empty original_id means the app never sent an i= key;
-                    // don't inject one into the response
-                    if !original_id.is_empty() {
+                    if original_id.is_empty() {
+                        restored_parts.push("i=0".to_owned());
+                    } else {
                         restored_parts.push(format!("i={}", original_id));
                     }
                     continue;
                 }
             }
         }
+        if let Some(payload_value) = kv.strip_prefix("p=") {
+            payload_type = Osc99PayloadType::from_metadata_value(payload_value);
+        }
         restored_parts.push(kv.to_string());
     }
 
     let terminal_id = terminal_id?;
+    let response_payload = if payload_type == Osc99PayloadType::Alive {
+        let prefix_with_report = format!("p{}r.", terminal_id);
+        let prefix = format!("p{}.", terminal_id);
+        let alive_ids: Vec<&str> = response_payload
+            .trim_start_matches(';')
+            .split(',')
+            .filter_map(|id| {
+                id.strip_prefix(&prefix_with_report)
+                    .or_else(|| id.strip_prefix(&prefix))
+            })
+            .map(|id| if id.is_empty() { "0" } else { id })
+            .collect();
+        format!(";{}", alive_ids.join(","))
+    } else {
+        response_payload.to_owned()
+    };
     let restored_metadata = restored_parts.join(":");
     let full_response = format!("\x1b]99;{}{}\x1b\\", restored_metadata, response_payload);
-    Some((
+    Some(NotificationResponse {
         terminal_id,
-        app_wants_report,
-        is_query,
-        full_response.into_bytes(),
-    ))
+        forward_to_pane: app_wants_report || payload_type.is_control_request(),
+        focus_pane: !payload_type.is_control_request(),
+        bytes: full_response.into_bytes(),
+    })
 }
 
 /// Get the active tab and call a closure on it
@@ -595,6 +625,16 @@ impl BreakPanesToTabOutcome {
     }
 }
 
+/// Who decides the session's dark/light appearance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ThemePolicy {
+    /// The host terminal's reports (CSI 2031 / DSR 997) are followed.
+    Auto,
+    /// Pinned by `explicit_theme_hue` or a manual `SetDarkTheme` /
+    /// `SetLightTheme`; host reports are recorded but not applied.
+    Pinned(HostTerminalThemeMode),
+}
+
 pub(crate) struct Screen {
     /// A Bus for sending and receiving messages with the other threads.
     pub bus: Bus<ScreenInstruction>,
@@ -705,16 +745,37 @@ pub(crate) struct Screen {
     /// A warp takes two hops — ask pty to let the supervisor go, then serialize
     /// the pane once it has — and whoever is waiting on the far end has to still
     /// be reachable from the second hop.
-    pending_warps: HashMap<u32, crossbeam::channel::Sender<Result<Box<WarpedPane>, String>>>,
+    ///
+    /// The `Instant` is the last moment the second hop may *start*: the
+    /// caller's deadline less `PANE_WARP_SCREEN_RESERVE`, the same number the
+    /// pty thread was given. It is kept because serializing the pane is also
+    /// what closes it: by the time a send could report that nobody is
+    /// listening, the pane is already gone and its process unwatched. Comparing
+    /// against this before starting is the only chance to notice in time.
+    pending_warps: HashMap<
+        u32,
+        (
+            crossbeam::channel::Sender<Result<Box<WarpedPane>, String>>,
+            std::time::Instant,
+        ),
+    >,
     /// The same idea as `pending_warps`, keyed by tab id rather than terminal id
     /// because a tab's release is answered once for the whole tab — and carrying
     /// the arrangement, which was worked out before the release so that a tab
     /// that could not be rebuilt was never taken apart.
+    ///
+    /// The `Instant` is the tab-sized version of the one above: the caller's
+    /// deadline less `TAB_WARP_SCREEN_RESERVE`. Not the caller's deadline
+    /// itself — a release landing inside the reserve would pass that check and
+    /// still have the tab closed under a caller that had gone by the time the
+    /// serialization finished, which is exactly what the reserve exists to rule
+    /// out.
     pending_tab_warps: HashMap<
         usize,
         (
             crossbeam::channel::Sender<Result<Box<WarpedTab>, String>>,
             PreparedTabWarp,
+            std::time::Instant,
         ),
     >,
     session_is_mirrored: bool,
@@ -785,13 +846,31 @@ pub(crate) struct Screen {
     guest_ascend_keys: HashMap<PaneId, Vec<KeyWithModifier>>,
     host_descend_keys: Vec<KeyWithModifier>,
     host_descended: bool,
+    /// The mode the session is currently painted in (`None` until resolved).
     host_terminal_theme_mode: Option<HostTerminalThemeMode>,
+    /// The last mode the host terminal reported, recorded even while a pin
+    /// suppresses it so that unpinning can restore it.
+    last_host_reported_theme_mode: Option<HostTerminalThemeMode>,
+    theme_policy: ThemePolicy,
+    /// The `explicit_theme_hue` the session was last configured with, so a
+    /// reconfigure can tell a changed pin from an unchanged one.
+    configured_explicit_theme_hue: Option<ThemeHue>,
     host_theme_dark_styling: Option<Styling>,
     host_theme_light_styling: Option<Styling>,
     nested_session_handling: NestedSessionHandling,
     last_mobile_state_sent: HashMap<ClientId, MobileStatePayload>,
     pane_output_activity: HashMap<PaneId, Instant>,
     mobile_web_prefs: HashMap<ClientId, MobileWebPrefs>,
+    /// Whether each client's host terminal currently has keyboard focus, as reported through
+    /// DECSET 1004. A client that never reported counts as focused.
+    client_host_focused: HashMap<ClientId, bool>,
+    /// The notification protocol resolved for each client from `host_notification_protocol`
+    /// and its host terminal environment.
+    client_notification_protocols: HashMap<ClientId, NotificationProtocol>,
+    /// The configured `host_notification_protocol`, re-resolved for every client on reconfigure.
+    host_notification_protocol: HostNotificationProtocol,
+    /// Each client's whitelisted host terminal environment, kept so a reconfigure can re-resolve.
+    client_host_terminal_env: HashMap<ClientId, BTreeMap<String, String>>,
     /// Pins what `frame_now` answers, so a test can step an animation frame by frame instead of
     /// sleeping. Never set outside tests.
     #[cfg(test)]
@@ -1246,12 +1325,19 @@ impl Screen {
             host_descend_keys: vec![],
             host_descended: false,
             host_terminal_theme_mode: None,
+            last_host_reported_theme_mode: None,
+            theme_policy: ThemePolicy::Auto,
+            configured_explicit_theme_hue: None,
             host_theme_dark_styling: None,
             host_theme_light_styling: None,
             nested_session_handling,
             last_mobile_state_sent: HashMap::new(),
             pane_output_activity: HashMap::new(),
             mobile_web_prefs: HashMap::new(),
+            client_host_focused: HashMap::new(),
+            client_notification_protocols: HashMap::new(),
+            host_notification_protocol: HostNotificationProtocol::default(),
+            client_host_terminal_env: HashMap::new(),
             #[cfg(test)]
             pinned_now: None,
         }
@@ -1338,6 +1424,32 @@ impl Screen {
 
     pub fn get_first_client_id(&self) -> Option<ClientId> {
         self.active_tab_ids.keys().next().copied()
+    }
+
+    /// True when a "focused tab/pane" action has nobody to act for: `client_id` is not attached
+    /// and there is no other client either, so the fallback that
+    /// `active_tab_and_connected_client_id!` makes silently would find nothing.
+    pub fn has_no_client_to_act_for(&self, client_id: ClientId) -> bool {
+        self.get_active_tab(client_id).is_err() && self.get_first_client_id().is_none()
+    }
+
+    /// Reports `message` back to whoever issued the action (the CLI, for `zellij action ...`)
+    /// and completes `completion_tx` so the caller stops waiting.
+    pub fn report_no_client_to_act_for(
+        &self,
+        client_id: ClientId,
+        message: String,
+        completion_tx: Option<NotificationEnd>,
+    ) {
+        self.bus
+            .senders
+            .send_to_server(ServerInstruction::LogError(
+                vec![message],
+                client_id,
+                completion_tx,
+            ))
+            .context("failed to report that no client is attached")
+            .non_fatal();
     }
 
     fn resolve_tab_and_client(
@@ -1734,12 +1846,13 @@ impl Screen {
                     client_id,
                     blocking_terminal,
                 )?;
-                tab.update_input_modes()?;
-
                 if let Some(drained_clients) = drained_clients {
                     tab.visible(true)?;
                     tab.add_multiple_clients(drained_clients)?;
                 }
+                // after the drained clients have joined, so the plugins in this tab hear
+                // about their modes too and not only about the client that opened it
+                tab.update_input_modes()?;
                 // the tab keeps the size its viewers gave it here; `recompute_tab_size` below
                 // reflows it against the session surface
                 let tab_size = tab.size;
@@ -1833,8 +1946,14 @@ impl Screen {
             .tabs
             .get_mut(&tab_index)
             .with_context(|| err_context(tab_index))?;
+        // `remove_client` tells a tab's plugins nobody is looking (`visible(false)`) once
+        // the last client leaves; a client arriving in an empty tab is the other half.
+        let tab_was_empty = tab.has_no_connected_clients();
         tab.add_client(client_id, None)
             .with_context(|| err_context(tab_index))?;
+        if tab_was_empty {
+            tab.visible(true).with_context(|| err_context(tab_index))?;
+        }
         if attach_to_first_tab_on_tiled_surface && tab.are_floating_panes_visible() {
             tab.hide_floating_panes();
         }
@@ -1937,6 +2056,9 @@ impl Screen {
         self.unowned_strip_fill.remove(&client_id);
         self.last_notification_fill.remove(&client_id);
         self.pane_render_subscribers.remove(&client_id);
+        self.client_host_focused.remove(&client_id);
+        self.client_notification_protocols.remove(&client_id);
+        self.client_host_terminal_env.remove(&client_id);
         self.revert_fit_disabled_without_reference_client()
             .with_context(err_context)?;
         if let Some(prev_tab_id) = previously_active_tab_id {
@@ -2872,12 +2994,14 @@ impl Screen {
         word_separators: String,
         nested_session_handling: NestedSessionHandling,
         dangerously_enable_paste_buffer_read: bool,
+        host_notification_protocol: HostNotificationProtocol,
         client_id: ClientId,
     ) -> Result<()> {
         let should_support_arrow_fonts = !simplified_ui;
         self.arrow_fonts = should_support_arrow_fonts;
 
         // global configuration
+        self.style.colors = theme;
         self.default_mode_info.update_theme(theme);
         self.default_mode_info
             .update_rounded_corners(rounded_corners);
@@ -2914,6 +3038,7 @@ impl Screen {
         self.word_separators = word_separators;
         self.nested_session_handling = nested_session_handling;
         self.paste_buffer_read_enabled = dangerously_enable_paste_buffer_read;
+        self.set_host_notification_protocol(host_notification_protocol);
         self.default_mode_info
             .update_arrow_fonts(should_support_arrow_fonts);
         self.default_mode_info
@@ -2979,14 +3104,25 @@ impl Screen {
     }
     /// Apply a host-reported color-palette theme mode (CSI 2031 / DSR 997).
     ///
-    /// This is the Phase 2 entry-point: it
+    /// The report is always remembered (so that unpinning can restore it), but
+    /// it only repaints the session while the theme policy is `Auto`: an
+    /// `explicit_theme_hue` or a manual `SetDarkTheme` / `SetLightTheme`
+    /// outranks the host terminal.
+    pub fn update_host_terminal_theme_mode(&mut self, mode: HostTerminalThemeMode) -> Result<()> {
+        self.last_host_reported_theme_mode = Some(mode);
+        if matches!(self.theme_policy, ThemePolicy::Pinned(_)) {
+            return Ok(());
+        }
+        self.apply_theme_mode(mode)
+    }
+    /// Make `mode` the session's effective theme mode. It
     /// 1. de-duplicates against the last-known mode,
     /// 2. swaps the active palette to the configured `theme_dark` / `theme_light`
     ///    (when both are configured) by reusing the reconfigure propagation,
     /// 3. fans out an `Event::HostTerminalThemeChanged` plugin event,
     /// 4. forwards a `CSI ?997;{1|2}n` DSR onto the pty of every terminal pane
     ///    whose app opted in via `CSI ? 2031 h`.
-    pub fn update_host_terminal_theme_mode(&mut self, mode: HostTerminalThemeMode) -> Result<()> {
+    fn apply_theme_mode(&mut self, mode: HostTerminalThemeMode) -> Result<()> {
         let err_context = || "Failed to update host terminal theme mode".to_string();
 
         // dedupe
@@ -2994,6 +3130,46 @@ impl Screen {
             return Ok(());
         }
         self.host_terminal_theme_mode = Some(mode);
+        self.repaint_theme_mode(mode)?;
+
+        // fan out the plugin event
+        self.bus
+            .senders
+            .send_to_plugin(PluginInstruction::Update(vec![(
+                None,
+                None,
+                Event::HostTerminalThemeChanged(mode),
+            )]))
+            .with_context(err_context)?;
+
+        // forward DSR to opted-in terminal panes
+        let mut pty_writes: Vec<(Vec<u8>, u32)> = vec![];
+        for tab in self.tabs.values_mut() {
+            for pane_id in tab.get_all_pane_ids() {
+                if let PaneId::Terminal(terminal_id) = pane_id {
+                    if let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
+                        pane.push_color_palette_dsr(mode);
+                        for bytes in pane.drain_messages_to_pty() {
+                            pty_writes.push((bytes, terminal_id));
+                        }
+                    }
+                }
+            }
+        }
+        for (bytes, terminal_id) in pty_writes {
+            let _ = self
+                .bus
+                .senders
+                .send_to_pty_writer(PtyWriteInstruction::Write(bytes, terminal_id, None));
+        }
+
+        self.render(None)?;
+        Ok(())
+    }
+    /// Swap the active palette to the `theme_dark` / `theme_light` styling for `mode` and
+    /// push it into every tab and client, without announcing a mode change to anyone.
+    fn repaint_theme_mode(&mut self, mode: HostTerminalThemeMode) -> Result<()> {
+        let err_context = || "Failed to update host terminal theme mode".to_string();
 
         // resolve target styling
         let resolved = match mode {
@@ -3008,6 +3184,9 @@ impl Screen {
             self.host_theme_dark_styling.is_some() && self.host_theme_light_styling.is_some();
         if auto_switch_enabled {
             if let Some(theme) = resolved {
+                // Screen's own style is what later panes and the
+                // `ColorPaletteMode` guess inherit, so it tracks the swap.
+                self.style.colors = theme;
                 self.default_mode_info.update_theme(theme);
                 for tab in self.tabs.values_mut() {
                     tab.update_theme(theme);
@@ -3048,45 +3227,13 @@ impl Screen {
                 );
             }
         }
-
-        // fan out the plugin event
-        self.bus
-            .senders
-            .send_to_plugin(PluginInstruction::Update(vec![(
-                None,
-                None,
-                Event::HostTerminalThemeChanged(mode),
-            )]))
-            .with_context(err_context)?;
-
-        // forward DSR to opted-in terminal panes
-        let mut pty_writes: Vec<(Vec<u8>, u32)> = vec![];
-        for tab in self.tabs.values_mut() {
-            for pane_id in tab.get_all_pane_ids() {
-                if let PaneId::Terminal(terminal_id) = pane_id {
-                    if let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
-                        pane.push_color_palette_dsr(mode);
-                        for bytes in pane.drain_messages_to_pty() {
-                            pty_writes.push((bytes, terminal_id));
-                        }
-                    }
-                }
-            }
-        }
-        for (bytes, terminal_id) in pty_writes {
-            let _ = self
-                .bus
-                .senders
-                .send_to_pty_writer(PtyWriteInstruction::Write(bytes, terminal_id, None));
-        }
-
-        self.render(None)?;
         Ok(())
     }
     /// Apply a manual host-terminal theme mode change requested via the CLI or a
     /// keybinding. Surfaces a clear error to the CLI if the auto-switch gate
     /// (both `theme_dark` and `theme_light` configured) is not satisfied;
-    /// otherwise delegates to `update_host_terminal_theme_mode`, which dedupes,
+    /// otherwise pins the session to `mode` - a deliberate choice is not
+    /// reverted by a later host report - and applies it, which dedupes,
     /// repaints, fans out the plugin event, and forwards DSR to opted-in panes.
     pub fn apply_manual_host_terminal_theme_mode(
         &mut self,
@@ -3105,7 +3252,75 @@ impl Screen {
             }
             return Ok(());
         }
-        self.update_host_terminal_theme_mode(mode)
+        self.theme_policy = ThemePolicy::Pinned(mode);
+        self.apply_theme_mode(mode)
+    }
+    /// Resolve the session to the dark theme when a `theme_dark` /
+    /// `theme_light` pair is configured but nothing has decided the mode yet
+    /// (the host has not reported and nothing is pinned). Without this the
+    /// session would sit on the unrelated static `theme` until the first host
+    /// report. This is a default, not a pin: a later host report still wins.
+    fn resolve_default_theme_mode(&mut self) -> Result<()> {
+        if self.host_terminal_theme_mode.is_some() {
+            return Ok(());
+        }
+        if !matches!(self.theme_policy, ThemePolicy::Auto) {
+            return Ok(());
+        }
+        if self.host_theme_dark_styling.is_some() && self.host_theme_light_styling.is_some() {
+            self.apply_theme_mode(HostTerminalThemeMode::Dark)?;
+        }
+        Ok(())
+    }
+    /// Re-resolve the session's current mode against the (possibly changed)
+    /// `theme_dark` / `theme_light` definitions after a reconfigure, instead
+    /// of leaving it painted with the static theme `reconfigure` applied.
+    ///
+    /// When the mode itself is unchanged only the palette is repainted: the plugin event and
+    /// the `CSI ?997;n` DSR announce a *change* of mode, and re-sending them on every config
+    /// reload would make every opted-in app re-run its theme hooks for nothing.
+    fn reapply_effective_theme_mode(&mut self) -> Result<()> {
+        let known_mode = match self.theme_policy {
+            ThemePolicy::Pinned(mode) => Some(mode),
+            ThemePolicy::Auto => self.host_terminal_theme_mode,
+        };
+        let Some(mode) = known_mode else {
+            return Ok(());
+        };
+        if self.host_terminal_theme_mode == Some(mode) {
+            self.repaint_theme_mode(mode)?;
+            self.render(None)?;
+        } else {
+            self.apply_theme_mode(mode)?;
+        }
+        Ok(())
+    }
+    /// Apply the configured `explicit_theme_hue`: `Some` pins the session to
+    /// that hue, `None` hands authority back to the host terminal and
+    /// restores whatever it last reported. The effective mode is cleared
+    /// first so that pinning (or unpinning) to the hue the session is
+    /// already in still repaints the resolved palette rather than deduping
+    /// into a no-op and leaving the static theme on screen.
+    fn apply_configured_explicit_theme_hue(
+        &mut self,
+        explicit_theme_hue: Option<ThemeHue>,
+    ) -> Result<()> {
+        self.configured_explicit_theme_hue = explicit_theme_hue;
+        self.host_terminal_theme_mode = None;
+        match explicit_theme_hue {
+            Some(hue) => {
+                let mode = HostTerminalThemeMode::from(hue);
+                self.theme_policy = ThemePolicy::Pinned(mode);
+                self.apply_theme_mode(mode)
+            },
+            None => {
+                self.theme_policy = ThemePolicy::Auto;
+                match self.last_host_reported_theme_mode {
+                    Some(mode) => self.apply_theme_mode(mode),
+                    None => Ok(()),
+                }
+            },
+        }
     }
     pub fn toggle_pane_pinned(&mut self, client_id: ClientId) {
         active_tab_and_connected_client_id!(
@@ -3189,10 +3404,11 @@ impl Screen {
     pub fn change_overlay_coordinates(
         &mut self,
         pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
+        override_user_placement: bool,
     ) {
         for (pane_id, coordinates) in pane_ids_and_coordinates {
             if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
-                tab.change_overlay_coordinates(&pane_id, coordinates)
+                tab.change_overlay_coordinates(&pane_id, coordinates, override_user_placement)
                     .non_fatal();
             }
         }
@@ -3270,12 +3486,16 @@ impl Screen {
         let active_tab_index =
             first_client_id.and_then(|client_id| self.active_tab_ids.get(&client_id));
 
-        // Filter tabs based on optional tab_index parameter
-        let tabs_to_process: Vec<_> = self
+        // Filter tabs based on optional tab_index parameter. `self.tabs` is keyed by
+        // creation id, so walk them by position instead: a dumped or resurrected
+        // layout should keep the order the user put the tabs in, not the order they
+        // opened them in.
+        let mut tabs_to_process: Vec<_> = self
             .tabs
             .iter()
             .filter(|(idx, _)| tab_index.is_none_or(|target| **idx == target))
             .collect();
+        tabs_to_process.sort_by_key(|(_, tab)| tab.position);
 
         for (tab_index, tab) in tabs_to_process {
             let tab_is_focused = active_tab_index == Some(&tab_index);
@@ -3589,6 +3809,173 @@ impl Screen {
     }
     fn get_active_pane_id(&self, client_id: &ClientId) -> Option<PaneId> {
         self.active_pane_id(*client_id)
+    }
+
+    /// The host terminal of `client_id` gained or lost focus. Only transitions are forwarded,
+    /// and only to the client's active pane, which is left alone while another non-watcher
+    /// client whose host is focused is sitting on the same pane.
+    pub fn host_terminal_focus_changed(&mut self, client_id: ClientId, focused: bool) {
+        let was_focused = self.client_host_is_focused(&client_id);
+        self.client_host_focused.insert(client_id, focused);
+        if was_focused == focused {
+            return;
+        }
+        let Some(pane_id) = self.get_active_pane_id(&client_id) else {
+            return;
+        };
+        if self.pane_is_held_focused_by_another_client(&client_id, pane_id) {
+            return;
+        }
+        if let Ok(tab) = self.get_active_tab_mut(client_id) {
+            tab.send_host_focus_event_to_pane(pane_id, focused);
+        }
+    }
+
+    fn pane_is_held_focused_by_another_client(
+        &self,
+        client_id: &ClientId,
+        pane_id: PaneId,
+    ) -> bool {
+        self.active_tab_ids
+            .keys()
+            .filter(|other_client_id| {
+                *other_client_id != client_id && !self.watcher_clients.contains_key(other_client_id)
+            })
+            .any(|other_client_id| {
+                self.client_host_is_focused(other_client_id)
+                    && self.get_active_pane_id(other_client_id) == Some(pane_id)
+            })
+    }
+
+    fn client_host_is_focused(&self, client_id: &ClientId) -> bool {
+        self.client_host_focused
+            .get(client_id)
+            .copied()
+            .unwrap_or(true)
+    }
+
+    pub fn set_client_host_terminal_env(
+        &mut self,
+        client_id: ClientId,
+        host_terminal_env: BTreeMap<String, String>,
+    ) {
+        self.client_notification_protocols.insert(
+            client_id,
+            NotificationProtocol::resolve(self.host_notification_protocol, &host_terminal_env),
+        );
+        self.client_host_terminal_env
+            .insert(client_id, host_terminal_env);
+    }
+
+    /// Applies a (re)configured `host_notification_protocol`, re-resolving every client that
+    /// reported its host environment.
+    pub fn set_host_notification_protocol(
+        &mut self,
+        host_notification_protocol: HostNotificationProtocol,
+    ) {
+        self.host_notification_protocol = host_notification_protocol;
+        let client_ids: Vec<ClientId> = self.client_host_terminal_env.keys().copied().collect();
+        for client_id in client_ids {
+            let host_terminal_env = self
+                .client_host_terminal_env
+                .get(&client_id)
+                .cloned()
+                .unwrap_or_default();
+            self.client_notification_protocols.insert(
+                client_id,
+                NotificationProtocol::resolve(host_notification_protocol, &host_terminal_env),
+            );
+        }
+    }
+
+    fn notification_protocol_for_client(&self, client_id: &ClientId) -> NotificationProtocol {
+        self.client_notification_protocols
+            .get(client_id)
+            .copied()
+            .unwrap_or_else(|| {
+                NotificationProtocol::resolve(self.host_notification_protocol, &BTreeMap::new())
+            })
+    }
+
+    /// Sends the notifications a pane asked for to every connected client, each in the protocol
+    /// its host speaks: an OSC 99 host gets OSC 99 passed through with the identifier namespaced
+    /// to the pane, everything else gets the assembled title and body rendered by its protocol.
+    /// All clients in the app are told, not just the ones viewing the pane's tab.
+    fn forward_desktop_notifications(
+        &mut self,
+        notifications: Vec<PendingNotification>,
+        pane_id: u32,
+    ) {
+        let all_clients: Vec<ClientId> = self.connected_clients.borrow().keys().copied().collect();
+        if all_clients.is_empty() || notifications.is_empty() {
+            return;
+        }
+        let mut output = Output::default();
+        let client_set: HashSet<ClientId> = all_clients.iter().copied().collect();
+        output.add_clients(&client_set, Rc::new(RefCell::new(LinkHandler::new())), None);
+        let mut emitted_anything = false;
+        for client_id in &all_clients {
+            let protocol = self.notification_protocol_for_client(client_id);
+            for notification in &notifications {
+                let raw = match (protocol, notification) {
+                    (
+                        NotificationProtocol::Osc99,
+                        PendingNotification::Osc99 {
+                            payload,
+                            terminator,
+                            wants_report,
+                            ..
+                        },
+                    ) => {
+                        let (metadata, rest) = match payload.find(';') {
+                            Some(idx) => (
+                                payload.get(..idx).unwrap_or_default(),
+                                payload.get(idx..).unwrap_or_default(),
+                            ),
+                            None => (payload.as_str(), ""),
+                        };
+                        let namespaced_metadata =
+                            namespace_notification_id(metadata, pane_id, *wants_report);
+                        Some(format!(
+                            "\u{1b}]99;{}{}{}",
+                            namespaced_metadata, rest, terminator
+                        ))
+                    },
+                    (_, PendingNotification::Osc99 { display, .. }) => display
+                        .as_ref()
+                        .and_then(|(title, body)| protocol.render(title, body)),
+                    _ => {
+                        let (title, body) = notification.title_and_body();
+                        protocol.render(&title, &body)
+                    },
+                };
+                if let Some(raw) = raw {
+                    emitted_anything = true;
+                    output.add_post_vte_instruction_to_multiple_clients(
+                        std::iter::once(*client_id),
+                        &raw,
+                    );
+                }
+            }
+        }
+        if !emitted_anything {
+            return;
+        }
+        match output.serialize() {
+            Ok(serialized_output) if !serialized_output.is_empty() => {
+                self.bus
+                    .senders
+                    .send_to_server(ServerInstruction::Render(Some(serialized_output)))
+                    .context("failed to forward desktop notifications to host terminals")
+                    .non_fatal();
+            },
+            Ok(_) => {},
+            Err(e) => {
+                Err::<(), _>(e)
+                    .context("failed to serialize desktop notifications for host terminals")
+                    .non_fatal();
+            },
+        }
     }
 
     fn get_pane_info(&self, pane_id: PaneId) -> Option<PaneInfo> {

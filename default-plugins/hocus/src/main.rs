@@ -99,6 +99,7 @@ const LOCAL_COMMANDS: [&str; 7] = [
 const KEYS_HELP: &str = "\
 Ctrl+`        toggle hocus
 Ctrl+l        new chat, in a new tab (also /clear)
+Ctrl+o        move hocus over a different pane - the largest one you are not in
 Shift+Tab     open chats: focus the tab bar
 Up / Down     previous / next message in history
 Tab           complete a /command or @agent
@@ -596,6 +597,28 @@ pub struct State {
     /// *what they were last placed against*.
     #[cfg(test)]
     pub(crate) placed_against: (usize, usize),
+    /// The tiled pane the conversation is sitting inside, chosen with Ctrl-o. `None` is the
+    /// corner.
+    ///
+    /// A pane rather than a position, so the conversation stays *with* the pane: a terminal
+    /// resize re-tiles the layout, and `on_panes` re-places the conversation inside wherever the
+    /// pane went. Cleared when the pane is no longer on our tab - closed, or we followed a client
+    /// to another tab - at which point the corner is the only place left to be.
+    pub(crate) anchor: Option<PaneId>,
+    /// The anchor's rectangle as the last `PaneUpdate` reported it - what a re-tile is detected
+    /// against, and what the placement is computed inside of.
+    pub(crate) anchor_rect: Option<overlay::Rect>,
+    /// Every pane on our tab from the last `PaneUpdate`, our own entry included.
+    ///
+    /// What Ctrl-o ranks. `TabUpdate` reports the surface but not the panes on it, so the manifest
+    /// is the only word hocus has about where the tiled panes are, and a key can arrive at any
+    /// time after it.
+    pub(crate) tab_panes: Vec<PaneInfo>,
+    /// The last placement sent, and whether it reclaimed a user's drag.
+    ///
+    /// Test-only, for the same reason `placed_against` is: the host call has no reply.
+    #[cfg(test)]
+    pub(crate) last_placement: Option<(Vec<(PaneId, FloatingPaneCoordinates)>, bool)>,
     /// The agents pane, as it announced itself.
     ///
     /// Learned from the first `AGENT_SELECTION` rather than assumed, because a plugin
@@ -714,6 +737,11 @@ impl Default for State {
             agents_placed: true,
             #[cfg(test)]
             placed_against: (0, 0),
+            anchor: None,
+            anchor_rect: None,
+            tab_panes: Vec::new(),
+            #[cfg(test)]
+            last_placement: None,
             agents_plugin: None,
             open_hidden: false,
             active_project: None,

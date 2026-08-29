@@ -218,6 +218,12 @@ enum MouseAction {
     ResizeScrollDown {
         pane_id: PaneId,
     },
+    ScrollToPreviousPrompt {
+        pane_id: PaneId,
+    },
+    ScrollToNextPrompt {
+        pane_id: PaneId,
+    },
     UpdateHover {
         pane_id: Option<PaneId>,
         position: Option<Position>,
@@ -312,12 +318,16 @@ struct MouseEventContext {
     selecting_with_mouse: bool,
     pane_being_moved: Option<MouseDragTarget>,
     clicked_pane: Option<ClickedPaneDetails>,
+    advanced_mouse_actions: bool,
     pinned_selectable: Option<PaneId>,
     pinned_unselectable: Option<PaneId>,
     focus_follows_mouse: bool,
     mouse_click_through: bool,
     mouse_scroll_resize: bool,
     context_menu_enabled: bool,
+    /// The pane the client is descended into (a nested guest), if any. Alt+mouse over it goes
+    /// to the pane when it tracks the mouse, instead of toggling host pane groups.
+    passthrough_pane_id: Option<PaneId>,
 }
 
 fn edge_and_delta_to_strategies(
@@ -458,11 +468,12 @@ impl MouseHandler {
         tab: &mut Tab,
         event: &MouseEvent,
         client_id: ClientId,
+        passthrough_pane_id: Option<PaneId>,
     ) -> Result<MouseEffect> {
         if let Some(effect) = Self::intercept_guest_modal_mouse_event(tab, event, client_id)? {
             return Ok(effect);
         }
-        let context = Self::gather_mouse_event_context(tab, event, client_id)?;
+        let context = Self::gather_mouse_event_context(tab, event, client_id, passthrough_pane_id)?;
         let action = Self::determine_mouse_action(event, &context)?;
         Self::execute_mouse_action(tab, action, event, client_id)
     }
@@ -529,6 +540,7 @@ impl MouseHandler {
         tab: &mut Tab,
         event: &MouseEvent,
         client_id: ClientId,
+        passthrough_pane_id: Option<PaneId>,
     ) -> Result<MouseEventContext> {
         let err_context = || format!("failed to gather context for event {event:?}");
 
@@ -579,12 +591,14 @@ impl MouseHandler {
                 None
             },
             clicked_pane,
+            advanced_mouse_actions: tab.advanced_mouse_actions,
             pinned_selectable,
             pinned_unselectable,
             focus_follows_mouse: tab.focus_follows_mouse,
             mouse_click_through: tab.mouse_click_through,
             mouse_scroll_resize: tab.mouse_scroll_resize,
             context_menu_enabled: tab.context_menu_on_right_click,
+            passthrough_pane_id,
         })
     }
 
@@ -1030,6 +1044,14 @@ impl MouseHandler {
             },
             MouseAction::ResizeScrollDown { pane_id } => {
                 Self::handle_resize_scroll_down(tab, pane_id, client_id).with_context(err_context)
+            },
+            MouseAction::ScrollToPreviousPrompt { pane_id } => {
+                Self::handle_prompt_jump(tab, pane_id, true, event, client_id)
+                    .with_context(err_context)
+            },
+            MouseAction::ScrollToNextPrompt { pane_id } => {
+                Self::handle_prompt_jump(tab, pane_id, false, event, client_id)
+                    .with_context(err_context)
             },
             MouseAction::UpdateHover { pane_id, position } => {
                 Self::execute_update_hover(tab, pane_id, position, client_id)
@@ -1636,6 +1658,35 @@ impl MouseHandler {
         }
 
         if event.alt {
+            if let (Some(passthrough_pane_id), Some(details)) =
+                (ctx.passthrough_pane_id, ctx.clicked_pane.as_ref())
+            {
+                if details.pane_id == passthrough_pane_id
+                    && !details.on_frame
+                    && details.terminal_wants_mouse
+                {
+                    return Ok(MouseAction::SendToTerminal {
+                        pane_id: details.pane_id,
+                        event: *event,
+                    });
+                }
+            }
+
+            // alt+wheel jumps between shell prompts; it is one of the advanced mouse actions
+            // and is swallowed rather than scrolling when those are off
+            if event.wheel_up || event.wheel_down {
+                if !ctx.advanced_mouse_actions {
+                    return Ok(MouseAction::NoAction);
+                }
+                if let Some(pane_id) = ctx.pane_id_at_position {
+                    if event.wheel_up {
+                        return Ok(MouseAction::ScrollToPreviousPrompt { pane_id });
+                    }
+                    return Ok(MouseAction::ScrollToNextPrompt { pane_id });
+                }
+                return Ok(MouseAction::NoAction);
+            }
+
             let is_left_press = event.left && event.event_type == MouseEventType::Press;
             let is_left_motion = event.left && event.event_type == MouseEventType::Motion;
 
@@ -2084,6 +2135,39 @@ impl MouseHandler {
         Ok(MouseEffect::default())
     }
 
+    /// Alt+wheel: a pane that tracks the mouse gets the (alt-modified) wheel report, as it
+    /// would a plain wheel; otherwise the pane jumps to the previous or next shell prompt.
+    fn handle_prompt_jump(
+        tab: &mut Tab,
+        pane_id: PaneId,
+        to_previous_prompt: bool,
+        event: &MouseEvent,
+        client_id: ClientId,
+    ) -> Result<MouseEffect> {
+        let err_context =
+            || format!("failed to jump to prompt in pane {pane_id:?} for client {client_id}");
+
+        let report_for_pane = tab.get_pane_with_id(pane_id).and_then(|pane| {
+            let mut event_for_pane = *event;
+            event_for_pane.position = pane.relative_position(&event.position);
+            pane.mouse_event(&event_for_pane, client_id)
+        });
+        if let Some(report_for_pane) = report_for_pane {
+            Self::write_to_pane(tab, report_for_pane.into_bytes(), pane_id, client_id)
+                .with_context(err_context)?;
+            return Ok(MouseEffect::default());
+        }
+
+        if let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
+            if to_previous_prompt {
+                pane.scroll_to_previous_prompt(client_id);
+            } else {
+                pane.scroll_to_next_prompt(client_id);
+            }
+        }
+        Ok(MouseEffect::state_changed())
+    }
+
     pub(crate) fn handle_scrollwheel_horizontal(
         tab: &mut Tab,
         pane_id: PaneId,
@@ -2254,12 +2338,14 @@ mod tests {
             selecting_with_mouse: false,
             pane_being_moved: None,
             clicked_pane: None,
+            advanced_mouse_actions: true,
             pinned_selectable: None,
             pinned_unselectable: None,
             focus_follows_mouse: false,
             mouse_click_through: false,
             mouse_scroll_resize,
             context_menu_enabled: false,
+            passthrough_pane_id: None,
         }
     }
 

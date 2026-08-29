@@ -59,6 +59,40 @@ fn tab_with_layout_that_has_floating_panes() {
 }
 
 #[test]
+fn titles_frame_style_with_fixed_size_pane() {
+    let layout = r#"
+        layout {
+            pane split_direction="horizontal" {
+                pane name="foo" {
+                    size 7
+                }
+                pane
+            }
+        }
+    "#;
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab_with_layout(size, ModeInfo::default(), layout);
+    tab.set_pane_frames(PaneFrameStyle::Titles);
+    tab.handle_pty_bytes(0, Vec::from("I am the fixed size pane".as_bytes()))
+        .unwrap();
+    tab.handle_pty_bytes(1, Vec::from("I am the flexible pane".as_bytes()))
+        .unwrap();
+    let mut output = Output::default();
+    tab.render(&mut output, None).unwrap();
+    let snapshot = take_snapshot(
+        output.serialize().unwrap().get(&client_id).unwrap(),
+        size.rows,
+        size.cols,
+        Palette::default(),
+    );
+    assert_snapshot!(snapshot);
+}
+
+#[test]
 fn tab_with_nested_layout() {
     let layout = r#"
         layout {

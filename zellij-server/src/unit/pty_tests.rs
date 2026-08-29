@@ -43,6 +43,13 @@ struct MockOsApi {
     /// Every id the release was actually attempted for, so a test can assert it
     /// was never attempted at all.
     release_attempts: Arc<Mutex<Vec<u32>>>,
+    /// The budget each release was handed, so a test can assert the caller's
+    /// deadline reached this far down rather than stopping at a constant.
+    release_budgets: Arc<Mutex<Vec<std::time::Duration>>>,
+    /// How long each release blocks for. Stands in for a remote pane's round
+    /// trip to its broker, which is the only reason releasing a tab's panes one
+    /// at a time was ever expensive.
+    release_delay: Arc<Mutex<std::time::Duration>>,
 }
 
 impl MockOsApi {
@@ -60,6 +67,8 @@ impl MockOsApi {
             warp_refusals: Arc::new(Mutex::new(HashMap::new())),
             unreleasable: Arc::new(Mutex::new(std::collections::HashSet::new())),
             release_attempts: Arc::new(Mutex::new(Vec::new())),
+            release_budgets: Arc::new(Mutex::new(Vec::new())),
+            release_delay: Arc::new(Mutex::new(std::time::Duration::ZERO)),
         }
     }
     fn refuse_to_warp(&self, terminal_id: u32, why: &str) {
@@ -73,6 +82,13 @@ impl MockOsApi {
     }
     fn release_attempts(&self) -> Vec<u32> {
         self.release_attempts.lock().unwrap().clone()
+    }
+    fn release_budgets(&self) -> Vec<std::time::Duration> {
+        self.release_budgets.lock().unwrap().clone()
+    }
+    /// Make every release take this long, the way a round trip to a broker does.
+    fn make_each_release_take(&self, how_long: std::time::Duration) {
+        *self.release_delay.lock().unwrap() = how_long;
     }
     fn set_remote_host(&self, terminal_id: u32, host: &str) {
         self.remote_panes.lock().unwrap().insert(terminal_id);
@@ -265,8 +281,17 @@ impl ServerOsApi for MockOsApi {
             None => Ok(()),
         }
     }
-    fn release_terminal_for_warp(&self, terminal_id: u32) -> anyhow::Result<ReleasedPane> {
+    fn release_terminal_for_warp(
+        &self,
+        terminal_id: u32,
+        budget: std::time::Duration,
+    ) -> anyhow::Result<ReleasedPane> {
         self.release_attempts.lock().unwrap().push(terminal_id);
+        self.release_budgets.lock().unwrap().push(budget);
+        let delay = *self.release_delay.lock().unwrap();
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
         if self.unreleasable.lock().unwrap().contains(&terminal_id) {
             return Err(anyhow::anyhow!(
                 "the supervisor did not confirm the handoff"
@@ -1279,6 +1304,13 @@ fn pane_messages(instructions: &[ScreenInstruction]) -> HashMap<u32, String> {
         .collect()
 }
 
+/// A deadline no test will reach, so a release under test is never cut short by
+/// one. What the deadline *does* to a release is exercised on its own, by the
+/// tests that pass one already in the past.
+fn test_warp_deadline() -> std::time::Instant {
+    std::time::Instant::now() + std::time::Duration::from_secs(30)
+}
+
 #[test]
 fn a_pane_that_cannot_be_warped_is_refused_before_its_reader_is_touched() {
     // The invariant the whole feature rests on. Aborting the reader closes this
@@ -1292,7 +1324,7 @@ fn a_pane_that_cannot_be_warped_is_refused_before_its_reader_is_touched() {
 
     let error = format!(
         "{:#}",
-        pty.release_terminal_for_warp(3)
+        pty.release_terminal_for_warp(3, test_warp_deadline())
             .expect_err("an unwarpable pane must be refused")
     );
 
@@ -1324,7 +1356,7 @@ fn a_refused_pane_is_not_told_it_was_cut_loose() {
     set_warpable_terminal(&mut pty, 3);
     mock.refuse_to_warp(3, "pane 3 has no pty-host supervisor");
 
-    let released = release_pane_for_warp(&mut pty, 3, "elsewhere");
+    let released = release_pane_for_warp(&mut pty, 3, "elsewhere", test_warp_deadline());
 
     assert!(released.is_err(), "the warp should have been refused");
     let instructions = drain_screen(&screen_rx);
@@ -1350,7 +1382,7 @@ fn a_release_that_fails_after_the_check_says_so_in_the_pane() {
     set_warpable_terminal(&mut pty, 3);
     mock.fail_the_release_of(3);
 
-    let released = release_pane_for_warp(&mut pty, 3, "elsewhere");
+    let released = release_pane_for_warp(&mut pty, 3, "elsewhere", test_warp_deadline());
 
     assert!(released.is_err(), "the release should have failed");
     let instructions = drain_screen(&screen_rx);
@@ -1371,6 +1403,149 @@ fn a_release_that_fails_after_the_check_says_so_in_the_pane() {
 }
 
 #[test]
+fn a_tabs_panes_are_released_together_rather_than_one_after_another() {
+    // The bug this is here for: a tab with two remote panes could not be warped
+    // at all. Each remote release is a round trip to a broker over ssh, they
+    // were done in turn, and two of them spent the whole of `WARP_TIMEOUT`
+    // before the first word came back — so the caller reported "timed out
+    // preparing the tab to be moved" while this thread was still waiting on
+    // pane one.
+    let mock = MockOsApi::new();
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(mock.clone());
+    let terminal_ids = vec![1, 2, 3, 4];
+    for terminal_id in &terminal_ids {
+        set_warpable_terminal(&mut pty, *terminal_id);
+    }
+    let each = std::time::Duration::from_millis(300);
+    mock.make_each_release_take(each);
+
+    let started_at = std::time::Instant::now();
+    let released = release_tab_for_warp(&mut pty, terminal_ids.clone(), test_warp_deadline());
+    let took = started_at.elapsed();
+
+    assert!(
+        released.iter().all(|(_, result)| result.is_ok()),
+        "every pane should have been released: {released:?}"
+    );
+    assert_eq!(
+        mock.release_attempts().len(),
+        terminal_ids.len(),
+        "every pane is still released exactly once"
+    );
+    // Four panes at 300ms each is 1.2s in turn and one 300ms round trip
+    // together. Halfway between the two is a threshold no amount of scheduler
+    // noise crosses, and it fails outright on the sequential version.
+    assert!(
+        took < each * 2,
+        "a tab's releases must overlap: four panes at {each:?} each took {took:?}"
+    );
+}
+
+#[test]
+fn a_release_gets_what_is_left_of_the_callers_deadline_and_no_more() {
+    // The budget used to be a constant with no relation to how long the caller
+    // was actually prepared to wait, which is how a release could still be
+    // running — and then hand a tab to nobody — after the caller had given up.
+    let mock = MockOsApi::new();
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(mock.clone());
+    for terminal_id in [1, 2] {
+        set_warpable_terminal(&mut pty, terminal_id);
+    }
+    let remaining = std::time::Duration::from_millis(400);
+
+    release_tab_for_warp(&mut pty, vec![1, 2], std::time::Instant::now() + remaining);
+
+    let budgets = mock.release_budgets();
+    assert_eq!(budgets.len(), 2, "both panes were released");
+    for budget in budgets {
+        assert!(
+            budget <= remaining,
+            "a release may not be given longer than the caller will wait: {budget:?} > \
+             {remaining:?}"
+        );
+    }
+}
+
+/// A deadline the caller has already reached. What a release does with one is
+/// the whole question, so no sleeping is needed to ask it.
+fn expired_warp_deadline() -> std::time::Instant {
+    std::time::Instant::now() - std::time::Duration::from_secs(1)
+}
+
+#[test]
+fn a_pane_whose_caller_has_already_given_up_is_refused_before_its_reader_is_touched() {
+    // Screen sends a deadline that has already passed when the caller left it
+    // nothing to spend, and the pty thread can dequeue late on its own. Either
+    // way, that used to reach the backend as a budget of zero — *after* the
+    // reader was aborted — so a remote pane's socket refused the bound and the
+    // pane was stranded to answer a caller who was gone. Asked first, the pane
+    // stays exactly as it was.
+    let mock = MockOsApi::new();
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
+    set_warpable_terminal(&mut pty, 3);
+
+    let error = format!(
+        "{:#}",
+        pty.release_terminal_for_warp(3, expired_warp_deadline())
+            .expect_err("a release nobody is waiting for must be refused")
+    );
+
+    assert!(
+        error.contains("stopped waiting"),
+        "the refusal should say why, got: {error}"
+    );
+    assert!(
+        mock.release_attempts().is_empty(),
+        "nothing should have been released"
+    );
+    assert!(
+        pty.task_handles.contains_key(&3),
+        "the pane's reader must still be running — refusing after the abort is what stranded it"
+    );
+    assert!(
+        pane_messages(&drain_screen(&screen_rx)).is_empty(),
+        "a pane that was never touched has nothing to tell the user"
+    );
+}
+
+#[test]
+fn a_tab_whose_caller_has_already_given_up_is_refused_while_it_is_still_whole() {
+    // The tab-sized version, and the one with more at stake: a tab release
+    // stops every reader before it asks any backend, so a zero budget found
+    // afterwards stranded every pane in the tab at once.
+    let mock = MockOsApi::new();
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
+    for terminal_id in [1, 2] {
+        set_warpable_terminal(&mut pty, terminal_id);
+    }
+
+    let released = release_tab_for_warp(&mut pty, vec![1, 2], expired_warp_deadline());
+
+    assert_eq!(released.len(), 2, "every pane is answered");
+    for (terminal_id, result) in &released {
+        let error = result
+            .as_ref()
+            .expect_err("a release nobody is waiting for must be refused");
+        assert!(
+            error.contains("stopped waiting"),
+            "pane {terminal_id}'s refusal should say why, got: {error}"
+        );
+        assert!(
+            pty.task_handles.contains_key(terminal_id),
+            "pane {terminal_id}'s reader must still be running"
+        );
+    }
+    assert!(
+        mock.release_attempts().is_empty(),
+        "nothing should have been released"
+    );
+    assert!(
+        pane_messages(&drain_screen(&screen_rx)).is_empty(),
+        "panes that were never touched have nothing to tell the user"
+    );
+}
+
+#[test]
 fn one_unwarpable_pane_stops_a_whole_tab_being_released() {
     // Releasing panes one at a time and stopping at the first refusal would
     // answer "no" with the panes ahead of it already handed away and nothing to
@@ -1382,7 +1557,7 @@ fn one_unwarpable_pane_stops_a_whole_tab_being_released() {
     }
     mock.refuse_to_warp(3, "pane 3 has no pty-host supervisor");
 
-    let released = release_tab_for_warp(&mut pty, vec![1, 2, 3]);
+    let released = release_tab_for_warp(&mut pty, vec![1, 2, 3], test_warp_deadline());
 
     assert!(
         mock.release_attempts().is_empty(),
@@ -1418,7 +1593,7 @@ fn a_tab_release_that_fails_part_way_tells_every_pane_in_it() {
     }
     mock.fail_the_release_of(3);
 
-    release_tab_for_warp(&mut pty, vec![1, 3]);
+    release_tab_for_warp(&mut pty, vec![1, 3], test_warp_deadline());
 
     let messages = pane_messages(&drain_screen(&screen_rx));
     let orphaned = messages

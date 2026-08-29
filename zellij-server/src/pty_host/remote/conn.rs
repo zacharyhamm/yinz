@@ -404,6 +404,16 @@ impl RemoteConn {
                 self.host
             ));
         }
+        // Refused up front rather than discovered a line later: std will not
+        // bound a socket by a zero duration, and the error it gives —
+        // "cannot set a 0 duration timeout" — describes the socket rather than
+        // the situation, which is a caller that has already given up.
+        if timeout.is_zero() {
+            return Err(anyhow!(
+                "no time was left to ask {} to release this pane",
+                self.host
+            ));
+        }
         // Blocking for the rest of this call. The queues are drained by whoever
         // writes next, and after a release nobody does — a half-written frame
         // left behind would be a truncated message on a connection the next

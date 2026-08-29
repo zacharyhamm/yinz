@@ -523,6 +523,10 @@ enum ActionName {
     ToggleHostFullscreen = 108;
     FocusGuestSession = 109;
     Notify = 111;
+    ScrollToPreviousPrompt = 112;
+    ScrollToNextPrompt = 113;
+    SelectCommandAtScrollPosition = 114;
+    CopyLastCommandOutput = 115;
     reserved 110;
 }
 

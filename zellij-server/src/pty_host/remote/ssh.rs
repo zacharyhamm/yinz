@@ -54,6 +54,15 @@ const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(30);
 /// `ATTACH_RETRY_WINDOW`: it is the same situation, and the thing being waited
 /// for — a peer noticing its connection is over — is on the same timescale.
 const RESUME_RETRY_WINDOW: Duration = Duration::from_millis(1000);
+
+/// How long one reply in the resume handshake may take to arrive.
+///
+/// Two round trips over a forward that is already up, so seconds is generous —
+/// and a bound is the point rather than the number. Before there was one, a
+/// forward whose ssh was alive locally but dead on the wire held the first
+/// resume attempt until TCP itself gave up, and the fallback that rebuilds the
+/// forward was never reached. See `RemoteHosts::resume_through_forward`.
+const RESUME_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 const RESUME_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
 /// A refusal that says whether waiting could change the answer.
@@ -398,16 +407,66 @@ impl RemoteHosts {
     }
 
     /// One attempt at picking a pane back up. See `Reconnector::reconnect`.
+    ///
+    /// The forward this host already has is tried first, and only rebuilt if
+    /// that fails. Rebuilding unconditionally — which this used to do, on the
+    /// grounds that a pane's connection usually dies because its forward did —
+    /// is wrong for the case that is not a reconnect at all: adopting a warped
+    /// pane resumes through a forward that is perfectly healthy, and often busy
+    /// carrying other panes on the same host. Throwing it away bought a full
+    /// ssh handshake, unmultiplexed by design, in the middle of a warp whose
+    /// budget is counted in seconds.
+    ///
+    /// Nothing is lost by trying: `ensure_forward` already probes a cached
+    /// forward and rebuilds one that no longer accepts connections, and a
+    /// forward that is up but whose broker is not still reaches the rebuild
+    /// below, which restarts it.
     fn try_resume(&self, host: &str, pane_token: &str, received: u64) -> Result<Reconnected> {
-        // Drop the cached forward first. The usual reason a pane's connection
-        // died is that the forward did, and reusing a dead one would fail in a
-        // way that looks like the broker refusing us.
+        let first = match self.resume_through_forward(host, pane_token, received) {
+            Ok(resumed) => return Ok(resumed),
+            // The broker answered, and said no. A fresh forward reaches the same
+            // broker and gets the same answer, so retrying wastes the caller's
+            // budget — and `reconnect` above needs this error to arrive intact
+            // to decide whether waiting is worth it.
+            Err(e) if e.downcast_ref::<ResumeRefusedError>().is_some() => return Err(e),
+            Err(e) => e,
+        };
         self.forget_forward(host);
+        self.resume_through_forward(host, pane_token, received)
+            .with_context(|| {
+                format!("the forward this host already had did not work either: {first:#}")
+            })
+    }
+
+    /// Resume a pane through whatever forward this host currently has,
+    /// building one if it has none.
+    fn resume_through_forward(
+        &self,
+        host: &str,
+        pane_token: &str,
+        received: u64,
+    ) -> Result<Reconnected> {
         let socket = self.connect(host)?;
+        // Bounded, because `connect` does not prove anything past the forward's
+        // local end. An ssh whose TCP session has silently died — the laptop
+        // slept, a NAT mapping expired — keeps accepting here, and the first
+        // thing to notice is this handshake, reading a reply that is never
+        // coming. Unbounded, that read lasts as long as the kernel's own
+        // retransmit patience, which is measured in minutes; on the adopting
+        // side of a warp it is the pty thread doing the waiting. The timeout is
+        // lifted again once the pane is resumed: the reader that takes the
+        // socket over drives it non-blocking, and a release later sets bounds
+        // of its own.
+        socket
+            .set_read_timeout(Some(RESUME_REPLY_TIMEOUT))
+            .context("failed to bound a remote pane's resume handshake")?;
         let read_socket = socket
             .try_clone()
             .context("failed to clone a reconnected pane's socket")?;
         let dropped = handshake_and_resume(&socket, host, pane_token, received)?;
+        socket
+            .set_read_timeout(None)
+            .context("failed to unbound a resumed pane's socket")?;
         Ok(Reconnected {
             write_socket: socket,
             read_socket,

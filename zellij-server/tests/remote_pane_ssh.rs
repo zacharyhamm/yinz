@@ -1542,6 +1542,107 @@ fn a_pane_moves_to_another_server_with_its_process_intact() {
     second_server.shutdown();
 }
 
+/// A tab's worth of panes, released together rather than one after another.
+///
+/// The bug this is here for: warping a tab that held remote panes failed with
+/// "timed out preparing the tab to be moved". Each release is a round trip to
+/// the broker, they were done in turn, and two of them spent the caller's whole
+/// budget before the first answer came back. Released together they cost one
+/// round trip — and, since they are separate connections to the same broker,
+/// the answers must not get crossed: each pane has to come back on its own
+/// stream, with its own counter intact.
+#[test]
+#[ignore]
+fn a_tabs_panes_can_be_released_together_and_are_all_adoptable() {
+    let first_server = start();
+    let second_server = Arc::new(RemoteHosts::new());
+
+    let markers: Vec<String> = (0..3).map(|_| marker("warp-tab")).collect();
+    let panes: Vec<Pane> = markers
+        .iter()
+        .map(|marker| {
+            open_pane(
+                &first_server,
+                &format!(
+                    "echo {marker}-ready; i=0; while :; do i=$((i+1)); echo {marker}-$i; \
+                     sleep 0.1; done"
+                ),
+            )
+        })
+        .collect();
+    for (pane, marker) in panes.iter().zip(&markers) {
+        pane.wait_for_output(&format!("{marker}-ready"));
+        pane.wait_for_output(&format!("{marker}-3"));
+    }
+    let highest_before: Vec<u32> = panes
+        .iter()
+        .zip(&markers)
+        .map(|(pane, marker)| highest_counter(&pane.output(), marker))
+        .collect();
+    let pids_before: Vec<Vec<u32>> = markers.iter().map(|m| remote_pids(m)).collect();
+
+    // Readers first, all of them, then the releases at the same time — the
+    // ordering `release_tab_for_warp` uses.
+    let mut panes = panes;
+    for pane in &mut panes {
+        pane.stop_pump();
+    }
+    let started_at = Instant::now();
+    let handed_over: Vec<(String, u64)> = std::thread::scope(|scope| {
+        let threads: Vec<_> = panes
+            .iter()
+            .map(|pane| {
+                scope.spawn(move || {
+                    let received = pane.conn.received();
+                    pane.conn
+                        .release_for_warp(Duration::from_secs(5))
+                        .expect("the broker should have released the pane");
+                    (pane.conn.pane_token().to_owned(), received)
+                })
+            })
+            .collect();
+        threads
+            .into_iter()
+            .map(|thread| thread.join().expect("a release panicked"))
+            .collect()
+    });
+    let took = started_at.elapsed();
+    assert!(
+        took < Duration::from_secs(5),
+        "three releases run together must cost about one round trip, not three; took {took:?}"
+    );
+
+    let adopted: Vec<Pane> = handed_over
+        .iter()
+        .map(|(token, received)| adopt_elsewhere(&second_server, token, *received).0)
+        .collect();
+
+    for (((pane, marker), highest_before), pids_before) in adopted
+        .iter()
+        .zip(&markers)
+        .zip(&highest_before)
+        .zip(&pids_before)
+    {
+        assert_eq!(
+            &remote_pids(marker),
+            pids_before,
+            "the pane's process did not survive the move — a warp that restarts the process is \
+             not a warp"
+        );
+        // Each stream continues where its own release left off. Crossed
+        // connections would show up here as a counter that jumped or restarted.
+        pane.wait_for_output_within(
+            &format!("{marker}-{}", highest_before + 5),
+            Duration::from_secs(30),
+        );
+    }
+
+    for pane in adopted {
+        pane.close();
+    }
+    second_server.shutdown();
+}
+
 /// The race `Release` closes. A resume with no retry window at all must succeed,
 /// because a warp hands the token over the instant the release returns.
 #[test]

@@ -3,15 +3,15 @@ use super::*;
 #[test]
 fn osc99_notification_forwarded_through_tab_to_server_render() {
     // Integration test: OSC 99 sequence emitted by a pane's PTY is parsed by Grid,
-    // drained by Tab, namespaced, and forwarded via ServerInstruction::Render.
+    // drained by Tab and handed to the screen, which namespaces it per host.
     let size = Size { cols: 80, rows: 24 };
-    let (mut tab, server_receiver) = create_new_tab_with_server_receiver(size, ModeInfo::default());
+    let (mut tab, screen_receiver) = create_new_tab_with_screen_receiver(size, ModeInfo::default());
 
     // Feed OSC 99 sequence to pane (pid=1) — BEL terminated
     tab.handle_pty_bytes(1, Vec::from("\x1b]99;i=test1:p=title;Hello World\x07"))
         .unwrap();
 
-    let output = collect_render_output(&server_receiver);
+    let output = collect_forwarded_osc99(&screen_receiver);
 
     // The forwarded output should contain a namespaced OSC 99 sequence
     assert!(
@@ -37,12 +37,12 @@ fn osc99_notification_forwarded_through_tab_to_server_render() {
 fn osc99_notification_st_terminator_forwarded() {
     // Same as above but with ESC \ (ST) terminator
     let size = Size { cols: 80, rows: 24 };
-    let (mut tab, server_receiver) = create_new_tab_with_server_receiver(size, ModeInfo::default());
+    let (mut tab, screen_receiver) = create_new_tab_with_screen_receiver(size, ModeInfo::default());
 
     tab.handle_pty_bytes(1, Vec::from("\x1b]99;i=test2:p=title;Build done\x1b\\"))
         .unwrap();
 
-    let output = collect_render_output(&server_receiver);
+    let output = collect_forwarded_osc99(&screen_receiver);
 
     assert!(
         output.contains("i=p1.test2"),
@@ -60,12 +60,12 @@ fn osc99_notification_st_terminator_forwarded() {
 fn osc99_notification_without_identifier_gets_default() {
     // When no i= key is present, namespace_notification_id adds i=p<N>.0
     let size = Size { cols: 80, rows: 24 };
-    let (mut tab, server_receiver) = create_new_tab_with_server_receiver(size, ModeInfo::default());
+    let (mut tab, screen_receiver) = create_new_tab_with_screen_receiver(size, ModeInfo::default());
 
     tab.handle_pty_bytes(1, Vec::from("\x1b]99;p=title;No ID here\x07"))
         .unwrap();
 
-    let output = collect_render_output(&server_receiver);
+    let output = collect_forwarded_osc99(&screen_receiver);
 
     assert!(
         output.contains("i=p1.:"),
@@ -83,7 +83,7 @@ fn osc99_notification_without_identifier_gets_default() {
 fn osc99_multiple_notifications_forwarded() {
     // Multiple OSC 99 sequences in one PTY write should all be forwarded
     let size = Size { cols: 80, rows: 24 };
-    let (mut tab, server_receiver) = create_new_tab_with_server_receiver(size, ModeInfo::default());
+    let (mut tab, screen_receiver) = create_new_tab_with_screen_receiver(size, ModeInfo::default());
 
     tab.handle_pty_bytes(
         1,
@@ -91,7 +91,7 @@ fn osc99_multiple_notifications_forwarded() {
     )
     .unwrap();
 
-    let output = collect_render_output(&server_receiver);
+    let output = collect_forwarded_osc99(&screen_receiver);
 
     assert!(
         output.contains("i=p1.n1"),
@@ -111,10 +111,31 @@ fn osc99_multiple_notifications_forwarded() {
 }
 
 #[test]
+fn osc99_chunks_of_one_notification_share_an_identifier() {
+    let size = Size { cols: 80, rows: 24 };
+    let (mut tab, screen_receiver) = create_new_tab_with_screen_receiver(size, ModeInfo::default());
+
+    tab.handle_pty_bytes(
+        1,
+        Vec::from("\x1b]99;i=chunked:a=report:d=0;Hello\x07\x1b]99;i=chunked:p=body;World\x07"),
+    )
+    .unwrap();
+
+    let output = collect_forwarded_osc99(&screen_receiver);
+
+    assert_eq!(
+        output.matches("i=p1r.chunked").count(),
+        2,
+        "both chunks address the same notification, got: {:?}",
+        output
+    );
+}
+
+#[test]
 fn osc99_notification_mixed_with_regular_output() {
     // OSC 99 embedded in regular terminal output should be extracted and forwarded
     let size = Size { cols: 80, rows: 24 };
-    let (mut tab, server_receiver) = create_new_tab_with_server_receiver(size, ModeInfo::default());
+    let (mut tab, screen_receiver) = create_new_tab_with_screen_receiver(size, ModeInfo::default());
 
     tab.handle_pty_bytes(
         1,
@@ -122,7 +143,7 @@ fn osc99_notification_mixed_with_regular_output() {
     )
     .unwrap();
 
-    let output = collect_render_output(&server_receiver);
+    let output = collect_forwarded_osc99(&screen_receiver);
 
     assert!(
         output.contains("i=p1.mid"),
@@ -140,7 +161,7 @@ fn osc99_notification_mixed_with_regular_output() {
 fn osc99_notification_preserves_metadata_keys() {
     // All metadata keys (p=, a=, u=, etc.) should be preserved through forwarding
     let size = Size { cols: 80, rows: 24 };
-    let (mut tab, server_receiver) = create_new_tab_with_server_receiver(size, ModeInfo::default());
+    let (mut tab, screen_receiver) = create_new_tab_with_screen_receiver(size, ModeInfo::default());
 
     tab.handle_pty_bytes(
         1,
@@ -148,7 +169,7 @@ fn osc99_notification_preserves_metadata_keys() {
     )
     .unwrap();
 
-    let output = collect_render_output(&server_receiver);
+    let output = collect_forwarded_osc99(&screen_receiver);
 
     assert!(
         output.contains("i=p1r.rich"),
@@ -216,7 +237,11 @@ fn osc99_grid_parses_and_stores_notification() {
         "Should have one pending notification"
     );
 
-    let (ref payload, ref _terminator) = grid.pending_desktop_notifications.first().unwrap();
+    let notification = grid.pending_desktop_notifications.first().unwrap();
+    let payload = match notification {
+        crate::panes::grid::PendingNotification::Osc99 { payload, .. } => payload.clone(),
+        other => panic!("Expected an OSC 99 notification, got: {:?}", other),
+    };
     assert!(
         payload.contains("i=gridtest"),
         "Payload should contain i=gridtest, got: {:?}",
@@ -235,7 +260,7 @@ fn osc99_namespace_denormalize_roundtrip() {
     let pane_id: u32 = 42;
 
     // Namespace — a=report means 'r' flag is set
-    let namespaced = namespace_notification_id(original_metadata, pane_id);
+    let namespaced = namespace_notification_id(original_metadata, pane_id, true);
     assert!(
         namespaced.contains("i=p42r.mynotif"),
         "Should namespace to i=p42r.mynotif (a=report → 'r' flag), got: {:?}",
@@ -243,19 +268,22 @@ fn osc99_namespace_denormalize_roundtrip() {
     );
 
     // Simulate a response with the namespaced ID
-    let response_payload = "i=p42r.mynotif:p=close;activated".to_string();
+    let response_payload = "i=p42r.mynotif;activated".to_string();
     let result = denormalize_notification_response(response_payload.as_bytes());
     assert!(result.is_some(), "Should successfully denormalize");
 
-    let (terminal_id, app_wants_report, is_query, response_bytes) = result.unwrap();
-    assert_eq!(terminal_id, 42, "Should extract pane_id 42");
+    let response = result.unwrap();
+    assert_eq!(response.terminal_id, 42, "Should extract pane_id 42");
     assert!(
-        app_wants_report,
-        "'r' flag in i=p42r.mynotif means app_wants_report should be true"
+        response.forward_to_pane,
+        "'r' flag in i=p42r.mynotif means the response goes back to the app"
     );
-    assert!(!is_query, "No 'q' flag means is_query should be false");
+    assert!(
+        response.focus_pane,
+        "an activation report focuses the originating pane"
+    );
 
-    let response_str = String::from_utf8_lossy(&response_bytes);
+    let response_str = String::from_utf8_lossy(&response.bytes);
     assert!(
         response_str.contains("i=mynotif"),
         "Should restore original i=mynotif, got: {:?}",
@@ -286,7 +314,7 @@ fn osc99_namespace_without_identifier_adds_default() {
 
     // With a=report → 'r' flag
     let metadata = "p=title:a=report";
-    let namespaced = namespace_notification_id(metadata, 7);
+    let namespaced = namespace_notification_id(metadata, 7, true);
     assert!(
         namespaced.contains("i=p7r.:"),
         "Should add default i=p7r. when no i= present (a=report → 'r' flag), got: {:?}",
@@ -295,7 +323,7 @@ fn osc99_namespace_without_identifier_adds_default() {
 
     // Without a=report → no 'r' flag
     let metadata = "p=title";
-    let namespaced = namespace_notification_id(metadata, 7);
+    let namespaced = namespace_notification_id(metadata, 7, false);
     assert!(
         namespaced.contains("i=p7.:"),
         "Should add default i=p7. when no i= and no a=report, got: {:?}",
@@ -304,11 +332,41 @@ fn osc99_namespace_without_identifier_adds_default() {
 }
 
 #[test]
+fn osc99_namespace_does_not_leave_empty_metadata_entries() {
+    use crate::panes::grid::namespace_notification_id;
+
+    let namespaced = namespace_notification_id("", 1, false);
+    assert_eq!(
+        namespaced, "i=p1.:a=focus,report",
+        "an empty metadata section produces no empty key=value entries"
+    );
+}
+
+#[test]
+fn osc99_namespace_is_stable_across_the_escapes_of_one_notification() {
+    use crate::panes::grid::namespace_notification_id;
+
+    let notification = namespace_notification_id("i=myid:a=report", 4, true);
+    let close = namespace_notification_id("i=myid:p=close", 4, true);
+    assert!(
+        notification.contains("i=p4r.myid") && close.contains("i=p4r.myid"),
+        "a close request addresses the same identifier the notification got, got: {:?} and {:?}",
+        notification,
+        close
+    );
+    assert!(
+        !close.contains("a="),
+        "a close request is not turned into something the host reports on, got: {:?}",
+        close
+    );
+}
+
+#[test]
 fn osc99_namespace_ensures_report_action() {
     use crate::panes::grid::namespace_notification_id;
 
     // a=focus → a=focus,report
-    let result = namespace_notification_id("i=test:p=title:a=focus", 1);
+    let result = namespace_notification_id("i=test:p=title:a=focus", 1, false);
     assert!(
         result.contains("a=focus,report"),
         "a=focus should be augmented with report, got: {:?}",
@@ -316,7 +374,7 @@ fn osc99_namespace_ensures_report_action() {
     );
 
     // a=report → unchanged
-    let result = namespace_notification_id("i=test:p=title:a=report", 1);
+    let result = namespace_notification_id("i=test:p=title:a=report", 1, true);
     assert!(
         result.contains("a=report"),
         "a=report should be preserved, got: {:?}",
@@ -329,18 +387,17 @@ fn osc99_namespace_ensures_report_action() {
     );
 
     // a=focus,report → unchanged
-    let result = namespace_notification_id("i=test:p=title:a=focus,report", 1);
+    let result = namespace_notification_id("i=test:p=title:a=focus,report", 1, true);
     assert!(
         result.contains("a=focus,report"),
         "a=focus,report should be preserved, got: {:?}",
         result
     );
 
-    // No a= key → a=report added
-    let result = namespace_notification_id("i=test:p=title", 1);
+    let result = namespace_notification_id("i=test:p=title", 1, false);
     assert!(
-        result.contains("a=report"),
-        "Missing a= should get a=report appended, got: {:?}",
+        result.contains("a=focus,report"),
+        "Missing a= should keep the protocol's default focus action, got: {:?}",
         result
     );
 }
@@ -351,20 +408,22 @@ fn osc99_report_flag_roundtrip() {
     use crate::screen::denormalize_notification_response;
 
     // App sends a=report → namespaced with 'r' flag → denormalize returns app_wants_report=true
-    let namespaced = namespace_notification_id("i=myid:p=title:a=report", 5);
+    let namespaced = namespace_notification_id("i=myid:p=title:a=report", 5, true);
     assert!(
         namespaced.contains("i=p5r.myid"),
         "a=report should produce 'r' flag in namespace, got: {:?}",
         namespaced
     );
     let response = "i=p5r.myid;activated".to_string();
-    let (pane_id, wants_report, _is_query, _bytes) =
-        denormalize_notification_response(response.as_bytes()).unwrap();
-    assert_eq!(pane_id, 5);
-    assert!(wants_report, "Should detect 'r' flag as app_wants_report");
+    let response = denormalize_notification_response(response.as_bytes()).unwrap();
+    assert_eq!(response.terminal_id, 5);
+    assert!(
+        response.forward_to_pane,
+        "Should detect 'r' flag and hand the report to the app"
+    );
 
     // App sends a=focus (no report) → namespaced without 'r' flag → denormalize returns false
-    let namespaced = namespace_notification_id("i=myid:p=title:a=focus", 5);
+    let namespaced = namespace_notification_id("i=myid:p=title:a=focus", 5, false);
     assert!(
         namespaced.contains("i=p5.myid"),
         "a=focus should NOT produce 'r' flag, got: {:?}",
@@ -376,58 +435,91 @@ fn osc99_report_flag_roundtrip() {
         namespaced
     );
     let response = "i=p5.myid;activated".to_string();
-    let (pane_id, wants_report, _is_query, _bytes) =
-        denormalize_notification_response(response.as_bytes()).unwrap();
-    assert_eq!(pane_id, 5);
-    assert!(!wants_report, "No 'r' flag means app did not want report");
+    let response = denormalize_notification_response(response.as_bytes()).unwrap();
+    assert_eq!(response.terminal_id, 5);
+    assert!(
+        !response.forward_to_pane,
+        "No 'r' flag means the app is not handed a report it never asked for"
+    );
+    assert!(
+        response.focus_pane,
+        "the pane is still focused when the notification is clicked"
+    );
 }
 
 #[test]
-fn osc99_query_flag_roundtrip() {
+fn osc99_query_response_is_handed_to_the_pane_without_focusing_it() {
     use crate::panes::grid::namespace_notification_id;
     use crate::screen::denormalize_notification_response;
 
-    // Capability query (p=?) gets 'q' flag
-    let namespaced = namespace_notification_id("i=qid:p=?", 3);
-    assert!(
-        namespaced.contains("i=p3q.qid"),
-        "p=? should produce 'q' flag, got: {:?}",
-        namespaced
+    let namespaced = namespace_notification_id("i=qid:p=?", 3, false);
+    assert_eq!(
+        namespaced, "i=p3.qid:p=?",
+        "a query is namespaced and otherwise left alone"
     );
-    let response = "i=p3q.qid;p=title,body".to_string();
-    let (pane_id, wants_report, is_query, _bytes) =
-        denormalize_notification_response(response.as_bytes()).unwrap();
-    assert_eq!(pane_id, 3);
-    assert!(!wants_report);
-    assert!(is_query, "Should detect 'q' flag");
+    let response = "i=p3.qid:p=?;a=focus,report:p=title,body".to_string();
+    let response = denormalize_notification_response(response.as_bytes()).unwrap();
+    assert_eq!(response.terminal_id, 3);
+    assert!(
+        response.forward_to_pane,
+        "the app is waiting for the answer to its query"
+    );
+    assert!(
+        !response.focus_pane,
+        "answering a query is not the user clicking a notification"
+    );
+    assert!(
+        String::from_utf8_lossy(&response.bytes).contains("i=qid:p=?"),
+        "the app's own identifier is restored, got: {:?}",
+        String::from_utf8_lossy(&response.bytes)
+    );
+}
 
-    // Both flags: a=report + p=? (unlikely but valid)
-    let namespaced = namespace_notification_id("i=both:p=?:a=report", 3);
-    assert!(
-        namespaced.contains("i=p3rq.both"),
-        "Both flags should be present, got: {:?}",
-        namespaced
-    );
-    let response = "i=p3rq.both;p=title,body".to_string();
-    let (pane_id, wants_report, is_query, _bytes) =
-        denormalize_notification_response(response.as_bytes()).unwrap();
-    assert_eq!(pane_id, 3);
-    assert!(wants_report);
-    assert!(is_query);
+#[test]
+fn osc99_close_report_does_not_steal_focus() {
+    use crate::screen::denormalize_notification_response;
 
-    // Regular notification (no p=?, no a=report) — no flags
-    let namespaced = namespace_notification_id("i=plain:p=title:a=focus", 3);
+    let response = denormalize_notification_response(b"i=p3.myid:p=close;").unwrap();
+    assert_eq!(response.terminal_id, 3);
     assert!(
-        namespaced.contains("i=p3.plain"),
-        "No flags expected, got: {:?}",
-        namespaced
+        response.forward_to_pane,
+        "close events only arrive when the app asked for them with c=1"
     );
-    let response = "i=p3.plain;activated".to_string();
-    let (pane_id, wants_report, is_query, _bytes) =
-        denormalize_notification_response(response.as_bytes()).unwrap();
-    assert_eq!(pane_id, 3);
-    assert!(!wants_report);
-    assert!(!is_query);
+    assert!(
+        !response.focus_pane,
+        "dismissing a notification is not activating it"
+    );
+}
+
+#[test]
+fn osc99_liveness_answer_is_restricted_to_the_asking_pane() {
+    use crate::screen::denormalize_notification_response;
+
+    let response =
+        denormalize_notification_response(b"i=p3.myid:p=alive;p3.one,p4r.other,p3r.two").unwrap();
+    let restored = String::from_utf8_lossy(&response.bytes).to_string();
+    assert!(
+        restored.contains(";one,two"),
+        "the pane's own identifiers are restored, got: {:?}",
+        restored
+    );
+    assert!(
+        !restored.contains("other"),
+        "identifiers belonging to other panes are not disclosed, got: {:?}",
+        restored
+    );
+}
+
+#[test]
+fn osc99_response_to_an_unidentified_notification_uses_the_protocol_default() {
+    use crate::screen::denormalize_notification_response;
+
+    let response = denormalize_notification_response(b"i=p3r.;activated").unwrap();
+    assert!(
+        String::from_utf8_lossy(&response.bytes).contains("i=0"),
+        "an app that sent no identifier is answered with i=0, got: {:?}",
+        String::from_utf8_lossy(&response.bytes)
+    );
 }
 
 #[test]

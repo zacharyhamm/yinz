@@ -260,7 +260,7 @@ fn changing_an_overlay_s_coordinates_keeps_it_an_overlay_of_the_same_kind() {
     let mut panes = overlay_panes(80, 20);
     add(&mut panes, 1, OverlayKind::Modal, coordinates("60%", "50%"));
     panes
-        .change_pane_coordinates(PaneId::Terminal(1), coordinates("30%", "25%"))
+        .change_pane_coordinates(PaneId::Terminal(1), coordinates("30%", "25%"), false)
         .unwrap();
     assert_eq!(
         panes.kind_of(&PaneId::Terminal(1)),
@@ -954,7 +954,11 @@ fn a_plugin_re_asserting_its_placement_does_not_undo_a_drag() {
     let dropped_at = xy(&panes, 1);
 
     panes
-        .change_pane_coordinates(PaneId::Terminal(1), plugin_placement("20%", "60%", "10"))
+        .change_pane_coordinates(
+            PaneId::Terminal(1),
+            plugin_placement("20%", "60%", "10"),
+            false,
+        )
         .unwrap();
 
     assert_eq!(
@@ -975,7 +979,11 @@ fn a_plugin_resize_after_a_drag_still_resizes() {
     let dropped_at = xy(&panes, 1);
 
     panes
-        .change_pane_coordinates(PaneId::Terminal(1), plugin_placement("20%", "40", "12"))
+        .change_pane_coordinates(
+            PaneId::Terminal(1),
+            plugin_placement("20%", "40", "12"),
+            false,
+        )
         .unwrap();
 
     let geom = panes.get(&PaneId::Terminal(1)).unwrap().position_and_size();
@@ -985,6 +993,90 @@ fn a_plugin_resize_after_a_drag_still_resizes() {
         "the size the plugin asked for"
     );
     assert_eq!(xy(&panes, 1), dropped_at, "at the position the user chose");
+}
+
+// ---- unless the placement is the user's own -------------------------------------------------
+
+/// A key the user pressed to move the overlay is as much theirs as the drag was, and later. The
+/// plugin says so with `override_user_placement`, and the overlay goes where the key said.
+#[test]
+fn a_placement_the_user_asked_for_reclaims_a_dragged_position() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Modal, coordinates("60%", "50%"));
+
+    drag_by(&mut panes, 1, 5, 3);
+    let dropped_at = xy(&panes, 1);
+
+    panes
+        .change_pane_coordinates(
+            PaneId::Terminal(1),
+            placed_coordinates("10", "5", "40", "10"),
+            true,
+        )
+        .unwrap();
+
+    assert_ne!(xy(&panes, 1), dropped_at, "the drag no longer wins");
+    assert_eq!(xy(&panes, 1), (10, 5), "the position the key asked for");
+}
+
+/// The size twin: a resize the user made is reclaimed by the same flag.
+#[test]
+fn a_placement_the_user_asked_for_reclaims_a_resized_size() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("60%", "50%"),
+    );
+
+    panes
+        .resize_pane_with_strategies(PaneId::Terminal(1), &[grow(Direction::Right)], (5, 2))
+        .unwrap();
+    let resized_to = size(&panes, 1);
+
+    panes
+        .change_pane_coordinates(
+            PaneId::Terminal(1),
+            placed_coordinates("10", "5", "40", "10"),
+            true,
+        )
+        .unwrap();
+
+    assert_ne!(size(&panes, 1), resized_to, "the resize no longer wins");
+    assert_eq!(size(&panes, 1), (40, 10), "the size the key asked for");
+}
+
+/// Cleared, not bypassed once: after the key has moved the overlay, the plugin's ordinary
+/// placements move it again - a resize of the terminal re-places it where the plugin says, not
+/// back where the drag left it.
+#[test]
+fn after_an_override_the_next_plain_placement_moves_the_overlay_again() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Modal, coordinates("60%", "50%"));
+
+    drag_by(&mut panes, 1, 5, 3);
+    panes
+        .change_pane_coordinates(
+            PaneId::Terminal(1),
+            placed_coordinates("10", "5", "40", "10"),
+            true,
+        )
+        .unwrap();
+
+    panes
+        .change_pane_coordinates(
+            PaneId::Terminal(1),
+            placed_coordinates("30", "5", "40", "10"),
+            false,
+        )
+        .unwrap();
+
+    assert_eq!(
+        xy(&panes, 1),
+        (30, 5),
+        "the plugin places the overlay again, the drag's claim having been released"
+    );
 }
 
 /// The replace semantics are unchanged for an overlay nobody dragged: an axis the call does not
@@ -1001,7 +1093,11 @@ fn an_overlay_nobody_dragged_is_still_re_placed_by_a_plugin() {
     assert_eq!(xy(&panes, 1), (10, 15), "pre-condition");
 
     panes
-        .change_pane_coordinates(PaneId::Terminal(1), plugin_placement("20%", "40", "10"))
+        .change_pane_coordinates(
+            PaneId::Terminal(1),
+            plugin_placement("20%", "40", "10"),
+            false,
+        )
         .unwrap();
 
     // x unnamed => centred on the surface; y named => 20% of it
@@ -1023,7 +1119,7 @@ fn a_replaced_pane_keeps_the_dragged_position() {
         .replace_pane(PaneId::Terminal(1), mock_pane(replacement))
         .unwrap();
     panes
-        .change_pane_coordinates(replacement, plugin_placement("20%", "60%", "10"))
+        .change_pane_coordinates(replacement, plugin_placement("20%", "60%", "10"), false)
         .unwrap();
 
     assert_eq!(xy(&panes, 9), dropped_at);
@@ -1177,7 +1273,11 @@ fn a_plugin_re_asserting_its_placement_does_not_undo_a_resize() {
     let resized_to = size(&panes, 1);
 
     panes
-        .change_pane_coordinates(PaneId::Terminal(1), plugin_placement("20%", "60%", "10"))
+        .change_pane_coordinates(
+            PaneId::Terminal(1),
+            plugin_placement("20%", "60%", "10"),
+            false,
+        )
         .unwrap();
 
     assert_eq!(
@@ -1202,7 +1302,11 @@ fn a_resize_alone_leaves_the_position_the_plugin_s() {
         .resize_pane_with_strategies(PaneId::Terminal(1), &[grow(Direction::Right)], (5, 2))
         .unwrap();
     panes
-        .change_pane_coordinates(PaneId::Terminal(1), plugin_placement("50%", "60%", "10"))
+        .change_pane_coordinates(
+            PaneId::Terminal(1),
+            plugin_placement("50%", "60%", "10"),
+            false,
+        )
         .unwrap();
 
     assert_eq!(xy(&panes, 1).1, 10, "the plugin still places the overlay");
@@ -1867,7 +1971,7 @@ fn the_first_placement_is_what_draws_it() {
     add_awaiting_placement(&mut panes, 1);
 
     panes
-        .change_pane_coordinates(PaneId::Terminal(1), coordinates("60%", "50%"))
+        .change_pane_coordinates(PaneId::Terminal(1), coordinates("60%", "50%"), false)
         .unwrap();
 
     assert_eq!(panes.rendered_pane_ids(), vec![PaneId::Terminal(1)]);
@@ -1931,7 +2035,7 @@ fn awaiting_placement_survives_a_move_between_collections() {
     assert!(elsewhere.rendered_pane_ids().is_empty());
 
     elsewhere
-        .change_pane_coordinates(PaneId::Terminal(1), coordinates("60%", "50%"))
+        .change_pane_coordinates(PaneId::Terminal(1), coordinates("60%", "50%"), false)
         .unwrap();
     let carry = elsewhere.carry_of(&PaneId::Terminal(1));
     assert!(
