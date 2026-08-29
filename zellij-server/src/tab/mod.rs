@@ -4212,6 +4212,26 @@ impl Tab {
             None
         }
     }
+    /// Tells a terminal pane that the host terminal gained or lost focus, if the application in
+    /// it asked for focus events (DECSET 1004). Plugin panes are left alone.
+    pub fn send_host_focus_event_to_pane(&mut self, pane_id: PaneId, focused: bool) {
+        let PaneId::Terminal(terminal_id) = pane_id else {
+            return;
+        };
+        let focus_event = self.get_pane_with_id(pane_id).and_then(|pane| {
+            if focused {
+                pane.focus_event()
+            } else {
+                pane.unfocus_event()
+            }
+        });
+        if let Some(focus_event) = focus_event {
+            self.os_api
+                .write_to_tty_stdin(terminal_id, focus_event.as_bytes())
+                .with_context(|| format!("failed to send host focus event to pane {}", terminal_id))
+                .non_fatal();
+        }
+    }
     pub fn check_and_handle_bell_notifications(
         &mut self,
         is_active_tab: bool,

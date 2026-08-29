@@ -187,6 +187,16 @@ impl InputHandler {
                             let mouse_event = from_termwiz(&mut self.mouse_old_event, mouse_event);
                             self.handle_mouse_event(&mouse_event);
                         },
+                        InputEvent::FocusGained => {
+                            self.os_input.send_to_server(
+                                ClientToServerMsg::HostTerminalFocusChanged { focused: true },
+                            );
+                        },
+                        InputEvent::FocusLost => {
+                            self.os_input.send_to_server(
+                                ClientToServerMsg::HostTerminalFocusChanged { focused: false },
+                            );
+                        },
                         InputEvent::Paste(pasted_text) => {
                             if self.mode == InputMode::Normal || self.mode == InputMode::Locked {
                                 self.dispatch_action(
@@ -277,6 +287,10 @@ impl InputHandler {
                     _error_context,
                 )) => {
                     self.handle_nested_session_frame_from_host(payload_bytes);
+                },
+                Ok((InputInstruction::HostTerminalFocusChanged(focused), _error_context)) => {
+                    self.os_input
+                        .send_to_server(ClientToServerMsg::HostTerminalFocusChanged { focused });
                 },
                 Ok((InputInstruction::Exit, _error_context)) => {
                     self.should_exit = true;

@@ -1781,6 +1781,7 @@ mod borderless_pinned;
 mod floating;
 mod focus_follows_mouse;
 mod highlights;
+mod host_focus;
 mod layout;
 mod mouse;
 mod osc99;

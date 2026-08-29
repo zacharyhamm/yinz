@@ -3295,7 +3295,7 @@ impl ThemeHue {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientToServerMsg {
-    #[prost(oneof="client_to_server_msg::Message", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26")]
+    #[prost(oneof="client_to_server_msg::Message", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27")]
     pub message: ::core::option::Option<client_to_server_msg::Message>,
 }
 /// Nested message and enum types in `ClientToServerMsg`.
@@ -3355,6 +3355,8 @@ pub mod client_to_server_msg {
         RequestSessionList(super::RequestSessionListMsg),
         #[prost(message, tag="26")]
         SetMobileRenderPreferences(super::SetMobileRenderPreferencesMsg),
+        #[prost(message, tag="27")]
+        HostTerminalFocusChanged(super::HostTerminalFocusChangedMsg),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -3536,6 +3538,12 @@ pub struct SetMobileRenderPreferencesMsg {
     pub single_pane: bool,
     #[prost(bool, tag="2")]
     pub fit: bool,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct HostTerminalFocusChangedMsg {
+    #[prost(bool, tag="1")]
+    pub focused: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

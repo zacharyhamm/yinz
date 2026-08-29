@@ -3769,6 +3769,8 @@ fn test_client_messages() {
         single_pane: false,
         fit: true,
     });
+    test_client_roundtrip!(ClientToServerMsg::HostTerminalFocusChanged { focused: true });
+    test_client_roundtrip!(ClientToServerMsg::HostTerminalFocusChanged { focused: false });
     test_client_roundtrip!(ClientToServerMsg::WebServerStarted {
         base_url: "http://localhost:8080".to_string(),
     });
