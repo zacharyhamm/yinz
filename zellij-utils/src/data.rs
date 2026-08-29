@@ -2606,7 +2606,7 @@ pub enum AgentSource {
 /// Carried on [`PaneInfo::agent`], so every reader of the pane manifest — plugins, `zellij
 /// events`, `list-panes --json` — sees the same answer to "is this an agent, and is it waiting
 /// on me". Written by the spawn path, by `PluginCommand::SetPaneAgent`, and by `zellij action
-/// agent-report`, which is what Claude Code's hooks call. A record is complete every time it is
+/// agent-report`, which is what coding-agent hooks call. A record is complete every time it is
 /// set; nothing merges.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AgentInfo {

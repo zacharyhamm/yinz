@@ -802,7 +802,7 @@ fn kdl_string(text: &str) -> String {
     out
 }
 
-/// What one Claude Code hook event asks the session to do: set the pane's record, and hand the
+/// What one agent hook event asks the session to do: set the pane's record, and hand the
 /// event itself to the plugins.
 ///
 /// Both, from the one process a hook may spend. A record is deliberately smaller than an event
@@ -842,19 +842,25 @@ fn hook_report_actions(
     };
     // A `KeybindPipe` rather than a `CliPipe`: it broadcasts to every running plugin without a
     // pipe id, so nothing waits to be unblocked and a hook cannot stall the turn it fired in.
-    // The pane travels as an argument because only a `CliPipe` carries `PipeMessage::pane_id`.
+    // The pane travels as an argument because only a `CliPipe` carries `PipeMessage::pane_id`,
+    // and the kind because the payload is the agent's own JSON, which never says which agent
+    // wrote it - a reader that writes a record of its own has nothing else to name it with.
+    let mut args = BTreeMap::from([(
+        crate::agent::AGENT_HOOK_KIND_ARG.to_owned(),
+        kind.to_owned(),
+    )]);
+    // The bare number, which is what a reader parses; a hook never fires in a plugin pane, so
+    // there is nothing to say for one.
+    if let PaneId::Terminal(id) = pane_id {
+        args.insert(
+            crate::agent::AGENT_HOOK_PANE_ID_ARG.to_owned(),
+            id.to_string(),
+        );
+    }
     actions.push(Action::KeybindPipe {
         name: Some(crate::agent::AGENT_HOOK_PIPE.to_owned()),
         payload: Some(payload),
-        // The bare number, which is what a reader parses; a hook never fires in a plugin pane,
-        // so there is nothing to say for one.
-        args: match pane_id {
-            PaneId::Terminal(id) => Some(BTreeMap::from([(
-                crate::agent::AGENT_HOOK_PANE_ID_ARG.to_owned(),
-                id.to_string(),
-            )])),
-            PaneId::Plugin(_) => None,
-        },
+        args: Some(args),
         plugin: None,
         plugin_id: None,
         configuration: None,
@@ -2405,10 +2411,8 @@ impl Action {
                     std::io::stdin()
                         .read_to_string(&mut json)
                         .map_err(|e| format!("failed to read the hook event from stdin: {e}"))?;
-                    let event: crate::agent::HookEvent =
-                        serde_json::from_str(&json).map_err(|e| {
-                            format!("the hook event is not the JSON Claude Code sends: {e}")
-                        })?;
+                    let event: crate::agent::HookEvent = serde_json::from_str(&json)
+                        .map_err(|e| format!("the hook event is not valid agent hook JSON: {e}"))?;
                     return Ok(hook_report_actions(&kind, pane_id, &event, json));
                 }
                 let agent = if clear {
@@ -3972,6 +3976,14 @@ mod tests {
             let event: crate::agent::HookEvent = serde_json::from_str(json).expect("parsed");
             hook_report_actions("claude", pane_id, &event, json.to_owned())
         };
+        let arg = |actions: &[Action], key: &str| match actions.last() {
+            Some(Action::KeybindPipe { args, .. }) => args
+                .as_ref()
+                .and_then(|args| args.get(key))
+                .cloned()
+                .unwrap_or_default(),
+            other => panic!("{other:?}"),
+        };
         let broadcast = |actions: &[Action], json: &str| match actions.last() {
             Some(Action::KeybindPipe {
                 name,
@@ -3990,6 +4002,14 @@ mod tests {
                         .map(String::as_str)),
                     Some("7"),
                     "the bare number, which is what a reader parses"
+                );
+                // The payload is the agent's own JSON and never says which agent wrote it, so
+                // a reader that writes a record of its own is told here.
+                assert_eq!(
+                    args.as_ref().and_then(|args| args
+                        .get(crate::agent::AGENT_HOOK_KIND_ARG)
+                        .map(String::as_str)),
+                    Some("claude")
                 );
                 // No plugin named and nothing new launched: a broadcast reaches whatever is
                 // already running, and addressing one by url would start a second copy.
@@ -4033,6 +4053,23 @@ mod tests {
         let actions = hook(json);
         assert_eq!(actions.len(), 1, "nothing to report is nothing to set");
         broadcast(&actions, json);
+
+        // Another agent's question, read the same way and named on the broadcast, so the
+        // plugin that hears it does not have to guess that a codex is a claude.
+        let json = r#"{"hook_event_name":"PreToolUse","session_id":"s1",
+                       "tool_name":"request_user_input"}"#;
+        let event: crate::agent::HookEvent = serde_json::from_str(json).expect("parsed");
+        let actions = hook_report_actions("codex", pane_id, &event, json.to_owned());
+        match &actions[0] {
+            Action::SetPaneAgent {
+                agent: Some(agent), ..
+            } => {
+                assert_eq!(agent.kind, "codex");
+                assert_eq!(agent.state, AgentState::Waiting);
+            },
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(arg(&actions, crate::agent::AGENT_HOOK_KIND_ARG), "codex");
     }
 
     /// …but not at any size. This payload is copied into every running plugin's memory,

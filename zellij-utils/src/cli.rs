@@ -200,19 +200,29 @@ pub enum Plugins {
 /// agent's own hook, runs from a shell.
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Hocus {
-    /// Wire Claude Code's hooks up to the agent plugins, so a Claude pane reports
-    /// its own state instead of being watched.
+    /// Wire coding-agent hooks up to the agent plugins, so panes report their own state.
     #[clap(subcommand)]
     Hooks(HocusHooks),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+pub enum HocusHookAgent {
+    Claude,
+    Codex,
+    All,
+}
+
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum HocusHooks {
-    /// Write the hook script and add it to Claude Code's settings.
+    /// Write hook scripts and add them to the agents' settings.
     ///
     /// Idempotent: running it again rewrites the script and replaces the entries it
     /// put there before, leaving everything else in the file alone.
     Install {
+        /// Install for one agent. User-level installs default to both agents; a project
+        /// install defaults to Claude because Codex has no machine-local project file.
+        #[clap(long, value_enum)]
+        agent: Option<HocusHookAgent>,
         /// Install into this project's `.claude/settings.local.json` (not committed)
         /// instead of `~/.claude/settings.json`.
         ///
@@ -231,6 +241,10 @@ pub enum HocusHooks {
     },
     /// Remove the hook entries and the script.
     Uninstall {
+        /// Uninstall for one agent. User-level uninstalls default to both agents; a project
+        /// uninstall defaults to Claude.
+        #[clap(long, value_enum)]
+        agent: Option<HocusHookAgent>,
         /// Uninstall from this project's `.claude/settings.local.json` (and its
         /// committed `settings.json`, if an older install is still in it).
         #[clap(long)]
@@ -241,7 +255,11 @@ pub enum HocusHooks {
         project_dir: Option<PathBuf>,
     },
     /// Say what is wired up, and what would stop it working.
-    Status,
+    Status {
+        /// Show one agent instead of both.
+        #[clap(long, value_enum)]
+        agent: Option<HocusHookAgent>,
+    },
 }
 
 /// Unix-only, because `zellij_server::pty_host` is: an ungated variant would
@@ -1743,8 +1761,8 @@ tail -f /tmp/my-live-logfile | zellij action pipe --name logs --plugin https://e
         cwd: Option<PathBuf>,
     },
     /// Report what the agent running in a pane is doing. The session carries it on the pane
-    /// (PaneInfo.agent), so `zellij events`, plugins and the agents list all see it. Claude
-    /// Code's hooks call this with --hook-json and the hook's JSON on stdin.
+    /// (PaneInfo.agent), so `zellij events`, plugins and the agents list all see it. Coding-agent
+    /// hooks call this with --hook-json and the hook's JSON on stdin.
     AgentReport {
         /// The pane the agent runs in, eg. terminal_1 or 3. Defaults to $ZELLIJ_PANE_ID.
         #[clap(long, value_parser)]
@@ -1761,7 +1779,7 @@ tail -f /tmp/my-live-logfile | zellij action pipe --name logs --plugin https://e
         /// The folder the agent is working in, when it is not the pane's.
         #[clap(long, value_parser)]
         cwd: Option<PathBuf>,
-        /// Read a Claude Code hook event (JSON) from stdin and report what it means. An event
+        /// Read a Claude Code or Codex hook event (JSON) from stdin and report what it means. An event
         /// that says nothing about the agent's state reports nothing.
         #[clap(long, conflicts_with = "clear")]
         hook_json: bool,

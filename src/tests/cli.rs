@@ -284,6 +284,7 @@ fn cli_hocus_hooks_parses_its_three_subcommands() {
     assert!(matches!(
         install.command,
         Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
+            agent: None,
             project: false,
             project_dir: None,
             dry_run: false
@@ -320,7 +321,19 @@ fn cli_hocus_hooks_parses_its_three_subcommands() {
     let status = try_parse_cli(["zellij", "hocus", "hooks", "status"]).expect("parsed");
     assert!(matches!(
         status.command,
-        Some(Command::Hocus(Hocus::Hooks(HocusHooks::Status)))
+        Some(Command::Hocus(Hocus::Hooks(HocusHooks::Status {
+            agent: None
+        })))
+    ));
+
+    let codex =
+        try_parse_cli(["zellij", "hocus", "hooks", "install", "--agent", "codex"]).expect("parsed");
+    assert!(matches!(
+        codex.command,
+        Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
+            agent: Some(zellij_utils::cli::HocusHookAgent::Codex),
+            ..
+        })))
     ));
 
     assert!(
@@ -383,7 +396,11 @@ fn installing_twice_wires_each_event_once() {
     let events = installed_events(&twice);
     // Against the table rather than a number: it has grown once already, and a literal
     // here is a test that goes stale silently the next time it does.
-    assert_eq!(events.len(), crate::hocus_hooks::EVENTS.len(), "{events:?}");
+    assert_eq!(
+        events.len(),
+        crate::hocus_hooks::CLAUDE_EVENTS.len(),
+        "{events:?}"
+    );
     for event in &events {
         assert_eq!(
             twice["hooks"][event].as_array().expect("an array").len(),

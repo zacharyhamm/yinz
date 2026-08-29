@@ -47,10 +47,11 @@ Claude Code pane's own hooks call, so `claude` typed at a shell becomes an agent
 it speaks. `hocus-agentd` derives its feeds from the pane manifest instead of a private map; its
 scrollback fingerprinting remains for agents that say nothing about themselves.
 
-The hook wiring is one list, `zellij_utils::agent::CLAUDE_HOOK_EVENTS`: `zellij hocus hooks
-install` writes it to `~/.claude/settings.json` (or, with `--project` / `--project-dir <dir>`,
-to `<dir>/.claude/settings.local.json`, kept out of git), and a spawned `claude` is handed the
-same list inline as `--settings`, so a spawned pane reports with nothing installed.
+The hook wiring uses one shared event reader and one event list per agent. `zellij hocus hooks
+install` writes Claude Code hooks to `~/.claude/settings.json` and Codex hooks to
+`~/.codex/hooks.json` (or `$CODEX_HOME/hooks.json`). A spawned `claude` receives the Claude list
+inline as `--settings`, so it reports with nothing installed. Codex requires its installed hooks
+to be reviewed and trusted with `/hooks`.
 
 Entry points: `zellij-utils/src/data.rs` (`AgentInfo`), `zellij-utils/src/agent.rs` (hook
 reading, the event list), `zellij-server/src/panes/terminal_pane.rs`, `screen/thread_main.rs`
