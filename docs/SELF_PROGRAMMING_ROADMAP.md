@@ -372,9 +372,15 @@ trustworthy and are done, the rest are the loose ends it left — continue from 
    was sent, and the cache is applied to every client's instance when it is ready.
    `lua_plugins::a_client_attaching_while_a_hook_waits_on_its_permission_does_not_lose_the_firing`
    pins it: without the fix the firing never arrives.)*
-3. **A shipped headless hook**, so the feature has a worked example: `zellij-utils/assets/
-   plugins/agent-policy.lua` (or `example-plugins/`) that logs every `hook` firing and, on
-   `agent_waiting`, notifies — then a `docs/LUA_PLUGINS.md` quickstart pointing at it.
+3. **A shipped headless hook**, so the feature has a worked example. *(done —
+   `zellij-utils/assets/plugins/agent-policy.lua`, registered in `BUILTIN_LUA_PLUGINS` so
+   `zellij:agent-policy` resolves; logs every `hook` firing as one sorted `key=value` line and
+   raises a `notify` addressed to the pane on `agent_waiting`. Bound by nothing by default —
+   hocus-agentd already notifies on a waiting agent — and shown commented out in
+   `example/default.kdl`. `lua::unit_tests::the_shipped_agent_policy_hook_notifies_when_an_agent_waits`
+   loads it and fires two points at it; the "Headless hooks" section of `docs/LUA_PLUGINS.md`
+   opens with a quickstart that binds it with `set-hook --write` and reads its log with
+   `zellij plugins log`.)*
 4. **Restored jobs follow their chat**: `job.chat_id` is stored but every restored job lands in
    the foreground (`State::restore_persisted`). When `/history` reopens a chat, move its jobs
    over; when a chat is archived for good, delete them.

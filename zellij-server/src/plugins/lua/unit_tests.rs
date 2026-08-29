@@ -674,6 +674,95 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
     );
 }
 
+/// The agent-policy hook is headless: a syntax error in it would surface the first time an agent
+/// stopped for a question, which is the moment its notification is for. So it is loaded and
+/// fired at here, and what is checked is its one visible act - the notification, addressed to
+/// the pane that is waiting - and that the other points it may be bound to stay quiet.
+#[test]
+fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
+    use crate::panes::PaneId;
+    use crate::screen::ScreenInstruction;
+    use zellij_utils::channels::SenderWithContext;
+    use zellij_utils::errors::ErrorContext;
+    use zellij_utils::input::hooks::HookPoint;
+
+    let source =
+        zellij_utils::consts::builtin_lua_plugin("agent-policy").expect("the hook is a builtin");
+    let (to_screen, screen_receiver) =
+        zellij_utils::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
+    let mut env = test_env();
+    env.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+
+    let mut plugin = load_lua_plugin(source, "agent-policy.lua", env).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+
+    let notifications =
+        |receiver: &zellij_utils::channels::Receiver<(ScreenInstruction, ErrorContext)>| {
+            receiver
+                .try_iter()
+                .filter_map(|(instruction, _)| match instruction {
+                    ScreenInstruction::Notify(text, pane_id, _) => Some((text, pane_id)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+    let payload = |state: &str, detail: Option<&str>| {
+        let mut payload = BTreeMap::from([
+            ("agent_pane_id".to_owned(), "7".to_owned()),
+            ("agent_kind".to_owned(), "claude".to_owned()),
+            ("agent_state".to_owned(), state.to_owned()),
+            ("agent_cwd".to_owned(), "/work".to_owned()),
+        ]);
+        if let Some(detail) = detail {
+            payload.insert("agent_detail".to_owned(), detail.to_owned());
+        }
+        payload
+    };
+
+    plugin
+        .update(&Event::Hook {
+            point: HookPoint::AgentStart,
+            payload: payload("busy", None),
+        })
+        .unwrap();
+    assert!(
+        notifications(&screen_receiver).is_empty(),
+        "an agent starting is logged, not announced"
+    );
+
+    plugin
+        .update(&Event::Hook {
+            point: HookPoint::AgentWaiting,
+            payload: payload("waiting", Some("Allow Bash(cargo test)?")),
+        })
+        .unwrap();
+    assert_eq!(
+        notifications(&screen_receiver),
+        vec![(
+            "claude in pane 7: Allow Bash(cargo test)?".to_owned(),
+            Some(PaneId::Terminal(7)),
+        )],
+        "a waiting agent is announced, and the toast focuses its pane"
+    );
+
+    plugin
+        .update(&Event::Hook {
+            point: HookPoint::AgentWaiting,
+            payload: payload("waiting", None),
+        })
+        .unwrap();
+    assert_eq!(
+        notifications(&screen_receiver),
+        vec![(
+            "claude in pane 7: is waiting for you".to_owned(),
+            Some(PaneId::Terminal(7)),
+        )],
+        "a wait with no detail still says who is waiting"
+    );
+}
+
 /// The context-menu hook has no `render`, so a load-and-draw check would prove nothing about it.
 /// What it does instead is transform an event into an answer, and that is what is exercised here:
 /// a syntax error, a bad field name or a broken filter would otherwise go unnoticed until somebody

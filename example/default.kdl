@@ -411,6 +411,14 @@ hooks {
     //               `set_context_menu`. The menu itself is drawn by zellij.
     context_menu "zellij:context-menu"
     // context_menu ""   // turn it off: the menu shows the items below and nothing else
+
+    // agent_waiting, agent_start, pane_exit, session_start  moments in the
+    //               session that a headless plugin can watch: loaded once, and
+    //               handed each later firing as a `hook` event. Nothing is bound
+    //               here by default; `zellij:agent-policy` is a shipped example
+    //               that logs every firing and raises a notification when an
+    //               agent stops for a question - the file to copy for your own.
+    // agent_waiting "zellij:agent-policy"
 }
 
 // What a right-click menu offers, before the `context_menu` hook plugin has had

@@ -55,11 +55,17 @@ pub fn write(
 
 /// The last `lines` lines of `log_file` about the plugin at `path`: the runtime tags a
 /// plugin's `zellij.log` and `print` output `[lua:<path>]`, and its loader errors name the
-/// path, so both are matched on the file name.
+/// path, so both are matched on the file name. A builtin's path is its bare tag - `agent-policy`,
+/// no extension - so the tag spelt with the file's stem is matched too, and `zellij plugins log
+/// agent-policy` reads a shipped hook's lines the same way it reads a written one's.
 pub fn log_tail(log_file: &Path, path: &Path, lines: usize) -> anyhow::Result<String> {
     let file_name = path
         .file_name()
         .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let builtin_tag = path
+        .file_stem()
+        .map(|stem| format!("[lua:{}]", stem.to_string_lossy()))
         .unwrap_or_default();
     let log = match std::fs::read_to_string(log_file) {
         Ok(log) => log,
@@ -70,7 +76,7 @@ pub fn log_tail(log_file: &Path, path: &Path, lines: usize) -> anyhow::Result<St
     };
     let matching: Vec<&str> = log
         .lines()
-        .filter(|line| line.contains(&file_name))
+        .filter(|line| line.contains(&file_name) || line.contains(&builtin_tag))
         .collect();
     let start = matching.len().saturating_sub(lines.max(1));
     let mut out = matching[start..].join("\n");
@@ -123,6 +129,17 @@ mod tests {
         .unwrap();
         let tail = log_tail(&log, Path::new("/p/keys.lua"), 2).unwrap();
         assert_eq!(tail, "c [lua:keys.lua] two\nd [lua:keys.lua] three\n");
+        // A builtin logs under its bare tag; asking for it by name finds those lines and not
+        // a written plugin's that happens to share the prefix.
+        std::fs::write(
+            &log,
+            "a [lua:agent-policy] hook\nb [lua:agent-policy-mine.lua] x\nc [lua:agent-policy] two\n",
+        )
+        .unwrap();
+        assert_eq!(
+            log_tail(&log, Path::new("/p/agent-policy.lua"), 5).unwrap(),
+            "a [lua:agent-policy] hook\nc [lua:agent-policy] two\n"
+        );
         assert_eq!(log_tail(&log, Path::new("/p/other.lua"), 5).unwrap(), "");
         assert!(log_tail(&dir.path().join("missing"), Path::new("/p/keys.lua"), 5).is_err());
     }
