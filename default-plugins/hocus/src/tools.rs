@@ -2936,6 +2936,11 @@ mod host {
     use std::path::PathBuf;
     use zellij_tile::prelude::*;
 
+    /// Write a pane's agent record to the session, for every reader of the manifest.
+    pub fn report_pane_agent(pane_id: u32, agent: AgentInfo) {
+        set_pane_agent(PaneId::Terminal(pane_id), Some(agent));
+    }
+
     pub fn dispatch(call: &ToolCall) -> String {
         let args = match Args::parse(&call.arguments) {
             Ok(args) => args,
@@ -3780,7 +3785,7 @@ mod host {
 #[cfg(target_arch = "wasm32")]
 pub use host::{
     dispatch, grant_permissions, new_pane_with_context, observe_plugin, reload_plugin,
-    spawn_in_checkout,
+    report_pane_agent, spawn_in_checkout,
 };
 
 /// What a `plugin_reload` found when it went to look: the plugin's pane, and its text.
@@ -3832,6 +3837,10 @@ pub fn new_pane_with_context(_args: &Args, _context: BTreeMap<String, String>) -
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn reload_plugin(_path: &str) {}
+
+/// Off wasm there is no session to hold the record; the tests read `manual_kinds`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn report_pane_agent(_pane_id: u32, _agent: zellij_tile::prelude::AgentInfo) {}
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn observe_plugin(_path: &str) -> Option<PluginObservation> {

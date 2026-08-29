@@ -2651,6 +2651,9 @@ pub enum AgentSource {
     /// The pane was opened as an agent pane, and nothing has been heard from the agent since:
     /// the state is what the session can see (running, exited), not what the agent says.
     Spawned,
+    /// A person named the pane's agent by hand (hocus's `agent_register`), and nothing has been
+    /// heard from the agent itself: the kind is theirs, the state is a placeholder.
+    Registered,
     /// The agent itself said so — its hooks through `zellij action agent-report`, or a plugin
     /// speaking for it.
     Reported,
