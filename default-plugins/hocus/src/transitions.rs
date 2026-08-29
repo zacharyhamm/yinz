@@ -1,5 +1,5 @@
 use crate::message::{
-    Job, Message, Reasoning, ReasoningKey, Role, ScheduledRun, Status, StreamState,
+    Ask, Job, Message, Reasoning, ReasoningKey, Role, ScheduledRun, Status, StreamState,
 };
 use crate::*;
 use hocus_proto::jobs;
@@ -1045,7 +1045,7 @@ impl State {
             return false;
         }
 
-        self.asks.push_back(text);
+        self.asks.push_back(Ask::text(text));
         let started = self.drain_asks();
         self.ack_ask(
             reply_to,
@@ -1103,7 +1103,11 @@ impl State {
     /// Send the oldest accepted question. The timer calls this after a plain
     /// reply; the tool loop calls it after every call in a batch has a result.
     pub(crate) fn start_queued_question(&mut self, cfg: &Config) -> bool {
-        let Some(mut text) = self.asks.pop_front() else {
+        let Some(Ask {
+            content: mut text,
+            display,
+        }) = self.asks.pop_front()
+        else {
             return false;
         };
 
@@ -1128,11 +1132,13 @@ impl State {
         // because the model is being handed words nobody typed; an ask *is* the
         // user's words, and marking them up would change what the model reads.
         // The provenance lives in the log line instead.
-        self.messages.push(Message::user(text));
+        let typed = display.clone();
+        self.messages.push(Message::user_shown(text, display));
         self.log(
             "user_input",
             serde_json::json!({
                 "content": log::truncate(&content),
+                "display": typed,
                 "via": "queue",
             }),
         );

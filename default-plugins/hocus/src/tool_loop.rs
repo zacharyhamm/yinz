@@ -253,7 +253,7 @@ impl State {
         self.pin_to_bottom();
         let line = line.trim();
         if line == "/" || line == "/help" {
-            let help = present::commands_with(self.extensions.names());
+            let help = present::commands_with(self.extensions.names(), self.skills.names());
             self.messages.push(Message::notice(help.clone()));
             self.log(
                 "notice",
@@ -287,6 +287,26 @@ impl State {
             );
             return true;
         }
+        // The list of skills, or a fresh read of their folders. The reload
+        // answers when its scans land, since off the host nothing is known
+        // until then.
+        if line == "/skills" || line.starts_with("/skills ") {
+            let tail = line["/skills".len()..].trim();
+            return match tail {
+                "" => {
+                    self.show_skills();
+                    true
+                },
+                "reload" => self.reload_skills(),
+                _ => {
+                    let error = "/skills lists the skills; /skills reload reads their folders \
+                                 again. To run one, type its name: /<skill> <text>";
+                    self.messages.push(Message::error(error));
+                    self.log("error", serde_json::json!({"error": error}));
+                    true
+                },
+            };
+        }
         // Above the `tools_busy` guard below: entering the mode changes what the
         // *next* request advertises, so it is legal while a call is still
         // running, and the prompt itself queues like any other typed message.
@@ -317,6 +337,15 @@ impl State {
             };
             return self.approve_plan(note, fresh);
         }
+        // A skill is a prompt, not a tool: it queues behind a running tool the
+        // way typed text does, which is why this too sits above the guard.
+        // After the plugin's own commands, so none of those can be shadowed;
+        // before the tools, which a skill is never allowed to be named like.
+        if let Some((name, tail)) = skills::split_command(line) {
+            if let Some(skill) = self.skills.get(name).cloned() {
+                return self.run_skill(&skill, tail);
+            }
+        }
         // A reply arriving is no reason to wait, but another *tool* is: the
         // queue runs one call at a time, and its head owns the deferred result
         // the host is about to deliver.
@@ -335,6 +364,17 @@ impl State {
                 return true;
             },
         };
+        // A name nothing answers to is a typo, and a typo is an error line,
+        // not a call the model is then shown the failure of. Every `dispatch`
+        // arm is in `tools::specs`, so this refuses nothing that would run.
+        if !tools::names().contains(&name) && self.extensions.tool(&name).is_none() {
+            let error = format!(
+                "no such tool or skill: {name} — /help lists the commands, /skills the skills"
+            );
+            self.messages.push(Message::error(error.clone()));
+            self.log("error", serde_json::json!({"error": error}));
+            return true;
+        }
 
         let call = ToolCall {
             // Unique within the transcript: every manual call appends at least
@@ -361,6 +401,68 @@ impl State {
         // command is itself the confirmation, so a destructive one runs without
         // the y/n prompt the model's calls get.
         self.run_head(&call);
+        true
+    }
+
+    /// `/<skill> <tail>`: the skill's prompt goes out as a user turn, shown as
+    /// the line that was typed.
+    ///
+    /// Nothing here is a tool: no `pending`, no `run_head`, no `manual_head`.
+    /// Whatever the model does with the prompt is its own call and gets the
+    /// confirmation its calls get — typing a skill is not typing `/close_pane`.
+    /// Through `send_user_message`, so a skill queues behind a reply, carries
+    /// an @-mention's context, answers a waiting plan and is a planning turn
+    /// while planning, all exactly as typed text is.
+    pub(crate) fn run_skill(&mut self, skill: &skills::Skill, tail: &str) -> bool {
+        let display = if tail.is_empty() {
+            format!("/{}", skill.name)
+        } else {
+            format!("/{} {tail}", skill.name)
+        };
+        let content = skills::expand(skill, tail);
+        self.log(
+            "skill",
+            serde_json::json!({
+                "name": skill.name,
+                "source": skill.source.label(),
+                "path": skill.path,
+                "arguments": tail,
+            }),
+        );
+        self.send_user_message(content, Some(display))
+    }
+
+    /// `/skills`: what is loaded, what was refused and why.
+    pub(crate) fn show_skills(&mut self) {
+        let listing = present::skills_listing(&self.skills, &self.skills_dir());
+        self.messages.push(Message::notice(listing.clone()));
+        self.log(
+            "notice",
+            serde_json::json!({"content": log::truncate(&listing)}),
+        );
+        self.pin_to_bottom();
+    }
+
+    /// `/skills reload`: read both folders again and list the result when the
+    /// last scan lands. Before the grant there is nothing to read with.
+    pub(crate) fn reload_skills(&mut self) -> bool {
+        if !self.granted {
+            let error = "the skills folders cannot be read before hocus is granted its \
+                         permissions";
+            self.messages.push(Message::error(error));
+            self.log("error", serde_json::json!({"error": error}));
+            return true;
+        }
+        self.skills_announce = true;
+        self.start_user_skill_scan();
+        // Forgetting the root is what makes the sync read the folder again.
+        self.skills_project_root = None;
+        self.sync_project_skills();
+        if self.skills_scans_pending == 0 {
+            // Neither tier has a folder to read: answer now.
+            self.skills_announce = false;
+            self.show_skills();
+        }
         true
     }
 
@@ -977,6 +1079,7 @@ impl State {
             .any(|tab| tab.tab_id == tab_id && tab.active)
         {
             self.active_project = Some(project.name.clone());
+            self.sync_project_skills();
         }
         format!("assigned tab {tab_id} to project {}", project.name)
     }
@@ -1036,6 +1139,7 @@ impl State {
         self.tab_projects.insert(tab_id as usize, name.to_owned());
         self.auto_tab_projects.remove(&(tab_id as usize));
         self.active_project = Some(name.to_owned());
+        self.sync_project_skills();
         result.to_owned()
     }
 
@@ -1409,6 +1513,7 @@ impl State {
                 .and_then(|tab| self.tab_project(tab.tab_id))
                 .map(str::to_owned)
         });
+        self.sync_project_skills();
         self.refresh_tab_project_labels();
     }
 

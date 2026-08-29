@@ -223,3 +223,10 @@ reader of the manifest. See `docs/AGENT_HOOKS.md`. Unrelated to the `hooks { …
 Plugins come in two kinds: wasm modules (every builtin) and Lua scripts. See
 `zellij-server/src/plugins/lua/CLAUDE.md` before changing the Lua runtime; `docs/LUA_PLUGINS.md`
 is the user-facing guide.
+
+## Hocus skills
+
+A hocus skill is a `SKILL.md` prompt typed as `/<name> [text]`, read from
+`<project root>/.hocus/skills/<name>/` and `~/.config/zellij/plugins/hocus/skills/<name>/` only
+— never from `.claude/skills`, which are Claude Code's and name tools hocus does not have. See
+`docs/SKILLS.md`; the code is `default-plugins/hocus/src/skills.rs`.

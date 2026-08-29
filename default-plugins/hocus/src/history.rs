@@ -334,7 +334,16 @@ pub fn title(messages: &[Message]) -> String {
     let first_line = messages
         .iter()
         .find(|message| message.role == Role::User)
-        .and_then(|message| message.content.trim().lines().next())
+        // The typed line for a skill, whose `content` is the expanded prompt.
+        .and_then(|message| {
+            message
+                .display
+                .as_deref()
+                .unwrap_or(&message.content)
+                .trim()
+                .lines()
+                .next()
+        })
         .unwrap_or_default();
 
     let mut title: String = first_line

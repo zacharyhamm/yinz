@@ -866,7 +866,11 @@ fn message_lines(message: &crate::Message, cols: usize) -> Vec<VLine> {
     // No `fn:` prefix: the presenter opens with a heading, which says the
     // same thing, and a five-column prefix would fight the markdown
     // renderer's own indents and narrow every code fence.
-    if let Some(display) = message.display.as_deref() {
+    if let Some(display) = message
+        .display
+        .as_deref()
+        .filter(|_| message.role != Role::User)
+    {
         return markdown_lines_as(display, cols, message.role);
     }
     let prefix = prefix_for(message.role);
@@ -878,7 +882,10 @@ fn message_lines(message: &crate::Message, cols: usize) -> Vec<VLine> {
         _ => cols.saturating_sub(prefix.chars().count()).max(1),
     };
 
-    let mut wrapped = wrap(&message.content, body_width);
+    let mut wrapped = wrap(
+        message.display.as_deref().unwrap_or(&message.content),
+        body_width,
+    );
     // Truncation is display-only; `content` still goes to the model whole.
     if message.role == Role::Tool && !message.full_output && wrapped.len() > TOOL_RESULT_ROWS {
         let hidden = wrapped.len() - TOOL_RESULT_ROWS;

@@ -141,7 +141,7 @@ fn a_plan_prompt_queues_behind_an_arriving_reply() {
 
     assert!(state.is_planning(), "the mode is on straight away");
     assert_eq!(
-        state.asks.iter().collect::<Vec<_>>(),
+        state.asks.iter().map(Ask::shown).collect::<Vec<_>>(),
         vec!["work out an approach"],
         "the question queued",
     );
@@ -707,4 +707,38 @@ fn plan_completes_without_colliding_with_the_plugin_tools() {
         "{}",
         listed.content
     );
+}
+
+// -- skills ---------------------------------------------------------------
+
+/// A skill is typed text as far as the mode is concerned: inside it, a
+/// planning turn; at a waiting plan, the answer to it.
+#[test]
+fn a_skill_is_a_planning_turn_while_planning_and_answers_a_waiting_plan() {
+    let mut state = planning_state();
+    settle(&mut state);
+    load_skill(
+        &mut state,
+        skills::Source::User,
+        "bench",
+        "Run the benchmarks.",
+    );
+    state.input.set_text("/bench".to_owned());
+    state.submit();
+    assert!(state.is_planning());
+    assert!(state.is_receiving());
+
+    let mut state = idle_state();
+    state.plan = Plan::AwaitingApproval;
+    load_skill(
+        &mut state,
+        skills::Source::User,
+        "bench",
+        "Run the benchmarks.",
+    );
+    state.input.set_text("/bench again".to_owned());
+    state.submit();
+    assert!(state.is_planning(), "answered, not left waiting");
+    assert!(!state.awaiting_plan());
+    assert!(state.is_receiving());
 }

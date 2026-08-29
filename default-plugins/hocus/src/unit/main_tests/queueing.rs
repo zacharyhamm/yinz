@@ -9,7 +9,7 @@ fn a_message_submitted_mid_reply_queues_for_the_next_tool_batch() {
     assert!(state.submit());
     assert!(state.input.get_text().is_empty());
     assert_eq!(
-        state.asks.front().map(String::as_str),
+        state.asks.front().map(Ask::shown),
         Some("check that result")
     );
     assert_eq!(
@@ -157,4 +157,43 @@ fn model_calls_queue_behind_a_typed_one_that_is_still_running() {
         "the running one is still head"
     );
     assert!(state.owes_reply, "and the model is owed its answer");
+}
+
+/// A skill typed mid-reply queues like any question, and everything that
+/// shows the queue shows the typed line rather than the prompt it expands to.
+#[test]
+fn a_skill_submitted_mid_reply_queues_as_the_typed_line() {
+    let mut state = ready_state();
+    load_skill(
+        &mut state,
+        skills::Source::User,
+        "bench",
+        "Run the benchmarks.",
+    );
+    state.input.set_text("/bench go".to_owned());
+    assert!(state.submit());
+
+    assert_eq!(state.asks.front().map(Ask::shown), Some("/bench go"));
+    assert!(state.asks.front().unwrap().content.starts_with("<skill "));
+    assert_eq!(
+        state
+            .messages
+            .last()
+            .map(|message| message.content.as_str()),
+        Some("queued: /bench go")
+    );
+
+    state.on_chunk("hocus-1", &delta_frame("done"), false, None);
+    state.on_chunk("hocus-1", b"", true, None);
+    state.on_timer(FRAME_SECONDS);
+
+    assert!(state.asks.is_empty());
+    let user = state
+        .messages
+        .iter()
+        .rfind(|m| m.role == Role::User)
+        .unwrap();
+    assert_eq!(user.display.as_deref(), Some("/bench go"));
+    assert!(user.content.ends_with("</skill>\n\ngo"), "{}", user.content);
+    assert!(state.is_receiving());
 }

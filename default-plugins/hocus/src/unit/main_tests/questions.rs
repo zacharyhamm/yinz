@@ -115,7 +115,7 @@ fn questions_stop_being_taken_at_the_cap() {
 
     state.pipe(ask("one too many"));
     assert_eq!(state.asks.len(), MAX_QUEUED_ASKS, "refused, not dropped in");
-    assert!(!state.asks.iter().any(|text| text == "one too many"));
+    assert!(!state.asks.iter().any(|ask| ask.content == "one too many"));
 }
 
 /// Mentions resolve when the question goes out, not when it was typed —

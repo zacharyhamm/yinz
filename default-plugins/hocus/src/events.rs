@@ -1,4 +1,4 @@
-use crate::message::{Message, Status, StreamState};
+use crate::message::{Ask, Message, Status, StreamState};
 use crate::*;
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
@@ -100,7 +100,14 @@ impl State {
                 // never sends. Like the environment, it is fixed for the session.
                 self.user_plugin_dir = get_user_plugin_dir();
                 self.start_extension_scan();
-                Config::resolve(&self.kdl, &self.env)
+                let cfg = Config::resolve(&self.kdl, &self.env);
+                // After the environment is in, which `skills_dir` may expand
+                // `~/` against; not gated on the config resolving, because a
+                // missing API key is no reason to hide what `/skills` would
+                // list.
+                self.start_user_skill_scan();
+                self.sync_project_skills();
+                cfg
             },
             PermissionStatus::Denied => Err(ConfigError {
                 message: "Permission denied.\n\nhocus needs web access (to reach the API) and \
@@ -214,6 +221,146 @@ impl State {
         false
     }
 
+    /// The user's own skills folder: the KDL `skills_dir`, or `hocus/skills`
+    /// under the plugin folder the host reported. Empty when there is neither.
+    ///
+    /// Read straight from the block rather than through `Config`: the config
+    /// is an `Err` without an API key, and the skills are worth listing
+    /// regardless.
+    pub(crate) fn skills_dir(&self) -> String {
+        match self.kdl.get("skills_dir").map(|dir| dir.trim()) {
+            Some(dir) if !dir.is_empty() => api::expand_home(dir, &self.env),
+            _ => {
+                let dir = self.user_plugin_dir.trim().trim_end_matches('/');
+                if dir.is_empty() {
+                    String::new()
+                } else {
+                    format!("{dir}/hocus/skills")
+                }
+            },
+        }
+    }
+
+    /// Every name a skill may not take: a skill that shadowed a tool or one
+    /// of the plugin's own commands would turn a typed command into a prompt.
+    pub(crate) fn reserved_command_names(&self) -> BTreeSet<String> {
+        tools::names()
+            .into_iter()
+            .chain(LOCAL_COMMANDS.iter().map(|name| (*name).to_owned()))
+            .chain(self.extensions.names())
+            .collect()
+    }
+
+    /// Read the user tier again. Nothing is cleared first: a scan that fails
+    /// leaves what was loaded, and says so in `/skills`.
+    pub(crate) fn start_user_skill_scan(&mut self) {
+        let dir = self.skills_dir();
+        if dir.is_empty() {
+            self.skills.clear(skills::Source::User);
+            return;
+        }
+        self.start_skill_scan(skills::Source::User, vec![dir]);
+    }
+
+    /// Read the project tier again if the active project's root changed since
+    /// it was last read. The old project's skills are dropped at once rather
+    /// than waiting for the scan: until it answers, a command from the project
+    /// just left must not still work.
+    ///
+    /// Called wherever `active_project` is written. Not from the timer — an
+    /// idle hocus has none running. Nothing before the grant, and in
+    /// particular no root recorded: a tab update can land first, and a root
+    /// remembered then would look already read to the sync the grant runs.
+    pub(crate) fn sync_project_skills(&mut self) {
+        if !self.granted {
+            return;
+        }
+        let root = self
+            .active_project
+            .as_deref()
+            .and_then(|name| self.projects.get(name))
+            .map(|project| project.root.trim_end_matches('/').to_owned());
+        if root == self.skills_project_root {
+            return;
+        }
+        self.skills_project_root = root.clone();
+        self.skills.clear(skills::Source::Project);
+        if let Some(root) = root {
+            self.start_skill_scan(
+                skills::Source::Project,
+                vec![format!("{root}/.hocus/skills")],
+            );
+        }
+    }
+
+    /// Ask the host to read `roots`. Answered in `on_skill_scan_result`; off
+    /// wasm the call is a no-op and the argv is recorded for the tests.
+    fn start_skill_scan(&mut self, source: skills::Source, roots: Vec<String>) {
+        if !self.granted {
+            return;
+        }
+        let argv = skills::scan_argv(&roots);
+        #[cfg(test)]
+        {
+            self.last_skill_scan = Some(argv.clone());
+        }
+        let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+        self.skills_scans_pending += 1;
+        run_command_with_output_limit(
+            &borrowed,
+            BTreeMap::new(),
+            std::path::PathBuf::from("."),
+            BTreeMap::from([
+                (skills::SCAN_CONTEXT.to_owned(), "true".to_owned()),
+                (skills::SOURCE_CONTEXT.to_owned(), source.label().to_owned()),
+            ]),
+            skills::MAX_SCAN_OUTPUT,
+        );
+    }
+
+    pub(crate) fn on_skill_scan_result(
+        &mut self,
+        source: skills::Source,
+        exit_code: Option<i32>,
+        stdout: &[u8],
+        stderr: &[u8],
+    ) -> bool {
+        self.skills_scans_pending = self.skills_scans_pending.saturating_sub(1);
+        if exit_code == Some(0) {
+            let listing = skills::parse_listing(source, &String::from_utf8_lossy(stdout));
+            let reserved = self.reserved_command_names();
+            self.skills.replace(source, listing, &reserved);
+        } else {
+            let stderr = String::from_utf8_lossy(stderr);
+            let stderr = stderr.trim();
+            self.skills.set_error(
+                source,
+                format!(
+                    "the {} skills folder could not be read (exit code {}){}{stderr}",
+                    source.label(),
+                    exit_code.unwrap_or(-1),
+                    if stderr.is_empty() { "" } else { ": " }
+                ),
+            );
+        }
+        self.log(
+            "skills_scan",
+            serde_json::json!({
+                "source": source.label(),
+                "exit_code": exit_code,
+                "loaded": self.skills.names(),
+            }),
+        );
+        // `/skills reload` is answered once, when the last scan it started
+        // has landed.
+        if self.skills_announce && self.skills_scans_pending == 0 {
+            self.skills_announce = false;
+            self.show_skills();
+            return true;
+        }
+        false
+    }
+
     pub(crate) fn on_sessions(&mut self, sessions: Vec<SessionInfo>) -> bool {
         let instances = sessions
             .into_iter()
@@ -250,9 +397,12 @@ impl State {
         let Some(payload) = payload else {
             return false;
         };
+        // The skills too, so that the two cannot both claim a name: whichever
+        // registered first keeps it, and the other is told.
         let reserved: BTreeSet<String> = tools::names()
             .into_iter()
             .chain(LOCAL_COMMANDS.iter().map(|name| (*name).to_owned()))
+            .chain(self.skills.names())
             .collect();
         let names = match self.extensions.register(
             owner,
@@ -683,6 +833,7 @@ impl State {
             .map(|name| (*name).to_owned())
             .chain(tools::names())
             .chain(self.extensions.names())
+            .chain(self.skills.names())
             .filter(|name| name.starts_with(prefix))
             .collect();
         match matches.as_slice() {
@@ -801,10 +952,19 @@ impl State {
     ///
     /// The text has already left the input box, so the two branches that refuse
     /// to send it put it back rather than swallow what was typed.
-    pub(crate) fn send_user_text(&mut self, mut text: String) -> bool {
+    pub(crate) fn send_user_text(&mut self, text: String) -> bool {
+        self.send_user_message(text, None)
+    }
+
+    /// `send_user_text` for a turn that is shown as something other than what
+    /// is sent. A skill arrives here with `content` as its expanded prompt and
+    /// `display` as the `/name args` line that was typed: the typed line is
+    /// what the transcript, the queue notice and a refusal's put-back show,
+    /// and the prompt is what the model reads.
+    pub(crate) fn send_user_message(&mut self, mut text: String, display: Option<String>) -> bool {
         // Cloned rather than borrowed so the transcript can be mutated below.
         let Ok(cfg) = self.cfg.clone() else {
-            self.input.set_text(text);
+            self.input.set_text(display.unwrap_or(text));
             return false;
         };
 
@@ -816,20 +976,24 @@ impl State {
                 let notice = "the question queue is full — the input was not sent";
                 self.messages.push(Message::notice(notice));
                 self.log("notice", serde_json::json!({"content": notice}));
-                self.input.set_text(text);
+                self.input.set_text(display.unwrap_or(text));
                 self.pin_to_bottom();
                 return true;
             }
             if text.trim().is_empty() {
                 return true;
             }
-            let notice = format!("queued: {text}");
+            let ask = Ask {
+                content: text,
+                display,
+            };
+            let notice = format!("queued: {}", ask.shown());
             self.messages.push(Message::notice(notice.clone()));
             self.log(
                 "notice",
                 serde_json::json!({"content": log::truncate(&notice)}),
             );
-            self.asks.push_back(text);
+            self.asks.push_back(ask);
             self.pin_to_bottom();
             self.arm_timer(FRAME_SECONDS);
             return true;
@@ -854,10 +1018,11 @@ impl State {
 
         let content = text.clone();
         self.scheduled_run = None;
-        self.messages.push(Message::user(text));
+        let typed = display.clone();
+        self.messages.push(Message::user_shown(text, display));
         self.log(
             "user_input",
-            serde_json::json!({"content": log::truncate(&content)}),
+            serde_json::json!({"content": log::truncate(&content), "display": typed}),
         );
         // A new question starts a fresh tool budget.
         self.tool_rounds = 0;

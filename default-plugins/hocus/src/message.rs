@@ -108,6 +108,15 @@ impl Message {
     pub fn user<S: Into<String>>(content: S) -> Self {
         Message::new(Role::User, content)
     }
+    /// A user turn shown as something other than what is sent: a skill, whose
+    /// `content` is the expanded prompt and whose `display` is the line that
+    /// was typed. `None` is a plain user turn.
+    pub fn user_shown<S: Into<String>>(content: S, display: Option<String>) -> Self {
+        Message {
+            display,
+            ..Message::user(content)
+        }
+    }
     pub fn assistant<S: Into<String>>(content: S) -> Self {
         Message::new(Role::Assistant, content)
     }
@@ -228,6 +237,29 @@ pub enum Plan {
     Planning,
     /// A plan has been given and is waiting on `y`/`n`.
     AwaitingApproval,
+}
+
+/// A question waiting behind a busy chat. `content` is what will be sent;
+/// `display`, when set, is what the person typed to produce it — a skill's
+/// `/name args` — and is what the queue notices and the archive show.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ask {
+    pub content: String,
+    pub display: Option<String>,
+}
+
+impl Ask {
+    pub fn text<S: Into<String>>(content: S) -> Self {
+        Ask {
+            content: content.into(),
+            display: None,
+        }
+    }
+
+    /// What to print for this ask: the typed line if there was one.
+    pub fn shown(&self) -> &str {
+        self.display.as_deref().unwrap_or(&self.content)
+    }
 }
 
 /// A prompt the plugin re-asks itself on an interval. Firing one is exactly

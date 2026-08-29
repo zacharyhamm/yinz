@@ -562,7 +562,7 @@ fn a_tick_for_another_tab_leaves_the_input_undo_and_history_alone() {
 #[test]
 fn a_tick_for_another_tab_keeps_the_foreground_transcript_cache() {
     let mut state = three_tabs();
-    state.parked[0].asks.push_back("later".to_owned());
+    state.parked[0].asks.push_back(Ask::text("later"));
     ui::render(&mut state, 24, 80);
     let cached = state
         .transcript_cache

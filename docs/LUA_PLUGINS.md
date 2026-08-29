@@ -530,7 +530,9 @@ since unloaded anything - its events are dropped, and the job runs to completion
 ## Hocus extensions
 
 Hocus discovers direct `.lua` files in the `hocus` folder under `user_plugin_dir` and loads them
-headlessly. A file named `hocus/weather.lua` owns the `weather_` tool namespace. File and local
+headlessly. (The same folder's `skills/` subfolder holds hocus skills — prompts typed as
+`/<name>`, see `docs/SKILLS.md`. Tools, extension tools and skills share one `/` namespace, and a
+name goes to whichever registered first.) A file named `hocus/weather.lua` owns the `weather_` tool namespace. File and local
 tool names are lower snake case, so a local tool named `forecast` is advertised to the model and
 available at the prompt as `weather_forecast` and `/weather_forecast`.
 

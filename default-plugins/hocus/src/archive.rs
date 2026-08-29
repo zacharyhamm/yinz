@@ -1,4 +1,4 @@
-use crate::message::{Message, Picker, PickerKind, PickerRow};
+use crate::message::{Ask, Message, Picker, PickerKind, PickerRow};
 use crate::*;
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
@@ -524,10 +524,10 @@ impl State {
 /// a parked `Chat`'s alike, which is why it is not a method.
 pub(crate) fn unsent_asks_to_notices(
     messages: &mut Vec<Message>,
-    asks: &mut std::collections::VecDeque<String>,
+    asks: &mut std::collections::VecDeque<Ask>,
 ) {
-    for text in std::mem::take(asks) {
-        messages.push(Message::notice(format!("unsent question: {text}")));
+    for ask in std::mem::take(asks) {
+        messages.push(Message::notice(format!("unsent question: {}", ask.shown())));
     }
 }
 
