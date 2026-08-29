@@ -86,7 +86,8 @@ use zellij_utils::input::layout::{
     TiledPaneLayout,
 };
 use zellij_utils::input::options::{
-    Clipboard, NestedSessionHandling, NotificationPosition, PaneFrameStyle,
+    Clipboard, HostNotificationProtocol, NestedSessionHandling, NotificationPosition,
+    PaneFrameStyle,
 };
 use zellij_utils::ipc::MobileStatePayload;
 use zellij_utils::pane_size::{Size, SizeInPixels};
@@ -94,7 +95,11 @@ use zellij_utils::position::Position;
 use zellij_utils::shared::clean_string_from_control_and_linebreak;
 
 use crate::background_jobs::BackgroundJob;
+use crate::notifications::NotificationProtocol;
+use crate::output::Output;
 use crate::pane_groups::PaneGroups;
+use crate::panes::grid::{namespace_notification_id, PendingNotification};
+use crate::panes::link_handler::LinkHandler;
 use crate::panes::terminal_pane::{BRACKETED_PASTE_BEGIN, BRACKETED_PASTE_END};
 use crate::session_layout_metadata::{PaneLayoutMetadata, SessionLayoutMetadata};
 
@@ -813,6 +818,13 @@ pub(crate) struct Screen {
     /// Whether each client's host terminal currently has keyboard focus, as reported through
     /// DECSET 1004. A client that never reported counts as focused.
     client_host_focused: HashMap<ClientId, bool>,
+    /// The notification protocol resolved for each client from `host_notification_protocol`
+    /// and its host terminal environment.
+    client_notification_protocols: HashMap<ClientId, NotificationProtocol>,
+    /// The configured `host_notification_protocol`, re-resolved for every client on reconfigure.
+    host_notification_protocol: HostNotificationProtocol,
+    /// Each client's whitelisted host terminal environment, kept so a reconfigure can re-resolve.
+    client_host_terminal_env: HashMap<ClientId, BTreeMap<String, String>>,
     /// Pins what `frame_now` answers, so a test can step an animation frame by frame instead of
     /// sleeping. Never set outside tests.
     #[cfg(test)]
@@ -1277,6 +1289,9 @@ impl Screen {
             pane_output_activity: HashMap::new(),
             mobile_web_prefs: HashMap::new(),
             client_host_focused: HashMap::new(),
+            client_notification_protocols: HashMap::new(),
+            host_notification_protocol: HostNotificationProtocol::default(),
+            client_host_terminal_env: HashMap::new(),
             #[cfg(test)]
             pinned_now: None,
         }
@@ -1996,6 +2011,8 @@ impl Screen {
         self.last_notification_fill.remove(&client_id);
         self.pane_render_subscribers.remove(&client_id);
         self.client_host_focused.remove(&client_id);
+        self.client_notification_protocols.remove(&client_id);
+        self.client_host_terminal_env.remove(&client_id);
         self.revert_fit_disabled_without_reference_client()
             .with_context(err_context)?;
         if let Some(prev_tab_id) = previously_active_tab_id {
@@ -2931,6 +2948,7 @@ impl Screen {
         word_separators: String,
         nested_session_handling: NestedSessionHandling,
         dangerously_enable_paste_buffer_read: bool,
+        host_notification_protocol: HostNotificationProtocol,
         client_id: ClientId,
     ) -> Result<()> {
         let should_support_arrow_fonts = !simplified_ui;
@@ -2974,6 +2992,7 @@ impl Screen {
         self.word_separators = word_separators;
         self.nested_session_handling = nested_session_handling;
         self.paste_buffer_read_enabled = dangerously_enable_paste_buffer_read;
+        self.set_host_notification_protocol(host_notification_protocol);
         self.default_mode_info
             .update_arrow_fonts(should_support_arrow_fonts);
         self.default_mode_info
@@ -3770,6 +3789,130 @@ impl Screen {
             .get(client_id)
             .copied()
             .unwrap_or(true)
+    }
+
+    pub fn set_client_host_terminal_env(
+        &mut self,
+        client_id: ClientId,
+        host_terminal_env: BTreeMap<String, String>,
+    ) {
+        self.client_notification_protocols.insert(
+            client_id,
+            NotificationProtocol::resolve(self.host_notification_protocol, &host_terminal_env),
+        );
+        self.client_host_terminal_env
+            .insert(client_id, host_terminal_env);
+    }
+
+    /// Applies a (re)configured `host_notification_protocol`, re-resolving every client that
+    /// reported its host environment.
+    pub fn set_host_notification_protocol(
+        &mut self,
+        host_notification_protocol: HostNotificationProtocol,
+    ) {
+        self.host_notification_protocol = host_notification_protocol;
+        let client_ids: Vec<ClientId> = self.client_host_terminal_env.keys().copied().collect();
+        for client_id in client_ids {
+            let host_terminal_env = self
+                .client_host_terminal_env
+                .get(&client_id)
+                .cloned()
+                .unwrap_or_default();
+            self.client_notification_protocols.insert(
+                client_id,
+                NotificationProtocol::resolve(host_notification_protocol, &host_terminal_env),
+            );
+        }
+    }
+
+    fn notification_protocol_for_client(&self, client_id: &ClientId) -> NotificationProtocol {
+        self.client_notification_protocols
+            .get(client_id)
+            .copied()
+            .unwrap_or_else(|| {
+                NotificationProtocol::resolve(self.host_notification_protocol, &BTreeMap::new())
+            })
+    }
+
+    /// Sends the notifications a pane asked for to every connected client, each in the protocol
+    /// its host speaks: an OSC 99 host gets OSC 99 passed through with the identifier namespaced
+    /// to the pane, everything else gets the assembled title and body rendered by its protocol.
+    /// All clients in the app are told, not just the ones viewing the pane's tab.
+    fn forward_desktop_notifications(
+        &mut self,
+        notifications: Vec<PendingNotification>,
+        pane_id: u32,
+    ) {
+        let all_clients: Vec<ClientId> = self.connected_clients.borrow().keys().copied().collect();
+        if all_clients.is_empty() || notifications.is_empty() {
+            return;
+        }
+        let mut output = Output::default();
+        let client_set: HashSet<ClientId> = all_clients.iter().copied().collect();
+        output.add_clients(&client_set, Rc::new(RefCell::new(LinkHandler::new())), None);
+        let mut emitted_anything = false;
+        for client_id in &all_clients {
+            let protocol = self.notification_protocol_for_client(client_id);
+            for notification in &notifications {
+                let raw = match (protocol, notification) {
+                    (
+                        NotificationProtocol::Osc99,
+                        PendingNotification::Osc99 {
+                            payload,
+                            terminator,
+                            wants_report,
+                            ..
+                        },
+                    ) => {
+                        let (metadata, rest) = match payload.find(';') {
+                            Some(idx) => (
+                                payload.get(..idx).unwrap_or_default(),
+                                payload.get(idx..).unwrap_or_default(),
+                            ),
+                            None => (payload.as_str(), ""),
+                        };
+                        let namespaced_metadata =
+                            namespace_notification_id(metadata, pane_id, *wants_report);
+                        Some(format!(
+                            "\u{1b}]99;{}{}{}",
+                            namespaced_metadata, rest, terminator
+                        ))
+                    },
+                    (_, PendingNotification::Osc99 { display, .. }) => display
+                        .as_ref()
+                        .and_then(|(title, body)| protocol.render(title, body)),
+                    _ => {
+                        let (title, body) = notification.title_and_body();
+                        protocol.render(&title, &body)
+                    },
+                };
+                if let Some(raw) = raw {
+                    emitted_anything = true;
+                    output.add_post_vte_instruction_to_multiple_clients(
+                        std::iter::once(*client_id),
+                        &raw,
+                    );
+                }
+            }
+        }
+        if !emitted_anything {
+            return;
+        }
+        match output.serialize() {
+            Ok(serialized_output) if !serialized_output.is_empty() => {
+                self.bus
+                    .senders
+                    .send_to_server(ServerInstruction::Render(Some(serialized_output)))
+                    .context("failed to forward desktop notifications to host terminals")
+                    .non_fatal();
+            },
+            Ok(_) => {},
+            Err(e) => {
+                Err::<(), _>(e)
+                    .context("failed to serialize desktop notifications for host terminals")
+                    .non_fatal();
+            },
+        }
     }
 
     fn get_pane_info(&self, pane_id: PaneId) -> Option<PaneInfo> {

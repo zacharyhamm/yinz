@@ -29,7 +29,7 @@ use zellij_utils::input::layout::{
 
 use zellij_utils::input::mouse::MouseEvent;
 use zellij_utils::input::options::{
-    NestedSessionHandling, NotificationPosition, Options, PaneFrameStyle,
+    HostNotificationProtocol, NestedSessionHandling, NotificationPosition, Options, PaneFrameStyle,
     DEFAULT_NOTIFICATION_TIMEOUT_SECS, DEFAULT_WORD_SEPARATORS,
 };
 
@@ -2124,6 +2124,7 @@ mod cli_layouts_and_rename;
 mod cli_pane_and_tab_id;
 mod clients;
 mod context_menu;
+mod desktop_notifications;
 mod floating_panes;
 mod hooks;
 mod host_focus;

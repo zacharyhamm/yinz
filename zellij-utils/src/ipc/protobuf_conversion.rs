@@ -849,6 +849,7 @@ impl From<crate::input::cli_assets::CliAssets>
             max_panes: cli_assets.max_panes.map(|m| m as u32),
             force_run_layout_commands: cli_assets.force_run_layout_commands,
             cwd: cli_assets.cwd.map(|p| p.to_string_lossy().to_string()),
+            host_terminal_env: cli_assets.host_terminal_env.into_iter().collect(),
         }
     }
 }
@@ -878,6 +879,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::CliAssets>
             max_panes: cli_assets.max_panes.map(|m| m as usize),
             force_run_layout_commands: cli_assets.force_run_layout_commands,
             cwd: cli_assets.cwd.map(PathBuf::from),
+            host_terminal_env: cli_assets.host_terminal_env.into_iter().collect(),
         })
     }
 }
@@ -983,6 +985,9 @@ impl From<crate::input::options::Options>
                 .notification_position
                 .map(|p| p.as_str().to_owned()),
             notification_timeout: options.notification_timeout,
+            host_notification_protocol: options
+                .host_notification_protocol
+                .map(|p| p.as_str().to_owned()),
             nested_session_handling: options.nested_session_handling.map(|n| {
                 use crate::client_server_contract::client_server_contract::NestedSessionHandling as ProtoNestedSessionHandling;
                 use crate::input::options::NestedSessionHandling;
@@ -1124,6 +1129,13 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             context_menu_on_right_click: options.context_menu_on_right_click,
             osc133_command_selection: options.osc133_command_selection,
             word_separators: options.word_separators,
+            host_notification_protocol: options
+                .host_notification_protocol
+                .map(|p| {
+                    p.parse::<crate::input::options::HostNotificationProtocol>()
+                        .map_err(|e| anyhow!(e))
+                })
+                .transpose()?,
             nested_session_handling: options
                 .nested_session_handling
                 .map(|n| match ProtoNestedSessionHandling::try_from(n) {
