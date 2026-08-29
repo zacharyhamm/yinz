@@ -1011,8 +1011,9 @@ fn pick_anchor_skips_the_focused_pane() {
 }
 
 #[test]
-fn pick_anchor_prefers_a_pane_hocus_is_not_sitting_on() {
-    // the corner pane is larger, but the conversation is already on it
+fn pick_anchor_prefers_the_pane_hocus_is_covering() {
+    // pane 2 is untouched, but pane 1 is the one the conversation is sitting on top of - and
+    // getting off it is the whole of what the key is for
     let panes = vec![
         tiled(1, 0, 0, 100, 50, false),
         tiled(2, 100, 0, 100, 25, false),
@@ -1020,7 +1021,7 @@ fn pick_anchor_prefers_a_pane_hocus_is_not_sitting_on() {
     ];
     assert_eq!(
         pick_anchor(at(3, 14, 60, 33), &panes, None),
-        Some(PaneId::Terminal(2))
+        Some(PaneId::Terminal(1))
     );
 }
 
@@ -1078,70 +1079,145 @@ fn pick_anchor_is_a_no_op_when_the_best_pane_is_the_current_anchor() {
 }
 
 #[test]
-fn pick_anchor_has_nothing_to_say_with_one_tiled_pane() {
+fn pick_anchor_falls_back_to_the_only_tiled_pane() {
+    // focused, and still the answer: it is the only thing on the tab to be clear of, and the
+    // overlay beside it is floating and so is not a pane the layout is made of
     let panes = vec![
         tiled(1, 0, 0, 200, 50, true),
         overlay_pane(7, 3, 14, 60, 33),
     ];
-    assert_eq!(pick_anchor(at(3, 14, 60, 33), &panes, None), None);
+    assert_eq!(
+        pick_anchor(at(3, 14, 60, 33), &panes, None),
+        Some(PaneId::Terminal(1))
+    );
+    assert_eq!(
+        pick_anchor(at(3, 14, 60, 33), &panes, Some(PaneId::Terminal(1))),
+        None,
+        "and still nowhere to go on a second press"
+    );
     assert_eq!(pick_anchor(at(3, 14, 60, 33), &[], None), None);
 }
 
 #[test]
-fn anchored_geometry_sits_in_the_anchors_bottom_left_inset_by_the_padding() {
+fn sole_tiled_pane_counts_only_the_layout() {
+    assert!(sole_tiled_pane(&[
+        tiled(1, 0, 0, 200, 50, true),
+        overlay_pane(7, 3, 14, 60, 33),
+        PaneInfo {
+            is_selectable: false,
+            ..tiled(4, 0, 49, 200, 1, false)
+        },
+    ]));
+    assert!(!sole_tiled_pane(&two_panes()));
+    assert!(!sole_tiled_pane(&[]));
+}
+
+/// The clear placement on the standard 50x200 surface, with the conversation on screen.
+fn clear_of(anchor: Rect, alone: bool) -> (usize, usize, usize, usize) {
+    rect(&clear_geometry(&BTreeMap::new(), 50, 200, true, anchor, alone).expect("some geometry"))
+}
+
+/// The corner placement's `(width, height)`, which the clear placement must never depart from.
+fn corner_size() -> (usize, usize) {
     let (corner, _) = beside(&BTreeMap::new(), 50, 200);
-    let (_, _, corner_w, corner_h) = rect(&corner);
-    let inside = anchored_geometry(&BTreeMap::new(), 50, 200, at(100, 0, 100, 50)).expect("some");
-    let (x, y, w, h) = rect(&inside);
+    let (_, _, w, h) = rect(&corner);
+    (w, h)
+}
+
+#[test]
+fn clear_geometry_goes_right_of_a_pane_on_the_left() {
+    let (w, h) = corner_size();
     assert_eq!(
-        x,
-        100 + DEFAULT_PAD,
-        "one padding in from the pane's left edge"
-    );
-    assert_eq!(
-        y + h,
-        50 - DEFAULT_PAD,
-        "one padding up from the pane's bottom edge"
-    );
-    assert_eq!(
-        (w, h),
-        (corner_w, corner_h),
-        "the configured size, when the pane has room for it"
+        clear_of(at(0, 0, 100, 50), false),
+        (200 - DEFAULT_PAD - w, 50 - DEFAULT_PAD - h, w, h),
+        "the right-hand slot, still along the bottom"
     );
 }
 
 #[test]
-fn anchored_geometry_clamps_the_size_to_the_anchor() {
-    let inside = anchored_geometry(&BTreeMap::new(), 50, 200, at(150, 30, 50, 20)).expect("some");
-    let (x, y, w, h) = rect(&inside);
-    assert_eq!(w, 50 - 2 * DEFAULT_PAD, "as wide as the pane allows");
-    assert_eq!(h, 20 - 2 * DEFAULT_PAD, "and as tall");
-    assert!(
-        x + w <= 200 && y + h <= 50,
-        "inside the pane, {x} {y} {w} {h}"
+fn clear_geometry_goes_left_of_a_pane_on_the_right() {
+    let (w, h) = corner_size();
+    assert_eq!(
+        clear_of(at(100, 0, 100, 50), false),
+        (DEFAULT_PAD, 50 - DEFAULT_PAD - h, w, h),
+        "the default corner, which is already clear of that pane"
     );
-    assert!(x >= 150 && y >= 30);
 }
 
 #[test]
-fn anchored_geometry_respects_the_minimums_in_a_tiny_pane() {
-    let inside = anchored_geometry(&BTreeMap::new(), 50, 200, at(0, 46, 10, 4)).expect("some");
-    let (x, y, w, h) = rect(&inside);
-    assert_eq!(x, 1, "the padding is capped to a quarter of the pane");
+fn clear_geometry_goes_top_right_when_the_pane_is_the_only_one() {
+    let (w, h) = corner_size();
     assert_eq!(
+        clear_of(at(0, 0, 200, 50), true),
+        (200 - DEFAULT_PAD - w, DEFAULT_PAD, w, h),
+        "there is no other side of the screen, so the far corner from the default"
+    );
+}
+
+#[test]
+fn clear_geometry_picks_the_vertical_slot_that_hides_the_least() {
+    let (w, h) = corner_size();
+    // a full-width band, so neither horizontal slot helps and only the row is left to choose
+    let (_, low_band_y, _, _) = clear_of(at(0, 30, 200, 20), false);
+    assert_eq!(
+        low_band_y, DEFAULT_PAD,
+        "a band along the bottom pushes it up"
+    );
+    let (_, high_band_y, _, _) = clear_of(at(0, 0, 200, 20), false);
+    assert_eq!(
+        high_band_y,
+        50 - DEFAULT_PAD - h,
+        "and a band along the top leaves it where it was"
+    );
+    assert_eq!(
+        clear_of(at(0, 30, 200, 20), false).2,
         w,
-        ui::MIN_COLS + 2,
-        "never narrower than the plugin can draw, even past the pane's edge"
+        "same size either way"
+    );
+}
+
+#[test]
+fn clear_geometry_still_chooses_a_row_when_the_column_was_forced() {
+    let (w, h) = corner_size();
+    // centred left, so the conversation is sent right - and wide enough that the right-hand slot
+    // is still on top of it, which leaves the row to make up the difference
+    assert_eq!(
+        clear_of(at(0, 30, 170, 20), false),
+        (200 - DEFAULT_PAD - w, DEFAULT_PAD, w, h),
+        "as far off it as the forced column allows"
+    );
+}
+
+#[test]
+fn clear_geometry_leaves_a_centred_pane_in_the_default_corner() {
+    let (w, h) = corner_size();
+    assert_eq!(
+        clear_of(at(0, 0, 200, 50), false),
+        (DEFAULT_PAD, 50 - DEFAULT_PAD - h, w, h),
+        "every slot ties against a pane that fills the screen, and ties go to the corner"
+    );
+}
+
+#[test]
+fn clear_geometry_is_never_clamped_to_the_pane() {
+    let (w, h) = corner_size();
+    assert_eq!(
+        clear_of(at(0, 46, 10, 4), false),
+        (200 - DEFAULT_PAD - w, 50 - DEFAULT_PAD - h, w, h),
+        "a tiny pane moves the conversation, it does not shrink it to fit"
+    );
+}
+
+#[test]
+fn clear_geometry_has_nothing_to_say_without_a_surface_or_a_pane() {
+    assert_eq!(
+        clear_geometry(&BTreeMap::new(), 0, 200, true, at(0, 0, 100, 50), false),
+        None
     );
     assert_eq!(
-        h, MIN_ROWS,
-        "and never shorter than a frame with a row in it"
-    );
-    assert_eq!(y + h, 46 + 4 - 1, "still anchored to the pane's bottom");
-    assert_eq!(
-        anchored_geometry(&BTreeMap::new(), 50, 200, at(0, 0, 0, 6)),
+        clear_geometry(&BTreeMap::new(), 50, 200, true, at(0, 0, 0, 6), false),
         None,
-        "and nothing at all for a pane with no size"
+        "nothing at all for a pane with no size"
     );
 }
 
@@ -1177,7 +1253,7 @@ fn placed_chat(state: &State) -> (usize, usize, usize, usize) {
 }
 
 #[test]
-fn ctrl_o_anchors_the_conversation_inside_the_largest_unfocused_pane() {
+fn ctrl_o_moves_the_conversation_clear_of_the_largest_unfocused_pane() {
     let mut state = two_pane_state();
 
     assert!(!state.on_key(ctrl_o()));
@@ -1188,15 +1264,56 @@ fn ctrl_o_anchors_the_conversation_inside_the_largest_unfocused_pane() {
         is_the_users,
         "sent as the user's own placement, over any drag"
     );
+    let (corner_w, corner_h) = corner_size();
     let (x, y, w, h) = placed_chat(&state);
     assert!(
-        x >= 100 && x + w <= 200 && y + h <= 50,
-        "inside pane 2: {x} {y} {w} {h}"
+        x + w <= 100,
+        "clear of pane 2, which starts at 100: {x} {w}"
+    );
+    assert_eq!(
+        (x, y, w, h),
+        (DEFAULT_PAD, 50 - DEFAULT_PAD - corner_h, corner_w, corner_h)
     );
 }
 
 #[test]
-fn ctrl_o_with_one_tiled_pane_is_a_no_op() {
+fn ctrl_o_walks_off_whatever_the_conversation_is_covering() {
+    let mut state = placed_state();
+    // the user's pane along the top, and two below it: one under the conversation's corner, one
+    // on the right
+    let panes = vec![
+        overlay_pane(7, 3, 14, 60, 33),
+        tiled(1, 0, 0, 200, 12, true),
+        tiled(2, 0, 12, 100, 38, false),
+        tiled(3, 100, 12, 100, 38, false),
+    ];
+    state.on_panes(manifest(0, panes.clone()));
+
+    state.on_key(ctrl_o());
+    assert_eq!(state.anchor, Some(PaneId::Terminal(2)), "the pane it is on");
+    let (x, _, w, _) = placed_chat(&state);
+    assert!(x >= 100, "moved off pane 2, onto pane 3: {x} {w}");
+
+    // the manifest catches up with where the server drew us
+    state.on_panes(manifest(
+        0,
+        std::iter::once(overlay_pane(7, x, 14, w, 33))
+            .chain(panes.into_iter().skip(1))
+            .collect(),
+    ));
+
+    state.on_key(ctrl_o());
+    assert_eq!(
+        state.anchor,
+        Some(PaneId::Terminal(3)),
+        "now it is on pane 3"
+    );
+    let (x, _, w, _) = placed_chat(&state);
+    assert!(x + w <= 100, "and back off it again: {x} {w}");
+}
+
+#[test]
+fn ctrl_o_with_one_tiled_pane_moves_to_the_top_right() {
     let mut state = placed_state();
     state.on_panes(manifest(
         0,
@@ -1209,8 +1326,16 @@ fn ctrl_o_with_one_tiled_pane_is_a_no_op() {
 
     state.on_key(ctrl_o());
 
-    assert_eq!(state.anchor, None);
-    assert_eq!(state.last_placement, None, "nothing was sent");
+    assert_eq!(
+        state.anchor,
+        Some(PaneId::Terminal(1)),
+        "the focused pane is admitted when it is the only one"
+    );
+    let (w, h) = corner_size();
+    assert_eq!(
+        placed_chat(&state),
+        (200 - DEFAULT_PAD - w, DEFAULT_PAD, w, h)
+    );
 }
 
 #[test]
@@ -1260,9 +1385,10 @@ fn an_anchored_conversation_follows_its_pane_when_the_tab_is_re_tiled() {
     assert_eq!(placements.len(), 1);
     let (x, _, w, _) = placed_chat(&state);
     assert!(
-        x >= 150 && x + w <= 200,
-        "inside the pane where it is now: {x} {w}"
+        x + w <= 150,
+        "still clear of the pane, where it is now: {x} {w}"
     );
+    assert_eq!(x, DEFAULT_PAD);
     assert_eq!(state.anchor_rect, Some(at(150, 0, 50, 50)));
 }
 

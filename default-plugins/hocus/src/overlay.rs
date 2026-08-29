@@ -36,13 +36,14 @@
 //! without that, an overlay left behind on another tab would never hear the `TabUpdate` it moves
 //! on.
 //!
-//! **The corner is the default, not the only place.** Ctrl-o (`State::reposition`) jumps the
-//! conversation over a different tiled pane - the largest one the user is not working in, by
-//! `pick_anchor` - and remembers the pane as `State::anchor`. From then on the conversation is
-//! placed *inside* that pane (`anchored_geometry`) rather than in the corner, and it stays with
-//! the pane: `track_anchor` reads each `PaneUpdate` and follows a re-tile or, once the pane is
-//! gone, releases the conversation back to the corner. The list is not part of this; it keeps
-//! its corner arithmetic as if the conversation were still there.
+//! **The corner is the default, not the only place.** Ctrl-o (`State::reposition`) moves the
+//! conversation *clear of* a tiled pane - whichever one it is covering, or the largest one the
+//! user is not working in, by `pick_anchor` - and remembers that pane as `State::anchor`. From
+//! then on the conversation is placed on the side of the screen opposite the pane
+//! (`clear_geometry`) rather than in the corner, at exactly the size the corner placement would
+//! have given it, and it stays with the pane: `track_anchor` reads each `PaneUpdate` and follows a
+//! re-tile or, once the pane is gone, releases the conversation back to the corner. The list is
+//! not part of this; it keeps its corner arithmetic as if the conversation were still there.
 
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
@@ -102,27 +103,9 @@ pub(crate) fn overlay_geometry(
         return None;
     }
     let pad = pad_of(config, rows, cols);
-    let (configured_width, configured_height) = configured_size(config, rows, cols);
-    // What is between the paddings, and how much of it one pane may take. With the conversation
-    // on screen the two panes and the gap between them are laid end to end, so neither may exceed
-    // half of what is left once the gap is taken off - a `width` wide enough for one is not wide
-    // enough for two, and the list would otherwise run off the right-hand edge. Alone, a pane may
-    // take the whole of it: there is no gap to leave room for.
-    let across = cols.saturating_sub(pad * 2).max(1);
-    let each = match chat_visible {
-        true => across.saturating_sub(pad) / 2,
-        false => across,
-    };
-    let width = configured_width
-        // an overlay is framed, so the plugin is rendered two cells narrower than the pane
-        .max(ui::MIN_COLS + 2)
-        .min(each.max(1));
-
-    // What is left of the screen once the padding is taken off the top and the bottom, and the
-    // share of it a pane actually takes. A pane is anchored to the *bottom*, so a height short of
-    // the whole leaves the top of the screen alone rather than the bottom.
-    let available = rows.saturating_sub(pad * 2);
-    let height = configured_height.clamp(MIN_ROWS.min(available).max(1), available.max(1));
+    let (width, height) = panel_size(config, rows, cols, chat_visible);
+    // A pane is anchored to the *bottom*, so a height short of the whole leaves the top of the
+    // screen alone rather than the bottom.
     let y = rows.saturating_sub(height + pad);
 
     // Fixed rather than percentages throughout: these are already resolved against the surface we
@@ -143,6 +126,41 @@ pub(crate) fn overlay_geometry(
         fixed_rect(pad, y, width, height),
         fixed_rect(agents_x, y, width, height),
     ))
+}
+
+/// One panel's `(width, height)`, resolved against the surface and clamped to it.
+///
+/// The size half of the corner placement, factored out because Ctrl-o's placement uses exactly
+/// this and nothing else: moving the conversation clear of a pane must never resize it, so the two
+/// placements have to agree on the size to the cell rather than each restating the clamping.
+fn panel_size(
+    config: &BTreeMap<String, String>,
+    rows: usize,
+    cols: usize,
+    chat_visible: bool,
+) -> (usize, usize) {
+    let pad = pad_of(config, rows, cols);
+    let (configured_width, configured_height) = configured_size(config, rows, cols);
+    // What is between the paddings, and how much of it one pane may take. With the conversation
+    // on screen the two panes and the gap between them are laid end to end, so neither may exceed
+    // half of what is left once the gap is taken off - a `width` wide enough for one is not wide
+    // enough for two, and the list would otherwise run off the right-hand edge. Alone, a pane may
+    // take the whole of it: there is no gap to leave room for.
+    let across = cols.saturating_sub(pad * 2).max(1);
+    let each = match chat_visible {
+        true => across.saturating_sub(pad) / 2,
+        false => across,
+    };
+    let width = configured_width
+        // an overlay is framed, so the plugin is rendered two cells narrower than the pane
+        .max(ui::MIN_COLS + 2)
+        .min(each.max(1));
+
+    // What is left of the screen once the padding is taken off the top and the bottom, and the
+    // share of it a pane actually takes.
+    let available = rows.saturating_sub(pad * 2);
+    let height = configured_height.clamp(MIN_ROWS.min(available).max(1), available.max(1));
+    (width, height)
 }
 
 /// The padding, resolved against a surface of `rows` by `cols`.
@@ -232,70 +250,128 @@ pub(crate) fn pane_id_of(pane: &PaneInfo) -> PaneId {
     }
 }
 
-/// The tiled pane the conversation should jump over, given every pane on its tab.
+/// Whether a manifest entry is one of the panes the layout is made of.
 ///
-/// The pane the user is working in is out: it is the one they want the conversation *off*. Of
-/// the rest, a pane the conversation is not already sitting on is preferred to one it is - least
-/// overlap first - and the larger pane wins among equals, because a panel inside a bigger pane
-/// keeps more of its size. The sort is stable, so a tie beyond that goes to manifest order.
+/// Floating, suppressed and unselectable panes are not: a floating pane is not the layout (which
+/// is what keeps hocus's own two overlays out of this), a suppressed one is not on screen, and an
+/// unselectable one is chrome such as the status bar.
+fn is_tiled(pane: &PaneInfo) -> bool {
+    !pane.is_floating && !pane.is_suppressed && pane.is_selectable
+}
+
+/// Whether the tab holds exactly one tiled pane.
 ///
-/// Floating, suppressed and unselectable panes are not places to sit: a floating pane is not the
-/// layout, a suppressed one is not on screen, and an unselectable one is chrome such as the
-/// status bar. `None` when there is nothing to go to, or when the best pane is the one the
-/// conversation is already anchored to - a press that would move it nowhere does nothing.
+/// The one case the placement cannot answer with "the other side of the screen", because a single
+/// pane has no other side - see [`clear_geometry`]. Read from the manifest at placement time
+/// rather than remembered, so a second pane opening drops the rule on the next re-tile.
+pub(crate) fn sole_tiled_pane(panes: &[PaneInfo]) -> bool {
+    panes.iter().filter(|pane| is_tiled(pane)).count() == 1
+}
+
+/// The tiled pane the conversation should get clear of, given every pane on its tab.
+///
+/// The pane the user is working in is out: it is the one they are already looking at, and hocus
+/// is asked to uncover something else. The exception is a tab with a single tiled pane, where the
+/// focused pane is the only thing there is to be clear of - without it Ctrl-o would do nothing at
+/// all on the commonest layout there is.
+///
+/// Of the rest, **the pane the conversation is covering most wins**, and the larger pane wins
+/// among equals. That ranking is what makes a repeat press walk: the first press takes hocus off
+/// the pane it was on, which lands it on some other pane, and the second press takes it off that
+/// one. Where hocus covers nothing the overlaps are all zero and the ranking reads as "the largest
+/// pane you are not in". The sort is stable, so a tie beyond that goes to manifest order.
+///
+/// `None` when there is nothing to go to, or when the best pane is the one the conversation is
+/// already anchored to - a press that would move it nowhere does nothing.
 pub(crate) fn pick_anchor(
     own_rect: Rect,
     panes: &[PaneInfo],
     current: Option<PaneId>,
 ) -> Option<PaneId> {
-    let mut candidates: Vec<&PaneInfo> = panes
-        .iter()
-        .filter(|pane| {
-            !pane.is_floating && !pane.is_suppressed && pane.is_selectable && !pane.is_focused
-        })
-        .collect();
+    let tiled: Vec<&PaneInfo> = panes.iter().filter(|pane| is_tiled(pane)).collect();
+    let mut candidates: Vec<&PaneInfo> = match tiled.len() {
+        1 => tiled,
+        _ => tiled.into_iter().filter(|pane| !pane.is_focused).collect(),
+    };
     candidates.sort_by_key(|pane| {
         let rect = Rect::of(pane);
-        (own_rect.overlap(&rect), Reverse(rect.area()))
+        (Reverse(own_rect.overlap(&rect)), Reverse(rect.area()))
     });
     let best = pane_id_of(candidates.first()?);
     (current != Some(best)).then_some(best)
 }
 
-/// The conversation's rectangle inside `anchor`: its bottom-left corner, inset by the padding,
-/// at the configured size or as much of it as fits.
+/// The conversation's rectangle *clear of* `anchor`: a corner of the screen on the other side of
+/// it, at exactly the size the corner placement would have given it.
 ///
-/// The same arithmetic as the corner placement with the anchor standing in for the screen, so a
-/// `width`, `height` or `pad` the user set means the same thing in both. The one addition is the
-/// cap: a pane can be far smaller than the screen, and the padding is capped against it too, or a
-/// pad of three would eat a pane six rows tall.
+/// Ctrl-o is a request to see a pane, so the placement's whole job is to stop covering it. The
+/// pane is never resized and neither is the conversation - the size comes straight from
+/// [`panel_size`], clamped to the screen and never to the pane, so a `width`, `height` or `pad`
+/// the user set means the same thing here as in the corner. What moves is the corner it sits in:
 ///
-/// The minimums win over the pane, where the corner placement lets the screen win over them: a
-/// pane can be smaller than anything hocus can draw in, and a conversation that overflows a tiny
-/// pane is still a conversation, where one squeezed to its width is not. The server clamps the
-/// result to the screen as it does every overlay.
+/// - `alone` - one tiled pane on the whole tab - goes to the **top right**. There is no other
+///   side of the screen to be on, so the rule is "the far corner from the default" rather than
+///   anything computed; every candidate below would tie against a pane that fills the screen and
+///   the conversation would not move at all.
+/// - A pane whose centre is left of the screen's sends the conversation to the **right**, and one
+///   whose centre is right of it sends the conversation **left**. A centred pane constrains
+///   neither, and both slots are candidates.
+/// - Among the slots left, the one that covers the least of the pane wins. Ties go to the bottom,
+///   and then to the left - the default corner, so nothing moves further than it has to.
 ///
-/// `None` when there is nothing to compute against - a surface or an anchor with no size.
-pub(crate) fn anchored_geometry(
+/// The vertical slot is chosen by overlap even when the horizontal one was forced, which is what
+/// answers a pane too wide for either side to clear outright: it is put where it hides the least
+/// of it. Covering *other* panes is not this function's problem - only the pane the user asked to
+/// see is.
+///
+/// `None` when there is nothing to compute against - a surface or an anchor with no size - which
+/// leaves the caller with the corner placement it already has.
+pub(crate) fn clear_geometry(
     config: &BTreeMap<String, String>,
     surface_rows: usize,
     surface_cols: usize,
+    chat_visible: bool,
     anchor: Rect,
+    alone: bool,
 ) -> Option<FloatingPaneCoordinates> {
     if surface_rows == 0 || surface_cols == 0 || anchor.rows == 0 || anchor.cols == 0 {
         return None;
     }
-    let pad = pad_of(config, surface_rows, surface_cols)
-        .min(anchor.rows / 4)
-        .min(anchor.cols / 4);
-    let (configured_width, configured_height) = configured_size(config, surface_rows, surface_cols);
-    let inner_cols = anchor.cols.saturating_sub(pad * 2).max(1);
-    let inner_rows = anchor.rows.saturating_sub(pad * 2).max(1);
-    let width = configured_width.min(inner_cols).max(ui::MIN_COLS + 2);
-    let height = configured_height.min(inner_rows).max(MIN_ROWS);
-    let x = anchor.x + pad;
-    let y = (anchor.y + anchor.rows).saturating_sub(pad + height);
-    Some(fixed_rect(x, y, width, height))
+    let pad = pad_of(config, surface_rows, surface_cols);
+    let (width, height) = panel_size(config, surface_rows, surface_cols, chat_visible);
+    // The four corners the conversation may sit in. `max` is the degenerate guard: the minimums in
+    // `panel_size` can win over a surface too small to inset, and a far slot that underflowed
+    // would otherwise be off the screen rather than merely on top of the near one.
+    let (left, top) = (pad, pad);
+    let right = surface_cols.saturating_sub(pad + width).max(left);
+    let bottom = surface_rows.saturating_sub(pad + height).max(top);
+
+    if alone {
+        return Some(fixed_rect(right, top, width, height));
+    }
+
+    // Doubled rather than halved, so a pane an odd number of columns wide is not rounded onto one
+    // side of a screen it is centred on.
+    let anchor_centre = 2 * anchor.x + anchor.cols;
+    let xs: &[usize] = match anchor_centre.cmp(&surface_cols) {
+        std::cmp::Ordering::Less => &[right],
+        std::cmp::Ordering::Greater => &[left],
+        std::cmp::Ordering::Equal => &[left, right],
+    };
+    // Preference order, most preferred first: `min_by_key` keeps the first of equals, so this list
+    // *is* the tie-break - the bottom row before the top, and the left column before the right.
+    let best = [bottom, top]
+        .into_iter()
+        .flat_map(|y| xs.iter().map(move |x| (*x, y)))
+        .min_by_key(|(x, y)| {
+            anchor.overlap(&Rect {
+                x: *x,
+                y: *y,
+                cols: width,
+                rows: height,
+            })
+        })?;
+    Some(fixed_rect(best.0, best.1, width, height))
 }
 
 /// The surface the panes are placed against, off the active tab's `TabInfo`.
@@ -410,10 +486,14 @@ impl State {
     /// keeps a position the user dragged and a size they resized over anything a plugin asks
     /// for, and a key the user pressed is theirs to override that with.
     ///
-    /// **An anchored conversation is placed inside its pane; the list is placed as if it were
+    /// **An anchored conversation is placed clear of its pane; the list is placed as if it were
     /// not.** The list's slot is a function of whether the conversation is on screen, not of
     /// where it is, so the corner arithmetic answers for it unchanged - the user moved the
     /// conversation, and the list is a separate pane they did not ask to move.
+    ///
+    /// `sole_tiled_pane` is read from the manifest here rather than remembered from the press,
+    /// so the single-pane rule is re-decided on every placement: a second pane opening re-tiles
+    /// the tab, and `track_anchor` comes back through here with a manifest that says so.
     fn place(&mut self, override_user_placement: bool) {
         let Some((mut chat, agents)) = overlay_geometry(
             &self.kdl,
@@ -424,10 +504,15 @@ impl State {
             return;
         };
         if let (Some(_), Some(anchor_rect)) = (self.anchor, self.anchor_rect) {
-            if let Some(inside) =
-                anchored_geometry(&self.kdl, self.surface_rows, self.surface_cols, anchor_rect)
-            {
-                chat = inside;
+            if let Some(clear) = clear_geometry(
+                &self.kdl,
+                self.surface_rows,
+                self.surface_cols,
+                !self.hidden,
+                anchor_rect,
+                sole_tiled_pane(&self.tab_panes),
+            ) {
+                chat = clear;
             }
         }
         let mut placements = vec![(PaneId::Plugin(self.own_plugin_id), chat)];
@@ -453,11 +538,12 @@ impl State {
         }
     }
 
-    /// Ctrl-o: jump the conversation over a different tiled pane.
+    /// Ctrl-o: move the conversation clear of a tiled pane.
     ///
     /// The pane is chosen by [`pick_anchor`] from the last manifest, and remembered: from here on
-    /// the conversation is placed inside it rather than in the corner, until the pane goes away.
-    /// Sent as the user's own placement, so it lands even on a conversation they dragged.
+    /// the conversation is placed on the far side of it ([`clear_geometry`]) rather than in the
+    /// corner, until the pane goes away. Sent as the user's own placement, so it lands even on a
+    /// conversation they dragged.
     ///
     /// Nothing happens before the first `PaneUpdate` - there is no manifest to rank - and nothing
     /// happens when there is nowhere better to go.
