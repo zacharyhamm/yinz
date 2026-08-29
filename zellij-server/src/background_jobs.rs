@@ -129,6 +129,7 @@ mod command_output_tests {
 struct WebRequestStreamState {
     response_sent: bool,
     finished: bool,
+    pending: Vec<u8>,
 }
 
 #[derive(
@@ -1032,6 +1033,13 @@ async fn streamed_web_request(
     proxy: Option<String>,
 ) {
     let (plugin_id, client_id, stream_id) = key.clone();
+    let emit_event = |event: Event| {
+        let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
+            Some(plugin_id),
+            Some(client_id),
+            event,
+        )]));
+    };
     let send_event = |event: Event| {
         let mut state = state.lock().unwrap();
         if state.finished {
@@ -1040,11 +1048,7 @@ async fn streamed_web_request(
         if matches!(event, Event::WebRequestResult(..)) {
             state.response_sent = true;
         }
-        let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-            Some(plugin_id),
-            Some(client_id),
-            event,
-        )]));
+        emit_event(event);
     };
     let finished =
         |error| {
@@ -1087,11 +1091,16 @@ async fn streamed_web_request(
         return finished(error);
     }
     send_event(Event::WebRequestResult(status, headers, vec![], context));
-    let error = forward_streamed_body(res.body_mut(), &stream_id, &send_event).await;
+    let error = forward_streamed_body(res.body_mut(), &stream_id, &state, &emit_event).await;
     finished(error);
 }
 
-async fn forward_streamed_body<R, F>(body: &mut R, stream_id: &str, send_event: F) -> Option<String>
+async fn forward_streamed_body<R, F>(
+    body: &mut R,
+    stream_id: &str,
+    state: &Arc<Mutex<WebRequestStreamState>>,
+    send_event: F,
+) -> Option<String>
 where
     R: futures_lite::io::AsyncRead + Unpin,
     F: Fn(Event),
@@ -1103,16 +1112,15 @@ where
     // reassembled on the far side (hocus feeds these to an `SseParser`, which already handles a
     // frame split across reads); all this changes is how many events carry the same bytes.
     let mut buf = [0u8; WEB_REQUEST_STREAM_CHUNK_SIZE];
-    let mut pending: Vec<u8> = Vec::new();
-    // Not `send_event` directly: every exit from the loop below owes the pending bytes to the
-    // plugin before the terminator goes out, and routing them through one place is what makes
-    // that hard to get wrong.
+    // Every exit from the loop below owes the pending bytes to the plugin before the terminator
+    // goes out. They live in the shared state so cancellation can keep that promise too.
     macro_rules! flush {
         () => {
-            if !pending.is_empty() {
+            let mut state = state.lock().unwrap();
+            if !state.finished && !state.pending.is_empty() {
                 send_event(Event::WebRequestStreamChunk {
                     stream_id: stream_id.to_owned(),
-                    chunk: std::mem::take(&mut pending),
+                    chunk: std::mem::take(&mut state.pending),
                     done: false,
                     error: None,
                 });
@@ -1155,10 +1163,17 @@ where
                 break None;
             },
             Ok(bytes_read) => {
-                pending.extend_from_slice(&buf[..bytes_read]);
+                let pending_len = {
+                    let mut state = state.lock().unwrap();
+                    if state.finished {
+                        return None;
+                    }
+                    state.pending.extend_from_slice(&buf[..bytes_read]);
+                    state.pending.len()
+                };
                 // A window bounds latency, not memory - a fast producer must not be allowed to
                 // grow this without limit between deadlines.
-                if pending.len() >= WEB_REQUEST_STREAM_COALESCE_MAX {
+                if pending_len >= WEB_REQUEST_STREAM_COALESCE_MAX {
                     flush!();
                     deadline = None;
                 } else if deadline.is_none() {
@@ -1221,6 +1236,18 @@ fn finish_stream(
             ),
         )]));
         state.response_sent = true;
+    }
+    if !state.pending.is_empty() {
+        let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
+            Some(plugin_id),
+            Some(client_id),
+            Event::WebRequestStreamChunk {
+                stream_id: stream_id.clone(),
+                chunk: std::mem::take(&mut state.pending),
+                done: false,
+                error: None,
+            },
+        )]));
     }
     state.finished = true;
     let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
@@ -1675,9 +1702,10 @@ mod web_request_stream_tests {
         for part in parts {
             reader_handle.send(part.to_vec()).unwrap();
         }
+        let state = Arc::new(Mutex::new(WebRequestStreamState::default()));
         let (emitted, mut emitted_chunks) = tokio::sync::mpsc::unbounded_channel();
         let task = tokio::spawn(async move {
-            forward_streamed_body(&mut reader, "stream-1", move |event| match event {
+            forward_streamed_body(&mut reader, "stream-1", &state, move |event| match event {
                 Event::WebRequestStreamChunk { chunk, done, .. } => {
                     assert!(!done, "the task must never emit the terminator itself");
                     emitted.send(chunk).unwrap();
@@ -1709,6 +1737,58 @@ mod web_request_stream_tests {
 
         drop(reader_handle);
         assert_eq!(task.await.unwrap(), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancellation_flushes_bytes_read_before_the_coalescing_deadline() {
+        let (mut reader, reader_handle, reader_is_waiting) = ControlledReader::new();
+        reader_handle.send(b"final bytes".to_vec()).unwrap();
+        let (senders, plugin_rx, _job_rx) = test_senders();
+        let state = Arc::new(Mutex::new(WebRequestStreamState {
+            response_sent: true,
+            ..Default::default()
+        }));
+        let task_state = state.clone();
+        let task_senders = senders.clone();
+        let task = tokio::spawn(async move {
+            forward_streamed_body(&mut reader, "stream-1", &task_state, move |event| {
+                let _ = task_senders.send_to_plugin(PluginInstruction::Update(vec![(
+                    Some(PLUGIN_ID),
+                    Some(CLIENT_ID),
+                    event,
+                )]));
+            })
+            .await
+        });
+
+        reader_is_waiting.await.unwrap();
+        assert_eq!(state.lock().unwrap().pending, b"final bytes");
+        let mut active_streams = HashMap::from([(
+            stream_key(),
+            ActiveWebRequestStream {
+                abort_handle: task.abort_handle(),
+                generation: GENERATION,
+                state,
+                context: BTreeMap::new(),
+            },
+        )]);
+        finish_stream(
+            &mut active_streams,
+            &senders,
+            stream_key(),
+            None,
+            Some("cancelled".to_owned()),
+        );
+
+        let events = drain_events(&plugin_rx);
+        assert!(matches!(
+            &events[..],
+            [
+                Event::WebRequestStreamChunk { chunk, done: false, error: None, .. },
+                Event::WebRequestStreamChunk { chunk: done_chunk, done: true, error: Some(error), .. }
+            ] if chunk == b"final bytes" && done_chunk.is_empty() && error == "cancelled"
+        ));
+        assert!(task.await.unwrap_err().is_cancelled());
     }
 
     async fn serve_truncated_response() -> String {
@@ -1951,7 +2031,7 @@ mod web_request_stream_tests {
                 state: Arc::new(Mutex::new(WebRequestStreamState {
                     // the task already emitted the leading result and its chunks
                     response_sent: true,
-                    finished: false,
+                    ..Default::default()
                 })),
                 context: BTreeMap::new(),
             },
@@ -1996,7 +2076,8 @@ mod web_request_stream_tests {
                 generation: GENERATION,
                 state: Arc::new(Mutex::new(WebRequestStreamState {
                     response_sent: true,
-                    finished: false,
+                    pending: b"final bytes".to_vec(),
+                    ..Default::default()
                 })),
                 context: BTreeMap::new(),
             },
@@ -2022,13 +2103,14 @@ mod web_request_stream_tests {
             },
         );
 
-        assert!(
-            matches!(
-                &drain_events(&plugin_rx)[..],
-                [Event::WebRequestStreamChunk { done: true, error: Some(e), .. }] if e == "superseded"
-            ),
-            "the superseded stream gets its terminator"
-        );
+        let events = drain_events(&plugin_rx);
+        assert!(matches!(
+            &events[..],
+            [
+                Event::WebRequestStreamChunk { chunk, done: false, error: None, .. },
+                Event::WebRequestStreamChunk { done: true, error: Some(error), .. }
+            ] if chunk == b"final bytes" && error == "superseded"
+        ));
         assert!(old_task.await.unwrap_err().is_cancelled());
 
         // the old stream's finish report must not disturb its replacement
