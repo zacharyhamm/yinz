@@ -239,7 +239,8 @@ impl State {
         self.job_count() > 0
     }
 
-    /// Jobs across every open chat, the foreground's first.
+    /// Jobs across every open chat, the foreground's first. Held jobs are not
+    /// counted: nothing is counting them down.
     pub(crate) fn job_count(&self) -> usize {
         self.jobs.len()
             + self
@@ -249,10 +250,37 @@ impl State {
                 .sum::<usize>()
     }
 
-    /// Every chat's job list, the foreground's first, for the operations that
-    /// reach across tabs: `unschedule` and `/stop_jobs`.
+    /// Every job hocus knows of: the open chats' and the held ones'.
+    pub(crate) fn total_job_count(&self) -> usize {
+        self.job_count() + self.held_jobs.values().map(Vec::len).sum::<usize>()
+    }
+
+    /// Whether `id` is a job in any chat, open or held - what stops a restore
+    /// from reading the same row in twice.
+    fn knows_job(&self, id: u64) -> bool {
+        self.jobs.iter().any(|job| job.id == id)
+            || self
+                .parked
+                .iter()
+                .any(|chat| chat.jobs.iter().any(|job| job.id == id))
+            || self
+                .held_jobs
+                .values()
+                .any(|jobs| jobs.iter().any(|job| job.id == id))
+    }
+
+    /// Every chat's job list, the foreground's first, then the held ones, for
+    /// the operations that reach across tabs: `unschedule` and `/stop_jobs`.
     pub(crate) fn all_jobs_mut(&mut self) -> impl Iterator<Item = &mut Vec<Job>> {
-        std::iter::once(&mut self.jobs).chain(self.parked.iter_mut().map(|chat| &mut chat.jobs))
+        std::iter::once(&mut self.jobs)
+            .chain(self.parked.iter_mut().map(|chat| &mut chat.jobs))
+            .chain(self.held_jobs.values_mut())
+    }
+
+    /// The jobs held for `chat_id`, for the chat that is being reopened; the
+    /// empty list when none are.
+    pub(crate) fn take_held_jobs(&mut self, chat_id: u64) -> Vec<Job> {
+        self.held_jobs.remove(&chat_id).unwrap_or_default()
     }
 
     /// Whether any chat has a question waiting for its turn.
@@ -626,9 +654,10 @@ impl State {
     /// user set by hand, and the daemon's last summaries. Read once, at load;
     /// hocus is the only writer of these rows, so nothing watches them.
     ///
-    /// Every restored job lands in the foreground chat, whichever chat armed it:
-    /// parked chats are not restored, only their transcripts are, and a job
-    /// that fired into nothing would be a job that quietly stopped. Its
+    /// A job follows the chat that armed it. A restart opens no chat, so a job
+    /// whose row names one is *held* under that id until `/history` reopens
+    /// it - see `held_jobs` - and only a job armed in a chat that was never
+    /// saved, which no archive can bring back, lands in the foreground. Its
     /// countdown resumes from where the wall clock says it is.
     pub(crate) fn restore_persisted(&mut self) {
         let now = now_secs();
@@ -636,25 +665,49 @@ impl State {
         let fetched = self.store().fetch(&fetch(jobs::ENTITY)).ok();
         if let Some(rows) = fetched {
             let mut restored = 0;
+            let mut held = 0;
             for row in jobs::from_rows(&rows) {
-                if self.jobs.iter().any(|job| job.id == row.job_id) {
+                if self.knows_job(row.job_id) {
                     continue;
                 }
                 self.job_seq = self.job_seq.max(row.job_id);
-                self.jobs.push(Job {
+                let job = Job {
                     id: row.job_id,
                     every: row.every,
                     due_in: (row.next_due_at - now).max(0) as f64,
                     prompt: row.prompt,
                     show: row.show,
                     auto_confirm: row.auto_confirm,
-                });
-                restored += 1;
+                };
+                match row.chat_id {
+                    Some(chat_id) if self.chat_id != Some(chat_id) => {
+                        if let Some(index) = self
+                            .parked
+                            .iter()
+                            .position(|chat| chat.chat_id == Some(chat_id))
+                        {
+                            self.parked[index].jobs.push(job);
+                            restored += 1;
+                        } else {
+                            self.held_jobs.entry(chat_id).or_default().push(job);
+                            held += 1;
+                        }
+                    },
+                    _ => {
+                        self.jobs.push(job);
+                        restored += 1;
+                    },
+                }
             }
             if restored > 0 {
                 self.arm_timer(JOB_SECONDS);
                 self.messages.push(Message::notice(format!(
                     "restored {restored} scheduled job(s)"
+                )));
+            }
+            if held > 0 {
+                self.messages.push(Message::notice(format!(
+                    "{held} scheduled job(s) wait in archived chats: /history reopens one with its jobs"
                 )));
             }
         }

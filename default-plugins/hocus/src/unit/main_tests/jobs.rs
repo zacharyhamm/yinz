@@ -336,3 +336,183 @@ fn a_scheduled_run_declines_a_confirmation_instead_of_parking() {
         .iter()
         .any(|m| m.content == "[scheduled] and again"));
 }
+
+/// The job ids the store holds, sorted.
+fn stored_job_ids(state: &State) -> Vec<u64> {
+    let rows = state
+        .store()
+        .fetch(&FetchRequest::entity(hocus_proto::jobs::ENTITY))
+        .expect("fetched");
+    let mut ids: Vec<u64> = hocus_proto::jobs::from_rows(&rows)
+        .iter()
+        .map(|row| row.job_id)
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// A row for a job armed in chat `chat_id`, as the last hocus would have left it.
+fn held_row(job_id: u64, chat_id: Option<u64>) -> hocus_proto::jobs::JobRow {
+    hocus_proto::jobs::JobRow {
+        job_id,
+        chat_id,
+        every: 60.0,
+        next_due_at: crate::transitions::now_secs() + 60,
+        prompt: format!("job {job_id}"),
+        show: false,
+        auto_confirm: false,
+    }
+}
+
+/// A job armed in a chat that is not open at the next start waits for that
+/// chat rather than firing into whichever one is on screen.
+#[test]
+fn a_restored_job_waits_for_its_chat() {
+    let mut state = State::default();
+    state
+        .store()
+        .apply(vec![
+            hocus_proto::jobs::to_mutation(&held_row(1, Some(3))),
+            hocus_proto::jobs::to_mutation(&held_row(2, Some(3))),
+            hocus_proto::jobs::to_mutation(&held_row(3, None)),
+        ])
+        .expect("written");
+    state.open_store();
+
+    assert_eq!(
+        state.jobs.iter().map(|job| job.id).collect::<Vec<_>>(),
+        vec![3],
+        "only the job of a chat that was never saved lands in the foreground"
+    );
+    assert_eq!(
+        state
+            .held_jobs
+            .get(&3)
+            .map(|jobs| jobs.iter().map(|job| job.id).collect::<Vec<_>>()),
+        Some(vec![1, 2]),
+        "the others wait under their chat"
+    );
+    assert_eq!(state.job_seq, 3);
+    assert_eq!(state.job_count(), 1, "held jobs are not counting down");
+    assert_eq!(state.total_job_count(), 3);
+    assert!(
+        state.live_chat_ids().contains(&3),
+        "and /history marks their chat as live"
+    );
+    let notices: Vec<&str> = state.messages.iter().map(|m| m.content.as_str()).collect();
+    assert_eq!(
+        notices,
+        vec![
+            "restored 1 scheduled job(s)",
+            "2 scheduled job(s) wait in archived chats: /history reopens one with its jobs"
+        ]
+    );
+
+    state.open_store();
+    assert_eq!(
+        state.total_job_count(),
+        3,
+        "opening again holds nothing twice"
+    );
+}
+
+/// `/history` opening the chat is what hands it its jobs back, counting down
+/// from there.
+#[test]
+fn reopening_a_chat_brings_its_jobs_with_it() {
+    let mut state = idle_state();
+    state.messages = vec![Message::user("watch this"), Message::assistant("ok")];
+    state.flush_save();
+    let saved = state.chat_id.expect("the flush allocated an id");
+    state.run_local(&schedule_call(r#"{"seconds":60,"prompt":"a"}"#));
+    assert_eq!(stored_job_ids(&state), vec![1]);
+
+    // The next hocus: the chat is in the archive and nowhere else, its job
+    // in the store with the chat's id on it.
+    state.new_chat();
+    state.parked.retain(|chat| chat.chat_id != Some(saved));
+    state.chat_tab = 0;
+    state.timer_armed = false;
+    state.restore_persisted();
+    assert!(state.jobs.is_empty());
+    assert_eq!(state.held_jobs.get(&saved).map(Vec::len), Some(1));
+    assert!(!state.timer_armed, "nothing is counting a held job down");
+
+    state.switch_to_chat(saved);
+    assert_eq!(state.chat_id, Some(saved));
+    assert_eq!(
+        state.jobs.iter().map(|job| job.id).collect::<Vec<_>>(),
+        vec![1],
+        "the job is the reopened chat's again"
+    );
+    assert!(state.held_jobs.is_empty());
+    assert!(state.timer_armed, "and counting down");
+    assert_eq!(
+        state.messages.last().map(|m| m.content.as_str()),
+        Some("restored 1 scheduled job(s)"),
+        "said in the chat it belongs to"
+    );
+    assert_eq!(stored_job_ids(&state), vec![1], "still armed in the store");
+}
+
+/// Closing a chat's tab stops its jobs for good, in the store as in memory;
+/// the row does not come back at the next start as a job nobody remembers.
+#[test]
+fn closing_a_chat_tab_forgets_its_jobs() {
+    let mut state = idle_state();
+    state.run_local(&schedule_call(r#"{"seconds":60,"prompt":"a"}"#));
+    state.new_chat();
+    assert_eq!(state.chat_tab_count(), 2, "the job kept its chat open");
+    assert_eq!(state.parked[0].jobs.len(), 1);
+    state.run_local(&schedule_call(r#"{"seconds":60,"prompt":"b"}"#));
+    assert_eq!(stored_job_ids(&state), vec![1, 2]);
+
+    state.close_tab(0);
+    assert_eq!(state.chat_tab_count(), 1);
+    assert_eq!(
+        stored_job_ids(&state),
+        vec![2],
+        "the closed chat's job is gone, the foreground's stays"
+    );
+}
+
+/// The kill switch reaches jobs held for chats that are not open, which no
+/// tab could otherwise get at.
+#[test]
+fn stop_jobs_clears_held_jobs_too() {
+    let mut state = idle_state();
+    state
+        .store()
+        .apply(vec![
+            hocus_proto::jobs::to_mutation(&held_row(7, Some(3))),
+            hocus_proto::jobs::to_mutation(&held_row(8, Some(4))),
+        ])
+        .expect("written");
+    state.open_store();
+    assert_eq!(state.held_jobs.len(), 2);
+    assert_eq!(state.job_count(), 0);
+
+    assert!(
+        state.run_manual("/stop_jobs"),
+        "there was something to stop"
+    );
+    assert!(state.held_jobs.is_empty());
+    assert!(stored_job_ids(&state).is_empty());
+    assert_eq!(
+        state.messages.last().map(|m| m.content.as_str()),
+        Some("cancelled 2 scheduled job(s)")
+    );
+
+    // And one by id.
+    state
+        .store()
+        .apply(vec![hocus_proto::jobs::to_mutation(&held_row(9, Some(3)))])
+        .expect("written");
+    state.restore_persisted();
+    assert_eq!(state.unschedule(Some(9)), "cancelled job 9");
+    assert!(
+        state.held_jobs.is_empty(),
+        "an emptied chat is dropped from the map"
+    );
+    assert!(stored_job_ids(&state).is_empty());
+}

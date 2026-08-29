@@ -203,7 +203,7 @@ re-loaded with the payload as config). Config surface is already generic over `H
 (`kdl/mod.rs:6005`; `config.lua` `hook` builder). `agent_start` is where "spawn the next agent
 on branch X when Y starts" and "auto-answer this permission prompt" policies live, in user Lua.
 
-**R15. Persist hocus jobs, latches and agent state in `shared:hocus`.** *(done — `job`, `agent_latch` and `agent_summary` entities in `store::shared_defs()`, row code in `hocus-proto/src/jobs.rs` and `agents::rows`; written as each change lands (`persist_job` on arm and fire, `forget_jobs`, `persist_latch`/`forget_latches`, `persist_summaries` diff-only) and read back once in `State::restore_persisted` from `open_store`. Every restored job lands in the foreground chat. `job_auto_confirm: bool` became `scheduled_run: Option<ScheduledRun { job_id, auto_confirm }>`, and `pump_tools` answers a confirmation-gated call on a scheduled run without `auto_confirm` with a decline instead of parking.)*
+**R15. Persist hocus jobs, latches and agent state in `shared:hocus`.** *(done — `job`, `agent_latch` and `agent_summary` entities in `store::shared_defs()`, row code in `hocus-proto/src/jobs.rs` and `agents::rows`; written as each change lands (`persist_job` on arm and fire, `forget_jobs`, `persist_latch`/`forget_latches`, `persist_summaries` diff-only) and read back once in `State::restore_persisted` from `open_store`. A restored job follows its `chat_id` — held in `State::held_jobs` until `/history` reopens that chat, or the foreground if the row has none (next step 4). `job_auto_confirm: bool` became `scheduled_run: Option<ScheduledRun { job_id, auto_confirm }>`, and `pump_tools` answers a confirmation-gated call on a scheduled run without `auto_confirm` with a decline instead of parking.)*
 `Job` (`message.rs:159`), `manual_kinds`/latches, and summaries go through `hocus-proto/src/store.rs`
 defs (constructor-only, `Backend` trait, `Local` for tests) so a plugin reload or session restart
 restores them. R4 already moves live agent state to the pane manifest; this covers what is
@@ -341,8 +341,11 @@ R16. What the next session should know:
   instance. (A second client attaching while a hook plugin was still loading used to wipe that
   plugin's cached events; fixed under next step 2 below.)
 - Persistence: `job`, `agent_latch`, `agent_summary` are in `store::shared_defs()`; both
-  hocus and hocus-store declare them. Restored jobs all land in the foreground chat; the row
-  keeps `chat_id` for a future that reattaches them to a reopened chat.
+  hocus and hocus-store declare them. A restored job whose row names a chat waits in
+  `State::held_jobs` for `/history` to reopen it (`switch_to_chat` hands them over and arms the
+  timer); a closed chat tab forgets its rows the way `/clear` does. Held jobs do not tick, are
+  not in `job_count()` (the `⏲ n` title note), but are in `total_job_count()`, `/stop_jobs`,
+  `unschedule`, and `live_chat_ids()` (the `/history` `●`).
 - Proto numbers now in use: plugin `EventType` 57 (`Hook`), event payload field 51,
   `AgentSource` 2 / IPC `AGENT_SOURCE_REGISTERED` 3.
 - Left open by design: `plugin_log` still shells out (the log file is outside every plugin
@@ -381,9 +384,16 @@ trustworthy and are done, the rest are the loose ends it left — continue from 
    loads it and fires two points at it; the "Headless hooks" section of `docs/LUA_PLUGINS.md`
    opens with a quickstart that binds it with `set-hook --write` and reads its log with
    `zellij plugins log`.)*
-4. **Restored jobs follow their chat**: `job.chat_id` is stored but every restored job lands in
-   the foreground (`State::restore_persisted`). When `/history` reopens a chat, move its jobs
-   over; when a chat is archived for good, delete them.
+4. **Restored jobs follow their chat**. *(done — `restore_persisted` sends a row with a
+   `chat_id` to that chat if it is open, to `State::held_jobs` if it is not, and to the foreground
+   only when the row has none; `switch_to_chat` takes the held jobs into the reopened chat with a
+   notice and arms the timer. Closing a chat tab is the only way a chat leaves the open set, so
+   `close_tab` now forgets the closed chat's rows as `reset_chat` already did — before, they
+   survived to be restored into the foreground as jobs nobody remembered arming. `/stop_jobs`
+   and `unschedule` reach held jobs through `all_jobs_mut`; `live_chat_ids` marks their chats.
+   Tests in `main_tests::jobs`: `a_restored_job_waits_for_its_chat`,
+   `reopening_a_chat_brings_its_jobs_with_it`, `closing_a_chat_tab_forgets_its_jobs`,
+   `stop_jobs_clears_held_jobs_too`.)*
 5. **`plugin_log` without a shell**: the one plugin tool still on `run_command`. Either a `/log`
    fs root (read-only, `ReadFiles`) or a `PluginCommand::ReadPluginLog { name, lines }` that
    greps server-side — the latter is the nine-file transcription TECH_DEBT describes.
