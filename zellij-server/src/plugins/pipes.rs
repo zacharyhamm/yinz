@@ -171,11 +171,12 @@ fn release_pipe_of_crashed_plugin(
         let plugin_render_asset =
             PluginRenderAsset::new(plugin_id, running_plugin.env().owner_client_id, vec![])
                 .with_pipes(pipe_state_changes);
-        let _ = senders
+        senders
             .send_to_plugin(PluginInstruction::UnblockCliPipes(vec![
                 plugin_render_asset,
             ]))
-            .context("failed to unblock input pipe of crashed plugin");
+            .context("failed to unblock input pipe of crashed plugin")
+            .non_fatal();
     }
 }
 

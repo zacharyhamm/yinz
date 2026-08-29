@@ -156,13 +156,39 @@ fn the_command_output_flash_is_shown_until_it_is_cleared() {
 }
 
 #[test]
-fn the_end_marker_carries_the_exit_code_when_the_shell_sends_one() {
-    let grid = six_row_grid_with(
-        "\u{1b}]133;D;0\u{7}\r\n\u{1b}]133;D\u{7}\r\n\u{1b}]133;D;127\u{7}\r\n\u{1b}]133;D;abc\u{7}\r\n",
-    );
-    assert_eq!(
-        grid.osc133_end_exit_codes(),
-        vec![Some(0), None, Some(127), None]
+fn the_command_output_flash_follows_its_rows_into_the_scrollback() {
+    let mut grid = six_row_grid_with(&marked_commands(12));
+    let (_, start, end) = grid.last_completed_command_output().unwrap();
+    grid.set_command_output_flash(start, end);
+    let before = grid.command_output_flash.unwrap();
+
+    // a background job prints while the flash is up: the flashed rows move up one line
+    feed_bytes(&mut grid, b"late output\r\n");
+
+    let after = grid.command_output_flash.unwrap();
+    assert_eq!(after.start.line.0, before.start.line.0 - 1);
+    assert_eq!(after.end.line.0, before.end.line.0 - 1);
+}
+
+#[test]
+fn the_command_output_flash_is_dropped_by_a_resize() {
+    let mut grid = six_row_grid_with(&marked_commands(12));
+    let (_, start, end) = grid.last_completed_command_output().unwrap();
+    grid.set_command_output_flash(start, end);
+    assert!(grid.command_output_flash_is_shown());
+
+    grid.change_size(6, 30);
+    assert!(!grid.command_output_flash_is_shown());
+}
+
+#[test]
+fn selecting_the_command_at_the_scroll_position_ignores_the_triple_click_opt_out() {
+    let mut grid = six_row_grid_with(&marked_commands(12));
+    grid.set_selection_options(false, "");
+    assert!(grid.scroll_to_previous_prompt());
+    assert!(
+        grid.select_command_at_scroll_position(),
+        "`osc133_command_selection false` only opts out of triple-click selection"
     );
 }
 

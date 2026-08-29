@@ -65,14 +65,31 @@ fn an_osc_9_conemu_progress_report_is_not_a_notification() {
 }
 
 #[test]
-fn other_osc_9_conemu_subcommands_are_not_notifications() {
+fn an_osc_9_conemu_cwd_report_is_not_a_notification() {
     let mut grid = new_grid_for_forwarding_test();
     feed_bytes(&mut grid, b"\x1b]9;9;/home/user\x07");
-    feed_bytes(&mut grid, b"\x1b]9;3;a tab title\x07");
     assert!(
         grid.pending_desktop_notifications.is_empty(),
-        "ConEmu subcommands are not desktop notifications, got: {:?}",
+        "ConEmu cwd reports are not desktop notifications, got: {:?}",
         grid.pending_desktop_notifications
+    );
+}
+
+#[test]
+fn an_osc_9_notification_starting_with_a_small_number_and_semicolon_is_still_a_notification() {
+    let mut grid = new_grid_for_forwarding_test();
+    feed_bytes(&mut grid, b"\x1b]9;3;builds remaining\x07");
+    feed_bytes(&mut grid, b"\x1b]9;4;not a state;text\x07");
+    assert_eq!(
+        grid.pending_desktop_notifications,
+        vec![
+            PendingNotification::Osc9 {
+                body: "3;builds remaining".to_owned()
+            },
+            PendingNotification::Osc9 {
+                body: "4;not a state;text".to_owned()
+            },
+        ]
     );
 }
 

@@ -1883,6 +1883,7 @@ impl Grid {
             return;
         }
         self.selection.reset();
+        self.command_output_flash = None;
         self.sixel_grid.character_cell_size_possibly_changed();
         self.kitty_grid.character_cell_size_possibly_changed();
         self.kitty_reanchor_all_from_pixels();
@@ -2481,6 +2482,9 @@ impl Grid {
         {
             self.transfer_rows_to_lines_above(1);
             self.selection.move_up(1);
+            if let Some(command_output_flash) = self.command_output_flash.as_mut() {
+                command_output_flash.move_up(1);
+            }
             RegionRowsScrolled::IntoScrollback
         } else if at < self.viewport.len() {
             self.viewport.remove(at);
@@ -2562,6 +2566,9 @@ impl Grid {
             }
             self.viewport.push_back(new_row);
             self.selection.move_up(1);
+            if let Some(command_output_flash) = self.command_output_flash.as_mut() {
+                command_output_flash.move_up(1);
+            }
         } else {
             let outcome = self.scroll_region_content_up(
                 scroll_region_top,
@@ -3419,7 +3426,9 @@ impl Grid {
             return;
         } else if self.click.is_triple_click() {
             let Some((start_position, end_position)) = self
-                .osc133_command_around_position(start)
+                .osc133_command_selection
+                .then(|| self.osc133_command_around_position(start))
+                .flatten()
                 .or_else(|| self.canonical_line_around_position(start))
             else {
                 // no-op
@@ -3699,17 +3708,19 @@ impl Grid {
         }
     }
 
+    /// The command around `position`, from its `Input` (or `Output`) marker to the next marker.
+    ///
+    /// Not gated on `osc133_command_selection`: that option only opts out of triple-click grabbing
+    /// a command, and the explicit prompt/command keybindings stay usable.
     fn osc133_command_around_position(&self, position: &Position) -> Option<(Position, Position)> {
-        if !self.osc133_command_selection || !self.osc133_markers_seen {
+        if !self.osc133_markers_seen {
             return None;
         }
         let first_line = -(self.lines_above.len() as isize);
         let last_line = (self.viewport.len() + self.lines_below.len()) as isize - 1;
         let clicked_line = position.line.0;
         let clicked_column = position.column.0;
-        let marker_position = |line: isize, column: usize| {
-            Position::new(line as i32, column.min(u16::MAX as usize) as u16)
-        };
+        let marker_position = Self::osc133_marker_position;
 
         let mut latest_output = None;
         let mut selection_start = None;
@@ -3732,7 +3743,7 @@ impl Grid {
                         selection_start = Some(marker_position(line, marker.column));
                         break 'backward;
                     },
-                    Osc133MarkerKind::Prompt | Osc133MarkerKind::End(_) => {
+                    Osc133MarkerKind::Prompt | Osc133MarkerKind::End => {
                         latest_output?;
                         break 'backward;
                     },
@@ -3788,7 +3799,7 @@ impl Grid {
                             input_candidate = Some(display_delta);
                         }
                     },
-                    Osc133MarkerKind::Output | Osc133MarkerKind::End(_) => {
+                    Osc133MarkerKind::Output | Osc133MarkerKind::End => {
                         if let Some(candidate) = input_candidate {
                             return Some(candidate);
                         }
@@ -3815,7 +3826,7 @@ impl Grid {
                         let reachable_delta = (line as usize).min(self.lines_below.len());
                         return (reachable_delta > 0).then_some(reachable_delta);
                     },
-                    Osc133MarkerKind::Output | Osc133MarkerKind::End(_) => {},
+                    Osc133MarkerKind::Output | Osc133MarkerKind::End => {},
                 }
             }
         }
@@ -3941,24 +3952,6 @@ impl Grid {
     #[cfg(test)]
     pub fn command_output_flash_is_shown(&self) -> bool {
         self.command_output_flash.is_some()
-    }
-
-    #[cfg(test)]
-    pub fn osc133_end_exit_codes(&self) -> Vec<Option<i32>> {
-        let first_line = -(self.lines_above.len() as isize);
-        let last_line = (self.viewport.len() + self.lines_below.len()) as isize - 1;
-        let mut exit_codes = vec![];
-        for line in first_line..=last_line {
-            let Some(row) = self.row_at(line) else {
-                continue;
-            };
-            for marker in row.osc133_markers.iter() {
-                if let Osc133MarkerKind::End(exit_code) = marker.kind {
-                    exit_codes.push(exit_code);
-                }
-            }
-        }
-        exit_codes
     }
 
     fn update_selected_lines(&mut self, old_selection: &Selection, new_selection: &Selection) {
@@ -5072,12 +5065,7 @@ impl Perform for Grid {
                     b"A" | b"P" => Some(Osc133MarkerKind::Prompt),
                     b"B" | b"I" => Some(Osc133MarkerKind::Input),
                     b"C" => Some(Osc133MarkerKind::Output),
-                    b"D" => Some(Osc133MarkerKind::End(
-                        params
-                            .get(2)
-                            .and_then(|exit_code| std::str::from_utf8(exit_code).ok())
-                            .and_then(|exit_code| exit_code.trim().parse::<i32>().ok()),
-                    )),
+                    b"D" => Some(Osc133MarkerKind::End),
                     _ => None,
                 });
                 if let (Some(marker), Some(row)) = (marker, self.viewport.get_mut(self.cursor.y)) {
@@ -5225,15 +5213,20 @@ impl Perform for Grid {
 
             b"9" => {
                 if params.len() > 1 {
-                    // ConEmu reuses OSC 9 for its own subcommands (`9;4;...` progress,
-                    // `9;9;<cwd>` and so on): a small number followed by more params.
+                    // ConEmu reuses OSC 9 for its own subcommands. Only the two that other
+                    // terminals emit and honour are recognised - `9;4;<state>;<pct>` progress
+                    // and `9;9;<cwd>` - so a notification whose body happens to start with a
+                    // small number (`9;3;builds remaining`) is still delivered.
                     let is_conemu_subcommand = params.len() > 2
-                        && params
-                            .get(1)
-                            .and_then(|param| str::from_utf8(param).ok())
-                            .and_then(|param| param.parse::<u8>().ok())
-                            .map(|subcommand| (1..=12).contains(&subcommand))
-                            .unwrap_or(false);
+                        && match params.get(1).copied() {
+                            Some(b"4") => params
+                                .get(2)
+                                .and_then(|state| str::from_utf8(state).ok())
+                                .map(|state| state.trim().parse::<u8>().is_ok())
+                                .unwrap_or(false),
+                            Some(b"9") => true,
+                            _ => false,
+                        };
                     let body = params
                         .get(1..)
                         .unwrap_or_default()
@@ -6147,8 +6140,8 @@ enum Osc133MarkerKind {
     Prompt,
     Input,
     Output,
-    /// `OSC 133 ; D ; <exit code>` - the exit code is optional and not every shell sends one.
-    End(Option<i32>),
+    /// `OSC 133 ; D ; <exit code>` - the exit code is not tracked, nothing reads it yet.
+    End,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

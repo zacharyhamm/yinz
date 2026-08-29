@@ -4713,12 +4713,12 @@ impl Tab {
             }
             if !desktop_notifications.is_empty() {
                 // The screen knows which protocol each client's host speaks.
-                let _ =
-                    self.senders
-                        .send_to_screen(ScreenInstruction::ForwardDesktopNotifications {
-                            pane_id: pid,
-                            notifications: desktop_notifications,
-                        });
+                self.senders
+                    .send_to_screen(ScreenInstruction::ForwardDesktopNotifications {
+                        pane_id: pid,
+                        notifications: desktop_notifications,
+                    })
+                    .with_context(err_context)?;
             }
             if let Some(path) = osc7_cwd {
                 let _ = self
