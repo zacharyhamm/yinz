@@ -85,3 +85,26 @@ fn every_tool_is_covered() {
         );
     }
 }
+
+/// Skills are a group of their own, never bucketed by name: a skill called
+/// `pane` is not a pane tool.
+#[test]
+fn skills_get_a_group_of_their_own() {
+    let listed = commands_with(Vec::new(), vec!["bench".to_owned(), "pane".to_owned()]);
+    let skills_row = listed
+        .lines()
+        .find(|line| line.starts_with("skills"))
+        .expect("a skills row");
+    assert!(skills_row.contains("/bench /pane"), "{skills_row}");
+    assert_eq!(
+        listed.matches("/pane ").count()
+            + listed.matches("/pane\n").count()
+            + usize::from(listed.ends_with("/pane")),
+        1,
+        "{listed}"
+    );
+    assert!(
+        listed.lines().next().unwrap().starts_with("hocus"),
+        "the plugin's own commands come first"
+    );
+}

@@ -171,10 +171,13 @@ const FAMILIES: &[(&str, &[&str])] = &[
 /// and it survives being plain.
 #[cfg(test)]
 pub fn commands() -> String {
-    commands_with(Vec::new())
+    commands_with(Vec::new(), Vec::new())
 }
 
-pub fn commands_with(extra: Vec<String>) -> String {
+/// `extra` are the extension tools, grouped with the rest by family. `skills`
+/// get a group of their own, never bucketed: a skill named `pane` is not a
+/// pane tool, and the list would say it was.
+pub fn commands_with(extra: Vec<String>, skills: Vec<String>) -> String {
     let mut groups: Vec<(String, Vec<String>)> = vec![(
         "hocus".to_owned(),
         crate::LOCAL_COMMANDS
@@ -182,6 +185,9 @@ pub fn commands_with(extra: Vec<String>) -> String {
             .map(|name| (*name).to_owned())
             .collect(),
     )];
+    if !skills.is_empty() {
+        groups.push(("skills".to_owned(), skills));
+    }
 
     let mut all = tools::names();
     all.extend(extra);
@@ -230,6 +236,58 @@ pub fn commands_with(extra: Vec<String>) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// `/skills`: every loaded skill with its description and tier, then what was
+/// found but refused, then what went wrong reading a folder. Plain text, for
+/// the reason `commands_with` is — and a description is the author's text,
+/// which a `#` or `*` in must not restyle.
+pub fn skills_listing(registry: &crate::skills::Registry, user_dir: &str) -> String {
+    let mut out = String::new();
+    let loaded = registry.all();
+    if loaded.is_empty() {
+        let user_dir = if user_dir.is_empty() {
+            "<user plugin dir>/hocus/skills".to_owned()
+        } else {
+            user_dir.to_owned()
+        };
+        out.push_str(&format!(
+            "no skills loaded. A skill is <name>/SKILL.md under {user_dir} or under \
+             <project root>/.hocus/skills; /skills reload reads the folders again."
+        ));
+    } else {
+        let width = loaded
+            .iter()
+            .map(|skill| skill.name.chars().count() + 1)
+            .max()
+            .unwrap_or_default();
+        for skill in &loaded {
+            let command = format!("/{}", skill.name);
+            out.push_str(&format!(
+                "{command:<width$}  {}  ({})\n",
+                skill.description,
+                skill.source.label()
+            ));
+            for warning in &skill.warnings {
+                out.push_str(&format!("{:width$}  ! {warning}\n", ""));
+            }
+        }
+    }
+    let skipped = registry.skipped();
+    if !skipped.is_empty() {
+        out.push_str("\nnot loaded:\n");
+        for (source, name, why) in skipped {
+            out.push_str(&format!("  {name} ({}): {why}\n", source.label()));
+        }
+    }
+    let errors = registry.errors();
+    if !errors.is_empty() {
+        out.push_str("\nerrors:\n");
+        for (source, error) in errors {
+            out.push_str(&format!("  {}: {error}\n", source.label()));
+        }
+    }
+    out.trim_end().to_owned()
 }
 
 /// Whether a tool belongs to a family, by whole word rather than by substring:

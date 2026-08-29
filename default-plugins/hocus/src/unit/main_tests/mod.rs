@@ -91,6 +91,21 @@ fn tool_result_index(state: &State) -> usize {
         .expect("a tool result")
 }
 
+// -- skills -------------------------------------------------------------
+
+/// Load one skill into a tier, as a scan would have. Nothing is reserved,
+/// so a test can name it after a tool on purpose.
+fn load_skill(state: &mut State, source: skills::Source, name: &str, body: &str) {
+    let path = format!("/skills/{name}/SKILL.md");
+    let listing = skills::parse_listing(
+        source,
+        &format!("\u{1}{path}\u{2}---\ndescription: The {name} skill.\n---\n{body}\n"),
+    );
+    state
+        .skills
+        .replace(source, listing, &std::collections::BTreeSet::new());
+}
+
 // -- the file tools -----------------------------------------------------
 
 /// A state whose active tab is a project, which is what the file tools read

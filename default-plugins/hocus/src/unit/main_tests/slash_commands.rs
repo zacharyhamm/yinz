@@ -217,3 +217,353 @@ fn slash_clear_on_an_empty_chat_opens_no_second_tab() {
     assert!(state.messages.is_empty());
     assert!(state.parked.is_empty());
 }
+
+// -- skills ----------------------------------------------------------------
+
+/// The whole feature: the body goes out as a user turn, the typed line is what
+/// the pane shows, and nothing about it is a tool.
+#[test]
+fn a_skill_sends_the_body_and_shows_the_typed_line() {
+    let mut state = ready_state();
+    settle(&mut state);
+    load_skill(
+        &mut state,
+        skills::Source::User,
+        "bench",
+        "Run the benchmarks.",
+    );
+    state.input.set_text("/bench fix the flaky test".to_owned());
+    assert!(state.submit());
+
+    let user = state
+        .messages
+        .iter()
+        .rfind(|message| message.role == Role::User)
+        .expect("a user turn");
+    assert_eq!(user.display.as_deref(), Some("/bench fix the flaky test"));
+    assert_eq!(
+        user.content,
+        "<skill name=\"bench\" path=\"/skills/bench/SKILL.md\">\nRun the \
+         benchmarks.\n</skill>\n\nfix the flaky test"
+    );
+    assert!(state.pending.is_empty(), "not a tool");
+    assert!(
+        state
+            .messages
+            .iter()
+            .all(|message| message.tool_calls.is_empty()),
+        "no call was recorded"
+    );
+    assert!(!state.manual_head);
+    assert!(state.is_receiving(), "the request went out");
+    assert_eq!(state.tool_rounds, 0, "a fresh budget, like any question");
+}
+
+/// A bare `/bench` shows as itself, and a mention in the tail still earns its
+/// context line — the skill went through the same path as typed text.
+#[test]
+fn a_bare_skill_and_a_mentioning_one() {
+    let mut state = ready_state();
+    settle(&mut state);
+    state.set_panes(terminal_panes(
+        &manifest(vec![pane_info(3, "codex", Some("codex"))]),
+        &[tab_info(0, 9, "work")],
+    ));
+    load_skill(
+        &mut state,
+        skills::Source::User,
+        "bench",
+        "Run the benchmarks.",
+    );
+
+    state.input.set_text("/bench".to_owned());
+    state.submit();
+    let user = state
+        .messages
+        .iter()
+        .rfind(|m| m.role == Role::User)
+        .unwrap();
+    assert_eq!(user.display.as_deref(), Some("/bench"));
+    assert!(user.content.ends_with("</skill>"), "{}", user.content);
+
+    settle(&mut state);
+    state.input.set_text("/bench with @codex".to_owned());
+    state.submit();
+    let user = state
+        .messages
+        .iter()
+        .rfind(|m| m.role == Role::User)
+        .unwrap();
+    assert!(
+        user.content
+            .ends_with("with @codex\n\n[@codex is agent pane 3 (codex, running) on tab \"work\"]"),
+        "{}",
+        user.content
+    );
+}
+
+/// The model's call after a skill is the model's call: it asks like any other.
+/// Typing a skill is not typing `/close_pane`.
+#[test]
+fn a_destructive_call_the_model_makes_after_a_skill_still_asks() {
+    let mut state = ready_state();
+    settle(&mut state);
+    load_skill(
+        &mut state,
+        skills::Source::User,
+        "tidy",
+        "Clear the noisy pane.",
+    );
+    state.input.set_text("/tidy".to_owned());
+    state.submit();
+    assert!(!state.job_auto_confirm);
+
+    let frame = tool_call_frame("call_1", "clear_pane", r#"{"pane_id":1,"is_plugin":false}"#);
+    state.on_chunk("hocus-1", &frame, false, None);
+    state.on_chunk("hocus-1", b"", true, None);
+    assert!(matches!(state.status, Status::ConfirmingTool));
+}
+
+/// Without a config nothing can be sent, and what goes back in the box is the
+/// line that was typed, not the prompt it expands to.
+#[test]
+fn a_skill_with_no_config_puts_the_typed_line_back() {
+    let mut state = State::default();
+    load_skill(
+        &mut state,
+        skills::Source::User,
+        "bench",
+        "Run the benchmarks.",
+    );
+    state.input.set_text("/bench now".to_owned());
+    assert!(!state.submit());
+    assert_eq!(state.input.get_text(), "/bench now");
+    assert!(state.messages.is_empty());
+}
+
+/// A skill may not be named like a tool: the tool keeps the name, and typing
+/// it still runs the tool.
+#[test]
+fn a_skill_never_shadows_a_tool_or_a_command() {
+    let mut state = State::default();
+    let listing = skills::parse_listing(
+        skills::Source::User,
+        "\u{1}/s/list_session/SKILL.md\u{2}Body.\n\u{1}/s/plan/SKILL.md\u{2}Body.\n\u{1}/s/ok/SKILL.md\u{2}Body.\n",
+    );
+    let reserved = state.reserved_command_names();
+    state
+        .skills
+        .replace(skills::Source::User, listing, &reserved);
+    assert_eq!(state.skills.names(), ["ok"]);
+
+    state.input.set_text("/list_session".to_owned());
+    state.submit();
+    assert_eq!(tool_results(&state).len(), 1, "the tool ran");
+
+    state.run_manual("/skills");
+    let notice = state.messages.last().unwrap();
+    assert!(
+        notice
+            .content
+            .contains("list_session (user): the name is taken"),
+        "{}",
+        notice.content
+    );
+}
+
+/// A typo is an error line naming where the real names are, not a tool call
+/// the model is then shown the failure of.
+#[test]
+fn an_unknown_command_is_an_error_naming_help_and_skills() {
+    let mut state = State::default();
+    state.input.set_text("/nonsense key=value".to_owned());
+    state.submit();
+
+    assert_eq!(state.messages.len(), 1);
+    assert_eq!(state.messages[0].role, Role::Error);
+    assert!(state.messages[0]
+        .content
+        .contains("no such tool or skill: nonsense"));
+    assert!(state.messages[0].content.contains("/skills"));
+    assert!(state.pending.is_empty());
+}
+
+#[test]
+fn tab_completes_a_skill_name() {
+    let mut state = State::default();
+    load_skill(
+        &mut state,
+        skills::Source::Project,
+        "bench",
+        "Run the benchmarks.",
+    );
+    state.input.set_text("/ben".to_owned());
+    assert!(state.complete_tool_name());
+    assert_eq!(state.input.get_text(), "/bench ");
+
+    // Listed beside the tools when more than one matches.
+    state.input.set_text("/".to_owned());
+    state.complete_tool_name();
+    assert!(state.messages.last().unwrap().content.contains("/bench"));
+}
+
+/// `/skills` and `/help` both name a loaded skill; `/skills` says where it is
+/// from and what it is for.
+#[test]
+fn slash_skills_lists_what_is_loaded_and_where_from() {
+    let mut state = State::default();
+    state.run_manual("/skills");
+    assert!(state
+        .messages
+        .last()
+        .unwrap()
+        .content
+        .starts_with("no skills loaded"));
+
+    load_skill(
+        &mut state,
+        skills::Source::User,
+        "bench",
+        "Run the benchmarks.",
+    );
+    load_skill(
+        &mut state,
+        skills::Source::Project,
+        "review",
+        "Review the diff.",
+    );
+    state.run_manual("/skills");
+    let listing = &state.messages.last().unwrap().content;
+    assert!(
+        listing.contains("/review  The review skill.  (project)"),
+        "{listing}"
+    );
+    assert!(
+        listing.contains("/bench   The bench skill.  (user)"),
+        "{listing}"
+    );
+
+    state.run_manual("/help");
+    let help = &state.messages.last().unwrap().content;
+    assert!(help.contains("skills"), "{help}");
+    assert!(help.contains("/bench /review"), "{help}");
+
+    state.run_manual("/skills nonsense");
+    assert_eq!(state.messages.last().unwrap().role, Role::Error);
+}
+
+/// `/skills reload` reads both folders and answers once the last scan lands.
+/// Off wasm the scans never answer, so they are fed in by hand.
+#[test]
+fn slash_skills_reload_reads_both_folders_and_answers_when_both_have_landed() {
+    let mut state = project_state();
+    settle(&mut state);
+    state.granted = true;
+    state.user_plugin_dir = "/plugins".to_owned();
+
+    assert!(state.run_manual("/skills reload"));
+    assert_eq!(state.skills_scans_pending, 2);
+    let argv = state.last_skill_scan.clone().expect("a scan was asked for");
+    assert_eq!(
+        argv.last().map(String::as_str),
+        Some("/work/hocus/.hocus/skills")
+    );
+
+    let user_listing = b"\x01/plugins/hocus/skills/hello/SKILL.md\x02Say hello.\n";
+    assert!(
+        !state.on_skill_scan_result(skills::Source::User, Some(0), user_listing, b""),
+        "one scan is still out"
+    );
+    assert!(state.on_skill_scan_result(skills::Source::Project, Some(0), b"", b""));
+    let listing = &state.messages.last().unwrap().content;
+    assert!(listing.contains("/hello  Say hello.  (user)"), "{listing}");
+    assert_eq!(state.skills_scans_pending, 0);
+
+    // A folder that could not be read keeps what was loaded and says why.
+    state.on_skill_scan_result(skills::Source::User, Some(2), b"", b"sh: boom\n");
+    assert!(state.skills.get("hello").is_some());
+    state.run_manual("/skills");
+    let listing = &state.messages.last().unwrap().content;
+    assert!(
+        listing.contains(
+            "errors:\n  user: the user skills folder could not be read (exit code 2): sh: boom"
+        ),
+        "{listing}"
+    );
+
+    // Before the grant there is nothing to read with.
+    let mut state = State::default();
+    state.run_manual("/skills reload");
+    assert_eq!(state.messages.last().unwrap().role, Role::Error);
+}
+
+/// The user tier is `hocus/skills` under the plugin folder unless the block
+/// names a folder, and a change to the block re-reads it.
+#[test]
+fn the_user_folder_follows_the_configuration() {
+    let mut state = State::default();
+    assert_eq!(state.skills_dir(), "");
+    state.user_plugin_dir = "/plugins/".to_owned();
+    assert_eq!(state.skills_dir(), "/plugins/hocus/skills");
+    state.env.insert("HOME".to_owned(), "/home/me".to_owned());
+    state
+        .kdl
+        .insert("skills_dir".to_owned(), "~/skills".to_owned());
+    assert_eq!(state.skills_dir(), "/home/me/skills");
+
+    state.granted = true;
+    state.handle(Event::PluginConfigurationChanged(BTreeMap::from([(
+        "skills_dir".to_owned(),
+        "/elsewhere".to_owned(),
+    )])));
+    let argv = state.last_skill_scan.clone().expect("re-read");
+    assert_eq!(argv.last().map(String::as_str), Some("/elsewhere"));
+}
+
+/// The project tier follows the active project's *root*: a switch to another
+/// project drops the old skills at once and reads the new folder, and a switch
+/// that lands on the same root reads nothing.
+#[test]
+fn a_project_switch_rereads_the_project_folder_and_drops_the_old_skills() {
+    let mut state = project_state();
+    // Before the grant nothing is read and nothing is remembered.
+    state.sync_project_skills();
+    assert!(state.last_skill_scan.is_none());
+    assert!(state.skills_project_root.is_none());
+
+    state.granted = true;
+    load_skill(&mut state, skills::Source::Project, "old", "Old.");
+
+    state.sync_project_skills();
+    assert!(
+        state.skills.get("old").is_none(),
+        "dropped before the scan answers"
+    );
+    let argv = state.last_skill_scan.take().expect("scanned");
+    assert_eq!(
+        argv.last().map(String::as_str),
+        Some("/work/hocus/.hocus/skills")
+    );
+
+    state.sync_project_skills();
+    assert!(
+        state.last_skill_scan.is_none(),
+        "the same root is not read twice"
+    );
+
+    state.active_project = None;
+    load_skill(&mut state, skills::Source::Project, "gone", "Gone.");
+    state.sync_project_skills();
+    assert!(state.skills.get("gone").is_none());
+    assert!(state.last_skill_scan.is_none(), "nothing to read");
+}
+
+/// A chat opened by a skill is titled by the line that was typed.
+#[test]
+fn a_skill_opened_chat_is_titled_by_the_typed_line() {
+    let messages = [Message::user_shown(
+        "<skill name=\"bench\" path=\"/s\">\nRun.\n</skill>",
+        Some("/bench now".to_owned()),
+    )];
+    assert_eq!(history::title(&messages), "/bench now");
+}

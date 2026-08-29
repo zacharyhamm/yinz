@@ -14,6 +14,7 @@ mod lua_docs;
 mod message;
 mod overlay;
 mod present;
+mod skills;
 mod tool_loop;
 mod tools;
 mod transitions;
@@ -22,7 +23,7 @@ pub mod ui;
 mod worker;
 
 pub use message::{
-    Job, Message, Picker, PickerKind, PickerRow, Plan, Reasoning, ReasoningKey, Role, RowKind,
+    Ask, Job, Message, Picker, PickerKind, PickerRow, Plan, Reasoning, ReasoningKey, Role, RowKind,
     Status, StreamState,
 };
 use worker::post_log;
@@ -87,7 +88,7 @@ const MAX_QUEUED_ASKS: usize = 8;
 
 /// Slash commands that drive the plugin itself rather than a tool. Typed and
 /// completed like tools, but never offered to the model.
-const LOCAL_COMMANDS: [&str; 7] = [
+const LOCAL_COMMANDS: [&str; 8] = [
     "history",
     "models",
     "stop_jobs",
@@ -95,6 +96,7 @@ const LOCAL_COMMANDS: [&str; 7] = [
     "plan",
     "execute",
     "clear",
+    "skills",
 ];
 
 /// Full keybinding reference for `/keys`. The chat view has no persistent
@@ -117,6 +119,9 @@ n             keep refining a plan hocus has written
 /plan <text>  plan before acting: read-only tools until
               you /execute the plan hocus writes
 /execute      carry out that plan; trailing text amends it
+/<skill> <text>  send a skill's prompt with <text> as its
+              arguments; /skills lists them, /skills reload
+              rescans their folders
 
 In history or models:
 Up / Down     choose
@@ -203,7 +208,7 @@ struct Chat {
     /// not, so they travel with it.
     pub(crate) jobs: Vec<Job>,
     /// Questions waiting behind this chat's reply. See `State::asks`.
-    pub(crate) asks: VecDeque<String>,
+    pub(crate) asks: VecDeque<Ask>,
 }
 
 impl Chat {
@@ -296,6 +301,20 @@ pub struct State {
     /// When to load scanned files that did not answer the discovery broadcast. The grace period
     /// lets extensions survive a Hocus reload without being duplicated.
     extension_scan_due_ms: Option<u64>,
+    /// Prompts on disk typed as `/name`, shared by every conversation. See `skills`.
+    skills: skills::Registry,
+    /// The project root the project tier of `skills` was read from, so a tab
+    /// switch that lands on the same project does not read the folder again.
+    /// The root rather than the name: a rename keeps the folder.
+    skills_project_root: Option<String>,
+    /// Scans still to be answered, and whether the one who asked for them
+    /// (`/skills reload`) is owed the listing when the last one lands.
+    skills_scans_pending: usize,
+    skills_announce: bool,
+    /// The argv of the last skill scan asked for. Test-only, for the reason
+    /// `last_placement` is: the host call has no reply off wasm.
+    #[cfg(test)]
+    pub(crate) last_skill_scan: Option<Vec<String>>,
     pub messages: Vec<Message>,
     pub input: TextInput,
     pub status: Status,
@@ -419,7 +438,7 @@ pub struct State {
     /// Capped by `MAX_QUEUED_ASKS`. Past the cap the ask is refused, which is
     /// an answer the caller can see, rather than an unbounded pile of questions
     /// stacking up behind one wedged stream.
-    pub asks: VecDeque<String>,
+    pub asks: VecDeque<Ask>,
     job_seq: u64,
     /// Authority for the scheduled run that currently owns the conversation.
     job_auto_confirm: bool,
@@ -682,6 +701,12 @@ impl Default for State {
             extension_files: BTreeMap::new(),
             extension_instances: BTreeMap::new(),
             extension_scan_due_ms: None,
+            skills: skills::Registry::default(),
+            skills_project_root: None,
+            skills_scans_pending: 0,
+            skills_announce: false,
+            #[cfg(test)]
+            last_skill_scan: None,
             messages: Vec::new(),
             input: TextInput::empty(),
             status: Status::Idle,
@@ -1020,6 +1045,19 @@ impl State {
                 if context.contains_key(extensions::SCAN_CONTEXT) {
                     return self.on_extension_scan_result(exit_code, &stdout);
                 }
+                // Host state, like the extension scan: answered on the
+                // foreground whatever chat is up.
+                if context.contains_key(skills::SCAN_CONTEXT) {
+                    return match context
+                        .get(skills::SOURCE_CONTEXT)
+                        .and_then(|label| skills::Source::parse(label))
+                    {
+                        Some(source) => {
+                            self.on_skill_scan_result(source, exit_code, &stdout, &stderr)
+                        },
+                        None => false,
+                    };
+                }
                 match self.owner_of(&context) {
                     Some(index) => self.with_parked(index, |state| {
                         state.on_command_result(exit_code, &stdout, &stderr, &context)
@@ -1030,8 +1068,14 @@ impl State {
             // Host state, not conversation state: applied to the foreground
             // chat's config only, never routed to a parked chat.
             Event::PluginConfigurationChanged(kdl) => {
+                let skills_dir_was = self.skills_dir();
                 self.kdl = kdl;
                 self.reconfigure();
+                // `skills_dir` is read straight from the block, so a change to
+                // it is only noticed here.
+                if self.skills_dir() != skills_dir_was {
+                    self.start_user_skill_scan();
+                }
                 // `width`, `height` and `pad` live in the same block, and nothing else re-reads
                 // them: without this the panes keep their old geometry until an unrelated resize
                 // or tab move happens to re-place them. Not folded into `reconfigure`, which is

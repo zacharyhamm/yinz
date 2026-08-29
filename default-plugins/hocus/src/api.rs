@@ -231,7 +231,7 @@ impl Config {
 /// hands a command's argv straight to exec, so a configured `~/dobbs/dobbs`
 /// would fail with a bare "No such file or directory" naming nothing at all.
 /// Left alone when `HOME` is absent, which is more honest than guessing.
-fn expand_home(path: &str, env: &BTreeMap<String, String>) -> String {
+pub(crate) fn expand_home(path: &str, env: &BTreeMap<String, String>) -> String {
     match path.strip_prefix("~/").zip(non_empty(env, "HOME")) {
         Some((rest, home)) => format!("{}/{rest}", home.trim_end_matches('/')),
         None => path.to_owned(),
