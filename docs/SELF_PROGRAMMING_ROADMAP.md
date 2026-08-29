@@ -317,9 +317,8 @@ R16. What the next session should know:
   in `plugins/mod.rs` is the one find-or-load path. `session_start` fires on the plugin
   thread's first `AddClient`, not at thread start — `WasmBridge::add_client` re-instantiates
   every plugin loaded before the first client, and would lose an event sent to the first
-  instance. A second client attaching while a hook plugin is still loading wipes that plugin's
-  cached events (`add_client` resets `cached_events_for_pending_plugins`); pre-existing, and
-  worth fixing if a lazily-loaded hook ever misses its first firing under multi-client use.
+  instance. (A second client attaching while a hook plugin was still loading used to wipe that
+  plugin's cached events; fixed under next step 2 below.)
 - Persistence: `job`, `agent_latch`, `agent_summary` are in `store::shared_defs()`; both
   hocus and hocus-store declare them. Restored jobs all land in the foreground chat; the row
   keeps `chat_id` for a future that reattaches them to a reopened chat.
@@ -346,11 +345,12 @@ make Phase 3 trustworthy, the rest are the loose ends it left.
    `lua_plugins::a_firing_during_the_headless_hooks_load_reaches_the_loading_instance` pins it.
    Harness additions: `EventsClientHandle::streamed_events` (type and JSON) and
    `TestSession::run_blocking_command_holding_on_exit`.)*
-2. **`WasmBridge::add_client` and pending plugins** (`wasm_bridge.rs`, `add_client`): a client
-   attaching while a plugin is still loading resets that plugin's
-   `cached_events_for_pending_plugins`, so a lazily-loaded hook can miss its first firing under
-   multi-client use. Keep the cached events across the re-instantiation (or replay them to the
-   new instance). Pre-existing; found while landing `session_start`.
+2. **`WasmBridge::add_client` and pending plugins.** *(done — `add_client` starts a plugin's
+   event cache with `entry().or_default()` rather than resetting it, so a plugin that is pending
+   when a client attaches - still loading, or waiting on its permission prompt - keeps what it
+   was sent, and the cache is applied to every client's instance when it is ready.
+   `lua_plugins::a_client_attaching_while_a_hook_waits_on_its_permission_does_not_lose_the_firing`
+   pins it: without the fix the firing never arrives.)*
 3. **A shipped headless hook**, so the feature has a worked example: `zellij-utils/assets/
    plugins/agent-policy.lua` (or `example-plugins/`) that logs every `hook` firing and, on
    `agent_waiting`, notifies — then a `docs/LUA_PLUGINS.md` quickstart pointing at it.
