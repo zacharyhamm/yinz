@@ -46,6 +46,7 @@ fn report(state: AgentState, session_id: Option<&str>) -> AgentInfo {
         state,
         source: AgentSource::Reported,
         detail: None,
+        waiting_on: None,
         cwd: Some("/work".to_owned()),
         session_id: session_id.map(str::to_owned),
     }

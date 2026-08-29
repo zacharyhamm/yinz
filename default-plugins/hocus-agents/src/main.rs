@@ -801,6 +801,41 @@ mod tests {
         );
     }
 
+    /// `render_summary` colours the `!` in a box header by *searching* the line for the
+    /// character — the label is cut to fit, so its position cannot be counted. That makes
+    /// every glyph the header can carry a hazard: one containing a `!` would light up the
+    /// wrong column. The hook marker is the newest of them, so it is worth pinning here
+    /// rather than trusting that nobody ever picks an exclamation mark for one.
+    #[test]
+    fn the_hook_marker_cannot_be_mistaken_for_the_waiting_one() {
+        assert!(!agents::HOOK_MARKER.contains('!'));
+
+        let mut state = State::default();
+        state.set_rows(with_summary(
+            vec![
+                StripRow::Project("hocus".to_owned()),
+                StripRow::Agent {
+                    pane_id: 3,
+                    text: "  3  claude◆  waiting".to_owned(),
+                    kind: "claude◆".to_owned(),
+                },
+            ],
+            3,
+            "Waiting on a permission prompt.",
+            true,
+        ));
+        let rows = state.summary_box(20, 40);
+        // The one `!` in the header is the waiting marker, and it is the last of the
+        // label rather than anywhere inside the kind.
+        let header = &rows[0];
+        assert!(header.contains("3 · claude◆"), "{header}");
+        assert_eq!(header.matches('!').count(), 1, "{header}");
+        assert!(
+            header.find('!').unwrap() > header.find('◆').unwrap(),
+            "{header}"
+        );
+    }
+
     /// A pane with room for the list and nothing else draws the list. `summary_box` is given
     /// half the pane, and `agents::summary_box` refuses anything it cannot frame.
     #[test]

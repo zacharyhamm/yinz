@@ -463,7 +463,9 @@ fn installing_hooks_leaves_the_rest_of_the_settings_alone() {
             "Stop": [
                 { "hooks": [ { "type": "command", "command": "/usr/local/bin/mine.sh" } ] }
             ],
-            "PreCompact": [
+            // Deliberately an event this fork has never wired and has no reason to:
+            // the point is that a growing table stays out of everything beside it.
+            "FileChanged": [
                 { "matcher": "auto", "hooks": [ { "type": "command", "command": "notify" } ] }
             ]
         }
@@ -474,7 +476,7 @@ fn installing_hooks_leaves_the_rest_of_the_settings_alone() {
     assert_eq!(installed["model"], "opus");
     assert_eq!(installed["permissions"]["defaultMode"], "auto");
     assert_eq!(
-        installed["hooks"]["PreCompact"], original["hooks"]["PreCompact"],
+        installed["hooks"]["FileChanged"], original["hooks"]["FileChanged"],
         "an event we do not wire is not ours to touch"
     );
     // Someone else's Stop hook is still there, beside ours rather than instead of it.
@@ -499,7 +501,9 @@ fn installing_twice_wires_each_event_once() {
     assert_eq!(once, twice);
 
     let events = installed_events(&twice);
-    assert_eq!(events.len(), 8, "{events:?}");
+    // Against the table rather than a number: it has grown once already, and a literal
+    // here is a test that goes stale silently the next time it does.
+    assert_eq!(events.len(), crate::hocus_hooks::EVENTS.len(), "{events:?}");
     for event in &events {
         assert_eq!(
             twice["hooks"][event].as_array().expect("an array").len(),
