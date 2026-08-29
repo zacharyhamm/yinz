@@ -410,3 +410,55 @@ fn a_garbage_frame_reports_malformed_not_eof() {
 
     client.join().expect("client thread panicked");
 }
+
+/// The third case, and the one that used to hang: a peer that is *there* and
+/// simply does not answer.
+///
+/// This is what a wedged zellij server looks like from the outside — it accepts
+/// the connection and then never replies, because the thread that would reply
+/// has stopped turning. Without a receive timeout the read below blocks
+/// forever, and since every session enumeration path goes through one of these
+/// probes (`assert_socket` in `sessions.rs`), one such server hangs `zellij`,
+/// `zellij attach` and `zellij ls` for every other session on the machine.
+///
+/// With the timeout it must come back, and it must come back as `Idle`:
+/// nothing arrived, but the stream is open and still in sync, so calling it
+/// `Malformed` would be the same conflation `IpcRecv` exists to prevent.
+#[test]
+fn a_peer_that_accepts_and_never_answers_times_out_as_idle() {
+    let (_guard, name) = new_ipc();
+    let listener = bind_listener(&name);
+
+    let keep_accepting = std::thread::spawn(move || {
+        // Accept and then sit on it. Holding the stream is the point: dropping
+        // it would close the socket and turn this into the Eof case.
+        let _stream = listener.incoming().next().unwrap().expect("accept failed");
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    });
+
+    let stream = connect_stream(&name);
+    stream
+        .set_recv_timeout(Some(std::time::Duration::from_millis(100)))
+        .expect("failed to set a recv timeout");
+
+    let mut sender: IpcSenderWithContext<ClientToServerMsg> = IpcSenderWithContext::new(stream);
+    sender
+        .send_client_msg(ClientToServerMsg::ConnStatus)
+        .expect("send failed");
+    let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = sender.get_receiver();
+
+    let started_at = std::time::Instant::now();
+    let received = receiver.recv_server_msg();
+    let waited = started_at.elapsed();
+
+    assert!(
+        matches!(received, IpcRecv::Idle),
+        "a silent peer should time out as Idle, not be reported as a hangup or as garbage"
+    );
+    assert!(
+        waited < std::time::Duration::from_secs(1),
+        "the read should have given up near its 100ms timeout, but it waited {waited:?}"
+    );
+
+    keep_accepting.join().expect("listener thread panicked");
+}

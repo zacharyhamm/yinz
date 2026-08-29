@@ -19,10 +19,41 @@ use std::time::{Duration, SystemTime};
 use std::{fs, io, process};
 use suggest::Suggest;
 
+/// Probe every candidate socket at once and keep the ones that answered.
+///
+/// Serially, the cost of enumeration is the number of sessions times
+/// `PROBE_TIMEOUT` in the worst case — on a machine with a dozen long-lived
+/// sessions that is seconds of latency on every `zellij ls`, and it grows with
+/// the number of sessions a user happens to have left running. Probes are
+/// independent and spend all their time blocked on a socket, so the whole set
+/// costs one timeout instead of N.
+///
+/// Order is not preserved; both callers below impose their own.
+fn probe_sockets<T: Send + 'static>(candidates: Vec<(String, T)>) -> Vec<(String, T)> {
+    let probes: Vec<_> = candidates
+        .into_iter()
+        .map(|(name, extra)| {
+            std::thread::spawn(move || {
+                if assert_socket(&name) {
+                    Some((name, extra))
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+    probes
+        .into_iter()
+        // A panicking probe is treated as a session that did not answer, which
+        // is the same conclusion by a worse route: never let it poison the rest.
+        .filter_map(|probe| probe.join().ok().flatten())
+        .collect()
+}
+
 pub fn get_sessions() -> Result<Vec<(String, Duration)>, io::ErrorKind> {
     match fs::read_dir(&*ZELLIJ_SOCK_DIR) {
         Ok(files) => {
-            let mut sessions = Vec::new();
+            let mut candidates = Vec::new();
             files.for_each(|file| {
                 if let Ok(file) = file {
                     let file_name = file.file_name().into_string().unwrap();
@@ -35,12 +66,12 @@ pub fn get_sessions() -> Result<Vec<(String, Duration)>, io::ErrorKind> {
                         .and_then(|d| d.elapsed().ok())
                         .unwrap_or_default();
                     let duration = Duration::from_secs(ctime.as_secs());
-                    if is_ipc_socket(&file.file_type().unwrap()) && assert_socket(&file_name) {
-                        sessions.push((file_name, duration));
+                    if is_ipc_socket(&file.file_type().unwrap()) {
+                        candidates.push((file_name, duration));
                     }
                 }
             });
-            Ok(sessions)
+            Ok(probe_sockets(candidates))
         },
         Err(err) if io::ErrorKind::NotFound != err.kind() => Err(err.kind()),
         Err(_) => Ok(Vec::with_capacity(0)),
@@ -124,15 +155,16 @@ pub fn get_resurrectable_session_names() -> Vec<String> {
 pub fn get_sessions_sorted_by_mtime() -> anyhow::Result<Vec<String>> {
     match fs::read_dir(&*ZELLIJ_SOCK_DIR) {
         Ok(files) => {
-            let mut sessions_with_mtime: Vec<(String, SystemTime)> = Vec::new();
+            let mut candidates: Vec<(String, SystemTime)> = Vec::new();
             for file in files {
                 let file = file?;
                 let file_name = file.file_name().into_string().unwrap();
                 let file_modified_at = file.metadata()?.modified()?;
-                if is_ipc_socket(&file.file_type()?) && assert_socket(&file_name) {
-                    sessions_with_mtime.push((file_name, file_modified_at));
+                if is_ipc_socket(&file.file_type()?) {
+                    candidates.push((file_name, file_modified_at));
                 }
             }
+            let mut sessions_with_mtime = probe_sockets(candidates);
             sessions_with_mtime.sort_by_key(|x| x.1); // the oldest one will be the first
 
             let sessions = sessions_with_mtime.iter().map(|x| x.0.clone()).collect();
@@ -143,24 +175,51 @@ pub fn get_sessions_sorted_by_mtime() -> anyhow::Result<Vec<String>> {
     }
 }
 
+/// How long to wait for a server to answer a liveness probe.
+///
+/// A wedged server is not a dead one: it accepts the connection and then never
+/// replies, because the reply comes from a main loop that has stopped turning.
+/// Without a deadline the probe below blocks forever, and since every
+/// enumeration path funnels through it, one wedged session hangs `zellij`,
+/// `zellij attach`, `zellij ls` and `zellij action` — for unrelated sessions
+/// too, and for a brand new session that has nothing to do with any of them.
+///
+/// Generous rather than tight: this is a loopback socket answering a constant,
+/// so a healthy server replies in well under a millisecond even under load. The
+/// margin is for a machine thrashing, not for a slow reply.
+const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// Probe a session socket to check if a server is alive.
 ///
+/// "Alive" here means *answering*, which is the property callers actually need —
+/// a server that cannot reply to `ConnStatus` cannot accept a client either.
 #[cfg(unix)]
 fn assert_socket(name: &str) -> bool {
     use crate::consts::ipc_connect;
+    use interprocess::local_socket::prelude::*;
     let path = &*ZELLIJ_SOCK_DIR.join(name);
     match ipc_connect(path) {
         Ok(stream) => {
+            // Best effort: a platform that will not take a timeout still gets
+            // probed, it just gets the old unbounded behaviour.
+            let _ = stream.set_recv_timeout(Some(PROBE_TIMEOUT));
+            let _ = stream.set_send_timeout(Some(PROBE_TIMEOUT));
             let mut sender: IpcSenderWithContext<ClientToServerMsg> =
                 IpcSenderWithContext::new(stream);
             let _ = sender.send_client_msg(ClientToServerMsg::ConnStatus);
             let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = sender.get_receiver();
+            // A timeout arrives here as `IpcRecv::Idle`, which `msg()` reports as
+            // `None` along with every other non-answer.
             match receiver.recv_server_msg().msg() {
                 Some((ServerToClientMsg::Connected, _)) => true,
                 None | Some((_, _)) => false,
             }
         },
         Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
+            // Nobody is listening, so the socket outlived its server: clean it up.
+            // Deliberately not reachable from the timeout above — a wedged server
+            // is still running, and deleting its socket would strand it with no
+            // way for any client to ever find it again.
             drop(fs::remove_file(path));
             false
         },

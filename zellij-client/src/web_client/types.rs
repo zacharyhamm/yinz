@@ -90,7 +90,11 @@ impl SessionManager for RealSessionManager {
         if !session_exists {
             spawn_new_session(session_name, os_input.clone(), zellij_ipc_pipe);
         }
-        os_input.connect_to_server(zellij_ipc_pipe);
+        if let Err(e) = os_input.connect_to_server(zellij_ipc_pipe) {
+            // Only this browser session is lost; the web server keeps serving.
+            log::error!("{e}");
+            return;
+        }
         os_input.send_to_server(first_message);
     }
 }

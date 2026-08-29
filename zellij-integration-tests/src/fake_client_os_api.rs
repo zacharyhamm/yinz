@@ -209,23 +209,35 @@ impl ServerConnection for FakeClientOsApi {
         }
         received
     }
-    fn connect_to_server(&self, path: &Path) {
-        let socket;
-        loop {
+    fn connect_to_server(
+        &self,
+        path: &Path,
+    ) -> Result<(), zellij_client::os_input_output::ConnectToServerError> {
+        // Bounded for the same reason as the real one, and doubly so here: a
+        // test whose server never binds should fail with a message naming the
+        // socket, not hang until nextest's kill timer notices.
+        let waited = std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + waited;
+        let socket = loop {
             match zellij_utils::consts::ipc_connect(path) {
-                Ok(sock) => {
-                    socket = sock;
-                    break;
-                },
-                Err(_) => {
+                Ok(sock) => break sock,
+                Err(last_error) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(zellij_client::os_input_output::ConnectToServerError {
+                            path: path.to_path_buf(),
+                            waited,
+                            last_error,
+                        });
+                    }
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 },
             }
-        }
+        };
         let ipc_sender = IpcSenderWithContext::new(socket);
         let ipc_receiver = ipc_sender.get_receiver();
         *self.send_instructions_to_server.lock().unwrap() = Some(ipc_sender);
         *self.receive_instructions_from_server.lock().unwrap() = Some(ipc_receiver);
+        Ok(())
     }
     fn spawn_server(&self, socket_path: &Path, _debug: bool) -> Result<(), std::io::Error> {
         if let Some(server_spawner) = self.server_spawner.lock().unwrap().take() {
