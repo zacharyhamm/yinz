@@ -423,8 +423,10 @@ fn move_tab_to_left() {
 
     zellij.send_stdin(&keys::alt('i'));
 
+    // See `move_tab_to_right`: the same race, and it only passes today by luck of scheduling.
     let grid_snapshot = zellij.wait_until("third tab moved one position left", |grid_snapshot| {
         tabs_in_order(grid_snapshot, &["Tab #1", "Tab #3", "Tab #2"])
+            && grid_snapshot.contains("LOCK")
     });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();
@@ -440,8 +442,12 @@ fn move_tab_to_right() {
     zellij.send_stdin(&keys::alt('h'));
     zellij.send_stdin(&keys::alt('o'));
 
+    // `LOCK` as well as the order: `open_new_tab_and_wait_for_prompt` gets there through TAB mode
+    // and does not wait for the mode to fall back, so the snapshot below - which covers the whole
+    // grid, status bar included - would otherwise race a status bar still showing the tab help.
     let grid_snapshot = zellij.wait_until("second tab moved one position right", |grid_snapshot| {
         tabs_in_order(grid_snapshot, &["Tab #1", "Tab #3", "Tab #2"])
+            && grid_snapshot.contains("LOCK")
     });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();
