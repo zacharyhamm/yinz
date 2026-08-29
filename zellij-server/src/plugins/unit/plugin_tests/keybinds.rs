@@ -235,8 +235,12 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
 /// `(plugin A received keybinds, plugin B received a ModeUpdate with them stripped)`.
 ///
 /// Plugin A subscribes to `ModeUpdate` alone and so should still be sent the full keybinds, which
-/// show up as `Quit` in its payload. Plugin B also subscribes to `InitialKeybinds` and so should
-/// get a `ModeUpdate` with the keybinds stripped out.
+/// show up as `Quit` under the `ModeUpdate`'s `keybinds:` field. Plugin B also subscribes to
+/// `InitialKeybinds` and so should get a `ModeUpdate` with the keybinds stripped out.
+///
+/// The check looks at the `keybinds:` field of the rendered `ModeUpdate` itself rather than for
+/// `Quit` anywhere in the render: plugin B's render also lists the `InitialKeybinds` event it was
+/// sent on reconfiguration, which carries the same `Quit` binding.
 fn mode_update_payloads(instructions: &[ScreenInstruction]) -> (bool, bool) {
     let mut plugin_a_has_keybinds = false;
     let mut plugin_b_has_empty_keybinds = false;
@@ -244,12 +248,19 @@ fn mode_update_payloads(instructions: &[ScreenInstruction]) -> (bool, bool) {
         if let ScreenInstruction::PluginBytes(plugin_render_assets) = instruction {
             for asset in plugin_render_assets {
                 let bytes = String::from_utf8_lossy(&asset.bytes).to_string();
-                if bytes.contains("ModeUpdate") {
-                    if bytes.contains("Quit") {
-                        plugin_a_has_keybinds = true;
-                    } else {
-                        plugin_b_has_empty_keybinds = true;
-                    }
+                let Some(mode_update_start) = bytes.find("ModeUpdate(") else {
+                    continue;
+                };
+                let mode_update = &bytes[mode_update_start..];
+                let Some(keybinds_start) = mode_update.find("keybinds: ") else {
+                    continue;
+                };
+                let keybinds = &mode_update[keybinds_start..];
+                if keybinds.starts_with("keybinds: [],") {
+                    plugin_b_has_empty_keybinds = true;
+                } else if keybinds.starts_with("keybinds: [(Normal, ") && keybinds.contains("Quit")
+                {
+                    plugin_a_has_keybinds = true;
                 }
             }
         }
@@ -336,7 +347,7 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_plugin_to_load(&received_screen_instructions, 0);
 
     // Build new keybinds for reconfiguration
     let mut keybind_map = std::collections::HashMap::new();
@@ -344,6 +355,12 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
     mode_map.insert(KeyWithModifier::new(BareKey::Char('x')), vec![Action::Quit]);
     keybind_map.insert(InputMode::Normal, mode_map);
     let new_keybinds = Keybinds(keybind_map);
+    // The fixture renders every event it received with `{:?}`, so the InitialKeybinds it is sent
+    // on reconfiguration shows up in its output verbatim.
+    let expected_event = format!(
+        "{:?}",
+        Event::InitialKeybinds(new_keybinds.to_keybinds_vec())
+    );
 
     // Send Reconfigure
     let _ = plugin_thread_sender.send(PluginInstruction::Reconfigure {
@@ -358,29 +375,44 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
         context_menu: Default::default(),
         was_written_to_disk: false,
     });
-    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // The InitialKeybinds sent on reconfiguration must carry the *new* keybinds. Reconfigure
+    // updates each plugin's env asynchronously on the executor, so a payload read back from the
+    // env could still be the old (empty) one; the payload is therefore built from the reconfigure
+    // request itself. Wait for a render that shows the new binding rather than for any
+    // InitialKeybinds at all - the plugin was also sent one when it loaded.
+    received_screen_instructions.wait_until_described(
+        "the plugin to render the InitialKeybinds sent on reconfiguration",
+        zellij_test_support::default_timeout(),
+        |instructions| {
+            renders_containing(instructions, "InitialKeybinds")
+                .iter()
+                .any(|render| render.contains(&expected_event))
+                .then_some(())
+        },
+        |instructions| {
+            format!(
+                "expected to find: {}\nin one of the renders containing InitialKeybinds: {:#?}",
+                expected_event,
+                renders_containing(instructions, "InitialKeybinds"),
+            )
+        },
+    );
 
     teardown();
     screen_thread.join().unwrap();
+}
 
-    let instructions = received_screen_instructions.lock();
-    let initial_keybinds_event = instructions.iter().find_map(|instruction| {
-        if let ScreenInstruction::PluginBytes(plugin_render_assets) = instruction {
-            for asset in plugin_render_assets {
-                let bytes = String::from_utf8_lossy(&asset.bytes).to_string();
-                if bytes.contains("InitialKeybinds") {
-                    return Some(bytes);
-                }
-            }
-        }
-        None
-    });
-
-    assert!(
-        initial_keybinds_event.is_some(),
-        "Plugin should receive InitialKeybinds event after reconfiguration"
-    );
-    // Note: the keybinds content in InitialKeybinds may be empty due to a race condition
-    // between the executor thread updating keybinds and send_initial_keybinds_to_plugin
-    // reading them synchronously. The important thing is that the event IS delivered.
+/// The rendered output of every `PluginBytes` asset in `instructions` that contains `needle`.
+fn renders_containing(instructions: &[ScreenInstruction], needle: &str) -> Vec<String> {
+    instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            ScreenInstruction::PluginBytes(assets) => Some(assets.iter()),
+            _ => None,
+        })
+        .flatten()
+        .map(|asset| String::from_utf8_lossy(&asset.bytes).to_string())
+        .filter(|bytes| bytes.contains(needle))
+        .collect()
 }

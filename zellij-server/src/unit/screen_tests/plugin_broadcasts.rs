@@ -242,3 +242,98 @@ pub fn inactive_tab_plugins_get_fresh_state_on_activation() {
         active_tab.position
     );
 }
+
+#[test]
+pub fn closing_tab_updates_input_modes_of_destination_tab_plugins() {
+    // Tab 0: plugin pane 2 (from new_tab_with_plugins)
+    // Tab 1: two terminal panes (from run, client starts here)
+    // Closing tab 1 sends the client back to tab 0, whose plugin last heard about the
+    // client's mode when it left. It has to be told again on arrival.
+    let size = Size { cols: 80, rows: 10 };
+
+    let mut mock_screen = MockScreen::new(size);
+    let client_id = mock_screen.main_client_id;
+    mock_screen.new_tab_with_plugins(vec![2]);
+    let initial_layout = TiledPaneLayout {
+        children_split_direction: SplitDirection::Vertical,
+        children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
+        ..Default::default()
+    };
+    let session_metadata = mock_screen.clone_session_metadata();
+    let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
+
+    let received_plugin_instructions = Watched::new(vec![]);
+    let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
+    let plugin_thread = log_actions_in_thread!(
+        received_plugin_instructions,
+        PluginInstruction::Exit,
+        plugin_receiver
+    );
+
+    let close_tab = CliAction::CloseTab { tab_id: None };
+    send_cli_action_to_server(&session_metadata, close_tab, client_id);
+
+    // The screen thread drains its instructions in order and this log is fed by it alone, so
+    // the close begins at the first `PaneClosed` (nothing else closes a pane here) and is
+    // over once plugin 2 has been told the tab list shrank to the one surviving tab.
+    let close_started_at = |instructions: &[PluginInstruction]| -> Option<usize> {
+        instructions.iter().position(|instruction| {
+            matches!(
+                instruction,
+                PluginInstruction::Update(updates)
+                    if updates.iter().any(|(_, _, event)| matches!(event, Event::PaneClosed(..)))
+            )
+        })
+    };
+    let mode_updates_after = |instructions: &[PluginInstruction]| -> Vec<(u32, ClientId)> {
+        let Some(from) = close_started_at(instructions) else {
+            return vec![];
+        };
+        instructions[from..]
+            .iter()
+            .flat_map(|instruction| match instruction {
+                PluginInstruction::Update(updates) => updates.as_slice(),
+                _ => &[],
+            })
+            .filter_map(|(pid, cid, event)| match (pid, cid, event) {
+                (Some(pid), Some(cid), Event::ModeUpdate(..)) => Some((*pid, *cid)),
+                _ => None,
+            })
+            .collect()
+    };
+    let mode_updates_received = received_plugin_instructions.wait_until_described(
+        "plugin 2 to be told only one tab is left after the close",
+        zellij_test_support::default_timeout(),
+        |instructions| {
+            let from = close_started_at(instructions)?;
+            let close_finished = instructions[from..].iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    PluginInstruction::Update(updates)
+                        if updates.iter().any(|(pid, _, event)| matches!(
+                            (pid, event),
+                            (Some(2), Event::TabUpdate(tabs)) if tabs.len() == 1
+                        ))
+                )
+            });
+            close_finished.then(|| mode_updates_after(instructions))
+        },
+        |instructions| {
+            format!(
+                "{} plugin instruction(s), close started at {:?}, mode updates since: {:?}",
+                instructions.len(),
+                close_started_at(instructions),
+                mode_updates_after(instructions)
+            )
+        },
+    );
+
+    mock_screen.teardown(vec![plugin_thread, screen_thread]);
+
+    assert!(
+        mode_updates_received.contains(&(2, client_id)),
+        "Plugin 2 in the tab focus returned to should receive a ModeUpdate for client {}, got: {:?}",
+        client_id,
+        mode_updates_received
+    );
+}

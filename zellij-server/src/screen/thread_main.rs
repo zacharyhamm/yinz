@@ -83,6 +83,7 @@ pub(crate) fn screen_thread_main(
     }
 
     let context_menu = config.context_menu.clone();
+    let explicit_theme_hue = config.options.explicit_theme_hue;
     let config_options = config.options;
     let arrow_fonts = !config_options.simplified_ui.unwrap_or_default();
     let pane_frame_style = PaneFrameStyle::from_options(&config_options);
@@ -165,6 +166,9 @@ pub(crate) fn screen_thread_main(
     let dangerously_enable_paste_buffer_read = config_options
         .dangerously_enable_paste_buffer_read
         .unwrap_or(false);
+    let host_notification_protocol = config_options
+        .host_notification_protocol
+        .unwrap_or_default();
 
     let thread_senders = bus.senders.clone();
     let mut screen = Screen::new(
@@ -223,6 +227,17 @@ pub(crate) fn screen_thread_main(
     screen.host_theme_dark_styling = host_theme_dark_styling;
     screen.host_theme_light_styling = host_theme_light_styling;
     screen.paste_buffer_read_enabled = dangerously_enable_paste_buffer_read;
+    // Resolve the session's hue before the first render: an explicit pin
+    // wins; otherwise a dark/light pair defaults to dark until the host
+    // terminal reports.
+    if explicit_theme_hue.is_some() {
+        screen
+            .apply_configured_explicit_theme_hue(explicit_theme_hue)
+            .non_fatal();
+    } else {
+        screen.resolve_default_theme_mode().non_fatal();
+    }
+    screen.set_host_notification_protocol(host_notification_protocol);
 
     let mut pending_tab_ids: HashSet<usize> = HashSet::new();
     let mut pending_tab_switches: HashSet<(usize, ClientId)> = HashSet::new(); // usize is the
@@ -1271,6 +1286,50 @@ pub(crate) fn screen_thread_main(
                 screen.sync_scroll_mode_if_scroll_changed(client_id, was_scrolled)?;
                 screen.render(None)?;
             },
+            // The prompt jumps deliberately do not sync scroll mode: they are bound in normal
+            // mode too, and jumping to a prompt from there must not switch modes.
+            ScreenInstruction::ScrollToPreviousPrompt(client_id, _completion_tx) => {
+                active_tab_and_connected_client_id!(
+                    screen,
+                    client_id,
+                    |tab: &mut Tab, client_id: ClientId| tab
+                        .scroll_active_terminal_to_previous_prompt(client_id)
+                );
+                screen.render(None)?;
+            },
+            ScreenInstruction::ScrollToNextPrompt(client_id, _completion_tx) => {
+                active_tab_and_connected_client_id!(
+                    screen,
+                    client_id,
+                    |tab: &mut Tab, client_id: ClientId| tab
+                        .scroll_active_terminal_to_next_prompt(client_id)
+                );
+                screen.render(None)?;
+            },
+            ScreenInstruction::SelectCommandAtScrollPosition(client_id, _completion_tx) => {
+                active_tab_and_connected_client_id!(
+                    screen,
+                    client_id,
+                    |tab: &mut Tab, client_id: ClientId| tab
+                        .select_command_at_scroll_position(client_id)
+                );
+                screen.render(None)?;
+            },
+            ScreenInstruction::CopyLastCommandOutput(client_id, _completion_tx) => {
+                active_tab_and_connected_client_id!(
+                    screen,
+                    client_id,
+                    |tab: &mut Tab, client_id: ClientId| tab.copy_last_command_output(client_id),
+                    ?
+                );
+                screen.render(None)?;
+            },
+            ScreenInstruction::ClearCommandOutputFlash(pane_id) => {
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.clear_command_output_flash(pane_id);
+                }
+                screen.render(None)?;
+            },
             ScreenInstruction::PageScrollUp(
                 client_id,
                 _completion_tx, // the action ends here, dropping this will release anything
@@ -1876,14 +1935,19 @@ pub(crate) fn screen_thread_main(
                     }
                 }
             },
-            ScreenInstruction::UpdateTabName(
-                c,
-                client_id,
-                _completion_tx, // the action ends here, dropping this will release anything
-                                // waiting for it
-            ) => {
-                screen.update_active_tab_name(c, client_id)?;
-                screen.render(None)?;
+            ScreenInstruction::UpdateTabName(c, client_id, completion_tx) => {
+                if screen.has_no_client_to_act_for(client_id) {
+                    screen.report_no_client_to_act_for(
+                        client_id,
+                        "Cannot rename the focused tab: no client is attached to this session. Target a tab explicitly with --tab-id.".to_owned(),
+                        completion_tx,
+                    );
+                } else {
+                    // the action ends here, dropping completion_tx will release anything
+                    // waiting for it
+                    screen.update_active_tab_name(c, client_id)?;
+                    screen.render(None)?;
+                }
             },
             ScreenInstruction::UndoRenameTab(
                 client_id,
@@ -1935,7 +1999,11 @@ pub(crate) fn screen_thread_main(
                 }
             },
             ScreenInstruction::TerminalPixelDimensions(client_id, pixel_dimensions) => {
-                screen.update_pixel_dimensions(client_id, pixel_dimensions);
+                let character_cell_size_changed =
+                    screen.update_pixel_dimensions(client_id, pixel_dimensions);
+                if character_cell_size_changed {
+                    screen.resize_pty_all_panes()?;
+                }
             },
             ScreenInstruction::TerminalBackgroundColor(background_color_instruction) => {
                 screen.update_terminal_background_color(background_color_instruction);
@@ -2250,6 +2318,18 @@ pub(crate) fn screen_thread_main(
                     }
                 }
                 screen.render(None)?;
+            },
+            ScreenInstruction::HostTerminalFocusChanged(client_id, focused) => {
+                screen.host_terminal_focus_changed(client_id, focused);
+            },
+            ScreenInstruction::SetClientHostTerminalEnv(client_id, host_terminal_env) => {
+                screen.set_client_host_terminal_env(client_id, host_terminal_env);
+            },
+            ScreenInstruction::ForwardDesktopNotifications {
+                pane_id,
+                notifications,
+            } => {
+                screen.forward_desktop_notifications(notifications, pane_id);
             },
             ScreenInstruction::SetTabBellFlash(tab_id, is_flashing) => {
                 if let Some(tab) = screen.tabs.values_mut().find(|t| t.id == tab_id) {
@@ -3136,16 +3216,26 @@ pub(crate) fn screen_thread_main(
                 }
                 screen.log_and_report_session_state()?;
             },
-            ScreenInstruction::RenameActivePane(new_name, client_id, _completion_tx) => {
-                active_tab_and_connected_client_id!(
-                    screen,
-                    client_id,
-                    |tab: &mut Tab, client_id: ClientId| tab
-                        .rename_active_pane(new_name, client_id),
-                    ?
-                );
-                screen.render(None)?;
-                screen.log_and_report_session_state()?;
+            ScreenInstruction::RenameActivePane(new_name, client_id, completion_tx) => {
+                if screen.has_no_client_to_act_for(client_id) {
+                    screen.report_no_client_to_act_for(
+                        client_id,
+                        "Cannot rename the focused pane: no client is attached to this session. Target a pane explicitly with --pane-id.".to_owned(),
+                        completion_tx,
+                    );
+                } else {
+                    // the action ends here, dropping completion_tx will release anything
+                    // waiting for it
+                    active_tab_and_connected_client_id!(
+                        screen,
+                        client_id,
+                        |tab: &mut Tab, client_id: ClientId| tab
+                            .rename_active_pane(new_name, client_id),
+                        ?
+                    );
+                    screen.render(None)?;
+                    screen.log_and_report_session_state()?;
+                }
             },
             ScreenInstruction::RenameTab(
                 tab_index,
@@ -3790,6 +3880,7 @@ pub(crate) fn screen_thread_main(
                 theme,
                 host_theme_dark,
                 host_theme_light,
+                explicit_theme_hue,
                 simplified_ui,
                 default_shell,
                 default_cwd,
@@ -3815,6 +3906,7 @@ pub(crate) fn screen_thread_main(
                 word_separators,
                 nested_session_handling,
                 dangerously_enable_paste_buffer_read,
+                host_notification_protocol,
             } => {
                 screen.host_theme_dark_styling = host_theme_dark;
                 screen.host_theme_light_styling = host_theme_light;
@@ -3848,9 +3940,21 @@ pub(crate) fn screen_thread_main(
                         word_separators,
                         nested_session_handling,
                         dangerously_enable_paste_buffer_read,
+                        host_notification_protocol,
                         client_id,
                     )
                     .non_fatal();
+                // `reconfigure` painted the static theme; put the session's
+                // effective hue back on top of it, against the possibly
+                // changed dark/light definitions.
+                if explicit_theme_hue != screen.configured_explicit_theme_hue {
+                    screen
+                        .apply_configured_explicit_theme_hue(explicit_theme_hue)
+                        .non_fatal();
+                } else {
+                    screen.reapply_effective_theme_mode().non_fatal();
+                }
+                screen.resolve_default_theme_mode().non_fatal();
             },
             ScreenInstruction::RerunCommandPane(terminal_pane_id, completion_tx) => {
                 screen.rerun_command_pane_with_id(terminal_pane_id, completion_tx)
@@ -4168,9 +4272,11 @@ pub(crate) fn screen_thread_main(
             },
             ScreenInstruction::ChangeOverlayCoordinates(
                 pane_ids_and_coordinates,
+                override_user_placement,
                 _completion_tx,
             ) => {
-                screen.change_overlay_coordinates(pane_ids_and_coordinates);
+                screen
+                    .change_overlay_coordinates(pane_ids_and_coordinates, override_user_placement);
                 let _ = screen.render(None);
             },
             ScreenInstruction::TogglePaneBorderless(pane_id, _completion_tx) => {
@@ -4374,27 +4480,15 @@ pub(crate) fn screen_thread_main(
                 screen.render(None)?;
             },
             ScreenInstruction::DesktopNotificationResponse(raw_bytes, client_id) => {
-                if let Some((terminal_id, app_wants_report, is_query, rewritten_bytes)) =
-                    denormalize_notification_response(&raw_bytes)
-                {
-                    let pane_id = PaneId::Terminal(terminal_id);
-                    // Write response to the pane if the app expects it:
-                    // capability query answers (q flag) or activation reports (r flag)
-                    if app_wants_report || is_query {
+                if let Some(response) = denormalize_notification_response(&raw_bytes) {
+                    let pane_id = PaneId::Terminal(response.terminal_id);
+                    if response.forward_to_pane {
                         if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
-                            tab.write_to_pane_id(
-                                &None,
-                                rewritten_bytes,
-                                false,
-                                pane_id,
-                                None,
-                                None,
-                            )
-                            .non_fatal();
+                            tab.write_to_pane_id(&None, response.bytes, false, pane_id, None, None)
+                                .non_fatal();
                         }
                     }
-                    // Focus the pane on activation click (not on query responses)
-                    if !is_query {
+                    if response.focus_pane {
                         screen
                             .focus_pane_with_id(pane_id, false, false, client_id)
                             .non_fatal();

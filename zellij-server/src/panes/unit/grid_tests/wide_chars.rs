@@ -786,3 +786,28 @@ fn printed_text_keeps_its_characters_and_its_width(tc: hegel::TestCase) {
         "row width should be the sum of the printed characters' widths"
     );
 }
+
+#[test]
+fn ech_over_wide_character_preserves_background_on_padding_cell() {
+    use crate::panes::terminal_character::{AnsiCode, NamedColor};
+    // Use a wide character to exercise replacement of a wide cell.
+    assert_eq!(TerminalCharacter::new('Ａ').width(), 2);
+
+    let content = "\x1b[44mＡ\x1b[1;1H\x1b[1X".as_bytes();
+    let grid = create_grid_with_size_and_raw(2, 4, content);
+
+    let lines = grid.as_character_lines();
+
+    assert_eq!(lines[0][0].character, ' ');
+    assert_eq!(lines[0][1].character, ' ');
+
+    assert_eq!(
+        lines[0][0].styles.background,
+        Some(AnsiCode::NamedColor(NamedColor::Blue))
+    );
+    assert_eq!(
+        lines[0][1].styles.background,
+        Some(AnsiCode::NamedColor(NamedColor::Blue)),
+        "the padding cell left behind by the erased wide character keeps the ECH background"
+    );
+}

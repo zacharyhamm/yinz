@@ -3387,7 +3387,31 @@ pub fn change_floating_panes_coordinates(
 pub fn change_overlay_coordinates(
     pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
 ) {
-    let plugin_command = PluginCommand::ChangeOverlayCoordinates(pane_ids_and_coordinates);
+    change_overlay_coordinates_with(pane_ids_and_coordinates, false);
+}
+
+/// The same call, for a placement the user asked for by a key in the plugin.
+///
+/// Once the user has dragged or resized an overlay with the mouse, the server keeps their
+/// position or size and takes only the rest from `change_overlay_coordinates` - a plugin that
+/// re-places itself on every resize would otherwise undo every step of the drag. A key the user
+/// pressed is as much theirs as the drag was, so this variant reclaims both: the overlay goes
+/// where the coordinates say, and the plugin's later placements move it again until the next
+/// drag.
+pub fn change_overlay_coordinates_overriding_user_placement(
+    pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
+) {
+    change_overlay_coordinates_with(pane_ids_and_coordinates, true);
+}
+
+fn change_overlay_coordinates_with(
+    placements: Vec<(PaneId, FloatingPaneCoordinates)>,
+    override_user_placement: bool,
+) {
+    let plugin_command = PluginCommand::ChangeOverlayCoordinates {
+        placements,
+        override_user_placement,
+    };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
     unsafe { host_run_plugin_command() };

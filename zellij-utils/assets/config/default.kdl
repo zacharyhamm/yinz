@@ -27,6 +27,7 @@ keybinds {
         bind "j" "Down" { MoveFocus "Down"; }
         bind "k" "Up" { MoveFocus "Up"; }
         bind "p" { SwitchFocus; }
+        bind ";" { FocusLastPane; }
         bind "n" { NewPane; SwitchToMode "Normal"; }
         bind "d" { NewPane "Down"; SwitchToMode "Normal"; }
         bind "r" { NewPane "Right"; SwitchToMode "Normal"; }
@@ -82,6 +83,10 @@ keybinds {
         bind "Ctrl b" "PageUp" "Left" "h" { PageScrollUp; }
         bind "d" { HalfPageScrollDown; }
         bind "u" { HalfPageScrollUp; }
+        bind "[" { ScrollToPreviousPrompt; }
+        bind "]" { ScrollToNextPrompt; }
+        bind "m" { SelectCommandAtScrollPosition; }
+        bind "c" { CopyLastCommandOutput; SwitchToMode "Normal"; }
         // uncomment this and adjust key if using copy_on_select=false
         // bind "Alt c" { Copy; }
     }
@@ -94,6 +99,9 @@ keybinds {
         bind "Ctrl b" "PageUp" "Left" "h" { PageScrollUp; }
         bind "d" { HalfPageScrollDown; }
         bind "u" { HalfPageScrollUp; }
+        bind "[" { ScrollToPreviousPrompt; }
+        bind "]" { ScrollToNextPrompt; }
+        bind "m" { SelectCommandAtScrollPosition; }
         bind "n" { Search "down"; }
         bind "p" { Search "up"; }
         bind "c" { SearchToggleOption "CaseSensitivity"; }
@@ -394,6 +402,11 @@ plugins {
     // parked chats and anything still streaming are all still there. The two
     // panes hide and open separately: `Ctrl e c` brings the conversation back,
     // `Ctrl e a` the agent list.
+    //
+    // Ctrl o, in the conversation, jumps it over a different tiled pane — the
+    // largest one you are not working in — and it stays inside that pane through
+    // resizes until the pane closes or hocus follows you to another tab, when it
+    // returns to the corner. It works on a pane you have dragged, too.
     hocus location="zellij:hocus" {
         shared true
     }
@@ -455,6 +468,17 @@ load_plugins {
 //
 // nested_session_handling "ask"
 
+// Which escape sequence desktop notifications coming from panes are
+// forwarded to the host terminal with.
+// Options:
+//   - "auto" (Default — detect from the host terminal environment)
+//   - "osc9" (the legacy iTerm2 protocol, understood by most terminals)
+//   - "osc99" (kitty's notification protocol)
+//   - "bell" (ring the terminal bell instead)
+//   - "off" (do not forward notifications to the host terminal)
+//
+// host_notification_protocol "auto"
+
 //  Send a request for a simplified ui (without arrow fonts) to plugins
 //  Options:
 //    - true
@@ -477,6 +501,14 @@ load_plugins {
 //   - false
 //
 // pane_frames true
+
+// Set the pane frame style when pane_frames is enabled
+// Options:
+//   - titles (default - draw a title above each pane)
+//   - full (draw a full frame around each pane)
+//   - none (equivalent to pane_frames false)
+//
+// pane_frame_style "titles"
 
 // The corner notifications appear in - they stack downwards from a top corner
 // and upwards from a bottom one
@@ -553,6 +585,21 @@ load_plugins {
 // Default: default
 //
 // theme "default"
+
+// Themes to use when the host terminal reports a dark or light color palette.
+// Both must be set for automatic switching to take place, otherwise `theme`
+// remains authoritative. Until the host terminal reports (or if it never does),
+// the dark theme is used.
+//
+// theme_dark "nightfox"
+// theme_light "dayfox"
+
+// Pin the session to a dark or light appearance, ignoring what the host
+// terminal reports. Resolved before the first render. When unset, the host
+// terminal decides.
+// Options: dark, light
+//
+// explicit_theme_hue "dark"
 
 // The name of the default layout to load on startup
 // Default: "default"

@@ -19,6 +19,26 @@ fn ctrl_backtick_is_the_hocus_toggle_key() {
     ));
 }
 
+#[test]
+fn ctrl_o_is_the_reposition_key() {
+    assert!(State::is_reposition_key(
+        &KeyWithModifier::new(BareKey::Char('o')).with_ctrl_modifier()
+    ));
+    assert!(!State::is_reposition_key(&KeyWithModifier::new(
+        BareKey::Char('o')
+    )));
+}
+
+/// Ctrl-o is taken before the input box sees it, and asks for a redraw of nothing: a hocus that
+/// has no manifest yet has nowhere to go, and the key must still not be typed.
+#[test]
+fn ctrl_o_is_not_typed_into_the_input() {
+    let mut state = idle_state();
+    assert!(!state.on_key(KeyWithModifier::new(BareKey::Char('o')).with_ctrl_modifier()));
+    assert!(state.input.get_text().is_empty());
+    assert_eq!(state.anchor, None);
+}
+
 // -- Esc hides, Ctrl-c interrupts ---------------------------------------
 //
 // The two used to be one key, resolved by precedence: a busy tool queue took

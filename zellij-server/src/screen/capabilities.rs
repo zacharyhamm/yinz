@@ -4,24 +4,29 @@ use crate::panes::kitty_graphics::KittyHostSupport;
 use crate::panes::terminal_character::AnsiCode;
 use crate::ClientId;
 use zellij_utils::data::PaletteColor;
+use zellij_utils::errors::prelude::*;
 use zellij_utils::ipc::PixelDimensions;
 use zellij_utils::pane_size::SizeInPixels;
 
 impl Screen {
+    /// Returns whether the character cell size changed, so the caller can re-apply
+    /// pty sizes: ptys created before the host reported its pixel dimensions were
+    /// sized without them.
     pub fn update_pixel_dimensions(
         &mut self,
         client_id: ClientId,
         pixel_dimensions: PixelDimensions,
-    ) {
+    ) -> bool {
+        let previous_character_cell_size = *self.character_cell_size.borrow();
         self.pixel_dimensions.merge(pixel_dimensions);
         if let Some(character_cell_size) = self.pixel_dimensions.character_cell_size {
             *self.character_cell_size.borrow_mut() = Some(character_cell_size);
         } else if let Some(text_area_size) = self.pixel_dimensions.text_area_size {
             let Some(client_size) = self.client_sizes.get(&client_id).copied() else {
-                return;
+                return false;
             };
             if client_size.rows == 0 || client_size.cols == 0 {
-                return;
+                return false;
             }
             let character_cell_size = SizeInPixels {
                 height: text_area_size.height / client_size.rows,
@@ -29,6 +34,17 @@ impl Screen {
             };
             *self.character_cell_size.borrow_mut() = Some(character_cell_size);
         }
+        *self.character_cell_size.borrow() != previous_character_cell_size
+    }
+
+    /// Re-send every pane's pty size, so a character cell size learned after the
+    /// panes were created reaches their ptys as pixel dimensions.
+    pub fn resize_pty_all_panes(&mut self) -> Result<()> {
+        for tab in self.tabs.values_mut() {
+            tab.resize_pty_all_panes()
+                .context("failed to re-apply pty sizes")?;
+        }
+        Ok(())
     }
 
     pub fn update_kitty_graphics_support(&mut self, client_id: ClientId, supported: bool) {

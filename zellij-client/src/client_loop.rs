@@ -60,8 +60,9 @@ pub(crate) struct ClientLoop<'a> {
     pub command_is_executing: &'a mut CommandIsExecuting,
     pub stdin_ansi_parser: &'a Arc<Mutex<StdinAnsiParser>>,
     pub send_input_instructions: &'a SenderWithContext<InputInstruction>,
-    pub nested_reannounce: Option<&'a NestedReannounce>,
-    pub is_nested_inside_zellij_pane: bool,
+    /// Re-announces this client to its Zellij host, and knows whether one has
+    /// ever answered — which is how the client learns it is nested at all.
+    pub nested_reannounce: &'a NestedReannounce,
     pub web_server_address: WebServerAddress,
     /// How to hand the terminal back when an instruction turns out to be
     /// fatal. Errors do not return through `LoopOutcome` — they exit.
@@ -97,9 +98,7 @@ impl ClientLoop<'_> {
             }
         }
 
-        if let Some(nested_reannounce) = self.nested_reannounce {
-            nested_reannounce.stop();
-        }
+        self.nested_reannounce.stop();
 
         outcome
     }
@@ -156,7 +155,9 @@ impl ClientLoop<'_> {
                 resolve_async,
             } => self.forward_query_to_host(token, query_bytes, resolve_async),
             ClientInstruction::EmitNestedSessionFrame(payload_bytes) => {
-                if self.is_nested_inside_zellij_pane {
+                // Only a client whose host has answered is nested; anywhere
+                // else the frame would land in a terminal that ignores it.
+                if self.nested_reannounce.host_contacted() {
                     let frame = nested_session::encode_frame_from_payload(&payload_bytes);
                     let mut out = self.os_input.get_stdout_writer();
                     let _ = out.write_all(&frame);

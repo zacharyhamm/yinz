@@ -49,83 +49,241 @@ const BASE64_DECODER: GeneralPurpose = GeneralPurpose::new(
     GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
 );
 
+const MAX_TRACKED_NOTIFICATION_IDS: usize = 256;
+const MAX_NOTIFICATION_ASSEMBLY_BYTES: usize = 4096;
+
+/// A desktop notification an application asked for, in the protocol it used.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingNotification {
+    /// kitty's protocol. `payload` is the semicolon-joined params after `99`, `terminator` is
+    /// `\x07` or `\x1b\\`, `wants_report` whether the app asked for an activation report, and
+    /// `display` the assembled title and body once the notification is complete (`None` for an
+    /// unfinished chunk or a control request that shows nothing).
+    Osc99 {
+        payload: String,
+        terminator: String,
+        wants_report: bool,
+        display: Option<(String, String)>,
+    },
+    /// The legacy iTerm2 protocol: a body and nothing else.
+    Osc9 { body: String },
+    /// The urxvt/rxvt protocol: `notify;title;body`.
+    Osc777 { title: String, body: String },
+}
+
+impl PendingNotification {
+    pub fn title_and_body(&self) -> (String, String) {
+        match self {
+            PendingNotification::Osc99 { display, .. } => display.clone().unwrap_or_default(),
+            PendingNotification::Osc9 { body } => (String::new(), body.clone()),
+            PendingNotification::Osc777 { title, body } => (title.clone(), body.clone()),
+        }
+    }
+}
+
+/// The `p=` key of an OSC 99 escape: what the payload is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Osc99PayloadType {
+    Title,
+    Body,
+    Close,
+    Query,
+    Alive,
+    Other,
+}
+
+impl Osc99PayloadType {
+    pub(crate) fn from_metadata_value(value: &str) -> Self {
+        match value {
+            "title" => Osc99PayloadType::Title,
+            "body" => Osc99PayloadType::Body,
+            "close" => Osc99PayloadType::Close,
+            "?" => Osc99PayloadType::Query,
+            "alive" => Osc99PayloadType::Alive,
+            _ => Osc99PayloadType::Other,
+        }
+    }
+    /// A request the app expects an answer to, rather than something to show.
+    pub(crate) fn is_control_request(&self) -> bool {
+        matches!(
+            self,
+            Osc99PayloadType::Close | Osc99PayloadType::Query | Osc99PayloadType::Alive
+        )
+    }
+}
+
+/// Splits an OSC 99 payload into its metadata (before the first `;`) and the rest.
+pub(crate) fn split_osc99_payload(payload: &str) -> (&str, &str) {
+    match payload.find(';') {
+        Some(idx) => (
+            payload.get(..idx).unwrap_or_default(),
+            payload.get(idx + 1..).unwrap_or_default(),
+        ),
+        None => (payload, ""),
+    }
+}
+
+/// The `key=value` pairs of an OSC 99 metadata section.
+pub(crate) fn parse_osc99_metadata(metadata: &str) -> BTreeMap<&str, &str> {
+    metadata
+        .split(':')
+        .filter_map(|kv| kv.split_once('='))
+        .collect()
+}
+
+fn action_wants_report(action_value: &str) -> bool {
+    action_value.split(',').any(|value| value == "report")
+}
+
+#[derive(Debug, Clone, Default)]
+struct NotificationAssembly {
+    title: String,
+    body: String,
+}
+
+/// Appends `payload` to `destination` without letting it grow past
+/// `MAX_NOTIFICATION_ASSEMBLY_BYTES`, truncating on a character boundary.
+fn append_bounded(destination: &mut String, payload: &str) {
+    let remaining = MAX_NOTIFICATION_ASSEMBLY_BYTES.saturating_sub(destination.len());
+    if remaining == 0 {
+        return;
+    }
+    if payload.len() <= remaining {
+        destination.push_str(payload);
+        return;
+    }
+    let mut truncate_at = remaining;
+    while truncate_at > 0 && !payload.is_char_boundary(truncate_at) {
+        truncate_at -= 1;
+    }
+    destination.push_str(&payload[..truncate_at]);
+}
+
+/// What one pane's application said about its OSC 99 notifications: whether each id asked for
+/// an activation report, and the title/body of notifications still being sent in chunks
+/// (`d=0`). Bounded to the last `MAX_TRACKED_NOTIFICATION_IDS` ids.
+#[derive(Debug, Clone, Default)]
+pub struct NotificationTracker {
+    wants_report: HashMap<String, bool>,
+    assemblies: HashMap<String, NotificationAssembly>,
+    known_ids: VecDeque<String>,
+}
+
+impl NotificationTracker {
+    fn remember(&mut self, id: &str) {
+        if self.known_ids.iter().any(|known| known == id) {
+            return;
+        }
+        self.known_ids.push_back(id.to_owned());
+        while self.known_ids.len() > MAX_TRACKED_NOTIFICATION_IDS {
+            if let Some(evicted) = self.known_ids.pop_front() {
+                self.wants_report.remove(&evicted);
+                self.assemblies.remove(&evicted);
+            }
+        }
+    }
+    /// Whether the escape wants an activation report: its own `a=` when it states one
+    /// (remembered from then on), otherwise what the notification with this id asked for.
+    fn wants_report(&mut self, id: &str, action: Option<&str>) -> bool {
+        match action {
+            Some(action_value) => {
+                let wants_report = action_wants_report(action_value);
+                if !id.is_empty() {
+                    self.remember(id);
+                    self.wants_report.insert(id.to_owned(), wants_report);
+                }
+                wants_report
+            },
+            None => self.wants_report.get(id).copied().unwrap_or(false),
+        }
+    }
+    /// Adds a chunk to the notification with this id and returns the assembled title and body
+    /// once it is complete. Control requests show nothing; a close drops the assembly.
+    fn assemble(
+        &mut self,
+        id: &str,
+        payload_type: Osc99PayloadType,
+        is_done: bool,
+        payload: String,
+    ) -> Option<(String, String)> {
+        if payload_type == Osc99PayloadType::Close {
+            self.assemblies.remove(id);
+            return None;
+        }
+        if payload_type.is_control_request() {
+            return None;
+        }
+        if !payload.is_empty() {
+            self.remember(id);
+            let assembly = self.assemblies.entry(id.to_owned()).or_default();
+            match payload_type {
+                Osc99PayloadType::Title => append_bounded(&mut assembly.title, &payload),
+                Osc99PayloadType::Body => append_bounded(&mut assembly.body, &payload),
+                _ => {},
+            }
+        }
+        if !is_done {
+            return None;
+        }
+        let assembly = self.assemblies.remove(id)?;
+        if assembly.title.is_empty() && assembly.body.is_empty() {
+            None
+        } else {
+            Some((assembly.title, assembly.body))
+        }
+    }
+}
+
 /// Rewrites OSC 99 metadata for multiplexer forwarding:
 ///
-/// 1. Namespaces the `i=` value with a pane ID prefix and flags so responses
-///    can be routed back to the originating pane.
-///    Format: `i=p<pane_id>[r][q].<original_id>`
-///    - `r` flag: app requested `a=report` — activation response should be
-///      written back to the pane's PTY
-///    - `q` flag: this is a capability query (`p=?`) — response must be
-///      written back to the pane's PTY
-///    - Neither: activation response used only for focus routing, not forwarded
+/// 1. Namespaces the `i=` value as `i=p<pane_id>[r].<original_id>` so responses can be routed
+///    back to the originating pane. The `r` flag records that the app asked for `a=report`
+///    (`wants_report`, remembered per id by the pane's `NotificationTracker`), so the response
+///    is handed back to it; without the flag the response is only used for focus routing.
+///    If no `i=` key is present, one is added with an empty original id.
 ///
-/// 2. Ensures `a=report` is always present so the host terminal sends the
-///    activation response back to Zellij (needed for pane focus routing).
-///
-/// If no `i=` key is present, one is added with an empty original ID.
-pub(crate) fn namespace_notification_id(metadata: &str, pane_id: u32) -> String {
+/// 2. Ensures `a=...,report` is present on notifications so the host terminal sends the
+///    activation response back to Zellij (needed for pane focus routing). An escape without an
+///    `a=` gets the protocol's default `a=focus,report`; control requests (`p=?`, `close`,
+///    `alive`) are left without one, as they are not something the host reports on.
+pub(crate) fn namespace_notification_id(
+    metadata: &str,
+    pane_id: u32,
+    wants_report: bool,
+) -> String {
+    let flags = if wants_report { "r" } else { "" };
     let mut found_id = false;
     let mut found_action = false;
-    let mut app_wants_report = false;
-    let mut is_query = false;
-    let result = metadata
-        .split(':')
-        .map(|kv| {
-            if kv.starts_with("i=") {
-                found_id = true;
-                // Defer i= rewriting until we know the flags
-                kv.to_string()
-            } else if let Some(action_value) = kv.strip_prefix("a=") {
-                found_action = true;
-                app_wants_report = action_value.split(',').any(|v| v == "report");
-                if app_wants_report {
-                    kv.to_string()
-                } else {
-                    format!("a={},report", action_value)
-                }
-            } else if kv == "p=?" {
-                is_query = true;
-                kv.to_string()
+    let mut payload_type = Osc99PayloadType::Title;
+    let mut parts: Vec<String> = Vec::new();
+    for kv in metadata.split(':') {
+        if kv.is_empty() {
+            continue;
+        }
+        if let Some(id_value) = kv.strip_prefix("i=") {
+            found_id = true;
+            parts.push(format!("i=p{}{}.{}", pane_id, flags, id_value));
+        } else if let Some(action_value) = kv.strip_prefix("a=") {
+            found_action = true;
+            if action_wants_report(action_value) {
+                parts.push(kv.to_owned());
             } else {
-                kv.to_string()
+                parts.push(format!("a={},report", action_value));
             }
-        })
-        .collect::<Vec<_>>()
-        .join(":");
-
-    // Build flags suffix
-    let mut flags = String::new();
-    if app_wants_report {
-        flags.push('r');
-    }
-    if is_query {
-        flags.push('q');
-    }
-
-    // Rewrite i= with pane ID and flags
-    let result = result
-        .split(':')
-        .map(|kv| {
-            if let Some(id_value) = kv.strip_prefix("i=") {
-                format!("i=p{}{}.{}", pane_id, flags, id_value)
-            } else {
-                kv.to_string()
+        } else {
+            if let Some(payload_value) = kv.strip_prefix("p=") {
+                payload_type = Osc99PayloadType::from_metadata_value(payload_value);
             }
-        })
-        .collect::<Vec<_>>()
-        .join(":");
-
-    let result = if !found_id {
-        format!("i=p{}{}.:{}", pane_id, flags, result)
-    } else {
-        result
-    };
-    if !found_action {
-        format!("{}:a=report", result)
-    } else {
-        result
+            parts.push(kv.to_owned());
+        }
     }
+    if !found_id {
+        parts.insert(0, format!("i=p{}{}.", pane_id, flags));
+    }
+    if !found_action && !payload_type.is_control_request() {
+        parts.push("a=focus,report".to_owned());
+    }
+    parts.join(":")
 }
 
 use vte::{Params, Perform};
@@ -722,9 +880,8 @@ pub struct Grid {
     pub search_results: SearchResult,
     pub pending_clipboard_update: Option<String>,
     pub pending_osc7_cwd: Option<std::path::PathBuf>,
-    /// Pending desktop notifications: (payload, terminator)
-    /// Payload is the semicolon-joined params after "99", terminator is "\x07" or "\x1b\\"
-    pub pending_desktop_notifications: Vec<(String, String)>,
+    pub pending_desktop_notifications: Vec<PendingNotification>,
+    notification_tracker: NotificationTracker,
     /// Whitelisted host-terminal queries intercepted from the app running
     /// in this pane (CSI 14t / 16t pixel-dim queries, OSC 10;? / 11;? /
     /// 4;N;? color queries). Each entry is the raw byte sequence that
@@ -760,6 +917,9 @@ pub struct Grid {
     pub cached_hover_tooltip: Option<String>,
     osc133_markers_seen: bool,
     osc133_command_selection: bool,
+    /// The output of the last copied command, painted for a moment as feedback for
+    /// `CopyLastCommandOutput`; cleared by `BackgroundJob::ClearCommandOutputFlash`.
+    command_output_flash: Option<Selection>,
     word_separators: String,
 }
 
@@ -1100,6 +1260,7 @@ impl Grid {
             pending_clipboard_update: None,
             pending_osc7_cwd: None,
             pending_desktop_notifications: Vec::new(),
+            notification_tracker: NotificationTracker::default(),
             pending_forwarded_queries: Vec::new(),
             pending_nested_session_messages: Vec::new(),
             ui_component_bytes: None,
@@ -1122,6 +1283,7 @@ impl Grid {
             cached_hover_tooltip: None,
             osc133_markers_seen: false,
             osc133_command_selection: true,
+            command_output_flash: None,
             word_separators: DEFAULT_WORD_SEPARATORS.to_owned(),
         }
     }
@@ -1610,6 +1772,9 @@ impl Grid {
                 .saturating_sub(transferred_rows_height);
 
             self.selection.move_down(1);
+            if let Some(command_output_flash) = self.command_output_flash.as_mut() {
+                command_output_flash.move_down(1);
+            }
             // Move all search-selections down one line as well
             found_something = self
                 .search_results
@@ -1671,6 +1836,9 @@ impl Grid {
             self.kitty_reanchor_all_from_pixels();
 
             self.selection.move_up(1);
+            if let Some(command_output_flash) = self.command_output_flash.as_mut() {
+                command_output_flash.move_up(1);
+            }
             // Move all search-selections up one line as well
             found_something =
                 self.search_results
@@ -1715,6 +1883,7 @@ impl Grid {
             return;
         }
         self.selection.reset();
+        self.command_output_flash = None;
         self.sixel_grid.character_cell_size_possibly_changed();
         self.kitty_grid.character_cell_size_possibly_changed();
         self.kitty_reanchor_all_from_pixels();
@@ -2132,6 +2301,27 @@ impl Grid {
                     }
                 }
             }
+            if let Some(command_output_flash) = self.command_output_flash {
+                if command_output_flash.contains_row(character_chunk.y.saturating_sub(content_y)) {
+                    let foreground_color = match style.colors.text_unselected.emphasis_0 {
+                        PaletteColor::Rgb(rgb) => AnsiCode::RgbCode(rgb),
+                        PaletteColor::EightBit(col) => AnsiCode::ColorIndex(col),
+                    };
+                    character_chunk.add_selection_and_colors(
+                        HighlightSelection {
+                            selection: command_output_flash,
+                            bg: None,
+                            fg: Some(foreground_color),
+                            bold: false,
+                            italic: false,
+                            underline: false,
+                            layer: HighlightLayer::ActionFeedback,
+                        },
+                        content_x,
+                        content_y,
+                    );
+                }
+            }
             // Apply pre-computed plugin highlight selections to this chunk.
             for hs in &plugin_highlight_selections {
                 if hs
@@ -2172,7 +2362,7 @@ impl Grid {
         self.reset_terminal_state();
         self.mark_for_rerender();
     }
-    /// Dumps all lines above terminal vieport and the viewport itself to a string
+    /// Dumps all lines above terminal viewport and the viewport itself to a string
     pub fn dump_screen(&self, full: bool) -> String {
         let viewport: String = dump_screen!(self.viewport);
         if !full {
@@ -2292,6 +2482,9 @@ impl Grid {
         {
             self.transfer_rows_to_lines_above(1);
             self.selection.move_up(1);
+            if let Some(command_output_flash) = self.command_output_flash.as_mut() {
+                command_output_flash.move_up(1);
+            }
             RegionRowsScrolled::IntoScrollback
         } else if at < self.viewport.len() {
             self.viewport.remove(at);
@@ -2373,6 +2566,9 @@ impl Grid {
             }
             self.viewport.push_back(new_row);
             self.selection.move_up(1);
+            if let Some(command_output_flash) = self.command_output_flash.as_mut() {
+                command_output_flash.move_up(1);
+            }
         } else {
             let outcome = self.scroll_region_content_up(
                 scroll_region_top,
@@ -3230,7 +3426,9 @@ impl Grid {
             return;
         } else if self.click.is_triple_click() {
             let Some((start_position, end_position)) = self
-                .osc133_command_around_position(start)
+                .osc133_command_selection
+                .then(|| self.osc133_command_around_position(start))
+                .flatten()
                 .or_else(|| self.canonical_line_around_position(start))
             else {
                 // no-op
@@ -3305,6 +3503,15 @@ impl Grid {
             return None;
         }
         self.text_for_selection(&self.selection)
+    }
+    /// The text between two positions, resolved the way a selection is (scrollback included).
+    pub fn text_in_range(&self, start: Position, end: Position) -> Option<String> {
+        let mut range_selection = Selection::default();
+        range_selection.set_start_and_end_positions(start, end);
+        if range_selection.is_empty() {
+            return None;
+        }
+        self.text_for_selection(&range_selection)
     }
     /// The text a `Selection` covers, whether or not it is the selection the user is making.
     ///
@@ -3501,17 +3708,19 @@ impl Grid {
         }
     }
 
+    /// The command around `position`, from its `Input` (or `Output`) marker to the next marker.
+    ///
+    /// Not gated on `osc133_command_selection`: that option only opts out of triple-click grabbing
+    /// a command, and the explicit prompt/command keybindings stay usable.
     fn osc133_command_around_position(&self, position: &Position) -> Option<(Position, Position)> {
-        if !self.osc133_command_selection || !self.osc133_markers_seen {
+        if !self.osc133_markers_seen {
             return None;
         }
         let first_line = -(self.lines_above.len() as isize);
         let last_line = (self.viewport.len() + self.lines_below.len()) as isize - 1;
         let clicked_line = position.line.0;
         let clicked_column = position.column.0;
-        let marker_position = |line: isize, column: usize| {
-            Position::new(line as i32, column.min(u16::MAX as usize) as u16)
-        };
+        let marker_position = Self::osc133_marker_position;
 
         let mut latest_output = None;
         let mut selection_start = None;
@@ -3559,6 +3768,190 @@ impl Grid {
         let selection_end = selection_end?;
 
         Some((selection_start, selection_end))
+    }
+
+    fn osc133_marker_position(line: isize, column: usize) -> Position {
+        Position::new(line as i32, column.min(u16::MAX as usize) as u16)
+    }
+
+    /// How many display rows up the previous prompt is, or `None` when there is none above.
+    ///
+    /// Walks the scrollback upwards. A `Prompt` marker wins outright; an `Input` marker is
+    /// remembered as a fallback for shells that only mark the command, and is used once the
+    /// walk passes the `Output`/`End` of the command before it.
+    fn previous_prompt_line_delta(&self) -> Option<usize> {
+        if !self.osc133_markers_seen {
+            return None;
+        }
+        let first_line = -(self.lines_above.len() as isize);
+        let mut input_candidate: Option<usize> = None;
+        let mut display_delta = 0;
+        for line in (first_line..0).rev() {
+            let Some(row) = self.row_at(line) else {
+                continue;
+            };
+            display_delta += calculate_row_display_height(row.width(), self.width);
+            for marker in row.osc133_markers.iter().rev() {
+                match marker.kind {
+                    Osc133MarkerKind::Prompt => return Some(display_delta),
+                    Osc133MarkerKind::Input => {
+                        if input_candidate.is_none() {
+                            input_candidate = Some(display_delta);
+                        }
+                    },
+                    Osc133MarkerKind::Output | Osc133MarkerKind::End => {
+                        if let Some(candidate) = input_candidate {
+                            return Some(candidate);
+                        }
+                    },
+                }
+            }
+        }
+        input_candidate
+    }
+
+    /// How many rows down the next prompt is, capped at what `lines_below` can still scroll.
+    fn next_prompt_line_delta(&self) -> Option<usize> {
+        if !self.osc133_markers_seen {
+            return None;
+        }
+        let last_line = (self.viewport.len() + self.lines_below.len()) as isize - 1;
+        for line in 1..=last_line {
+            let Some(row) = self.row_at(line) else {
+                continue;
+            };
+            for marker in row.osc133_markers.iter() {
+                match marker.kind {
+                    Osc133MarkerKind::Prompt | Osc133MarkerKind::Input => {
+                        let reachable_delta = (line as usize).min(self.lines_below.len());
+                        return (reachable_delta > 0).then_some(reachable_delta);
+                    },
+                    Osc133MarkerKind::Output | Osc133MarkerKind::End => {},
+                }
+            }
+        }
+        None
+    }
+
+    pub fn scroll_to_previous_prompt(&mut self) -> bool {
+        match self.previous_prompt_line_delta() {
+            Some(delta) => {
+                self.move_viewport_up(delta);
+                true
+            },
+            None => false,
+        }
+    }
+
+    pub fn scroll_to_next_prompt(&mut self) -> bool {
+        match self.next_prompt_line_delta() {
+            Some(delta) => {
+                self.move_viewport_down(delta);
+                true
+            },
+            None => false,
+        }
+    }
+
+    /// The command at the top of the viewport, or failing that the first command whose output
+    /// starts somewhere in the viewport.
+    fn osc133_command_at_scroll_position(&self) -> Option<(Position, Position)> {
+        if let Some(command) = self.osc133_command_around_position(&Position::new(0, 0)) {
+            return Some(command);
+        }
+        for line in 0..self.viewport.len() as isize {
+            let Some(row) = self.row_at(line) else {
+                continue;
+            };
+            for marker in row.osc133_markers.iter() {
+                if marker.kind != Osc133MarkerKind::Output {
+                    continue;
+                }
+                let anchor = Self::osc133_marker_position(line, marker.column);
+                if let Some(command) = self.osc133_command_around_position(&anchor) {
+                    return Some(command);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn select_command_at_scroll_position(&mut self) -> bool {
+        let Some((start_position, end_position)) = self.osc133_command_at_scroll_position() else {
+            return false;
+        };
+        let old_selection = self.selection;
+        self.selection
+            .set_start_and_end_positions(start_position, end_position);
+        self.selection.finalize();
+        let current_selection = self.selection;
+        self.update_selected_lines(&old_selection, &current_selection);
+        self.mark_for_rerender();
+        true
+    }
+
+    fn command_output_text(&self, start: Position, end: Position) -> Option<String> {
+        let output = self.text_in_range(start, end)?;
+        let output = output
+            .strip_prefix('\n')
+            .map(String::from)
+            .unwrap_or(output);
+        if output.trim().is_empty() {
+            return None;
+        }
+        Some(output)
+    }
+
+    /// The output of the most recent command that has both an `Output` marker and a marker
+    /// after it (its `End`, or the next prompt), with the positions the text spans.
+    pub fn last_completed_command_output(&self) -> Option<(String, Position, Position)> {
+        if !self.osc133_markers_seen {
+            return None;
+        }
+        let first_line = -(self.lines_above.len() as isize);
+        let last_line = (self.viewport.len() + self.lines_below.len()) as isize - 1;
+        let mut command_boundary: Option<Position> = None;
+        for line in (first_line..=last_line).rev() {
+            let Some(row) = self.row_at(line) else {
+                continue;
+            };
+            for marker in row.osc133_markers.iter().rev() {
+                let marker_position = Self::osc133_marker_position(line, marker.column);
+                if marker.kind == Osc133MarkerKind::Output {
+                    if let Some(output_end) = command_boundary {
+                        if let Some(output) = self.command_output_text(marker_position, output_end)
+                        {
+                            return Some((output, marker_position, output_end));
+                        }
+                    }
+                }
+                command_boundary = Some(marker_position);
+            }
+        }
+        None
+    }
+
+    pub fn set_command_output_flash(&mut self, start: Position, end: Position) {
+        let mut flash = Selection::default();
+        flash.set_start_and_end_positions(start, end);
+        flash.finalize();
+        self.command_output_flash = Some(flash);
+        self.output_buffer.update_all_lines();
+        self.mark_for_rerender();
+    }
+
+    pub fn clear_command_output_flash(&mut self) -> bool {
+        if self.command_output_flash.take().is_none() {
+            return false;
+        }
+        self.output_buffer.update_all_lines();
+        self.mark_for_rerender();
+        true
+    }
+
+    #[cfg(test)]
+    pub fn command_output_flash_is_shown(&self) -> bool {
+        self.command_output_flash.is_some()
     }
 
     fn update_selected_lines(&mut self, old_selection: &Selection, new_selection: &Selection) {
@@ -4785,9 +5178,85 @@ impl Perform for Grid {
                         .collect::<Vec<&str>>()
                         .join(";");
                     if !payload.is_empty() {
-                        // Store raw payload and terminator; namespacing applied at Tab level
+                        let (metadata, rest) = split_osc99_payload(&payload);
+                        let metadata = parse_osc99_metadata(metadata);
+                        let id = metadata.get("i").copied().unwrap_or_default();
+                        let payload_type = metadata
+                            .get("p")
+                            .map(|value| Osc99PayloadType::from_metadata_value(value))
+                            .unwrap_or(Osc99PayloadType::Title);
+                        let is_done = metadata.get("d").copied().unwrap_or("1") != "0";
+                        let decoded = if metadata.get("e").copied() == Some("1") {
+                            BASE64_DECODER
+                                .decode(rest.as_bytes())
+                                .map(|decoded| String::from_utf8_lossy(&decoded).into_owned())
+                                .unwrap_or_else(|_| rest.to_owned())
+                        } else {
+                            rest.to_owned()
+                        };
+                        let wants_report = self
+                            .notification_tracker
+                            .wants_report(id, metadata.get("a").copied());
+                        let display =
+                            self.notification_tracker
+                                .assemble(id, payload_type, is_done, decoded);
                         self.pending_desktop_notifications
-                            .push((payload, terminator.to_string()));
+                            .push(PendingNotification::Osc99 {
+                                payload,
+                                terminator: terminator.to_string(),
+                                wants_report,
+                                display,
+                            });
+                    }
+                }
+            },
+
+            b"9" => {
+                if params.len() > 1 {
+                    // ConEmu reuses OSC 9 for its own subcommands. Only the two that other
+                    // terminals emit and honour are recognised - `9;4;<state>;<pct>` progress
+                    // and `9;9;<cwd>` - so a notification whose body happens to start with a
+                    // small number (`9;3;builds remaining`) is still delivered.
+                    let is_conemu_subcommand = params.len() > 2
+                        && match params.get(1).copied() {
+                            Some(b"4") => params
+                                .get(2)
+                                .and_then(|state| str::from_utf8(state).ok())
+                                .map(|state| state.trim().parse::<u8>().is_ok())
+                                .unwrap_or(false),
+                            Some(b"9") => true,
+                            _ => false,
+                        };
+                    let body = params
+                        .get(1..)
+                        .unwrap_or_default()
+                        .iter()
+                        .flat_map(|x| str::from_utf8(x))
+                        .collect::<Vec<&str>>()
+                        .join(";");
+                    if !body.is_empty() && !is_conemu_subcommand {
+                        self.pending_desktop_notifications
+                            .push(PendingNotification::Osc9 { body });
+                    }
+                }
+            },
+
+            b"777" => {
+                let parts: Vec<&str> = params
+                    .get(1..)
+                    .unwrap_or_default()
+                    .iter()
+                    .flat_map(|x| str::from_utf8(x))
+                    .collect();
+                if parts.first().copied() == Some("notify") {
+                    let title = parts.get(1).map(|s| s.to_string()).unwrap_or_default();
+                    let body = parts
+                        .get(2..)
+                        .map(|rest| rest.join(";"))
+                        .unwrap_or_default();
+                    if !title.is_empty() || !body.is_empty() {
+                        self.pending_desktop_notifications
+                            .push(PendingNotification::Osc777 { title, body });
                     }
                 }
             },
@@ -5671,6 +6140,7 @@ enum Osc133MarkerKind {
     Prompt,
     Input,
     Output,
+    /// `OSC 133 ; D ; <exit code>` - the exit code is not tracked, nothing reads it yet.
     End,
 }
 
@@ -5957,6 +6427,11 @@ impl Row {
         if let Some(character) = self.columns.get_mut(absolute_x_index) {
             let terminal_character_width = terminal_character.width();
             let overwrite_end = x + character.width().max(terminal_character_width);
+            // A narrower replacement leaves the wide character's trailing cells behind as
+            // padding. That padding keeps the replacement's styles so an erased wide
+            // character does not end up half pane-background, half terminal-default.
+            let mut padding_character = EMPTY_TERMINAL_CHARACTER;
+            padding_character.styles = terminal_character.styles.clone();
             let character = std::mem::replace(character, terminal_character);
             self.osc133_markers
                 .retain(|marker| marker.column < x || marker.column >= overwrite_end);
@@ -5964,7 +6439,7 @@ impl Row {
             let excess_width = character.width().saturating_sub(terminal_character_width);
             for _ in 0..excess_width {
                 self.columns
-                    .insert(absolute_x_index, EMPTY_TERMINAL_CHARACTER);
+                    .insert(absolute_x_index, padding_character.clone());
             }
         }
         self.invalidate_width_cache();

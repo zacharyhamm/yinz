@@ -291,6 +291,10 @@ message Action {
     WarpTabAction warp_tab = 152;
     AdoptTabAction adopt_tab = 153;
     WarpTabFromAction warp_tab_from = 154;
+    ScrollToPreviousPromptAction scroll_to_previous_prompt = 155;
+    ScrollToNextPromptAction scroll_to_next_prompt = 156;
+    SelectCommandAtScrollPositionAction select_command_at_scroll_position = 157;
+    CopyLastCommandOutputAction copy_last_command_output = 158;
   }
 }
 
@@ -316,6 +320,10 @@ message ScrollUpAction {}
 message ScrollDownAction {}
 message ScrollToBottomAction {}
 message ScrollToTopAction {}
+message ScrollToPreviousPromptAction {}
+message ScrollToNextPromptAction {}
+message SelectCommandAtScrollPositionAction {}
+message CopyLastCommandOutputAction {}
 message PageScrollUpAction {}
 message PageScrollDownAction {}
 message HalfPageScrollUpAction {}
@@ -823,6 +831,7 @@ message CliAssets {
   optional uint32 max_panes = 9;
   bool force_run_layout_commands = 10;
   optional string cwd = 11;
+  map<string, string> host_terminal_env = 12;
 }
 
 message LayoutInfo {
@@ -1352,6 +1361,8 @@ message Options {
   optional string word_separators = 62;
   optional bool dangerously_enable_paste_buffer_read = 63;
   optional bool context_menu_on_right_click = 65;
+  optional ThemeHue explicit_theme_hue = 69;
+  optional string host_notification_protocol = 67;
 }
 
 enum OnForceClose {
@@ -1385,6 +1396,12 @@ enum NestedSessionHandling {
   NESTED_SESSION_HANDLING_FULLSCREEN = 2;
   NESTED_SESSION_HANDLING_DESCEND = 3;
   NESTED_SESSION_HANDLING_NEVER = 4;
+}
+
+enum ThemeHue {
+  THEME_HUE_UNSPECIFIED = 0;
+  THEME_HUE_DARK = 1;
+  THEME_HUE_LIGHT = 2;
 }
 
 

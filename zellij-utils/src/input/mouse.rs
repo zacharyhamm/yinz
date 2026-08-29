@@ -351,6 +351,38 @@ impl MouseEvent {
             position,
         }
     }
+    pub fn new_alt_scroll_up_event(position: Position) -> Self {
+        MouseEvent {
+            event_type: MouseEventType::Press,
+            left: false,
+            right: false,
+            middle: false,
+            wheel_up: true,
+            wheel_down: false,
+            wheel_left: false,
+            wheel_right: false,
+            shift: false,
+            alt: true,
+            ctrl: false,
+            position,
+        }
+    }
+    pub fn new_alt_scroll_down_event(position: Position) -> Self {
+        MouseEvent {
+            event_type: MouseEventType::Press,
+            left: false,
+            right: false,
+            middle: false,
+            wheel_up: false,
+            wheel_down: true,
+            wheel_left: false,
+            wheel_right: false,
+            shift: false,
+            alt: true,
+            ctrl: false,
+            position,
+        }
+    }
     pub fn new_ctrl_scroll_up_event(position: Position) -> Self {
         MouseEvent {
             event_type: MouseEventType::Press,

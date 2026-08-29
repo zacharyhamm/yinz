@@ -31,6 +31,7 @@ message ClientToServerMsg {
     SixelSupportMsg sixel_support = 24;
     RequestSessionListMsg request_session_list = 25;
     SetMobileRenderPreferencesMsg set_mobile_render_preferences = 26;
+    HostTerminalFocusChangedMsg host_terminal_focus_changed = 27;
   }
 }
 
@@ -155,4 +156,8 @@ message RequestSessionListMsg {
 message SetMobileRenderPreferencesMsg {
   bool single_pane = 1;
   bool fit = 2;
+}
+
+message HostTerminalFocusChangedMsg {
+  bool focused = 1;
 }

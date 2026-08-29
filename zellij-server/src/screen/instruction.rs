@@ -1,6 +1,7 @@
 use zellij_utils::errors::prelude::*;
 
 use super::{GuestModalOutcome, HoldForCommand, InitialTitle, TabOverrideResult};
+use crate::panes::grid::PendingNotification;
 use crate::panes::PaneId;
 use crate::plugins::{DumpSessionLayoutResponse, PluginId, PluginRenderAsset};
 use crate::pty::{AdoptedTabPanes, ClientTabIndexOrPaneId, VteBytes};
@@ -17,7 +18,7 @@ use zellij_utils::data::{
     GetFocusedPaneInfoResponse, HostTerminalThemeMode, InputMode, KeyWithModifier, LayoutInfo,
     LayoutWithError, ListPanesResponse, ListTabsResponse, ModeInfo, NewPanePlacement,
     NotificationInfo, OverlayPlacement, PaneInfo, PaneScrollbackResponse, PluginPermission,
-    RegexHighlight, Resize, ResizeStrategy, SessionInfo, Styling, TabInfo, WarpPlacement,
+    RegexHighlight, Resize, ResizeStrategy, SessionInfo, Styling, TabInfo, ThemeHue, WarpPlacement,
     WarpedPane, WarpedTab,
 };
 use zellij_utils::errors::ScreenContext;
@@ -30,7 +31,9 @@ use zellij_utils::input::layout::{
     TiledPaneLayout,
 };
 use zellij_utils::input::mouse::MouseEvent;
-use zellij_utils::input::options::{Clipboard, NestedSessionHandling, PaneFrameStyle};
+use zellij_utils::input::options::{
+    Clipboard, HostNotificationProtocol, NestedSessionHandling, PaneFrameStyle,
+};
 use zellij_utils::ipc::PixelDimensions;
 use zellij_utils::nested_session::NestedSessionMessage;
 use zellij_utils::pane_size::Size;
@@ -154,6 +157,12 @@ pub enum ScreenInstruction {
     ScrollDownAt(Position, ClientId, Option<NotificationEnd>),
     ScrollToBottom(ClientId, Option<NotificationEnd>),
     ScrollToTop(ClientId, Option<NotificationEnd>),
+    ScrollToPreviousPrompt(ClientId, Option<NotificationEnd>),
+    ScrollToNextPrompt(ClientId, Option<NotificationEnd>),
+    SelectCommandAtScrollPosition(ClientId, Option<NotificationEnd>),
+    CopyLastCommandOutput(ClientId, Option<NotificationEnd>),
+    /// The feedback flash `CopyLastCommandOutput` painted has run its course.
+    ClearCommandOutputFlash(PaneId),
     PageScrollUp(ClientId, Option<NotificationEnd>),
     PageScrollDown(ClientId, Option<NotificationEnd>),
     HalfPageScrollUp(ClientId, Option<NotificationEnd>),
@@ -356,6 +365,17 @@ pub enum ScreenInstruction {
     AddRedPaneFrameColorOverride(Vec<PaneId>, Option<String>), // Option<String> => optional error text
     ClearPaneFrameColorOverride(Vec<PaneId>),
     SetTabBellFlash(usize, bool), // tab_id, is_flashing
+    /// The host terminal of `ClientId` gained (`true`) or lost (`false`) keyboard focus.
+    HostTerminalFocusChanged(ClientId, bool),
+    /// The whitelisted environment of a client's host terminal (`HOST_TERMINAL_ENV_VARS`), from
+    /// which the notification protocol the host speaks is resolved.
+    SetClientHostTerminalEnv(ClientId, BTreeMap<String, String>),
+    /// Desktop notifications a pane asked for, to be rendered per client in the protocol that
+    /// client's host speaks.
+    ForwardDesktopNotifications {
+        pane_id: u32,
+        notifications: Vec<PendingNotification>,
+    },
     PreviousSwapLayout(ClientId, Option<NotificationEnd>),
     NextSwapLayout(ClientId, Option<NotificationEnd>),
     OverrideLayout(
@@ -625,6 +645,10 @@ pub enum ScreenInstruction {
         host_theme_dark: Option<Styling>,
         /// Resolved styling for `theme_light`. See `host_theme_dark`.
         host_theme_light: Option<Styling>,
+        /// `explicit_theme_hue` from the config: pins the session to one
+        /// hue regardless of what the host terminal reports. `None` hands
+        /// authority back to the host.
+        explicit_theme_hue: Option<ThemeHue>,
         simplified_ui: bool,
         default_shell: Option<PathBuf>,
         default_cwd: Option<PathBuf>,
@@ -652,6 +676,7 @@ pub enum ScreenInstruction {
         word_separators: String,
         nested_session_handling: NestedSessionHandling,
         dangerously_enable_paste_buffer_read: bool,
+        host_notification_protocol: HostNotificationProtocol,
     },
     RerunCommandPane(u32, Option<NotificationEnd>), // u32 - terminal pane id
     ResizePaneWithId(ResizeStrategy, PaneId),
@@ -708,8 +733,12 @@ pub enum ScreenInstruction {
     TogglePanePinned(ClientId, Option<NotificationEnd>),
     SetFloatingPanePinned(PaneId, bool),
     StackPanes(Vec<PaneId>, ClientId, Option<NotificationEnd>),
+    /// The `bool` says the placement is a user gesture made through the plugin, and so may
+    /// reclaim a position the user dragged or a size they resized - see
+    /// `OverlayPanes::change_pane_coordinates`.
     ChangeOverlayCoordinates(
         Vec<(PaneId, FloatingPaneCoordinates)>,
+        bool,
         Option<NotificationEnd>,
     ),
     ChangeFloatingPanesCoordinates(

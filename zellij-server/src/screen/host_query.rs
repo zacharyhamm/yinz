@@ -1,7 +1,7 @@
 use zellij_utils::errors::prelude::*;
 
 use super::{
-    PendingForward, PendingForwardEntry, Screen, ScreenInstruction,
+    PendingForward, PendingForwardEntry, Screen, ScreenInstruction, ThemePolicy,
     SERVER_CLIPBOARD_FORWARD_TIMEOUT_MS, SERVER_FORWARD_TIMEOUT_MS, STARTUP_SENTINEL_TOKEN,
 };
 use crate::panes::PaneId;
@@ -149,7 +149,14 @@ impl Screen {
         let _ = self.resume_pane_after_forward(pane_id, reply);
     }
 
+    /// The mode apps and nested guests are told the session is in: a pinned
+    /// hue first (`explicit_theme_hue` or a manual `SetDarkTheme` /
+    /// `SetLightTheme`), then the mode the session resolved to, and only
+    /// when neither is known a guess from the active palette's background.
     pub(super) fn effective_host_terminal_theme_mode(&self) -> HostTerminalThemeMode {
+        if let ThemePolicy::Pinned(mode) = self.theme_policy {
+            return mode;
+        }
         self.host_terminal_theme_mode.unwrap_or_else(|| {
             match detect_theme_hue(self.style.colors.text_unselected.background) {
                 ThemeHue::Dark => HostTerminalThemeMode::Dark,
