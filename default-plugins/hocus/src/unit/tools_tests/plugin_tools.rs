@@ -8,6 +8,51 @@ use super::*;
 
 const DIR: &str = "/home/someone/.config/zellij/plugins";
 
+/// A compile error names the file the loader would name, whatever spelling the write used.
+#[test]
+fn the_chunk_name_is_the_file_the_loader_would_name() {
+    for (name, chunk) in [
+        ("keys", "keys.lua"),
+        ("keys.lua", "keys.lua"),
+        (" keys ", "keys.lua"),
+        ("app/ui", "ui.lua"),
+        ("hocus/weather", "weather.lua"),
+    ] {
+        assert_eq!(chunk_name(name), chunk, "{name}");
+    }
+}
+
+/// Off wasm every source compiles, so what is tested is the shape around the answer: only a
+/// `plugin_write` with a name and a source is ever refused, and never by the host stand-in.
+#[test]
+fn only_a_complete_plugin_write_is_candidate_for_a_compile_refusal() {
+    let call = |name: &str, arguments: &str| ToolCall {
+        id: "1".to_owned(),
+        name: name.to_owned(),
+        arguments: arguments.to_owned(),
+    };
+    assert_eq!(
+        uncompilable_write(&call(
+            "plugin_write",
+            r#"{"name":"keys","source":"return {}"}"#
+        )),
+        None
+    );
+    assert_eq!(
+        uncompilable_write(&call("plugin_write", r#"{"name":"keys"}"#)),
+        None,
+        "a missing source is plugin_argv's refusal, not a compile error"
+    );
+    assert_eq!(
+        uncompilable_write(&call("plugin_reload", r#"{"name":"keys"}"#)),
+        None
+    );
+    assert_eq!(
+        compile_report("keys", "return {}").unwrap(),
+        "keys.lua compiles"
+    );
+}
+
 fn plugin_argv_for(
     name: &str,
     arguments: &str,

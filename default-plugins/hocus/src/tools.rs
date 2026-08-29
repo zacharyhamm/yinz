@@ -1364,12 +1364,28 @@ pub fn specs() -> Value {
             }),
         ),
         tool(
+            "plugin_check",
+            "Compile a Lua plugin source without writing or loading it, answering with the \
+             compile error or that it compiles. plugin_write runs this check itself and refuses \
+             a source that fails it, so call this to try a fix before writing, not after. A \
+             source that compiles can still fail at load; plugin_reload shows that.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "source": { "type": "string" },
+                },
+                "required": ["name", "source"],
+            }),
+        ),
+        tool(
             "plugin_write",
             "Write a Lua plugin. This is how a plugin is authored: you write it yourself, never \
              by spawning an agent to do it. Call plugin_docs first. `source` is the complete \
-             file, not a patch; approving the write grants the permissions the source requests, \
-             and plugin_reload comes next. `overwrite` is required to replace one that exists. \
-             `name` may be `folder/module` for a file the plugin loads with \
+             file, not a patch; it is compiled before anything is asked or written, and a \
+             compile error is the answer. Approving the write grants the permissions the source \
+             requests, and plugin_reload comes next. `overwrite` is required to replace one \
+             that exists. `name` may be `folder/module` for a file the plugin loads with \
              require(\"folder.module\").",
             json!({
                 "type": "object",
@@ -1453,6 +1469,7 @@ pub const READ_ONLY: &[&str] = &[
     "todo_list",
     "todo_search",
     "plugin_docs",
+    "plugin_check",
     "plugin_list",
     "plugin_read",
     "plugin_log",
@@ -2084,8 +2101,9 @@ pub const PROJECT_READ_TOOLS: [&str; 6] = [
 /// the host knows — `get_user_plugin_dir`, since a wasm plugin's WASI preopens are `/host`,
 /// `/data`, `/cache` and `/tmp` and a config dir is none of them — and the three that touch the
 /// filesystem answer later, on the host's `RunCommandResult`.
-pub const PLUGIN_TOOLS: [&str; 6] = [
+pub const PLUGIN_TOOLS: [&str; 7] = [
     "plugin_docs",
+    "plugin_check",
     "plugin_list",
     "plugin_read",
     "plugin_write",
@@ -2105,6 +2123,61 @@ pub const PLUGIN_FILE_TOOLS: [&str; 5] = [
     "plugin_reload",
     "plugin_log",
 ];
+
+/// Compile `source` as the plugin `name` would be loaded, answering the compile error.
+///
+/// The host does the compiling (`zellij.check_lua_plugin`), with the same interpreter the
+/// loader uses, so what passes here parses there. Off wasm there is no host, and every source
+/// compiles: the tests exercise what is said around the answer, not the Lua parser.
+#[cfg(target_arch = "wasm32")]
+pub fn compile_check(name: &str, source: &str) -> Result<(), String> {
+    zellij_tile::shim::check_lua_plugin(&chunk_name(name), source)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn compile_check(_name: &str, _source: &str) -> Result<(), String> {
+    Ok(())
+}
+
+/// The name a compile error reports the plugin under: the file the loader would name, so a
+/// `folder/module` reads as `module.lua` here as it does in a load error.
+pub fn chunk_name(name: &str) -> String {
+    let file = std::path::Path::new(name.trim())
+        .file_name()
+        .map(|file| file.to_string_lossy().to_string())
+        .unwrap_or_else(|| name.trim().to_owned());
+    match file.ends_with(".lua") {
+        true => file,
+        false => format!("{file}.lua"),
+    }
+}
+
+/// What `plugin_check` answers, and what `plugin_write` says instead of asking to write a
+/// plugin that cannot be loaded. The error is the interpreter's, which names the line.
+pub fn compile_report(name: &str, source: &str) -> Result<String, String> {
+    let chunk = chunk_name(name);
+    match compile_check(name, source) {
+        Ok(()) => Ok(format!("{chunk} compiles")),
+        Err(error) => Err(format!(
+            "{chunk} does not compile: {error}\nFix the source and send the whole file again."
+        )),
+    }
+}
+
+/// The refusal for a `plugin_write` whose source will not compile, or `None` when there is
+/// nothing to refuse — a write with no source at all is refused later, by `plugin_argv`.
+///
+/// Checked before the confirmation rather than at write time, so nobody is asked to approve a
+/// file the loader would only reject.
+pub fn uncompilable_write(call: &ToolCall) -> Option<String> {
+    if call.name != "plugin_write" {
+        return None;
+    }
+    let args = Args::parse(&call.arguments).ok()?;
+    let name = args.name.as_deref()?;
+    let source = args.source.as_deref()?;
+    compile_report(name, source).err()
+}
 
 /// How many log lines `plugin_log` shows unless asked otherwise.
 pub const PLUGIN_LOG_LINES: usize = 50;

@@ -6,6 +6,7 @@
 #![allow(clippy::useless_format)]
 #![allow(clippy::redundant_pattern_matching)]
 mod lua;
+pub use lua::check_lua_plugin;
 mod pinned_executor;
 mod pipes;
 mod plugin_limits;
@@ -66,6 +67,10 @@ pub struct DumpSessionLayoutResponse {
     pub layout_result: Result<String, String>,
     pub metadata: Option<zellij_utils::data::LayoutMetadata>,
 }
+/// The plugin id a state report is addressed to when no plugin wants it but a `zellij events`
+/// client does. No plugin ever has this id, so the plugin thread loads nothing for it and the
+/// report reaches the CLI subscribers alone. See `WasmBridge::forward_events_to_cli_subscribers`.
+pub const CLI_EVENTS_ONLY_TARGET: PluginId = u32::MAX;
 
 #[derive(Clone, Debug, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PluginInstruction {
@@ -125,6 +130,8 @@ pub enum PluginInstruction {
         Option<NotificationEnd>,
     ),
     ReloadPluginWithId(u32),
+    /// Reload every running instance at a location in place; nothing if none is running.
+    ReloadPluginByUrl(RunPluginOrAlias),
     Resize(PluginId, usize, usize), // plugin_id, columns, rows
     AddClient(ClientId),
     RemoveClient(ClientId),
@@ -170,6 +177,11 @@ pub enum PluginInstruction {
         String, // serialized payload
     ),
     PluginSubscribedToEvents(PluginId, ClientId, HashSet<EventType>),
+    /// A `zellij events` client asking for the session's state events, by name.
+    SubscribeCliClientToEvents {
+        client_id: ClientId,
+        event_types: Vec<String>,
+    },
     PermissionRequestResult(
         PluginId,
         Option<ClientId>,
@@ -198,6 +210,8 @@ pub enum PluginInstruction {
         cwd: Option<PathBuf>,
         skip_cache: bool,
         cli_client_id: ClientId,
+        /// The pane the pipe was run in, if the CLI client knew it.
+        source_pane_id: Option<PaneId>,
     },
     KeybindPipe {
         name: String,
@@ -583,6 +597,29 @@ pub(crate) fn plugin_thread_main(
             PluginInstruction::ReloadPluginWithId(plugin_id) => {
                 wasm_bridge.reload_plugin_with_id(plugin_id).non_fatal();
             },
+            PluginInstruction::ReloadPluginByUrl(mut run_plugin_or_alias) => {
+                run_plugin_or_alias.populate_run_plugin_if_needed(&plugin_aliases);
+                match run_plugin_or_alias.get_run_plugin() {
+                    Some(run_plugin) => match wasm_bridge.reload_plugin(&run_plugin) {
+                        Ok(()) => {},
+                        Err(e)
+                            if matches!(
+                                e.downcast_ref::<ZellijError>(),
+                                Some(ZellijError::PluginDoesNotExist)
+                            ) =>
+                        {
+                            log::warn!(
+                                "Nothing is running at {}, so there is nothing to reload",
+                                run_plugin.location
+                            );
+                        },
+                        Err(e) => Err::<(), _>(e).non_fatal(),
+                    },
+                    None => {
+                        log::error!("Failed to find plugin info for: {:?}", run_plugin_or_alias);
+                    },
+                }
+            },
             PluginInstruction::Resize(pid, new_columns, new_rows) => {
                 wasm_bridge.resize_plugin(pid, new_columns, new_rows, shutdown_send.clone())?;
             },
@@ -599,6 +636,12 @@ pub(crate) fn plugin_thread_main(
             },
             PluginInstruction::RemoveClient(client_id) => {
                 wasm_bridge.remove_client(client_id);
+            },
+            PluginInstruction::SubscribeCliClientToEvents {
+                client_id,
+                event_types,
+            } => {
+                wasm_bridge.subscribe_cli_client_to_events(client_id, event_types);
             },
             PluginInstruction::NewTab(
                 cwd,
@@ -1030,6 +1073,7 @@ pub(crate) fn plugin_thread_main(
                 cwd,
                 skip_cache,
                 cli_client_id,
+                source_pane_id,
             } => {
                 let should_float = floating.unwrap_or(true);
                 let mut pipe_messages = vec![];
@@ -1069,6 +1113,13 @@ pub(crate) fn plugin_thread_main(
                             &mut pipe_messages,
                         );
                     },
+                }
+                let source_pane_id = source_pane_id.map(|pane_id| match pane_id {
+                    PaneId::Terminal(id) => zellij_utils::data::PaneId::Terminal(id),
+                    PaneId::Plugin(id) => zellij_utils::data::PaneId::Plugin(id),
+                });
+                for (_, _, message) in pipe_messages.iter_mut() {
+                    message.pane_id = source_pane_id.clone();
                 }
                 wasm_bridge.pipe_messages(pipe_messages, shutdown_send.clone(), None)?;
             },

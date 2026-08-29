@@ -190,6 +190,10 @@ pub struct WasmBridge {
     // plugins that run as a single instance for the whole session rather than one per client
     shared_plugin_ids: HashSet<PluginId>,
     plugin_ids_waiting_for_permission_request: HashSet<PluginId>,
+    /// `zellij events` clients, each with the event types it asked for; an empty set is every
+    /// streamable one. Kept here rather than on the screen because this thread is the one place
+    /// every event passes through, whichever thread produced it.
+    cli_event_subscribers: HashMap<ClientId, HashSet<EventType>>,
     cached_events_for_pending_plugins: HashMap<PluginId, Vec<EventOrPipeMessage>>,
     cached_resizes_for_pending_plugins: HashMap<PluginId, (usize, usize)>, // (rows, columns)
     cached_worker_messages: HashMap<PluginId, Vec<(ClientId, String, String, String)>>, // Vec<clientid,
@@ -296,6 +300,7 @@ impl WasmBridge {
             plugin_ids_waiting_for_permission_request: HashSet::new(),
             cached_resizes_for_pending_plugins: HashMap::new(),
             cached_worker_messages: HashMap::new(),
+            cli_event_subscribers: HashMap::new(),
             loading_plugins: HashSet::new(),
             unloaded_while_loading: Default::default(),
             pending_plugin_reloads: HashSet::new(),
@@ -975,6 +980,27 @@ impl WasmBridge {
             move |senders, plugin_map, connected_clients, plugin_cache, engine| {
                 let skip_cache = true; // we want to explicitly reload the plugin
                 let mut plugin_map = plugin_map.lock().unwrap();
+                // The instance about to be replaced gets the same last word an unloaded one
+                // does, so a plugin that persists in `BeforeClose` survives its own reload.
+                if let Some((running_plugin, subscriptions)) =
+                    plugin_map.get_running_plugin_and_subscriptions(plugin_id, first_client_id)
+                {
+                    let wants_before_close = subscriptions
+                        .lock()
+                        .unwrap()
+                        .contains(&EventType::BeforeClose);
+                    if wants_before_close {
+                        let mut running_plugin = running_plugin.lock().unwrap();
+                        if let Err(e) = apply_before_close_event_to_plugin(
+                            plugin_id,
+                            first_client_id,
+                            &mut running_plugin,
+                            senders.clone(),
+                        ) {
+                            log::error!("{:?}", e);
+                        }
+                    }
+                }
                 match PluginLoader::new(
                     skip_cache,
                     loading_context,
@@ -1263,11 +1289,103 @@ impl WasmBridge {
         }
         Ok(())
     }
+    /// A `zellij events` client asking for `event_types` by name. A name that is not a
+    /// streamable event refuses the whole subscription, told to the client as an error, so a
+    /// typo is an exit rather than a silent stream of everything else.
+    pub fn subscribe_cli_client_to_events(
+        &mut self,
+        client_id: ClientId,
+        event_types: Vec<String>,
+    ) {
+        let mut wanted = HashSet::new();
+        for name in &event_types {
+            match EventType::from_cli_name(name) {
+                Some(event_type) => {
+                    wanted.insert(event_type);
+                },
+                None => {
+                    let _ = self.senders.send_to_server(ServerInstruction::LogError(
+                        vec![format!(
+                            "Unknown or unstreamable event type '{}'. Streamable events: {}",
+                            name,
+                            EventType::cli_streamable_names().join(", ")
+                        )],
+                        client_id,
+                        None,
+                    ));
+                    return;
+                },
+            }
+        }
+        self.cli_event_subscribers.insert(client_id, wanted);
+        // Sent for every subscriber, not just the first: the screen answers it with a state
+        // report, which is the snapshot a new subscriber starts from. It also has the screen
+        // report pane and tab state when no plugin wants it, addressed to
+        // `CLI_EVENTS_ONLY_TARGET`.
+        let _ = self
+            .senders
+            .send_to_screen(ScreenInstruction::SetCliEventSubscribersPresent(true));
+    }
+
+    /// Hand every streamable event in `updates` to the `zellij events` clients that want it.
+    ///
+    /// A state report — `PaneUpdate`, `TabUpdate`, `ModeUpdate`, `SessionUpdate` — arrives here
+    /// as one copy per (plugin, client) it is addressed to, all alike but for the addressee, so
+    /// a batch forwards one of each. Everything else is a single entry to begin with.
+    fn forward_events_to_cli_subscribers(
+        &self,
+        updates: &[(Option<PluginId>, Option<ClientId>, Event)],
+    ) {
+        if self.cli_event_subscribers.is_empty() {
+            return;
+        }
+        let mut forwarded_reports = HashSet::new();
+        for (_, _, event) in updates {
+            let event_type = EventType::from(event);
+            if !event_type.is_cli_streamable() {
+                continue;
+            }
+            let is_state_report = matches!(
+                event_type,
+                EventType::PaneUpdate
+                    | EventType::TabUpdate
+                    | EventType::ModeUpdate
+                    | EventType::SessionUpdate
+            );
+            if is_state_report && !forwarded_reports.insert(event_type) {
+                continue;
+            }
+            let event_json = match serde_json::to_string(event) {
+                Ok(event_json) => event_json,
+                Err(e) => {
+                    log::error!(
+                        "failed to serialize {} for a cli subscriber: {}",
+                        event_type,
+                        e
+                    );
+                    continue;
+                },
+            };
+            for (client_id, wanted) in &self.cli_event_subscribers {
+                if wanted.is_empty() || wanted.contains(&event_type) {
+                    let _ = self
+                        .senders
+                        .send_to_server(ServerInstruction::EventUpdateToClient(
+                            *client_id,
+                            event_type.to_string(),
+                            event_json.clone(),
+                        ));
+                }
+            }
+        }
+    }
+
     pub fn update_plugins(
         &mut self,
         mut updates: Vec<(Option<PluginId>, Option<ClientId>, Event)>,
         shutdown_sender: Sender<()>,
     ) -> Result<()> {
+        self.forward_events_to_cli_subscribers(&updates);
         for (plugin_id, client_id, event) in updates.iter() {
             if plugin_id.is_none() && client_id.is_none() {
                 if let Event::HostTerminalThemeChanged(mode) = event {
@@ -1467,6 +1585,7 @@ impl WasmBridge {
                                 &plugin_env.plugin_own_data_dir,
                                 &plugin_env.plugin_own_cache_dir,
                                 &ZELLIJ_TMP_DIR,
+                                plugin_env.user_plugin_dir.as_ref(),
                                 &plugin_env.plugin.location.to_string(),
                                 plugin_env.plugin_id,
                                 stdin_pipe.clone(),
@@ -1673,6 +1792,13 @@ impl WasmBridge {
             .lock()
             .unwrap()
             .retain(|c| c != &client_id);
+        if self.cli_event_subscribers.remove(&client_id).is_some()
+            && self.cli_event_subscribers.is_empty()
+        {
+            let _ = self
+                .senders
+                .send_to_screen(ScreenInstruction::SetCliEventSubscribersPresent(false));
+        }
         if let Some(new_owner) = self.get_first_client_id() {
             for plugin_id in self.shared_plugin_ids.clone() {
                 self.rekey_shared_plugin_if_owner_gone(plugin_id, new_owner);
@@ -2683,37 +2809,74 @@ fn check_event_permission(
         // there's no use to deny them anything
         return (PermissionStatus::Granted, None);
     }
-    let permission = match event {
-        Event::ModeUpdate(..)
-        | Event::TabUpdate(..)
-        | Event::PaneUpdate(..)
-        | Event::SessionUpdate(..)
-        | Event::CopyToClipboard(..)
-        | Event::SystemClipboardFailure
-        | Event::CommandPaneOpened(..)
-        | Event::CommandPaneExited(..)
-        | Event::PaneClosed(..)
-        | Event::EditPaneOpened(..)
-        | Event::EditPaneExited(..)
-        | Event::FailedToWriteConfigToDisk(..)
-        | Event::CommandPaneReRun(..)
-        | Event::CwdChanged(..)
-        | Event::CommandChanged(..)
-        | Event::AvailableLayoutInfo(..)
-        | Event::PluginConfigurationChanged(..)
-        | Event::HighlightClicked { .. }
-        | Event::SoftKeyboardVisibilityChanged(..)
-        | Event::HintText(..)
-        | Event::ActivePaneScroll(..)
-        | Event::InputReceived => PermissionType::ReadApplicationState,
-        Event::WebServerStatus(..) => PermissionType::StartWebServer,
-        Event::PluginDataChanged { .. } => PermissionType::PluginData,
+    // Matched on the discriminant rather than on `Event`, which is `#[non_exhaustive]` and so
+    // could only ever be matched with a wildcard from this crate. On `EventType` the match is
+    // exhaustive: a new event that is not classified here is a compile error rather than an
+    // event delivered to every plugin regardless of what it has been granted.
+    let permission = match EventType::from(event) {
+        EventType::ModeUpdate
+        | EventType::TabUpdate
+        | EventType::PaneUpdate
+        | EventType::SessionUpdate
+        | EventType::CopyToClipboard
+        | EventType::SystemClipboardFailure
+        | EventType::CommandPaneOpened
+        | EventType::CommandPaneExited
+        | EventType::PaneClosed
+        | EventType::EditPaneOpened
+        | EventType::EditPaneExited
+        | EventType::FailedToWriteConfigToDisk
+        | EventType::CommandPaneReRun
+        | EventType::CwdChanged
+        | EventType::CommandChanged
+        | EventType::AvailableLayoutInfo
+        | EventType::PluginConfigurationChanged
+        | EventType::HighlightClicked
+        | EventType::SoftKeyboardVisibilityChanged
+        | EventType::HintText
+        | EventType::ActivePaneScroll
+        | EventType::InputReceived => PermissionType::ReadApplicationState,
+        EventType::WebServerStatus => PermissionType::StartWebServer,
+        EventType::PluginDataChanged => PermissionType::PluginData,
         // Other plugins' jobs are session state. A plugin's own jobs' Started/Finished events
         // need nothing more than the permission it enqueued with.
-        Event::QueueChanged { .. } => PermissionType::ReadApplicationState,
-        Event::PaneRenderReport(..) => PermissionType::ReadPaneContents,
-        Event::UserAction(..) => PermissionType::InterceptInput,
-        _ => return (PermissionStatus::Granted, None),
+        EventType::QueueChanged => PermissionType::ReadApplicationState,
+        EventType::PaneRenderReport => PermissionType::ReadPaneContents,
+        EventType::UserAction => PermissionType::InterceptInput,
+        // Ungated on purpose. These are either addressed to this plugin alone (its own input,
+        // timers, lifecycle, worker messages and the replies to commands it was already
+        // permitted to issue) or carry nothing about the session a plugin could not learn by
+        // being loaded into it.
+        EventType::Key
+        | EventType::Mouse
+        | EventType::PastedText
+        | EventType::InterceptedKeyPress
+        | EventType::Timer
+        | EventType::Visible
+        | EventType::BeforeClose
+        | EventType::CustomMessage
+        | EventType::PermissionRequestResult
+        | EventType::InitialKeybinds
+        | EventType::HostTerminalThemeChanged
+        | EventType::ActionComplete
+        | EventType::RunCommandResult
+        | EventType::WebRequestResult
+        | EventType::WebRequestStreamChunk
+        | EventType::FailedToStartWebServer
+        | EventType::ListClients
+        | EventType::HostFolderChanged
+        | EventType::FailedToChangeHostFolder
+        | EventType::ConfigWasWrittenToDisk
+        | EventType::ContextMenuRequested
+        | EventType::ContextMenuItemSelected
+        | EventType::QueueJobStarted
+        | EventType::QueueJobFinished
+        // Paths and metadata under the host folder, not contents; see `ScanHostFolder` in
+        // `zellij_exports::command_permission` for why these stay open for now.
+        | EventType::FileSystemCreate
+        | EventType::FileSystemRead
+        | EventType::FileSystemUpdate
+        | EventType::FileSystemDelete => return (PermissionStatus::Granted, None),
     };
 
     if let Some(permissions) = plugin_env.permissions.lock().unwrap().as_ref() {

@@ -826,6 +826,7 @@ pub fn the_agent_exit_hook_opens_again_after_the_first_one_is_closed() {
         cwd: None,
         skip_cache: false,
         cli_client_id: client_id,
+        source_pane_id: None,
     });
     let _ = plugin_thread_sender.send(PluginInstruction::Unload(first));
     fire();

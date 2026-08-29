@@ -7,8 +7,9 @@ use super::layout::{
 };
 use crate::cli::CliAction;
 use crate::data::{
-    CommandOrPlugin, Direction, KeyWithModifier, LayoutInfo, NewPanePlacement, OriginatingPlugin,
-    PaneId, Resize, UnblockCondition, WarpPlacement, WarpedPane, WarpedTab,
+    AgentInfo, AgentSource, AgentState, CommandOrPlugin, Direction, KeyWithModifier, LayoutInfo,
+    NewPanePlacement, OriginatingPlugin, PaneId, Resize, UnblockCondition, WarpPlacement,
+    WarpedPane, WarpedTab,
 };
 use crate::data::{FloatingPaneCoordinates, InputMode};
 use crate::home::{find_default_config_dir, get_layout_dir};
@@ -381,6 +382,11 @@ pub enum Action {
         fg: Option<String>,
         bg: Option<String>,
     },
+    /// Set what agent runs in a pane and what it is doing; `None` clears the record
+    SetPaneAgent {
+        pane_id: PaneId,
+        agent: Option<AgentInfo>,
+    },
     /// Detach session and exit
     Detach,
     /// Switch the host-terminal theme mode to dark (uses configured `theme_dark`).
@@ -586,6 +592,12 @@ pub enum Action {
     RenameSession {
         name: String,
     },
+    /// Apply a KDL config fragment to every attached client's running configuration, and
+    /// optionally persist it. What `PluginCommand::Reconfigure` does for a plugin, for a shell.
+    Reconfigure {
+        config: String,
+        write_to_disk: bool,
+    },
     /// Show a self-dismissing notification in the configured screen corner
     Notify(String),
     CliPipe {
@@ -755,6 +767,39 @@ pub fn warp_placement(focused_tab: bool, floating: bool) -> WarpPlacement {
     } else {
         WarpPlacement::NewTab
     }
+}
+
+/// A KDL fragment as `Action::Reconfigure`, refused here - as a CLI error naming the problem -
+/// when it does not parse over the caller's own config, rather than on the server, where a
+/// bad fragment is a log line nobody reads.
+fn reconfigure_action(
+    fragment: String,
+    write_to_disk: bool,
+    config: Option<Config>,
+) -> Result<Action, String> {
+    let base = config.unwrap_or_default();
+    Config::from_kdl(&fragment, Some(base))
+        .map_err(|e| format!("the config fragment does not parse: {e}"))?;
+    Ok(Action::Reconfigure {
+        config: fragment,
+        write_to_disk,
+    })
+}
+
+/// `text` as a KDL string literal.
+fn kdl_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 impl Action {
@@ -2061,6 +2106,31 @@ impl Action {
                 }])
             },
             CliAction::RenameSession { name } => Ok(vec![Action::RenameSession { name }]),
+            CliAction::Reconfigure { kdl, file, write } => {
+                let fragment = match (kdl, file) {
+                    (Some(_), Some(_)) => {
+                        return Err("give the config as --kdl or --file, not both".to_string())
+                    },
+                    (Some(kdl), None) => kdl,
+                    (None, Some(file)) => std::fs::read_to_string(&file)
+                        .map_err(|e| format!("failed to read {}: {e}", file.display()))?,
+                    (None, None) => {
+                        use std::io::Read;
+                        let mut kdl = String::new();
+                        std::io::stdin().read_to_string(&mut kdl).map_err(|e| {
+                            format!("failed to read the config fragment from stdin: {e}")
+                        })?;
+                        kdl
+                    },
+                };
+                Ok(vec![reconfigure_action(fragment, write, config)?])
+            },
+            CliAction::SetHook { point, url, write } => {
+                use std::str::FromStr;
+                let point = crate::input::hooks::HookPoint::from_str(&point)?;
+                let fragment = format!("hooks {{\n    {} {}\n}}\n", point, kdl_string(&url));
+                Ok(vec![reconfigure_action(fragment, write, config)?])
+            },
             CliAction::Notify { text } => Ok(vec![Action::Notify(text)]),
             CliAction::Pipe {
                 name,
@@ -2231,6 +2301,68 @@ impl Action {
                         ))
                     }
                 }
+            },
+            CliAction::AgentReport {
+                pane_id,
+                kind,
+                state,
+                detail,
+                cwd,
+                hook_json,
+                clear,
+            } => {
+                let pane_id_str = match pane_id {
+                    Some(id) => id,
+                    None => std::env::var("ZELLIJ_PANE_ID").map_err(|_| {
+                        "No --pane-id provided and ZELLIJ_PANE_ID is not set".to_string()
+                    })?,
+                };
+                let pane_id = PaneId::from_str(&pane_id_str).map_err(|_| {
+                    format!(
+                        "Malformed pane id: {}, expecting either a bare integer (eg. 1), a \
+                         terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)",
+                        pane_id_str
+                    )
+                })?;
+                let kind = kind
+                    .map(|kind| kind.trim().to_lowercase())
+                    .filter(|kind| !kind.is_empty())
+                    .unwrap_or_else(|| "claude".to_owned());
+                let agent = if clear {
+                    None
+                } else if hook_json {
+                    use std::io::Read;
+                    let mut json = String::new();
+                    std::io::stdin()
+                        .read_to_string(&mut json)
+                        .map_err(|e| format!("failed to read the hook event from stdin: {e}"))?;
+                    let event: crate::agent::HookEvent =
+                        serde_json::from_str(&json).map_err(|e| {
+                            format!("the hook event is not the JSON Claude Code sends: {e}")
+                        })?;
+                    match crate::agent::hook_outcome(&kind, &event) {
+                        crate::agent::HookOutcome::Ended => None,
+                        crate::agent::HookOutcome::Reported(agent) => Some(agent),
+                        // Nothing to report is nothing to send: the record stays as it was.
+                        crate::agent::HookOutcome::Nothing => return Ok(vec![]),
+                    }
+                } else {
+                    let state = state.ok_or_else(|| {
+                        "one of --state, --hook-json or --clear is required".to_string()
+                    })?;
+                    let state = AgentState::parse_lenient(&state).ok_or_else(|| {
+                        format!("Unknown agent state '{state}': busy, waiting, idle or exited")
+                    })?;
+                    Some(AgentInfo {
+                        kind,
+                        state,
+                        source: AgentSource::Reported,
+                        detail: detail.filter(|detail| !detail.trim().is_empty()),
+                        cwd: cwd.map(|cwd| cwd.display().to_string()),
+                        session_id: None,
+                    })
+                };
+                Ok(vec![Action::SetPaneAgent { pane_id, agent }])
             },
             CliAction::SetPaneColor {
                 pane_id,
@@ -3681,6 +3813,184 @@ mod tests {
             },
             _ => panic!("Expected NewStackedPane action"),
         }
+    }
+
+    /// A fragment is checked against the caller's config before it leaves the machine, so a
+    /// typo is an error naming the problem rather than a server log line.
+    #[test]
+    fn reconfigure_takes_a_fragment_and_refuses_one_that_does_not_parse() {
+        let reconfigure = |kdl: &str, write: bool| {
+            Action::actions_from_cli(
+                CliAction::Reconfigure {
+                    kdl: Some(kdl.to_owned()),
+                    file: None,
+                    write,
+                },
+                Box::new(|| PathBuf::from("/tmp")),
+                None,
+            )
+        };
+        let fragment = "keybinds {\n    normal {\n        bind \"Ctrl y\" { NewPane; }\n    }\n}\n";
+        assert_eq!(
+            reconfigure(fragment, true).unwrap(),
+            vec![Action::Reconfigure {
+                config: fragment.to_owned(),
+                write_to_disk: true,
+            }]
+        );
+        let refused = reconfigure("options { nonsense", false).unwrap_err();
+        assert!(refused.contains("does not parse"), "{refused}");
+    }
+
+    /// `set-hook` is the one-block fragment spelled for you; an empty url unbinds, and a point
+    /// nobody has heard of is refused with the ones that exist.
+    #[test]
+    fn set_hook_is_a_hooks_fragment() {
+        let set_hook = |point: &str, url: &str| {
+            Action::actions_from_cli(
+                CliAction::SetHook {
+                    point: point.to_owned(),
+                    url: url.to_owned(),
+                    write: false,
+                },
+                Box::new(|| PathBuf::from("/tmp")),
+                None,
+            )
+        };
+        assert_eq!(
+            set_hook("agent_exit", "file:my-hook.lua").unwrap(),
+            vec![Action::Reconfigure {
+                config: "hooks {\n    agent_exit \"file:my-hook.lua\"\n}\n".to_owned(),
+                write_to_disk: false,
+            }]
+        );
+        assert_eq!(
+            set_hook("context-menu", "").unwrap(),
+            vec![Action::Reconfigure {
+                config: "hooks {\n    context_menu \"\"\n}\n".to_owned(),
+                write_to_disk: false,
+            }]
+        );
+        assert!(set_hook("agent_exit", "file:quote\"d.lua").unwrap()[0]
+            .to_string()
+            .contains("Reconfigure"));
+        let refused = set_hook("on_coffee", "file:x.lua").unwrap_err();
+        assert!(refused.contains("agent_exit"), "{refused}");
+    }
+
+    /// `agent-report` is what an agent's hooks call: a state names the record, `--clear` ends
+    /// it, and the pane is the one the caller is in unless it says otherwise.
+    #[test]
+    fn agent_report_sets_or_clears_the_panes_agent_record() {
+        let report = |state: Option<&str>, clear: bool| {
+            Action::actions_from_cli(
+                CliAction::AgentReport {
+                    pane_id: Some("terminal_4".to_owned()),
+                    kind: Some(" Codex ".to_owned()),
+                    state: state.map(str::to_owned),
+                    detail: Some("rebasing".to_owned()),
+                    cwd: Some(PathBuf::from("/work/.worktrees/topic")),
+                    hook_json: false,
+                    clear,
+                },
+                Box::new(|| PathBuf::from("/tmp")),
+                None,
+            )
+        };
+        assert_eq!(
+            report(Some("waiting"), false).unwrap(),
+            vec![Action::SetPaneAgent {
+                pane_id: PaneId::Terminal(4),
+                agent: Some(AgentInfo {
+                    kind: "codex".to_owned(),
+                    state: AgentState::Waiting,
+                    source: AgentSource::Reported,
+                    detail: Some("rebasing".to_owned()),
+                    cwd: Some("/work/.worktrees/topic".to_owned()),
+                    session_id: None,
+                }),
+            }]
+        );
+        assert_eq!(
+            report(None, true).unwrap(),
+            vec![Action::SetPaneAgent {
+                pane_id: PaneId::Terminal(4),
+                agent: None,
+            }]
+        );
+        assert!(
+            report(None, false).is_err(),
+            "a report has to say something"
+        );
+        assert!(report(Some("asleep"), false).is_err());
+    }
+
+    /// Each `--block-until-exit*` flag names the condition that ends the wait, and a condition
+    /// handed in directly (`unblock_condition`, the escape hatch `zellij run` itself uses) wins
+    /// over the flags.
+    #[test]
+    fn blocking_flags_map_to_their_unblock_condition() {
+        let build = |success: bool, failure: bool, any: bool, direct: Option<UnblockCondition>| {
+            let cli_action = CliAction::NewPane {
+                remote_host: None,
+                direction: None,
+                command: vec!["ls".into()],
+                plugin: None,
+                cwd: None,
+                floating: false,
+                in_place: false,
+                close_replaced_pane: false,
+                pane_id: None,
+                name: None,
+                close_on_exit: false,
+                start_suspended: false,
+                configuration: None,
+                skip_plugin_cache: false,
+                x: None,
+                y: None,
+                width: None,
+                height: None,
+                pinned: None,
+                overlay: None,
+                modal: None,
+                stacked: false,
+                blocking: false,
+                block_until_exit_success: success,
+                block_until_exit_failure: failure,
+                block_until_exit: any,
+                unblock_condition: direct,
+                near_current_pane: false,
+                no_focus: false,
+                borderless: None,
+                tab_id: None,
+            };
+            let actions =
+                Action::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None)
+                    .unwrap();
+            match actions.as_slice() {
+                [Action::NewBlockingPane {
+                    unblock_condition, ..
+                }] => *unblock_condition,
+                other => panic!("expected one NewBlockingPane, got {other:?}"),
+            }
+        };
+        assert_eq!(
+            build(true, false, false, None),
+            Some(UnblockCondition::OnExitSuccess)
+        );
+        assert_eq!(
+            build(false, true, false, None),
+            Some(UnblockCondition::OnExitFailure)
+        );
+        assert_eq!(
+            build(false, false, true, None),
+            Some(UnblockCondition::OnAnyExit)
+        );
+        assert_eq!(
+            build(true, false, false, Some(UnblockCondition::OnAnyExit)),
+            Some(UnblockCondition::OnAnyExit),
+            "a condition given directly wins over the flags"
+        );
     }
 
     #[test]

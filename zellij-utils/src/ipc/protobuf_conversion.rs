@@ -7,7 +7,7 @@ use crate::{
         AttachWatcherClientMsg, BackgroundColorMsg, CliPipeOutputMsg, ClientExitedMsg,
         ClientToServerMsg as ProtoClientToServerMsg, ColorRegistersMsg, ConfigFileUpdatedMsg,
         ConnStatusMsg, ConnectedMsg, DesktopNotificationResponseMsg, DetachSessionMsg,
-        EmitNestedSessionFrameMsg, ExitMsg, ExitReason as ProtoExitReason,
+        EmitNestedSessionFrameMsg, EventUpdateMsg, ExitMsg, ExitReason as ProtoExitReason,
         FailedToStartWebServerMsg, FirstClientConnectedMsg, ForegroundColorMsg,
         ForwardQueryToHostMsg, ForwardedReplyFromHostMsg, HostTerminalFocusChangedMsg,
         HostTerminalThemeChangedMsg,
@@ -19,10 +19,11 @@ use crate::{
         PaneRenderUpdateMsg, QueryTerminalSizeMsg, RenamedSessionMsg, RenderMsg,
         RequestSessionListMsg, ServerToClientMsg as ProtoServerToClientMsg,
         SetMobileRenderPreferencesMsg, SetSoftKeyboardMsg, SixelSupportMsg,
-        SoftKeyboardVisibilityChangedMsg, StartWebServerMsg, SubscribeToPaneRendersMsg,
-        SubscribedPaneClosedMsg, SwitchSessionMsg, TabMetadata as ProtoTabMetadata,
-        TerminalPixelDimensionsMsg, TerminalResizeMsg, UnblockCliPipeInputMsg,
-        UnblockInputThreadMsg, WarpPlacement as ProtobufWarpPlacement, WebServerStartedMsg,
+        SoftKeyboardVisibilityChangedMsg, StartWebServerMsg, SubscribeToEventsMsg,
+        SubscribeToPaneRendersMsg, SubscribedPaneClosedMsg, SwitchSessionMsg,
+        TabMetadata as ProtoTabMetadata, TerminalPixelDimensionsMsg, TerminalResizeMsg,
+        UnblockCliPipeInputMsg, UnblockInputThreadMsg, WarpPlacement as ProtobufWarpPlacement,
+        WebServerStartedMsg,
     },
     data::{HostTerminalThemeMode, InputMode, PaneId},
     errors::prelude::*,
@@ -142,6 +143,11 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
                 scrollback: scrollback.map(|s| s as u32),
                 ansi,
             }),
+            ClientToServerMsg::SubscribeToEvents { event_types } => {
+                client_to_server_msg::Message::SubscribeToEvents(SubscribeToEventsMsg {
+                    event_types,
+                })
+            },
             ClientToServerMsg::DesktopNotificationResponse { raw_bytes } => {
                 client_to_server_msg::Message::DesktopNotificationResponse(
                     DesktopNotificationResponseMsg { raw_bytes },
@@ -315,6 +321,11 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                     ansi: msg.ansi,
                 })
             },
+            Some(client_to_server_msg::Message::SubscribeToEvents(msg)) => {
+                Ok(ClientToServerMsg::SubscribeToEvents {
+                    event_types: msg.event_types,
+                })
+            },
             Some(client_to_server_msg::Message::DesktopNotificationResponse(msg)) => {
                 Ok(ClientToServerMsg::DesktopNotificationResponse {
                     raw_bytes: msg.raw_bytes,
@@ -446,6 +457,13 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
                     pane_id: Some(pane_id.into()),
                 })
             },
+            ServerToClientMsg::EventUpdate {
+                event_type,
+                event_json,
+            } => server_to_client_msg::Message::EventUpdate(EventUpdateMsg {
+                event_type,
+                event_json,
+            }),
             ServerToClientMsg::ForwardQueryToHost {
                 token,
                 query_bytes,
@@ -690,6 +708,12 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
                     .ok_or_else(|| anyhow!("Missing pane_id"))?
                     .try_into()?;
                 Ok(ServerToClientMsg::SubscribedPaneClosed { pane_id })
+            },
+            Some(server_to_client_msg::Message::EventUpdate(msg)) => {
+                Ok(ServerToClientMsg::EventUpdate {
+                    event_type: msg.event_type,
+                    event_json: msg.event_json,
+                })
             },
             Some(server_to_client_msg::Message::ForwardQueryToHost(msg)) => {
                 Ok(ServerToClientMsg::ForwardQueryToHost {
@@ -2254,6 +2278,23 @@ impl TryFrom<crate::input::actions::Action>
             crate::input::actions::Action::SaveSession => {
                 ActionType::SaveSession(SaveSessionAction {})
             },
+            crate::input::actions::Action::Reconfigure {
+                config,
+                write_to_disk,
+            } => ActionType::Reconfigure(
+                crate::client_server_contract::client_server_contract::ReconfigureAction {
+                    config,
+                    write_to_disk,
+                },
+            ),
+            crate::input::actions::Action::SetPaneAgent { pane_id, agent } => {
+                ActionType::SetPaneAgent(
+                    crate::client_server_contract::client_server_contract::SetPaneAgentAction {
+                        pane_id: Some(pane_id.into()),
+                        agent: agent.map(agent_info_to_proto),
+                    },
+                )
+            },
             crate::input::actions::Action::ListTabs {
                 show_state,
                 show_dimensions,
@@ -3237,6 +3278,17 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                     borderless: set_borderless_action.borderless,
                 })
             },
+            ActionType::Reconfigure(action) => Ok(crate::input::actions::Action::Reconfigure {
+                config: action.config,
+                write_to_disk: action.write_to_disk,
+            }),
+            ActionType::SetPaneAgent(action) => Ok(crate::input::actions::Action::SetPaneAgent {
+                pane_id: action
+                    .pane_id
+                    .ok_or_else(|| anyhow!("SetPaneAgent missing pane_id"))?
+                    .try_into()?,
+                agent: action.agent.map(agent_info_from_proto).transpose()?,
+            }),
             ActionType::TogglePaneInGroup(_) => {
                 Ok(crate::input::actions::Action::TogglePaneInGroup)
             },
@@ -3712,7 +3764,12 @@ impl TryFrom<ProtoExitReason> for ExitReason {
             ProtoExitReason::WebClientsForbidden => Ok(ExitReason::WebClientsForbidden),
             ProtoExitReason::KickedByHost => Ok(ExitReason::KickedByHost),
             ProtoExitReason::Error => Ok(ExitReason::Error("Protobuf error".to_string())),
-            ProtoExitReason::CustomExitStatus => Ok(ExitReason::CustomExitStatus(0)),
+            // The status rides in `ExitMsg.payload`, which a bare reason does not carry. The
+            // message decoder handles this arm itself; answering `0` here would turn every
+            // failure into a success for whoever reached for the enum conversion instead.
+            ProtoExitReason::CustomExitStatus => Err(anyhow!(
+                "a custom exit status needs its payload; decode the ExitMsg, not the reason"
+            )),
             ProtoExitReason::Unspecified => Err(anyhow!("Unspecified exit reason")),
         }
     }
@@ -3801,6 +3858,62 @@ fn overlay_kind_from_proto_i32(kind: i32) -> crate::data::OverlayKind {
         Ok(ProtoOverlayKind::Modal) => crate::data::OverlayKind::Modal,
         _ => crate::data::OverlayKind::Dismissible,
     }
+}
+
+fn agent_info_to_proto(
+    agent: crate::data::AgentInfo,
+) -> crate::client_server_contract::client_server_contract::AgentInfo {
+    use crate::client_server_contract::client_server_contract::{
+        AgentInfo as ProtoAgentInfo, AgentSource as ProtoAgentSource, AgentState as ProtoAgentState,
+    };
+    use crate::data::{AgentSource, AgentState};
+    let state = match agent.state {
+        AgentState::Busy => ProtoAgentState::Busy,
+        AgentState::Waiting => ProtoAgentState::Waiting,
+        AgentState::Idle => ProtoAgentState::Idle,
+        AgentState::Exited => ProtoAgentState::Exited,
+    };
+    let source = match agent.source {
+        AgentSource::Spawned => ProtoAgentSource::Spawned,
+        AgentSource::Reported => ProtoAgentSource::Reported,
+    };
+    ProtoAgentInfo {
+        kind: agent.kind,
+        state: state as i32,
+        source: source as i32,
+        detail: agent.detail,
+        cwd: agent.cwd,
+        session_id: agent.session_id,
+    }
+}
+
+fn agent_info_from_proto(
+    proto: crate::client_server_contract::client_server_contract::AgentInfo,
+) -> Result<crate::data::AgentInfo> {
+    use crate::client_server_contract::client_server_contract::{
+        AgentSource as ProtoAgentSource, AgentState as ProtoAgentState,
+    };
+    use crate::data::{AgentSource, AgentState};
+    let state = match ProtoAgentState::try_from(proto.state) {
+        Ok(ProtoAgentState::Busy) => AgentState::Busy,
+        Ok(ProtoAgentState::Waiting) => AgentState::Waiting,
+        Ok(ProtoAgentState::Idle) => AgentState::Idle,
+        Ok(ProtoAgentState::Exited) => AgentState::Exited,
+        _ => return Err(anyhow!("Unspecified agent state")),
+    };
+    let source = match ProtoAgentSource::try_from(proto.source) {
+        Ok(ProtoAgentSource::Spawned) => AgentSource::Spawned,
+        Ok(ProtoAgentSource::Reported) => AgentSource::Reported,
+        _ => return Err(anyhow!("Unspecified agent source")),
+    };
+    Ok(crate::data::AgentInfo {
+        kind: proto.kind,
+        state,
+        source,
+        detail: proto.detail,
+        cwd: proto.cwd,
+        session_id: proto.session_id,
+    })
 }
 
 fn direction_to_proto_i32(direction: crate::data::Direction) -> i32 {

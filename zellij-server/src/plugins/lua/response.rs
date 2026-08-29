@@ -43,18 +43,19 @@ use zellij_utils::plugin_api::plugin_command::{
     parse_layout_response, rename_layout_response, save_layout_response, save_session_response,
     show_floating_panes_response, CreateTokenResponse, ListTokensResponse,
     ProtobufBreakPanesToNewTabResponse, ProtobufBreakPanesToTabWithIdResponse,
-    ProtobufBreakPanesToTabWithIndexResponse, ProtobufCurrentSessionLastSavedTimeResponse,
-    ProtobufDataApplyResponse, ProtobufDataCountResponse, ProtobufDataDefineResponse,
-    ProtobufDataFetchResponse, ProtobufDataUnwatchResponse, ProtobufDataWatchResponse,
-    ProtobufDeleteAllDeadSessionsResponse, ProtobufDeleteDeadSessionResponse,
-    ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse, ProtobufDumpSessionLayoutResponse,
-    ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse, ProtobufFocusOrCreateTabResponse,
-    ProtobufFsListResponse, ProtobufFsMetadataResponse, ProtobufFsMutateResponse,
-    ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse, ProtobufGetFocusedPaneInfoResponse,
-    ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneGitProbeResponse,
-    ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
-    ProtobufGetPluginAliasConfigurationResponse, ProtobufGetSessionEnvironmentVariablesResponse,
-    ProtobufGetSessionListResponse, ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
+    ProtobufBreakPanesToTabWithIndexResponse, ProtobufCheckLuaPluginResponse,
+    ProtobufCurrentSessionLastSavedTimeResponse, ProtobufDataApplyResponse,
+    ProtobufDataCountResponse, ProtobufDataDefineResponse, ProtobufDataFetchResponse,
+    ProtobufDataUnwatchResponse, ProtobufDataWatchResponse, ProtobufDeleteAllDeadSessionsResponse,
+    ProtobufDeleteDeadSessionResponse, ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse,
+    ProtobufDumpSessionLayoutResponse, ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse,
+    ProtobufFocusOrCreateTabResponse, ProtobufFsListResponse, ProtobufFsMetadataResponse,
+    ProtobufFsMutateResponse, ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse,
+    ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse,
+    ProtobufGetPaneGitProbeResponse, ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
+    ProtobufGetPaneRunningCommandResponse, ProtobufGetPluginAliasConfigurationResponse,
+    ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
+    ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
     ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
     ProtobufListNotificationsResponse, ProtobufListOrphanedPanesResponse,
     ProtobufListRecordingsResponse, ProtobufNewTabResponse, ProtobufNewTabsResponse,
@@ -230,6 +231,11 @@ pub fn response_to_lua(lua: &Lua, command: CommandType, bytes: &[u8]) -> Option<
                     None => Err(anyhow!("zellij answered with nothing")),
                 }
             })
+        },
+        // `nil` for a plugin that compiles, the error text otherwise: a check is a question,
+        // so a failing one is an answer rather than a raised error.
+        CommandType::CheckLuaPlugin => {
+            decode(bytes).and_then(|r: ProtobufCheckLuaPluginResponse| value(lua, r.error))
         },
         CommandType::ParseLayout => {
             decode(bytes).and_then(|r: ProtobufParseLayoutResponse| match r.result {

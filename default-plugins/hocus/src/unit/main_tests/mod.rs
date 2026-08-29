@@ -256,6 +256,7 @@ fn worktree_snapshot(seq: u64, branch: &str) -> PipeMessage {
         ),
         args: BTreeMap::from([("seq".to_owned(), seq.to_string())]),
         is_private: true,
+        pane_id: None,
     }
 }
 
@@ -292,6 +293,7 @@ fn agent_in(pane_id: u32, cwd: &str, tab_id: usize) -> agents::AgentPane {
         status: agents::AgentStatus::Running,
         tab: Some((tab_id, format!("tab {tab_id}"))),
         detected: None,
+        agent: None,
     }
 }
 
@@ -564,6 +566,7 @@ fn agent_snapshot_with(seq: u64, panes: Vec<agents::AgentPane>) -> PipeMessage {
         ),
         args: BTreeMap::from([("seq".to_owned(), seq.to_string())]),
         is_private: true,
+        pane_id: None,
     }
 }
 
@@ -602,6 +605,7 @@ fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
         ),
         args: BTreeMap::from([("seq".to_owned(), seq.to_string())]),
         is_private: true,
+        pane_id: None,
     }
 }
 
@@ -622,6 +626,7 @@ fn ask(text: &str) -> PipeMessage {
         ),
         args: BTreeMap::new(),
         is_private: true,
+        pane_id: None,
     }
 }
 

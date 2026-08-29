@@ -79,6 +79,10 @@ pub struct AgentPane {
     /// no two readers can disagree about what is an agent.
     #[serde(default)]
     pub detected: Option<String>,
+    /// The session's own record of the agent here, off the pane manifest. Written by the
+    /// spawn path, a plugin, or the agent's hooks; the one answer every reader shares.
+    #[serde(default)]
+    pub agent: Option<AgentInfo>,
 }
 
 /// Every agent we know.
@@ -227,6 +231,11 @@ pub fn classify<'a>(
     if let Some(kind) = manual.get(&pane.pane_id) {
         return Some((kind.as_str(), "manual"));
     }
+    // The session's record first: a pane spawned as an agent, or one whose agent has reported,
+    // is an agent whatever its foreground command says right now.
+    if let Some(agent) = pane.agent.as_ref() {
+        return Some((agent.kind.as_str(), "auto"));
+    }
     detect_kind(&pane.title, pane.command.as_deref())
         .map(|kind| (kind, "auto"))
         .or_else(|| pane.detected.as_deref().map(|kind| (kind, "auto")))
@@ -364,35 +373,13 @@ pub fn activity_hash(activity: &Activity, pane_id: u32) -> Option<u64> {
 // What an agent says about itself
 // ---------------------------------------------------------------------------
 
-/// The event name that ends a session, and so ends a feed.
-pub const HOOK_SESSION_END: &str = "SessionEnd";
-
-/// The `Notification` kinds that mean the agent is blocked on the user.
-///
-/// Most notifications are not about being waited on — `auth_success` and the
-/// `quota_auto_resume_*` family say nothing about the turn, and `idle_prompt`
-/// fires a minute *after* a finished turn, which is idleness rather than a
-/// question. Naming the ones that count, rather than excluding the ones that do
-/// not, means a notification kind added in a later Claude Code cannot silently
-/// start drawing a `!`.
-const WAITING_NOTIFICATIONS: &[&str] = &[
-    "permission_prompt",
-    "elicitation_dialog",
-    "elicitation_url_dialog",
-    "agent_needs_input",
-    "worker_permission_prompt",
-];
-
-/// The longest tool hint a status cell will carry. A sidebar row has no room for
-/// an argument, and `tool_input` is free-form text of arbitrary size.
-const HOOK_DETAIL_CHARS: usize = 24;
+pub use zellij_tile::agent::{clean_hint, hook_detail, HOOK_DETAIL_CHARS, HOOK_SESSION_END};
+use zellij_tile::prelude::{AgentInfo, AgentSource, AgentState};
 
 /// What a Claude Code pane says it is doing, in the three states a row can draw.
 ///
-/// Deliberately coarser than the hook stream that feeds it: `PreToolUse` and
-/// `UserPromptSubmit` are both simply work, and the distinction between them
-/// lives in [`HookFeed::detail`] rather than in a variant nothing would render
-/// differently.
+/// The session's `AgentState` minus `Exited`, which a row draws from the pane's own status
+/// rather than from a feed: the feed is what the agent *says*, and an exited agent says nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HookPhase {
     /// The agent is working.
@@ -404,6 +391,18 @@ pub enum HookPhase {
     Idle,
 }
 
+impl HookPhase {
+    /// The phase a session-side state draws as, or `None` for an exited agent.
+    pub fn from_state(state: AgentState) -> Option<HookPhase> {
+        match state {
+            AgentState::Busy => Some(HookPhase::Busy),
+            AgentState::Waiting => Some(HookPhase::Waiting),
+            AgentState::Idle => Some(HookPhase::Idle),
+            AgentState::Exited => None,
+        }
+    }
+}
+
 /// What one pane's own hooks have last reported.
 ///
 /// A pane with one of these is not guessed at. The screen-diff heuristic beside it
@@ -411,14 +410,9 @@ pub enum HookPhase {
 /// edge — is inference from a picture; this is the agent saying so. Where the two
 /// disagree, this wins.
 ///
-/// **Nothing here expires on a clock.** That was the tempting design and it is wrong
-/// twice over: a permission prompt can sit unanswered all day without the pane's state
-/// having changed, and a ten-minute `cargo build` under one `PreToolUse` is a pane that
-/// is genuinely working while saying nothing. A feed ends when the session does
-/// (`SessionEnd`), when the pane closes, or when the pane stops being an agent at all —
-/// all three of which are observed rather than assumed. The cost is that a single
-/// dropped event leaves a pane mislabelled until the next one, which is a fair trade
-/// against a timer that confidently lies.
+/// The session carries the record itself (`PaneInfo::agent`), whichever road a report took;
+/// a feed is that record read back off the manifest, so nothing here expires on a clock and
+/// nothing here can disagree with what every other reader of the manifest sees.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HookFeed {
     pub phase: HookPhase,
@@ -435,6 +429,23 @@ pub struct HookFeed {
     pub cwd: Option<String>,
 }
 
+impl HookFeed {
+    /// The feed a pane's record reads as: one for a record the agent reported itself and is
+    /// not exited, none for a spawned-but-silent agent, whose state is the heuristic's to
+    /// judge, and none for an exited one.
+    pub fn from_agent(agent: &AgentInfo) -> Option<HookFeed> {
+        if agent.source != AgentSource::Reported {
+            return None;
+        }
+        Some(HookFeed {
+            phase: HookPhase::from_state(agent.state)?,
+            detail: agent.detail.clone(),
+            session_id: agent.session_id.clone().unwrap_or_default(),
+            cwd: agent.cwd.clone(),
+        })
+    }
+}
+
 /// Pane id → what that pane's own hooks last said.
 pub type HookFeeds = BTreeMap<u32, HookFeed>;
 
@@ -445,78 +456,7 @@ pub type HookFeeds = BTreeMap<u32, HookFeed>;
 /// `SessionEnd` is `None` here too, and deliberately: it does not move a feed to a
 /// state, it ends one. Callers check [`HOOK_SESSION_END`] first.
 pub fn hook_phase(event: &crate::wire::HookEvent) -> Option<HookPhase> {
-    match event.hook_event_name.as_str() {
-        "SessionStart"
-            if matches!(event.source.as_deref(), Some("startup" | "resume" | "fork")) =>
-        {
-            Some(HookPhase::Idle)
-        },
-        "Stop" => Some(HookPhase::Idle),
-        "UserPromptSubmit" | "PreToolUse" | "PostToolUse" => Some(HookPhase::Busy),
-        "PermissionRequest" => Some(HookPhase::Waiting),
-        "Notification" => event
-            .notification_type
-            .as_deref()
-            .filter(|kind| WAITING_NOTIFICATIONS.contains(kind))
-            .map(|_| HookPhase::Waiting),
-        _ => None,
-    }
-}
-
-/// The few words a status cell shows for the tool a `PreToolUse` names.
-///
-/// The tool's own name, and one argument's worth of hint where the tool has an
-/// obvious one: which file, or which program. Everything else about `tool_input` is
-/// ignored rather than summarised — it is free-form text of arbitrary size that the
-/// agent's *input* can steer, so what little is taken is cut to
-/// [`HOOK_DETAIL_CHARS`] and stripped of anything that is not printable.
-///
-/// `None` for any event that is not a tool starting, which is what clears the hint
-/// when the tool finishes.
-pub fn hook_detail(event: &crate::wire::HookEvent) -> Option<String> {
-    if event.hook_event_name != "PreToolUse" {
-        return None;
-    }
-    let tool = clean_hint(event.tool_name.as_deref()?)?;
-    let input = event.tool_input.as_ref();
-    let hint = match tool.as_str() {
-        // The program, not the command line: a row has room for `git`, not for the
-        // rest of it.
-        "Bash" => input
-            .and_then(|input| input.get("command")?.as_str())
-            .and_then(|command| command.split_whitespace().next()),
-        "Read" | "Edit" | "Write" | "NotebookEdit" => input
-            .and_then(|input| input.get("file_path")?.as_str())
-            .map(|path| {
-                Path::new(path)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or(path)
-            }),
-        _ => None,
-    };
-    match hint.and_then(clean_hint) {
-        Some(hint) => Some(format!("{tool} {hint}")),
-        None => Some(tool),
-    }
-}
-
-/// One word of agent-supplied text, made safe to put in a row: printable characters
-/// only, no whitespace of any kind, and cut to a length a sidebar has.
-fn clean_hint(text: &str) -> Option<String> {
-    let mut chars = text
-        .chars()
-        .filter(|c| !c.is_control() && !c.is_whitespace());
-    let mut hint: String = chars.by_ref().take(HOOK_DETAIL_CHARS).collect();
-    if hint.is_empty() {
-        return None;
-    }
-    // A cut word is marked, so a truncated file name does not read as the whole one.
-    if chars.next().is_some() {
-        hint.pop();
-        hint.push('…');
-    }
-    Some(hint)
+    zellij_tile::agent::hook_state(event).and_then(HookPhase::from_state)
 }
 
 /// The status column of one agent row.
@@ -1342,6 +1282,7 @@ mod tests {
             status: AgentStatus::Running,
             tab: None,
             detected: None,
+            agent: None,
         }
     }
 

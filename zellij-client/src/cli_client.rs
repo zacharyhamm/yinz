@@ -9,8 +9,8 @@ use std::{fs, path::PathBuf};
 use crate::os_input_output::CliClientOs;
 use uuid::Uuid;
 use zellij_utils::{
-    cli::{SubscribeCli, SubscribeFormat},
-    data::PaneId,
+    cli::{EventsCli, SubscribeCli, SubscribeFormat},
+    data::{EventType, PaneId},
     errors::prelude::*,
     input::actions::Action,
     ipc::{ClientToServerMsg, ExitReason, ServerToClientMsg},
@@ -203,6 +203,9 @@ fn pipe_client(
                         eprintln!("{}", e);
                         process::exit(2);
                     },
+                    ExitReason::CustomExitStatus(exit_status) => {
+                        process::exit(exit_status);
+                    },
                     _ => {
                         process::exit(0);
                     },
@@ -218,13 +221,11 @@ fn individual_messages_client(
     action: Action,
     pane_id: Option<u32>,
 ) -> Option<i32> {
-    let is_blocking = matches!(
-        &action,
-        Action::NewBlockingPane {
-            unblock_condition: Some(_),
-            ..
-        }
-    );
+    // Every blocking pane waits for its own `Exit`, condition or no condition. The server
+    // broadcasts `UnblockInputThread` to every client whenever any pane closes anywhere in the
+    // session, so a plain `--blocking` that returned on it would report success the moment an
+    // unrelated pane went away.
+    let is_blocking = matches!(&action, Action::NewBlockingPane { .. });
     let msg = ClientToServerMsg::Action {
         action,
         terminal_id: pane_id,
@@ -239,7 +240,11 @@ fn individual_messages_client(
             },
             Some((ServerToClientMsg::Log { lines: log_lines }, _)) => {
                 log_lines.iter().for_each(|line| println!("{line}"));
-                return None;
+                // A blocking pane's ids arrive ahead of its exit status; the status is the
+                // answer, so keep reading for it.
+                if !is_blocking {
+                    return None;
+                }
             },
             Some((ServerToClientMsg::LogError { lines: log_lines }, _)) => {
                 log_lines.iter().for_each(|line| eprintln!("{line}"));
@@ -369,5 +374,83 @@ pub fn start_subscribe_client(
         }
     }
 
+    os_input.send_to_server(ClientToServerMsg::ClientExited);
+}
+
+/// `zellij events`: every state event the session reports to plugins, one JSON object per line
+/// on stdout, until the session ends or stdout goes away.
+pub fn start_events_client(
+    os_input: Box<dyn CliClientOs>,
+    session_name: &str,
+    events_cli: EventsCli,
+) {
+    let zellij_ipc_pipe: PathBuf = {
+        let mut sock_dir = zellij_utils::consts::ZELLIJ_SOCK_DIR.clone();
+        fs::create_dir_all(&sock_dir).unwrap();
+        zellij_utils::shared::set_permissions(&sock_dir, 0o700).unwrap();
+        sock_dir.push(session_name);
+        sock_dir
+    };
+    crate::check_ipc_pipe_length(&zellij_ipc_pipe);
+
+    // Refused here, before connecting, so a typo costs nothing but the message.
+    let event_types: Vec<String> = events_cli
+        .event_type
+        .iter()
+        .map(|name| match EventType::from_cli_name(name) {
+            Some(event_type) => event_type.to_string(),
+            None => {
+                eprintln!(
+                    "Unknown or unstreamable event type '{}'. Streamable events: {}",
+                    name,
+                    EventType::cli_streamable_names().join(", ")
+                );
+                process::exit(2);
+            },
+        })
+        .collect();
+
+    if let Err(e) = os_input.connect_to_server(&zellij_ipc_pipe) {
+        eprintln!("{e}");
+        process::exit(1);
+    }
+    os_input.send_to_server(ClientToServerMsg::SubscribeToEvents { event_types });
+
+    // Locked per line rather than for the loop: a lock held while blocking on the server would
+    // stop anything else in the process printing, which is one client too many in a test.
+    let mut stdout = io::stdout();
+    loop {
+        match os_input.recv_from_server().msg() {
+            Some((
+                ServerToClientMsg::EventUpdate {
+                    event_type,
+                    event_json,
+                },
+                _,
+            )) => {
+                // The payload is already JSON, so the line is assembled around it rather than
+                // parsed and re-serialized. A write that fails is a reader that went away
+                // (`zellij events | head`), which is how this stream ends.
+                let event_type = serde_json::to_string(&event_type).unwrap_or_default();
+                if writeln!(
+                    stdout,
+                    "{{\"event\":{event_type},\"payload\":{event_json}}}"
+                )
+                .and_then(|_| stdout.flush())
+                .is_err()
+                {
+                    break;
+                }
+            },
+            Some((ServerToClientMsg::LogError { lines }, _)) => {
+                for line in lines {
+                    eprintln!("{}", line);
+                }
+                process::exit(2);
+            },
+            Some((ServerToClientMsg::Exit { .. }, _)) | None => break,
+            _ => {},
+        }
+    }
     os_input.send_to_server(ClientToServerMsg::ClientExited);
 }

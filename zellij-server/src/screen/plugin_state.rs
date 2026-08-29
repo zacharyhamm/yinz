@@ -3,7 +3,7 @@ use zellij_utils::errors::prelude::*;
 use super::Screen;
 use crate::background_jobs::BackgroundJob;
 use crate::panes::PaneId;
-use crate::plugins::PluginInstruction;
+use crate::plugins::{PluginInstruction, CLI_EVENTS_ONLY_TARGET};
 use crate::tab::Tab;
 use crate::ClientId;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -111,6 +111,13 @@ impl Screen {
             }
             plugin_tab_updates.sort_by_key(|a| a.position);
             let target_plugin_ids = self.targeted_plugin_ids(*client_id, EventType::TabUpdate);
+            if self.cli_event_subscribers_present && target_plugin_ids.is_empty() {
+                plugin_updates.push((
+                    Some(CLI_EVENTS_ONLY_TARGET),
+                    None,
+                    Event::TabUpdate(plugin_tab_updates.clone()),
+                ));
+            }
             for plugin_id in target_plugin_ids {
                 plugin_updates.push((
                     Some(plugin_id),
@@ -154,6 +161,15 @@ impl Screen {
                     Event::PaneUpdate(pane_manifest.clone()),
                 ));
             }
+        }
+        // No plugin wants the manifest but a `zellij events` client does: address it to no
+        // plugin, and the plugin thread forwards it without loading anything.
+        if self.cli_event_subscribers_present && plugin_updates.is_empty() {
+            plugin_updates.push((
+                Some(CLI_EVENTS_ONLY_TARGET),
+                None,
+                Event::PaneUpdate(pane_manifest.clone()),
+            ));
         }
         if !plugin_updates.is_empty() {
             self.bus

@@ -39,6 +39,7 @@ isahc = { workspace = true }
 ssh2 = { version = "0.9.1", optional = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 insta = "1.48"
 rand = { workspace = true }
 regex = { workspace = true }

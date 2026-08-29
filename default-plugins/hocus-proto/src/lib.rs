@@ -12,6 +12,8 @@
 //! is in the pure half that the linking crates' own tests exercise. For [`store`] that
 //! pure half runs against the real store engine over a temporary file.
 
+/// The session's reading of a Claude Code hook event, for plugins that link only this crate.
+pub use zellij_tile::agent;
 pub mod agents;
 pub mod launch;
 pub mod llm;

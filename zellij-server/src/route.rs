@@ -378,6 +378,27 @@ pub(crate) fn route_action(
                 ))
                 .with_context(err_context)?;
         },
+        Action::Reconfigure {
+            config,
+            write_to_disk,
+        } => {
+            senders
+                .send_to_server(ServerInstruction::ReconfigureAllClients {
+                    config,
+                    write_config_to_disk: write_to_disk,
+                    completion: Some(NotificationEnd::new(completion_tx)),
+                })
+                .with_context(err_context)?;
+        },
+        Action::SetPaneAgent { pane_id, agent } => {
+            senders
+                .send_to_screen(ScreenInstruction::SetPaneAgent(
+                    pane_id.into(),
+                    agent,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
         Action::SetPaneColor { pane_id, fg, bg } => {
             senders
                 .send_to_screen(ScreenInstruction::SetPaneColor(
@@ -1862,6 +1883,7 @@ pub(crate) fn route_action(
                         pane_title,
                         skip_cache,
                         cli_client_id: cli_client_id.unwrap_or(client_id),
+                        source_pane_id: pane_id,
                     })
                     .with_context(err_context)?;
             } else {
@@ -2362,17 +2384,6 @@ pub(crate) fn route_action(
                 );
             }
         }
-    } else if let Some(exit_status) = result.exit_status {
-        if let Some(cli_client_id) = cli_client_id {
-            if let Some(ref os_input) = os_input {
-                let _ = os_input.send_to_client(
-                    cli_client_id,
-                    ServerToClientMsg::Exit {
-                        exit_reason: ExitReason::CustomExitStatus(exit_status),
-                    },
-                );
-            }
-        }
     }
     // Return tab ID to CLI clients as plain text
     if let Some(tab_id) = result.affected_tab_id {
@@ -2397,6 +2408,23 @@ pub(crate) fn route_action(
                         lines: vec![pane_id.to_string()],
                     },
                 );
+            }
+        }
+    }
+    // A blocking pane's exit status, last: the client stops reading at `Exit`, so the ids above
+    // have to be on the wire before it. Not sent alongside an error or a stdout message, which
+    // already ended the client's wait.
+    if result.error_message.is_none() && result.stdout_message.is_none() {
+        if let Some(exit_status) = result.exit_status {
+            if let Some(cli_client_id) = cli_client_id {
+                if let Some(ref os_input) = os_input {
+                    let _ = os_input.send_to_client(
+                        cli_client_id,
+                        ServerToClientMsg::Exit {
+                            exit_reason: ExitReason::CustomExitStatus(exit_status),
+                        },
+                    );
+                }
             }
         }
     }
@@ -2995,6 +3023,16 @@ pub(crate) fn route_thread_main(
                                 instruction,
                                 retry_queue
                             );
+                        },
+                        ClientToServerMsg::SubscribeToEvents { ref event_types } => {
+                            if let Some(senders) = senders.as_ref() {
+                                let _ = senders.send_to_plugin(
+                                    PluginInstruction::SubscribeCliClientToEvents {
+                                        client_id,
+                                        event_types: event_types.clone(),
+                                    },
+                                );
+                            }
                         },
                         ClientToServerMsg::SoftKeyboardVisibilityChanged { visible } => {
                             if let Some(senders) = senders.as_ref() {

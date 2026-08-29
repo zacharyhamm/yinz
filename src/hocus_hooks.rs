@@ -21,15 +21,6 @@ use std::path::{Path, PathBuf};
 
 use zellij_utils::cli::{Hocus, HocusHooks};
 
-/// The pipe `hocus-agentd` listens for, and the argument naming the pane.
-///
-/// Spelled here as well as in `hocus_proto::wire`, because that crate is a wasm
-/// plugin's and this binary does not link it. A pipe name that does not match is
-/// silent — the host delivers it and nothing answers — so the two spellings are worth
-/// a grep: `AGENT_HOOK` and `HOOK_PANE_ID` in `default-plugins/hocus-proto/src/wire.rs`.
-const PIPE_NAME: &str = "agent_hook";
-const PIPE_PANE_ID_ARG: &str = "pane_id";
-
 /// The Claude Code hook events wired, and what each one buys.
 ///
 /// None of them takes a matcher: every entry fires on every occurrence of its event
@@ -67,7 +58,7 @@ const EVENTS: &[&str] = &[
 const TIMEOUT_SECONDS: u64 = 5;
 
 /// Bumped whenever [`script`] changes, so `status` can say the installed copy is old.
-const SCRIPT_VERSION: u32 = 2;
+const SCRIPT_VERSION: u32 = 3;
 
 /// What marks an entry in the settings file as ours, and nothing else as ours.
 ///
@@ -99,8 +90,9 @@ fn script(zellij: &Path) -> String {
 # `zellij hocus hooks install` rewrites this file, and `--uninstall` removes it.
 #
 # Claude Code runs this on each wired hook event, with that event's JSON on stdin.
-# It forwards the JSON to hocus-agentd, which is what lets a Claude pane report its
-# own busy/waiting/idle state instead of being guessed at from its screen.
+# It hands the JSON to the session, which carries what it means on the pane
+# (`zellij action agent-report`): a Claude pane reports its own busy/waiting/idle
+# state instead of being guessed at from its screen.
 #
 # Two rules this file keeps, both of which matter:
 #   - it never writes to stdout. On UserPromptSubmit and SessionStart, an exit-0
@@ -114,11 +106,9 @@ fn script(zellij: &Path) -> String {
 ZELLIJ_BIN='{zellij}'
 [ -x "$ZELLIJ_BIN" ] || ZELLIJ_BIN=zellij
 
-# Broadcast, deliberately without --plugin: addressing the daemon by url would miss
-# the running instance and launch a second one. With no payload argument, zellij reads
-# the event from this script's stdin instead of hitting execve's per-argument limit.
-"$ZELLIJ_BIN" pipe --name {PIPE_NAME} --args "{PIPE_PANE_ID_ARG}=$ZELLIJ_PANE_ID" \
-    >/dev/null 2>&1
+# The event travels on stdin rather than as an argument, clear of execve's per-argument
+# limit; the pane is $ZELLIJ_PANE_ID, which the action reads itself.
+"$ZELLIJ_BIN" action agent-report --hook-json >/dev/null 2>&1
 
 exit 0
 "#
@@ -498,7 +488,7 @@ mod tests {
         assert!(child.wait().unwrap().success());
 
         assert_eq!(std::fs::read(captured).unwrap(), payload);
-        assert_eq!(std::fs::read_to_string(argc).unwrap(), "5");
+        assert_eq!(std::fs::read_to_string(argc).unwrap(), "3");
         std::fs::remove_dir_all(temp).unwrap();
     }
 

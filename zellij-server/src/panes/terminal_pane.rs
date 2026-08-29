@@ -24,6 +24,7 @@ use std::rc::Rc;
 use std::time::{self, Instant};
 use vte;
 use zellij_utils::data::PaneContents;
+use zellij_utils::data::{AgentInfo, AgentSource, AgentState, HOCUS_AGENT_PANE_CONTEXT};
 use zellij_utils::input::command::RunCommand;
 use zellij_utils::input::mouse::{MouseEvent, MouseEventType};
 use zellij_utils::pane_size::Offset;
@@ -157,6 +158,9 @@ pub struct TerminalPane {
     /// checkout is a fact about the pane rather than a name for it, and the
     /// remote host beside this field is the same kind of fact.
     title_prefix: Option<String>,
+    /// The agent running here, if the session knows of one. Starts as what the spawn path
+    /// said; replaced whole by every report, and moved to `Exited`/`Busy` by hold and re-run.
+    agent: Option<AgentInfo>,
     frame: HashMap<ClientId, PaneFrame>,
     borderless: bool,
     exclude_from_sync: bool,
@@ -1162,6 +1166,10 @@ impl Pane for TerminalPane {
         // would leave the resume hint up over a dead pane forever.
         self.suspended = false;
         self.is_held = Some((exit_status, is_first_run, run_command));
+        if let Some(agent) = self.agent.as_mut() {
+            agent.state = AgentState::Exited;
+            agent.detail = None;
+        }
         if let Some(notification_end) = self.notification_end.as_mut() {
             if let Some(exit_status) = exit_status {
                 notification_end.set_exit_status(exit_status);
@@ -1266,6 +1274,16 @@ impl Pane for TerminalPane {
     fn set_remote_host(&mut self, host: Option<String>) {
         self.remote_host = host;
     }
+    fn agent_info(&self) -> Option<&AgentInfo> {
+        self.agent.as_ref()
+    }
+    fn set_agent_info(&mut self, agent: Option<AgentInfo>) -> bool {
+        if self.agent == agent {
+            return false;
+        }
+        self.agent = agent;
+        true
+    }
     fn set_title_prefix(&mut self, prefix: Option<String>) {
         if self.title_prefix != prefix {
             self.title_prefix = prefix;
@@ -1347,6 +1365,9 @@ impl Pane for TerminalPane {
         self.is_held.take().map(|(_, _, run_command)| {
             self.is_held = None;
             self.suspended = false;
+            if let Some(agent) = self.agent.as_mut() {
+                agent.state = AgentState::Busy;
+            }
             self.grid.reset_terminal_state();
             self.set_should_render(true);
             self.remove_banner();
@@ -1510,6 +1531,36 @@ impl Pane for TerminalPane {
     }
 }
 
+/// The agent record a pane starts with: one for a pane a plugin opened *as an agent pane* -
+/// its `originating_plugin` context carries `HOCUS_AGENT_PANE_CONTEXT`, whose value names the
+/// kind, or is the legacy `"true"`, in which case the program's name stands in - and nothing
+/// for any other pane. The agent itself has said nothing yet, so the source is `Spawned`.
+fn agent_from_run(invoked_with: Option<&Run>) -> Option<AgentInfo> {
+    let Some(Run::Command(run_command)) = invoked_with else {
+        return None;
+    };
+    let context = &run_command.originating_plugin.as_ref()?.context;
+    let marker = context.get(HOCUS_AGENT_PANE_CONTEXT)?;
+    let kind = match marker.trim() {
+        "" | "true" => run_command
+            .command
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())?,
+        kind => kind.to_owned(),
+    };
+    Some(AgentInfo {
+        kind,
+        state: AgentState::Busy,
+        source: AgentSource::Spawned,
+        detail: None,
+        cwd: run_command
+            .cwd
+            .as_ref()
+            .map(|cwd| cwd.display().to_string()),
+        session_id: None,
+    })
+}
+
 impl TerminalPane {
     /// The frame's title: the pane's id, then [`Pane::display_title`].
     ///
@@ -1554,6 +1605,7 @@ impl TerminalPane {
     ) -> TerminalPane {
         let initial_pane_title =
             initial_pane_title.unwrap_or_else(|| format!("Pane #{}", pane_index));
+        let agent = agent_from_run(invoked_with.as_ref());
         let grid = Grid::new(
             position_and_size.rows.as_usize(),
             position_and_size.cols.as_usize(),
@@ -1590,6 +1642,7 @@ impl TerminalPane {
             prev_pane_name: pane_name,
             remote_host: None,
             title_prefix: None,
+            agent,
             borderless: false,
             exclude_from_sync: false,
             fake_cursor_locations: HashSet::new(),
@@ -1785,6 +1838,9 @@ impl TerminalPane {
         self.is_held.take().map(|(_, _, run_command)| {
             self.is_held = None;
             self.suspended = false;
+            if let Some(agent) = self.agent.as_mut() {
+                agent.state = AgentState::Busy;
+            }
             self.grid.reset_terminal_state();
             self.set_should_render(true);
             self.remove_banner();

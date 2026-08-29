@@ -7,10 +7,10 @@
 //! specification, not a way past a failing case.
 
 use crate::data::{
-    BareKey, CommandOrPlugin, CommandToRun, CommandType, ConnectToSession, ContextMenuItem,
-    Direction, EntityDef, EventType, FetchRequest, FileMetadata, FileToOpen,
-    FloatingPaneCoordinates, GitCheckout, HighlightLayer, HighlightStyle, HttpVerb, InputMode,
-    KeyModifier, KeyWithModifier, LayoutInfo, LayoutMetadata, MessageToPlugin, Mutation,
+    AgentInfo, AgentSource, AgentState, BareKey, CommandOrPlugin, CommandToRun, CommandType,
+    ConnectToSession, ContextMenuItem, Direction, EntityDef, EventType, FetchRequest, FileMetadata,
+    FileToOpen, FloatingPaneCoordinates, GitCheckout, HighlightLayer, HighlightStyle, HttpVerb,
+    InputMode, KeyModifier, KeyWithModifier, LayoutInfo, LayoutMetadata, MessageToPlugin, Mutation,
     NewPanePlacement, NewPluginArgs, OriginatingPlugin, OverlayKind, OverlayPlacement, PaneId,
     PaneMetadata, PermissionType, PluginCommand, PluginMessage, PluginTag, RegexHighlight,
     RemotePaneHandoff, Resize, ResizeStrategy, TabMetadata, UnblockCondition, WarpPlacement,
@@ -860,6 +860,14 @@ pub(crate) fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             near_current_pane: booleans(tc),
             no_focus: booleans(tc),
         },
+        ActionKind::SetPaneAgent => Action::SetPaneAgent {
+            pane_id: pane_id(tc),
+            agent: optional_agent_infos(tc),
+        },
+        ActionKind::Reconfigure => Action::Reconfigure {
+            config: strings(tc),
+            write_to_disk: booleans(tc),
+        },
         ActionKind::SetPaneColor => Action::SetPaneColor {
             pane_id: pane_id(tc),
             fg: optional_strings(tc),
@@ -1180,6 +1188,29 @@ pub(crate) fn u32s(tc: &hegel::TestCase) -> u32 {
     tc.draw(generators::integers::<u32>())
 }
 
+fn agent_infos(tc: &hegel::TestCase) -> AgentInfo {
+    AgentInfo {
+        kind: strings(tc),
+        state: tc.draw(generators::sampled_from(vec![
+            AgentState::Busy,
+            AgentState::Waiting,
+            AgentState::Idle,
+            AgentState::Exited,
+        ])),
+        source: tc.draw(generators::sampled_from(vec![
+            AgentSource::Spawned,
+            AgentSource::Reported,
+        ])),
+        detail: optional_strings(tc),
+        cwd: optional_strings(tc),
+        session_id: optional_strings(tc),
+    }
+}
+
+fn optional_agent_infos(tc: &hegel::TestCase) -> Option<AgentInfo> {
+    booleans(tc).then(|| agent_infos(tc))
+}
+
 pub(crate) fn u64s(tc: &hegel::TestCase) -> u64 {
     tc.draw(generators::integers::<u64>())
 }
@@ -1426,6 +1457,15 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         })),
         CommandType::GetPluginIds => PluginCommand::GetPluginIds,
         CommandType::GetZellijVersion => PluginCommand::GetZellijVersion,
+        CommandType::CheckLuaPlugin => PluginCommand::CheckLuaPlugin {
+            name: strings(tc),
+            source: strings(tc),
+        },
+        CommandType::SetPaneAgent => PluginCommand::SetPaneAgent {
+            pane_id: pane_id(tc),
+            agent: optional_agent_infos(tc),
+        },
+        CommandType::ReloadPluginByUrl => PluginCommand::ReloadPluginByUrl(strings(tc)),
         CommandType::OpenFile => PluginCommand::OpenFile(files_to_open(tc), context(tc)),
         CommandType::OpenFileFloating => PluginCommand::OpenFileFloating(
             files_to_open(tc),

@@ -24,4 +24,5 @@ enum PermissionType {
   SharedPluginData = 18;
   ReadFiles = 19;
   WriteFiles = 20;
+  AuthorPlugins = 21;
 }

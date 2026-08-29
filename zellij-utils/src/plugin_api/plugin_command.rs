@@ -29,7 +29,8 @@ pub use super::generated_api::api::{
         BreakPanesToTabWithIndexPayload,
         BreakPanesToTabWithIndexResponse as ProtobufBreakPanesToTabWithIndexResponse,
         CancelQueueJobPayload, CancelWebRequestPayload, ChangeFloatingPanesCoordinatesPayload,
-        ChangeHostFolderPayload, ChangeOverlayCoordinatesPayload, ClearPaneHighlightsPayload,
+        ChangeHostFolderPayload, ChangeOverlayCoordinatesPayload, CheckLuaPluginPayload,
+        CheckLuaPluginResponse as ProtobufCheckLuaPluginResponse, ClearPaneHighlightsPayload,
         ClearScreenForPaneIdPayload, CliPipeOutputPayload, CloseMultiplePanesPayload,
         CloseTabWithIdPayload, CloseTabWithIndexPayload, CommandName, ConfigureQueuePayload,
         ContextItem, CopyToClipboardPayload, CreateTokenResponse as ProtobufCreateTokenResponse,
@@ -163,8 +164,8 @@ pub use super::generated_api::api::{
         SearchHit as ProtobufSearchHit, SearchRecordingsPayload as ProtobufSearchRecordingsPayload,
         SearchRecordingsResponse as ProtobufSearchRecordingsResponse,
         SessionListSnapshot as ProtobufSessionListSnapshot, SetContextMenuPayload,
-        SetFloatingPanePinnedPayload, SetPaneBorderlessPayload, SetPaneColorPayload,
-        SetPaneFrameStylePayload as ProtobufSetPaneFrameStylePayload,
+        SetFloatingPanePinnedPayload, SetPaneAgentPayload, SetPaneBorderlessPayload,
+        SetPaneColorPayload, SetPaneFrameStylePayload as ProtobufSetPaneFrameStylePayload,
         SetPaneRegexHighlightsPayload, SetPaneTitlePrefixPayload,
         SetSelfMouseSelectionSupportPayload,
         SetSoftKeyboardPayload as ProtobufSetSoftKeyboardPayload, SetTabProjectsPayload,
@@ -185,9 +186,10 @@ pub use super::generated_api::api::{
 
 use crate::plugin_api::plugin_data::{watch_mode_from_i32, ProtobufMutation, ProtobufWatchMode};
 
+use super::generated_api::api::event::AgentInfo as ProtobufAgentInfo;
 use crate::data::{
-    ConnectToSession, DataApplyResponse, DataCountResponse, DataDefineResponse, DataFetchResponse,
-    DataUnwatchResponse, DataWatchResponse, DeleteAllDeadSessionsResponse,
+    AgentInfo, ConnectToSession, DataApplyResponse, DataCountResponse, DataDefineResponse,
+    DataFetchResponse, DataUnwatchResponse, DataWatchResponse, DeleteAllDeadSessionsResponse,
     DeleteDeadSessionResponse, DeleteLayoutResponse, EditLayoutResponse, EnqueueQueueJobResponse,
     FloatingPaneCoordinates, GetFocusedPaneInfoResponse, GetPaneCwdResponse,
     GetPaneGitProbeResponse, GetPanePidResponse, GetPaneRunningCommandResponse,
@@ -2815,6 +2817,31 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for ParseLayout"),
             },
+            Some(CommandName::ReloadPluginByUrl) => match protobuf_plugin_command.payload {
+                Some(Payload::ReloadPluginByUrlPayload(url)) => {
+                    Ok(PluginCommand::ReloadPluginByUrl(url))
+                },
+                _ => Err("Mismatched payload for ReloadPluginByUrl"),
+            },
+            Some(CommandName::SetPaneAgent) => match protobuf_plugin_command.payload {
+                Some(Payload::SetPaneAgentPayload(payload)) => Ok(PluginCommand::SetPaneAgent {
+                    pane_id: payload
+                        .pane_id
+                        .ok_or("SetPaneAgent must have a pane id")?
+                        .try_into()?,
+                    agent: payload.agent.map(AgentInfo::try_from).transpose()?,
+                }),
+                _ => Err("Mismatched payload for SetPaneAgent"),
+            },
+            Some(CommandName::CheckLuaPlugin) => match protobuf_plugin_command.payload {
+                Some(Payload::CheckLuaPluginPayload(payload)) => {
+                    Ok(PluginCommand::CheckLuaPlugin {
+                        name: payload.name,
+                        source: payload.source,
+                    })
+                },
+                _ => Err("Mismatched payload for CheckLuaPlugin"),
+            },
             Some(CommandName::GetLayoutDir) => Ok(PluginCommand::GetLayoutDir),
             Some(CommandName::GetUserPluginDir) => Ok(PluginCommand::GetUserPluginDir),
             Some(CommandName::GetFocusedPaneInfo) => Ok(PluginCommand::GetFocusedPaneInfo),
@@ -5016,6 +5043,24 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     layout_string,
                 })),
             }),
+            PluginCommand::ReloadPluginByUrl(url) => Ok(ProtobufPluginCommand {
+                name: CommandName::ReloadPluginByUrl as i32,
+                payload: Some(Payload::ReloadPluginByUrlPayload(url)),
+            }),
+            PluginCommand::SetPaneAgent { pane_id, agent } => Ok(ProtobufPluginCommand {
+                name: CommandName::SetPaneAgent as i32,
+                payload: Some(Payload::SetPaneAgentPayload(SetPaneAgentPayload {
+                    pane_id: pane_id.try_into().ok(),
+                    agent: agent.map(ProtobufAgentInfo::try_from).transpose()?,
+                })),
+            }),
+            PluginCommand::CheckLuaPlugin { name, source } => Ok(ProtobufPluginCommand {
+                name: CommandName::CheckLuaPlugin as i32,
+                payload: Some(Payload::CheckLuaPluginPayload(CheckLuaPluginPayload {
+                    name,
+                    source,
+                })),
+            }),
             PluginCommand::GetLayoutDir => Ok(ProtobufPluginCommand {
                 name: CommandName::GetLayoutDir as i32,
                 payload: Some(Payload::GetLayoutDirPayload(GetLayoutDirPayload {})),
@@ -7086,6 +7131,9 @@ mod tests {
         fn as_the_plugin_wire_carries_it(command: PluginCommand) -> Option<PluginCommand> {
             Some(match command {
                 carried @ (PluginCommand::Subscribe(_)
+                | PluginCommand::CheckLuaPlugin { .. }
+                | PluginCommand::SetPaneAgent { .. }
+                | PluginCommand::ReloadPluginByUrl(_)
                 | PluginCommand::Unsubscribe(_)
                 | PluginCommand::SetSelectable(_)
                 | PluginCommand::GetPluginIds
