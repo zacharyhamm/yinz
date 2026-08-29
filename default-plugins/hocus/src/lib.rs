@@ -1,3 +1,6 @@
+// The tool schemas are one `json!` literal each, and the largest is past the default limit.
+#![recursion_limit = "256"]
+
 //! hocus — chat with an OpenAI-compatible endpoint from a Zellij popup.
 //!
 //! A library so the wasm entry point (`src/main.rs`) and the render benchmark
