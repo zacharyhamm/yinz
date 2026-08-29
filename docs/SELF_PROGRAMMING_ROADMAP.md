@@ -255,8 +255,10 @@ Per item, the narrow recipes in `CLAUDE.md` (`cargo x test -p zellij-server -E '
 change; `cargo x ci check` before each handoff; `cargo x integration-test -- -j 16` for R4–R7
 and R11–R12 (they cross screen/plugin/client).
 
-End-to-end scenario to script as an integration test once Phase 2 lands (uses
-`write_git_repository`/`write_git_worktree` from `zellij-integration-tests/src/test_env.rs`):
+End-to-end scenario, scripted as
+`hocus_plugin_authoring::a_written_hook_is_bound_and_fired_by_a_reporting_agent_end_to_end`
+(the agent is a fake pty driven the way its hook script drives it; `zellij plugins write` is the
+same `zellij_server::plugin_authoring::write` the command calls):
 
 1. From a pane, `zellij plugins write my-agent-start < hook.lua` → `zellij plugins check` passes.
 2. `zellij action set-hook agent_start file:my-agent-start.lua --write` → `config.d` updated,
@@ -280,7 +282,7 @@ know without re-deriving it:
 | Reporting it | `zellij action agent-report` (`cli.rs` `AgentReport` → `actions.rs`), `PluginCommand::SetPaneAgent`, hook script v3 in `src/hocus_hooks.rs`; agentd derives feeds from the manifest (`hocus-agentd/src/main.rs` `rebuild_panes`, `HookFeed::from_agent`) |
 | Event stream | `zellij events` (`cli_client.rs` `start_events_client`), `WasmBridge::forward_events_to_cli_subscribers`, `CLI_EVENTS_ONLY_TARGET` in `plugins/mod.rs`, `EventType::CLI_STREAMABLE` in `data.rs` |
 | Config | `Action::Reconfigure` → `ServerInstruction::ReconfigureAllClients` (`lib.rs`), `ConfigPersistence` + `update_new_saved_config`, `Config::with_overlay_dir` / `write_managed_fragment` / `merge_kdl_fragment` (`input/config.rs`), `home::get_config_overlay_dir` |
-| Plugin authoring | `zellij plugins …` (`src/commands.rs` `plugins`, `plugin_authoring` module), `zellij_utils::plugin_authoring::resolve_plugin_file`, `zellij_server::check_lua_plugin`, `/plugins` root + `AuthorPlugins` (`zellij_exports.rs` `fs_roots`, `resolve_fs_path_with_permission`), `ReloadPluginByUrl` |
+| Plugin authoring | `zellij plugins …` (`src/commands.rs` `plugins`; the file work is `zellij_server::plugin_authoring` — `write`, `log_tail` — so the integration test runs the code the command runs), `zellij_utils::plugin_authoring::resolve_plugin_file`, `zellij_server::check_lua_plugin`, `/plugins` root + `AuthorPlugins` (`zellij_exports.rs` `fs_roots`, `resolve_fs_path_with_permission`), `ReloadPluginByUrl` |
 | Pipes | `PipeMessage.pane_id` (`data.rs`, `pipe_message.proto` field 8), set in `plugins/mod.rs` `CliPipe` arm |
 
 **Proto numbers in use** (next free): plugin `CommandName` 274 / payload field 215 (next 275 /
@@ -331,14 +333,19 @@ R16. What the next session should know:
 **Next steps, in order.** Each is independently landable; the first two are the ones that
 make Phase 3 trustworthy, the rest are the loose ends it left.
 
-1. **The end-to-end integration test** under "Verification" above: write a headless
-   `agent_start` hook with `zellij plugins write`, bind it with `zellij action set-hook
-   agent_start … --write`, run a stand-in agent with `zellij run --block-until-exit` whose
-   script calls `zellij action agent-report`, and assert the hook's `zellij.log` line and the
-   `agent_start → agent_waiting → pane_exit → agent_exit` order through `zellij events`. Lives in
-   `zellij-integration-tests/tests/hocus_plugin_authoring.rs`'s harness; `write_git_repository`
-   in `test_env.rs` gives it a checkout. Everything it needs exists; nothing yet proves the loop
-   end to end in one session.
+1. **The end-to-end integration test** under "Verification" above. *(done —
+   `hocus_plugin_authoring::a_written_hook_is_bound_and_fired_by_a_reporting_agent_end_to_end`:
+   one Lua hook bound to `agent_start`, `agent_waiting`, `pane_exit` and `agent_exit` with
+   `set-hook --write`, a `zellij run --block-until-exit -- claude` pane reporting through
+   `agent-report`, the three headless firings asserted in order off `zellij.log` and the
+   record's busy → waiting → exited off `zellij events`. It found one bug: a point firing while
+   the hook's first load was still in flight loaded a **second instance**, and the firings were
+   split between the two. `deliver_to_headless_hook` now addresses the loading instance
+   (`WasmBridge::loading_plugin_ids_for_plugin_location`) for a connected client or a shared
+   hook, and the bridge holds the event until the load lands;
+   `lua_plugins::a_firing_during_the_headless_hooks_load_reaches_the_loading_instance` pins it.
+   Harness additions: `EventsClientHandle::streamed_events` (type and JSON) and
+   `TestSession::run_blocking_command_holding_on_exit`.)*
 2. **`WasmBridge::add_client` and pending plugins** (`wasm_bridge.rs`, `add_client`): a client
    attaching while a plugin is still loading resets that plugin's
    `cached_events_for_pending_plugins`, so a lazily-loaded hook can miss its first firing under

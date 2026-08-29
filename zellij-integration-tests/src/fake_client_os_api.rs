@@ -205,8 +205,19 @@ impl ServerConnection for FakeClientOsApi {
                 ServerToClientMsg::Log { lines } | ServerToClientMsg::LogError { lines } => {
                     format!("{}: {}", server_message_name(msg), lines.join("\n"))
                 },
-                ServerToClientMsg::EventUpdate { event_type, .. } => {
-                    format!("{}: {}", server_message_name(msg), event_type)
+                // The type and then the JSON, one space apart: `streamed_event_types` reads
+                // the first word, `streamed_events` the rest, and a test that wants to know
+                // what an `AgentInfo` said can read it off the payload.
+                ServerToClientMsg::EventUpdate {
+                    event_type,
+                    event_json,
+                } => {
+                    format!(
+                        "{}: {} {}",
+                        server_message_name(msg),
+                        event_type,
+                        event_json
+                    )
                 },
                 _ => server_message_name(msg),
             };

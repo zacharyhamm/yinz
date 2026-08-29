@@ -2297,6 +2297,25 @@ impl WasmBridge {
             None => vec![],
         }
     }
+    /// The plugins at `plugin_location` with `plugin_configuration` whose load is still in
+    /// flight, so not yet in the plugin map. An event addressed to one of these is held in its
+    /// cache and applied when the load completes - which makes a loading plugin an instance to
+    /// address, not a reason to load another.
+    pub fn loading_plugin_ids_for_plugin_location(
+        &self,
+        plugin_location: &RunPluginLocation,
+        plugin_configuration: &PluginUserConfiguration,
+    ) -> Vec<PluginId> {
+        let wanted = plugin_configuration.without_caller_context();
+        self.loading_plugins
+            .iter()
+            .filter(|(_, run_plugin)| {
+                &run_plugin.location == plugin_location
+                    && run_plugin.configuration.without_caller_context() == wanted
+            })
+            .map(|(plugin_id, _)| *plugin_id)
+            .collect()
+    }
     pub fn all_plugin_ids(&self) -> Vec<(PluginId, ClientId)> {
         self.plugin_map.lock().unwrap().all_plugin_ids()
     }
