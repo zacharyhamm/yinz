@@ -290,6 +290,40 @@ fn the_scan_is_one_shell_loop_over_the_roots() {
     assert_eq!(&argv[3..], ["sh", "/u/skills", "/p/.hocus/skills"]);
 }
 
+#[cfg(unix)]
+#[test]
+fn the_scan_does_not_follow_symlinked_skill_entries() {
+    use std::os::unix::fs::symlink;
+
+    let base = std::env::temp_dir().join(format!(
+        "hocus-skill-scan-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let root = base.join("skills");
+    let outside = base.join("outside");
+    std::fs::create_dir_all(root.join("regular")).unwrap();
+    std::fs::create_dir_all(outside.join("linked-dir")).unwrap();
+    std::fs::create_dir_all(root.join("linked-file")).unwrap();
+    std::fs::write(root.join("regular/SKILL.md"), "Regular.").unwrap();
+    std::fs::write(outside.join("linked-dir/SKILL.md"), "Directory secret.").unwrap();
+    std::fs::write(outside.join("secret.md"), "File secret.").unwrap();
+    symlink(outside.join("linked-dir"), root.join("linked-dir")).unwrap();
+    symlink(outside.join("secret.md"), root.join("linked-file/SKILL.md")).unwrap();
+
+    let argv = scan_argv(&[root.to_string_lossy().into_owned()]);
+    let output = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(base).unwrap();
+
+    assert!(output.status.success(), "{:?}", output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Regular."), "{stdout:?}");
+    assert!(!stdout.contains("secret"), "{stdout:?}");
+}
+
 #[test]
 fn skill_tools_stay_below_the_tier_root_and_refresh_after_mutations() {
     assert!(resolve_paths("/skills", Some("../escape")).is_err());
