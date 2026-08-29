@@ -1257,7 +1257,9 @@ fn tab_label(messages: &[crate::Message], live: bool, confirming: bool) -> Strin
 /// with an arrow at whichever edge has tabs hidden past it.
 pub(crate) fn chat_tabs(state: &State, width: usize) -> Vec<TabCell> {
     let focus = state.chat_tab_focus;
-    let keep = focus.or(state.chat_tab_view).unwrap_or(state.chat_tab);
+    let keep = focus
+        .or(state.chat_tab_view.get(&state.client).copied())
+        .unwrap_or(state.chat_tab);
     let labels: Vec<String> = (0..state.chat_tab_count())
         .map(|tab| match state.parked_at_tab(tab) {
             None => tab_label(

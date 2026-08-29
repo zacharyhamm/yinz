@@ -376,7 +376,7 @@ impl State {
     /// reply — unless there is nothing to it, in which case it is simply let
     /// go rather than left as a blank tab nothing will ever reap.
     pub(crate) fn open_tab(&mut self, incoming: Chat) {
-        self.chat_tab_view = None;
+        self.chat_tab_view.remove(&self.client);
         let worth_a_tab = self.worth_a_tab();
         let outgoing = self.swap_foreground(incoming);
         if worth_a_tab {
@@ -422,7 +422,7 @@ impl State {
         };
         self.parked.insert(insert_at, outgoing);
         self.chat_tab = tab;
-        self.chat_tab_view = None;
+        self.chat_tab_view.remove(&self.client);
         self.log_global("open_chat", serde_json::json!({"chat_id": self.chat_id}));
     }
 
@@ -435,7 +435,7 @@ impl State {
         if tab >= self.chat_tab_count() {
             return;
         }
-        self.chat_tab_view = None;
+        self.chat_tab_view.remove(&self.client);
         let closing_id = match self.parked_at_tab(tab) {
             None => self.chat_id,
             Some(index) => self.parked[index].chat_id,
