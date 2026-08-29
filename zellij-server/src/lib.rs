@@ -19,6 +19,7 @@ mod global_async_runtime;
 mod logging_pipe;
 mod mobile_web;
 pub mod nested_guest;
+pub mod notifications;
 mod pane_groups;
 mod plugins;
 mod pty;
@@ -156,6 +157,7 @@ pub enum ServerInstruction {
     WebServerStarted(String), // String -> base_url
     FailedToStartWebServer(String),
     ClearMouseHelpText(ClientId),
+    ClearCommandOutputFlash(PaneId),
     /// Relay a forwarded-query dispatch from Screen to the server main
     /// loop. The main loop writes `ServerToClientMsg::ForwardQueryToHost`
     ForwardQueryToHost(u32, Vec<u8>, bool),
@@ -491,6 +493,7 @@ impl SessionMetaData {
                         .unwrap_or_else(|| default_palette().into()),
                     host_theme_dark,
                     host_theme_light,
+                    explicit_theme_hue: new_config.options.explicit_theme_hue,
                     simplified_ui: new_config.options.simplified_ui.unwrap_or(false),
                     default_shell: new_config.options.default_shell,
                     default_cwd: new_config.options.default_cwd.clone(),
@@ -534,6 +537,10 @@ impl SessionMetaData {
                     nested_session_handling: new_config
                         .options
                         .nested_session_handling
+                        .unwrap_or_default(),
+                    host_notification_protocol: new_config
+                        .options
+                        .host_notification_protocol
                         .unwrap_or_default(),
                 })
                 .unwrap();
@@ -956,6 +963,7 @@ pub fn start_server_impl(
         err_ctx.add_call(ContextType::IPCServer((&instruction).into()));
         match instruction {
             ServerInstruction::FirstClientConnected(cli_assets, is_web_client, client_id) => {
+                let host_terminal_env = cli_assets.host_terminal_env.clone();
                 let (config, layout) = cli_assets.load_config_and_layout();
                 let layout_is_welcome_screen = cli_assets.layout
                     == Some(LayoutInfo::BuiltIn("welcome".to_owned()))
@@ -1121,14 +1129,21 @@ pub fn start_server_impl(
                         true,
                     );
                 }
-                session_data
-                    .read()
-                    .unwrap()
-                    .as_ref()
-                    .unwrap()
-                    .senders
-                    .send_to_plugin(PluginInstruction::AddClient(client_id))
-                    .unwrap();
+                {
+                    let rlock = session_data.read().unwrap();
+                    let session_data = rlock.as_ref().unwrap();
+                    session_data
+                        .senders
+                        .send_to_plugin(PluginInstruction::AddClient(client_id))
+                        .unwrap();
+                    session_data
+                        .senders
+                        .send_to_screen(ScreenInstruction::SetClientHostTerminalEnv(
+                            client_id,
+                            host_terminal_env,
+                        ))
+                        .unwrap();
+                }
             },
             ServerInstruction::AttachClient(
                 cli_assets,
@@ -1157,6 +1172,7 @@ pub fn start_server_impl(
                     continue;
                 };
                 let config = session_data.session_configuration.saved_config.clone();
+                let host_terminal_env = cli_assets.host_terminal_env.clone();
                 let runtime_config_options = match cli_assets.configuration_options {
                     Some(configuration_options) => config.options.merge(configuration_options),
                     None => config.options.clone(),
@@ -1189,6 +1205,13 @@ pub fn start_server_impl(
                     .unwrap()
                     .set_client_is_web(client_id, is_web_client);
 
+                session_data
+                    .senders
+                    .send_to_screen(ScreenInstruction::SetClientHostTerminalEnv(
+                        client_id,
+                        host_terminal_env,
+                    ))
+                    .unwrap();
                 session_data
                     .senders
                     .send_to_screen(ScreenInstruction::AddClient(
@@ -1918,6 +1941,16 @@ pub fn start_server_impl(
                     .unwrap()
                     .senders
                     .send_to_screen(ScreenInstruction::ClearMouseHelpText(client_id))
+                    .unwrap();
+            },
+            ServerInstruction::ClearCommandOutputFlash(pane_id) => {
+                session_data
+                    .write()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .senders
+                    .send_to_screen(ScreenInstruction::ClearCommandOutputFlash(pane_id))
                     .unwrap();
             },
             ServerInstruction::ForwardQueryToHost(token, query_bytes, resolve_async) => {

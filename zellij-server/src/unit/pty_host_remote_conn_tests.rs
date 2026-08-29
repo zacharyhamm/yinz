@@ -192,3 +192,27 @@ fn a_lost_transport_refuses_further_writes_rather_than_pretending() {
     assert!(conn.transport_lost());
     assert!(conn.write_input(b"hello").is_err());
 }
+
+/// A budget of zero is a caller that has already given up, and std refuses to
+/// bound a socket by it. Refused here, up front, the socket is left exactly as
+/// it was — non-blocking, nothing written — rather than flipped to blocking on
+/// the way to an error about "a 0 duration timeout".
+#[test]
+fn a_release_with_no_time_left_is_refused_before_the_socket_is_touched() {
+    let (conn, mut peer) = conn_pair();
+
+    let error = format!(
+        "{:#}",
+        conn.release_for_warp(std::time::Duration::ZERO)
+            .expect_err("a release with no budget must be refused")
+    );
+
+    assert!(
+        error.contains("no time was left"),
+        "the refusal should describe the situation, not the socket: {error}"
+    );
+    assert!(
+        drain_all(&mut peer).is_empty(),
+        "nothing should have been asked of the broker"
+    );
+}

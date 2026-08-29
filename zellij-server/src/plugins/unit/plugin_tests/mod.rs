@@ -781,6 +781,7 @@ mod break_panes_commands;
 mod config_events;
 mod focused_pane_commands;
 mod highlights;
+mod host_theme;
 mod keybinds;
 mod layout_api;
 mod loading;

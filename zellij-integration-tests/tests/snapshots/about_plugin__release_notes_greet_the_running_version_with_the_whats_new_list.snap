@@ -1,0 +1,28 @@
+---
+source: zellij-integration-tests/tests/about_plugin.rs
+assertion_line: 79
+expression: normalized(&grid)
+---
+ Zellij (test)  Tab #1  + 
+$
+               ┌ Release Notes 0.45.0 ───────────────────────────────────────────────────────── PIN [ ] ┐
+               │                                                                                        │
+               │                                                                                        │
+               │       Hi there, welcome to Zellij 0.45.0!                                              │
+               │                                                                                        │
+               │       What's new?                                                                      │
+               │       1. Nested Sessions                                                               │
+               │       2. Kitty Graphics Protocol                                                       │
+               │       3. Scroll By Command                                                             │
+               │       4. Mobile Web UI                                                                 │
+               │       5. New UI                                                                        │
+               │       6. Focus Last Pane and Fullscreen Floating Panes                                 │
+               │                                                                                        │
+               │       Full Changelog: https://github.com/zellij-org/zellij/releases/tag/v0.45.0        │
+               │                                                                                        │
+               │       Please support the Zellij developer <3: https://github.com/sponsors/imsnif       │
+               │                                                                                        │
+               │                                                                                        │
+               │Help: <↓↑> - Navigate, <ESC> - Dismiss                                                  │
+               └────────────────────────────────────────────────────────────────────────────────────────┘
+ Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <e> AGENT  <q> QUIT 

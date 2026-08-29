@@ -22,6 +22,7 @@ use crate::{
 };
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use std::{collections::HashMap, path::PathBuf};
 
 use crate::pty_host::client::{ChildRunState, ReleasedPane};
@@ -200,6 +201,9 @@ pub enum PtyInstruction {
         to_session: String,
         placement: WarpPlacement,
         client_id: ClientId,
+        /// When the caller stops waiting. See
+        /// [`ReleaseTerminalsForWarp`](Self::ReleaseTerminalsForWarp).
+        deadline: Instant,
     },
     /// Take a detached supervisor over into this session and give it a pane.
     AdoptTerminal {
@@ -216,6 +220,17 @@ pub enum PtyInstruction {
     ReleaseTerminalsForWarp {
         tab_index: usize,
         terminal_ids: Vec<u32>,
+        /// The moment the warp's caller stops waiting for an answer.
+        ///
+        /// Carried rather than re-derived because a release that outlives the
+        /// caller is worse than a release that fails: by the time it lands,
+        /// Screen has nobody to hand the tab to and every process in it is
+        /// running unwatched. A remote pane's release is a round trip over ssh
+        /// with a budget of its own, and until this was plumbed through, that
+        /// budget was a constant unrelated to the caller's — so a tab with two
+        /// remote panes spent the caller's entire ten seconds before the first
+        /// word came back. Now every leg answers to the same clock.
+        deadline: Instant,
     },
     /// Say in a pane that its warp cut it loose, and hold it.
     ///
@@ -771,8 +786,9 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 to_session,
                 placement,
                 client_id,
+                deadline,
             } => {
-                let released = release_pane_for_warp(&mut pty, terminal_id, &to_session);
+                let released = release_pane_for_warp(&mut pty, terminal_id, &to_session, deadline);
                 // Screen hears about this either way: it has a pane sitting in
                 // limbo and has to either send it on or put it back.
                 let _ = pty
@@ -818,8 +834,9 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
             PtyInstruction::ReleaseTerminalsForWarp {
                 tab_index,
                 terminal_ids,
+                deadline,
             } => {
-                let released = release_tab_for_warp(&mut pty, terminal_ids);
+                let released = release_tab_for_warp(&mut pty, terminal_ids, deadline);
                 // Screen hears about this either way: it has a tab full of panes
                 // in limbo and has to either send them on or put them back.
                 let _ = pty
@@ -2281,7 +2298,11 @@ impl Pty {
     /// it goes: once the abort has happened there is no dup left to reopen, so a
     /// refusal raised after it would leave a pane on screen with no process on
     /// the other end. Everything knowable is therefore knowable *before*.
-    pub fn release_terminal_for_warp(&mut self, terminal_id: u32) -> Result<ReleasedPane> {
+    pub fn release_terminal_for_warp(
+        &mut self,
+        terminal_id: u32,
+        deadline: Instant,
+    ) -> Result<ReleasedPane> {
         let err_context = || format!("failed to release pane {terminal_id} for a warp");
         // Asked before the reader is touched, which is the whole point of it
         // being a separate question: everything the release below can refuse for
@@ -2291,18 +2312,50 @@ impl Pty {
         // refusal from that side would cost the user a working pane.
         self.check_terminal_can_be_warped(terminal_id)
             .with_context(err_context)?;
-        if let Some(handle) = self.task_handles.remove(&terminal_id) {
-            handle.abort();
-        }
+        refuse_if_nobody_is_waiting(deadline).with_context(err_context)?;
+        self.stop_readers_for_warp(&[terminal_id]);
+        // Measured *after* the readers have stopped, because stopping them is
+        // not free — up to `READER_SHUTDOWN_TIMEOUT` each — and a budget taken
+        // before it would hand the backend time the caller has already spent.
+        let budget = deadline.saturating_duration_since(Instant::now());
         let released = self
             .bus
             .os_input
             .as_ref()
             .context("no OS I/O interface found")
-            .and_then(|os_input| os_input.release_terminal_for_warp(terminal_id))
+            .and_then(|os_input| os_input.release_terminal_for_warp(terminal_id, budget))
             .with_context(err_context)?;
 
-        // Removed, emphatically not killed: the process is the point.
+        self.forget_released_terminal(terminal_id);
+        Ok(released)
+    }
+
+    /// Cancel these panes' readers and wait until they are actually gone.
+    ///
+    /// Every abort is issued before any join, so a tab's readers stop in
+    /// parallel rather than one 500ms window after another. See
+    /// [`wait_for_reader_to_stop`] for why the join has to happen at all.
+    fn stop_readers_for_warp(&mut self, terminal_ids: &[u32]) {
+        let handles: Vec<(u32, JoinHandle<()>)> = terminal_ids
+            .iter()
+            .filter_map(|terminal_id| {
+                self.task_handles
+                    .remove(terminal_id)
+                    .map(|handle| (*terminal_id, handle))
+            })
+            .collect();
+        for (_, handle) in &handles {
+            handle.abort();
+        }
+        for (terminal_id, handle) in handles {
+            wait_for_reader_to_stop(terminal_id, handle);
+        }
+    }
+
+    /// Forget everything this session knew about a pane it has handed away.
+    ///
+    /// Removed, emphatically not killed: the process is the point.
+    fn forget_released_terminal(&mut self, terminal_id: u32) {
         let _ = self.id_to_child_pid.remove(&terminal_id);
         self.pane_activity_flags.remove(&terminal_id);
         self.forget_terminal_cwd(terminal_id);
@@ -2312,7 +2365,6 @@ impl Pty {
         // The plugin that spawned this pane lives in *this* session, so it does
         // not follow the pane out.
         self.originating_plugins.remove(&terminal_id);
-        Ok(released)
     }
 
     /// Take a supervisor over from another session (or from a server that died)
@@ -2462,7 +2514,10 @@ impl Pty {
                 .map(|pane| pane.host_id.clone())
                 .collect();
             for adopted in tiled.iter().chain(floating.iter()) {
-                if let Err(e) = self.release_terminal_for_warp(adopted.terminal_id) {
+                if let Err(e) = self.release_terminal_for_warp(
+                    adopted.terminal_id,
+                    Instant::now() + GIVE_BACK_BUDGET,
+                ) {
                     // Nothing left to try. Say which supervisors are now stranded
                     // so they can be recovered by hand.
                     log::error!(
@@ -3276,15 +3331,85 @@ fn release_pane_for_warp(
     pty: &mut Pty,
     terminal_id: u32,
     to_session: &str,
+    deadline: Instant,
 ) -> std::result::Result<ReleasedPane, String> {
     if let Err(e) = pty.check_terminal_can_be_warped(terminal_id) {
         return Err(format!("{e:#}"));
     }
-    pty.release_terminal_for_warp(terminal_id).map_err(|e| {
-        let why = format!("could not move this pane to '{to_session}': {e:#}");
-        strand_pane_after_warp(pty, terminal_id, &why, None);
-        format!("{e:#}")
-    })
+    if let Err(e) = refuse_if_nobody_is_waiting(deadline) {
+        return Err(format!("{e:#}"));
+    }
+    pty.release_terminal_for_warp(terminal_id, deadline)
+        .map_err(|e| {
+            let why = format!("could not move this pane to '{to_session}': {e:#}");
+            strand_pane_after_warp(pty, terminal_id, &why, None);
+            format!("{e:#}")
+        })
+}
+
+/// Say no to a release whose caller has already stopped waiting.
+///
+/// Asked in the same breath as [`Pty::check_terminal_can_be_warped`] and for
+/// the same reason: after this point the pane's reader is aborted and there is
+/// no putting it back. A deadline that has passed used to reach the backend as
+/// a budget of zero — which a remote pane's socket refuses to be bounded by —
+/// with the reader already gone, so the pane was stranded to answer a caller
+/// that was not there. Screen deliberately sends an already-passed deadline
+/// when the caller left it nothing to spend; this is where that is honoured.
+fn refuse_if_nobody_is_waiting(deadline: Instant) -> Result<()> {
+    if Instant::now() >= deadline {
+        return Err(anyhow!(
+            "the caller stopped waiting before this pane could be released"
+        ));
+    }
+    Ok(())
+}
+
+/// What giving a just-adopted pane back may spend on each one.
+///
+/// This runs when a tab was adopted part-way and then failed, inside the
+/// adopting side's own warp budget, once per pane already taken. It is
+/// deliberately mean: the pane's process survives on its supervisor either way,
+/// and the only thing a longer wait buys is a tidier handback — paid for by the
+/// caller's remaining budget, which the rest of the rollback still needs.
+const GIVE_BACK_BUDGET: Duration = Duration::from_secs(1);
+
+/// How long to wait for a pane's reader to actually stop before releasing it.
+///
+/// Short, because it is measured against a task that has already been told to
+/// cancel and only has to reach its next await point to do it. Bounded at all
+/// because the pty thread is what does the waiting, and a reader wedged in a
+/// blocking call it cannot be cancelled out of must not take the session with
+/// it.
+const READER_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Wait for an already-cancelled reader to actually be gone, before its
+/// connection is handed to anyone else.
+///
+/// `JoinHandle::abort` asks; it does not deliver. The task keeps running until
+/// it reaches an await point, and for a remote pane that window is long enough
+/// to matter: the reader's socket is a `try_clone` of the very socket the
+/// release is about to write `Release` down and read `Released` back from, so a
+/// reader still on its feet can consume the ack and leave the release waiting
+/// out its whole budget before reporting that the host never confirmed. The
+/// release also flips that socket to blocking, and `O_NONBLOCK` lives on the
+/// open file description the clone shares — so a reader that outlives the abort
+/// finds its own reads blocking a runtime worker.
+///
+/// The real ssh tests get this right by construction: `release_for_warp` there
+/// joins the pump thread before releasing. This is that join, in production.
+fn wait_for_reader_to_stop(terminal_id: u32, handle: JoinHandle<()>) {
+    let joined = async_runtime()
+        .block_on(async { tokio::time::timeout(READER_SHUTDOWN_TIMEOUT, handle).await });
+    // A cancelled task reports `JoinError::is_cancelled`, which is the expected
+    // outcome and not worth a word. Only the timeout is: it means the release
+    // below is about to share a socket with a reader that is still reading.
+    if joined.is_err() {
+        log::warn!(
+            "pane {terminal_id}'s reader did not stop within {READER_SHUTDOWN_TIMEOUT:?} of \
+             being cancelled; releasing it anyway"
+        );
+    }
 }
 
 /// Give up a whole tab's supervisors for a warp, or say why not.
@@ -3294,14 +3419,30 @@ fn release_pane_for_warp(
 /// it already handed away and nothing to give them back to — so a tab that
 /// cannot go is refused while it is still whole, and every pane in it is
 /// reported with the one reason.
+///
+/// The releases themselves then run *concurrently*, which is not an
+/// optimisation. A local release is a single non-blocking write and costs
+/// nothing either way; a remote one is a request and an acknowledgement over
+/// ssh, and doing those in turn made a tab's cost the sum of its panes' round
+/// trips. Two remote panes was already the whole of `warp::WARP_TIMEOUT`, so a
+/// tab like that could not be moved at all — it reported "timed out preparing
+/// the tab to be moved" while this thread was still waiting on the first pane.
+/// Run together they cost one round trip, and each answers to the same
+/// `deadline` rather than to a budget of its own.
 fn release_tab_for_warp(
     pty: &mut Pty,
     terminal_ids: Vec<u32>,
+    deadline: Instant,
 ) -> Vec<(u32, std::result::Result<ReleasedPane, String>)> {
     let refusal = terminal_ids.iter().find_map(|terminal_id| {
         pty.check_terminal_can_be_warped(*terminal_id)
             .err()
             .map(|e| format!("pane {terminal_id} cannot be moved: {e:#}"))
+    });
+    let refusal = refusal.or_else(|| {
+        refuse_if_nobody_is_waiting(deadline)
+            .err()
+            .map(|e| format!("{e:#}"))
     });
     if let Some(reason) = refusal {
         return terminal_ids
@@ -3310,15 +3451,56 @@ fn release_tab_for_warp(
             .collect();
     }
 
-    let released: Vec<_> = terminal_ids
-        .into_iter()
-        .map(|terminal_id| {
-            let result = pty
-                .release_terminal_for_warp(terminal_id)
-                .map_err(|e| format!("{e:#}"));
-            (terminal_id, result)
+    // Every reader stopped before any socket is written to. A remote pane's
+    // reader shares the connection the release is about to speak on, and it
+    // shares it with *this* pane's release only — but stopping them all up
+    // front costs one wait instead of one per pane.
+    pty.stop_readers_for_warp(&terminal_ids);
+
+    let budget = deadline.saturating_duration_since(Instant::now());
+    let released: Vec<(u32, std::result::Result<ReleasedPane, String>)> = {
+        let Some(os_input) = pty.bus.os_input.as_deref() else {
+            return terminal_ids
+                .iter()
+                .map(|terminal_id| (*terminal_id, Err("no OS I/O interface found".to_owned())))
+                .collect();
+        };
+        std::thread::scope(|scope| {
+            let threads: Vec<_> = terminal_ids
+                .iter()
+                .map(|terminal_id| {
+                    let terminal_id = *terminal_id;
+                    scope.spawn(move || {
+                        os_input
+                            .release_terminal_for_warp(terminal_id, budget)
+                            .with_context(|| {
+                                format!("failed to release pane {terminal_id} for a warp")
+                            })
+                            .map_err(|e| format!("{e:#}"))
+                    })
+                })
+                .collect();
+            terminal_ids
+                .iter()
+                .zip(threads)
+                .map(|(terminal_id, thread)| {
+                    // A panicked release is a failed release. Reporting it as
+                    // one puts the pane through the stranding below, which is
+                    // the only way its process gets named to the user at all.
+                    let result = thread
+                        .join()
+                        .unwrap_or_else(|_| Err(format!("releasing pane {terminal_id} panicked")));
+                    (*terminal_id, result)
+                })
+                .collect()
         })
-        .collect();
+    };
+
+    for (terminal_id, result) in &released {
+        if result.is_ok() {
+            pty.forget_released_terminal(*terminal_id);
+        }
+    }
     // A release that fails *after* every pane passed the check takes the whole
     // tab down with it: the ones that succeeded are orphaned, the one that
     // failed is severed, and none of them has a process on the other end any

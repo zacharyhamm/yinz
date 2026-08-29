@@ -1,5 +1,6 @@
 ---
 source: zellij-utils/src/kdl/./unit/config_options.rs
+assertion_line: 98
 expression: fake_document.to_string()
 ---
  
@@ -31,6 +32,12 @@ theme "dracula"
 // Requires `theme_dark` to also be set; otherwise `theme` is used.
 // 
 // theme_light "solarized-light"
+ 
+// Pin the session to a dark or light appearance, ignoring what the
+// host terminal reports. When unset, the host terminal decides.
+// Options: dark, light
+// 
+// explicit_theme_hue "dark"
  
 // Choose the base input mode of zellij.
 // Default: normal
@@ -401,3 +408,14 @@ web_sharing "disabled"
 //   - "never" (never prompt or descend; do it manually)
 // 
 // nested_session_handling "ask"
+
+// Which escape sequence desktop notifications coming from panes are
+// forwarded to the host terminal with.
+// Options:
+//   - "auto" (Default — detect from the host terminal environment)
+//   - "osc9" (the legacy iTerm2 protocol, understood by most terminals)
+//   - "osc99" (kitty's notification protocol)
+//   - "bell" (ring the terminal bell instead)
+//   - "off" (do not forward notifications to the host terminal)
+// 
+// host_notification_protocol "auto"

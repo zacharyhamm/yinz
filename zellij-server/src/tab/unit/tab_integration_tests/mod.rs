@@ -1,11 +1,11 @@
 use super::{Output, Tab};
 use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::sixel::SixelImageStore;
-use crate::screen::CopyOptions;
+use crate::screen::{CopyOptions, ScreenInstruction};
 use crate::Arc;
 use crate::{
     os_input_output::ServerOsApi, pane_groups::PaneGroups, panes::PaneId,
-    plugins::PluginInstruction, thread_bus::ThreadSenders, ClientId, ServerInstruction,
+    plugins::PluginInstruction, thread_bus::ThreadSenders, ClientId,
 };
 use zellij_utils::input::options::PaneFrameStyle;
 
@@ -1307,21 +1307,22 @@ fn create_new_tab_with_plugin_receiver(
 
 /// Creates a Tab with a real `to_server` sender so that `ServerInstruction::Render`
 /// calls from `forward_desktop_notifications` can be captured on the receiver.
-fn create_new_tab_with_server_receiver(
+/// A tab with a real `to_screen` sender, so what it hands the screen (desktop notifications,
+/// for one) can be read off the receiver.
+fn create_new_tab_with_screen_receiver(
     size: Size,
     default_mode: ModeInfo,
-) -> (Tab, Receiver<(ServerInstruction, ErrorContext)>) {
+) -> (Tab, Receiver<(ScreenInstruction, ErrorContext)>) {
     set_session_name("test".into());
     let index = 0;
     let position = 0;
     let name = String::new();
     let os_api = Box::new(FakeInputOutput::default());
 
-    // Set up real server channel to capture ServerInstruction::Render
-    let (server_sender, server_receiver) = channels::unbounded();
-    let server_sender = SenderWithContext::new(server_sender);
+    let (screen_sender, screen_receiver) = channels::unbounded();
+    let screen_sender = SenderWithContext::new(screen_sender);
     let mut senders = ThreadSenders::default().silently_fail_on_send();
-    senders.to_server = Some(server_sender);
+    senders.to_screen = Some(screen_sender);
 
     let max_panes = None;
     let client_id = 1;
@@ -1390,17 +1391,42 @@ fn create_new_tab_with_server_receiver(
         None,
     )
     .unwrap();
-    (tab, server_receiver)
+    (tab, screen_receiver)
 }
 
-/// Helper: collect all ServerInstruction::Render messages from the receiver,
-/// concatenate the per-client strings, and return the combined output.
-fn collect_render_output(receiver: &Receiver<(ServerInstruction, ErrorContext)>) -> String {
+/// Helper: render every OSC 99 notification the tab handed the screen the way an OSC 99 host
+/// would receive it (identifier namespaced to the pane), concatenated.
+fn collect_forwarded_osc99(receiver: &Receiver<(ScreenInstruction, ErrorContext)>) -> String {
+    use crate::panes::grid::{namespace_notification_id, PendingNotification};
     let mut output = String::new();
     while let Ok((instruction, _)) = receiver.try_recv() {
-        if let ServerInstruction::Render(Some(client_map)) = instruction {
-            for (_client_id, content) in client_map {
-                output.push_str(&content);
+        if let ScreenInstruction::ForwardDesktopNotifications {
+            pane_id,
+            notifications,
+        } = instruction
+        {
+            for notification in notifications {
+                if let PendingNotification::Osc99 {
+                    payload,
+                    terminator,
+                    wants_report,
+                    ..
+                } = notification
+                {
+                    let (metadata, rest) = match payload.find(';') {
+                        Some(idx) => (
+                            payload.get(..idx).unwrap_or_default(),
+                            payload.get(idx..).unwrap_or_default(),
+                        ),
+                        None => (payload.as_str(), ""),
+                    };
+                    let namespaced_metadata =
+                        namespace_notification_id(metadata, pane_id, wants_report);
+                    output.push_str(&format!(
+                        "\u{1b}]99;{}{}{}",
+                        namespaced_metadata, rest, terminator
+                    ));
+                }
             }
         }
     }
@@ -1781,6 +1807,7 @@ mod borderless_pinned;
 mod floating;
 mod focus_follows_mouse;
 mod highlights;
+mod host_focus;
 mod layout;
 mod mouse;
 mod osc99;
@@ -1788,3 +1815,4 @@ mod pane_content;
 mod rendering;
 mod stacked_panes;
 mod swap_layouts;
+mod visibility;

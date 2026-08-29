@@ -255,15 +255,15 @@ pub fn hints_for_mode(mi: &ModeInfo) -> Vec<Hint> {
     ]} else if mi.mode == IM::Scroll { vec![
         hint("Enter search term", "Search",
             action_key(&km, &[A::SwitchToMode{input_mode: IM::EnterSearch}, A::SearchInput{input: vec![0]}])),
-        hint("Scroll", "Scroll",
-            action_key_group(&km, &[&[A::ScrollDown], &[A::ScrollUp]])),
-        hint("Scroll page", "Scroll",
-            action_key_group(&km, &[&[A::PageScrollDown], &[A::PageScrollUp]])),
-        hint("Scroll half page", "Scroll",
-            action_key_group(&km, &[&[A::HalfPageScrollDown], &[A::HalfPageScrollUp]])),
+        hint("Scroll", "Scroll", action_key_group(&km, &[
+            &[A::ScrollDown], &[A::ScrollUp],
+            &[A::PageScrollDown], &[A::PageScrollUp],
+            &[A::HalfPageScrollDown], &[A::HalfPageScrollUp]])),
         hint("Edit scrollback in default editor", "Edit",
             key_doing(&km, &A::EditScrollback { ansi: false })),
         hint("Select pane", "Select", to_base_mode),
+        hint("Scroll commands", "Commands",
+            action_key_group(&km, &[&[A::ScrollToPreviousPrompt], &[A::ScrollToNextPrompt]])),
     ]} else if mi.mode == IM::EnterSearch { vec![
         hint("When done", "Done", action_key(&km, &[A::SwitchToMode{input_mode: IM::Search}])),
         hint("Cancel", "Cancel",

@@ -15,7 +15,11 @@ use zellij_utils::cli::CliArgs;
 use zellij_utils::{
     data::{LayoutInfo, LayoutMetadata},
     envs,
-    input::{cli_assets::CliAssets, config::Config, options::Options},
+    input::{
+        cli_assets::{host_terminal_env, CliAssets},
+        config::Config,
+        options::Options,
+    },
     ipc::ClientToServerMsg,
     pane_size::Size,
 };
@@ -115,6 +119,7 @@ impl<'a> StartupContext<'a> {
             max_panes: self.cli_args.max_panes,
             force_run_layout_commands,
             cwd,
+            host_terminal_env: host_terminal_env(),
         }
     }
 

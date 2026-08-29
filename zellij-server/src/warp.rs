@@ -21,7 +21,7 @@
 //! recovery instructions, so a caller that reworded them would be making things
 //! worse.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use zellij_utils::{
     data::{WarpPlacement, WarpedPane, WarpedTab},
@@ -51,6 +51,34 @@ pub const WARP_TIMEOUT: Duration = Duration::from_secs(10);
 /// a `connect(2)` and nothing else. Named separately so the two can diverge
 /// later without touching call sites.
 pub const PLUGIN_WARP_TIMEOUT: Duration = WARP_TIMEOUT;
+
+/// How long the *asking* side of a warp waits, and deliberately longer than
+/// [`WARP_TIMEOUT`] — three of them, plus change.
+///
+/// `warp_tab_from_session` and `warp_pane_from_session` hand the whole warp to
+/// the session that owns the pane and then wait for its answer. That session
+/// does not produce its answer under one `WARP_TIMEOUT` clock but under up to
+/// three, run one after another, none of them sharing a deadline with ours:
+///
+/// 1. releasing the pane or tab, bounded by its own `recv_timeout(WARP_TIMEOUT)`;
+/// 2. handing it to *us* and waiting for our reply — our own pty thread
+///    adopting it under `adopt_*_here`'s `WARP_TIMEOUT`, behind a socket read
+///    the owner bounds by another `WARP_TIMEOUT`;
+/// 3. if that failed, taking it back, under a further `WARP_TIMEOUT`.
+///
+/// With the asker's budget equal to one of them it always expired first — in
+/// perfectly ordinary slow cases, not only pathological ones: a release of a
+/// couple of remote panes plus an adoption that had to rebuild an ssh forward
+/// was enough. The owner's carefully worded answer then lost a race it should
+/// never have been in, and worse, the read that gave up was reported by
+/// `read_cli_reply` as the other session having *closed the connection*, for a
+/// warp that in fact went on to succeed.
+///
+/// So this is sized to the owner's real worst case rather than to a guess at
+/// its usual one. It is a ceiling: a warp that succeeds returns the moment it
+/// does, and the full wait is only ever paid for a warp that failed at every
+/// step. The extra second covers the round trips between the two servers.
+pub const WARP_PULL_TIMEOUT: Duration = Duration::from_secs(3 * WARP_TIMEOUT.as_secs() + 1);
 
 /// A warp that takes longer than this is worth a line in the log.
 ///
@@ -207,6 +235,11 @@ pub fn warp_pane_to_session(
     let mut sender = connect_to_session(to_session, timeout).map_err(|e| format!("{e:#}"))?;
 
     let (response_sender, response_receiver) = crossbeam::channel::unbounded();
+    // The same instant this side will stop waiting at, handed down so that every
+    // leg of the release answers to one clock rather than to a constant of its
+    // own. A release that finishes after we have given up has nobody to hand the
+    // pane to.
+    let deadline = Instant::now() + timeout;
     senders
         .send_to_screen(ScreenInstruction::WarpPane {
             pane_id,
@@ -214,13 +247,14 @@ pub fn warp_pane_to_session(
             placement,
             client_id,
             response_channel: response_sender,
+            deadline,
         })
         .map_err(|e| format!("{e:#}"))?;
 
     let payload = match response_receiver.recv_timeout(timeout) {
         Ok(Ok(payload)) => payload,
         Ok(Err(reason)) => return Err(reason),
-        Err(_) => return Err("timed out preparing the pane to be moved".to_owned()),
+        Err(e) => return Err(preparation_failed("pane", e)),
     };
     log_if_slow("releasing the pane", started_at);
 
@@ -346,18 +380,23 @@ pub fn warp_tab_to_session(
     let mut sender = connect_to_session(to_session, timeout).map_err(|e| format!("{e:#}"))?;
 
     let (response_sender, response_receiver) = crossbeam::channel::unbounded();
+    // See `warp_pane_to_session`: one clock, shared all the way down. It matters
+    // more here — a tab releases several panes, and before this was plumbed
+    // through each of them spent an unrelated budget in turn.
+    let deadline = Instant::now() + timeout;
     senders
         .send_to_screen(ScreenInstruction::WarpTab {
             tab_index,
             client_id,
             response_channel: response_sender,
+            deadline,
         })
         .map_err(|e| format!("{e:#}"))?;
 
     let payload = match response_receiver.recv_timeout(timeout) {
         Ok(Ok(payload)) => payload,
         Ok(Err(reason)) => return Err(reason),
-        Err(_) => return Err("timed out preparing the tab to be moved".to_owned()),
+        Err(e) => return Err(preparation_failed("tab", e)),
     };
     log_if_slow("releasing the tab", started_at);
 
@@ -480,6 +519,26 @@ pub fn recovery_command(pane: &WarpedPane) -> String {
             .as_ref()
             .map(|remote| (remote.host.as_str(), remote.pane_token.as_str())),
     )
+}
+
+/// Why the preparation half of a warp produced nothing.
+///
+/// `recv_timeout` collapses two genuinely different things into one `Err`, and
+/// they call for different reactions from whoever reads this. A timeout means
+/// the release is still running somewhere and trying again in a moment may
+/// work; a disconnect means the thread that was going to answer is gone, and
+/// trying again will not. Saying "timed out" for both sent more than one
+/// investigation looking for a slow pane that was never there.
+fn preparation_failed(what: &str, e: crossbeam::channel::RecvTimeoutError) -> String {
+    match e {
+        crossbeam::channel::RecvTimeoutError::Timeout => {
+            format!("timed out preparing the {what} to be moved")
+        },
+        crossbeam::channel::RecvTimeoutError::Disconnected => format!(
+            "this session stopped preparing the {what} to be moved before it said whether it \
+             could"
+        ),
+    }
 }
 
 fn log_if_slow(what: &str, started_at: std::time::Instant) {

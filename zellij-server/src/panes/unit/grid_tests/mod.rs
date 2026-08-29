@@ -764,6 +764,8 @@ mod kitty_relative_placement;
 mod kitty_shared_memory;
 mod kitty_spec;
 mod kitty_unicode_placeholders;
+mod notifications;
+mod osc133_navigation;
 mod osc133_selection;
 mod scroll_region_and_forwarding;
 mod sixel_and_ui;

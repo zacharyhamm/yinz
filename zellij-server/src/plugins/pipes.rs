@@ -128,7 +128,59 @@ impl PendingPipeInfo {
     }
 }
 
+/// Hands `pipe_message` to the plugin, and makes sure the CLI pipe it came from (if any) is
+/// released whatever happens: every success path below unblocks it, and a plugin that traps while
+/// handling the message is not unloaded (`handle_plugin_crash` only paints the error), so without
+/// the release here the `zellij pipe` client would stay blocked until the plugin is unloaded or
+/// the session ends.
 pub fn apply_pipe_message_to_plugin(
+    plugin_id: PluginId,
+    client_id: ClientId,
+    render_clients: &[ClientId],
+    running_plugin: &mut RunningPlugin,
+    pipe_message: &PipeMessage,
+    plugin_render_assets: &mut Vec<PluginRenderAsset>,
+    senders: &ThreadSenders,
+) -> Result<()> {
+    let result = apply_pipe_message_to_plugin_inner(
+        plugin_id,
+        client_id,
+        render_clients,
+        running_plugin,
+        pipe_message,
+        plugin_render_assets,
+        senders,
+    );
+    if result.is_err() {
+        release_pipe_of_crashed_plugin(plugin_id, running_plugin, pipe_message, senders);
+    }
+    result
+}
+
+fn release_pipe_of_crashed_plugin(
+    plugin_id: PluginId,
+    running_plugin: &RunningPlugin,
+    pipe_message: &PipeMessage,
+    senders: &ThreadSenders,
+) {
+    if let PipeSource::Cli(pipe_id) = &pipe_message.source {
+        let mut pipe_state_changes = HashMap::new();
+        pipe_state_changes.insert(pipe_id.to_owned(), PipeStateChange::NoChange);
+        // the pipe was marked pending under the instance's owner, which is also what the success
+        // paths release it under
+        let plugin_render_asset =
+            PluginRenderAsset::new(plugin_id, running_plugin.env().owner_client_id, vec![])
+                .with_pipes(pipe_state_changes);
+        senders
+            .send_to_plugin(PluginInstruction::UnblockCliPipes(vec![
+                plugin_render_asset,
+            ]))
+            .context("failed to unblock input pipe of crashed plugin")
+            .non_fatal();
+    }
+}
+
+fn apply_pipe_message_to_plugin_inner(
     plugin_id: PluginId,
     client_id: ClientId,
     render_clients: &[ClientId],

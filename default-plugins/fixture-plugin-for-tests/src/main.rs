@@ -87,6 +87,10 @@ impl ZellijPlugin for State {
             .get("subscribe_mode_update")
             .map(|v| v == "true")
             .unwrap_or(false);
+        let should_subscribe_host_terminal_theme = configuration
+            .get("subscribe_host_terminal_theme")
+            .map(|v| v == "true")
+            .unwrap_or(false);
         self.configuration = configuration;
         subscribe(&[
             EventType::InputReceived,
@@ -107,6 +111,9 @@ impl ZellijPlugin for State {
         }
         if should_subscribe_mode_update {
             subscribe(&[EventType::ModeUpdate]);
+        }
+        if should_subscribe_host_terminal_theme {
+            subscribe(&[EventType::HostTerminalThemeChanged]);
         }
         watch_filesystem();
     }
@@ -1048,6 +1055,8 @@ impl ZellijPlugin for State {
             );
         } else if name == "message_to_plugin" {
             self.message_to_plugin_payload = payload.clone();
+        } else if name == "panic_while_handling_pipe" {
+            panic!("intentional panic for the pipe-release-on-crash test");
         } else if name == "enqueue_queue_job" {
             // payload: the plugin url to queue on "fixture_queue"
             let mut context = BTreeMap::new();

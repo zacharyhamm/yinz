@@ -9,7 +9,8 @@ use crate::{
         ConnStatusMsg, ConnectedMsg, DesktopNotificationResponseMsg, DetachSessionMsg,
         EmitNestedSessionFrameMsg, ExitMsg, ExitReason as ProtoExitReason,
         FailedToStartWebServerMsg, FirstClientConnectedMsg, ForegroundColorMsg,
-        ForwardQueryToHostMsg, ForwardedReplyFromHostMsg, HostTerminalThemeChangedMsg,
+        ForwardQueryToHostMsg, ForwardedReplyFromHostMsg, HostTerminalFocusChangedMsg,
+        HostTerminalThemeChangedMsg,
         HostTerminalThemeIndication as ProtoHostTerminalThemeIndication,
         InputMode as ProtoInputMode, KeyMsg, KillSessionMsg, KittyGraphicsSupportMsg,
         LayoutMetadata as ProtoLayoutMetadata, LogErrorMsg, LogMsg, MobileActivePaneMsg,
@@ -186,6 +187,11 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
                     SetMobileRenderPreferencesMsg { single_pane, fit },
                 )
             },
+            ClientToServerMsg::HostTerminalFocusChanged { focused } => {
+                client_to_server_msg::Message::HostTerminalFocusChanged(
+                    HostTerminalFocusChangedMsg { focused },
+                )
+            },
         };
 
         Ok(ProtoClientToServerMsg {
@@ -354,6 +360,11 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                 Ok(ClientToServerMsg::SetMobileRenderPreferences {
                     single_pane: msg.single_pane,
                     fit: msg.fit,
+                })
+            },
+            Some(client_to_server_msg::Message::HostTerminalFocusChanged(msg)) => {
+                Ok(ClientToServerMsg::HostTerminalFocusChanged {
+                    focused: msg.focused,
                 })
             },
             None => Err(anyhow!("Empty ClientToServerMsg message")),
@@ -838,6 +849,7 @@ impl From<crate::input::cli_assets::CliAssets>
             max_panes: cli_assets.max_panes.map(|m| m as u32),
             force_run_layout_commands: cli_assets.force_run_layout_commands,
             cwd: cli_assets.cwd.map(|p| p.to_string_lossy().to_string()),
+            host_terminal_env: cli_assets.host_terminal_env.into_iter().collect(),
         }
     }
 }
@@ -867,6 +879,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::CliAssets>
             max_panes: cli_assets.max_panes.map(|m| m as usize),
             force_run_layout_commands: cli_assets.force_run_layout_commands,
             cwd: cli_assets.cwd.map(PathBuf::from),
+            host_terminal_env: cli_assets.host_terminal_env.into_iter().collect(),
         })
     }
 }
@@ -972,6 +985,9 @@ impl From<crate::input::options::Options>
                 .notification_position
                 .map(|p| p.as_str().to_owned()),
             notification_timeout: options.notification_timeout,
+            host_notification_protocol: options
+                .host_notification_protocol
+                .map(|p| p.as_str().to_owned()),
             nested_session_handling: options.nested_session_handling.map(|n| {
                 use crate::client_server_contract::client_server_contract::NestedSessionHandling as ProtoNestedSessionHandling;
                 use crate::input::options::NestedSessionHandling;
@@ -982,6 +998,13 @@ impl From<crate::input::options::Options>
                     },
                     NestedSessionHandling::Descend => ProtoNestedSessionHandling::Descend as i32,
                     NestedSessionHandling::Never => ProtoNestedSessionHandling::Never as i32,
+                }
+            }),
+            explicit_theme_hue: options.explicit_theme_hue.map(|hue| {
+                use crate::client_server_contract::client_server_contract::ThemeHue as ProtoThemeHue;
+                match hue {
+                    crate::data::ThemeHue::Dark => ProtoThemeHue::Dark as i32,
+                    crate::data::ThemeHue::Light => ProtoThemeHue::Light as i32,
                 }
             }),
         }
@@ -1106,6 +1129,13 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             context_menu_on_right_click: options.context_menu_on_right_click,
             osc133_command_selection: options.osc133_command_selection,
             word_separators: options.word_separators,
+            host_notification_protocol: options
+                .host_notification_protocol
+                .map(|p| {
+                    p.parse::<crate::input::options::HostNotificationProtocol>()
+                        .map_err(|e| anyhow!(e))
+                })
+                .transpose()?,
             nested_session_handling: options
                 .nested_session_handling
                 .map(|n| match ProtoNestedSessionHandling::try_from(n) {
@@ -1122,6 +1152,17 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
                         Ok(crate::input::options::NestedSessionHandling::Never)
                     },
                     _ => Err(anyhow!("Invalid NestedSessionHandling value: {}", n)),
+                })
+                .transpose()?,
+            explicit_theme_hue: options
+                .explicit_theme_hue
+                .map(|hue| {
+                    use crate::client_server_contract::client_server_contract::ThemeHue as ProtoThemeHue;
+                    match ProtoThemeHue::try_from(hue).ok() {
+                        Some(ProtoThemeHue::Dark) => Ok(crate::data::ThemeHue::Dark),
+                        Some(ProtoThemeHue::Light) => Ok(crate::data::ThemeHue::Light),
+                        _ => Err(anyhow!("Invalid ThemeHue value: {}", hue)),
+                    }
                 })
                 .transpose()?,
         })
@@ -1279,6 +1320,7 @@ impl TryFrom<crate::input::actions::Action>
             CloseTerminalPaneAction,
             ConfirmAction,
             CopyAction,
+            CopyLastCommandOutputAction,
             CurrentTabInfoAction,
             DenyAction,
             DetachAction,
@@ -1361,6 +1403,8 @@ impl TryFrom<crate::input::actions::Action>
             ScrollDownByPaneIdAction,
             ScrollToBottomAction,
             ScrollToBottomByPaneIdAction,
+            ScrollToNextPromptAction,
+            ScrollToPreviousPromptAction,
             ScrollToTopAction,
             ScrollToTopByPaneIdAction,
             ScrollUpAction,
@@ -1370,6 +1414,7 @@ impl TryFrom<crate::input::actions::Action>
             SearchAction,
             SearchInputAction,
             SearchToggleOptionAction,
+            SelectCommandAtScrollPositionAction,
             SetDarkThemeAction,
             SetLightThemeAction,
             SetPaneBorderlessAction,
@@ -1549,6 +1594,18 @@ impl TryFrom<crate::input::actions::Action>
             },
             crate::input::actions::Action::ScrollToTop => {
                 ActionType::ScrollToTop(ScrollToTopAction {})
+            },
+            crate::input::actions::Action::ScrollToPreviousPrompt => {
+                ActionType::ScrollToPreviousPrompt(ScrollToPreviousPromptAction {})
+            },
+            crate::input::actions::Action::ScrollToNextPrompt => {
+                ActionType::ScrollToNextPrompt(ScrollToNextPromptAction {})
+            },
+            crate::input::actions::Action::SelectCommandAtScrollPosition => {
+                ActionType::SelectCommandAtScrollPosition(SelectCommandAtScrollPositionAction {})
+            },
+            crate::input::actions::Action::CopyLastCommandOutput => {
+                ActionType::CopyLastCommandOutput(CopyLastCommandOutputAction {})
             },
             crate::input::actions::Action::PageScrollUp => {
                 ActionType::PageScrollUp(PageScrollUpAction {})
@@ -2506,6 +2563,18 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             },
             ActionType::ScrollToBottom(_) => Ok(crate::input::actions::Action::ScrollToBottom),
             ActionType::ScrollToTop(_) => Ok(crate::input::actions::Action::ScrollToTop),
+            ActionType::ScrollToPreviousPrompt(_) => {
+                Ok(crate::input::actions::Action::ScrollToPreviousPrompt)
+            },
+            ActionType::ScrollToNextPrompt(_) => {
+                Ok(crate::input::actions::Action::ScrollToNextPrompt)
+            },
+            ActionType::SelectCommandAtScrollPosition(_) => {
+                Ok(crate::input::actions::Action::SelectCommandAtScrollPosition)
+            },
+            ActionType::CopyLastCommandOutput(_) => {
+                Ok(crate::input::actions::Action::CopyLastCommandOutput)
+            },
             ActionType::PageScrollUp(_) => Ok(crate::input::actions::Action::PageScrollUp),
             ActionType::PageScrollDown(_) => Ok(crate::input::actions::Action::PageScrollDown),
             ActionType::HalfPageScrollUp(_) => Ok(crate::input::actions::Action::HalfPageScrollUp),

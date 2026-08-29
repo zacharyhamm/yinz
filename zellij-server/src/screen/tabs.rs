@@ -142,6 +142,7 @@ impl Screen {
             .next()
             .context("screen contained no tabs")
             .with_context(err_context)?;
+        let mut destination_tab_ids = HashSet::new();
         for (client_id, client_mode_info) in client_ids_and_mode_infos {
             let client_tab_history = self.tab_history.entry(client_id).or_default();
             if let Some(client_previous_tab) = client_tab_history.pop() {
@@ -150,6 +151,7 @@ impl Screen {
                     client_active_tab
                         .add_client(client_id, Some(client_mode_info))
                         .with_context(err_context)?;
+                    destination_tab_ids.insert(client_previous_tab);
                     continue;
                 }
             }
@@ -159,6 +161,17 @@ impl Screen {
                 .with_context(err_context)?
                 .add_client(client_id, Some(client_mode_info))
                 .with_context(err_context)?;
+            destination_tab_ids.insert(first_tab_index);
+        }
+        // The plugins in a tab a client just landed in last heard about that client's
+        // mode when it left, if ever - `update_input_modes` only covers the connected
+        // clients, and the ones that just arrived were not among them until now.
+        for destination_tab_id in destination_tab_ids {
+            if let Some(destination_tab) = self.tabs.get_mut(&destination_tab_id) {
+                destination_tab
+                    .update_input_modes()
+                    .with_context(err_context)?;
+            }
         }
         Ok(())
     }
