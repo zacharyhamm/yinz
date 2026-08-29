@@ -12,6 +12,11 @@ impl State {
         key.bare_key == BareKey::Char('`') && key.has_modifiers(&[KeyModifier::Ctrl])
     }
 
+    /// Ctrl-o: jump the conversation over a different tiled pane - see `State::reposition`.
+    pub(crate) fn is_reposition_key(key: &KeyWithModifier) -> bool {
+        key.bare_key == BareKey::Char('o') && key.has_modifiers(&[KeyModifier::Ctrl])
+    }
+
     /// The interrupt. Split out from Esc, which now only ever hides.
     pub(crate) fn is_interrupt_key(key: &KeyWithModifier) -> bool {
         key.bare_key == BareKey::Char('c') && key.has_modifiers(&[KeyModifier::Ctrl])
@@ -400,6 +405,10 @@ impl State {
                 continue;
             };
             self.own_tab_index = Some(*tab_index);
+            // What Ctrl-o ranks, and what an anchored conversation follows. Read before the
+            // placement retry below, so a manifest that both places and re-anchors does so once.
+            self.tab_panes = panes.clone();
+            self.track_anchor(panes);
             // The manifest is what makes a placement possible at all: it names the tab a pane is
             // on, which is the thing `change_overlay_coordinates` needs to find it. A pane still
             // sitting at the centered default the host gave it is placed here, whichever event
@@ -493,6 +502,13 @@ impl State {
         // and Alt-Enter as a submit.
         if key.bare_key == BareKey::Char('l') && key.has_modifiers(&[KeyModifier::Ctrl]) {
             return self.new_chat();
+        }
+        // Taken ahead of the modal states below for the same reason Ctrl-l is: moving the pane
+        // out of the way is wanted whatever is on screen in it, and the input box would swallow
+        // the key. Nothing to redraw here - the move is the server's to paint.
+        if Self::is_reposition_key(&key) {
+            self.reposition();
+            return false;
         }
         // The temporary lists are modal while open.
         if self.picker.is_some() {

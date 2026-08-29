@@ -4360,7 +4360,13 @@ pub enum PluginCommand {
     ChangeFloatingPanesCoordinates(Vec<(PaneId, FloatingPaneCoordinates)>),
     /// Move or resize an overlay on the session surface. The overlay's kind was decided when it
     /// was born and is not touched here.
-    ChangeOverlayCoordinates(Vec<(PaneId, FloatingPaneCoordinates)>),
+    ChangeOverlayCoordinates {
+        placements: Vec<(PaneId, FloatingPaneCoordinates)>,
+        /// The placement is a user gesture made through the plugin, so it may reclaim a position
+        /// the user dragged and a size they resized (`OverlayCarry::position_is_user_stated` /
+        /// `size_is_user_stated` on the server) rather than being overruled by them.
+        override_user_placement: bool,
+    },
     TogglePaneBorderless(PaneId),
     SetPaneBorderless(PaneId, bool),
     OpenCommandPaneNearPlugin(CommandToRun, Context),

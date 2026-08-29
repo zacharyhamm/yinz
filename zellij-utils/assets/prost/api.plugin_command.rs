@@ -1202,6 +1202,10 @@ pub struct ChangeFloatingPanesCoordinatesPayload {
 pub struct ChangeOverlayCoordinatesPayload {
     #[prost(message, repeated, tag="1")]
     pub pane_ids_and_floating_panes_coordinates: ::prost::alloc::vec::Vec<PaneIdAndFloatingPaneCoordinates>,
+    /// The placement is a user gesture made through the plugin - a key that moves the overlay - so
+    /// a position the user dragged and a size they resized are reclaimed rather than kept.
+    #[prost(bool, tag="2")]
+    pub override_user_placement: bool,
 }
 /// Open a command pane directly onto the session surface. A terminal pane has no plugin
 /// configuration for the server to read overlay-ness out of, so the placement says it.

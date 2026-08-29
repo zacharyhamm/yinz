@@ -952,3 +952,403 @@ fn a_pair_that_is_already_together_asks_for_nothing() {
 // its arms end in `break_panes_to_tab_with_index`, a value-returning host call that blocks on a
 // reply no native test can send. That is the same reason `tab_to_follow` is a free function - the
 // decision is the part worth pinning, and it is the part that can be.
+
+// ---------------------------------------------------------------------------------------------
+// Ctrl-o: the conversation jumps over a different tiled pane.
+//
+// `pick_anchor` and `anchored_geometry` are pure functions of the manifest and are tested as
+// such; the state-level tests below pin what a press does to the placement over time.
+
+/// A tiled pane as the manifest reports one: selectable, on the tiled layer, with a rect.
+fn tiled(id: u32, x: usize, y: usize, cols: usize, rows: usize, focused: bool) -> PaneInfo {
+    PaneInfo {
+        id,
+        is_plugin: false,
+        is_focused: focused,
+        is_selectable: true,
+        pane_x: x,
+        pane_y: y,
+        pane_columns: cols,
+        pane_rows: rows,
+        ..Default::default()
+    }
+}
+
+/// Our own overlay entry, with the rect the server drew us at.
+fn overlay_pane(id: u32, x: usize, y: usize, cols: usize, rows: usize) -> PaneInfo {
+    PaneInfo {
+        is_floating: true,
+        ..tiled(id, x, y, cols, rows, false)
+    }
+    .with_plugin()
+}
+
+trait WithPlugin {
+    fn with_plugin(self) -> Self;
+}
+impl WithPlugin for PaneInfo {
+    fn with_plugin(mut self) -> Self {
+        self.is_plugin = true;
+        self
+    }
+}
+
+fn at(x: usize, y: usize, cols: usize, rows: usize) -> Rect {
+    Rect { x, y, cols, rows }
+}
+
+#[test]
+fn pick_anchor_skips_the_focused_pane() {
+    // the focused pane is the biggest by far, and still not a candidate
+    let panes = vec![
+        tiled(1, 0, 0, 150, 50, true),
+        tiled(2, 150, 0, 50, 50, false),
+    ];
+    assert_eq!(
+        pick_anchor(at(3, 14, 60, 33), &panes, None),
+        Some(PaneId::Terminal(2))
+    );
+}
+
+#[test]
+fn pick_anchor_prefers_a_pane_hocus_is_not_sitting_on() {
+    // the corner pane is larger, but the conversation is already on it
+    let panes = vec![
+        tiled(1, 0, 0, 100, 50, false),
+        tiled(2, 100, 0, 100, 25, false),
+        tiled(3, 100, 25, 100, 25, true),
+    ];
+    assert_eq!(
+        pick_anchor(at(3, 14, 60, 33), &panes, None),
+        Some(PaneId::Terminal(2))
+    );
+}
+
+#[test]
+fn pick_anchor_breaks_ties_by_the_larger_pane() {
+    // nothing overlaps: the conversation is over the focused pane
+    let panes = vec![
+        tiled(1, 0, 0, 100, 50, true),
+        tiled(2, 100, 0, 100, 20, false),
+        tiled(3, 100, 20, 100, 30, false),
+    ];
+    assert_eq!(
+        pick_anchor(at(3, 14, 60, 33), &panes, None),
+        Some(PaneId::Terminal(3))
+    );
+}
+
+#[test]
+fn pick_anchor_ignores_floating_suppressed_and_unselectable_panes() {
+    let floating = PaneInfo {
+        is_floating: true,
+        ..tiled(2, 100, 0, 100, 50, false)
+    };
+    let suppressed = PaneInfo {
+        is_suppressed: true,
+        ..tiled(3, 100, 0, 100, 50, false)
+    };
+    let chrome = PaneInfo {
+        is_selectable: false,
+        ..tiled(4, 0, 49, 200, 1, false)
+    };
+    let panes = vec![
+        tiled(1, 0, 0, 100, 50, true),
+        floating,
+        suppressed,
+        chrome,
+        tiled(5, 100, 0, 100, 10, false),
+    ];
+    assert_eq!(
+        pick_anchor(at(3, 14, 60, 33), &panes, None),
+        Some(PaneId::Terminal(5))
+    );
+}
+
+#[test]
+fn pick_anchor_is_a_no_op_when_the_best_pane_is_the_current_anchor() {
+    let panes = vec![
+        tiled(1, 0, 0, 100, 50, true),
+        tiled(2, 100, 0, 100, 50, false),
+    ];
+    assert_eq!(
+        pick_anchor(at(103, 14, 60, 33), &panes, Some(PaneId::Terminal(2))),
+        None
+    );
+}
+
+#[test]
+fn pick_anchor_has_nothing_to_say_with_one_tiled_pane() {
+    let panes = vec![
+        tiled(1, 0, 0, 200, 50, true),
+        overlay_pane(7, 3, 14, 60, 33),
+    ];
+    assert_eq!(pick_anchor(at(3, 14, 60, 33), &panes, None), None);
+    assert_eq!(pick_anchor(at(3, 14, 60, 33), &[], None), None);
+}
+
+#[test]
+fn anchored_geometry_sits_in_the_anchors_bottom_left_inset_by_the_padding() {
+    let (corner, _) = beside(&BTreeMap::new(), 50, 200);
+    let (_, _, corner_w, corner_h) = rect(&corner);
+    let inside = anchored_geometry(&BTreeMap::new(), 50, 200, at(100, 0, 100, 50)).expect("some");
+    let (x, y, w, h) = rect(&inside);
+    assert_eq!(
+        x,
+        100 + DEFAULT_PAD,
+        "one padding in from the pane's left edge"
+    );
+    assert_eq!(
+        y + h,
+        50 - DEFAULT_PAD,
+        "one padding up from the pane's bottom edge"
+    );
+    assert_eq!(
+        (w, h),
+        (corner_w, corner_h),
+        "the configured size, when the pane has room for it"
+    );
+}
+
+#[test]
+fn anchored_geometry_clamps_the_size_to_the_anchor() {
+    let inside = anchored_geometry(&BTreeMap::new(), 50, 200, at(150, 30, 50, 20)).expect("some");
+    let (x, y, w, h) = rect(&inside);
+    assert_eq!(w, 50 - 2 * DEFAULT_PAD, "as wide as the pane allows");
+    assert_eq!(h, 20 - 2 * DEFAULT_PAD, "and as tall");
+    assert!(
+        x + w <= 200 && y + h <= 50,
+        "inside the pane, {x} {y} {w} {h}"
+    );
+    assert!(x >= 150 && y >= 30);
+}
+
+#[test]
+fn anchored_geometry_respects_the_minimums_in_a_tiny_pane() {
+    let inside = anchored_geometry(&BTreeMap::new(), 50, 200, at(0, 46, 10, 4)).expect("some");
+    let (x, y, w, h) = rect(&inside);
+    assert_eq!(x, 1, "the padding is capped to a quarter of the pane");
+    assert_eq!(
+        w,
+        ui::MIN_COLS + 2,
+        "never narrower than the plugin can draw, even past the pane's edge"
+    );
+    assert_eq!(
+        h, MIN_ROWS,
+        "and never shorter than a frame with a row in it"
+    );
+    assert_eq!(y + h, 46 + 4 - 1, "still anchored to the pane's bottom");
+    assert_eq!(
+        anchored_geometry(&BTreeMap::new(), 50, 200, at(0, 0, 0, 6)),
+        None,
+        "and nothing at all for a pane with no size"
+    );
+}
+
+/// A hocus over a two-pane tab: the focused pane on the left, where the corner is, and another
+/// on the right.
+fn two_pane_state() -> State {
+    let mut state = placed_state();
+    state.on_panes(manifest(0, two_panes()));
+    state.last_placement = None;
+    state
+}
+
+fn two_panes() -> Vec<PaneInfo> {
+    vec![
+        overlay_pane(7, 3, 14, 60, 33),
+        tiled(1, 0, 0, 100, 50, true),
+        tiled(2, 100, 0, 100, 50, false),
+    ]
+}
+
+fn ctrl_o() -> KeyWithModifier {
+    KeyWithModifier::new(BareKey::Char('o')).with_ctrl_modifier()
+}
+
+/// The conversation's rect from the last placement.
+fn placed_chat(state: &State) -> (usize, usize, usize, usize) {
+    let (placements, _) = state.last_placement.as_ref().expect("a placement");
+    let (_, chat) = placements
+        .iter()
+        .find(|(id, _)| *id == PaneId::Plugin(7))
+        .expect("our own pane");
+    rect(chat)
+}
+
+#[test]
+fn ctrl_o_anchors_the_conversation_inside_the_largest_unfocused_pane() {
+    let mut state = two_pane_state();
+
+    assert!(!state.on_key(ctrl_o()));
+
+    assert_eq!(state.anchor, Some(PaneId::Terminal(2)));
+    let (_, is_the_users) = state.last_placement.as_ref().expect("a placement");
+    assert!(
+        is_the_users,
+        "sent as the user's own placement, over any drag"
+    );
+    let (x, y, w, h) = placed_chat(&state);
+    assert!(
+        x >= 100 && x + w <= 200 && y + h <= 50,
+        "inside pane 2: {x} {y} {w} {h}"
+    );
+}
+
+#[test]
+fn ctrl_o_with_one_tiled_pane_is_a_no_op() {
+    let mut state = placed_state();
+    state.on_panes(manifest(
+        0,
+        vec![
+            overlay_pane(7, 3, 14, 60, 33),
+            tiled(1, 0, 0, 200, 50, true),
+        ],
+    ));
+    state.last_placement = None;
+
+    state.on_key(ctrl_o());
+
+    assert_eq!(state.anchor, None);
+    assert_eq!(state.last_placement, None, "nothing was sent");
+}
+
+#[test]
+fn ctrl_o_twice_on_the_same_best_pane_does_not_re_place() {
+    let mut state = two_pane_state();
+    state.on_key(ctrl_o());
+    let first = state.last_placement.clone();
+    state.last_placement = None;
+
+    state.on_key(ctrl_o());
+
+    assert_eq!(state.anchor, Some(PaneId::Terminal(2)));
+    assert_eq!(
+        state.last_placement, None,
+        "nowhere better to go: {first:?}"
+    );
+}
+
+#[test]
+fn an_anchored_conversation_follows_its_pane_when_the_tab_is_re_tiled() {
+    let mut state = two_pane_state();
+    state.on_key(ctrl_o());
+    state.last_placement = None;
+
+    // the same manifest again: nothing moved, nothing to say
+    state.on_panes(manifest(0, two_panes()));
+    assert_eq!(
+        state.last_placement, None,
+        "an anchor where it was asks for nothing"
+    );
+
+    // pane 2 was re-tiled narrower
+    state.on_panes(manifest(
+        0,
+        vec![
+            overlay_pane(7, 103, 14, 60, 33),
+            tiled(1, 0, 0, 150, 50, true),
+            tiled(2, 150, 0, 50, 50, false),
+        ],
+    ));
+
+    let (placements, is_the_users) = state.last_placement.clone().expect("re-placed");
+    assert!(
+        !is_the_users,
+        "a re-tile is the plugin keeping up, not a gesture"
+    );
+    assert_eq!(placements.len(), 1);
+    let (x, _, w, _) = placed_chat(&state);
+    assert!(
+        x >= 150 && x + w <= 200,
+        "inside the pane where it is now: {x} {w}"
+    );
+    assert_eq!(state.anchor_rect, Some(at(150, 0, 50, 50)));
+}
+
+#[test]
+fn closing_the_anchor_pane_returns_the_conversation_to_the_corner() {
+    let mut state = two_pane_state();
+    state.on_key(ctrl_o());
+    state.last_placement = None;
+
+    state.on_panes(manifest(
+        0,
+        vec![
+            overlay_pane(7, 103, 14, 60, 33),
+            tiled(1, 0, 0, 200, 50, true),
+        ],
+    ));
+
+    assert_eq!(state.anchor, None);
+    let (corner, _) = beside(&BTreeMap::new(), 50, 200);
+    assert_eq!(placed_chat(&state), rect(&corner), "back in the corner");
+}
+
+/// `follow_tab` releases the anchor before its own placement (a host call with a reply, so not
+/// driven here); the manifest of the tab we landed on is the other route, and the one every
+/// cross-tab move ends in.
+#[test]
+fn arriving_on_another_tab_drops_the_anchor() {
+    let mut state = two_pane_state();
+    state.on_key(ctrl_o());
+    state.last_placement = None;
+
+    state.on_panes(manifest(
+        1,
+        vec![
+            overlay_pane(7, 103, 14, 60, 33),
+            tiled(3, 0, 0, 200, 50, true),
+        ],
+    ));
+
+    assert_eq!(state.own_tab_index, Some(1));
+    assert_eq!((state.anchor, state.anchor_rect), (None, None));
+    let (corner, _) = beside(&BTreeMap::new(), 50, 200);
+    assert_eq!(
+        placed_chat(&state),
+        rect(&corner),
+        "placed in the corner of the tab it landed on"
+    );
+}
+
+#[test]
+fn a_hidden_conversation_keeps_its_anchor() {
+    let mut state = two_pane_state();
+    state.on_key(ctrl_o());
+    let anchored = placed_chat(&state);
+
+    state.hide_self_only();
+    assert_eq!(state.anchor, Some(PaneId::Terminal(2)));
+    state.reveal_self();
+
+    assert_eq!(state.anchor, Some(PaneId::Terminal(2)));
+    assert_eq!(placed_chat(&state), anchored, "revealed where it was");
+}
+
+#[test]
+fn the_agent_list_keeps_its_corner_arithmetic_while_the_conversation_is_anchored() {
+    let mut state = two_pane_state();
+    state.pipe(selection(9));
+    state.on_panes(manifest(
+        0,
+        two_panes()
+            .into_iter()
+            .chain(std::iter::once(overlay_pane(9, 66, 14, 60, 33)))
+            .collect(),
+    ));
+
+    state.on_key(ctrl_o());
+
+    let (placements, _) = state.last_placement.clone().expect("a placement");
+    let (_, list) = placements
+        .iter()
+        .find(|(id, _)| *id == PaneId::Plugin(9))
+        .expect("the list is placed too");
+    let (_, beside_the_corner) = beside(&BTreeMap::new(), 50, 200);
+    assert_eq!(
+        rect(list),
+        rect(&beside_the_corner),
+        "exactly where it would be with the conversation in the corner"
+    );
+}

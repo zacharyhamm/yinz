@@ -8915,14 +8915,18 @@ impl Tab {
         &mut self,
         pane_id: &PaneId,
         coordinates: FloatingPaneCoordinates,
+        override_user_placement: bool,
     ) -> Result<()> {
         if !self.overlay_panes.panes_contain(pane_id) {
             return Err(anyhow!(
                 "pane {pane_id:?} is not an overlay - use change_floating_pane_coordinates"
             ));
         }
-        self.overlay_panes
-            .change_pane_coordinates(*pane_id, coordinates)?;
+        self.overlay_panes.change_pane_coordinates(
+            *pane_id,
+            coordinates,
+            override_user_placement,
+        )?;
         self.set_force_render();
         Ok(())
     }
@@ -8944,8 +8948,11 @@ impl Tab {
     ) -> Result<()> {
         // already an overlay: coordinates change, overlay-ness does not
         if self.overlay_panes.panes_contain(pane_id) {
-            self.overlay_panes
-                .change_pane_coordinates(*pane_id, floating_pane_coordinates)?;
+            self.overlay_panes.change_pane_coordinates(
+                *pane_id,
+                floating_pane_coordinates,
+                false,
+            )?;
             self.set_force_render();
             return Ok(());
         }
@@ -8962,8 +8969,11 @@ impl Tab {
                 // `add_floating_pane` sends an overlay-by-configuration pane straight to the
                 // overlay collection, so it may already have landed there
                 if self.overlay_panes.panes_contain(pane_id) {
-                    self.overlay_panes
-                        .change_pane_coordinates(*pane_id, floating_pane_coordinates)?;
+                    self.overlay_panes.change_pane_coordinates(
+                        *pane_id,
+                        floating_pane_coordinates,
+                        false,
+                    )?;
                     self.set_force_render();
                     return Ok(());
                 }
