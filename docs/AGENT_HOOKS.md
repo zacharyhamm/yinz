@@ -51,6 +51,17 @@ both, and a plugin that wants more than a record holds subscribes to the pipe. I
 broadcast without a pipe id, so nothing waits to be unblocked and a hook cannot stall the turn
 it fired in.
 
+"Whole" has one bound on it, `agent::HOOK_BROADCAST_MAX_BYTES` (64 KiB). Two of the fields
+Claude Code sends have no size limit in its own schema — `tool_input`, so a `Write` of a
+two-megabyte file, and `tool_response`, so a `Read` of anything — and this payload is copied
+into every running plugin's memory, twice per tool call, inside a hook with five seconds to
+live. An event over the cap goes out through `HookEvent::pruned` instead: every field it
+models survives, with each string cut to 256 characters and a budget spent across
+`tool_input`, which leaves everything any reader actually takes from it — the `Bash` command,
+the `file_path`, the first `AskUserQuestion` question. Anything the struct does not model,
+`tool_response` above all, is gone. Under the cap, which is nearly every event, the JSON
+arrives exactly as Claude Code wrote it.
+
 The same record is written by two other roads, which is what makes "is this pane an agent" one
 question with one answer: the spawn path, when a plugin opens a pane *as* an agent pane
 (`AgentSource::Spawned`, state `Busy`, moved to `Exited` when the command exits and back to
@@ -81,7 +92,7 @@ is a no-op on the pane. Pass `hooks: false` to spawn without it.
 | `PermissionDenied` | busy | Auto mode refused a call; the agent carries on |
 | `Elicitation` | **waiting** | An MCP server asking for input |
 | `ElicitationResult` | busy | The answer came back |
-| `Notification` | **waiting** / idle | Backstop; see below |
+| `Notification` | **waiting** | Backstop; see below |
 | `SubagentStart` / `SubagentStop` | busy | A worker under an agent that is working anyway |
 | `PreCompact` / `PostCompact` | busy | Work the user did not ask for and is waiting on |
 | `Stop` | idle | Every turn end. **Carries `last_assistant_message`** |
@@ -92,10 +103,19 @@ is a no-op on the pane. Pass `hooks: false` to spawn without it.
 notification only fires after ~6s of the prompt going unanswered, which is most of what
 the feed exists to remove. Its `notification_type` is matched against an allowlist —
 `permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`,
-`worker_permission_prompt` for waiting, `agent_completed` for idle — so a kind added in a
-later Claude Code cannot silently start drawing a `!`. None of these hooks returns a
-decision: the script exits 0 with empty stdout, which leaves the permission flow exactly
-as it was.
+`worker_permission_prompt` — so a kind added in a later Claude Code cannot silently start
+drawing a `!`. None of these hooks returns a decision: the script exits 0 with empty stdout,
+which leaves the permission flow exactly as it was.
+
+**No notification means the turn ended**, and `agent_completed` least of all, though it reads
+like the one that would. Claude Code raises it from its background-job monitor, for an async
+agent this session started, on the foreground session's own payload — so a pane whose Claude
+launched one and kept working would be marked idle mid-turn by it. The turn ending has `Stop`
+and `StopFailure`, which arrive earlier and carry the words to describe it. `agent_needs_input`
+stays on the waiting list despite coming from that same monitor, because it has a second
+source the finish notification does not: the foreground dialog map, which raises it for
+teammate setup, a Slack-connect dialog and an offline file sync. Those are this session,
+blocked, with a person to tell.
 
 Two rules the generated script keeps, both of which matter:
 
@@ -174,7 +194,8 @@ agent waiting · 7 · claude◆
 Which library should we use for date formatting?
 ```
 
-Three rules, each the same one the summary toast already keeps:
+Three rules, each the same one the summary toast already keeps — and a fourth this one needs
+on its own:
 
 - **Not over the pane it describes.** If the user is focused there, they can see it.
 - **The edge, on the phase alone.** `PermissionRequest` puts the prompt up and the
@@ -184,13 +205,21 @@ Three rules, each the same one the summary toast already keeps:
   that `busy` is what re-arms the edge. For the same reason a `Notification` never
   overwrites a `waiting_on` that is already set — it fills a gap, it does not replace.
 - **Not for a prompt the mode answers itself** — and only for those. A mode answers a
-  *permission prompt*: `bypassPermissions`, `dontAsk` and `auto` answer every one, and
-  `acceptEdits` answers only the file-editing tools, so a `Bash` prompt under it blocks
-  exactly as it would under `default` and still interrupts. An `AskUserQuestion`, an
-  `ExitPlanMode`, an MCP `Elicitation` and every waiting `Notification` are never
-  suppressed under any mode: the first three address a person directly, and the last
+  *permission prompt*: `bypassPermissions` and `dontAsk` answer every one, resolving to a
+  blanket allow and a blanket deny, and `acceptEdits` answers only the file-editing tools, so
+  a `Bash` prompt under it blocks exactly as it would under `default` and still interrupts. An
+  `AskUserQuestion`, an `ExitPlanMode`, an MCP `Elicitation` and every waiting `Notification`
+  are never suppressed under any mode: the first three address a person directly, and the last
   fires only once its prompt has gone six seconds unanswered, which is itself the proof
   nothing answered it. The row draws the wait either way — it is what the agent said.
+- **`auto` is silenced on the odds, and the backstop is what settles up.** It resolves to a
+  *classifier*, not to an allow: it clears what it judges safe and puts the rest in front of
+  the user exactly as `default` would. Silencing its requests is still right — most of them
+  really are answered — but a request has by then moved the feed to `waiting`, so the
+  `Notification` behind it has no busy→waiting edge left to cross, and a genuinely blocked
+  agent would go unannounced. So a wait drawn but not announced *holds its edge open*
+  (`suppressed_waits` in the daemon) until something spends it: the backstop toasts on the
+  question the request itself worded, or the agent goes back to work and the wait is over.
 
 ## When a feed ends
 
@@ -200,6 +229,11 @@ unanswered all day without the pane's state having changed, and a ten-minute
 is *observed* — `SessionEnd` clears it, the command exiting marks it `Exited`, the pane
 closing takes it with it. The cost is that a single dropped event leaves a pane mislabelled
 until the next one arrives, which is what `StopFailure` exists to stop being the common case.
+
+The record going `Exited` is read **even for a pane the daemon hears events from**, which is
+the one place the manifest overrules the pipe. An agent killed outright sends no `SessionEnd`,
+so without that the feed would never end, and the screen heuristic behind it stays disabled —
+a pane parked on `waiting · Bash rm` for the life of the session.
 
 A `session_id` that changes in the same pane is a session replaced rather than ended —
 `/clear` — and drops the summary, the in-flight request and the held prompt with it.

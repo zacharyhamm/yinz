@@ -220,6 +220,20 @@ struct State {
     /// manifest road is for a pane that reports some other way: one hocus spawned, an
     /// `agent-report --state` script, a plugin speaking for an agent.
     event_fed: BTreeSet<u32>,
+    /// The panes now waiting on something nobody was told about.
+    ///
+    /// A `PermissionRequest` under an unattended mode is drawn but not announced, on the
+    /// grounds that the mode is about to answer it. `bypassPermissions` and `dontAsk` really
+    /// do; `auto` runs a classifier and puts whatever it will not clear in front of the user
+    /// exactly as `default` would - see `agent::UNATTENDED_MODES`. That prompt's only other
+    /// signal is the `Notification` six seconds later, and by then the feed is already
+    /// `Waiting`, so there is no busy→waiting edge left for it to cross.
+    ///
+    /// This is that edge, held open. A wait suppressed on the way in leaves its pane here; the
+    /// backstop takes it out again and toasts, which is the right reading of a notification
+    /// that fired at all - a prompt the mode had answered would never have gone six seconds
+    /// unanswered.
+    suppressed_waits: BTreeSet<u32>,
     /// What the user last asked each hook-fed pane for, from its `UserPromptSubmit`.
     ///
     /// Kept so the summary made at the end of a turn can say what the turn was *for*.
@@ -644,10 +658,6 @@ impl State {
             hocus_proto::agent::HookOutcome::Reported(agent) => report_agent(pane_id, Some(agent)),
             hocus_proto::agent::HookOutcome::Nothing => {},
         }
-        // What this pane says for itself is read from its events, not from the record they
-        // also write: `waiting_on` survives a `Notification` here and a complete record has no
-        // way to express that. See the `event_fed` skip in `on_pane_update`.
-        self.event_fed.insert(pane_id);
         if event.hook_event_name == agents::HOOK_SESSION_END {
             // The session is over, so there is nothing left reporting for this pane
             // and the heuristic takes it back. The pane itself may well live on - a
@@ -655,6 +665,7 @@ impl State {
             // not ours. The question the last turn answered goes with it either way.
             self.prompts.remove(&pane_id);
             self.event_fed.remove(&pane_id);
+            self.suppressed_waits.remove(&pane_id);
             if self.hooks.remove(&pane_id).is_some() {
                 self.publish();
             }
@@ -750,6 +761,18 @@ impl State {
             session_id: event.session_id.clone(),
             cwd: event.cwd.clone(),
         };
+        // What this pane says for itself is read from its events, not from the record they
+        // also write: `waiting_on` survives a `Notification` here and a complete record has no
+        // way to express that. See the `event_fed` skip in `on_pane_update`.
+        //
+        // Set here rather than on the way in, because an event that built no feed - one whose
+        // phase says nothing, or one for a pane the snapshot does not call an agent, or one
+        // that arrived before the first snapshot did - has nothing to read *instead of* the
+        // record. Claiming the pane for the pipe road on such an event closes the manifest
+        // road behind a feed that was never built, and the record the same command wrote goes
+        // unread until the next hook fires - which for a permission prompt is when the user
+        // answers it.
+        self.event_fed.insert(pane_id);
         let changed = previous.as_ref() != Some(&feed);
         if changed {
             self.hooks.insert(pane_id, feed.clone());
@@ -778,17 +801,29 @@ impl State {
             && previous
                 .as_ref()
                 .is_none_or(|was| was.phase != agents::HookPhase::Waiting);
-        if entered_wait
+        // The one thing that reopens a spent edge: a wait entered under a mode that was
+        // expected to answer it, and did not. See `suppressed_waits`. Taken out of the set
+        // here whether or not this event announces it, because either way the edge it was
+        // holding has now been used.
+        let held_edge = self.suppressed_waits.remove(&pane_id);
+        let announce = phase == agents::HookPhase::Waiting
             && agents::waiting_needs_a_person(event)
-            // Not over the very pane it describes: the user is looking at the question.
-            // The same rule the summary toast keeps.
-            && self.focused != Some(pane_id)
-        {
+            && (entered_wait || held_edge);
+        // Not over the very pane it describes: the user is looking at the question. The same
+        // rule the summary toast keeps — and the reason this is not part of `announce`, which
+        // is about the wait having been spoken for rather than about it being seen.
+        if announce && self.focused != Some(pane_id) {
             let kind = self.toast_kind(pane_id);
             toast(
                 pane_id,
                 &agents::waiting_toast(pane_id, kind.as_deref(), &feed),
             );
+        }
+        // A wait still standing that nobody has been told about, whether it started that way
+        // or a second silent event replaced the first. The edge stays open for its backstop;
+        // anything that ends the wait takes it out above and leaves it out.
+        if phase == agents::HookPhase::Waiting && !announce && (entered_wait || held_edge) {
+            self.suppressed_waits.insert(pane_id);
         }
         // Any busy event after a turn summary went out is *later work*, and a sentence
         // about the turn before it is not a description of this one. Checking the phase
@@ -970,6 +1005,13 @@ impl State {
         let Some(mut summary) = agents::local_summary(message, hash) else {
             return;
         };
+        // Whatever was in flight for this pane can only be a screen request the poller started
+        // before the first hook arrived, and this turn is the better answer — the same claim
+        // the endpoint path makes by *replacing* the entry. Left standing, that reply lands on
+        // a pane that is idle and has not moved, so its hash still matches, and it overwrites
+        // the agent's own words with a guess made from a photograph and toasts the same turn a
+        // second time.
+        self.summary_requests.remove(&pane_id);
         // The one thing a summary must never disagree with the row about, on either
         // path. See `finish_summary_with`, which does the same to the model's answer.
         if let Some(feed) = self.hooks.get(&pane_id) {
@@ -1105,6 +1147,12 @@ impl State {
         // honest ends are the ones that are observed: the session saying so, the pane
         // closing, and the latch being released. This is the second.
         self.hooks.retain(|id, _| live.contains(id));
+        // The two maps that only make sense beside a feed, pruned with it rather than each on
+        // a rule of its own: a pane that closed while its agent was still running would
+        // otherwise leave its id in both for the life of the daemon, and leave `event_fed`
+        // disagreeing with `hooks` about which road the pane is read from.
+        self.event_fed.retain(|id| live.contains(id));
+        self.suppressed_waits.retain(|id| live.contains(id));
         // A pane that has come back to life is running a new process, and has to
         // earn its latch again rather than inherit the dead one's. `settle_latches`
         // below re-earns it in the same breath if it really is running an agent.
@@ -1146,18 +1194,23 @@ impl State {
             let Some(agent) = pane.agent.as_ref() else {
                 continue;
             };
+            // An exited agent's feed is over however its record travelled, so this is read
+            // even for a pane whose events we hear. It is the only end a feed has left when
+            // the process dies without a `SessionEnd` - a `kill -9`, a machine that went away
+            // - and skipping it there leaves the pane on `waiting · …` for good, with the
+            // screen heuristic disabled behind the feed that will not go.
+            if agent.state == AgentState::Exited {
+                self.hooks.remove(&pane.pane_id);
+                self.event_fed.remove(&pane.pane_id);
+                self.suppressed_waits.remove(&pane.pane_id);
+                continue;
+            }
             // A pane whose events we hear is read from them; see `event_fed`.
             if self.event_fed.contains(&pane.pane_id) {
                 continue;
             }
-            match agents::HookFeed::from_agent(agent) {
-                Some(feed) => {
-                    self.hooks.insert(pane.pane_id, feed);
-                },
-                None if agent.state == AgentState::Exited => {
-                    self.hooks.remove(&pane.pane_id);
-                },
-                None => {},
+            if let Some(feed) = agents::HookFeed::from_agent(agent) {
+                self.hooks.insert(pane.pane_id, feed);
             }
         }
         for (pane_id, cwd) in reported {
@@ -2035,6 +2088,7 @@ impl State {
     fn forget_agent(&mut self, pane_id: u32) {
         self.hooks.remove(&pane_id);
         self.event_fed.remove(&pane_id);
+        self.suppressed_waits.remove(&pane_id);
         self.activity.remove(&pane_id);
         self.phase.remove(&pane_id);
         self.summaries.remove(&pane_id);
@@ -2504,6 +2558,97 @@ mod tests {
             Some("Bash rm"),
             "a pane we hear from directly is read from its events"
         );
+    }
+
+    /// An event that builds no feed claims nothing. The daemon can be reloaded mid-session,
+    /// and then the first broadcast for a pane arrives before any snapshot has: there is no
+    /// pane list to classify against, so no feed is built. Reading that as "this pane is fed
+    /// by its events" closes the manifest road behind a feed that does not exist, and the
+    /// record the very same command wrote goes unread — for a permission prompt, until the
+    /// user answers it, which is the one thing nobody was going to be told about.
+    #[test]
+    fn an_event_that_builds_no_feed_leaves_the_manifest_road_open() {
+        let request = wire::HookEvent {
+            tool_name: Some("Bash".to_owned()),
+            tool_input: Some(serde_json::json!({ "command": "rm -rf target" })),
+            ..hook("PermissionRequest")
+        };
+        // No snapshot yet, which is what a reloaded daemon has.
+        let mut state = State::default();
+        state.on_hook(7, &request);
+        assert!(state.hooks.is_empty(), "nothing to build a feed from");
+        assert!(
+            !state.event_fed.contains(&7),
+            "and so nothing claimed for the pipe road"
+        );
+
+        // The snapshot arrives carrying the record that same command wrote.
+        let record = match hocus_proto::agent::hook_outcome(CLAUDE, &request) {
+            hocus_proto::agent::HookOutcome::Reported(agent) => agent,
+            other => panic!("{other:?}"),
+        };
+        state.manifest.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                title: "claude".to_owned(),
+                agent: Some(record),
+                ..PaneInfo::default()
+            }],
+        );
+        state.rebuild_panes();
+        assert_eq!(
+            state.hooks[&7].waiting_on.as_deref(),
+            Some("Bash rm"),
+            "the record is read, so the wait is drawn"
+        );
+    }
+
+    /// A feed ends where an ending is *observed*, and `SessionEnd` is not the only observer.
+    /// An agent killed outright sends nothing at all, and the record moving to `Exited` is
+    /// then the one thing that says the session is over. Skipping that for a pane fed by its
+    /// events leaves the row on `waiting · …` for the life of the session, with the screen
+    /// heuristic disabled behind the feed that will not go.
+    #[test]
+    fn a_killed_agent_loses_its_feed_even_though_it_never_said_goodbye() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            latched: BTreeMap::from([(7, CLAUDE.to_owned())]),
+            ..State::default()
+        };
+        let request = wire::HookEvent {
+            tool_name: Some("Bash".to_owned()),
+            tool_input: Some(serde_json::json!({ "command": "rm -rf target" })),
+            ..hook("PermissionRequest")
+        };
+        state.on_hook(7, &request);
+        assert_eq!(state.hooks[&7].waiting_on.as_deref(), Some("Bash rm"));
+        assert!(state.event_fed.contains(&7));
+
+        // `kill -9`: no `SessionEnd`, and the pane's record goes to `Exited` on its own.
+        state.manifest.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                title: "claude".to_owned(),
+                agent: Some(AgentInfo {
+                    kind: CLAUDE.to_owned(),
+                    state: AgentState::Exited,
+                    source: AgentSource::Reported,
+                    detail: None,
+                    waiting_on: None,
+                    cwd: Some("/work".to_owned()),
+                    session_id: Some("cc-session-1".to_owned()),
+                }),
+                ..PaneInfo::default()
+            }],
+        );
+        state.rebuild_panes();
+        assert!(
+            !state.hooks.contains_key(&7),
+            "the feed is over, so the heuristic has the pane back"
+        );
+        assert!(!state.event_fed.contains(&7));
     }
 
     /// The other half: a pane that has never piped an event is read off the manifest, which is
@@ -4217,6 +4362,66 @@ mod tests {
         assert_eq!(cell(&state, 7), "waiting · Bash");
     }
 
+    /// …and a mode that turns out not to have answered it says so six seconds later.
+    ///
+    /// `auto` is a classifier, not a blanket allow: it clears what it judges safe and puts
+    /// the rest in front of the user exactly as `default` would. Silencing the request is
+    /// still right — most of them really are answered — but the request has by then moved the
+    /// feed to `waiting`, so the `Notification` behind it has no busy→waiting edge left to
+    /// cross, and a genuinely blocked agent goes unannounced. A notification that fired *is*
+    /// the evidence: a prompt the mode had answered would never have gone unanswered long
+    /// enough for one.
+    #[test]
+    fn a_wait_the_mode_did_not_answer_is_announced_by_its_backstop() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        let auto = |event: wire::HookEvent| wire::HookEvent {
+            permission_mode: Some("auto".to_owned()),
+            ..event
+        };
+        let (silent, _) = feed(
+            &mut state,
+            7,
+            &auto(tool_hook(
+                "PermissionRequest",
+                "Bash",
+                serde_json::json!({ "command": "rm -rf target" }),
+            )),
+            None,
+        );
+        assert!(silent.is_empty(), "the mode is expected to answer it");
+        assert_eq!(cell(&state, 7), "waiting · Bash rm");
+
+        let backstop = auto(wire::HookEvent {
+            notification_type: Some("permission_prompt".to_owned()),
+            message: Some("Claude needs your permission to use Bash".to_owned()),
+            ..hook("Notification")
+        });
+        let (toasts, _) = feed(&mut state, 7, &backstop, None);
+        assert_eq!(
+            toasts,
+            vec![(7, "agent waiting · 7 · claude◆\nBash rm".to_owned())],
+            "the classifier refused it after all, and the row's own words are the better ones"
+        );
+
+        // Answered, and then a second prompt the mode does answer: the edge the first one
+        // held is spent, and nothing is owed for the second until its own backstop fires.
+        feed(&mut state, 7, &auto(hook("PostToolUse")), None);
+        let (again, _) = feed(
+            &mut state,
+            7,
+            &auto(tool_hook(
+                "PermissionRequest",
+                "Read",
+                serde_json::json!({ "file_path": "/work/src/main.rs" }),
+            )),
+            None,
+        );
+        assert!(again.is_empty(), "back to the odds on the next prompt");
+    }
+
     /// But only the prompts that mode actually answers. `acceptEdits` accepts edits;
     /// a `Bash` prompt under it blocks until somebody says otherwise, and a question is
     /// not a permission prompt at all — so both still interrupt. The toast is the only
@@ -4401,6 +4606,52 @@ mod tests {
         assert_eq!(
             toasts,
             vec![(7, format!("agent idle · 7 · claude◆\n{}", summary.text))],
+        );
+    }
+
+    /// …and it owns the turn, the same way the endpoint path does by replacing whatever was
+    /// in flight. Before the first hook arrives a pane looks like any other to the poller, so
+    /// a screen request can already be out when the feed takes over. That answer describes a
+    /// pane which is now idle and has not moved, so its hash still matches and every other
+    /// guard waves it through — and it would overwrite the agent's own words with a guess made
+    /// from a photograph, rename the pane on it, and toast the same turn a second time.
+    #[test]
+    fn a_screen_reply_cannot_overwrite_the_summary_a_turn_made_of_its_own_words() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            activity: agents::Activity::from([(7, (11, 1))]),
+            ..State::default()
+        };
+        // The poller got there first, from the screen the pane is still showing.
+        let hash = agents::activity_hash(&state.activity, 7).expect("a hash");
+        state.summary_requests.insert(
+            7,
+            InFlight {
+                id: 1,
+                hash,
+                origin: Origin::Screen {
+                    tail: "$ cargo test".to_owned(),
+                },
+                ticks: 0,
+            },
+        );
+
+        let (toasts, sent) = feed(&mut state, 7, &stop_saying(REPLY), None);
+        assert!(sent.is_empty(), "nobody was asked");
+        assert_eq!(toasts.len(), 1, "one toast for one turn");
+
+        let finished = finish(
+            &mut state,
+            200,
+            &reply("Ran a build.", false),
+            &context(7, 1),
+        );
+        assert!(finished.toasts.is_empty(), "and it is not toasted twice");
+        assert!(finished.renames.is_empty());
+        assert!(
+            state.summaries[&7].text.starts_with("I ran the test suite"),
+            "the agent's own words stand, got {:?}",
+            state.summaries[&7].text
         );
     }
 
