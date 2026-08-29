@@ -2867,24 +2867,32 @@ mod tests {
         );
     }
 
-    /// A permission mode that answers by itself has nobody to interrupt. The phase is
-    /// still whatever the agent said — only the toast is gated on this.
-    #[test]
-    fn a_wait_under_an_unattended_mode_is_drawn_but_not_announced() {
-        let request = |mode: Option<&str>| crate::wire::HookEvent {
+    /// One `PermissionRequest` for a tool, under a mode.
+    fn request(tool: Option<&str>, mode: Option<&str>) -> crate::wire::HookEvent {
+        crate::wire::HookEvent {
             hook_event_name: "PermissionRequest".to_owned(),
+            tool_name: tool.map(str::to_owned),
             permission_mode: mode.map(str::to_owned),
             ..Default::default()
-        };
-        assert!(waiting_needs_a_person(&request(None)));
-        assert!(waiting_needs_a_person(&request(Some("default"))));
-        assert!(waiting_needs_a_person(&request(Some("plan"))));
-        assert!(!waiting_needs_a_person(&request(Some("bypassPermissions"))));
-        assert!(!waiting_needs_a_person(&request(Some("acceptEdits"))));
+        }
+    }
+
+    /// A permission mode that answers by itself has nobody to interrupt. The phase is
+    /// still whatever the agent said — only the toast is gated on this.
+    ///
+    /// Which prompts a mode answers is `zellij_utils::agent`'s to decide and to test; what is
+    /// worth pinning here is that the row and the `!` are unaffected by the answer.
+    #[test]
+    fn a_wait_under_an_unattended_mode_is_drawn_but_not_announced() {
+        assert!(waiting_needs_a_person(&request(Some("Bash"), None)));
+        assert!(!waiting_needs_a_person(&request(
+            Some("Bash"),
+            Some("bypassPermissions")
+        )));
 
         // The phase is unaffected either way: the agent said it stopped.
         assert_eq!(
-            hook_phase(&request(Some("bypassPermissions"))),
+            hook_phase(&request(Some("Bash"), Some("bypassPermissions"))),
             Some(HookPhase::Waiting)
         );
     }

@@ -176,13 +176,23 @@ pub const IDLE_NOTIFICATIONS: &[&str] = &["agent_completed"];
 /// - so a tool named here needs no special case on the way out.
 pub const WAITING_TOOLS: &[&str] = &["AskUserQuestion", "ExitPlanMode"];
 
-/// The permission modes that answer prompts without a person.
+/// The permission modes that answer *every* permission prompt without a person.
 ///
-/// A wait reported under one of these has nobody to interrupt: either the mode decided
-/// already, or the prompt that fired is one the user has said in advance they do not want to
-/// see. The state is still recorded - it is what the agent said - but see
+/// A permission prompt reported under one of these has nobody to interrupt: either the mode
+/// decided already, or the prompt that fired is one the user has said in advance they do not
+/// want to see. The state is still recorded - it is what the agent said - but see
 /// [`waiting_needs_a_person`].
-pub const UNATTENDED_MODES: &[&str] = &["acceptEdits", "bypassPermissions", "dontAsk", "auto"];
+///
+/// `acceptEdits` is deliberately not here: it answers one kind of prompt rather than all of
+/// them, which is what [`AUTO_ACCEPTED_EDIT_TOOLS`] names.
+pub const UNATTENDED_MODES: &[&str] = &["bypassPermissions", "dontAsk", "auto"];
+
+/// The tools whose permission prompt `acceptEdits` answers by itself.
+///
+/// That mode accepts *file edits*, and nothing else. A `Bash` prompt under it stops and waits
+/// exactly as it would under `default`, which is why the mode alone cannot decide whether a
+/// wait is real.
+pub const AUTO_ACCEPTED_EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
 
 /// The longest tool hint a record carries. A status row has no room for an argument, and
 /// `tool_input` is free-form text of arbitrary size.
@@ -313,15 +323,44 @@ pub fn hook_state(event: &HookEvent) -> Option<AgentState> {
 
 /// Whether a reported wait is one a person has to answer.
 ///
-/// `false` under a permission mode that answers by itself: the agent is momentarily blocked,
-/// and recording that is right, but interrupting somebody over a prompt that is about to
-/// answer itself is not. Read only by whatever would interrupt — the state, the record and the
-/// row all take the agent at its word.
+/// `false` only where the prompt is about to answer itself: the agent is momentarily blocked,
+/// and recording that is right, but interrupting somebody over it is not. Read only by
+/// whatever would interrupt — the state, the record and the row all take the agent at its word.
+///
+/// The gate is on the event *and* the mode, because a mode only ever answers a **permission
+/// prompt**. Of the five ways into [`AgentState::Waiting`], three are a person being addressed
+/// directly under any mode at all — the two [`WAITING_TOOLS`], which put a question or a plan
+/// in front of the user, and an `Elicitation`, which is an MCP server's own form. Silencing
+/// those because the session happens to be in `acceptEdits` leaves a pane blocked with nothing
+/// to say so.
+///
+/// A waiting `Notification` is never suppressed either, and that is the deliberate half. It is
+/// the backstop, firing only once its prompt has gone about six seconds unanswered — which is
+/// itself the evidence that nothing auto-resolved it — and because an interruption is gated on
+/// the busy→waiting edge it can only ever be the sole signal for that prompt in the first
+/// place.
+///
+/// That leaves `PermissionRequest`, where the mode decides: everything under
+/// [`UNATTENDED_MODES`], and only the file-editing tools under `acceptEdits`. A request naming
+/// no tool is treated as attended, because a wait announced once too often costs a toast and
+/// one missed costs a blocked agent nobody is told about.
 pub fn waiting_needs_a_person(event: &HookEvent) -> bool {
+    if event.hook_event_name != "PermissionRequest" {
+        return true;
+    }
+    let Some(mode) = event.permission_mode.as_deref() else {
+        return true;
+    };
+    if UNATTENDED_MODES.contains(&mode) {
+        return false;
+    }
+    if mode != "acceptEdits" {
+        return true;
+    }
     !event
-        .permission_mode
+        .tool_name
         .as_deref()
-        .is_some_and(|mode| UNATTENDED_MODES.contains(&mode))
+        .is_some_and(|tool| AUTO_ACCEPTED_EDIT_TOOLS.contains(&tool))
 }
 
 /// The few words a record carries for the tool a `PreToolUse` names.
@@ -655,22 +694,77 @@ mod tests {
     }
 
     /// A wait a mode answers by itself is still a wait; it is just not one to interrupt
-    /// somebody over.
+    /// somebody over. The gate is on the event *and* the mode, because a mode only ever
+    /// answers a permission prompt.
     #[test]
     fn a_wait_the_mode_answers_needs_nobody() {
-        let request = |mode: Option<&str>| HookEvent {
+        let request = |tool: Option<&str>, mode: Option<&str>| HookEvent {
             permission_mode: mode.map(str::to_owned),
-            tool_name: Some("Bash".to_owned()),
+            tool_name: tool.map(str::to_owned),
             ..event("PermissionRequest")
         };
-        assert!(waiting_needs_a_person(&request(None)));
-        assert!(waiting_needs_a_person(&request(Some("default"))));
-        assert!(waiting_needs_a_person(&request(Some("plan"))));
+        assert!(waiting_needs_a_person(&request(Some("Bash"), None)));
+        assert!(waiting_needs_a_person(&request(
+            Some("Bash"),
+            Some("default")
+        )));
+        assert!(waiting_needs_a_person(&request(Some("Bash"), Some("plan"))));
         for unattended in UNATTENDED_MODES {
             assert!(
-                !waiting_needs_a_person(&request(Some(unattended))),
-                "{unattended}"
+                !waiting_needs_a_person(&request(Some("Bash"), Some(unattended))),
+                "{unattended} answers every prompt"
             );
+        }
+
+        // `acceptEdits` accepts *edits*. A `Bash` prompt under it blocks exactly as it would
+        // under `default`, and the mode alone cannot tell the two apart.
+        for tool in AUTO_ACCEPTED_EDIT_TOOLS {
+            assert!(
+                !waiting_needs_a_person(&request(Some(tool), Some("acceptEdits"))),
+                "{tool} is accepted without anybody"
+            );
+        }
+        for tool in ["Bash", "WebFetch", "mcp__github__create_pull_request"] {
+            assert!(
+                waiting_needs_a_person(&request(Some(tool), Some("acceptEdits"))),
+                "{tool} still stops and waits"
+            );
+        }
+        // No tool named is treated as attended: a toast too many costs a line, and one too
+        // few costs a blocked agent nobody hears about.
+        assert!(waiting_needs_a_person(&request(None, Some("acceptEdits"))));
+
+        // The three waits that address a person directly, and the backstop. None of them is a
+        // permission prompt, so no mode answers any of them.
+        for mode in ["acceptEdits", "bypassPermissions", "dontAsk", "auto"] {
+            for tool in WAITING_TOOLS {
+                let asking = HookEvent {
+                    tool_name: Some((*tool).to_owned()),
+                    permission_mode: Some(mode.to_owned()),
+                    ..event("PreToolUse")
+                };
+                assert!(
+                    waiting_needs_a_person(&asking),
+                    "{tool} under {mode} is still a question"
+                );
+            }
+            let elicitation = HookEvent {
+                permission_mode: Some(mode.to_owned()),
+                ..event("Elicitation")
+            };
+            assert!(waiting_needs_a_person(&elicitation), "{mode}");
+            // The backstop fires only once its prompt has gone unanswered, which is itself
+            // the evidence that the mode did not answer it.
+            for kind in ["permission_prompt", "worker_permission_prompt"] {
+                let backstop = HookEvent {
+                    permission_mode: Some(mode.to_owned()),
+                    ..notification(kind)
+                };
+                assert!(
+                    waiting_needs_a_person(&backstop),
+                    "{kind} under {mode} went unanswered for six seconds"
+                );
+            }
         }
     }
 

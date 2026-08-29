@@ -787,6 +787,28 @@ impl State {
                 &agents::waiting_toast(pane_id, kind.as_deref(), &feed),
             );
         }
+        // Any busy event after a turn summary went out is *later work*, and a sentence
+        // about the turn before it is not a description of this one. Checking the phase
+        // when the answer lands is not enough on its own: a whole short turn can start
+        // and end inside one round trip, leaving the feed back at `Idle` with the stale
+        // answer looking current — and if that turn carried no final message it issued
+        // no request of its own to shadow it. Cancelling on the way in is the check that
+        // cannot be outrun.
+        //
+        // Only a turn request: a screen request goes stale on its screen moving, which
+        // `finish_summary_with` compares hashes for, and a pane going busy is not that.
+        // The `Stop` that buys a turn request is `Idle`, so this can never cancel the
+        // request the call below is about to make.
+        if phase == agents::HookPhase::Busy
+            && matches!(
+                self.summary_requests
+                    .get(&pane_id)
+                    .map(|request| &request.origin),
+                Some(Origin::Turn { .. })
+            )
+        {
+            self.summary_requests.remove(&pane_id);
+        }
         if matches!(event.hook_event_name.as_str(), "Stop" | "StopFailure") {
             turn(self, pane_id, event);
         }
@@ -1926,6 +1948,12 @@ impl State {
             // agent said, and a `cargo build` printing throughout the round trip does not
             // make the sentence about it wrong. What voids it is the session being
             // replaced, or the agent already being back at work on something else.
+            //
+            // "Back at work" is enforced by `on_hook_with` dropping this request on the
+            // first busy event rather than here: a later turn can begin *and end* inside
+            // one round trip, and by the time such an answer landed the phase would be
+            // `Idle` again and say nothing about it. What is left below is the same claim
+            // stated where it is read, cheap enough to keep as an invariant.
             Origin::Turn { session_id } => {
                 let feed = self.hooks.get(&pane_id);
                 let same_session = feed.is_some_and(|feed| feed.session_id == session_id);
@@ -4186,6 +4214,68 @@ mod tests {
         assert_eq!(cell(&state, 7), "waiting · Bash");
     }
 
+    /// But only the prompts that mode actually answers. `acceptEdits` accepts edits;
+    /// a `Bash` prompt under it blocks until somebody says otherwise, and a question is
+    /// not a permission prompt at all — so both still interrupt. The toast is the only
+    /// thing that ever says so, because it is gated on the edge into the wait and the
+    /// `Notification` six seconds later cannot cross that edge a second time.
+    #[test]
+    fn an_unattended_mode_only_silences_the_prompts_it_answers() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        let accept_edits = |event: wire::HookEvent| wire::HookEvent {
+            permission_mode: Some("acceptEdits".to_owned()),
+            ..event
+        };
+
+        // An edit is what the mode is for: accepted without anybody.
+        let (toasts, _) = feed(
+            &mut state,
+            7,
+            &accept_edits(tool_hook(
+                "PermissionRequest",
+                "Edit",
+                serde_json::json!({ "file_path": "/work/src/main.rs" }),
+            )),
+            None,
+        );
+        assert!(
+            toasts.is_empty(),
+            "an edit under acceptEdits answers itself"
+        );
+
+        // Back to work, so the next wait crosses the edge on its own.
+        feed(&mut state, 7, &hook("PostToolUse"), None);
+        let (toasts, _) = feed(
+            &mut state,
+            7,
+            &accept_edits(tool_hook(
+                "PermissionRequest",
+                "Bash",
+                serde_json::json!({ "command": "cargo test" }),
+            )),
+            None,
+        );
+        assert_eq!(toasts.len(), 1, "a Bash prompt under acceptEdits blocks");
+        assert!(toasts[0].1.contains("Bash cargo"));
+
+        feed(&mut state, 7, &hook("PostToolUse"), None);
+        let (toasts, _) = feed(
+            &mut state,
+            7,
+            &accept_edits(tool_hook(
+                "PreToolUse",
+                "AskUserQuestion",
+                serde_json::json!({ "questions": [{ "question": "Which library?" }] }),
+            )),
+            None,
+        );
+        assert_eq!(toasts.len(), 1, "no mode answers a question");
+        assert!(toasts[0].1.contains("Which library?"));
+    }
+
     /// The whole of what the feed buys over the screen for summaries. A `Stop` says the
     /// turn is over and hands over the agent's own final message, at the instant it
     /// happens — where the heuristic waits fifteen seconds and then sends a photograph of
@@ -4358,6 +4448,35 @@ mod tests {
             &context(7, id),
         );
         assert!(state.summaries.is_empty(), "the turn it described is over");
+    }
+
+    /// And it stays dropped when the turn that displaced it has itself finished. A short
+    /// turn can start and end inside one round trip, and one that says nothing at the end
+    /// buys no request of its own — so an answer landing after it would find the feed
+    /// `Idle`, look current, and be toasted over a turn it never saw.
+    #[test]
+    fn a_turn_summary_is_dropped_when_a_later_turn_has_already_finished() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
+        let id = state.summary_requests.get(&7).expect("in flight").id;
+
+        // A whole turn, beginning to end, while the first answer is still in flight.
+        feed(&mut state, 7, &hook("UserPromptSubmit"), None);
+        let (_, sent) = feed(&mut state, 7, &hook("Stop"), Some(&endpoint()));
+        assert!(sent.is_empty(), "nothing said, so nothing asked");
+
+        let finished = finish(
+            &mut state,
+            200,
+            &reply("Tests pass.", false),
+            &context(7, id),
+        );
+        assert!(state.summaries.is_empty(), "it describes the turn before");
+        assert!(finished.renames.is_empty(), "and must not rename the pane");
+        assert!(finished.toasts.is_empty());
     }
 
     /// And a session replaced in the same pane: `/clear` starts a new one, and the old
