@@ -146,11 +146,37 @@ fn clicking_an_overflow_arrow_reveals_tabs_without_switching() {
 
     assert!(state.on_mouse(Mouse::LeftClick(0, right.x)));
     assert_eq!(state.chat_id, Some(2), "the active chat did not change");
-    assert_eq!(state.chat_tab_view, Some(2));
+    assert_eq!(state.chat_tab_view.get(&state.client), Some(&2));
     assert_eq!(
         state.chat_tab_focus, None,
         "the clicked view now takes effect"
     );
+    assert!(ui::chat_tabs(&state, state.chat_tab_width)
+        .iter()
+        .any(|cell| cell.target == ui::TabTarget::Tab(2)));
+}
+
+#[test]
+fn overflow_tab_reveal_is_per_client() {
+    let mut state = three_tabs();
+    state.chat_tab_width = 12;
+    state.client = 1;
+    let right = ui::chat_tabs(&state, state.chat_tab_width)
+        .into_iter()
+        .find(|cell| cell.target == ui::TabTarget::Reveal(2))
+        .unwrap();
+
+    assert!(state.on_mouse(Mouse::LeftClick(0, right.x)));
+    assert!(ui::chat_tabs(&state, state.chat_tab_width)
+        .iter()
+        .any(|cell| cell.target == ui::TabTarget::Tab(2)));
+
+    state.client = 2;
+    assert!(ui::chat_tabs(&state, state.chat_tab_width)
+        .iter()
+        .any(|cell| cell.target == ui::TabTarget::Tab(1)));
+
+    state.client = 1;
     assert!(ui::chat_tabs(&state, state.chat_tab_width)
         .iter()
         .any(|cell| cell.target == ui::TabTarget::Tab(2)));
@@ -188,18 +214,18 @@ fn clicks_outside_the_tab_bar_do_nothing() {
 #[test]
 fn changing_tabs_resets_the_scrolled_view() {
     let mut state = three_tabs();
-    state.chat_tab_view = Some(2);
+    state.chat_tab_view.insert(state.client, 2);
 
     state.switch_to_tab(0);
-    assert_eq!(state.chat_tab_view, None);
+    assert!(!state.chat_tab_view.contains_key(&state.client));
 
-    state.chat_tab_view = Some(2);
+    state.chat_tab_view.insert(state.client, 2);
     state.close_tab(2);
-    assert_eq!(state.chat_tab_view, None);
+    assert!(!state.chat_tab_view.contains_key(&state.client));
 
-    state.chat_tab_view = Some(1);
+    state.chat_tab_view.insert(state.client, 1);
     state.open_tab(Chat::default());
-    assert_eq!(state.chat_tab_view, None);
+    assert!(!state.chat_tab_view.contains_key(&state.client));
 }
 
 #[test]

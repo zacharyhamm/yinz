@@ -745,13 +745,13 @@ impl State {
                 match target {
                     Some(ui::TabTarget::Tab(tab)) => {
                         self.chat_tab_focus = None;
-                        self.chat_tab_view = None;
+                        self.chat_tab_view.remove(&self.client);
                         self.switch_to_tab(tab);
                         true
                     },
                     Some(ui::TabTarget::Reveal(tab)) => {
                         self.chat_tab_focus = None;
-                        self.chat_tab_view = Some(tab);
+                        self.chat_tab_view.insert(self.client, tab);
                         true
                     },
                     None => false,
