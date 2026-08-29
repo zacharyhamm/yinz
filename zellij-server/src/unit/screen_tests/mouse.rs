@@ -545,13 +545,10 @@ fn break_group_with_mouse() {
     );
 }
 
-/// A form widget acts when the button comes back up, not when it goes down, so a
-/// plugin that only ever hears the press cannot have a clickable button. The tab
-/// used to track the drag only for panes doing their own text selection - which
-/// is the very flag that stops a plugin being sent `Mouse::LeftClick` at all - so
-/// a plugin heard the press and nothing after it.
+/// Mouse selection and plugin mouse events are independent capabilities: enabling selection must
+/// not make clickable plugin UI unreachable.
 #[test]
-fn a_plugin_pane_hears_the_whole_click_and_not_just_the_press() {
+fn a_plugin_pane_with_mouse_selection_hears_the_whole_click() {
     let size = Size { cols: 80, rows: 20 };
     let client_id = 1;
     let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
@@ -576,6 +573,11 @@ fn a_plugin_pane_hears_the_whole_click_and_not_just_the_press() {
             None,
         )
         .expect("TEST");
+    screen
+        .with_pane(PaneId::Plugin(7), |pane| {
+            pane.set_mouse_selection_support(true)
+        })
+        .expect("the dialog is in the tab");
     let (content_x, content_y) = screen
         .with_pane(PaneId::Plugin(7), |pane| {
             (pane.get_content_x(), pane.get_content_y())
