@@ -657,6 +657,7 @@ pub enum ServerContext {
     KillSession,
     DetachSession,
     AttachClient,
+    ConnStatus,
     Log,
     LogError,
     SwitchSession,

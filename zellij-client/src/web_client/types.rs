@@ -37,6 +37,9 @@ pub trait SessionManager: Send + Sync + std::fmt::Debug {
         &self,
         session_name: &str,
     ) -> Option<zellij_utils::input::layout::Layout>;
+    /// Spawn the server if there is none, connect `os_input` to it, and send
+    /// the first message. On `Err`, `os_input` is not connected and the caller
+    /// must not go on to use it.
     fn spawn_session_if_needed(
         &self,
         session_name: &str,
@@ -44,7 +47,7 @@ pub trait SessionManager: Send + Sync + std::fmt::Debug {
         session_exists: bool,
         zellij_ipc_pipe: &Path,
         first_message: ClientToServerMsg,
-    );
+    ) -> Result<(), Box<dyn std::error::Error>>;
 }
 
 #[derive(Debug, Clone)]
@@ -52,8 +55,17 @@ pub struct RealSessionManager;
 
 impl SessionManager for RealSessionManager {
     fn session_exists(&self, session_name: &str) -> Result<bool, Box<dyn std::error::Error>> {
-        zellij_utils::sessions::session_exists(session_name)
-            .map_err(|e| format!("Session check failed: {:?}", e).into())
+        use zellij_utils::sessions::{session_status, unresponsive_session_message, SessionProbe};
+        match session_status(session_name) {
+            Ok(SessionProbe::Alive) => Ok(true),
+            Ok(SessionProbe::Absent) => Ok(false),
+            // Reported as an error, not `false`: `false` means "create it",
+            // and creating over a live server unlinks its socket.
+            Ok(SessionProbe::Unresponsive) => {
+                Err(unresponsive_session_message(session_name).into())
+            },
+            Err(e) => Err(format!("Session check failed: {:?}", e).into()),
+        }
     }
 
     fn list_sessions(&self) -> Vec<WebSessionInfo> {
@@ -86,16 +98,13 @@ impl SessionManager for RealSessionManager {
         session_exists: bool,
         zellij_ipc_pipe: &Path,
         first_message: ClientToServerMsg,
-    ) {
+    ) -> Result<(), Box<dyn std::error::Error>> {
         if !session_exists {
             spawn_new_session(session_name, os_input.clone(), zellij_ipc_pipe);
         }
-        if let Err(e) = os_input.connect_to_server(zellij_ipc_pipe) {
-            // Only this browser session is lost; the web server keeps serving.
-            log::error!("{e}");
-            return;
-        }
+        os_input.connect_to_server(zellij_ipc_pipe)?;
         os_input.send_to_server(first_message);
+        Ok(())
     }
 }
 

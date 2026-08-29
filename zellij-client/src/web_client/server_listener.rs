@@ -17,6 +17,7 @@ use std::{
 use zellij_utils::{
     cli::CliArgs,
     data::Style,
+    errors::prelude::*,
     input::{config::Config, options::Options},
     ipc::{ClientToServerMsg, ExitReason, IpcRecv, PixelDimensions, ServerToClientMsg},
     pane_size::{Size, SizeInPixels},
@@ -115,7 +116,20 @@ pub fn zellij_server_listener(
                         .is_client_read_only(&web_client_id);
 
 
-                    let session_exists = session_manager.session_exists(&session_name).unwrap_or(false);
+                    // A failed check is not "no session": treating it as one
+                    // would create a session over a server that is merely not
+                    // answering. Only this browser connection is lost; the web
+                    // server keeps serving.
+                    let session_exists = match session_manager.session_exists(&session_name) {
+                        Ok(session_exists) => session_exists,
+                        Err(e) => {
+                            Err::<(), _>(anyhow!("{e}"))
+                                .with_context(|| format!("failed to check session {session_name:?}"))
+                                .non_fatal();
+                            client_connection_bus.close_connection();
+                            return;
+                        },
+                    };
 
                     if is_read_only && !session_exists {
                         log::error!("Read only tokens cannot create new sessions.");
@@ -127,13 +141,22 @@ pub fn zellij_server_listener(
                     let first_message = create_first_message(is_read_only, config_file_path.clone(), client_attributes.clone(), config_options.clone(), should_create_new_session, &session_name, initial_layout);
                     let zellij_ipc_pipe = create_ipc_pipe(&session_name);
 
-                    session_manager.spawn_session_if_needed(
+                    // Stop here on failure, before the browser is told it is
+                    // attached and before the receive loop below reads from a
+                    // connection that was never made.
+                    if let Err(e) = session_manager.spawn_session_if_needed(
                         &session_name,
                         os_input.clone(),
                         session_exists,
                         &zellij_ipc_pipe,
                         first_message,
-                    );
+                    ) {
+                        Err::<(), _>(anyhow!("{e}"))
+                            .with_context(|| format!("failed to attach to session {session_name:?}"))
+                            .non_fatal();
+                        client_connection_bus.close_connection();
+                        return;
+                    }
 
                     if let Some(pixel_dims) = client_pixel_dims {
                         os_input.send_to_server(ClientToServerMsg::TerminalPixelDimensions {

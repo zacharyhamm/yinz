@@ -13,8 +13,9 @@ use zellij_utils::sessions::{
     assert_dead_session, assert_session, assert_session_ne, delete_session as delete_session_impl,
     generate_unique_session_name, get_active_session, get_resurrectable_sessions, get_sessions,
     get_sessions_sorted_by_mtime, kill_session as kill_session_impl, match_session_name,
-    print_sessions, print_sessions_with_index, resurrection_layout, session_exists,
-    session_listing_error_message, validate_session_name, ActiveSession, SessionNameMatch,
+    print_sessions, print_sessions_with_index, resurrection_layout, session_listing_error_message,
+    session_status, unresponsive_session_message, validate_session_name, ActiveSession,
+    SessionNameMatch, SessionProbe,
 };
 
 use zellij_utils::consts::session_layout_cache_file_name;
@@ -553,9 +554,15 @@ fn attach_with_session_name(
     create: bool,
 ) -> ClientInfo {
     match &session_name {
-        Some(session) if create => match session_exists(session) {
-            Ok(true) => ClientInfo::Attach(session_name.unwrap(), config_options),
-            Ok(false) => ClientInfo::New(session_name.unwrap(), None, None),
+        Some(session) if create => match session_status(session) {
+            Ok(SessionProbe::Alive) => ClientInfo::Attach(session_name.unwrap(), config_options),
+            Ok(SessionProbe::Absent) => ClientInfo::New(session_name.unwrap(), None, None),
+            // Neither attach (it would hang) nor create (it would unlink the
+            // live server's socket).
+            Ok(SessionProbe::Unresponsive) => {
+                eprintln!("{}", unresponsive_session_message(session));
+                process::exit(1);
+            },
             Err(kind) => {
                 eprintln!("{}", session_listing_error_message(kind));
                 process::exit(1);
@@ -739,10 +746,18 @@ pub(crate) fn start_client(opts: CliArgs) {
                         create || should_create_detached,
                     )
                 } else {
-                    let session_exists = session_name
-                        .as_ref()
-                        .and_then(|s| session_exists(s).ok())
-                        .unwrap_or(false);
+                    let session_exists =
+                        match session_name.as_ref().and_then(|s| session_status(s).ok()) {
+                            Some(SessionProbe::Alive) => true,
+                            // Every branch below either attaches (hangs) or creates
+                            // or resurrects (unlinks the live socket); none is safe.
+                            Some(SessionProbe::Unresponsive) => {
+                                let name = session_name.as_deref().unwrap_or_default();
+                                eprintln!("{}", unresponsive_session_message(name));
+                                process::exit(1);
+                            },
+                            Some(SessionProbe::Absent) | None => false,
+                        };
                     let resurrection_layout =
                         session_name
                             .as_ref()

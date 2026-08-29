@@ -597,8 +597,10 @@ pub fn start_client(
     );
 
     if let Err(e) = os_input.connect_to_server(&ipc_pipe) {
-        eprintln!("{e}");
-        std::process::exit(1);
+        // The terminal is already on the alternate screen with the kitty
+        // keyboard protocol pushed; a bare `exit` here would leave the shell
+        // there, with the message gone along with the screen it was printed on.
+        ClientTeardown::exit_after_startup_error(startup.teardown, e.to_string());
     }
     os_input.send_to_server(first_msg);
 
@@ -809,8 +811,9 @@ pub fn start_server_detached(
     let (first_msg, ipc_pipe) = startup.first_message(&mut os_input, info, Default::default());
 
     if let Err(e) = os_input.connect_to_server(&ipc_pipe) {
-        eprintln!("{e}");
-        std::process::exit(1);
+        // No terminal was claimed on this path (`teardown` is `None`), so this
+        // is a plain message on stderr.
+        ClientTeardown::exit_after_startup_error(startup.teardown, e.to_string());
     }
     os_input.send_to_server(first_msg);
 }
