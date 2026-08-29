@@ -5254,6 +5254,22 @@ fn resolve_plugin_fs_path(env: &PluginEnv, path: &Path) -> Result<ResolvedPath> 
     };
 
     if !resolved.starts_with(&canonical_root) {
+        // Name the link when there is one: a plugin that wrote `link.lua` and is refused
+        // should hear that it is a link, not merely that it points somewhere.
+        let through_a_symlink = joined
+            .ancestors()
+            .take_while(|ancestor| ancestor.starts_with(&canonical_root))
+            .any(|ancestor| {
+                ancestor
+                    .symlink_metadata()
+                    .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            });
+        if through_a_symlink {
+            return Err(anyhow!(
+                "'{}' is a symlink pointing outside the plugin's own folders; refusing",
+                path.display()
+            ));
+        }
         return Err(anyhow!(
             "'{}' points outside the plugin's own folders",
             path.display()

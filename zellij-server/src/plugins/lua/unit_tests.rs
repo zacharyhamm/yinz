@@ -1892,6 +1892,8 @@ fn a_symlink_out_of_a_root_is_followed_and_then_refused() {
         "got: {}",
         err
     );
+    // And it is named as a link: a plugin refused for `link.lua` should hear that it is one.
+    assert!(err.contains("is a symlink"), "got: {}", err);
 }
 
 #[test]

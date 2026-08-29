@@ -298,7 +298,9 @@ cargo x integration-test -E 'binary(cli) | binary(hocus_plugin_authoring) | bina
 
 Known environment noise: the 19 `zellij-client web_client_tests` time out on this machine at
 the moment **on `main` as well** (verified in a control worktree); they passed earlier in the
-day. The integration harness cannot end a session (`quit()` runs into the quit-confirmation
+day. `hocus_tab_projects::a_tab_is_named_after_the_project_its_agent_is_in` fails on this
+machine at the pre-Phase-3 commit `d9d4b338c` too (bisected while landing Phase 3), so it is
+not one of Phase 3's. The integration harness cannot end a session (`quit()` runs into the quit-confirmation
 modal and times out twice, ~20s per test), so no integration test can assert "the stream ended
 with the session". The box is shared: check for sibling `cargo x test` runs before believing a
 timeout.
