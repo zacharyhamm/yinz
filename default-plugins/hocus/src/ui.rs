@@ -1133,7 +1133,8 @@ fn render_title(state: &mut State, cols: usize) {
     // of one keeps the last tab from running into it.
     let note = title_note(state);
     let note_width = note.as_ref().map_or(0, |note| note.width() + 1);
-    for cell in chat_tabs(state, cols.saturating_sub(note_width)) {
+    state.chat_tab_width = cols.saturating_sub(note_width);
+    for cell in chat_tabs(state, state.chat_tab_width) {
         let text = Text::new(&cell.text).unbold_range(..);
         let text = if cell.highlighted {
             text.selected()
@@ -1219,6 +1220,13 @@ pub(crate) struct TabCell {
     pub(crate) active: bool,
     /// Under the bar's highlight, while Shift+Tab has it focused.
     pub(crate) highlighted: bool,
+    pub(crate) target: TabTarget,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum TabTarget {
+    Tab(usize),
+    Reveal(usize),
 }
 
 /// What one tab says: a glyph for what the chat is doing, then its title.
@@ -1238,16 +1246,16 @@ fn tab_label(messages: &[crate::Message], live: bool, confirming: bool) -> Strin
     if clipped.len() < title.len() {
         clipped.push('…');
     }
-    format!(" {glyph}{clipped} ")
+    format!(" {glyph}{clipped} │")
 }
 
 /// The tab bar, laid out in `width` columns. Every open chat gets a cell in
 /// bar order; when they do not all fit, the window slides so the highlighted
 /// tab — or the active one, when the bar is not focused — is always on screen,
-/// with a `…` at whichever edge has tabs hidden past it.
+/// with an arrow at whichever edge has tabs hidden past it.
 pub(crate) fn chat_tabs(state: &State, width: usize) -> Vec<TabCell> {
     let focus = state.chat_tab_focus;
-    let keep = focus.unwrap_or(state.chat_tab);
+    let keep = focus.or(state.chat_tab_view).unwrap_or(state.chat_tab);
     let labels: Vec<String> = (0..state.chat_tab_count())
         .map(|tab| match state.parked_at_tab(tab) {
             None => tab_label(
@@ -1274,15 +1282,15 @@ pub(crate) fn chat_tabs(state: &State, width: usize) -> Vec<TabCell> {
 
     // Grow the window outward from `keep` — rightward first, so the tabs after
     // the one you are on are what you see — until nothing more fits, leaving a
-    // column for each ellipsis the window will need.
+    // two columns for each arrow and divider the window will need.
     let mut start = keep;
     let mut end = keep + 1;
     let mut used = widths[keep];
     loop {
         // Counted even for an edge the next step would reach, which only ever
         // leaves a column spare.
-        let ellipses = usize::from(start > 0) + usize::from(end < labels.len());
-        let room = width.saturating_sub(ellipses);
+        let arrows = usize::from(start > 0) + usize::from(end < labels.len());
+        let room = width.saturating_sub(arrows * 2);
         if end < labels.len() && used + widths[end] <= room {
             used += widths[end];
             end += 1;
@@ -1296,7 +1304,7 @@ pub(crate) fn chat_tabs(state: &State, width: usize) -> Vec<TabCell> {
     lay_out(&labels, start, end, width, state.chat_tab, focus)
 }
 
-/// Print-ready cells for the tabs in `start..end`, with an ellipsis on either
+/// Print-ready cells for the tabs in `start..end`, with an arrow on either
 /// side that has tabs hidden past it.
 fn lay_out(
     labels: &[String],
@@ -1311,7 +1319,7 @@ fn lay_out(
     let mut full = false;
     // Stops at the first cell that does not fit, rather than skipping it: a
     // later, narrower one would otherwise be drawn in its place.
-    let mut push = |text: String, active: bool, highlighted: bool| {
+    let mut push = |text: String, active: bool, highlighted: bool, target: TabTarget| {
         let w = text.width();
         if full || x + w > width {
             full = true;
@@ -1323,17 +1331,23 @@ fn lay_out(
             text,
             active,
             highlighted,
+            target,
         });
         x += w;
     };
     if start > 0 {
-        push("…".to_owned(), false, false);
+        push("←│".to_owned(), false, false, TabTarget::Reveal(start - 1));
     }
     for (tab, label) in labels.iter().enumerate().take(end).skip(start) {
-        push(label.clone(), tab == active, focus == Some(tab));
+        push(
+            label.clone(),
+            tab == active,
+            focus == Some(tab),
+            TabTarget::Tab(tab),
+        );
     }
     if end < labels.len() {
-        push("…".to_owned(), false, false);
+        push("→│".to_owned(), false, false, TabTarget::Reveal(end));
     }
     cells
 }
@@ -2829,7 +2843,7 @@ mod tests {
     fn a_single_chat_is_one_active_cell() {
         let state = State::default();
         let cells = chat_tabs(&state, 40);
-        assert_eq!(texts(&cells), [" new chat "], "an empty chat is named");
+        assert_eq!(texts(&cells), [" new chat │"], "an empty chat is named");
         assert!(cells[0].active);
         assert!(!cells[0].highlighted);
         assert_eq!(cells[0].x, 0);
@@ -2847,7 +2861,7 @@ mod tests {
         let cells = chat_tabs(&state, 60);
         assert_eq!(
             texts(&cells),
-            [" ● chat 0 ", " chat 1 ", " ? chat 2 "],
+            [" ● chat 0 │", " chat 1 │", " ? chat 2 │"],
             "streaming, idle, waiting on y/n"
         );
     }
@@ -2880,38 +2894,40 @@ mod tests {
             ..Default::default()
         };
         let cells = chat_tabs(&state, 80);
-        assert_eq!(texts(&cells), [" a question that go… "]);
-        assert!(cells[0].width <= TAB_TITLE_COLS + 3);
+        assert_eq!(texts(&cells), [" a question that go… │"]);
+        assert!(cells[0].width <= TAB_TITLE_COLS + 4);
     }
 
     #[test]
     fn the_window_keeps_the_highlighted_tab_on_screen() {
-        // Every cell is " chat N " = 8 columns; room for two and an ellipsis.
+        // Every cell is " chat N │" = 9 columns; room for two and an arrow.
         let mut state = tabs_state(5);
-        let cells = chat_tabs(&state, 18);
+        let cells = chat_tabs(&state, 20);
         assert_eq!(
             texts(&cells),
-            [" chat 0 ", " chat 1 ", "…"],
+            [" chat 0 │", " chat 1 │", "→│"],
             "the active tab first"
         );
+        assert_eq!(cells[2].target, TabTarget::Reveal(2));
 
         state.chat_tab_focus = Some(4);
-        let cells = chat_tabs(&state, 18);
-        assert_eq!(texts(&cells), ["…", " chat 3 ", " chat 4 "]);
+        let cells = chat_tabs(&state, 20);
+        assert_eq!(texts(&cells), ["←│", " chat 3 │", " chat 4 │"]);
+        assert_eq!(cells[0].target, TabTarget::Reveal(2));
         assert!(cells[2].highlighted);
         assert!(!cells[1].active);
 
         state.chat_tab_focus = Some(2);
-        let cells = chat_tabs(&state, 18);
+        let cells = chat_tabs(&state, 22);
         assert_eq!(
             texts(&cells),
-            ["…", " chat 2 ", " chat 3 ", "…"],
+            ["←│", " chat 2 │", " chat 3 │", "→│"],
             "hidden tabs on both sides, growing rightward first"
         );
-        let cells = chat_tabs(&state, 17);
+        let cells = chat_tabs(&state, 21);
         assert_eq!(
             texts(&cells),
-            ["…", " chat 2 ", "…"],
+            ["←│", " chat 2 │", "→│"],
             "and with room for only one"
         );
     }
