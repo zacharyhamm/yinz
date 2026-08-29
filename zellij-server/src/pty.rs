@@ -2301,7 +2301,7 @@ impl Pty {
     pub fn release_terminal_for_warp(
         &mut self,
         terminal_id: u32,
-        budget: Duration,
+        deadline: Instant,
     ) -> Result<ReleasedPane> {
         let err_context = || format!("failed to release pane {terminal_id} for a warp");
         // Asked before the reader is touched, which is the whole point of it
@@ -2312,7 +2312,12 @@ impl Pty {
         // refusal from that side would cost the user a working pane.
         self.check_terminal_can_be_warped(terminal_id)
             .with_context(err_context)?;
+        refuse_if_nobody_is_waiting(deadline).with_context(err_context)?;
         self.stop_readers_for_warp(&[terminal_id]);
+        // Measured *after* the readers have stopped, because stopping them is
+        // not free — up to `READER_SHUTDOWN_TIMEOUT` each — and a budget taken
+        // before it would hand the backend time the caller has already spent.
+        let budget = deadline.saturating_duration_since(Instant::now());
         let released = self
             .bus
             .os_input
@@ -2509,9 +2514,10 @@ impl Pty {
                 .map(|pane| pane.host_id.clone())
                 .collect();
             for adopted in tiled.iter().chain(floating.iter()) {
-                if let Err(e) =
-                    self.release_terminal_for_warp(adopted.terminal_id, GIVE_BACK_BUDGET)
-                {
+                if let Err(e) = self.release_terminal_for_warp(
+                    adopted.terminal_id,
+                    Instant::now() + GIVE_BACK_BUDGET,
+                ) {
                     // Nothing left to try. Say which supervisors are now stranded
                     // so they can be recovered by hand.
                     log::error!(
@@ -3330,13 +3336,33 @@ fn release_pane_for_warp(
     if let Err(e) = pty.check_terminal_can_be_warped(terminal_id) {
         return Err(format!("{e:#}"));
     }
-    let budget = deadline.saturating_duration_since(Instant::now());
-    pty.release_terminal_for_warp(terminal_id, budget)
+    if let Err(e) = refuse_if_nobody_is_waiting(deadline) {
+        return Err(format!("{e:#}"));
+    }
+    pty.release_terminal_for_warp(terminal_id, deadline)
         .map_err(|e| {
             let why = format!("could not move this pane to '{to_session}': {e:#}");
             strand_pane_after_warp(pty, terminal_id, &why, None);
             format!("{e:#}")
         })
+}
+
+/// Say no to a release whose caller has already stopped waiting.
+///
+/// Asked in the same breath as [`Pty::check_terminal_can_be_warped`] and for
+/// the same reason: after this point the pane's reader is aborted and there is
+/// no putting it back. A deadline that has passed used to reach the backend as
+/// a budget of zero — which a remote pane's socket refuses to be bounded by —
+/// with the reader already gone, so the pane was stranded to answer a caller
+/// that was not there. Screen deliberately sends an already-passed deadline
+/// when the caller left it nothing to spend; this is where that is honoured.
+fn refuse_if_nobody_is_waiting(deadline: Instant) -> Result<()> {
+    if Instant::now() >= deadline {
+        return Err(anyhow!(
+            "the caller stopped waiting before this pane could be released"
+        ));
+    }
+    Ok(())
 }
 
 /// What giving a just-adopted pane back may spend on each one.
@@ -3412,6 +3438,11 @@ fn release_tab_for_warp(
         pty.check_terminal_can_be_warped(*terminal_id)
             .err()
             .map(|e| format!("pane {terminal_id} cannot be moved: {e:#}"))
+    });
+    let refusal = refusal.or_else(|| {
+        refuse_if_nobody_is_waiting(deadline)
+            .err()
+            .map(|e| format!("{e:#}"))
     });
     if let Some(reason) = refusal {
         return terminal_ids

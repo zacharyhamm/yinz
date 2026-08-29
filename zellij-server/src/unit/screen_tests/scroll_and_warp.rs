@@ -541,6 +541,173 @@ fn a_tab_is_not_taken_apart_for_a_caller_that_has_already_given_up() {
 }
 
 #[test]
+fn a_tab_is_not_taken_apart_when_its_release_lands_inside_screens_own_reserve() {
+    // The pty thread is given the caller's deadline less
+    // `TAB_WARP_SCREEN_RESERVE`, because serializing the tab takes time of its
+    // own. The check on the way back has to use the same number: a release
+    // landing with less than the reserve left is one this thread can no longer
+    // serialize in time, and comparing against the caller's *full* deadline
+    // let it through — to close the tab and then find nobody listening.
+    let mut mock_screen = MockScreen::new(Size { cols: 80, rows: 24 });
+    let pty_receiver = mock_screen.pty_receiver.take().unwrap();
+    let client_id = mock_screen.main_client_id;
+    let screen_thread = mock_screen.run(None, vec![]);
+    let (response_tx, response_rx) = crossbeam::channel::unbounded();
+
+    // Still in the future, but by less than the reserve. Nothing sleeps: the
+    // release below lands at once, well inside that window.
+    let inside_the_reserve =
+        std::time::Instant::now() + crate::screen::warp_ops::TAB_WARP_SCREEN_RESERVE / 4;
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::WarpTab {
+            tab_index: Some(0),
+            client_id,
+            response_channel: response_tx,
+            deadline: inside_the_reserve,
+        })
+        .unwrap();
+
+    let released = loop {
+        let (instruction, _) = pty_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("the warp should reach the pty thread");
+        if let PtyInstruction::ReleaseTerminalsForWarp { terminal_ids, .. } = instruction {
+            break terminal_ids;
+        }
+    };
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::TabReleasedForWarp {
+            tab_index: 0,
+            released: released
+                .iter()
+                .map(|terminal_id| {
+                    (
+                        *terminal_id,
+                        Ok(ReleasedPane::Local(ReleasedPtyHost {
+                            host_id: format!("host-{terminal_id}"),
+                            host_pid: 1,
+                            control_socket: Some(std::path::PathBuf::from("/tmp/warp-test.sock")),
+                        })),
+                    )
+                })
+                .collect(),
+        })
+        .unwrap();
+
+    let mut stranded = Vec::new();
+    while stranded.len() < released.len() {
+        let (instruction, _) = pty_receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("every released pane must be held rather than the tab closed");
+        if let PtyInstruction::StrandPaneAfterWarp { terminal_id, .. } = instruction {
+            stranded.push(terminal_id);
+        }
+    }
+    stranded.sort_unstable();
+    let mut expected = released.clone();
+    expected.sort_unstable();
+    assert_eq!(stranded, expected);
+    assert!(
+        response_rx.try_recv().is_err(),
+        "a tab this thread could not serialize in time must not be sent"
+    );
+
+    mock_screen.teardown(vec![screen_thread]);
+}
+
+#[test]
+fn a_pane_is_not_taken_apart_for_a_caller_that_has_already_given_up() {
+    // The single-pane twin of the tab test above, which the pane path did not
+    // get when the tab path did: it closed the pane first and discovered the
+    // caller was gone from the failed send, by which point the pane was out of
+    // its tab with its process running unwatched and a log line as the only
+    // record.
+    let size = Size { cols: 80, rows: 24 };
+    let two_panes = TiledPaneLayout {
+        children_split_direction: SplitDirection::Vertical,
+        children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
+        ..Default::default()
+    };
+    let mut mock_screen = MockScreen::new(size);
+    let pty_receiver = mock_screen.pty_receiver.take().unwrap();
+    let client_id = mock_screen.main_client_id;
+    let screen_thread = mock_screen.run(Some(two_panes), vec![]);
+    let (response_tx, response_rx) = crossbeam::channel::unbounded();
+
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::WarpPane {
+            pane_id: Some(PaneId::Terminal(1)),
+            to_session: "elsewhere".to_owned(),
+            placement: zellij_utils::data::WarpPlacement::NewTab,
+            client_id,
+            response_channel: response_tx,
+            deadline: std::time::Instant::now() - std::time::Duration::from_secs(1),
+        })
+        .unwrap();
+
+    let (terminal_id, to_session, placement) = loop {
+        let (instruction, _) = pty_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("the warp should reach the pty thread");
+        if let PtyInstruction::ReleaseTerminalForWarp {
+            terminal_id,
+            to_session,
+            placement,
+            ..
+        } = instruction
+        {
+            break (terminal_id, to_session, placement);
+        }
+    };
+    assert_eq!(terminal_id, 1);
+
+    // The supervisor really was handed over: this is the window under test,
+    // not a release that failed.
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::PaneReleasedForWarp {
+            terminal_id,
+            to_session,
+            placement,
+            client_id,
+            released: Ok(ReleasedPane::Local(ReleasedPtyHost {
+                host_id: "host-1".to_owned(),
+                host_pid: 1,
+                control_socket: Some(std::path::PathBuf::from("/tmp/warp-test.sock")),
+            })),
+        })
+        .unwrap();
+
+    let stranded = loop {
+        let (instruction, _) = pty_receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("the released pane must be held and told what happened to it");
+        if let PtyInstruction::StrandPaneAfterWarp {
+            terminal_id,
+            recovery,
+            ..
+        } = instruction
+        {
+            break (terminal_id, recovery);
+        }
+    };
+    assert_eq!(stranded.0, 1);
+    assert!(
+        stranded.1.is_some(),
+        "a pane whose supervisor is gone must be told how to get it back"
+    );
+    assert!(
+        response_rx.try_recv().is_err(),
+        "nothing should have been sent to a caller that stopped waiting"
+    );
+
+    mock_screen.teardown(vec![screen_thread]);
+}
+
+#[test]
 fn a_refused_duplicate_tab_warp_does_not_strand_the_still_attached_panes() {
     let mut mock_screen = MockScreen::new(Size { cols: 80, rows: 24 });
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();

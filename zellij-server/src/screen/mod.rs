@@ -705,17 +705,31 @@ pub(crate) struct Screen {
     /// A warp takes two hops — ask pty to let the supervisor go, then serialize
     /// the pane once it has — and whoever is waiting on the far end has to still
     /// be reachable from the second hop.
-    pending_warps: HashMap<u32, crossbeam::channel::Sender<Result<Box<WarpedPane>, String>>>,
+    ///
+    /// The `Instant` is the last moment the second hop may *start*: the
+    /// caller's deadline less `PANE_WARP_SCREEN_RESERVE`, the same number the
+    /// pty thread was given. It is kept because serializing the pane is also
+    /// what closes it: by the time a send could report that nobody is
+    /// listening, the pane is already gone and its process unwatched. Comparing
+    /// against this before starting is the only chance to notice in time.
+    pending_warps: HashMap<
+        u32,
+        (
+            crossbeam::channel::Sender<Result<Box<WarpedPane>, String>>,
+            std::time::Instant,
+        ),
+    >,
     /// The same idea as `pending_warps`, keyed by tab id rather than terminal id
     /// because a tab's release is answered once for the whole tab — and carrying
     /// the arrangement, which was worked out before the release so that a tab
     /// that could not be rebuilt was never taken apart.
     ///
-    /// The `Instant` is when the caller stops waiting. It is kept because
-    /// serializing the tab is also what *closes* it: by the time a send could
-    /// report that nobody is listening, the tab is already gone and every
-    /// process in it unwatched. Comparing against this before starting is the
-    /// only chance to notice in time.
+    /// The `Instant` is the tab-sized version of the one above: the caller's
+    /// deadline less `TAB_WARP_SCREEN_RESERVE`. Not the caller's deadline
+    /// itself — a release landing inside the reserve would pass that check and
+    /// still have the tab closed under a caller that had gone by the time the
+    /// serialization finished, which is exactly what the reserve exists to rule
+    /// out.
     pending_tab_warps: HashMap<
         usize,
         (

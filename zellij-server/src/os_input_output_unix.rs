@@ -937,14 +937,22 @@ impl UnixPtyBackend {
         // A remote pane is asked about first, because the miss below is not the
         // truth about one: its supervisor exists, it is simply on the far side
         // of a broker and was never going to be in this map.
-        if let Some(conn) = self
+        //
+        // Bound to a `let` rather than matched in place, and not for style: the
+        // guard on `terminal_id_to_transport` is a temporary of the expression
+        // it is created in, and as an `if let` scrutinee it would live through
+        // the whole body — including the release below, which takes the same
+        // lock again to remove the pane. `std::sync::Mutex` is not reentrant,
+        // so that was a deadlock on the pty thread for every remote pane ever
+        // released. The `let` ends the guard's statement, and its life, here.
+        let remote = self
             .terminal_id_to_transport
             .lock()
             .to_anyhow()?
             .get(&terminal_id)
             .and_then(|transport| transport.remote())
-            .cloned()
-        {
+            .cloned();
+        if let Some(conn) = remote {
             return self.release_remote_terminal_for_warp(terminal_id, conn, budget);
         }
 
@@ -1266,5 +1274,56 @@ mod tests {
             libc::close(master_fd);
             libc::close(slave_fd);
         }
+    }
+
+    /// The real backend, releasing a remote pane, on the thread that would
+    /// deadlock.
+    ///
+    /// The lookup that finds the pane's connection and the release that removes
+    /// it take the same lock, and a guard kept alive across the two — which an
+    /// `if let` scrutinee did — blocked the pty thread for good. The peer here
+    /// hangs up at once, so a release that returns at all returns in
+    /// milliseconds; one that has not returned in five seconds is the deadlock.
+    #[test]
+    fn releasing_a_remote_pane_does_not_deadlock_on_the_transport_table() {
+        use std::os::unix::net::UnixStream;
+
+        let backend = UnixPtyBackend::new().expect("a backend");
+        let (ours, theirs) = UnixStream::pair().expect("socketpair failed");
+        drop(theirs);
+        let conn = RemoteConn::new(
+            ours,
+            "build-box".to_owned(),
+            "tok".to_owned(),
+            RunCommand::default(),
+            None,
+        )
+        .expect("a remote connection");
+        backend
+            .terminal_id_to_transport
+            .lock()
+            .unwrap()
+            .insert(7, PaneTransport::Remote(Arc::new(conn)));
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let releasing = backend.clone();
+        std::thread::spawn(move || {
+            let outcome = releasing.release_terminal_for_warp(7, Duration::from_secs(1));
+            let _ = done_tx.send(outcome.map(|_| ()).map_err(|e| format!("{e:#}")));
+        });
+
+        // Whether the broker "confirmed" is the peer's business, and the peer
+        // is gone; what is asserted is that the call came back at all.
+        let _ = done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the release deadlocked on the transport table");
+        assert!(
+            !backend
+                .terminal_id_to_transport
+                .lock()
+                .unwrap()
+                .contains_key(&7),
+            "a released pane leaves the transport table whether or not the broker confirmed"
+        );
     }
 }

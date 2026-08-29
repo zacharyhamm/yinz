@@ -3290,7 +3290,21 @@ pub(crate) fn screen_thread_main(
                 // pane exactly where it was.
                 match screen.check_pane_can_be_warped(pane_id, client_id) {
                     Ok(terminal_id) => {
-                        screen.pending_warps.insert(terminal_id, response_channel);
+                        // Minus what this thread needs to serialize the pane
+                        // once the release lands, so the answer still beats
+                        // the caller's clock. `checked_sub` because `Instant -
+                        // Duration` panics rather than saturating, and a panic
+                        // here would take the screen thread with it; a deadline
+                        // that has already passed is the honest answer for a
+                        // caller with nothing left to spend. The same instant
+                        // is what `PaneReleasedForWarp` checks before it starts
+                        // that serialization, for the same reason.
+                        let deadline = deadline
+                            .checked_sub(PANE_WARP_SCREEN_RESERVE)
+                            .unwrap_or_else(Instant::now);
+                        screen
+                            .pending_warps
+                            .insert(terminal_id, (response_channel, deadline));
                         screen
                             .bus
                             .senders
@@ -3299,17 +3313,7 @@ pub(crate) fn screen_thread_main(
                                 to_session,
                                 placement,
                                 client_id,
-                                // Minus what this thread needs to serialize the
-                                // pane once the release lands, so the answer
-                                // still beats the caller's clock. `checked_sub`
-                                // because `Instant - Duration` panics rather
-                                // than saturating, and a panic here would take
-                                // the screen thread with it; a deadline that
-                                // has already passed is the honest answer for a
-                                // caller with nothing left to spend.
-                                deadline: deadline
-                                    .checked_sub(PANE_WARP_SCREEN_RESERVE)
-                                    .unwrap_or_else(Instant::now),
+                                deadline,
                             })?;
                     },
                     Err(e) => {
@@ -3324,24 +3328,58 @@ pub(crate) fn screen_thread_main(
                 client_id: _,
                 released,
             } => {
-                let response_channel = screen.pending_warps.remove(&terminal_id);
-                let result = screen.take_released_pane_for_warp(terminal_id, released);
-                // Nobody listening means the caller gave up waiting — its own
-                // timeout fired while this was still in flight. The pane has
-                // been taken out of its tab by now and its process is running
-                // with nothing watching it, so the recovery line has to go
-                // somewhere: this log is the only place left that it can.
-                let stranded = match (response_channel, result) {
-                    (Some(response_channel), result) => response_channel.send(result).err(),
-                    (None, Ok(payload)) => Some(crossbeam::channel::SendError(Ok(payload))),
-                    (None, Err(_)) => None,
+                // Asked before the pane is taken apart, exactly as
+                // `TabReleasedForWarp` asks below and for the same reason:
+                // `take_released_pane_for_warp` is what closes the pane, so a
+                // caller found to be gone on the far side of it has already
+                // cost the user the pane, with its process running unwatched
+                // and a log line as the only record. A caller past its
+                // deadline has stopped waiting; the pane stays where it is,
+                // held and told why.
+                let still_waiting = match screen.pending_warps.remove(&terminal_id) {
+                    Some((_, deadline)) if Instant::now() >= deadline => None,
+                    other => other,
                 };
-                if let Some(crossbeam::channel::SendError(Ok(payload))) = stranded {
+                if let Some((response_channel, _)) = still_waiting {
+                    let result = screen.take_released_pane_for_warp(terminal_id, released);
+                    if let Err(crossbeam::channel::SendError(Ok(payload))) =
+                        response_channel.send(result)
+                    {
+                        // The caller timed out between asking and being
+                        // answered. The pane is out of this session by now and
+                        // its process is running unwatched, so the recovery
+                        // line has to go somewhere: this log is the only place
+                        // left that it can.
+                        log::error!(
+                            "pane {terminal_id} was released for a warp nobody was waiting on; \
+                             it is still running and can be recovered with `{}`",
+                            crate::warp::recovery_command(&payload)
+                        );
+                    }
+                } else {
+                    // Nobody is waiting, which means the supervisor has been
+                    // released with no one to hand it to. The pane is still
+                    // on screen and now talking to nothing, so it has to say
+                    // so itself — a log line alone leaves the user with a pane
+                    // that looks alive and answers nothing. A release that
+                    // *failed* was already stranded by the pty thread, with
+                    // the failure as its reason.
                     log::error!(
-                        "pane {terminal_id} was released for a warp nobody was waiting on; it \
-                         is still running and can be recovered with `{}`",
-                        crate::warp::recovery_command(&payload)
+                        "pane {terminal_id} was released for a warp nobody was waiting on; it is \
+                         still running and can be recovered with `zellij pty-host adopt <id>`"
                     );
+                    if let Ok(released) = released {
+                        screen
+                            .bus
+                            .senders
+                            .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
+                                terminal_id,
+                                why: "this pane was moved to another session, but nothing took it"
+                                    .to_owned(),
+                                recovery: Some(released.recovery_command()),
+                            })
+                            .non_fatal();
+                    }
                 }
                 screen.log_and_report_session_state().non_fatal();
                 screen.render(None)?;
@@ -3378,6 +3416,19 @@ pub(crate) fn screen_thread_main(
                 // stays exactly where it was.
                 match screen.check_tab_can_be_warped(tab_index, client_id) {
                     Ok((tab_index, terminal_ids, prepared)) => {
+                        // The caller's deadline less what this thread will
+                        // need afterwards: `take_released_tab_for_warp`
+                        // serializes every pane's scrollback, and a release
+                        // that used the whole budget would leave no time to do
+                        // it in. `checked_sub` for the reason given in
+                        // `WarpPane` above. One number for both the pty thread
+                        // and the check in `TabReleasedForWarp`: a release
+                        // that lands inside the reserve is one this thread can
+                        // no longer serialize in time, however punctual the
+                        // pty thread was.
+                        let deadline = deadline
+                            .checked_sub(TAB_WARP_SCREEN_RESERVE)
+                            .unwrap_or_else(Instant::now);
                         screen
                             .pending_tab_warps
                             .insert(tab_index, (response_channel, prepared, deadline));
@@ -3385,16 +3436,7 @@ pub(crate) fn screen_thread_main(
                             PtyInstruction::ReleaseTerminalsForWarp {
                                 tab_index,
                                 terminal_ids,
-                                // The pty thread gets the caller's deadline
-                                // less what this thread will need afterwards:
-                                // `take_released_tab_for_warp` serializes every
-                                // pane's scrollback, and a release that used
-                                // the whole budget would leave no time to do it
-                                // in. `checked_sub` for the reason given in
-                                // `WarpPane` above.
-                                deadline: deadline
-                                    .checked_sub(TAB_WARP_SCREEN_RESERVE)
-                                    .unwrap_or_else(Instant::now),
+                                deadline,
                             },
                         )?;
                     },
@@ -3412,23 +3454,15 @@ pub(crate) fn screen_thread_main(
                 // caller found to be gone on the far side of it has already
                 // cost this session the whole tab, with every process in it
                 // running unwatched and a log line as the only record. A caller
-                // whose deadline has passed is a caller that has stopped
-                // waiting, so the tab stays where it is and its panes are held
-                // and told why — visible, and recoverable — below.
-                let still_waiting =
-                    screen
-                        .pending_tab_warps
-                        .remove(&tab_index)
-                        .filter(|(_, _, deadline)| {
-                            let waiting = Instant::now() < *deadline;
-                            if !waiting {
-                                log::error!(
-                                "tab {tab_index}'s panes were released for a warp whose caller \
-                                 had already given up; the tab was kept and its panes held"
-                            );
-                            }
-                            waiting
-                        });
+                // whose deadline has passed — less the reserve this thread
+                // needs, which is what the stored instant already is — is a
+                // caller that has stopped waiting, so the tab stays where it
+                // is and its panes are held and told why — visible, and
+                // recoverable — below.
+                let still_waiting = match screen.pending_tab_warps.remove(&tab_index) {
+                    Some((_, _, deadline)) if Instant::now() >= deadline => None,
+                    other => other,
+                };
                 if let Some((response_channel, prepared, _)) = still_waiting {
                     let result = screen.take_released_tab_for_warp(tab_index, released, prepared);
                     if let Err(crossbeam::channel::SendError(Ok(payload))) =
@@ -3450,16 +3484,18 @@ pub(crate) fn screen_thread_main(
                         );
                     }
                 } else {
-                    // Nobody is waiting, which means the supervisors have been
-                    // released with no one to hand them to. The tab is still on
-                    // screen and every pane in it is now talking to nothing, so
-                    // saying where the processes went in the log is not enough —
-                    // each pane has to say it too, or the user is left with a
-                    // tab that looks alive and answers nothing.
+                    // Nobody is waiting — the caller gave up, or left too
+                    // little time to serialize the tab in — which means the
+                    // supervisors have been released with no one to hand them
+                    // to. The tab is still on screen and every pane in it is
+                    // now talking to nothing, so saying where the processes
+                    // went in the log is not enough — each pane has to say it
+                    // too, or the user is left with a tab that looks alive and
+                    // answers nothing.
                     log::error!(
-                        "tab {tab_index} was released for a warp nobody was waiting on; its \
-                         panes are still running and can be recovered with `zellij pty-host \
-                         adopt <id>`"
+                        "tab {tab_index} was released for a warp nobody was waiting on any \
+                         more; the tab was kept, and its panes are still running and can be \
+                         recovered with `zellij pty-host adopt <id>`"
                     );
                     for (terminal_id, released) in released {
                         if let Ok(released) = released {

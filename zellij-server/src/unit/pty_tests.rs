@@ -1324,7 +1324,7 @@ fn a_pane_that_cannot_be_warped_is_refused_before_its_reader_is_touched() {
 
     let error = format!(
         "{:#}",
-        pty.release_terminal_for_warp(3, std::time::Duration::from_secs(5))
+        pty.release_terminal_for_warp(3, test_warp_deadline())
             .expect_err("an unwarpable pane must be refused")
     );
 
@@ -1464,6 +1464,85 @@ fn a_release_gets_what_is_left_of_the_callers_deadline_and_no_more() {
              {remaining:?}"
         );
     }
+}
+
+/// A deadline the caller has already reached. What a release does with one is
+/// the whole question, so no sleeping is needed to ask it.
+fn expired_warp_deadline() -> std::time::Instant {
+    std::time::Instant::now() - std::time::Duration::from_secs(1)
+}
+
+#[test]
+fn a_pane_whose_caller_has_already_given_up_is_refused_before_its_reader_is_touched() {
+    // Screen sends a deadline that has already passed when the caller left it
+    // nothing to spend, and the pty thread can dequeue late on its own. Either
+    // way, that used to reach the backend as a budget of zero — *after* the
+    // reader was aborted — so a remote pane's socket refused the bound and the
+    // pane was stranded to answer a caller who was gone. Asked first, the pane
+    // stays exactly as it was.
+    let mock = MockOsApi::new();
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
+    set_warpable_terminal(&mut pty, 3);
+
+    let error = format!(
+        "{:#}",
+        pty.release_terminal_for_warp(3, expired_warp_deadline())
+            .expect_err("a release nobody is waiting for must be refused")
+    );
+
+    assert!(
+        error.contains("stopped waiting"),
+        "the refusal should say why, got: {error}"
+    );
+    assert!(
+        mock.release_attempts().is_empty(),
+        "nothing should have been released"
+    );
+    assert!(
+        pty.task_handles.contains_key(&3),
+        "the pane's reader must still be running — refusing after the abort is what stranded it"
+    );
+    assert!(
+        pane_messages(&drain_screen(&screen_rx)).is_empty(),
+        "a pane that was never touched has nothing to tell the user"
+    );
+}
+
+#[test]
+fn a_tab_whose_caller_has_already_given_up_is_refused_while_it_is_still_whole() {
+    // The tab-sized version, and the one with more at stake: a tab release
+    // stops every reader before it asks any backend, so a zero budget found
+    // afterwards stranded every pane in the tab at once.
+    let mock = MockOsApi::new();
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
+    for terminal_id in [1, 2] {
+        set_warpable_terminal(&mut pty, terminal_id);
+    }
+
+    let released = release_tab_for_warp(&mut pty, vec![1, 2], expired_warp_deadline());
+
+    assert_eq!(released.len(), 2, "every pane is answered");
+    for (terminal_id, result) in &released {
+        let error = result
+            .as_ref()
+            .expect_err("a release nobody is waiting for must be refused");
+        assert!(
+            error.contains("stopped waiting"),
+            "pane {terminal_id}'s refusal should say why, got: {error}"
+        );
+        assert!(
+            pty.task_handles.contains_key(terminal_id),
+            "pane {terminal_id}'s reader must still be running"
+        );
+    }
+    assert!(
+        mock.release_attempts().is_empty(),
+        "nothing should have been released"
+    );
+    assert!(
+        pane_messages(&drain_screen(&screen_rx)).is_empty(),
+        "panes that were never touched have nothing to tell the user"
+    );
 }
 
 #[test]

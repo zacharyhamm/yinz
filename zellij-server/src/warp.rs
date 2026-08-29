@@ -53,20 +53,32 @@ pub const WARP_TIMEOUT: Duration = Duration::from_secs(10);
 pub const PLUGIN_WARP_TIMEOUT: Duration = WARP_TIMEOUT;
 
 /// How long the *asking* side of a warp waits, and deliberately longer than
-/// [`WARP_TIMEOUT`].
+/// [`WARP_TIMEOUT`] — three of them, plus change.
 ///
 /// `warp_tab_from_session` and `warp_pane_from_session` hand the whole warp to
-/// the session that owns the pane and then wait for its answer — an answer that
-/// session produces by running its own `WARP_TIMEOUT` clock, started *after*
-/// ours. With the two budgets equal the asker always expires first, so the
-/// owner's carefully worded refusal — the one naming the host that did not
-/// confirm, or the pane that could not be moved — loses a race it should never
-/// have been in, and the user gets a bare "the other session never answered"
-/// instead.
+/// the session that owns the pane and then wait for its answer. That session
+/// does not produce its answer under one `WARP_TIMEOUT` clock but under up to
+/// three, run one after another, none of them sharing a deadline with ours:
 ///
-/// The slack only has to cover the round trip that separates the two clocks. A
-/// second is enormous next to it and still bounded for a plugin thread.
-pub const WARP_PULL_TIMEOUT: Duration = Duration::from_secs(WARP_TIMEOUT.as_secs() + 1);
+/// 1. releasing the pane or tab, bounded by its own `recv_timeout(WARP_TIMEOUT)`;
+/// 2. handing it to *us* and waiting for our reply — our own pty thread
+///    adopting it under `adopt_*_here`'s `WARP_TIMEOUT`, behind a socket read
+///    the owner bounds by another `WARP_TIMEOUT`;
+/// 3. if that failed, taking it back, under a further `WARP_TIMEOUT`.
+///
+/// With the asker's budget equal to one of them it always expired first — in
+/// perfectly ordinary slow cases, not only pathological ones: a release of a
+/// couple of remote panes plus an adoption that had to rebuild an ssh forward
+/// was enough. The owner's carefully worded answer then lost a race it should
+/// never have been in, and worse, the read that gave up was reported by
+/// `read_cli_reply` as the other session having *closed the connection*, for a
+/// warp that in fact went on to succeed.
+///
+/// So this is sized to the owner's real worst case rather than to a guess at
+/// its usual one. It is a ceiling: a warp that succeeds returns the moment it
+/// does, and the full wait is only ever paid for a warp that failed at every
+/// step. The extra second covers the round trips between the two servers.
+pub const WARP_PULL_TIMEOUT: Duration = Duration::from_secs(3 * WARP_TIMEOUT.as_secs() + 1);
 
 /// A warp that takes longer than this is worth a line in the log.
 ///
