@@ -353,6 +353,7 @@ pub enum ScreenContext {
     AddRedPaneFrameColorOverride,
     ClearPaneFrameColorOverride,
     SetTabBellFlash,
+    HostTerminalFocusChanged,
     PreviousSwapLayout,
     NextSwapLayout,
     OverrideLayout,

@@ -45,7 +45,7 @@ use std::sync::OnceLock;
 
 use crate::terminal_escapes::{
     announce_nested, enter_terminal, say_bye, write_seqs, ClientTeardown, CLEAR_SCREEN,
-    ENABLE_BRACKETED_PASTE,
+    ENABLE_BRACKETED_PASTE, ENABLE_FOCUS_REPORTING,
 };
 
 /// Spawn an async runtime for this client instance.
@@ -437,6 +437,8 @@ pub(crate) enum InputInstruction {
         reply_bytes: Vec<u8>,
     },
     NestedSessionFrameFromHost(Vec<u8>),
+    /// The host terminal gained (`true`) or lost (`false`) keyboard focus.
+    HostTerminalFocusChanged(bool),
     Exit,
 }
 
@@ -484,7 +486,10 @@ pub fn start_remote_client(
     let full_screen_ws = os_input.get_terminal_size();
 
     os_input.set_raw_mode();
-    write_seqs(&*os_input, &[ENABLE_BRACKETED_PASTE]);
+    write_seqs(
+        &*os_input,
+        &[ENABLE_BRACKETED_PASTE, ENABLE_FOCUS_REPORTING],
+    );
     // Announce unconditionally: whether there is a Zellij host on the other
     // side of the terminal is learnt from it answering, not from the
     // environment (which a remote pane, for one, does not carry over).
@@ -598,7 +603,10 @@ pub fn start_client(
     let mut command_is_executing = CommandIsExecuting::new();
 
     os_input.set_raw_mode();
-    write_seqs(&*os_input, &[ENABLE_BRACKETED_PASTE]);
+    write_seqs(
+        &*os_input,
+        &[ENABLE_BRACKETED_PASTE, ENABLE_FOCUS_REPORTING],
+    );
     // Announce unconditionally: whether there is a Zellij host on the other
     // side of the terminal is learnt from it answering, not from the
     // environment (which a remote pane, for one, does not carry over). The

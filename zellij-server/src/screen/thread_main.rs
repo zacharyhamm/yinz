@@ -2318,6 +2318,9 @@ pub(crate) fn screen_thread_main(
                 }
                 screen.render(None)?;
             },
+            ScreenInstruction::HostTerminalFocusChanged(client_id, focused) => {
+                screen.host_terminal_focus_changed(client_id, focused);
+            },
             ScreenInstruction::SetTabBellFlash(tab_id, is_flashing) => {
                 if let Some(tab) = screen.tabs.values_mut().find(|t| t.id == tab_id) {
                     tab.tab_bell_flash = is_flashing;

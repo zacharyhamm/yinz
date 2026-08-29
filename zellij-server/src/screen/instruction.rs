@@ -362,6 +362,8 @@ pub enum ScreenInstruction {
     AddRedPaneFrameColorOverride(Vec<PaneId>, Option<String>), // Option<String> => optional error text
     ClearPaneFrameColorOverride(Vec<PaneId>),
     SetTabBellFlash(usize, bool), // tab_id, is_flashing
+    /// The host terminal of `ClientId` gained (`true`) or lost (`false`) keyboard focus.
+    HostTerminalFocusChanged(ClientId, bool),
     PreviousSwapLayout(ClientId, Option<NotificationEnd>),
     NextSwapLayout(ClientId, Option<NotificationEnd>),
     OverrideLayout(

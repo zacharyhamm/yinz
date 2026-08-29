@@ -810,6 +810,9 @@ pub(crate) struct Screen {
     last_mobile_state_sent: HashMap<ClientId, MobileStatePayload>,
     pane_output_activity: HashMap<PaneId, Instant>,
     mobile_web_prefs: HashMap<ClientId, MobileWebPrefs>,
+    /// Whether each client's host terminal currently has keyboard focus, as reported through
+    /// DECSET 1004. A client that never reported counts as focused.
+    client_host_focused: HashMap<ClientId, bool>,
     /// Pins what `frame_now` answers, so a test can step an animation frame by frame instead of
     /// sleeping. Never set outside tests.
     #[cfg(test)]
@@ -1273,6 +1276,7 @@ impl Screen {
             last_mobile_state_sent: HashMap::new(),
             pane_output_activity: HashMap::new(),
             mobile_web_prefs: HashMap::new(),
+            client_host_focused: HashMap::new(),
             #[cfg(test)]
             pinned_now: None,
         }
@@ -1991,6 +1995,7 @@ impl Screen {
         self.unowned_strip_fill.remove(&client_id);
         self.last_notification_fill.remove(&client_id);
         self.pane_render_subscribers.remove(&client_id);
+        self.client_host_focused.remove(&client_id);
         self.revert_fit_disabled_without_reference_client()
             .with_context(err_context)?;
         if let Some(prev_tab_id) = previously_active_tab_id {
@@ -3722,6 +3727,49 @@ impl Screen {
     }
     fn get_active_pane_id(&self, client_id: &ClientId) -> Option<PaneId> {
         self.active_pane_id(*client_id)
+    }
+
+    /// The host terminal of `client_id` gained or lost focus. Only transitions are forwarded,
+    /// and only to the client's active pane, which is left alone while another non-watcher
+    /// client whose host is focused is sitting on the same pane.
+    pub fn host_terminal_focus_changed(&mut self, client_id: ClientId, focused: bool) {
+        let was_focused = self.client_host_is_focused(&client_id);
+        self.client_host_focused.insert(client_id, focused);
+        if was_focused == focused {
+            return;
+        }
+        let Some(pane_id) = self.get_active_pane_id(&client_id) else {
+            return;
+        };
+        if self.pane_is_held_focused_by_another_client(&client_id, pane_id) {
+            return;
+        }
+        if let Ok(tab) = self.get_active_tab_mut(client_id) {
+            tab.send_host_focus_event_to_pane(pane_id, focused);
+        }
+    }
+
+    fn pane_is_held_focused_by_another_client(
+        &self,
+        client_id: &ClientId,
+        pane_id: PaneId,
+    ) -> bool {
+        self.active_tab_ids
+            .keys()
+            .filter(|other_client_id| {
+                *other_client_id != client_id && !self.watcher_clients.contains_key(other_client_id)
+            })
+            .any(|other_client_id| {
+                self.client_host_is_focused(other_client_id)
+                    && self.get_active_pane_id(other_client_id) == Some(pane_id)
+            })
+    }
+
+    fn client_host_is_focused(&self, client_id: &ClientId) -> bool {
+        self.client_host_focused
+            .get(client_id)
+            .copied()
+            .unwrap_or(true)
     }
 
     fn get_pane_info(&self, pane_id: PaneId) -> Option<PaneInfo> {

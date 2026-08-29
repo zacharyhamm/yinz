@@ -16,6 +16,11 @@ use zellij_utils::nested_session;
 pub const ENTER_ALTERNATE_SCREEN: &str = "\u{1b}[?1049h";
 pub const EXIT_ALTERNATE_SCREEN: &str = "\u{1b}[?1049l";
 pub const ENABLE_BRACKETED_PASTE: &str = "\u{1b}[?2004h";
+/// Ask the host to report focus changes as `CSI I` / `CSI O` (DECSET 1004),
+/// so panes that track focus can be told about the host's.
+pub const ENABLE_FOCUS_REPORTING: &str = "\u{1b}[?1004h";
+/// Stop the host's focus reports on the way out.
+pub const DISABLE_FOCUS_REPORTING: &str = "\u{1b}[?1004l";
 pub const RESET_STYLE: &str = "\u{1b}[m";
 pub const SHOW_CURSOR: &str = "\u{1b}[?25h";
 pub const ENTER_KITTY_KEYBOARD_MODE: &str = "\u{1b}[>1u";
@@ -141,9 +146,10 @@ impl ClientTeardown {
             None => "\r\n".to_owned(),
         };
         format!(
-            "{}{}{}{}{}{}{}\n",
+            "{}{}{}{}{}{}{}{}\n",
             kitty_exit,
             DISABLE_HOST_THEME_NOTIFY,
+            DISABLE_FOCUS_REPORTING,
             EXIT_ALTERNATE_SCREEN,
             RESET_STYLE,
             SHOW_CURSOR,

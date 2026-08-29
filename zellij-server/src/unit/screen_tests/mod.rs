@@ -40,7 +40,7 @@ use crate::{
     plugins::{PluginInstruction, PluginRenderAsset},
     pty::{ClientTabIndexOrPaneId, PtyInstruction},
 };
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::env::set_var;
 use std::sync::{Arc, Mutex};
 use zellij_utils::ipc::IpcReceiverWithContext;
@@ -222,10 +222,15 @@ fn route_arbitrary_action_to_server(
     .unwrap();
 }
 
+/// Everything the screen wrote to each terminal's stdin, keyed by terminal id.
+type TtyStdinBytes = Arc<Mutex<BTreeMap<u32, Vec<u8>>>>;
+type ServerReceiver = Receiver<(ServerInstruction, ErrorContext)>;
+
 #[derive(Clone, Default)]
 struct FakeInputOutput {
     fake_filesystem: Arc<Mutex<HashMap<String, String>>>,
     server_to_client_messages: Arc<Mutex<HashMap<ClientId, Vec<ServerToClientMsg>>>>,
+    tty_stdin_bytes: TtyStdinBytes,
 }
 
 impl ServerOsApi for FakeInputOutput {
@@ -248,8 +253,14 @@ impl ServerOsApi for FakeInputOutput {
     ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
         Ok((42, Box::new(NullAsyncReader), None))
     }
-    fn write_to_tty_stdin(&self, _id: u32, _buf: &[u8]) -> Result<usize> {
-        unimplemented!()
+    fn write_to_tty_stdin(&self, id: u32, buf: &[u8]) -> Result<usize> {
+        self.tty_stdin_bytes
+            .lock()
+            .unwrap()
+            .entry(id)
+            .or_default()
+            .extend_from_slice(buf);
+        Ok(buf.len())
     }
     fn tcdrain(&self, _id: u32) -> Result<()> {
         unimplemented!()
@@ -330,9 +341,31 @@ fn create_new_screen_with_kitty_graphics(
     mouse_hover_effects: bool,
     support_kitty_graphics_protocol: bool,
 ) -> Screen {
+    let (screen, _tty_stdin_bytes, _server_receiver) = create_new_screen_with_capture(
+        size,
+        advanced_mouse_actions,
+        mouse_hover_effects,
+        support_kitty_graphics_protocol,
+        true,
+    );
+    screen
+}
+
+/// Like `create_new_screen_with_kitty_graphics`, but also hands back what the screen writes to
+/// each pane's stdin and what it sends to the server thread.
+fn create_new_screen_with_capture(
+    size: Size,
+    advanced_mouse_actions: bool,
+    mouse_hover_effects: bool,
+    support_kitty_graphics_protocol: bool,
+    session_is_mirrored: bool,
+) -> (Screen, TtyStdinBytes, ServerReceiver) {
     let mut bus: Bus<ScreenInstruction> = Bus::empty();
     let fake_os_input = FakeInputOutput::default();
+    let tty_stdin_bytes = fake_os_input.tty_stdin_bytes.clone();
     bus.os_input = Some(Box::new(fake_os_input));
+    let (to_server, server_receiver): ChannelWithContext<ServerInstruction> = channels::unbounded();
+    bus.senders.to_server = Some(SenderWithContext::new(to_server));
     let client_attributes = ClientAttributes {
         size,
         ..Default::default()
@@ -344,7 +377,6 @@ fn create_new_screen_with_kitty_graphics(
     };
     let draw_pane_frames = PaneFrameStyle::None;
     let auto_layout = true;
-    let session_is_mirrored = true;
     let copy_options = CopyOptions::default();
     let default_layout = Box::new(Layout::default());
     let default_layout_name = None;
@@ -409,7 +441,11 @@ fn create_new_screen_with_kitty_graphics(
         NotificationPosition::default(),
         DEFAULT_NOTIFICATION_TIMEOUT_SECS,
     );
-    seed_first_client_size(screen, size)
+    (
+        seed_first_client_size(screen, size),
+        tty_stdin_bytes,
+        server_receiver,
+    )
 }
 
 fn seed_first_client_size(mut screen: Screen, size: Size) -> Screen {
@@ -2090,6 +2126,7 @@ mod clients;
 mod context_menu;
 mod floating_panes;
 mod hooks;
+mod host_focus;
 mod host_query;
 mod mouse;
 mod nested_sessions;
