@@ -675,6 +675,7 @@ mod project_discovery;
 mod questions;
 mod queueing;
 mod repository_tools;
+mod skill_tools;
 mod slash_commands;
 mod streaming;
 mod strip;

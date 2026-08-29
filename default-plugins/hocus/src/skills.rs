@@ -24,6 +24,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use hocus_proto::paths;
+
 /// Context key on the `RunCommandResult` that answers a scan.
 pub const SCAN_CONTEXT: &str = "hocus_skill_scan";
 /// Context key naming which tier the scan was for.
@@ -49,10 +51,11 @@ pub const ARGUMENTS: &str = "$ARGUMENTS";
 /// What the host appends when it cuts a command's output at the limit.
 const TRUNCATED: &str = "\n[truncated]";
 
-/// Record framing in the scan output: a path, then a body. Neither byte can
+/// Record framing in the scan output: a path, its enabled state, then a body. Neither byte can
 /// occur in a markdown file, so nothing needs escaping.
 const PATH_START: char = '\u{1}';
 const BODY_START: char = '\u{2}';
+const DISABLED: char = '\u{3}';
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Source {
@@ -86,6 +89,7 @@ pub struct Skill {
     pub body: String,
     pub path: String,
     pub source: Source,
+    pub enabled: bool,
     /// Things worth telling the author that did not stop the skill loading.
     pub warnings: Vec<String>,
 }
@@ -110,16 +114,23 @@ pub struct Registry {
 impl Registry {
     /// The skill behind `/name`, the project's ahead of the user's.
     pub fn get(&self, name: &str) -> Option<&Skill> {
-        [Source::Project, Source::User]
-            .iter()
-            .find_map(|source| self.tiers.get(source)?.get(name))
+        [Source::Project, Source::User].iter().find_map(|source| {
+            self.tiers
+                .get(source)?
+                .get(name)
+                .filter(|skill| skill.enabled)
+        })
     }
 
     /// Every name that can be typed, each once, sorted.
     pub fn names(&self) -> Vec<String> {
         self.tiers
             .values()
-            .flat_map(|tier| tier.keys().cloned())
+            .flat_map(|tier| {
+                tier.values()
+                    .filter(|skill| skill.enabled)
+                    .map(|skill| skill.name.clone())
+            })
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect()
@@ -132,6 +143,16 @@ impl Registry {
             .filter_map(|source| self.tiers.get(source))
             .flat_map(|tier| tier.values())
             .collect()
+    }
+
+    pub fn is_shadowed(&self, skill: &Skill) -> bool {
+        skill.source == Source::User
+            && skill.enabled
+            && self
+                .tiers
+                .get(&Source::Project)
+                .and_then(|tier| tier.get(&skill.name))
+                .is_some_and(|project| project.enabled)
     }
 
     pub fn skipped(&self) -> Vec<(Source, &str, &str)> {
@@ -205,8 +226,8 @@ impl Registry {
 /// entered, or a file that cannot be read, exits non-zero, because those are the
 /// cases where an empty listing would otherwise look like an emptied folder and
 /// unload the tier.
-pub fn scan_argv(roots: &[String]) -> Vec<String> {
-    let script = format!(
+fn scan_script() -> String {
+    format!(
         r#"status=0
 for root in "$@"; do
   if [ -d "$root" ] && {{ [ ! -r "$root" ] || [ ! -x "$root" ]; }}; then
@@ -216,7 +237,9 @@ for root in "$@"; do
   fi
   for f in "$root"/*/SKILL.md; do
     [ -f "$f" ] || continue
-    printf '\001%s\002' "$f"
+    printf '\001%s' "$f"
+    [ -f "${{f%/SKILL.md}}/.disabled" ] && printf '\003'
+    printf '\002'
     if ! head -c {} -- "$f"; then
       printf '%s: the file could not be read\n' "$f" >&2
       status=1
@@ -226,10 +249,109 @@ for root in "$@"; do
 done
 exit $status"#,
         MAX_SKILL_BYTES + 1
-    );
-    let mut argv = vec!["sh".to_owned(), "-c".to_owned(), script, "sh".to_owned()];
+    )
+}
+
+pub fn scan_argv(roots: &[String]) -> Vec<String> {
+    let mut argv = vec![
+        "sh".to_owned(),
+        "-c".to_owned(),
+        scan_script(),
+        "sh".to_owned(),
+    ];
     argv.extend(roots.iter().cloned());
     argv
+}
+
+const SKILL_SOURCE_VAR: &str = "HOCUS_SKILL_SOURCE";
+
+/// Resolve one skill below a trusted tier root. The root may itself be a symlink (a configured
+/// dotfiles folder commonly is); the model-chosen child and its files may not be.
+pub fn resolve_paths(root: &str, name: Option<&str>) -> Result<(String, String, String), String> {
+    let root = paths::normalize(root.trim())
+        .map_err(|_| "the skill folder is not an absolute path".to_owned())?;
+    let name = name.map(str::trim).unwrap_or_default();
+    valid_name(name)?;
+    let dir = paths::normalize(&format!("{root}/{name}"))
+        .map_err(|_| format!("{name:?} is not a skill name"))?;
+    if !std::path::Path::new(&dir).starts_with(&root) {
+        return Err(format!("{name:?} is not a skill name"));
+    }
+    Ok((
+        dir.clone(),
+        format!("{dir}/SKILL.md"),
+        format!("{dir}/.disabled"),
+    ))
+}
+
+/// Validate a complete file before handing it to the host.
+pub fn validate_source(name: &str, source: &str) -> Result<(), String> {
+    valid_name(name)?;
+    if source.len() > MAX_SKILL_BYTES {
+        return Err(format!(
+            "source is {} bytes; the limit is {MAX_SKILL_BYTES}. Shorten the skill.",
+            source.len()
+        ));
+    }
+    parse_skill(Source::User, name, "SKILL.md", source).map(|_| ())
+}
+
+/// Turn a skill filesystem tool into one host command. Mutations finish by printing a fresh scan
+/// of the affected tier, so the registry and command completion change before the tool answers.
+pub fn tool_argv(
+    tool: &str,
+    root: &str,
+    name: Option<&str>,
+    source: Option<&str>,
+    overwrite: bool,
+) -> Result<(Vec<String>, BTreeMap<String, String>), String> {
+    let root = paths::normalize(root.trim())
+        .map_err(|_| "the skill folder is not an absolute path".to_owned())?;
+    let name = name.map(str::trim).unwrap_or_default();
+    let (dir, file, marker) = resolve_paths(&root, Some(name))?;
+    let guard = r#"if [ -L "$2" ] || [ -L "$3" ] || [ -L "$4" ]; then printf '%s\n' "$2 contains a symlink; refusing" >&2; exit 1; fi"#;
+    let mut env = BTreeMap::new();
+    let script = match tool {
+        "skill_read" => format!(
+            "{guard}\nif [ ! -f \"$3\" ]; then printf '%s\\n' \"$3: no such skill\" >&2; exit 1; fi\nexec head -c {} -- \"$3\"",
+            MAX_SKILL_BYTES + 1
+        ),
+        "skill_write" => {
+            let source = source.ok_or("source is required: send the complete SKILL.md")?;
+            validate_source(name, source)?;
+            env.insert(
+                SKILL_SOURCE_VAR.to_owned(),
+                format!("{}\n", source.trim_end_matches('\n')),
+            );
+            let noclobber = if overwrite { "" } else { "set -C\n" };
+            format!(
+                "{guard}\nmkdir -p \"$1\" || exit 1\nmkdir -p \"$2\" || exit 1\n{noclobber}printf %s \"$HOCUS_SKILL_SOURCE\" > \"$3\" || exit 1\nset -- \"$1\"\n{}",
+                scan_script()
+            )
+        },
+        "skill_disable" => format!(
+            "{guard}\nif [ ! -f \"$3\" ]; then printf '%s\\n' \"$3: no such skill\" >&2; exit 1; fi\n: > \"$4\" || exit 1\nset -- \"$1\"\n{}",
+            scan_script()
+        ),
+        "skill_enable" => format!(
+            "{guard}\nif [ ! -f \"$3\" ]; then printf '%s\\n' \"$3: no such skill\" >&2; exit 1; fi\nrm -f -- \"$4\" || exit 1\nset -- \"$1\"\n{}",
+            scan_script()
+        ),
+        other => return Err(format!("no such tool: {other}")),
+    };
+    Ok((
+        vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            script,
+            "sh".to_owned(),
+            root,
+            dir,
+            file,
+            marker,
+        ],
+        env,
+    ))
 }
 
 /// Turn a scan's stdout into skills.
@@ -255,6 +377,10 @@ pub fn parse_listing(source: Source, stdout: &str) -> Listing {
             continue;
         };
         let body = body.strip_suffix('\n').unwrap_or(body);
+        let (path, enabled) = match path.strip_suffix(DISABLED) {
+            Some(path) => (path, false),
+            None => (path, true),
+        };
         let name = skill_name(path);
         if let Err(why) = valid_name(&name) {
             listing.skipped.push((name, why));
@@ -268,7 +394,10 @@ pub fn parse_listing(source: Source, stdout: &str) -> Listing {
             continue;
         }
         match parse_skill(source, &name, path, body) {
-            Ok(skill) => listing.skills.push(skill),
+            Ok(mut skill) => {
+                skill.enabled = enabled;
+                listing.skills.push(skill);
+            },
             Err(why) => listing.skipped.push((name, why)),
         }
     }
@@ -283,7 +412,7 @@ fn skill_name(path: &str) -> String {
 
 /// A skill's name is a command, so it is held to what a command can be:
 /// lowercase, digits, `_` and `-`, never option-shaped.
-fn valid_name(name: &str) -> Result<(), String> {
+pub fn valid_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("the folder has no name".to_owned());
     }
@@ -337,6 +466,7 @@ fn parse_skill(source: Source, name: &str, path: &str, text: &str) -> Result<Ski
         body: body.to_owned(),
         path: path.to_owned(),
         source,
+        enabled: true,
         warnings,
     })
 }

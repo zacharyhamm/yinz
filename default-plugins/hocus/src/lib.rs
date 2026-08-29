@@ -121,7 +121,8 @@ n             keep refining a plan hocus has written
 /execute      carry out that plan; trailing text amends it
 /<skill> <text>  send a skill's prompt with <text> as its
               arguments; /skills lists them, /skills reload
-              rescans their folders
+              rescans, /skills enable|disable <scope> <name>
+              changes one
 
 In history or models:
 Up / Down     choose

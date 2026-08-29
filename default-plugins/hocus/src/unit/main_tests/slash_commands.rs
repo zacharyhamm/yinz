@@ -316,7 +316,7 @@ fn a_destructive_call_the_model_makes_after_a_skill_still_asks() {
     );
     state.input.set_text("/tidy".to_owned());
     state.submit();
-    assert!(!state.job_auto_confirm);
+    assert!(state.scheduled_run.is_none());
 
     let frame = tool_call_frame("call_1", "clear_pane", r#"{"pane_id":1,"is_plugin":false}"#);
     state.on_chunk("hocus-1", &frame, false, None);
