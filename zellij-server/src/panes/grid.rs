@@ -49,83 +49,241 @@ const BASE64_DECODER: GeneralPurpose = GeneralPurpose::new(
     GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
 );
 
+const MAX_TRACKED_NOTIFICATION_IDS: usize = 256;
+const MAX_NOTIFICATION_ASSEMBLY_BYTES: usize = 4096;
+
+/// A desktop notification an application asked for, in the protocol it used.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingNotification {
+    /// kitty's protocol. `payload` is the semicolon-joined params after `99`, `terminator` is
+    /// `\x07` or `\x1b\\`, `wants_report` whether the app asked for an activation report, and
+    /// `display` the assembled title and body once the notification is complete (`None` for an
+    /// unfinished chunk or a control request that shows nothing).
+    Osc99 {
+        payload: String,
+        terminator: String,
+        wants_report: bool,
+        display: Option<(String, String)>,
+    },
+    /// The legacy iTerm2 protocol: a body and nothing else.
+    Osc9 { body: String },
+    /// The urxvt/rxvt protocol: `notify;title;body`.
+    Osc777 { title: String, body: String },
+}
+
+impl PendingNotification {
+    pub fn title_and_body(&self) -> (String, String) {
+        match self {
+            PendingNotification::Osc99 { display, .. } => display.clone().unwrap_or_default(),
+            PendingNotification::Osc9 { body } => (String::new(), body.clone()),
+            PendingNotification::Osc777 { title, body } => (title.clone(), body.clone()),
+        }
+    }
+}
+
+/// The `p=` key of an OSC 99 escape: what the payload is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Osc99PayloadType {
+    Title,
+    Body,
+    Close,
+    Query,
+    Alive,
+    Other,
+}
+
+impl Osc99PayloadType {
+    pub(crate) fn from_metadata_value(value: &str) -> Self {
+        match value {
+            "title" => Osc99PayloadType::Title,
+            "body" => Osc99PayloadType::Body,
+            "close" => Osc99PayloadType::Close,
+            "?" => Osc99PayloadType::Query,
+            "alive" => Osc99PayloadType::Alive,
+            _ => Osc99PayloadType::Other,
+        }
+    }
+    /// A request the app expects an answer to, rather than something to show.
+    pub(crate) fn is_control_request(&self) -> bool {
+        matches!(
+            self,
+            Osc99PayloadType::Close | Osc99PayloadType::Query | Osc99PayloadType::Alive
+        )
+    }
+}
+
+/// Splits an OSC 99 payload into its metadata (before the first `;`) and the rest.
+pub(crate) fn split_osc99_payload(payload: &str) -> (&str, &str) {
+    match payload.find(';') {
+        Some(idx) => (
+            payload.get(..idx).unwrap_or_default(),
+            payload.get(idx + 1..).unwrap_or_default(),
+        ),
+        None => (payload, ""),
+    }
+}
+
+/// The `key=value` pairs of an OSC 99 metadata section.
+pub(crate) fn parse_osc99_metadata(metadata: &str) -> BTreeMap<&str, &str> {
+    metadata
+        .split(':')
+        .filter_map(|kv| kv.split_once('='))
+        .collect()
+}
+
+fn action_wants_report(action_value: &str) -> bool {
+    action_value.split(',').any(|value| value == "report")
+}
+
+#[derive(Debug, Clone, Default)]
+struct NotificationAssembly {
+    title: String,
+    body: String,
+}
+
+/// Appends `payload` to `destination` without letting it grow past
+/// `MAX_NOTIFICATION_ASSEMBLY_BYTES`, truncating on a character boundary.
+fn append_bounded(destination: &mut String, payload: &str) {
+    let remaining = MAX_NOTIFICATION_ASSEMBLY_BYTES.saturating_sub(destination.len());
+    if remaining == 0 {
+        return;
+    }
+    if payload.len() <= remaining {
+        destination.push_str(payload);
+        return;
+    }
+    let mut truncate_at = remaining;
+    while truncate_at > 0 && !payload.is_char_boundary(truncate_at) {
+        truncate_at -= 1;
+    }
+    destination.push_str(&payload[..truncate_at]);
+}
+
+/// What one pane's application said about its OSC 99 notifications: whether each id asked for
+/// an activation report, and the title/body of notifications still being sent in chunks
+/// (`d=0`). Bounded to the last `MAX_TRACKED_NOTIFICATION_IDS` ids.
+#[derive(Debug, Clone, Default)]
+pub struct NotificationTracker {
+    wants_report: HashMap<String, bool>,
+    assemblies: HashMap<String, NotificationAssembly>,
+    known_ids: VecDeque<String>,
+}
+
+impl NotificationTracker {
+    fn remember(&mut self, id: &str) {
+        if self.known_ids.iter().any(|known| known == id) {
+            return;
+        }
+        self.known_ids.push_back(id.to_owned());
+        while self.known_ids.len() > MAX_TRACKED_NOTIFICATION_IDS {
+            if let Some(evicted) = self.known_ids.pop_front() {
+                self.wants_report.remove(&evicted);
+                self.assemblies.remove(&evicted);
+            }
+        }
+    }
+    /// Whether the escape wants an activation report: its own `a=` when it states one
+    /// (remembered from then on), otherwise what the notification with this id asked for.
+    fn wants_report(&mut self, id: &str, action: Option<&str>) -> bool {
+        match action {
+            Some(action_value) => {
+                let wants_report = action_wants_report(action_value);
+                if !id.is_empty() {
+                    self.remember(id);
+                    self.wants_report.insert(id.to_owned(), wants_report);
+                }
+                wants_report
+            },
+            None => self.wants_report.get(id).copied().unwrap_or(false),
+        }
+    }
+    /// Adds a chunk to the notification with this id and returns the assembled title and body
+    /// once it is complete. Control requests show nothing; a close drops the assembly.
+    fn assemble(
+        &mut self,
+        id: &str,
+        payload_type: Osc99PayloadType,
+        is_done: bool,
+        payload: String,
+    ) -> Option<(String, String)> {
+        if payload_type == Osc99PayloadType::Close {
+            self.assemblies.remove(id);
+            return None;
+        }
+        if payload_type.is_control_request() {
+            return None;
+        }
+        if !payload.is_empty() {
+            self.remember(id);
+            let assembly = self.assemblies.entry(id.to_owned()).or_default();
+            match payload_type {
+                Osc99PayloadType::Title => append_bounded(&mut assembly.title, &payload),
+                Osc99PayloadType::Body => append_bounded(&mut assembly.body, &payload),
+                _ => {},
+            }
+        }
+        if !is_done {
+            return None;
+        }
+        let assembly = self.assemblies.remove(id)?;
+        if assembly.title.is_empty() && assembly.body.is_empty() {
+            None
+        } else {
+            Some((assembly.title, assembly.body))
+        }
+    }
+}
+
 /// Rewrites OSC 99 metadata for multiplexer forwarding:
 ///
-/// 1. Namespaces the `i=` value with a pane ID prefix and flags so responses
-///    can be routed back to the originating pane.
-///    Format: `i=p<pane_id>[r][q].<original_id>`
-///    - `r` flag: app requested `a=report` — activation response should be
-///      written back to the pane's PTY
-///    - `q` flag: this is a capability query (`p=?`) — response must be
-///      written back to the pane's PTY
-///    - Neither: activation response used only for focus routing, not forwarded
+/// 1. Namespaces the `i=` value as `i=p<pane_id>[r].<original_id>` so responses can be routed
+///    back to the originating pane. The `r` flag records that the app asked for `a=report`
+///    (`wants_report`, remembered per id by the pane's `NotificationTracker`), so the response
+///    is handed back to it; without the flag the response is only used for focus routing.
+///    If no `i=` key is present, one is added with an empty original id.
 ///
-/// 2. Ensures `a=report` is always present so the host terminal sends the
-///    activation response back to Zellij (needed for pane focus routing).
-///
-/// If no `i=` key is present, one is added with an empty original ID.
-pub(crate) fn namespace_notification_id(metadata: &str, pane_id: u32) -> String {
+/// 2. Ensures `a=...,report` is present on notifications so the host terminal sends the
+///    activation response back to Zellij (needed for pane focus routing). An escape without an
+///    `a=` gets the protocol's default `a=focus,report`; control requests (`p=?`, `close`,
+///    `alive`) are left without one, as they are not something the host reports on.
+pub(crate) fn namespace_notification_id(
+    metadata: &str,
+    pane_id: u32,
+    wants_report: bool,
+) -> String {
+    let flags = if wants_report { "r" } else { "" };
     let mut found_id = false;
     let mut found_action = false;
-    let mut app_wants_report = false;
-    let mut is_query = false;
-    let result = metadata
-        .split(':')
-        .map(|kv| {
-            if kv.starts_with("i=") {
-                found_id = true;
-                // Defer i= rewriting until we know the flags
-                kv.to_string()
-            } else if let Some(action_value) = kv.strip_prefix("a=") {
-                found_action = true;
-                app_wants_report = action_value.split(',').any(|v| v == "report");
-                if app_wants_report {
-                    kv.to_string()
-                } else {
-                    format!("a={},report", action_value)
-                }
-            } else if kv == "p=?" {
-                is_query = true;
-                kv.to_string()
+    let mut payload_type = Osc99PayloadType::Title;
+    let mut parts: Vec<String> = Vec::new();
+    for kv in metadata.split(':') {
+        if kv.is_empty() {
+            continue;
+        }
+        if let Some(id_value) = kv.strip_prefix("i=") {
+            found_id = true;
+            parts.push(format!("i=p{}{}.{}", pane_id, flags, id_value));
+        } else if let Some(action_value) = kv.strip_prefix("a=") {
+            found_action = true;
+            if action_wants_report(action_value) {
+                parts.push(kv.to_owned());
             } else {
-                kv.to_string()
+                parts.push(format!("a={},report", action_value));
             }
-        })
-        .collect::<Vec<_>>()
-        .join(":");
-
-    // Build flags suffix
-    let mut flags = String::new();
-    if app_wants_report {
-        flags.push('r');
-    }
-    if is_query {
-        flags.push('q');
-    }
-
-    // Rewrite i= with pane ID and flags
-    let result = result
-        .split(':')
-        .map(|kv| {
-            if let Some(id_value) = kv.strip_prefix("i=") {
-                format!("i=p{}{}.{}", pane_id, flags, id_value)
-            } else {
-                kv.to_string()
+        } else {
+            if let Some(payload_value) = kv.strip_prefix("p=") {
+                payload_type = Osc99PayloadType::from_metadata_value(payload_value);
             }
-        })
-        .collect::<Vec<_>>()
-        .join(":");
-
-    let result = if !found_id {
-        format!("i=p{}{}.:{}", pane_id, flags, result)
-    } else {
-        result
-    };
-    if !found_action {
-        format!("{}:a=report", result)
-    } else {
-        result
+            parts.push(kv.to_owned());
+        }
     }
+    if !found_id {
+        parts.insert(0, format!("i=p{}{}.", pane_id, flags));
+    }
+    if !found_action && !payload_type.is_control_request() {
+        parts.push("a=focus,report".to_owned());
+    }
+    parts.join(":")
 }
 
 use vte::{Params, Perform};
@@ -722,9 +880,8 @@ pub struct Grid {
     pub search_results: SearchResult,
     pub pending_clipboard_update: Option<String>,
     pub pending_osc7_cwd: Option<std::path::PathBuf>,
-    /// Pending desktop notifications: (payload, terminator)
-    /// Payload is the semicolon-joined params after "99", terminator is "\x07" or "\x1b\\"
-    pub pending_desktop_notifications: Vec<(String, String)>,
+    pub pending_desktop_notifications: Vec<PendingNotification>,
+    notification_tracker: NotificationTracker,
     /// Whitelisted host-terminal queries intercepted from the app running
     /// in this pane (CSI 14t / 16t pixel-dim queries, OSC 10;? / 11;? /
     /// 4;N;? color queries). Each entry is the raw byte sequence that
@@ -1103,6 +1260,7 @@ impl Grid {
             pending_clipboard_update: None,
             pending_osc7_cwd: None,
             pending_desktop_notifications: Vec::new(),
+            notification_tracker: NotificationTracker::default(),
             pending_forwarded_queries: Vec::new(),
             pending_nested_session_messages: Vec::new(),
             ui_component_bytes: None,
@@ -5032,9 +5190,80 @@ impl Perform for Grid {
                         .collect::<Vec<&str>>()
                         .join(";");
                     if !payload.is_empty() {
-                        // Store raw payload and terminator; namespacing applied at Tab level
+                        let (metadata, rest) = split_osc99_payload(&payload);
+                        let metadata = parse_osc99_metadata(metadata);
+                        let id = metadata.get("i").copied().unwrap_or_default();
+                        let payload_type = metadata
+                            .get("p")
+                            .map(|value| Osc99PayloadType::from_metadata_value(value))
+                            .unwrap_or(Osc99PayloadType::Title);
+                        let is_done = metadata.get("d").copied().unwrap_or("1") != "0";
+                        let decoded = if metadata.get("e").copied() == Some("1") {
+                            BASE64_DECODER
+                                .decode(rest.as_bytes())
+                                .map(|decoded| String::from_utf8_lossy(&decoded).into_owned())
+                                .unwrap_or_else(|_| rest.to_owned())
+                        } else {
+                            rest.to_owned()
+                        };
+                        let wants_report = self
+                            .notification_tracker
+                            .wants_report(id, metadata.get("a").copied());
+                        let display =
+                            self.notification_tracker
+                                .assemble(id, payload_type, is_done, decoded);
                         self.pending_desktop_notifications
-                            .push((payload, terminator.to_string()));
+                            .push(PendingNotification::Osc99 {
+                                payload,
+                                terminator: terminator.to_string(),
+                                wants_report,
+                                display,
+                            });
+                    }
+                }
+            },
+
+            b"9" => {
+                if params.len() > 1 {
+                    // ConEmu reuses OSC 9 for its own subcommands (`9;4;...` progress,
+                    // `9;9;<cwd>` and so on): a small number followed by more params.
+                    let is_conemu_subcommand = params.len() > 2
+                        && params
+                            .get(1)
+                            .and_then(|param| str::from_utf8(param).ok())
+                            .and_then(|param| param.parse::<u8>().ok())
+                            .map(|subcommand| (1..=12).contains(&subcommand))
+                            .unwrap_or(false);
+                    let body = params
+                        .get(1..)
+                        .unwrap_or_default()
+                        .iter()
+                        .flat_map(|x| str::from_utf8(x))
+                        .collect::<Vec<&str>>()
+                        .join(";");
+                    if !body.is_empty() && !is_conemu_subcommand {
+                        self.pending_desktop_notifications
+                            .push(PendingNotification::Osc9 { body });
+                    }
+                }
+            },
+
+            b"777" => {
+                let parts: Vec<&str> = params
+                    .get(1..)
+                    .unwrap_or_default()
+                    .iter()
+                    .flat_map(|x| str::from_utf8(x))
+                    .collect();
+                if parts.first().copied() == Some("notify") {
+                    let title = parts.get(1).map(|s| s.to_string()).unwrap_or_default();
+                    let body = parts
+                        .get(2..)
+                        .map(|rest| rest.join(";"))
+                        .unwrap_or_default();
+                    if !title.is_empty() || !body.is_empty() {
+                        self.pending_desktop_notifications
+                            .push(PendingNotification::Osc777 { title, body });
                     }
                 }
             },

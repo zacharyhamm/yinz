@@ -63,7 +63,7 @@ use crate::{
     os_input_output::ServerOsApi,
     output::{CharacterChunk, FloatingPanesStack, KittyImageChunk, Output, SixelImageChunk},
     panes::floating_panes::floating_pane_grid::half_size_middle_geom,
-    panes::grid::namespace_notification_id,
+    panes::grid::{namespace_notification_id, PendingNotification},
     panes::kitty_graphics::{KittyHostSupport, KittyImageStore},
     panes::nested_session_modal::GuestModalShortcuts,
     panes::sixel::SixelImageStore,
@@ -648,7 +648,7 @@ pub trait Pane {
     fn drain_clipboard_update(&mut self) -> Option<String> {
         None
     }
-    fn drain_desktop_notifications(&mut self) -> Vec<(String, String)> {
+    fn drain_desktop_notifications(&mut self) -> Vec<PendingNotification> {
         vec![]
     }
     fn drain_osc7_cwd(&mut self) -> Option<std::path::PathBuf> {
@@ -7462,7 +7462,7 @@ impl Tab {
     }
     fn forward_desktop_notifications(
         &self,
-        notifications: Vec<(String, String)>,
+        notifications: Vec<PendingNotification>,
         pane_id: u32,
     ) -> Result<()> {
         let err_context = || "failed to forward desktop notifications to host terminal".to_string();
@@ -7478,7 +7478,18 @@ impl Tab {
                 .collect()
         };
         output.add_clients(&all_clients, self.link_handler.clone(), None);
-        for (payload, terminator) in notifications {
+        for notification in notifications {
+            // Only kitty's protocol is forwarded as-is for now; the other protocols are
+            // rendered per host by the screen once it knows what each host speaks.
+            let PendingNotification::Osc99 {
+                payload,
+                terminator,
+                wants_report,
+                ..
+            } = notification
+            else {
+                continue;
+            };
             // Apply identifier namespacing (Phase 3)
             // The first semicolon-delimited part of payload is the metadata
             let (metadata, rest) = match payload.find(';') {
@@ -7488,7 +7499,7 @@ impl Tab {
                 ),
                 None => (payload.as_str(), ""),
             };
-            let namespaced_metadata = namespace_notification_id(metadata, pane_id);
+            let namespaced_metadata = namespace_notification_id(metadata, pane_id, wants_report);
             let raw = if rest.is_empty() {
                 format!("\x1b]99;{}{}", namespaced_metadata, terminator)
             } else {
