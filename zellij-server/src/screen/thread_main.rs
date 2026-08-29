@@ -1324,12 +1324,8 @@ pub(crate) fn screen_thread_main(
                 screen.render(None)?;
             },
             ScreenInstruction::ClearCommandOutputFlash(pane_id) => {
-                let all_tabs = screen.get_tabs_mut();
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        tab.clear_command_output_flash(pane_id);
-                        break;
-                    }
+                if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                    tab.clear_command_output_flash(pane_id);
                 }
                 screen.render(None)?;
             },

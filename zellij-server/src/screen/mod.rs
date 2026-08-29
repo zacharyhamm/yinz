@@ -3109,6 +3109,46 @@ impl Screen {
             return Ok(());
         }
         self.host_terminal_theme_mode = Some(mode);
+        self.repaint_theme_mode(mode)?;
+
+        // fan out the plugin event
+        self.bus
+            .senders
+            .send_to_plugin(PluginInstruction::Update(vec![(
+                None,
+                None,
+                Event::HostTerminalThemeChanged(mode),
+            )]))
+            .with_context(err_context)?;
+
+        // forward DSR to opted-in terminal panes
+        let mut pty_writes: Vec<(Vec<u8>, u32)> = vec![];
+        for tab in self.tabs.values_mut() {
+            for pane_id in tab.get_all_pane_ids() {
+                if let PaneId::Terminal(terminal_id) = pane_id {
+                    if let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
+                        pane.push_color_palette_dsr(mode);
+                        for bytes in pane.drain_messages_to_pty() {
+                            pty_writes.push((bytes, terminal_id));
+                        }
+                    }
+                }
+            }
+        }
+        for (bytes, terminal_id) in pty_writes {
+            let _ = self
+                .bus
+                .senders
+                .send_to_pty_writer(PtyWriteInstruction::Write(bytes, terminal_id, None));
+        }
+
+        self.render(None)?;
+        Ok(())
+    }
+    /// Swap the active palette to the `theme_dark` / `theme_light` styling for `mode` and
+    /// push it into every tab and client, without announcing a mode change to anyone.
+    fn repaint_theme_mode(&mut self, mode: HostTerminalThemeMode) -> Result<()> {
+        let err_context = || "Failed to update host terminal theme mode".to_string();
 
         // resolve target styling
         let resolved = match mode {
@@ -3166,39 +3206,6 @@ impl Screen {
                 );
             }
         }
-
-        // fan out the plugin event
-        self.bus
-            .senders
-            .send_to_plugin(PluginInstruction::Update(vec![(
-                None,
-                None,
-                Event::HostTerminalThemeChanged(mode),
-            )]))
-            .with_context(err_context)?;
-
-        // forward DSR to opted-in terminal panes
-        let mut pty_writes: Vec<(Vec<u8>, u32)> = vec![];
-        for tab in self.tabs.values_mut() {
-            for pane_id in tab.get_all_pane_ids() {
-                if let PaneId::Terminal(terminal_id) = pane_id {
-                    if let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
-                        pane.push_color_palette_dsr(mode);
-                        for bytes in pane.drain_messages_to_pty() {
-                            pty_writes.push((bytes, terminal_id));
-                        }
-                    }
-                }
-            }
-        }
-        for (bytes, terminal_id) in pty_writes {
-            let _ = self
-                .bus
-                .senders
-                .send_to_pty_writer(PtyWriteInstruction::Write(bytes, terminal_id, None));
-        }
-
-        self.render(None)?;
         Ok(())
     }
     /// Apply a manual host-terminal theme mode change requested via the CLI or a
@@ -3247,13 +3254,22 @@ impl Screen {
     /// Re-resolve the session's current mode against the (possibly changed)
     /// `theme_dark` / `theme_light` definitions after a reconfigure, instead
     /// of leaving it painted with the static theme `reconfigure` applied.
+    ///
+    /// When the mode itself is unchanged only the palette is repainted: the plugin event and
+    /// the `CSI ?997;n` DSR announce a *change* of mode, and re-sending them on every config
+    /// reload would make every opted-in app re-run its theme hooks for nothing.
     fn reapply_effective_theme_mode(&mut self) -> Result<()> {
         let known_mode = match self.theme_policy {
             ThemePolicy::Pinned(mode) => Some(mode),
             ThemePolicy::Auto => self.host_terminal_theme_mode,
         };
-        if let Some(mode) = known_mode {
-            self.host_terminal_theme_mode = None;
+        let Some(mode) = known_mode else {
+            return Ok(());
+        };
+        if self.host_terminal_theme_mode == Some(mode) {
+            self.repaint_theme_mode(mode)?;
+            self.render(None)?;
+        } else {
             self.apply_theme_mode(mode)?;
         }
         Ok(())
