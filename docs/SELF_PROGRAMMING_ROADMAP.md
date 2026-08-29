@@ -269,10 +269,12 @@ same `zellij_server::plugin_authoring::write` the command calls):
    `zellij run` exits with the child's status.
 5. `agent_exit` hook fires; `plugin_log` shows the hook's output.
 
-## Handoff (Phase 3 landed)
+## Handoff (Phase 3 landed; next steps 1–2 landed)
 
-Everything through R16 is on `self-programming-vision`, committed. What the next session needs to
-know without re-deriving it:
+Everything through R16 is on `self-programming-vision`, committed, followed by next steps 1 and 2
+below (`0b419ed90` the end-to-end test and the in-flight-load fix it found, `2e89ec623` the
+`add_client` cache fix). The gate was green at `2e89ec623` apart from the environment noise
+listed here. What the next session needs to know without re-deriving it:
 
 **Where things are now.**
 
@@ -297,11 +299,30 @@ cargo x test -p zellij-utils -p zellij-server -p zellij -p hocus -p hocus-agentd
       | test(/plugin_authoring/) | test(/lua/) | test(/pipe/) | test(/hook/)'
 # nextest flags go after `--`; `-E` before it is refused by xtask
 cargo x integration-test -- -j 16 -E 'binary(cli) | binary(/hocus_/) | binary(new_agent_modal) | binary(plugins)'
+# the whole self-programming loop in one session, ~1.5s; loop it when touching hooks
+cargo x integration-test -- -j 16 -E 'test(a_written_hook)'
 ```
 
-Known environment noise: the 19 `zellij-client web_client_tests` time out on this machine at
-the moment **on `main` as well** (verified in a control worktree); they passed earlier in the
-day. Three more fail on this machine at the pre-Phase-3 commit `d9d4b338c` too (checked while
+Two things learned landing the loop test, for anyone touching hooks or plugin loading:
+
+- **`WasmBridge::all_plugin_and_client_ids_for_plugin_location` reads `cached_plugin_map`**, a
+  copy of the plugin map warmed on first use and cleared only by `unload_plugin` and
+  `apply_cached_events`. During a load it is stale, so a lookup finds nothing for a plugin
+  whose load is in flight; `loading_plugins` (`loading_plugin_ids_for_plugin_location`) is the
+  authoritative in-flight list and the plugin thread updates it synchronously. With an *empty*
+  plugin map the copy never warms and every lookup takes the map's lock instead — which the
+  loader holds for the whole load — so a bare plugin-thread test does not see the staleness a
+  session does; load any other plugin first (see
+  `a_firing_during_the_headless_hooks_load_reaches_the_loading_instance`).
+- **`grant_permissions_and_log_actions_in_thread!` answers permission requests for plugin id
+  0.** With more than one plugin loaded, write the fake screen thread by hand and answer with
+  the request's own `plugin_id` (`RequestPluginPermissions(plugin_id, _)`); both new
+  `lua_plugins` tests do.
+
+Known environment noise: the 19 `zellij-client web_client_tests` time out in a full `cargo x
+test` on this machine **on `main` as well** (verified in a control worktree) and pass 97/97
+when `cargo x test -p zellij-client` runs alone, so they are load-sensitive rather than broken.
+Three more fail on this machine at the pre-Phase-3 commit `d9d4b338c` too (checked while
 landing Phase 3), so they are not Phase 3's:
 `hocus_tab_projects::a_tab_is_named_after_the_project_its_agent_is_in`,
 `floating_pane_overlay::an_overlay_floating_pane_moves_to_another_tab_when_its_own_tab_closes`
@@ -329,8 +350,8 @@ R16. What the next session should know:
   `agent_start`; a per-project `hooks install` is unnecessary for spawned panes and still
   writes `.claude/settings.json` (committed) for hand-started ones.
 
-**Next steps, in order.** Each is independently landable; the first two are the ones that
-make Phase 3 trustworthy, the rest are the loose ends it left.
+**Next steps, in order.** Each is independently landable; the first two made Phase 3
+trustworthy and are done, the rest are the loose ends it left — continue from 3.
 
 1. **The end-to-end integration test** under "Verification" above. *(done —
    `hocus_plugin_authoring::a_written_hook_is_bound_and_fired_by_a_reporting_agent_end_to_end`:
