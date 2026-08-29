@@ -989,8 +989,8 @@ pub fn specs() -> Value {
         ),
         tool(
             "schedule",
-            "Repeat a prompt until cancelled; unschedule it when done. A scheduled run declines \
-         confirmation-gated tools unless the job has auto_confirm. Jobs survive a reload.",
+            "Repeat a prompt until cancelled; unschedule it when done. Runs decline gated tools \
+         unless auto_confirm.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1214,25 +1214,23 @@ pub fn specs() -> Value {
                     "env": {
                         "type": "object",
                         "additionalProperties": { "type": "string" },
-                        "description": "Environment variables the agent starts with.",
+                        "description": "Environment for the agent.",
                     },
                     "permission_mode": {
                         "type": "string",
                         "description": format!(
-                            "How much the agent may do without asking. claude: {}; codex: {}; cursor: {}. \
-                             `skip` turns permissions off for any of them.",
-                            launch::CLAUDE_PERMISSION_MODES.join("/"),
-                            launch::CODEX_PERMISSION_MODES.join("/"),
-                            launch::CURSOR_PERMISSION_MODES.join("/"),
+                            "skip = no permission checks; or the agent's own: claude {}; codex {}.",
+                            launch::CLAUDE_PERMISSION_MODES[..6].join("/"),
+                            launch::CODEX_PERMISSION_MODES[..5].join("/"),
                         ),
                     },
                     "resume": {
                         "type": "string",
-                        "description": "A session id to resume, or `last` for the most recent.",
+                        "description": "Session id to resume, or `last`.",
                     },
                     "hooks": {
                         "type": "boolean",
-                        "description": "Whether a claude pane reports its state through its hooks; defaults true.",
+                        "description": "claude reports its state via hooks; default true.",
                     },
                 },
             }),
