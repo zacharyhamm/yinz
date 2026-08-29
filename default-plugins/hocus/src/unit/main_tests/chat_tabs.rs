@@ -587,7 +587,7 @@ fn a_tick_for_another_tab_keeps_the_foreground_transcript_cache() {
 #[test]
 fn a_new_chat_keeps_a_tab_that_only_has_a_queued_question() {
     let mut state = idle_state();
-    state.asks.push_back("later".to_owned());
+    state.asks.push_back(Ask::text("later"));
     state.new_chat();
     assert_eq!(state.chat_tab_count(), 2);
     assert_eq!(state.parked[0].asks.len(), 1);
@@ -639,7 +639,7 @@ fn closing_a_parked_tab_before_its_first_token_archives_no_empty_reply() {
 fn closing_a_tab_archives_its_queued_questions_as_notices() {
     // A parked tab.
     let mut state = three_tabs();
-    state.parked[1].asks.push_back("one more thing".to_owned());
+    state.parked[1].asks.push_back(Ask::text("one more thing"));
     state.close_tab(2);
     let archived = history::load(&state.private_store(), 3).expect("archived");
     assert_eq!(
@@ -650,7 +650,7 @@ fn closing_a_tab_archives_its_queued_questions_as_notices() {
     // The only tab, mid-reply.
     let mut state = ready_state();
     state.chat_id = Some(7);
-    state.asks.push_back("and another".to_owned());
+    state.asks.push_back(Ask::text("and another"));
     state.close_tab(0);
     assert!(state.messages.is_empty(), "reset in place");
     let archived = history::load(&state.private_store(), 7).expect("archived");
