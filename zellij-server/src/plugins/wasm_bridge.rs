@@ -106,7 +106,6 @@ pub struct LoadingContext {
     pub builtin_plugins_dir: Option<PathBuf>,
     pub default_mode: InputMode,
     pub keybinds: Keybinds,
-    pub plugin_dir: PathBuf,
     pub zellij_data_dir: PathBuf,
     pub plugin_data_store: Arc<PluginDataStore>,
     pub queues: Arc<Mutex<Queues>>,
@@ -161,7 +160,6 @@ impl LoadingContext {
             plugin_own_cache_dir,
             plugin_config,
             tab_index,
-            plugin_dir: wasm_bridge.plugin_dir.clone(),
             zellij_data_dir: wasm_bridge.zellij_data_dir.clone(),
             plugin_data_store: wasm_bridge.plugin_data_store.clone(),
             queues: wasm_bridge.queues.clone(),
@@ -179,7 +177,6 @@ pub type PluginCache = Arc<Mutex<HashMap<PluginCacheKey, Module>>>;
 pub struct WasmBridge {
     connected_clients: Arc<Mutex<Vec<ClientId>>>,
     senders: ThreadSenders,
-    plugin_dir: PathBuf,
     zellij_data_dir: PathBuf,
     /// The data store every plugin shares. Built here so that there is one connection and one
     /// watch registry for the whole server, and cloned into each plugin's environment.
@@ -253,7 +250,6 @@ impl WasmBridge {
     pub fn new(
         senders: ThreadSenders,
         engine: Engine,
-        plugin_dir: PathBuf,
         zellij_data_dir: PathBuf,
         path_to_default_shell: PathBuf,
         zellij_cwd: PathBuf,
@@ -287,7 +283,6 @@ impl WasmBridge {
         WasmBridge {
             connected_clients,
             senders,
-            plugin_dir,
             zellij_data_dir,
             plugin_data_store,
             plugin_map,

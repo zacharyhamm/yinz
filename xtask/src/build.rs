@@ -48,7 +48,7 @@ pub fn build(sh: &Shell, flags: flags::Build) -> anyhow::Result<()> {
     run_proto_codegen(sh, false);
 
     if flags.release && !flags.no_plugins {
-        ensure_plugin_assets(sh)?;
+        ensure_release_plugins(sh)?;
     } else if !flags.no_plugins && (plugins_force() || plugin_sources_changed()) {
         // Build all plugins in a single invocation so Cargo can unify transitive dependency
         // features across all of them and compile shared crates (e.g. zellij-utils) only once.
@@ -106,11 +106,34 @@ fn plugins_force() -> bool {
     std::env::var_os("ZELLIJ_FORCE_PLUGINS").is_some()
 }
 
-fn plugin_asset_path(plugin_name: &str) -> PathBuf {
-    crate::asset_dir()
-        .join("plugins")
+/// The plugin crates `cargo x build -p` builds, by wasm file stem.
+pub fn plugin_names() -> Vec<&'static str> {
+    crate::workspace_members()
+        .iter()
+        .filter(|m| m.build && m.crate_name.contains("plugins"))
+        .filter_map(|m| plugin_name_of(m).ok())
+        .collect()
+}
+
+/// Plugins that exist for the test suites and must not be installed for users.
+pub const TEST_ONLY_PLUGINS: &[&str] = &["fixture-plugin-for-tests", "shared-test"];
+
+fn wasm_target_path(profile: &str, plugin_name: &str) -> PathBuf {
+    crate::target_dir()
+        .join("wasm32-wasip1")
+        .join(profile)
         .join(plugin_name)
         .with_extension("wasm")
+}
+
+/// Where `cargo build --target wasm32-wasip1 --release` leaves a plugin.
+pub fn release_plugin_path(plugin_name: &str) -> PathBuf {
+    wasm_target_path("release", plugin_name)
+}
+
+/// Where the debug plugin build leaves a plugin - what a debug zellij looks for first.
+pub fn debug_plugin_path(plugin_name: &str) -> PathBuf {
+    wasm_target_path("debug", plugin_name)
 }
 
 /// Hashes the inputs which can change plugin wasm, so checkout and worktree mtime changes do not
@@ -248,17 +271,17 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
         };
         if file_type.is_dir() {
             let name = path.file_name().and_then(|name| name.to_str());
-            if matches!(name, Some("benches" | "target" | "tests" | "unit"))
-                || path.ends_with("zellij-utils/assets/plugins")
-            {
+            if matches!(name, Some("benches" | "target" | "tests" | "unit")) {
                 continue;
             }
             collect_files(&path, out);
         } else {
             let name = path.file_name().and_then(|name| name.to_str());
+            // `.wasm` is build output, never an input: a stale, gitignored plugin left in
+            // `zellij-utils/assets/plugins` by an older checkout must not perturb the hash.
             if !matches!(
                 path.extension().and_then(|extension| extension.to_str()),
-                Some("md" | "snap")
+                Some("md" | "snap" | "wasm")
             ) && !matches!(name, Some(".gitignore" | "test.rs"))
                 && !name
                     .is_some_and(|name| name.ends_with("_test.rs") || name.ends_with("_tests.rs"))
@@ -269,7 +292,10 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-pub fn ensure_plugin_assets(sh: &Shell) -> anyhow::Result<()> {
+/// Make sure every plugin's release wasm is present and fresh under
+/// `target/wasm32-wasip1/release`, building only when the inputs changed since the last
+/// release build (or `ZELLIJ_FORCE_PLUGINS` is set).
+pub fn ensure_release_plugins(sh: &Shell) -> anyhow::Result<()> {
     let plugin_members: Vec<&WorkspaceMember> = crate::workspace_members()
         .iter()
         .filter(|m| m.build && m.crate_name.contains("plugins"))
@@ -278,44 +304,36 @@ pub fn ensure_plugin_assets(sh: &Shell) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let missing_asset = plugin_members.iter().any(|member| {
-        let plugin_name = match member.crate_name.rsplit_once('/') {
-            Some((_, name)) => name,
-            None => return true,
-        };
-        !plugin_asset_path(plugin_name).is_file()
-    });
-    let stale = plugins_force() || missing_asset || release_plugin_sources_changed();
+    let missing = plugin_members
+        .iter()
+        .any(|member| match plugin_name_of(member) {
+            Ok(name) => !release_plugin_path(name).is_file(),
+            Err(_) => true,
+        });
+    let stale = plugins_force() || missing || release_plugin_sources_changed();
 
     if !stale {
-        let msg = ">> Plugin assets up to date, skipping plugin build";
+        let msg = ">> Release plugins up to date, skipping plugin build";
         crate::status(msg);
         eprintln!("{}", msg);
         return Ok(());
     }
 
-    let msg = ">> Building plugin assets (release)";
+    let msg = ">> Building plugins (release)";
     crate::status(msg);
     eprintln!("{}", msg);
 
-    build_plugins_release_into_assets(sh, &plugin_members)
+    build_plugins_release(sh, &plugin_members)
 }
 
-fn build_plugins_release_into_assets(
-    sh: &Shell,
-    plugin_members: &[&WorkspaceMember],
-) -> anyhow::Result<()> {
+fn build_plugins_release(sh: &Shell, plugin_members: &[&WorkspaceMember]) -> anyhow::Result<()> {
     let cargo = crate::cargo()?;
     let mut base_cmd = cmd!(sh, "{cargo} build --target wasm32-wasip1 --release");
     for member in plugin_members {
         let plugin_name = plugin_name_of(member)?;
         base_cmd = base_cmd.args(["-p", plugin_name]);
     }
-    base_cmd.run().context("failed to build plugin assets")?;
-
-    for member in plugin_members {
-        move_plugin_to_assets(plugin_name_of(member)?)?;
-    }
+    base_cmd.run().context("failed to build release plugins")?;
     write_release_plugin_stamp(sh);
     Ok(())
 }
@@ -434,36 +452,6 @@ fn run_proto_codegen(sh: &Shell, force: bool) {
     }
 }
 
-fn move_plugin_to_assets(plugin_name: &str) -> anyhow::Result<()> {
-    let err_context = || format!("failed to move plugin '{plugin_name}' to assets folder");
-
-    // Get asset path
-    let asset_name = crate::asset_dir()
-        .join("plugins")
-        .join(plugin_name)
-        .with_extension("wasm");
-
-    // Get plugin path
-    let plugin = crate::target_dir()
-        .join("wasm32-wasip1")
-        .join("release")
-        .join(plugin_name)
-        .with_extension("wasm");
-
-    if !plugin.is_file() {
-        return Err(anyhow::anyhow!("No plugin found at '{}'", plugin.display()))
-            .with_context(err_context);
-    }
-
-    let from = plugin.as_path();
-    let to = asset_name.as_path();
-    let bytes = std::fs::read(from).with_context(err_context)?;
-    if std::fs::read(to).ok().as_deref() == Some(bytes.as_slice()) {
-        return Ok(());
-    }
-    std::fs::write(to, bytes).with_context(err_context)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,7 +503,14 @@ mod tests {
         assert_eq!(original, hash_plugin_files(&root).unwrap().finalize());
 
         fs::write(&source, "fn main() { println!(\"changed\"); }\n").unwrap();
-        assert_ne!(original, hash_plugin_files(&root).unwrap().finalize());
+        let changed = hash_plugin_files(&root).unwrap().finalize();
+        assert_ne!(original, changed);
+
+        // A stale plugin binary lying around is output, not input.
+        let stray_wasm = root.join("zellij-utils/assets/plugins/tab-bar.wasm");
+        fs::create_dir_all(stray_wasm.parent().unwrap()).unwrap();
+        fs::write(&stray_wasm, "wasm").unwrap();
+        assert_eq!(changed, hash_plugin_files(&root).unwrap().finalize());
 
         fs::remove_dir_all(root).unwrap();
     }

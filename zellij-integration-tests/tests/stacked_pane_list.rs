@@ -78,7 +78,7 @@ fn add_stacked_pane_and_wait_for_selected_entry(
     terminal.output(PROMPT);
     zellij.wait_until("stacked pane added and selected", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
-            && has_selected_entry(&grid_snapshot, selected_entry_title)
+            && has_selected_entry(grid_snapshot, selected_entry_title)
     });
     terminal
 }
@@ -143,7 +143,7 @@ fn stack_renders_as_title_list_above_the_visible_pane() {
         grid_snapshot.status_bar_appears()
             && grid_snapshot.contains("Pane #1")
             && grid_snapshot.contains("Pane #2")
-            && has_selected_entry(&grid_snapshot, "Pane #3")
+            && has_selected_entry(grid_snapshot, "Pane #3")
             && grid_snapshot.contains("third-member")
     });
     assert_snapshot!(normalized(&grid_snapshot));
@@ -162,7 +162,7 @@ fn a_layout_stack_renders_as_a_title_list() {
 
     let grid_snapshot = zellij.wait_until("layout stack rendered as a list", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
-            && has_selected_entry(&grid_snapshot, "Pane #1")
+            && has_selected_entry(grid_snapshot, "Pane #1")
             && grid_snapshot.contains("Pane #2")
             && grid_snapshot.contains("Pane #3")
             && grid_snapshot.cursor_is_at(col(2).row(5))
@@ -188,7 +188,7 @@ fn disabling_stacked_pane_list_restores_the_classic_stack() {
         grid_snapshot.status_bar_appears()
             && grid_snapshot.contains("Pane #1")
             && grid_snapshot.contains("Pane #2")
-            && !has_selected_entry(&grid_snapshot, "Pane #2")
+            && !has_selected_entry(grid_snapshot, "Pane #2")
             && grid_snapshot.cursor_is_at(col(2).row(3))
     });
     assert_snapshot!(normalized(&grid_snapshot));
@@ -203,20 +203,20 @@ fn up_and_down_move_the_selection_through_the_list() {
     zellij.send_stdin(&keys::alt('k'));
     let middle_member_selected = zellij.wait_until("middle member swapped in", |grid_snapshot| {
         grid_snapshot.contains("<g> LOCK")
-            && has_selected_entry(&grid_snapshot, "Pane #2")
+            && has_selected_entry(grid_snapshot, "Pane #2")
             && grid_snapshot.contains("second-member")
-            && !has_selected_entry(&grid_snapshot, "Pane #3")
+            && !has_selected_entry(grid_snapshot, "Pane #3")
     });
     assert_snapshot!(normalized(&middle_member_selected));
 
     zellij.send_stdin(&keys::alt('k'));
     zellij.wait_until("top member swapped in", |grid_snapshot| {
-        has_selected_entry(&grid_snapshot, "Pane #1") && grid_snapshot.contains("first-member")
+        has_selected_entry(grid_snapshot, "Pane #1") && grid_snapshot.contains("first-member")
     });
 
     zellij.send_stdin(&keys::alt('j'));
     zellij.wait_until("selection moved back down", |grid_snapshot| {
-        has_selected_entry(&grid_snapshot, "Pane #2") && grid_snapshot.contains("second-member")
+        has_selected_entry(grid_snapshot, "Pane #2") && grid_snapshot.contains("second-member")
     });
     zellij.quit();
 }
@@ -231,21 +231,21 @@ fn navigating_past_the_top_entry_leaves_the_stack() {
 
     zellij.send_stdin(&keys::alt('k'));
     zellij.wait_until("selection on the middle entry", |grid_snapshot| {
-        has_selected_entry(&grid_snapshot, "Pane #3")
+        has_selected_entry(grid_snapshot, "Pane #3")
     });
     zellij.send_stdin(&keys::alt('k'));
     zellij.wait_until("selection on the top entry", |grid_snapshot| {
-        has_selected_entry(&grid_snapshot, "Pane #2")
+        has_selected_entry(grid_snapshot, "Pane #2")
     });
 
     zellij.send_stdin(&keys::alt('k'));
     zellij.wait_until("focus left the stack to the pane above", |grid_snapshot| {
-        has_selected_entry(&grid_snapshot, "Pane #2") && grid_snapshot.cursor_is_at(col(2).row(2))
+        has_selected_entry(grid_snapshot, "Pane #2") && grid_snapshot.cursor_is_at(col(2).row(2))
     });
 
     zellij.send_stdin(&keys::alt('j'));
     zellij.wait_until("focus re-entered the stack", |grid_snapshot| {
-        has_selected_entry(&grid_snapshot, "Pane #2") && grid_snapshot.cursor_is_at(col(2).row(16))
+        has_selected_entry(grid_snapshot, "Pane #2") && grid_snapshot.cursor_is_at(col(2).row(16))
     });
     zellij.quit();
 }
@@ -262,7 +262,7 @@ fn closing_the_visible_member_promotes_its_neighbor() {
         zellij.wait_until("third member closed, second promoted", |grid_snapshot| {
             grid_snapshot.status_bar_appears()
                 && !grid_snapshot.contains("Pane #3")
-                && has_selected_entry(&grid_snapshot, "Pane #2")
+                && has_selected_entry(grid_snapshot, "Pane #2")
                 && grid_snapshot.contains("second-member")
         });
     assert_snapshot!(normalized(&grid_snapshot));
@@ -300,7 +300,7 @@ fn a_hidden_member_exiting_removes_its_entry() {
         grid_snapshot.status_bar_appears()
             && !grid_snapshot.contains("Pane #2")
             && grid_snapshot.contains("Pane #1")
-            && has_selected_entry(&grid_snapshot, "Pane #3")
+            && has_selected_entry(grid_snapshot, "Pane #3")
     });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();
@@ -331,7 +331,7 @@ fn breaking_the_visible_member_out_promotes_and_moves_it_to_a_new_tab() {
             && grid_snapshot.contains("Tab #1")
             && grid_snapshot.contains("Tab #2")
             && grid_snapshot.contains("Pane #1")
-            && has_selected_entry(&grid_snapshot, "Pane #2")
+            && has_selected_entry(grid_snapshot, "Pane #2")
             && !grid_snapshot.contains("Pane #3")
             && grid_snapshot.contains("second-member")
     });
@@ -349,7 +349,7 @@ fn floating_the_visible_member_promotes_its_neighbor() {
 
     let grid_snapshot = zellij.wait_until("member floated over the stack", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
-            && has_selected_entry(&grid_snapshot, "Pane #2")
+            && has_selected_entry(grid_snapshot, "Pane #2")
             && grid_snapshot.contains("Pane #3")
             && grid_snapshot.contains("third-member")
     });
@@ -365,7 +365,7 @@ fn fullscreen_suspends_the_list_and_restores_it() {
     zellij.send_stdin(&keys::ctrl('p'));
     zellij.send_stdin(&keys::key('f'));
     zellij.wait_until("stack member fullscreened", |grid_snapshot| {
-        grid_snapshot.contains("(FULLSCREEN)") && !has_selected_entry(&grid_snapshot, "Pane #3")
+        grid_snapshot.contains("(FULLSCREEN)") && !has_selected_entry(grid_snapshot, "Pane #3")
     });
 
     zellij.send_stdin(&keys::ctrl('p'));
@@ -375,7 +375,7 @@ fn fullscreen_suspends_the_list_and_restores_it() {
             && !grid_snapshot.contains("(FULLSCREEN)")
             && grid_snapshot.contains("Pane #1")
             && grid_snapshot.contains("Pane #2")
-            && has_selected_entry(&grid_snapshot, "Pane #3")
+            && has_selected_entry(grid_snapshot, "Pane #3")
             && grid_snapshot.contains("third-member")
     });
     assert_snapshot!(normalized(&grid_snapshot));
@@ -390,14 +390,14 @@ fn clicking_a_hidden_entry_swaps_it_in() {
     build_three_member_stack(&zellij);
 
     let grid_snapshot = zellij.wait_until("stack list rendered", |grid_snapshot| {
-        grid_snapshot.contains("Pane #1") && has_selected_entry(&grid_snapshot, "Pane #3")
+        grid_snapshot.contains("Pane #1") && has_selected_entry(grid_snapshot, "Pane #3")
     });
     let (entry_column, entry_line) = entry_click_coordinates(&grid_snapshot, "Pane #1");
     zellij.send_stdin(&sgr_left_click(entry_column, entry_line));
 
     let swapped_in = zellij.wait_until("clicked member swapped in", |grid_snapshot| {
         grid_snapshot.contains("<g> LOCK")
-            && has_selected_entry(&grid_snapshot, "Pane #1")
+            && has_selected_entry(grid_snapshot, "Pane #1")
             && grid_snapshot.contains("first-member")
     });
     assert_snapshot!(normalized(&swapped_in));
@@ -412,7 +412,7 @@ fn alt_clicking_a_hidden_entry_marks_it_without_selecting() {
     build_three_member_stack(&zellij);
 
     let grid_snapshot = zellij.wait_until("stack list rendered", |grid_snapshot| {
-        grid_snapshot.contains("Pane #1") && has_selected_entry(&grid_snapshot, "Pane #3")
+        grid_snapshot.contains("Pane #1") && has_selected_entry(grid_snapshot, "Pane #3")
     });
     let (entry_column, entry_line) = entry_click_coordinates(&grid_snapshot, "Pane #1");
     zellij.send_stdin(&sgr_alt_left_click(entry_column, entry_line));
@@ -420,7 +420,7 @@ fn alt_clicking_a_hidden_entry_marks_it_without_selecting() {
     zellij.wait_until(
         "hidden member marked, selection unchanged",
         |grid_snapshot| {
-            grid_snapshot.contains("GROUP ACTIONS") && has_selected_entry(&grid_snapshot, "Pane #3")
+            grid_snapshot.contains("GROUP ACTIONS") && has_selected_entry(grid_snapshot, "Pane #3")
         },
     );
     zellij.quit();
@@ -462,7 +462,7 @@ fn entries_share_a_uniform_width_sized_by_the_widest_title() {
     let grid_snapshot = zellij.wait_until("mixed-width entries rendered", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
             && grid_snapshot.contains("member-command")
-            && has_selected_entry(&grid_snapshot, "Pane #1")
+            && has_selected_entry(grid_snapshot, "Pane #1")
             && grid_snapshot.cursor_is_at(col(2).row(4))
     });
 
@@ -509,7 +509,7 @@ fn a_hidden_held_members_exit_code_shows_on_its_entry() {
         |grid_snapshot| {
             grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("member-command")
-                && has_selected_entry(&grid_snapshot, "Pane #1")
+                && has_selected_entry(grid_snapshot, "Pane #1")
         },
     );
 
@@ -517,7 +517,7 @@ fn a_hidden_held_members_exit_code_shows_on_its_entry() {
 
     let grid_snapshot =
         zellij.wait_until("exit code rendered on the hidden entry", |grid_snapshot| {
-            grid_snapshot.contains("EXIT CODE: 2") && has_selected_entry(&grid_snapshot, "Pane #1")
+            grid_snapshot.contains("EXIT CODE: 2") && has_selected_entry(grid_snapshot, "Pane #1")
         });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();
@@ -543,7 +543,7 @@ fn the_visible_members_scroll_state_shows_on_its_entry() {
     let grid_snapshot = zellij.wait_until("scroll indicator on the entry row", |grid_snapshot| {
         grid_snapshot.contains("SCROLL: ")
             && !grid_snapshot.contains("SCROLL: 0/")
-            && has_selected_entry(&grid_snapshot, "Pane #2")
+            && has_selected_entry(grid_snapshot, "Pane #2")
             && grid_snapshot.contains("PgDn|PgUp")
     });
     assert_snapshot!(normalized(&grid_snapshot));
@@ -609,7 +609,7 @@ fn a_scrollback_editor_follows_its_member_through_selection_changes() {
 
     editor.exit(Some(0));
     zellij.wait_until("editor closed back into its member", |grid_snapshot| {
-        has_selected_entry(&grid_snapshot, "Pane #2")
+        has_selected_entry(grid_snapshot, "Pane #2")
             && grid_snapshot.contains("second-member")
             && !grid_snapshot.contains("editor-open")
     });
@@ -633,7 +633,7 @@ fn a_hidden_scrollback_editor_pair_survives_fullscreen() {
     zellij.send_stdin(&keys::ctrl('p'));
     zellij.send_stdin(&keys::key('f'));
     zellij.wait_until("list re-formed after fullscreen", |grid_snapshot| {
-        has_selected_entry(&grid_snapshot, "Pane #1") && grid_snapshot.contains("first-member")
+        has_selected_entry(grid_snapshot, "Pane #1") && grid_snapshot.contains("first-member")
     });
 
     zellij.send_stdin(&keys::alt('j'));
@@ -643,7 +643,7 @@ fn a_hidden_scrollback_editor_pair_survives_fullscreen() {
 
     editor.exit(Some(0));
     zellij.wait_until("editor closed back into its member", |grid_snapshot| {
-        has_selected_entry(&grid_snapshot, "Pane #2") && grid_snapshot.contains("second-member")
+        has_selected_entry(grid_snapshot, "Pane #2") && grid_snapshot.contains("second-member")
     });
     zellij.quit();
 }
@@ -664,7 +664,7 @@ fn closing_a_hidden_editor_member_substitutes_its_parked_pane() {
 
     zellij.send_stdin(&keys::alt('j'));
     zellij.wait_until("substituted member swapped in", |grid_snapshot| {
-        has_selected_entry(&grid_snapshot, "Pane #2") && grid_snapshot.contains("second-member")
+        has_selected_entry(grid_snapshot, "Pane #2") && grid_snapshot.contains("second-member")
     });
     zellij.quit();
 }
@@ -683,7 +683,7 @@ fn splitting_a_new_pane_reforms_the_list_around_it() {
         grid_snapshot.contains("<g> LOCK")
             && grid_snapshot.contains("Pane #1")
             && grid_snapshot.contains("Pane #2")
-            && has_selected_entry(&grid_snapshot, "Pane #3")
+            && has_selected_entry(grid_snapshot, "Pane #3")
             && grid_snapshot.contains("Pane #4")
             && grid_snapshot.cursor_is_at(col(2).row(13))
     });
@@ -699,7 +699,7 @@ fn resizing_the_visible_member_keeps_the_list() {
     let _lower_terminal = split_down_and_wait_for_prompt(&zellij);
     add_stacked_pane_and_wait_for_selected_entry(&zellij, "Pane #3");
     let before_resize = zellij.wait_until("list settled before resize", |grid_snapshot| {
-        grid_snapshot.contains("<g> LOCK") && has_selected_entry(&grid_snapshot, "Pane #3")
+        grid_snapshot.contains("<g> LOCK") && has_selected_entry(grid_snapshot, "Pane #3")
     });
     let entry_row_before = before_resize
         .lines()
@@ -778,7 +778,7 @@ fn a_stack_list_survives_session_resurrection() {
         grid_snapshot.status_bar_appears()
             && grid_snapshot.contains("Pane #1")
             && grid_snapshot.contains("Pane #2")
-            && has_selected_entry(&grid_snapshot, "Pane #3")
+            && has_selected_entry(grid_snapshot, "Pane #3")
             && grid_snapshot.cursor_is_at(col(2).row(5))
     });
     assert_snapshot!(normalized(&grid_snapshot));

@@ -2,7 +2,7 @@
 //! # This module contain everything you'll need to access local system paths
 //! containing configuration and layouts
 
-use crate::consts::{SYSTEM_DEFAULT_CONFIG_DIR, ZELLIJ_PROJ_DIR};
+use crate::consts::{BUILTIN_PLUGIN_DIR_NAME, SYSTEM_DEFAULT_CONFIG_DIR, VERSION, ZELLIJ_PROJ_DIR};
 
 use std::{path::Component, path::Path, path::PathBuf};
 
@@ -60,6 +60,31 @@ pub fn try_create_home_config_dir() {
 
 pub fn system_data_dir() -> PathBuf {
     platform::system_data_dir()
+}
+
+/// Where the builtin plugin wasm for *this* version of zellij lives under a data dir:
+/// `<data_dir>/builtins/<VERSION>/<name>.wasm`. `cargo x install` writes it, and it is
+/// searched by `PluginConfig::resolve_wasm_bytes` right after `<data_dir>/plugins`.
+///
+/// Versioned by `VERSION` rather than by `CLIENT_SERVER_CONTRACT_VERSION`: that one versions the
+/// client<->server IPC, but builtin wasm is bound to the host<->plugin API of the binary that
+/// was built alongside it, so a binary must never load another version's wasm. Keyed on the
+/// data dir handed in - not unconditionally on the XDG dir - so `--data-dir X` means "X is
+/// where my builtins are" and a test's scratch data dir never sees the developer's install.
+pub fn builtin_plugin_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join(BUILTIN_PLUGIN_DIR_NAME).join(VERSION)
+}
+
+/// The per-user install target for the builtins. Deliberately `xdg_data_dir()` and not
+/// `get_default_data_dir()`: on a machine with a distro `/usr/share/zellij` and no
+/// `~/.local/share/zellij` yet, the latter answers the system dir, which needs root to write.
+pub fn user_builtin_plugin_dir() -> PathBuf {
+    builtin_plugin_dir(&xdg_data_dir())
+}
+
+/// The system-wide install target, `$PREFIX/share/zellij/builtins/<VERSION>`.
+pub fn system_builtin_plugin_dir() -> PathBuf {
+    builtin_plugin_dir(&system_data_dir())
 }
 
 pub fn get_layout_dir(config_dir: Option<PathBuf>) -> Option<PathBuf> {
@@ -162,6 +187,22 @@ pub fn user_plugin_dir_or_default(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_builtin_dir_is_versioned_under_the_data_dir() {
+        assert_eq!(
+            builtin_plugin_dir(Path::new("/data")),
+            PathBuf::from("/data").join("builtins").join(VERSION)
+        );
+        assert_eq!(
+            user_builtin_plugin_dir(),
+            xdg_data_dir().join("builtins").join(VERSION)
+        );
+        assert_eq!(
+            system_builtin_plugin_dir(),
+            system_data_dir().join("builtins").join(VERSION)
+        );
+    }
 
     #[test]
     fn the_user_plugin_dir_hangs_off_the_config_dir() {

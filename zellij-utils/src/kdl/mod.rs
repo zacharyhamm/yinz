@@ -3390,7 +3390,7 @@ impl Options {
             "{}\n{}\n{}\n{}",
             " ",
             "// The folder in which Zellij will look for builtin plugin WASM files",
-            "// It falls back to the embedded builtin plugins when a file is not present",
+            "// It falls back to the installed builtin plugins when a file is not present",
             "// ",
         );
 

@@ -772,14 +772,19 @@ pub enum ZellijError {
     Plugin name: '{plugin_path}'
     Plugin directory: '{plugin_dir}'
 
-If you're a user:
-    Please report this error to the distributor of your current zellij version
+If you built zellij from source:
+    `cargo x install <destination>` installs the builtin plugins next to the data
+    dir, under 'builtins/<version>'. In a checkout, `cargo x build -p` builds them
+    where a debug binary looks. Do not set CARGO_TARGET_DIR: the checkout paths
+    are baked in at compile time.
 
-Possible fix for your problem:
-    Place the builtin plugin '.wasm' files in the plugin directory shown above,
-    or in the 'plugins' folder of the system data directory, or point the
-    'builtin_plugins_dir' config option at the directory holding them. All of
-    these are visible in the output of `zellij setup --check`.
+If you're a user of a packaged zellij:
+    Please report this error to the distributor of your current zellij version.
+
+Otherwise, place the builtin plugin '.wasm' files in the plugin directory shown
+above, in the 'plugins' folder of the system data directory, or point the
+'builtin_plugins_dir' config option at the directory holding them. Every
+location zellij looks in is listed by `zellij setup --check`.
 "
     )]
     BuiltinPluginMissing {

@@ -12,7 +12,19 @@ pub fn integration_test(sh: &Shell, flags: flags::IntegrationTest) -> anyhow::Re
     crate::status(msg);
     println!("{}", msg);
 
-    crate::build::ensure_plugin_assets(sh).context(err_context)?;
+    // Debug plugins, as `x test` builds them: the suite runs a debug binary, which looks in
+    // `target/wasm32-wasip1/debug` before anything installed, so this tests the plugins in
+    // the tree rather than the last release build.
+    crate::build::build(
+        sh,
+        flags::Build {
+            release: false,
+            no_plugins: false,
+            plugins_only: true,
+            args: vec![],
+        },
+    )
+    .context(err_context)?;
 
     let nextest_available = cmd!(sh, "{cargo} nextest --version")
         .quiet()

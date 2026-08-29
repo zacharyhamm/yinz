@@ -61,9 +61,15 @@ xflags::xflags! {
             optional -c, --clean
         }
 
-        /// Generate a runnable `zellij` executable with plugins bundled
+        /// Generate a runnable `zellij` executable and install its builtin plugins
         cmd install {
             required destination: PathBuf
+            /// Where to put the builtin plugin wasm. Defaults to what the built binary
+            /// reports: `<data dir>/builtins/<version>`, or `$PREFIX/share/zellij/builtins/<version>`
+            /// when PREFIX is set. Nothing is pruned under an explicit directory.
+            optional --builtins-dir path: PathBuf
+            /// Install the binary only; the builtins are already in place
+            optional --no-builtins
             /// Extra arguments appended to the native `cargo build` invocation
             /// (e.g. `--no-default-features`, `--features ...`, `--offline`, `--locked`, `-j N`).
             /// Not applied to the wasm plugin build.
@@ -72,7 +78,8 @@ xflags::xflags! {
 
         /// Run debug version of zellij
         cmd run {
-            /// Take plugins from asset folder, skip building plugins.
+            /// Skip the plugin build: run against the debug plugins already under target/,
+            /// with a scratch data dir (target/dev-data) instead of the real one.
             optional --quick-run
             /// Take plugins from here, skip building plugins. Passed to zellij verbatim
             optional --data-dir path: PathBuf
@@ -226,6 +233,9 @@ pub struct Make {
 pub struct Install {
     pub destination: PathBuf,
     pub args: Vec<OsString>,
+
+    pub builtins_dir: Option<PathBuf>,
+    pub no_builtins: bool,
 }
 
 #[derive(Debug)]

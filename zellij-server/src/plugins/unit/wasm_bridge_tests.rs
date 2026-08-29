@@ -36,11 +36,9 @@ impl TestBridge {
             should_silently_fail: true,
         };
         let data_dir = tempdir().unwrap();
-        let plugin_dir = tempdir().unwrap();
         let bridge = WasmBridge::new(
             senders,
             Engine::default(),
-            plugin_dir.path().to_path_buf(),
             data_dir.path().to_path_buf(),
             PathBuf::from("."),
             PathBuf::from("."),
@@ -65,7 +63,7 @@ impl TestBridge {
                 Box::new(receive_pty_writer),
                 Box::new(receive_background_jobs),
             ],
-            _dirs: vec![data_dir, plugin_dir],
+            _dirs: vec![data_dir],
         }
     }
 }

@@ -21,15 +21,13 @@ cargo x remote-test --build && cargo x remote-test --test  # remote panes, real 
 
 Requires `protoc` (protobufs cross the plugin wasm boundary).
 
-**Never set `CARGO_TARGET_DIR` or change `build.target-dir`.** Debug builds embed
-plugins from `<repo>/target/wasm32-wasip1/debug`, resolved at compile time; moving the
-target dir breaks debug builds. Symlink `target/` instead. See CONTRIBUTING.md.
+**Never set `CARGO_TARGET_DIR` or change `build.target-dir`.** Checkout builds look for
+plugins in `<repo>/target/wasm32-wasip1/{debug,release}`, resolved at compile time; moving
+the target dir leaves them with no builtins. Symlink `target/` instead. See CONTRIBUTING.md.
 
-Every build rewrites the checked-in `.wasm` files under `zellij-utils/assets/plugins/`,
-so `git status` shows a pile of modified binaries after any `cargo x build` or test run.
-This is normal and expected — wasm builds are not byte-reproducible. Restore them with
-`git checkout -- zellij-utils/assets/plugins` before committing unless the plugin sources
-actually changed, and don't report the churn.
+Builtin plugin wasm is not checked in: it is built under `target/wasm32-wasip1/` and
+installed by `cargo x install` to `<data dir>/builtins/<version>` (`--builtins-dir`,
+`--no-builtins` to override). `zellij-utils/assets/plugins/` holds only the Lua builtins.
 
 **There is no CI in this fork.** `.github/workflows` was deleted deliberately (`c456d1cdf`), so
 nothing checks a branch unless a person runs it. The gate is:
@@ -51,7 +49,7 @@ each command forwards to a different place:
 |---|---|
 | `x test` | `cargo nextest run` — nextest flags, not libtest ones |
 | `x integration-test` | `cargo nextest run` — nextest flags, not libtest ones |
-| `x build`, `x install` | the native `cargo build`, repeated per crate (never the wasm plugin build) |
+| `x build`, `x install` | the native `cargo build`, repeated per crate (never the wasm plugin build); `x install` also takes `--builtins-dir <dir>` / `--no-builtins` |
 | `x run` | zellij itself (after `cargo run --`) |
 | `x bench` | criterion (after `cargo bench --`) — criterion flags, not libtest ones |
 | `x ci e2e` | the e2e test runner |
@@ -77,7 +75,7 @@ its own process and `cargo test` does not: `cargo test -p zellij-server -- some_
 repo root, never with `CARGO_TARGET_DIR` set. Don't pass `--target`; the plugin crates' wasm pin
 in `default-plugins/*/.cargo/config.toml` is only read when cargo is invoked from inside those
 directories, and passing it splits the artifact tree. Tests that load a plugin at runtime need
-`cargo x build -p` (plugins only) first.
+`cargo x build -p` (plugins only) first - there is no checked-in wasm to fall back on.
 
 ### Choosing what to run
 
