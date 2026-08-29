@@ -4,6 +4,7 @@ use super::*;
 fn a_successful_toggle_refreshes_the_tier_before_answering() {
     let mut state = project_state();
     settle(&mut state);
+    state.skills_project_root = Some("/work/hocus".to_owned());
     load_skill(&mut state, skills::Source::User, "bench", "User.");
     load_skill(&mut state, skills::Source::Project, "bench", "Project.");
     state.pending = vec![ToolCall {
@@ -21,6 +22,10 @@ fn a_successful_toggle_refreshes_the_tier_before_answering() {
         &BTreeMap::from([
             ("tool_call_id".to_owned(), "mine".to_owned()),
             (skills::SOURCE_CONTEXT.to_owned(), "project".to_owned()),
+            (
+                skills::ROOT_CONTEXT.to_owned(),
+                "/work/hocus/.hocus/skills".to_owned(),
+            ),
         ]),
     );
 
@@ -28,6 +33,38 @@ fn a_successful_toggle_refreshes_the_tier_before_answering() {
     assert!(tool_results(&state)[0]
         .content
         .contains("disabled the project skill bench"));
+}
+
+#[test]
+fn a_mutation_result_from_an_obsolete_project_root_is_ignored() {
+    let mut state = project_state();
+    settle(&mut state);
+    state.skills_project_root = Some("/work/other".to_owned());
+    load_skill(&mut state, skills::Source::Project, "current", "Current.");
+    state.pending = vec![ToolCall {
+        id: "mine".into(),
+        name: "skill_write".into(),
+        arguments: r#"{"name":"old","scope":"project","source":"Old."}"#.into(),
+    }]
+    .into();
+    state.status = Status::AwaitingCommand;
+
+    state.on_command_result(
+        Some(0),
+        b"\x01/work/hocus/.hocus/skills/old/SKILL.md\x02Old.\n",
+        b"",
+        &BTreeMap::from([
+            ("tool_call_id".to_owned(), "mine".to_owned()),
+            (skills::SOURCE_CONTEXT.to_owned(), "project".to_owned()),
+            (
+                skills::ROOT_CONTEXT.to_owned(),
+                "/work/hocus/.hocus/skills".to_owned(),
+            ),
+        ]),
+    );
+
+    assert!(state.skills.get("current").is_some());
+    assert!(state.skills.get("old").is_none());
 }
 
 #[test]

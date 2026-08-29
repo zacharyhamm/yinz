@@ -833,6 +833,7 @@ impl State {
             BTreeMap::from([
                 ("tool_call_id".to_owned(), call.id.clone()),
                 (skills::SOURCE_CONTEXT.to_owned(), source.label().to_owned()),
+                (skills::ROOT_CONTEXT.to_owned(), root),
             ]),
             if call.name == "skill_read" {
                 skills::MAX_SKILL_BYTES + 1

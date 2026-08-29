@@ -30,6 +30,8 @@ use hocus_proto::paths;
 pub const SCAN_CONTEXT: &str = "hocus_skill_scan";
 /// Context key naming which tier the scan was for.
 pub const SOURCE_CONTEXT: &str = "hocus_skill_source";
+/// Context key naming the tier root a skill mutation operated on.
+pub const ROOT_CONTEXT: &str = "hocus_skill_root";
 /// Context key carrying the id of the scan being answered. Two scans of the
 /// same tier can be out at once — a project switch starts one before the last
 /// has landed — and they may answer in either order, so a result names the
@@ -236,6 +238,8 @@ for root in "$@"; do
     continue
   fi
   for f in "$root"/*/SKILL.md; do
+    [ -L "${{f%/SKILL.md}}" ] && continue
+    [ -L "$f" ] && continue
     [ -f "$f" ] || continue
     printf '\001%s' "$f"
     [ -f "${{f%/SKILL.md}}/.disabled" ] && printf '\003'

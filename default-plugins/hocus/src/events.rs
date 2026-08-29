@@ -1674,9 +1674,19 @@ impl State {
                 return "the skill changed, but its tier could not be refreshed; use /skills reload"
                     .to_owned();
             };
-            let listing = skills::parse_listing(source, &String::from_utf8_lossy(stdout));
-            let reserved = self.reserved_command_names();
-            self.skills.replace(source, listing, &reserved);
+            let current_root = match source {
+                skills::Source::User => self.skills_dir(),
+                skills::Source::Project => self
+                    .skills_project_root
+                    .as_ref()
+                    .map(|root| format!("{root}/.hocus/skills"))
+                    .unwrap_or_default(),
+            };
+            if context.get(skills::ROOT_CONTEXT) == Some(&current_root) {
+                let listing = skills::parse_listing(source, &String::from_utf8_lossy(stdout));
+                let reserved = self.reserved_command_names();
+                self.skills.replace(source, listing, &reserved);
+            }
             let verb = match head.name.as_str() {
                 "skill_write" => "wrote",
                 "skill_enable" => "enabled",
