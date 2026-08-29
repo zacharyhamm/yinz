@@ -129,10 +129,9 @@ Neither suite is reliable enough for a single red run to be evidence. Before bel
   be listed here - `floating_pane_overlay::an_overlay_floating_pane_moves_to_another_tab_when_its_own_tab_closes`
   and `hocus_tab_projects::a_tab_is_named_after_the_project_its_agent_is_in` - and are fixed:
   `75376d615` rewrote their layouts when the global panes went, and each test's own overlay
-  landed on the row it read. A floating pane at `y=0` covers the tab bar.) One more since the
-  merge of `main` at `9463b399a`: `tabs::move_tab_to_right` (the status bar still shows
-  Tab-mode hints in its snapshot) - red on that `main` commit itself, green on `main` at
-  `ea7738dd8`, so it is `main`'s.
+  landed on the row it read. A floating pane at `y=0` covers the tab bar.) `tabs::move_tab_to_right`
+  was a race - the landed-on tab's status bar hears about Normal mode asynchronously since
+  `9003d98e6` - and now waits for the settled frame; see `docs/SELF_PROGRAMMING.md`.
 - **The two known-flaky `zellij-server` lib tests are fixed** and each now passes 20/20 in a
   loop: `screen_tests::cli_actions::send_cli_scroll_up_action` and
   `plugins::plugin_tests::keybinds::mode_update_payload_is_lightweight_for_opted_in_plugins`.

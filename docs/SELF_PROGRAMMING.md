@@ -175,12 +175,19 @@ three chunks by binary (`ls zellij-integration-tests/tests` is the list): `about
 `-E 'binary(/^(a|b|…)$/)'`.
 
 **Known red, none of it this branch's** (CLAUDE.md keeps the list): `misc::quit_with_keybinding`,
-the `nested_*` group, `stacked_pane_list::a_stack_list_survives_session_resurrection`;
-`tabs::move_tab_to_right` and three `zellij-client web_client_tests` (`test_full_session_flow`,
+the `nested_*` group, `stacked_pane_list::a_stack_list_survives_session_resurrection`; three
+`zellij-client web_client_tests` (`test_full_session_flow`,
 `test_regular_token_uses_first_client_connected_for_new_session`,
-`test_read_only_token_uses_watcher_message_type`) fail on `main` itself, verified in control
-worktrees. `cli::send_command_through_the_cli` is a snapshot race under load. The box is shared
+`test_read_only_token_uses_watcher_message_type`) fail on `main` itself, verified in a control
+worktree. `cli::send_command_through_the_cli` is a snapshot race under load. The box is shared
 with sibling worktrees running their own gates: run a red test alone before believing it.
+
+One race worth knowing about, fixed in its test: since `main`'s `9003d98e6` a tab's plugins hear
+about mode changes only while a client is on that tab, and get a fresh `ModeUpdate` when one
+lands - asynchronously, so a snapshot taken the moment the tab bar changes can still show the
+landed-on tab's status bar in the mode the client *left* it in. `tabs::move_tab_to_right` now
+waits for the Normal-mode ribbon too (`status_bar_appears()`); do the same in any test that
+switches tabs and snapshots the status bar.
 
 ## Not done, by decision
 
