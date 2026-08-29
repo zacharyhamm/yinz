@@ -440,12 +440,10 @@ fn edge_and_delta_to_strategies(
 
 /// Whether a press in this pane should be followed until it is released.
 ///
-/// A pane that does its own text selection needs the drag to extend the selection. A
-/// plugin pane that opted *out* of selection needs it for the opposite reason: its
-/// `Mouse::LeftClick`, `Mouse::Hold` and `Mouse::Release` events are all sent from those
-/// same three `Pane` calls (see `PluginPane::start_selection`), so a plugin whose drag is
-/// not tracked only ever hears the press - and a form widget that activates on release
-/// would never fire.
+/// A pane that does its own text selection needs the drag to extend the selection. A plugin pane
+/// needs it so its `Mouse::LeftClick`, `Mouse::Hold` and `Mouse::Release` events are all sent from
+/// those same three `Pane` calls (see `PluginPane::start_selection`); otherwise a form widget that
+/// activates on release would never fire.
 fn drag_should_be_tracked(pane_id: PaneId, pane: &dyn Pane) -> bool {
     pane.supports_mouse_selection() || matches!(pane_id, PaneId::Plugin(_))
 }

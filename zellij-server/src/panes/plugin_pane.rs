@@ -646,15 +646,14 @@ impl Pane for PluginPane {
                 grid.start_selection(start);
                 self.set_should_render(true);
             }
-        } else {
-            self.send_plugin_instructions
-                .send(PluginInstruction::Update(vec![(
-                    Some(self.pid),
-                    Some(client_id),
-                    Event::Mouse(Mouse::LeftClick(start.line.0, start.column.0)),
-                )]))
-                .unwrap();
         }
+        self.send_plugin_instructions
+            .send(PluginInstruction::Update(vec![(
+                Some(self.pid),
+                Some(client_id),
+                Event::Mouse(Mouse::LeftClick(start.line.0, start.column.0)),
+            )]))
+            .unwrap();
     }
     fn update_selection(&mut self, position: &Position, client_id: ClientId) {
         if self.supports_mouse_selection {
@@ -662,30 +661,28 @@ impl Pane for PluginPane {
                 grid.update_selection(position);
                 self.set_should_render(true); // TODO: no??
             }
-        } else {
-            self.send_plugin_instructions
-                .send(PluginInstruction::Update(vec![(
-                    Some(self.pid),
-                    Some(client_id),
-                    Event::Mouse(Mouse::Hold(position.line.0, position.column.0)),
-                )]))
-                .unwrap();
         }
+        self.send_plugin_instructions
+            .send(PluginInstruction::Update(vec![(
+                Some(self.pid),
+                Some(client_id),
+                Event::Mouse(Mouse::Hold(position.line.0, position.column.0)),
+            )]))
+            .unwrap();
     }
     fn end_selection(&mut self, end: &Position, client_id: ClientId) {
         if self.supports_mouse_selection {
             if let Some(grid) = self.grids.get_mut(&client_id) {
                 grid.end_selection(end);
             }
-        } else {
-            self.send_plugin_instructions
-                .send(PluginInstruction::Update(vec![(
-                    Some(self.pid),
-                    Some(client_id),
-                    Event::Mouse(Mouse::Release(end.line(), end.column())),
-                )]))
-                .unwrap();
         }
+        self.send_plugin_instructions
+            .send(PluginInstruction::Update(vec![(
+                Some(self.pid),
+                Some(client_id),
+                Event::Mouse(Mouse::Release(end.line(), end.column())),
+            )]))
+            .unwrap();
     }
     fn reset_selection(&mut self, client_id: Option<ClientId>) {
         if let Some(grid) = client_id.and_then(|c| self.grids.get_mut(&c)) {
