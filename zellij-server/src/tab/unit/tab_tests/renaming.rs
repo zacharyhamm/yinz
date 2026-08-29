@@ -425,3 +425,44 @@ pub fn cli_rename_active_pane_then_interactive_esc_restores() {
     let pane = tab.get_pane_with_id(pane_id).unwrap();
     assert_eq!(pane.current_title(), "spark");
 }
+
+/// The caller skips the repaint and the session-state report when this says
+/// nothing moved. That report rebuilds every tab's pane manifest and pushes a
+/// `PaneUpdate`/`TabUpdate` at every subscribed plugin, so a plugin restating
+/// its own title every render used to bury the user's keystrokes under its own
+/// event traffic.
+#[test]
+pub fn renaming_a_pane_reports_whether_the_name_moved() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let mut tab = create_new_tab(size, true);
+    let pane_id = PaneId::Terminal(1);
+
+    assert!(
+        tab.rename_pane("flame".as_bytes().to_vec(), pane_id)
+            .unwrap(),
+        "a name it did not have"
+    );
+    assert!(
+        !tab.rename_pane("flame".as_bytes().to_vec(), pane_id)
+            .unwrap(),
+        "the one it already has"
+    );
+    assert!(
+        tab.rename_pane("spark".as_bytes().to_vec(), pane_id)
+            .unwrap(),
+        "a different one"
+    );
+
+    // Clearing a name is a change; clearing an already-clear one is not.
+    assert!(
+        tab.rename_pane(Vec::new(), pane_id).unwrap(),
+        "dropping the custom name"
+    );
+    assert!(
+        !tab.rename_pane(Vec::new(), pane_id).unwrap(),
+        "and it is already dropped"
+    );
+}

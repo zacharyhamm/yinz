@@ -1389,6 +1389,7 @@ checksum = "c706f1711006204c2ba8fb1a7bd55f689bbf7feca9ff40325206b5e140cff6df"
 name = "hocus"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "hocus-proto",
  "pulldown-cmark",
  "serde",

@@ -563,13 +563,20 @@ fn a_tick_for_another_tab_leaves_the_input_undo_and_history_alone() {
 fn a_tick_for_another_tab_keeps_the_foreground_transcript_cache() {
     let mut state = three_tabs();
     state.parked[0].asks.push_back("later".to_owned());
-    let key = (80, state.messages.len(), state.mutable_len());
-    state.transcript_cache = Some((key, ui::transcript(&state.messages, 80)));
+    ui::render(&mut state, 24, 80);
+    let cached = state
+        .transcript_cache
+        .as_ref()
+        .map(ui::TranscriptCache::len);
+    assert_eq!(cached, Some(state.messages.len()), "the frame filled it");
 
     state.on_timer(FRAME_SECONDS);
     assert_eq!(
-        state.transcript_cache.as_ref().map(|(k, _)| *k),
-        Some(key),
+        state
+            .transcript_cache
+            .as_ref()
+            .map(ui::TranscriptCache::len),
+        cached,
         "still cached"
     );
     assert!(state.parked[0].asks.is_empty(), "and the ask went out");

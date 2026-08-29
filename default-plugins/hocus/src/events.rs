@@ -405,6 +405,13 @@ impl State {
                 continue;
             };
             self.own_tab_index = Some(*tab_index);
+            // Placement, or anything else outside hocus, may have renamed the
+            // pane since our last render. Forgetting what we asked for is what
+            // makes the next render assert the title again; see
+            // `State::last_pane_title`.
+            if self.last_pane_title.as_deref() != Some(own.title.as_str()) {
+                self.last_pane_title = None;
+            }
             // What Ctrl-o ranks, and what an anchored conversation follows. Read before the
             // placement retry below, so a manifest that both places and re-anchors does so once.
             self.tab_panes = panes.clone();
@@ -1130,10 +1137,17 @@ impl State {
                         asked.content = prior_text.clone();
                         asked.reasoning = prior_reasoning;
                         self.messages.push(asked);
-                        // Both keyed on the fingerprint, which the swap above
-                        // does not move: the same count, and the same length
-                        // of prose now on the tool-calls message.
-                        self.transcript_cache = None;
+                        // The swap moves neither the message count nor the
+                        // length of the prose, which is all the context memo
+                        // watches, so it has to be dropped by hand. The
+                        // transcript's per-message key would in fact notice
+                        // this one (the call summary arrives as `display`), but
+                        // the invalidation is explicit so that guarantee does
+                        // not rest on the coincidence.
+                        let swapped = self.messages.len() - 1;
+                        if let Some(cache) = self.transcript_cache.as_mut() {
+                            cache.invalidate_from(swapped);
+                        }
                         self.context_cache = None;
                         self.saved.1 = self.mutable_len().wrapping_add(1);
                         let tool_payload: Vec<serde_json::Value> = calls

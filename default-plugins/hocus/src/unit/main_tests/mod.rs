@@ -667,3 +667,31 @@ mod todo_tools;
 mod tool_rounds;
 mod viewport;
 mod web_search;
+
+/// Placement, or anything else outside hocus, can rename our pane after we last
+/// asserted a title. Forgetting what we asked for is what makes the next render
+/// say it again — the memo that keeps a render from restating an unchanged title
+/// must not also let a stale one stand. See `State::last_pane_title`.
+#[test]
+fn a_pane_renamed_from_outside_is_titled_again_on_the_next_render() {
+    let mut state = idle_state();
+    state.own_plugin_id = 7;
+    state.last_pane_title = Some("hocus — a-model".to_owned());
+
+    let mut own = pane_info(7, "hocus — a-model", None);
+    own.is_plugin = true;
+    state.on_panes(manifest(vec![own.clone()]));
+    assert_eq!(
+        state.last_pane_title.as_deref(),
+        Some("hocus — a-model"),
+        "the pane says what we asked for, so there is nothing to redo"
+    );
+
+    let mut renamed = pane_info(7, "something else", None);
+    renamed.is_plugin = true;
+    state.on_panes(manifest(vec![renamed]));
+    assert_eq!(
+        state.last_pane_title, None,
+        "someone else renamed it, so the next render asserts the title again"
+    );
+}

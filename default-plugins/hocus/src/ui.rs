@@ -813,88 +813,208 @@ pub struct Transcript {
 /// User turns are wrapped narrow and pushed against the right edge; replies run
 /// the full width from the left. That contrast is what tells them apart.
 pub fn transcript(messages: &[crate::Message], cols: usize) -> Transcript {
-    let mut lines = Vec::new();
-    let mut starts = Vec::with_capacity(messages.len());
-    for (index, message) in messages.iter().enumerate() {
-        if index > 0 {
-            lines.push(VLine::blank());
-        }
-        starts.push(lines.len());
-        if message.role == Role::Assistant && message.tool_calls.is_empty() {
-            lines.extend(markdown_lines(&message.content, cols));
-            continue;
-        }
-        // A tool the user typed, drawn as the answer they asked for rather than
-        // as context for the model. `content` is untouched and is still what
-        // gets sent; this is only what the pane shows.
-        //
-        // No `fn:` prefix: the presenter opens with a heading, which says the
-        // same thing, and a five-column prefix would fight the markdown
-        // renderer's own indents and narrow every code fence.
-        if let Some(display) = message.display.as_deref() {
-            lines.extend(markdown_lines_as(display, cols, message.role));
-            continue;
-        }
-        let prefix = prefix_for(message.role);
-        let indent = " ".repeat(prefix.chars().count());
-        let body_width = match message.role {
-            // Two thirds: a full-width block against the right edge reads as
-            // justified text rather than as a turn of its own.
-            Role::User => (cols * 2 / 3).max(1),
-            _ => cols.saturating_sub(prefix.chars().count()).max(1),
-        };
+    let mut transcript = Transcript {
+        lines: Vec::new(),
+        starts: Vec::with_capacity(messages.len()),
+    };
+    append_messages(&mut transcript, messages, cols);
+    transcript
+}
 
-        let mut wrapped = wrap(&message.content, body_width);
-        // Truncation is display-only; `content` still goes to the model whole.
-        if message.role == Role::Tool && !message.full_output && wrapped.len() > TOOL_RESULT_ROWS {
-            let hidden = wrapped.len() - TOOL_RESULT_ROWS;
-            wrapped.truncate(TOOL_RESULT_ROWS);
-            wrapped.push(format!("… {hidden} more lines"));
+/// Draw `messages` onto the end of `transcript`, which is assumed to already
+/// hold everything before them. The separator logic keys off the flattened
+/// output rather than the message index, so this is correct whether it is
+/// appending to nothing or to a cached prefix.
+fn append_messages(transcript: &mut Transcript, messages: &[crate::Message], cols: usize) {
+    for message in messages {
+        if !transcript.starts.is_empty() {
+            transcript.lines.push(VLine::blank());
         }
+        transcript.starts.push(transcript.lines.len());
+        transcript.lines.extend(message_lines(message, cols));
+    }
+}
 
-        for (n, line) in wrapped.into_iter().enumerate() {
+// How many messages have been drawn since `rebuilds()` was last read. The
+// property the transcript cache exists for is "a streaming frame redraws one
+// message", and counting is the only way to assert it directly — the output is
+// identical either way, which is the whole point.
+#[cfg(test)]
+thread_local! {
+    static REBUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Rebuilds since this was last called, resetting the count.
+#[cfg(test)]
+fn rebuilds() -> usize {
+    REBUILDS.with(|count| count.replace(0))
+}
+
+/// One message's display lines, with no separator and no knowledge of what
+/// surrounds it. The single renderer behind both `transcript` and the
+/// incremental cache, so the two can never drift.
+fn message_lines(message: &crate::Message, cols: usize) -> Vec<VLine> {
+    #[cfg(test)]
+    REBUILDS.with(|count| count.set(count.get() + 1));
+    if message.role == Role::Assistant && message.tool_calls.is_empty() {
+        return markdown_lines(&message.content, cols);
+    }
+    // A tool the user typed, drawn as the answer they asked for rather than
+    // as context for the model. `content` is untouched and is still what
+    // gets sent; this is only what the pane shows.
+    //
+    // No `fn:` prefix: the presenter opens with a heading, which says the
+    // same thing, and a five-column prefix would fight the markdown
+    // renderer's own indents and narrow every code fence.
+    if let Some(display) = message.display.as_deref() {
+        return markdown_lines_as(display, cols, message.role);
+    }
+    let prefix = prefix_for(message.role);
+    let indent = " ".repeat(prefix.chars().count());
+    let body_width = match message.role {
+        // Two thirds: a full-width block against the right edge reads as
+        // justified text rather than as a turn of its own.
+        Role::User => (cols * 2 / 3).max(1),
+        _ => cols.saturating_sub(prefix.chars().count()).max(1),
+    };
+
+    let mut wrapped = wrap(&message.content, body_width);
+    // Truncation is display-only; `content` still goes to the model whole.
+    if message.role == Role::Tool && !message.full_output && wrapped.len() > TOOL_RESULT_ROWS {
+        let hidden = wrapped.len() - TOOL_RESULT_ROWS;
+        wrapped.truncate(TOOL_RESULT_ROWS);
+        wrapped.push(format!("… {hidden} more lines"));
+    }
+
+    wrapped
+        .into_iter()
+        .enumerate()
+        .map(|(n, line)| {
             let text = match message.role {
                 Role::User => right_align(&line, cols),
                 _ if n == 0 => format!("{prefix}{line}"),
                 _ => format!("{indent}{line}"),
             };
-            lines.push(VLine {
+            VLine {
                 text,
                 role: message.role,
                 styles: Vec::new(),
-            });
-        }
-    }
-    Transcript { lines, starts }
+            }
+        })
+        .collect()
 }
 
-/// What `transcript`'s output depends on: the width it was wrapped for,
-/// the number of messages, and the length of the one message that can grow
-/// without the count moving.
+/// What one message's display lines depend on: everything `message_lines`
+/// reads out of it.
 ///
-/// That last field is what makes the count sufficient. Only the streaming
-/// placeholder is ever mutated in place (`State::append_to_reply`), and
-/// `State::mutable_len` is which message that is; every other change to the
-/// transcript is a push, a pop or a clear, all of which move the count.
+/// Lengths rather than the strings themselves, which is the same bargain the
+/// whole-transcript key used to make: only the streaming placeholder is ever
+/// mutated in place (`State::append_to_reply`), and that only ever appends. A
+/// caller that rewrites a message's text without changing its length owes the
+/// cache an `invalidate_from`; `on_chunk`'s prose-swap onto a tool-calls
+/// message is the one such site, and it does exactly that.
+type MessageKey = (Role, usize, Option<usize>, usize, bool);
+
+fn message_key(message: &crate::Message) -> MessageKey {
+    (
+        message.role,
+        message.content.len(),
+        message.display.as_ref().map(String::len),
+        message.tool_calls.len(),
+        message.full_output,
+    )
+}
+
+/// The wrapped transcript, kept across renders and rebuilt only from the first
+/// message that changed.
 ///
-/// `Message::display` needs no field of its own here for the same reason: it is
-/// set once, when the message is pushed, and a push moves the count. The
-/// placeholder never carries one.
-pub type TranscriptKey = (usize, usize, usize);
+/// Wrapping the transcript is by far the most expensive thing a render does — a
+/// full markdown parse and a per-character style vector for every line — and
+/// during a streaming reply it used to happen in its entirety ten times a
+/// second, because the cache key carried the growing reply's length. The cost
+/// was O(whole conversation) per frame and it queued ahead of the user's
+/// keystrokes. Now a frame re-renders only the messages whose `MessageKey`
+/// moved, which while streaming is just the last one.
+pub struct TranscriptCache {
+    cols: usize,
+    /// One per message in `transcript.starts`, in the same order.
+    keys: Vec<MessageKey>,
+    transcript: Transcript,
+}
+
+impl TranscriptCache {
+    /// How many messages the cache currently covers.
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// Whether it covers nothing at all — a fresh cache, or one just cleared by
+    /// a resize.
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+
+    /// Drop everything from `index` onward, so the next render re-draws it.
+    ///
+    /// For the callers that change a message's text without changing its
+    /// length, which `MessageKey` cannot see.
+    pub fn invalidate_from(&mut self, index: usize) {
+        if index >= self.keys.len() {
+            return;
+        }
+        self.keys.truncate(index);
+        // `starts[index]` is the message's first *content* line; the blank
+        // separator that precedes it belongs to this message too, and goes
+        // with it. The first message has no separator.
+        let line = match self.transcript.starts.get(index) {
+            Some(start) if index > 0 => start.saturating_sub(1),
+            Some(start) => *start,
+            None => return,
+        };
+        self.transcript.lines.truncate(line);
+        self.transcript.starts.truncate(index);
+    }
+}
 
 /// Pane width, selected plan message, and the only message length that can
 /// change without moving the transcript count.
 pub type PlanKey = (usize, usize, usize);
 
-/// `transcript`, memoised on the state. Wrapping the whole transcript is the
-/// single most expensive thing a render does, and typing does not change any of
-/// it.
-fn cached_transcript(state: &mut State, cols: usize) -> &Transcript {
-    let key: TranscriptKey = (cols, state.messages.len(), state.mutable_len());
-    if state.transcript_cache.as_ref().map(|(k, _)| *k) != Some(key) {
-        state.transcript_cache = Some((key, transcript(&state.messages, cols)));
+/// `transcript`, memoised on the state and rebuilt incrementally. See
+/// `TranscriptCache`.
+pub fn cached_transcript(state: &mut State, cols: usize) -> &Transcript {
+    let messages = &state.messages;
+    let cache = state
+        .transcript_cache
+        .get_or_insert_with(|| TranscriptCache {
+            cols,
+            keys: Vec::new(),
+            transcript: Transcript {
+                lines: Vec::new(),
+                starts: Vec::new(),
+            },
+        });
+    // A resize re-wraps everything; nothing about the old lines survives it.
+    if cache.cols != cols {
+        cache.cols = cols;
+        cache.invalidate_from(0);
     }
-    &state.transcript_cache.as_ref().expect("just populated").1
+    // Messages that are gone, and then the first surviving one that changed.
+    cache.invalidate_from(messages.len());
+    let stale = cache
+        .keys
+        .iter()
+        .zip(messages.iter())
+        .position(|(cached, message)| *cached != message_key(message));
+    if let Some(index) = stale {
+        cache.invalidate_from(index);
+    }
+    let from = cache.keys.len();
+    if from < messages.len() {
+        append_messages(&mut cache.transcript, &messages[from..], cols);
+        cache.keys.extend(messages[from..].iter().map(message_key));
+    }
+    &cache.transcript
 }
 
 fn frame_content_width(cols: usize) -> usize {
@@ -1149,9 +1269,17 @@ fn render_title(state: &mut State, cols: usize) {
     } else {
         format!("hocus — {model}")
     };
-    // Placement can rename the pane after our previous render. Reassert the
-    // title rather than caching what we asked the host to do.
-    rename_plugin_pane(state.own_plugin_id, &title);
+    // Only when it actually moved. The host turns this into a
+    // `ScreenInstruction::RenamePane`, which re-renders the screen and reports
+    // the whole session state back out to every plugin — far too much to spend
+    // on restating an unchanged title ten times a second while a reply streams,
+    // and on every keystroke besides. `on_panes` clears the memo when the
+    // manifest shows some other title, so placement renaming the pane behind our
+    // back is still caught.
+    if state.last_pane_title.as_deref() != Some(title.as_str()) {
+        rename_plugin_pane(state.own_plugin_id, &title);
+        state.last_pane_title = Some(title.clone());
+    }
 
     // The note first, so the bar knows how much of the row is its own. A gap
     // of one keeps the last tab from running into it.
@@ -2345,6 +2473,145 @@ mod tests {
         state.messages.push(Message::user("aaaa bbbb"));
         assert_eq!(cached_transcript(&mut state, 40).lines.len(), 1);
         assert_eq!(cached_transcript(&mut state, 9).lines.len(), 2);
+    }
+
+    /// A few turns, ending on the assistant message a reply would be growing.
+    fn a_conversation() -> State {
+        let mut state = State::default();
+        for n in 0..6 {
+            state.messages.push(match n % 2 {
+                0 => Message::user(format!("question {n}")),
+                _ => Message::assistant(format!("## reply {n}\n\nwith a paragraph under it")),
+            });
+        }
+        state
+    }
+
+    /// The reason the cache is per-message at all. A streaming reply used to
+    /// move the one key the whole transcript was memoised on, so every frame
+    /// re-parsed every message — work proportional to the whole conversation,
+    /// ten times a second, queued ahead of whatever the user was typing.
+    #[test]
+    fn a_streaming_frame_redraws_only_the_message_that_grew() {
+        let mut state = a_conversation();
+        cached_transcript(&mut state, 40);
+        assert_eq!(rebuilds(), 6, "the first frame draws all of them");
+
+        state.messages.last_mut().unwrap().content.push_str(" more");
+        cached_transcript(&mut state, 40);
+        assert_eq!(rebuilds(), 1, "and the next one draws only the reply");
+    }
+
+    #[test]
+    fn a_frame_with_nothing_new_redraws_nothing() {
+        let mut state = a_conversation();
+        cached_transcript(&mut state, 40);
+        rebuilds();
+        cached_transcript(&mut state, 40);
+        assert_eq!(rebuilds(), 0);
+    }
+
+    #[test]
+    fn a_resize_redraws_every_message() {
+        let mut state = a_conversation();
+        cached_transcript(&mut state, 40);
+        rebuilds();
+        cached_transcript(&mut state, 60);
+        assert_eq!(rebuilds(), 6);
+    }
+
+    /// A message going away has to take its lines and its separator with it, or
+    /// the cached prefix no longer lines up with `starts`.
+    #[test]
+    fn popping_a_message_drops_its_lines_and_keeps_the_rest() {
+        let mut state = a_conversation();
+        cached_transcript(&mut state, 40);
+        state.messages.pop();
+        rebuilds();
+
+        let popped = cached_transcript(&mut state, 40).lines.clone();
+        assert_eq!(state.transcript_cache.as_ref().unwrap().len(), 5);
+        assert_eq!(rebuilds(), 0, "the survivors were already drawn");
+        assert_eq!(popped, transcript(&state.messages, 40).lines);
+    }
+
+    /// Expanding a tool result changes how many of its lines are drawn without
+    /// changing a byte of its content, so the key has to carry the flag.
+    #[test]
+    fn expanding_a_tool_result_redraws_it_and_what_follows() {
+        let mut state = State::default();
+        state.messages.push(Message::user("run it"));
+        let mut result = Message::tool_result("call_1", "a line\n".repeat(40));
+        result.full_output = false;
+        state.messages.push(result);
+        state.messages.push(Message::assistant("done"));
+        let elided = cached_transcript(&mut state, 40).lines.len();
+        rebuilds();
+
+        state.messages[1].full_output = true;
+        let full = cached_transcript(&mut state, 40).lines.clone();
+        assert!(full.len() > elided, "every line is drawn now");
+        assert_eq!(rebuilds(), 2, "the result and the message after it");
+        assert_eq!(full, transcript(&state.messages, 40).lines);
+    }
+
+    /// The property that matters most: however the cache got there, what it
+    /// holds is what a from-scratch render would have produced.
+    #[test]
+    fn the_incremental_transcript_matches_a_full_one() {
+        let mut state = a_conversation();
+        cached_transcript(&mut state, 40);
+        for token in ["\n\n- one", ", two", "\n- three", "\n\n```\ncode"] {
+            state.messages.last_mut().unwrap().content.push_str(token);
+            let incremental = cached_transcript(&mut state, 40);
+            let (lines, starts) = (incremental.lines.clone(), incremental.starts.clone());
+            let full = transcript(&state.messages, 40);
+            assert_eq!(lines, full.lines, "after {token:?}");
+            assert_eq!(starts, full.starts, "after {token:?}");
+        }
+    }
+
+    /// The pane title is asserted to the host with `rename_plugin_pane`, which
+    /// costs a screen repaint and a session-state report fanned out to every
+    /// plugin. `last_pane_title` is what stops a render restating an unchanged
+    /// one — ten times a second while streaming, and once per keystroke.
+    #[test]
+    fn the_pane_title_is_only_asserted_when_it_changes() {
+        let mut state = State::default();
+        assert_eq!(state.last_pane_title, None, "nothing asserted yet");
+
+        render_title(&mut state, RENDER_COLS);
+        let asserted = state.last_pane_title.clone();
+        assert!(asserted.is_some(), "the first render names the pane");
+
+        render_title(&mut state, RENDER_COLS);
+        assert_eq!(
+            state.last_pane_title, asserted,
+            "and the next one has nothing new to say"
+        );
+
+        // Plan mode is in the title, so turning it on has to reach the host.
+        state.plan = Plan::Planning;
+        render_title(&mut state, RENDER_COLS);
+        assert_ne!(state.last_pane_title, asserted, "the title moved");
+    }
+
+    /// `on_chunk` swaps the streamed prose onto a tool-calls message, which can
+    /// leave the count and every length where they were. Nothing but the
+    /// explicit invalidation can catch that.
+    #[test]
+    fn an_invalidated_message_is_redrawn_even_when_its_key_did_not_move() {
+        let mut state = a_conversation();
+        cached_transcript(&mut state, 40);
+        // Same length, different text — invisible to the key by construction.
+        let last = state.messages.last_mut().unwrap();
+        last.content = "x".repeat(last.content.len());
+        rebuilds();
+
+        state.transcript_cache.as_mut().unwrap().invalidate_from(5);
+        let redrawn = cached_transcript(&mut state, 40).lines.clone();
+        assert_eq!(rebuilds(), 1);
+        assert_eq!(redrawn, transcript(&state.messages, 40).lines);
     }
 
     #[test]

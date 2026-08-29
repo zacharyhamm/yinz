@@ -119,6 +119,7 @@ mod command_output_tests {
 struct WebRequestStreamState {
     response_sent: bool,
     finished: bool,
+    pending: Vec<u8>,
 }
 
 #[derive(
@@ -215,6 +216,17 @@ static WEB_REQUEST_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 /// blackholed host needs its own bound
 static WEB_REQUEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const WEB_REQUEST_STREAM_CHUNK_SIZE: usize = 8192;
+/// How long a streamed byte may wait to be joined by the ones behind it.
+///
+/// A token stream comes off the socket in ~50 small reads a second. Forwarding each as its own
+/// event gave every one of them a `PluginInstruction`, a wasm `update()` and a place in the
+/// plugin thread's queue ahead of whatever the user was typing. Batching them costs a reply
+/// nothing a reader can see - the frames still arrive in order, and this is well inside the 100ms
+/// a plugin repaints at - while cutting that traffic by roughly a third.
+static WEB_REQUEST_STREAM_COALESCE_WINDOW: Duration = Duration::from_millis(20);
+/// The most that may accumulate inside one window, so a fast producer is bounded by size as well
+/// as by time. Two reads' worth: enough to be worth joining, small enough to stay responsive.
+const WEB_REQUEST_STREAM_COALESCE_MAX: usize = WEB_REQUEST_STREAM_CHUNK_SIZE * 2;
 static HELP_TEXT_DEBOUNCE_DURATION: u64 = 5000;
 static COMMAND_OUTPUT_FLASH_DURATION_MS: u64 = 400;
 
@@ -969,7 +981,7 @@ async fn buffered_web_request(
     Ok((status_code, headers, body))
 }
 
-/// Sends the leading `WebRequestResult` and then one `WebRequestStreamChunk` per read off the
+/// Sends the leading `WebRequestResult` and then coalesced `WebRequestStreamChunk`s from the
 /// socket. Never emits the terminating chunk itself: it reports back with
 /// `BackgroundJob::WebRequestStreamFinished` so the terminator is emitted from a single place
 /// even when this task is aborted mid-read by a cancellation.
@@ -989,6 +1001,13 @@ async fn streamed_web_request(
     proxy: Option<String>,
 ) {
     let (plugin_id, client_id, stream_id) = key.clone();
+    let emit_event = |event: Event| {
+        let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
+            Some(plugin_id),
+            Some(client_id),
+            event,
+        )]));
+    };
     let send_event = |event: Event| {
         let mut state = state.lock().unwrap();
         if state.finished {
@@ -997,11 +1016,7 @@ async fn streamed_web_request(
         if matches!(event, Event::WebRequestResult(..)) {
             state.response_sent = true;
         }
-        let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-            Some(plugin_id),
-            Some(client_id),
-            event,
-        )]));
+        emit_event(event);
     };
     let finished =
         |error| {
@@ -1044,27 +1059,105 @@ async fn streamed_web_request(
         return finished(error);
     }
     send_event(Event::WebRequestResult(status, headers, vec![], context));
+    let error = forward_streamed_body(res.body_mut(), &stream_id, &state, &emit_event).await;
+    finished(error);
+}
 
-    // ponytail: chunks are forwarded as they come off the socket, one plugin update() per chunk
-    // (~50/s for a token stream, ~100us each). Coalesce on a ~30ms window here if it ever shows
-    // up in a profile.
+async fn forward_streamed_body<R, F>(
+    body: &mut R,
+    stream_id: &str,
+    state: &Arc<Mutex<WebRequestStreamState>>,
+    send_event: F,
+) -> Option<String>
+where
+    R: futures_lite::io::AsyncRead + Unpin,
+    F: Fn(Event),
+{
+    // Reads are coalesced over a short window rather than forwarded one-for-one: a token stream
+    // produces ~50 socket reads a second, and each one used to be its own `PluginInstruction`,
+    // its own wasm `update()` and its own trip through the plugin thread's queue - the same
+    // queue the user's keystrokes have to cross. Concatenating is safe because the framing is
+    // reassembled on the far side (hocus feeds these to an `SseParser`, which already handles a
+    // frame split across reads); all this changes is how many events carry the same bytes.
     let mut buf = [0u8; WEB_REQUEST_STREAM_CHUNK_SIZE];
-    let error = loop {
-        match res.body_mut().read(&mut buf).await {
-            Ok(0) => break None,
-            Ok(bytes_read) => send_event(Event::WebRequestStreamChunk {
-                stream_id: stream_id.clone(),
-                chunk: buf[..bytes_read].to_vec(),
-                done: false,
-                error: None,
-            }),
+    // Every exit from the loop below owes the pending bytes to the plugin before the terminator
+    // goes out. They live in the shared state so cancellation can keep that promise too.
+    macro_rules! flush {
+        () => {
+            let mut state = state.lock().unwrap();
+            if !state.finished && !state.pending.is_empty() {
+                send_event(Event::WebRequestStreamChunk {
+                    stream_id: stream_id.to_owned(),
+                    chunk: std::mem::take(&mut state.pending),
+                    done: false,
+                    error: None,
+                });
+            }
+        };
+    }
+    // When the bytes we are holding have to go out, whether or not more have arrived by then.
+    // `None` means nothing is being held and the read below may wait indefinitely, exactly as it
+    // used to.
+    let mut deadline: Option<tokio::time::Instant> = None;
+    loop {
+        // The read future is created once and then *held across* any deadline that expires while
+        // it is pending, rather than being re-issued. `AsyncRead::read` makes no cancellation-
+        // safety promise: dropping a partially-completed read could take buffered bytes with it,
+        // which on a token stream means silently corrupting the reply. So the timeout only ever
+        // borrows the future, and the future itself lives until it resolves.
+        let outcome: std::io::Result<usize> = {
+            let read = body.read(&mut buf);
+            tokio::pin!(read);
+            loop {
+                let finished = match deadline {
+                    None => read.as_mut().await,
+                    Some(at) => match tokio::time::timeout_at(at, read.as_mut()).await {
+                        Ok(finished) => finished,
+                        // The window expired with the socket still quiet, which is precisely when
+                        // what we are holding should go out. The read carries on untouched.
+                        Err(_) => {
+                            flush!();
+                            deadline = None;
+                            continue;
+                        },
+                    },
+                };
+                break finished;
+            }
+        };
+        match outcome {
+            Ok(0) => {
+                flush!();
+                break None;
+            },
+            Ok(bytes_read) => {
+                let pending_len = {
+                    let mut state = state.lock().unwrap();
+                    if state.finished {
+                        return None;
+                    }
+                    state.pending.extend_from_slice(&buf[..bytes_read]);
+                    state.pending.len()
+                };
+                // A window bounds latency, not memory - a fast producer must not be allowed to
+                // grow this without limit between deadlines.
+                if pending_len >= WEB_REQUEST_STREAM_COALESCE_MAX {
+                    flush!();
+                    deadline = None;
+                } else if deadline.is_none() {
+                    deadline =
+                        Some(tokio::time::Instant::now() + WEB_REQUEST_STREAM_COALESCE_WINDOW);
+                }
+            },
             Err(e) => {
                 log::error!("Web request stream failed: {}", e);
+                // What arrived before the failure is still real output, and the plugin has a
+                // better chance of saying something useful with it than without.
+                flush!();
                 break Some(e.to_string());
             },
         }
-    };
-    finished(error);
+    }
 }
 
 /// Ends a stream: drop it from the registry, abort its task if it is still running, and emit its
@@ -1111,6 +1204,18 @@ fn finish_stream(
             ),
         )]));
         state.response_sent = true;
+    }
+    if !state.pending.is_empty() {
+        let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
+            Some(plugin_id),
+            Some(client_id),
+            Event::WebRequestStreamChunk {
+                stream_id: stream_id.clone(),
+                chunk: std::mem::take(&mut state.pending),
+                done: false,
+                error: None,
+            },
+        )]));
     }
     state.finished = true;
     let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
@@ -1387,6 +1492,9 @@ mod tests {
 mod web_request_stream_tests {
     use super::*;
     use crate::thread_bus::ThreadSenders;
+    use futures_lite::io::AsyncRead;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use zellij_utils::channels::{unbounded, Receiver, SenderWithContext};
     use zellij_utils::errors::ErrorContext;
@@ -1397,6 +1505,67 @@ mod web_request_stream_tests {
 
     type PluginRx = Receiver<(PluginInstruction, ErrorContext)>;
     type JobRx = Receiver<(BackgroundJob, ErrorContext)>;
+
+    struct ControlledReader {
+        chunks: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+        waiting: Option<tokio::sync::oneshot::Sender<()>>,
+        current: Vec<u8>,
+        offset: usize,
+    }
+
+    impl ControlledReader {
+        fn new() -> (
+            Self,
+            tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+            tokio::sync::oneshot::Receiver<()>,
+        ) {
+            let (sender, chunks) = tokio::sync::mpsc::unbounded_channel();
+            let (waiting, reader_is_waiting) = tokio::sync::oneshot::channel();
+            (
+                Self {
+                    chunks,
+                    waiting: Some(waiting),
+                    current: vec![],
+                    offset: 0,
+                },
+                sender,
+                reader_is_waiting,
+            )
+        }
+    }
+
+    impl AsyncRead for ControlledReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut [u8],
+        ) -> Poll<std::io::Result<usize>> {
+            let this = self.get_mut();
+            loop {
+                if this.offset < this.current.len() {
+                    let bytes_read = buf.len().min(this.current.len() - this.offset);
+                    let end = this.offset + bytes_read;
+                    buf[..bytes_read].copy_from_slice(&this.current[this.offset..end]);
+                    this.offset = end;
+                    return Poll::Ready(Ok(bytes_read));
+                }
+
+                match Pin::new(&mut this.chunks).poll_recv(cx) {
+                    Poll::Ready(Some(next)) => {
+                        this.current = next;
+                        this.offset = 0;
+                    },
+                    Poll::Ready(None) => return Poll::Ready(Ok(0)),
+                    Poll::Pending => {
+                        if let Some(waiting) = this.waiting.take() {
+                            let _ = waiting.send(());
+                        }
+                        return Poll::Pending;
+                    },
+                }
+            }
+        }
+    }
 
     fn test_senders() -> (ThreadSenders, PluginRx, JobRx) {
         let (to_plugin, plugin_rx) = unbounded();
@@ -1446,6 +1615,112 @@ mod web_request_stream_tests {
             let _ = socket.flush().await;
         });
         url
+    }
+
+    /// Frames arriving back-to-back are joined into one event rather than one apiece. Every one
+    /// used to be its own `PluginInstruction`, its own wasm `update()` and its own place in the
+    /// plugin thread's queue - ahead of whatever the user was typing.
+    #[tokio::test(start_paused = true)]
+    async fn a_burst_of_frames_arrives_as_one_event_after_the_coalescing_window() {
+        let parts: &[&[u8]] = &[
+            b"data: {\"n\":1}\n\n",
+            b"data: {\"n\":2}\n\n",
+            b"data: {\"n\":3}\n\n",
+            b"data: {\"n\":4}\n\n",
+            b"data: [DONE]\n\n",
+        ];
+        let expected = parts.concat();
+        let (mut reader, reader_handle, reader_is_waiting) = ControlledReader::new();
+        for part in parts {
+            reader_handle.send(part.to_vec()).unwrap();
+        }
+        let state = Arc::new(Mutex::new(WebRequestStreamState::default()));
+        let (emitted, mut emitted_chunks) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            forward_streamed_body(&mut reader, "stream-1", &state, move |event| match event {
+                Event::WebRequestStreamChunk { chunk, done, .. } => {
+                    assert!(!done, "the task must never emit the terminator itself");
+                    emitted.send(chunk).unwrap();
+                },
+                other => panic!("expected a stream chunk, got {:?}", other),
+            })
+            .await
+        });
+
+        reader_is_waiting.await.unwrap();
+        tokio::time::advance(WEB_REQUEST_STREAM_COALESCE_WINDOW - Duration::from_millis(1)).await;
+        assert!(
+            matches!(
+                emitted_chunks.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "the burst must wait for the coalescing deadline"
+        );
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        assert_eq!(emitted_chunks.recv().await.unwrap(), expected);
+        assert!(
+            matches!(
+                emitted_chunks.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "the burst must produce exactly one chunk"
+        );
+
+        drop(reader_handle);
+        assert_eq!(task.await.unwrap(), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancellation_flushes_bytes_read_before_the_coalescing_deadline() {
+        let (mut reader, reader_handle, reader_is_waiting) = ControlledReader::new();
+        reader_handle.send(b"final bytes".to_vec()).unwrap();
+        let (senders, plugin_rx, _job_rx) = test_senders();
+        let state = Arc::new(Mutex::new(WebRequestStreamState {
+            response_sent: true,
+            ..Default::default()
+        }));
+        let task_state = state.clone();
+        let task_senders = senders.clone();
+        let task = tokio::spawn(async move {
+            forward_streamed_body(&mut reader, "stream-1", &task_state, move |event| {
+                let _ = task_senders.send_to_plugin(PluginInstruction::Update(vec![(
+                    Some(PLUGIN_ID),
+                    Some(CLIENT_ID),
+                    event,
+                )]));
+            })
+            .await
+        });
+
+        reader_is_waiting.await.unwrap();
+        assert_eq!(state.lock().unwrap().pending, b"final bytes");
+        let mut active_streams = HashMap::from([(
+            stream_key(),
+            ActiveWebRequestStream {
+                abort_handle: task.abort_handle(),
+                generation: GENERATION,
+                state,
+                context: BTreeMap::new(),
+            },
+        )]);
+        finish_stream(
+            &mut active_streams,
+            &senders,
+            stream_key(),
+            None,
+            Some("cancelled".to_owned()),
+        );
+
+        let events = drain_events(&plugin_rx);
+        assert!(matches!(
+            &events[..],
+            [
+                Event::WebRequestStreamChunk { chunk, done: false, error: None, .. },
+                Event::WebRequestStreamChunk { chunk: done_chunk, done: true, error: Some(error), .. }
+            ] if chunk == b"final bytes" && done_chunk.is_empty() && error == "cancelled"
+        ));
+        assert!(task.await.unwrap_err().is_cancelled());
     }
 
     async fn serve_truncated_response() -> String {
@@ -1688,7 +1963,7 @@ mod web_request_stream_tests {
                 state: Arc::new(Mutex::new(WebRequestStreamState {
                     // the task already emitted the leading result and its chunks
                     response_sent: true,
-                    finished: false,
+                    ..Default::default()
                 })),
                 context: BTreeMap::new(),
             },
@@ -1733,7 +2008,8 @@ mod web_request_stream_tests {
                 generation: GENERATION,
                 state: Arc::new(Mutex::new(WebRequestStreamState {
                     response_sent: true,
-                    finished: false,
+                    pending: b"final bytes".to_vec(),
+                    ..Default::default()
                 })),
                 context: BTreeMap::new(),
             },
@@ -1759,13 +2035,14 @@ mod web_request_stream_tests {
             },
         );
 
-        assert!(
-            matches!(
-                &drain_events(&plugin_rx)[..],
-                [Event::WebRequestStreamChunk { done: true, error: Some(e), .. }] if e == "superseded"
-            ),
-            "the superseded stream gets its terminator"
-        );
+        let events = drain_events(&plugin_rx);
+        assert!(matches!(
+            &events[..],
+            [
+                Event::WebRequestStreamChunk { chunk, done: false, error: None, .. },
+                Event::WebRequestStreamChunk { done: true, error: Some(error), .. }
+            ] if chunk == b"final bytes" && error == "superseded"
+        ));
         assert!(old_task.await.unwrap_err().is_cancelled());
 
         // the old stream's finish report must not disturb its replacement
