@@ -99,7 +99,8 @@ const LOCAL_COMMANDS: [&str; 7] = [
 const KEYS_HELP: &str = "\
 Ctrl+`        toggle hocus
 Ctrl+l        new chat, in a new tab (also /clear)
-Ctrl+o        move hocus over a different pane - the largest one you are not in
+Ctrl+o        move hocus clear of a pane - the one it is covering, or the
+              largest one you are not in (top right if it is the only pane)
 Shift+Tab     open chats: focus the tab bar
 Up / Down     previous / next message in history
 Tab           complete a /command or @agent
@@ -601,16 +602,16 @@ pub struct State {
     /// *what they were last placed against*.
     #[cfg(test)]
     pub(crate) placed_against: (usize, usize),
-    /// The tiled pane the conversation is sitting inside, chosen with Ctrl-o. `None` is the
+    /// The tiled pane the conversation is keeping clear of, chosen with Ctrl-o. `None` is the
     /// corner.
     ///
-    /// A pane rather than a position, so the conversation stays *with* the pane: a terminal
-    /// resize re-tiles the layout, and `on_panes` re-places the conversation inside wherever the
-    /// pane went. Cleared when the pane is no longer on our tab - closed, or we followed a client
-    /// to another tab - at which point the corner is the only place left to be.
+    /// A pane rather than a position, so the conversation stays out of *this pane's* way: a
+    /// terminal resize re-tiles the layout, and `on_panes` re-places the conversation clear of
+    /// wherever the pane went. Cleared when the pane is no longer on our tab - closed, or we
+    /// followed a client to another tab - at which point the corner is the only place left to be.
     pub(crate) anchor: Option<PaneId>,
     /// The anchor's rectangle as the last `PaneUpdate` reported it - what a re-tile is detected
-    /// against, and what the placement is computed inside of.
+    /// against, and what the placement is computed away from.
     pub(crate) anchor_rect: Option<overlay::Rect>,
     /// Every pane on our tab from the last `PaneUpdate`, our own entry included.
     ///

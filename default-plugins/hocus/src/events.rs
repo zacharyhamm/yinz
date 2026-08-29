@@ -12,7 +12,7 @@ impl State {
         key.bare_key == BareKey::Char('`') && key.has_modifiers(&[KeyModifier::Ctrl])
     }
 
-    /// Ctrl-o: jump the conversation over a different tiled pane - see `State::reposition`.
+    /// Ctrl-o: move the conversation clear of a tiled pane - see `State::reposition`.
     pub(crate) fn is_reposition_key(key: &KeyWithModifier) -> bool {
         key.bare_key == BareKey::Char('o') && key.has_modifiers(&[KeyModifier::Ctrl])
     }
