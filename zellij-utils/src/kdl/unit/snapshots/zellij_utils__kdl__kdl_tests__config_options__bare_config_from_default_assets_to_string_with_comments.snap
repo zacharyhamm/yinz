@@ -1,5 +1,6 @@
 ---
 source: zellij-utils/src/kdl/./unit/config_options.rs
+assertion_line: 191
 expression: fake_config_stringified
 ---
 keybinds clear-defaults=true {
@@ -359,6 +360,10 @@ load_plugins {
 }
 hooks {
     agent_exit "zellij:agent-exit"
+    agent_start ""
+    agent_waiting ""
+    pane_exit ""
+    session_start ""
     context_menu "zellij:context-menu"
 }
 context_menu {
