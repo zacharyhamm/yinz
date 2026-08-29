@@ -359,10 +359,30 @@ fn a_spawn_naming_no_agent_and_no_command_is_refused_before_any_git_work() {
 #[test]
 fn a_prompt_and_a_model_reach_the_agent_as_its_own_arguments() {
     let args =
-        tools::Args::parse(r#"{"agent":"claude","model":"opus","prompt":"fix it"}"#).unwrap();
+        tools::Args::parse(r#"{"agent":"claude","model":"opus","prompt":"fix it","hooks":false}"#)
+            .unwrap();
     let (command, _) = launch::plan(&args.launch_spec()).unwrap();
     assert_eq!(command.path, std::path::PathBuf::from("claude"));
     assert_eq!(command.args, ["--model", "opus", "fix it"]);
+
+    // Left to its default, a claude pane is also handed its hook wiring, which the model
+    // may pass through untouched as `env`, `permission_mode` and `resume` too.
+    let args = tools::Args::parse(
+        r#"{"agent":"claude","permission_mode":"skip","resume":"last","env":{"A":"1"}}"#,
+    )
+    .unwrap();
+    let (command, _) = launch::plan(&args.launch_spec()).unwrap();
+    assert_eq!(command.path, std::path::PathBuf::from("env"));
+    assert_eq!(
+        &command.args[..4],
+        [
+            "A=1",
+            "claude",
+            "--dangerously-skip-permissions",
+            "--continue"
+        ]
+    );
+    assert_eq!(command.args[4], "--settings");
 }
 
 /// A kind set by hand outlives the hocus that set it, as long as the pane does.

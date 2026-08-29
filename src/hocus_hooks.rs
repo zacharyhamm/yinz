@@ -21,41 +21,9 @@ use std::path::{Path, PathBuf};
 
 use zellij_utils::cli::{Hocus, HocusHooks};
 
-/// The Claude Code hook events wired, and what each one buys.
-///
-/// None of them takes a matcher: every entry fires on every occurrence of its event
-/// and the plugin decides what it means. That is deliberate for `Notification`, whose
-/// matcher would have to name the notification kinds that mean "blocked on the user" —
-/// a list Claude Code adds to between versions, and one already written in
-/// `agents::hook_phase` where it can be tested.
-const EVENTS: &[&str] = &[
-    // The feed begins, and the pane is proved to be running Claude Code.
-    "SessionStart",
-    // Work starts.
-    "UserPromptSubmit",
-    // Work continues, and names the tool it is in.
-    "PreToolUse",
-    "PostToolUse",
-    // Blocked on the user, said as the prompt goes up.
-    "PermissionRequest",
-    // The same, from the other direction: the backstop for a Claude Code too old to
-    // have `PermissionRequest`, and the only signal for an MCP form or a background
-    // session wanting input.
-    "Notification",
-    // The turn ended.
-    "Stop",
-    // The feed ends.
-    "SessionEnd",
-];
-
-/// Seconds a hook may take before Claude Code abandons it.
-///
-/// Explicit because the default is ten minutes and a hook blocks the turn: a `zellij
-/// pipe` against a socket whose server has gone must not be able to stall an agent.
-/// Five rather than one because `SessionEnd` is special-cased at the other end —
-/// every `SessionEnd` hook shares a 1.5s budget, raised only to match an individual
-/// timeout — and a feed that ends is worth waiting a moment for.
-const TIMEOUT_SECONDS: u64 = 5;
+/// The events, the timeout and the handler shape live in `zellij_utils::agent`, so that this
+/// installer and a spawned Claude Code pane's inline `--settings` cannot wire different events.
+const EVENTS: &[&str] = zellij_utils::agent::CLAUDE_HOOK_EVENTS;
 
 /// Bumped whenever [`script`] changes, so `status` can say the installed copy is old.
 const SCRIPT_VERSION: u32 = 3;
@@ -117,11 +85,7 @@ exit 0
 
 /// One handler entry, as Claude Code's settings spell it.
 fn handler(command: &str) -> Value {
-    json!({
-        "type": "command",
-        "command": command,
-        "timeout": TIMEOUT_SECONDS,
-    })
+    zellij_utils::agent::claude_hook_handler(command)
 }
 
 /// Whether one handler entry is one we wrote.

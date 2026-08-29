@@ -49,6 +49,11 @@ to `waiting`. Both go to a headless plugin as `Event::Hook` — see `docs/LUA_PL
 "Headless hooks". `zellij action agent-report --state waiting --detail "y/n"` is the same road
 for a script of your own; `--clear` ends the record and fires nothing.
 
+A pane hocus spawns needs none of this: `agent_spawn` (and the `hocus-new-agent` modal) hands
+`claude` the same hook wiring inline as `--settings`, built from the one event list in
+`zellij_utils::agent`. A user-level install on top double-reports harmlessly — an equal record
+is a no-op on the pane. Pass `hooks: false` to spawn without it.
+
 | Event | State | Why |
 |---|---|---|
 | `SessionStart` | idle | Starts the feed, and proves the pane runs Claude Code |

@@ -2508,11 +2508,9 @@ fn open_command_pane_in_git_checkout_near_plugin(
             command_to_run.cwd = Some(cwd);
             // The marker's value is the agent's kind - the program - which is what the pane's
             // agent record starts from. See `agent_from_run` in `panes::terminal_pane`.
-            let kind = command_to_run
-                .path
-                .file_name()
-                .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or_else(|| "true".to_owned());
+            let kind =
+                zellij_utils::agent::agent_kind_of(&command_to_run.path, &command_to_run.args)
+                    .unwrap_or_else(|| "true".to_owned());
             spawn_command_pane_near_plugin(
                 env,
                 command_to_run,

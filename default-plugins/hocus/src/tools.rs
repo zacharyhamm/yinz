@@ -169,6 +169,13 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
                 return Some("opens a new pane running an agent".to_owned());
             };
             let mut sentence = format!("opens a new pane running `{}`", command.path.display());
+            // The one flag worth a sentence of its own: an agent that never asks.
+            if matches!(
+                args.permission_mode.as_deref().map(str::trim),
+                Some("skip" | "bypassPermissions" | "force" | "full-auto" | "never")
+            ) {
+                sentence.push_str(" with its permission checks off");
+            }
             // Named in full, because this is the half that writes to the user's
             // repository and a confirmation that hid it would be worth nothing.
             match checkout {
@@ -1204,6 +1211,29 @@ pub fn specs() -> Value {
                         "type": "string",
                         "description": format!("From the repo root. Defaults to {}<branch>.", launch::WORKTREE_PREFIX),
                     },
+                    "env": {
+                        "type": "object",
+                        "additionalProperties": { "type": "string" },
+                        "description": "Environment variables the agent starts with.",
+                    },
+                    "permission_mode": {
+                        "type": "string",
+                        "description": format!(
+                            "How much the agent may do without asking. claude: {}; codex: {}; cursor: {}. \
+                             `skip` turns permissions off for any of them.",
+                            launch::CLAUDE_PERMISSION_MODES.join("/"),
+                            launch::CODEX_PERMISSION_MODES.join("/"),
+                            launch::CURSOR_PERMISSION_MODES.join("/"),
+                        ),
+                    },
+                    "resume": {
+                        "type": "string",
+                        "description": "A session id to resume, or `last` for the most recent.",
+                    },
+                    "hooks": {
+                        "type": "boolean",
+                        "description": "Whether a claude pane reports its state through its hooks; defaults true.",
+                    },
                 },
             }),
         ),
@@ -1733,6 +1763,11 @@ pub struct Args {
     pub base: Option<String>,
     pub worktree: Option<bool>,
     pub worktree_path: Option<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    pub permission_mode: Option<String>,
+    pub resume: Option<String>,
+    pub hooks: Option<bool>,
     // The todo tools. `text`, `query` and `project` above are theirs as well.
     pub id: Option<u64>,
     pub parent_id: Option<u64>,
@@ -1853,6 +1888,10 @@ impl Args {
             base: self.base.clone(),
             worktree: self.worktree,
             worktree_path: self.worktree_path.clone(),
+            env: self.env.clone(),
+            permission_mode: self.permission_mode.clone(),
+            resume: self.resume.clone(),
+            hooks: self.hooks,
         }
     }
 

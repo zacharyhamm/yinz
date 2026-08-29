@@ -436,3 +436,27 @@ fn the_edges_of_an_agent_record() {
         );
     }
 }
+
+/// A launch with an environment is `env K=V codex …`; `env` execs, so the pane runs the agent,
+/// and the record is named for it rather than for the wrapper.
+#[test]
+fn an_env_wrapped_agent_is_named_for_the_agent() {
+    let mut wrapped = agent_command("/work");
+    wrapped.command = PathBuf::from("/usr/bin/env");
+    wrapped.args = vec![
+        "FOO=1".to_owned(),
+        "codex".to_owned(),
+        "--model".to_owned(),
+        "o3".to_owned(),
+    ];
+    let fired = hooks_fired_by(vec![new_pane(2, Some(Run::Command(wrapped)))]);
+    assert_eq!(
+        points(&fired),
+        vec![HookPoint::AgentStart],
+        "got: {fired:?}"
+    );
+    assert_eq!(
+        fired[0].2.get("agent_kind").map(String::as_str),
+        Some("codex")
+    );
+}

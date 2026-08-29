@@ -214,7 +214,7 @@ hocus-owned. Fix the `transitions.rs:775` stall at the same time: scheduled runs
 
 **R15c. hocus `plugin_write` on `fs_write`.** *(done — `zellij-tile` gained `fs_read`/`fs_list`/`fs_metadata`/`fs_write`/`fs_remove`/`fs_create_dir`/`fs_rename` (and `data::FsEntry`); hocus's `plugin_write`, `plugin_read`, `plugin_list`, `plugin_reload` and its startup extension scan go through them against `/plugins` and answer synchronously. The shell script, the 64 KB argv cap and the hand-rolled symlink guard are gone; the host's root resolution is the containment. `plugin_log` still shells out - the log file is outside every plugin root.)*
 
-**R16. Richer launch specs.**
+**R16. Richer launch specs.** *(done — `Spec` gains `env`, `permission_mode`, `resume` and `hooks`; `launch::shape_args` is the per-kind table (claude `--permission-mode`/`--dangerously-skip-permissions`, `--resume`/`--continue`; codex `--ask-for-approval`/`--full-auto`/`--dangerously-bypass-approvals-and-sandbox`, `resume` as a leading subcommand; cursor `--force`, `--resume`/`resume`), an unknown mode being an error that names the accepted ones. `env` is an `env(1)` wrapper in the command, and `zellij_utils::agent::agent_kind_of` looks through it so the pane's record is named for the agent. A `claude` spawn is handed the hook wiring inline as `--settings`, built by `zellij_utils::agent::claude_hook_settings` — the same list `zellij hocus hooks install` writes — so a spawned pane reports its state with nothing installed.)*
 `launch::Spec` (`launch.rs:46`) gains `env`, `permission_mode`, `resume`/`session_id`, and a
 per-kind arg shaper (today only `--model` is understood; everything else is raw `args`). Keep
 `plan()` pure and host-tested. With R5, a spawned Claude Code pane's hooks are installed
@@ -232,7 +232,8 @@ per-project automatically (`zellij hocus hooks install --project` is already ide
 
 ## Status
 
-Phase 0 (R1–R3) landed with this document, then Phase 1 (R4–R7) and Phase 2 (R8–R13). `zellij events` keeps its subscriber
+Phase 0 (R1–R3) landed with this document, then Phase 1 (R4–R7), Phase 2 (R8–R13) and
+Phase 3 (R14–R16). `zellij events` keeps its subscriber
 list on the plugin thread (the one place every event passes), forwards each state report once
 per batch however many plugins it was addressed to, and has the screen report pane/tab state to
 a `CLI_EVENTS_ONLY_TARGET` when no plugin wants it, so it works in a plugin-less layout too. R1 found two real inconsistencies while making the
@@ -302,23 +303,25 @@ modal and times out twice, ~20s per test), so no integration test can assert "th
 with the session". The box is shared: check for sibling `cargo x test` runs before believing a
 timeout.
 
-**Phase 3, in order.**
+**Phase 3 landed** (one commit per item on `self-programming-vision`): R14, R15, R15b, R15c,
+R16. What the next session should know:
 
-1. **R14 — headless hook shape and new points.** `HookPoint` (`zellij-utils/src/input/hooks.rs`)
-   gains `AgentStart`, `AgentWaiting`, `PaneExit`, `SessionStart`; `PluginInstruction::RunHook`
-   gains a shape (`ReplacePane` for `agent_exit`, `Headless` delivering `Event::Hook { point,
-   payload }` to a long-lived plugin - reuse the `request_context_menu` load path in
-   `plugins/mod.rs`). Fire `AgentStart`/`AgentWaiting` from the `SetPaneAgent` handler on the
-   state edge, `PaneExit` beside `fire_agent_exit_hook`, `SessionStart` from
-   `FirstClientConnected`. Both `hooks_from_kdl`/`hooks_to_kdl` and the Lua `hook` builder are
-   generic over `HookPoint::ALL`; `zellij action set-hook` validates against it. Needs
-   `EventType::Hook` in `CLI_STREAMABLE`? No - the hook plugin is the consumer; the CLI has
-   `zellij events`.
-2. **R15 — persistence.** hocus `Job`s, latches and summaries into the `shared:hocus` data
-   store (`hocus-proto/src/store.rs` defs); fix the `transitions.rs` "scheduled run parks on a
-   confirmation" stall by auto-declining `confirm` tools on scheduled runs.
-3. **R15b/R15c** (small): hocus `agent_register` → `set_pane_agent`; hocus `plugin_write` onto
-   `fs_write` (needs `fs_*` shims in `zellij-tile/src/shim.rs`).
-4. **R16 — launch specs**: `launch::Spec` gains `env`, `permission_mode`, `resume`; per-kind arg
-   shaping; auto-install hooks per project on spawn.
+- Hooks: `HookPoint::shape()` decides pane-replacing vs headless; `deliver_to_headless_hook`
+  in `plugins/mod.rs` is the one find-or-load path. `session_start` fires on the plugin
+  thread's first `AddClient`, not at thread start — `WasmBridge::add_client` re-instantiates
+  every plugin loaded before the first client, and would lose an event sent to the first
+  instance. A second client attaching while a hook plugin is still loading wipes that plugin's
+  cached events (`add_client` resets `cached_events_for_pending_plugins`); pre-existing, and
+  worth fixing if a lazily-loaded hook ever misses its first firing under multi-client use.
+- Persistence: `job`, `agent_latch`, `agent_summary` are in `store::shared_defs()`; both
+  hocus and hocus-store declare them. Restored jobs all land in the foreground chat; the row
+  keeps `chat_id` for a future that reattaches them to a reopened chat.
+- Proto numbers now in use: plugin `EventType` 57 (`Hook`), event payload field 51,
+  `AgentSource` 2 / IPC `AGENT_SOURCE_REGISTERED` 3.
+- Left open by design: `plugin_log` still shells out (the log file is outside every plugin
+  root); Enter in a held pane with no `agent_exit` bound restarts the command without an
+  `agent_start`; a per-project `hooks install` is unnecessary for spawned panes and still
+  writes `.claude/settings.json` (committed) for hand-started ones.
 
+**What's next** is the end-to-end scenario under "Verification" as an integration test, and
+the items under "Explicitly not recommended now" as they come due.

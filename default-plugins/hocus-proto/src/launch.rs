@@ -16,6 +16,7 @@
 //! so it is gated the way [`crate::store::Host`] is, with a stub on the host triple that
 //! fails loudly rather than quietly answering nothing.
 
+use std::collections::BTreeMap;
 use zellij_tile::prelude::{CommandToRun, GitCheckout, PaneId, HOCUS_AGENT_PANE_CONTEXT};
 
 /// The branch a new one is cut from when the caller does not say.
@@ -68,7 +69,46 @@ pub struct Spec {
     /// Where that worktree goes, relative to the repository's primary checkout.
     /// Defaults to [`worktree_path_for`] the branch.
     pub worktree_path: Option<String>,
+    /// Environment the agent starts with, on top of the pane's own. Carried by an `env(1)`
+    /// wrapper in the command - `env K=V claude …` - because a command pane has no
+    /// environment of its own to set; `env` execs the agent, so the pane still runs it.
+    pub env: BTreeMap<String, String>,
+    /// How much the agent may do without asking, in the agent's own terms - see
+    /// [`shape_args`] for what each kind accepts. `skip` is understood by every kind that
+    /// has a way to turn permissions off.
+    pub permission_mode: Option<String>,
+    /// A session to resume: an id, or `last` for the most recent.
+    pub resume: Option<String>,
+    /// Whether a `claude` pane reports its state through its hooks. Defaults to true; the
+    /// hooks are handed to it inline, so nothing needs installing.
+    pub hooks: Option<bool>,
 }
+
+/// The permission modes `claude --permission-mode` accepts, plus `skip` for
+/// `--dangerously-skip-permissions`.
+pub const CLAUDE_PERMISSION_MODES: &[&str] = &[
+    "acceptEdits",
+    "auto",
+    "bypassPermissions",
+    "manual",
+    "dontAsk",
+    "plan",
+    "skip",
+];
+
+/// The approval policies `codex --ask-for-approval` accepts, plus `full-auto` for
+/// `--full-auto` and `skip` for `--dangerously-bypass-approvals-and-sandbox`.
+pub const CODEX_PERMISSION_MODES: &[&str] = &[
+    "untrusted",
+    "on-failure",
+    "on-request",
+    "never",
+    "full-auto",
+    "skip",
+];
+
+/// `cursor-agent` has one switch: `--force`, which `skip` and `force` both name.
+pub const CURSOR_PERMISSION_MODES: &[&str] = &["skip", "force"];
 
 /// The program a kind runs.
 ///
@@ -88,28 +128,151 @@ pub fn worktree_path_for(branch: &str) -> String {
     format!("{WORKTREE_PREFIX}{branch}")
 }
 
+/// The arguments a kind's program takes for what a [`Spec`] asks, as `(leading, flags)`:
+/// `leading` goes before the caller's own arguments (a `resume` subcommand), `flags` after
+/// them and before the prompt.
+///
+/// One table, verified against each program's `--help`. A mode a kind does not have is an
+/// error naming the ones it does, never silently dropped: a caller who asked for permissions
+/// off and got an agent that asks would not find out until it stalled.
+pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<String>), String> {
+    let mut leading = Vec::new();
+    let mut flags = Vec::new();
+    if let Some(model) = trimmed(&spec.model) {
+        flags.push("--model".to_owned());
+        flags.push(model.to_owned());
+    }
+    let mode = trimmed(&spec.permission_mode);
+    let resume = trimmed(&spec.resume);
+    let hooks = spec.hooks.unwrap_or(true);
+    let unknown_mode = |accepted: &[&str], mode: &str| {
+        Err(format!(
+            "{kind} has no permission mode {mode:?}; it accepts: {}",
+            accepted.join(", "),
+            kind = kind.unwrap_or("this command"),
+        ))
+    };
+    match kind {
+        Some("claude") => {
+            match mode {
+                None => {},
+                Some("skip") => flags.push("--dangerously-skip-permissions".to_owned()),
+                Some(mode) if CLAUDE_PERMISSION_MODES.contains(&mode) => {
+                    flags.push("--permission-mode".to_owned());
+                    flags.push(mode.to_owned());
+                },
+                Some(mode) => return unknown_mode(CLAUDE_PERMISSION_MODES, mode),
+            }
+            match resume {
+                None => {},
+                Some("last") => flags.push("--continue".to_owned()),
+                Some(id) => {
+                    flags.push("--resume".to_owned());
+                    flags.push(id.to_owned());
+                },
+            }
+            if hooks {
+                // The hooks that make the pane report its own state, handed over whole:
+                // no script, no settings file, and nothing to install first.
+                flags.push("--settings".to_owned());
+                flags.push(claude_hook_settings_argument());
+            }
+        },
+        Some("codex") => {
+            match mode {
+                None => {},
+                Some("full-auto") => flags.push("--full-auto".to_owned()),
+                Some("skip") => flags.push("--dangerously-bypass-approvals-and-sandbox".to_owned()),
+                Some(mode) if CODEX_PERMISSION_MODES.contains(&mode) => {
+                    flags.push("--ask-for-approval".to_owned());
+                    flags.push(mode.to_owned());
+                },
+                Some(mode) => return unknown_mode(CODEX_PERMISSION_MODES, mode),
+            }
+            // A subcommand, so it goes first: `codex resume [OPTIONS] [SESSION_ID] [PROMPT]`.
+            match resume {
+                None => {},
+                Some("last") => leading.extend(["resume".to_owned(), "--last".to_owned()]),
+                Some(id) => leading.extend(["resume".to_owned(), id.to_owned()]),
+            }
+        },
+        Some("cursor") => {
+            match mode {
+                None => {},
+                Some("skip" | "force") => flags.push("--force".to_owned()),
+                Some(mode) => return unknown_mode(CURSOR_PERMISSION_MODES, mode),
+            }
+            match resume {
+                None => {},
+                Some("last") => leading.push("resume".to_owned()),
+                Some(id) => {
+                    flags.push("--resume".to_owned());
+                    flags.push(id.to_owned());
+                },
+            }
+        },
+        _ => {
+            // A kind nothing here knows, or a bare command: `--model` is the one flag every
+            // agent spells the same, and nothing else can be guessed at.
+            if let Some(mode) = mode {
+                return unknown_mode(&[], mode);
+            }
+            if resume.is_some() {
+                return Err(format!(
+                    "{} has no resume spelling known here; pass the flag in args",
+                    kind.unwrap_or("this command")
+                ));
+            }
+        },
+    }
+    Ok((leading, flags))
+}
+
+/// The `--settings` value a spawned `claude` is handed: the hook wiring from
+/// `zellij_utils::agent`, as one JSON argument.
+pub fn claude_hook_settings_argument() -> String {
+    zellij_tile::agent::claude_hook_settings(zellij_tile::agent::CLAUDE_HOOK_REPORT_COMMAND)
+        .to_string()
+}
+
 /// What to run, and what to do to the repository before running it.
 ///
 /// The error strings are the ones shown to whoever asked — the modal puts them in its
 /// status row, hocus hands them back to the model as the tool result — so they say what
 /// is missing rather than that something is.
 pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
-    let path = match (trimmed(&spec.kind), trimmed(&spec.command)) {
-        (Some(kind), _) => binary_for(&kind.to_lowercase()).to_owned(),
+    let kind = trimmed(&spec.kind).map(str::to_lowercase);
+    let program = match (kind.as_deref(), trimmed(&spec.command)) {
+        (Some(kind), _) => binary_for(kind).to_owned(),
         (None, Some(command)) => command.to_owned(),
         (None, None) => return Err("an agent or a command is required".to_owned()),
     };
 
-    let mut args = spec.args.clone();
-    if let Some(model) = trimmed(&spec.model) {
-        args.push("--model".to_owned());
-        args.push(model.to_owned());
-    }
-    // Last, and after `--model`: a positional argument that came before a flag would
+    let (leading, flags) = shape_args(kind.as_deref(), spec)?;
+    let mut args = leading;
+    args.extend(spec.args.iter().cloned());
+    args.extend(flags);
+    // Last, and after every flag: a positional argument that came before a flag would
     // be read by some of these programs as the flag's value.
     if let Some(prompt) = trimmed(&spec.prompt) {
         args.push(prompt.to_owned());
     }
+
+    // An environment is an `env(1)` wrapper: assignments first, then the program and its
+    // arguments. `env` execs, so the pane's foreground process is still the agent, and the
+    // session names the record for it rather than for `env` (`agent_kind_of`).
+    let (path, args) = if spec.env.is_empty() {
+        (program, args)
+    } else {
+        let mut wrapped: Vec<String> = spec
+            .env
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect();
+        wrapped.push(program);
+        wrapped.extend(args);
+        ("env".to_owned(), wrapped)
+    };
 
     let command = CommandToRun {
         path: path.into(),
@@ -243,6 +406,7 @@ mod tests {
     fn a_branch_alone_means_a_worktree_off_main() {
         let (command, checkout) = plan(&Spec {
             branch: Some("fix-parser".to_owned()),
+            hooks: Some(false),
             ..spec("claude")
         })
         .unwrap();
@@ -317,6 +481,7 @@ mod tests {
             model: Some("opus".to_owned()),
             prompt: Some("fix the parser".to_owned()),
             args: vec!["--verbose".to_owned()],
+            hooks: Some(false),
             ..spec("claude")
         })
         .unwrap();
@@ -361,6 +526,198 @@ mod tests {
         );
     }
 
+    /// A `claude` pane reports its own state: the hook wiring rides along as `--settings`,
+    /// and lists exactly the events `zellij hocus hooks install` would wire.
+    #[test]
+    fn claude_spawns_carry_the_hook_settings() {
+        let (command, _) = plan(&spec("claude")).unwrap();
+        assert_eq!(command.args[0], "--settings");
+        let settings: serde_json::Value = serde_json::from_str(&command.args[1]).unwrap();
+        let hooks = settings["hooks"].as_object().unwrap();
+        for event in zellij_tile::agent::CLAUDE_HOOK_EVENTS {
+            assert_eq!(
+                hooks[*event][0]["hooks"][0]["command"],
+                zellij_tile::agent::CLAUDE_HOOK_REPORT_COMMAND,
+                "{event}"
+            );
+        }
+        // Opted out, and the other kinds never had them.
+        let (command, _) = plan(&Spec {
+            hooks: Some(false),
+            ..spec("claude")
+        })
+        .unwrap();
+        assert!(command.args.is_empty());
+        let (command, _) = plan(&spec("codex")).unwrap();
+        assert!(command.args.is_empty());
+    }
+
+    fn without_hooks(kind: &str) -> Spec {
+        Spec {
+            hooks: Some(false),
+            ..spec(kind)
+        }
+    }
+
+    #[test]
+    fn env_wraps_the_command_and_keeps_the_prompt_last() {
+        let (command, _) = plan(&Spec {
+            env: BTreeMap::from([
+                ("ANTHROPIC_MODEL".to_owned(), "opus".to_owned()),
+                ("FOO".to_owned(), "a=b".to_owned()),
+            ]),
+            prompt: Some("go".to_owned()),
+            ..without_hooks("claude")
+        })
+        .unwrap();
+        assert_eq!(command.path, PathBuf::from("env"));
+        assert_eq!(
+            command.args,
+            vec!["ANTHROPIC_MODEL=opus", "FOO=a=b", "claude", "go"]
+        );
+        assert_eq!(
+            zellij_tile::agent::agent_kind_of(&command.path, &command.args).as_deref(),
+            Some("claude"),
+            "the record is named for the agent, not the wrapper"
+        );
+    }
+
+    #[test]
+    fn claude_permission_mode_and_resume_are_flags() {
+        let (command, _) = plan(&Spec {
+            permission_mode: Some("acceptEdits".to_owned()),
+            resume: Some("abc-123".to_owned()),
+            model: Some("opus".to_owned()),
+            prompt: Some("go".to_owned()),
+            ..without_hooks("claude")
+        })
+        .unwrap();
+        assert_eq!(
+            command.args,
+            vec![
+                "--model",
+                "opus",
+                "--permission-mode",
+                "acceptEdits",
+                "--resume",
+                "abc-123",
+                "go"
+            ]
+        );
+        let (command, _) = plan(&Spec {
+            permission_mode: Some("skip".to_owned()),
+            resume: Some("last".to_owned()),
+            ..without_hooks("claude")
+        })
+        .unwrap();
+        assert_eq!(
+            command.args,
+            vec!["--dangerously-skip-permissions", "--continue"]
+        );
+    }
+
+    /// `codex resume` is a subcommand, so it goes ahead of everything - including the
+    /// caller's own arguments - while the approval policy is an ordinary flag.
+    #[test]
+    fn codex_resume_is_a_subcommand_ahead_of_the_flags() {
+        let (command, _) = plan(&Spec {
+            resume: Some("last".to_owned()),
+            permission_mode: Some("never".to_owned()),
+            args: vec!["--verbose".to_owned()],
+            prompt: Some("go".to_owned()),
+            ..spec("codex")
+        })
+        .unwrap();
+        assert_eq!(
+            command.args,
+            vec![
+                "resume",
+                "--last",
+                "--verbose",
+                "--ask-for-approval",
+                "never",
+                "go"
+            ]
+        );
+        let (command, _) = plan(&Spec {
+            resume: Some("0192-abc".to_owned()),
+            permission_mode: Some("full-auto".to_owned()),
+            ..spec("codex")
+        })
+        .unwrap();
+        assert_eq!(command.args, vec!["resume", "0192-abc", "--full-auto"]);
+        let (command, _) = plan(&Spec {
+            permission_mode: Some("skip".to_owned()),
+            ..spec("codex")
+        })
+        .unwrap();
+        assert_eq!(
+            command.args,
+            vec!["--dangerously-bypass-approvals-and-sandbox"]
+        );
+    }
+
+    #[test]
+    fn cursor_only_knows_force() {
+        let (command, _) = plan(&Spec {
+            permission_mode: Some("skip".to_owned()),
+            resume: Some("chat-7".to_owned()),
+            ..spec("cursor")
+        })
+        .unwrap();
+        assert_eq!(command.path, PathBuf::from("cursor-agent"));
+        assert_eq!(command.args, vec!["--force", "--resume", "chat-7"]);
+        let (command, _) = plan(&Spec {
+            resume: Some("last".to_owned()),
+            ..spec("cursor")
+        })
+        .unwrap();
+        assert_eq!(command.args, vec!["resume"]);
+        let refused = plan(&Spec {
+            permission_mode: Some("plan".to_owned()),
+            ..spec("cursor")
+        })
+        .unwrap_err();
+        assert!(refused.contains("skip, force"), "{refused}");
+    }
+
+    #[test]
+    fn an_unknown_permission_mode_names_the_accepted_ones() {
+        let refused = plan(&Spec {
+            permission_mode: Some("yolo".to_owned()),
+            ..spec("claude")
+        })
+        .unwrap_err();
+        assert!(refused.contains("\"yolo\""), "{refused}");
+        assert!(refused.contains("acceptEdits"), "{refused}");
+        assert!(refused.contains("skip"), "{refused}");
+    }
+
+    /// A bare command, or an agent nothing here knows, still takes `--model`; the rest
+    /// cannot be guessed at and is said so rather than dropped.
+    #[test]
+    fn a_raw_command_refuses_modes_it_cannot_spell() {
+        let (command, _) = plan(&Spec {
+            command: Some("aider".to_owned()),
+            model: Some("gpt".to_owned()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(command.args, vec!["--model", "gpt"]);
+        assert!(plan(&Spec {
+            command: Some("aider".to_owned()),
+            permission_mode: Some("skip".to_owned()),
+            ..Default::default()
+        })
+        .is_err());
+        assert!(plan(&Spec {
+            resume: Some("last".to_owned()),
+            ..spec("gemini")
+        })
+        .unwrap_err()
+        .contains("args"));
+    }
+
     /// A form field tabbed through and a JSON key sent as `""` are the same thing:
     /// nothing said. Neither may reach Git as a branch name.
     #[test]
@@ -369,6 +726,9 @@ mod tests {
             branch: Some("   ".to_owned()),
             model: Some("".to_owned()),
             prompt: Some(" ".to_owned()),
+            permission_mode: Some("".to_owned()),
+            resume: Some(" ".to_owned()),
+            hooks: Some(false),
             ..spec("claude")
         })
         .unwrap();

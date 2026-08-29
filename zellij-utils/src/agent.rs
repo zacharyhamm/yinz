@@ -8,7 +8,107 @@
 
 use crate::data::{AgentInfo, AgentSource, AgentState};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::path::Path;
+
+/// The Claude Code hook events a record is read from, in the order Claude Code fires them.
+///
+/// One list for the two things that wire it: `zellij hocus hooks install`, which writes it
+/// into a settings file, and a spawned Claude Code pane, which is handed it inline as
+/// `--settings`. A `Notification` matcher would have to name the notification kinds that mean
+/// "blocked on the user" - a list Claude Code adds to between versions, and one already written
+/// in [`WAITING_NOTIFICATIONS`] where it can be tested - so every entry fires on every
+/// occurrence and the reading happens here.
+pub const CLAUDE_HOOK_EVENTS: &[&str] = &[
+    // The feed begins, and the pane is proved to be running Claude Code.
+    "SessionStart",
+    // Work starts.
+    "UserPromptSubmit",
+    // Work continues, and names the tool it is in.
+    "PreToolUse",
+    "PostToolUse",
+    // Blocked on the user, said as the prompt goes up.
+    "PermissionRequest",
+    // The same, from the other direction: the backstop for a Claude Code too old to
+    // have `PermissionRequest`, and the only signal for an MCP form or a background
+    // session wanting input.
+    "Notification",
+    // The turn ended.
+    "Stop",
+    // The feed ends.
+    "SessionEnd",
+];
+
+/// Seconds a hook may take before Claude Code abandons it.
+///
+/// Explicit because the default is ten minutes and a hook blocks the turn: a report against a
+/// socket whose server has gone must not be able to stall an agent. Five rather than one
+/// because `SessionEnd` is special-cased at the other end - every `SessionEnd` hook shares a
+/// 1.5s budget, raised only to match an individual timeout - and a feed that ends is worth
+/// waiting a moment for.
+pub const CLAUDE_HOOK_TIMEOUT_SECONDS: u64 = 5;
+
+/// The command a spawned Claude Code pane's hooks run, with no script in between: the pane
+/// inherits `ZELLIJ_PANE_ID`, which the action reads itself, and `zellij` is on the path the
+/// pane's shell found it on.
+pub const CLAUDE_HOOK_REPORT_COMMAND: &str = "zellij action agent-report --hook-json";
+
+/// One handler entry, as Claude Code's settings spell it.
+pub fn claude_hook_handler(command: &str) -> Value {
+    json!({
+        "type": "command",
+        "command": command,
+        "timeout": CLAUDE_HOOK_TIMEOUT_SECONDS,
+    })
+}
+
+/// A Claude Code settings document whose `hooks` wire every event in [`CLAUDE_HOOK_EVENTS`]
+/// to `command`. What `zellij hocus hooks install` merges into a settings file, and what a
+/// spawned pane is handed whole as `--settings`; the two cannot disagree about the events
+/// because this is the one place they are listed.
+pub fn claude_hook_settings(command: &str) -> Value {
+    let hooks: serde_json::Map<String, Value> = CLAUDE_HOOK_EVENTS
+        .iter()
+        // No `matcher`: an entry without one fires on every occurrence of the event.
+        .map(|event| {
+            (
+                (*event).to_owned(),
+                json!([{ "hooks": [claude_hook_handler(command)] }]),
+            )
+        })
+        .collect();
+    json!({ "hooks": hooks })
+}
+
+/// The program a command pane's agent record is named for: the command's file name, looked
+/// through an `env(1)` wrapper - `env K=V claude …` is `claude`, because `env` execs it and the
+/// pane is running the agent, not the wrapper. `None` when there is no program to name.
+pub fn agent_kind_of(program: &Path, args: &[String]) -> Option<String> {
+    let name = program.file_name()?.to_string_lossy().to_string();
+    if name != "env" {
+        return Some(name);
+    }
+    // `env`'s own options and assignments come first; the program is the first word that
+    // is neither. `-u NAME` takes a value, which is skipped with it.
+    let mut skip_next = false;
+    for arg in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg == "-u" || arg == "--unset" || arg == "-C" || arg == "--chdir" {
+            skip_next = true;
+            continue;
+        }
+        if arg.starts_with('-') || arg.contains('=') {
+            continue;
+        }
+        return Path::new(arg)
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string());
+    }
+    None
+}
 
 /// The event name that ends a session, and so ends the pane's record.
 pub const HOOK_SESSION_END: &str = "SessionEnd";
@@ -179,6 +279,49 @@ pub fn hook_outcome(kind: &str, event: &HookEvent) -> HookOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hook_settings_wire_every_event_to_the_command() {
+        let settings = claude_hook_settings("zellij action agent-report --hook-json");
+        let hooks = settings["hooks"].as_object().unwrap();
+        assert_eq!(hooks.len(), CLAUDE_HOOK_EVENTS.len());
+        for event in CLAUDE_HOOK_EVENTS {
+            let handler = &hooks[*event][0]["hooks"][0];
+            assert_eq!(handler["type"], "command", "{event}");
+            assert_eq!(handler["command"], "zellij action agent-report --hook-json");
+            assert_eq!(handler["timeout"], CLAUDE_HOOK_TIMEOUT_SECONDS);
+            assert!(
+                hooks[*event][0].get("matcher").is_none(),
+                "{event} fires on every occurrence"
+            );
+        }
+    }
+
+    #[test]
+    fn an_env_wrapper_is_looked_through_for_the_agents_name() {
+        let args = |list: &[&str]| list.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            agent_kind_of(Path::new("/usr/bin/claude"), &[]).as_deref(),
+            Some("claude")
+        );
+        assert_eq!(
+            agent_kind_of(
+                Path::new("env"),
+                &args(&["FOO=1", "BAR=x=y", "claude", "--model", "opus"])
+            )
+            .as_deref(),
+            Some("claude")
+        );
+        assert_eq!(
+            agent_kind_of(
+                Path::new("/usr/bin/env"),
+                &args(&["-i", "-u", "HOME", "codex"])
+            )
+            .as_deref(),
+            Some("codex")
+        );
+        assert_eq!(agent_kind_of(Path::new("env"), &args(&["FOO=1"])), None);
+    }
 
     fn event(name: &str) -> HookEvent {
         HookEvent {

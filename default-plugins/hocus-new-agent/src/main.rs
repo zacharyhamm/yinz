@@ -711,6 +711,7 @@ fn spec(form: &Form) -> launch::Spec {
         // `launch` for a worktree with nothing to put in it.
         worktree: form.checked(CREATE_BRANCH).then(|| form.checked(WORKTREE)),
         worktree_path: Some(form.text(PATH).to_owned()),
+        ..Default::default()
     }
 }
 
@@ -874,7 +875,10 @@ mod tests {
             .set_text("opus".into());
         let (command, checkout) = request(state.dialog.form()).unwrap();
         assert_eq!(command.path, PathBuf::from("claude"));
-        assert_eq!(command.args, ["--model", "opus"]);
+        assert_eq!(&command.args[..2], ["--model", "opus"]);
+        // A claude pane the modal starts reports its own state, like one hocus starts.
+        assert_eq!(command.args[2], "--settings");
+        assert_eq!(command.args.len(), 4);
         assert_eq!(checkout, GitCheckout::Current);
     }
 
