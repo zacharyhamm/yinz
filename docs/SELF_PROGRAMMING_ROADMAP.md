@@ -210,9 +210,7 @@ restores them. R4 already moves live agent state to the pane manifest; this cove
 hocus-owned. Fix the `transitions.rs:775` stall at the same time: scheduled runs auto-decline
 `confirm` tools rather than parking every job on a y/n.
 
-**R15b. hocus `agent_register` writes the record.** `agent_register` still latches a kind in
-hocus's own `manual_kinds`; it should call `set_pane_agent` so the registration is visible to
-every reader (and survives a hocus reload). Small; not done.
+**R15b. hocus `agent_register` writes the record.** *(done — `agents::registered_agent` builds an `AgentSource::Registered` record (new variant, `idle` placeholder state) that `agent_register` writes through `set_pane_agent`; `manual_kinds` and its latch row stay, for the daemon's classifier.)*
 
 **R15c. hocus `plugin_write` on `fs_write`.** With the `/plugins` root in place, `plugin_write`
 can drop its shell script, the 64 KB argv cap and the hand-rolled symlink guard. Needs `fs_*`

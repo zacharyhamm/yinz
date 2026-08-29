@@ -2015,6 +2015,7 @@ impl TryFrom<ProtobufAgentInfo> for AgentInfo {
         let source = match ProtobufAgentSource::try_from(protobuf.source) {
             Ok(ProtobufAgentSource::Spawned) => AgentSource::Spawned,
             Ok(ProtobufAgentSource::Reported) => AgentSource::Reported,
+            Ok(ProtobufAgentSource::Registered) => AgentSource::Registered,
             Err(_) => return Err("unknown agent source"),
         };
         Ok(AgentInfo {
@@ -2040,6 +2041,7 @@ impl TryFrom<AgentInfo> for ProtobufAgentInfo {
         let source = match agent.source {
             AgentSource::Spawned => ProtobufAgentSource::Spawned,
             AgentSource::Reported => ProtobufAgentSource::Reported,
+            AgentSource::Registered => ProtobufAgentSource::Registered,
         };
         Ok(ProtobufAgentInfo {
             kind: agent.kind,

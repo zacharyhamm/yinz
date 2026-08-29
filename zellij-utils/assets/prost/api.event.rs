@@ -1526,6 +1526,7 @@ impl AgentState {
 pub enum AgentSource {
     Spawned = 0,
     Reported = 1,
+    Registered = 2,
 }
 impl AgentSource {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1536,6 +1537,7 @@ impl AgentSource {
         match self {
             AgentSource::Spawned => "Spawned",
             AgentSource::Reported => "Reported",
+            AgentSource::Registered => "Registered",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1543,6 +1545,7 @@ impl AgentSource {
         match value {
             "Spawned" => Some(Self::Spawned),
             "Reported" => Some(Self::Reported),
+            "Registered" => Some(Self::Registered),
             _ => None,
         }
     }

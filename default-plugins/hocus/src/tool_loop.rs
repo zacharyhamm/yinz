@@ -1422,6 +1422,14 @@ impl State {
         }
         self.manual_kinds.insert(pane_id, kind.to_owned());
         self.persist_latch(pane_id, kind);
+        // The session's record too, so `list-panes`, `zellij events` and every other plugin
+        // see the registration, and so it outlives a hocus reload on its own.
+        let cwd = self
+            .panes
+            .iter()
+            .find(|pane| pane.pane_id == pane_id)
+            .and_then(|pane| pane.cwd.clone());
+        tools::report_pane_agent(pane_id, agents::registered_agent(kind, cwd));
         // hocus stays authoritative for the overrides; the daemon holds a copy
         // only to classify with, so it needs the new one before its next poll.
         self.send_manual_kinds();

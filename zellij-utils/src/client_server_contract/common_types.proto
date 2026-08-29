@@ -806,6 +806,7 @@ enum AgentSource {
   AGENT_SOURCE_UNSPECIFIED = 0;
   AGENT_SOURCE_SPAWNED = 1;
   AGENT_SOURCE_REPORTED = 2;
+  AGENT_SOURCE_REGISTERED = 3;
 }
 
 // Supporting enums and messages

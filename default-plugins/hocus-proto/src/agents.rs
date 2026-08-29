@@ -434,6 +434,8 @@ impl HookFeed {
     /// not exited, none for a spawned-but-silent agent, whose state is the heuristic's to
     /// judge, and none for an exited one.
     pub fn from_agent(agent: &AgentInfo) -> Option<HookFeed> {
+        // `Registered` is a person's word for the kind and nothing about the state, so it is
+        // not a feed either.
         if agent.source != AgentSource::Reported {
             return None;
         }
@@ -560,6 +562,20 @@ pub struct Summary {
     /// is where it comes from.
     #[serde(default)]
     pub hash: u64,
+}
+
+/// The record `agent_register` writes for a pane: the kind a person gave it, `idle` as a
+/// placeholder for a state nobody has reported, and `Registered` so every reader knows which.
+/// The agent's own reports replace it whole, as any record replaces any other.
+pub fn registered_agent(kind: &str, cwd: Option<String>) -> AgentInfo {
+    AgentInfo {
+        kind: kind.to_owned(),
+        state: AgentState::Idle,
+        source: AgentSource::Registered,
+        detail: None,
+        cwd,
+        session_id: None,
+    }
 }
 
 /// Pane id → what the model last said about it.
@@ -1377,6 +1393,20 @@ pub fn list_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_registered_record_names_the_kind_and_nothing_it_does_not_know() {
+        let record = registered_agent("reviewer", Some("/work".to_owned()));
+        assert_eq!(record.kind, "reviewer");
+        assert_eq!(record.source, AgentSource::Registered);
+        assert_eq!(record.state, AgentState::Idle);
+        assert_eq!(record.cwd.as_deref(), Some("/work"));
+        assert!(record.detail.is_none() && record.session_id.is_none());
+        assert!(
+            HookFeed::from_agent(&record).is_none(),
+            "a person's word about the kind is not a hook feed"
+        );
+    }
 
     fn pane(pane_id: u32, title: &str, command: Option<&str>) -> AgentPane {
         AgentPane {

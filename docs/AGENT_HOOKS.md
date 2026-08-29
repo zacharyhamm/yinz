@@ -40,7 +40,8 @@ The same record is written by two other roads, which is what makes "is this pane
 question with one answer: the spawn path, when a plugin opens a pane *as* an agent pane
 (`AgentSource::Spawned`, state `Busy`, moved to `Exited` when the command exits and back to
 `Busy` on re-run), and `PluginCommand::SetPaneAgent` / `zellij.set_pane_agent`, for a plugin
-speaking for an agent. A pane with a record fires the `agent_exit` hook when its command exits,
+speaking for an agent — hocus's `agent_register` is one such plugin, writing
+`AgentSource::Registered` with the kind a person gave and `idle` as a placeholder state. A pane with a record fires the `agent_exit` hook when its command exits,
 however the record got there — `claude` typed at a shell becomes an agent pane the moment it
 reports for itself. The record's edges fire hooks of their own: `agent_start` when a record
 appears (or comes back after `exited`, or changes `session_id`), `agent_waiting` when it moves

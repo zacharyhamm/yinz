@@ -588,6 +588,7 @@ enum AgentState {
 enum AgentSource {
     Spawned = 0;
     Reported = 1;
+    Registered = 2;
 }
 
 message IndexInPaneGroup {

@@ -3876,6 +3876,7 @@ fn agent_info_to_proto(
     let source = match agent.source {
         AgentSource::Spawned => ProtoAgentSource::Spawned,
         AgentSource::Reported => ProtoAgentSource::Reported,
+        AgentSource::Registered => ProtoAgentSource::Registered,
     };
     ProtoAgentInfo {
         kind: agent.kind,
@@ -3904,6 +3905,7 @@ fn agent_info_from_proto(
     let source = match ProtoAgentSource::try_from(proto.source) {
         Ok(ProtoAgentSource::Spawned) => AgentSource::Spawned,
         Ok(ProtoAgentSource::Reported) => AgentSource::Reported,
+        Ok(ProtoAgentSource::Registered) => AgentSource::Registered,
         _ => return Err(anyhow!("Unspecified agent source")),
     };
     Ok(crate::data::AgentInfo {
