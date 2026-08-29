@@ -24,6 +24,7 @@ message ServerToClientMsg {
     SetSoftKeyboardMsg set_soft_keyboard = 17;
     EmitNestedSessionFrameMsg emit_nested_session_frame = 18;
     MobileStateMsg mobile_state = 19;
+    EventUpdateMsg event_update = 20;
   }
 }
 
@@ -91,6 +92,11 @@ message PaneRenderUpdateMsg {
 
 message SubscribedPaneClosedMsg {
   PaneId pane_id = 1;
+}
+
+message EventUpdateMsg {
+  string event_type = 1;
+  string event_json = 2;
 }
 
 message ForwardQueryToHostMsg {

@@ -1,20 +1,62 @@
-//! The plugin-authoring tools' two pure halves: turning a name the model sent into a path, and
-//! turning that path into an argv.
+//! The plugin-authoring tools' pure halves: turning a name the model sent into a path - the real
+//! one and the one under the host's `/plugins` root - and shaping what goes to and comes back from
+//! the host's file commands.
 //!
-//! Both run before anything reaches the host, which is the point — a name that escapes the
-//! plugin folder, or a source too large to pass, is refused without a command being spawned.
+//! All of it runs before anything reaches the host, which is the point — a name that escapes the
+//! plugin folder, or a write with nothing to write, is refused without a file being touched.
 
 use super::*;
+use zellij_tile::prelude::{FileMetadata, FsEntry};
 
 const DIR: &str = "/home/someone/.config/zellij/plugins";
 
-fn plugin_argv_for(
-    name: &str,
-    arguments: &str,
-) -> Result<(Vec<String>, BTreeMap<String, String>), String> {
-    let args = Args::parse(arguments).unwrap();
-    let target = resolve_plugin_file(DIR, args.name.as_deref())?;
-    plugin_argv(name, &args, DIR, &target)
+/// A compile error names the file the loader would name, whatever spelling the write used.
+#[test]
+fn the_chunk_name_is_the_file_the_loader_would_name() {
+    for (name, chunk) in [
+        ("keys", "keys.lua"),
+        ("keys.lua", "keys.lua"),
+        (" keys ", "keys.lua"),
+        ("app/ui", "ui.lua"),
+        ("hocus/weather", "weather.lua"),
+    ] {
+        assert_eq!(chunk_name(name), chunk, "{name}");
+    }
+}
+
+/// Off wasm every source compiles, so what is tested is the shape around the answer: only a
+/// `plugin_write` with a name and a source is ever refused, and never by the host stand-in.
+#[test]
+fn only_a_complete_plugin_write_is_candidate_for_a_compile_refusal() {
+    let call = |name: &str, arguments: &str| ToolCall {
+        id: "1".to_owned(),
+        name: name.to_owned(),
+        arguments: arguments.to_owned(),
+    };
+    assert_eq!(
+        uncompilable_write(&call(
+            "plugin_write",
+            r#"{"name":"keys","source":"return {}"}"#
+        )),
+        None
+    );
+    assert_eq!(
+        uncompilable_write(&call("plugin_write", r#"{"name":"keys"}"#)),
+        None,
+        "a missing source is plugin_source's refusal, not a compile error"
+    );
+    assert_eq!(
+        uncompilable_write(&call("plugin_reload", r#"{"name":"keys"}"#)),
+        None
+    );
+    assert_eq!(
+        compile_report("keys", "return {}").unwrap(),
+        "keys.lua compiles"
+    );
+}
+
+fn args(arguments: &str) -> Args {
+    Args::parse(arguments).unwrap()
 }
 
 #[test]
@@ -84,10 +126,19 @@ fn a_module_name_resolves_one_folder_down() {
         resolve_plugin_file(DIR, Some("app/init.lua")).unwrap(),
         format!("{DIR}/app/init.lua")
     );
-    // The write makes the subfolder, not the plugin folder, so a module lands where it is named.
-    let (argv, _) = plugin_argv_for("plugin_write", r#"{"name":"app/ui","source":"x"}"#).unwrap();
-    assert_eq!(argv[4], format!("{DIR}/app/ui.lua"));
-    assert_eq!(argv[5], format!("{DIR}/app"));
+}
+
+/// The host's file commands take the same name under `/plugins`: one set of rules, two roots,
+/// so the file that is written and the file that is reloaded cannot be different files.
+#[test]
+fn a_plugin_fs_path_is_the_same_name_under_the_plugins_root() {
+    assert_eq!(plugin_fs_path(Some("keys")).unwrap(), "/plugins/keys.lua");
+    assert_eq!(
+        plugin_fs_path(Some("app/ui")).unwrap(),
+        "/plugins/app/ui.lua"
+    );
+    assert!(plugin_fs_path(Some("../keys")).is_err());
+    assert!(plugin_fs_path(None).unwrap_err().contains("name"));
 }
 
 /// Never option-shaped, even though every path either follows a `--` or sits in a quoted shell
@@ -127,42 +178,23 @@ fn a_missing_name_or_folder_says_which_is_missing() {
     assert!(no_folder.contains("user_plugin_dir"), "{no_folder}");
 }
 
+/// What the model reads from `plugin_log`: the host's lines as they are, a pointer at
+/// `zellij.log` when there are none yet, and the host's own reason when it could not look.
 #[test]
-fn listing_asks_find_for_the_lua_files_one_level_down() {
-    let (argv, env) = plugin_argv("plugin_list", &Args::default(), DIR, DIR).unwrap();
+fn the_log_tool_passes_lines_on_and_explains_an_empty_log() {
     assert_eq!(
-        argv,
-        vec![
-            "find",
-            DIR,
-            "-maxdepth",
-            "2",
-            "-type",
-            "f",
-            "-name",
-            "*.lua"
-        ]
+        plugin_log_answer("keys", Ok("INFO [lua:keys.lua] pressed t\n".to_owned())),
+        "INFO [lua:keys.lua] pressed t"
     );
-    assert!(env.is_empty());
-}
-
-/// The log tool greps zellij's own log for the plugin's tag. The file is the one the server
-/// writes to (`ZELLIJ_TMP_LOG_FILE`), the match is the bare file name so a plugin loaded by
-/// name and one loaded by absolute path are both found, and the count is the last argument.
-#[test]
-fn the_log_tool_greps_zellijs_log_for_the_plugins_tag() {
-    let (argv, env) = plugin_argv_for("plugin_log", r#"{"name":"keys"}"#).unwrap();
-    assert_eq!(argv[0], "sh");
-    assert_eq!(argv[1], "-c");
-    assert!(argv[2].contains("zellij-log/zellij.log"), "{}", argv[2]);
-    assert!(argv[2].contains("grep -F -- \"$1\""), "{}", argv[2]);
-    assert!(argv[2].contains("tail -n \"$2\""), "{}", argv[2]);
-    assert_eq!(argv[4], "keys.lua");
-    assert_eq!(argv[5], PLUGIN_LOG_LINES.to_string());
-    assert!(env.is_empty());
-
-    let (argv, _) = plugin_argv_for("plugin_log", r#"{"name":"keys","line_count":5}"#).unwrap();
-    assert_eq!(argv[5], "5");
+    let empty = plugin_log_answer("keys.lua", Ok(String::new()));
+    assert!(
+        empty.starts_with("no log lines from keys.lua yet") && empty.contains("zellij.log"),
+        "{empty}"
+    );
+    assert_eq!(
+        plugin_log_answer("keys", Err("no zellij log at /tmp/zellij.log".to_owned())),
+        "no zellij log at /tmp/zellij.log"
+    );
 }
 
 /// What the model reads after a reload. A pane that is not there is not a success; a pane
@@ -204,223 +236,95 @@ fn a_load_report_names_the_outcome_before_the_pane_text() {
 }
 
 #[test]
-fn reading_a_plugin_uses_the_read_file_shape() {
-    let (argv, env) = plugin_argv_for("plugin_read", r#"{"name":"keys"}"#).unwrap();
-    assert_eq!(argv[0], "sh");
-    assert_eq!(argv[1], "-c");
-    assert!(
-        argv[2].contains(r#"exec sed -n "$2" -- "$1""#),
-        "{}",
-        argv[2]
-    );
-    assert_eq!(argv[3], "sh", "$0, so the file is $1 and the range $2");
-    assert_eq!(argv[4], format!("{DIR}/keys.lua"));
-    assert_eq!(argv[5], format!("1,{}p", FILE_TOOL_LINES));
-    assert!(env.is_empty());
-
-    let (argv, _) = plugin_argv_for(
-        "plugin_read",
-        r#"{"name":"keys","start_line":10,"line_count":5}"#,
-    )
-    .unwrap();
-    assert_eq!(argv[5], "10,14p");
-}
-
-/// A reload runs no reload: the command asks the host the one question a wasm plugin cannot
-/// answer, and `plugin_tool_result` starts the plugin when it comes back clean.
-#[test]
-fn a_reload_only_asks_whether_the_file_may_be_loaded() {
-    let (argv, env) = plugin_argv_for("plugin_reload", r#"{"name":"keys"}"#).unwrap();
-    assert_eq!(argv[0], "sh");
-    assert_eq!(argv[1], "-c");
-    assert!(argv[2].contains("-L"), "{}", argv[2]);
-    assert!(
-        argv[2].contains("[ ! -f \"$1\" ]"),
-        "a name that was never written should be refused here: {}",
-        argv[2]
-    );
-    assert!(
-        !argv[2].contains("sed") && !argv[2].contains("printf %s"),
-        "nothing is read or written by a reload: {}",
-        argv[2]
-    );
-    assert_eq!(argv[4], format!("{DIR}/keys.lua"));
-    assert!(env.is_empty());
-}
-
-/// The containment `resolve_plugin_file` can only assert lexically, enforced where it can
-/// actually be checked: a symlink in the folder passes every rule about the *name*.
-#[test]
-fn every_tool_that_opens_the_path_refuses_a_symlink_first() {
-    for (tool, arguments) in [
-        ("plugin_read", r#"{"name":"keys"}"#),
-        ("plugin_reload", r#"{"name":"keys"}"#),
-        ("plugin_write", r#"{"name":"keys","source":"x"}"#),
-        (
-            "plugin_write",
-            r#"{"name":"keys","source":"x","overwrite":true}"#,
-        ),
-    ] {
-        let (argv, _) = plugin_argv_for(tool, arguments).unwrap();
-        assert!(
-            argv[2].contains(r#"if [ -L "$1" ]"#),
-            "{tool} follows a symlink out of the plugin folder: {}",
-            argv[2]
-        );
-        assert!(
-            argv[2].contains("exit 1"),
-            "{tool}'s guard does not stop the command: {}",
-            argv[2]
-        );
-    }
-}
-
-/// The name may carry one folder, so the folder is the model's choosing too: a link there leads
-/// out of the plugin folder as surely as a link on the file, and the guard is given it to check.
-#[test]
-fn a_module_folder_is_checked_for_a_symlink_as_well() {
-    for (tool, arguments) in [
-        ("plugin_read", r#"{"name":"app/ui"}"#),
-        ("plugin_reload", r#"{"name":"app/ui"}"#),
-        ("plugin_write", r#"{"name":"app/ui","source":"x"}"#),
-        (
-            "plugin_write",
-            r#"{"name":"app/ui","source":"x","overwrite":true}"#,
-        ),
-    ] {
-        let (argv, env) = plugin_argv_for(tool, arguments).unwrap();
-        assert_eq!(
-            env.get("HOCUS_PLUGIN_MODULE_DIR").map(String::as_str),
-            Some(format!("{DIR}/app").as_str()),
-            "{tool} does not tell the guard which folder to check"
-        );
-        assert!(
-            argv[2].contains(r#"[ -L "$HOCUS_PLUGIN_MODULE_DIR" ]"#),
-            "{tool} follows a symlinked module folder: {}",
-            argv[2]
-        );
-    }
-}
-
-/// The plugin folder itself is the user's own configuration rather than anything the model
-/// chose, so a plain name hands the guard nothing to check and a symlinked plugin folder still
-/// works.
-#[test]
-fn a_plain_name_leaves_the_plugin_folder_unchecked() {
-    for (tool, arguments) in [
-        ("plugin_read", r#"{"name":"keys"}"#),
-        ("plugin_reload", r#"{"name":"keys"}"#),
-        ("plugin_write", r#"{"name":"keys","source":"x"}"#),
-    ] {
-        let (_, env) = plugin_argv_for(tool, arguments).unwrap();
-        assert!(
-            !env.contains_key("HOCUS_PLUGIN_MODULE_DIR"),
-            "{tool} checks the plugin folder itself"
-        );
-    }
-}
-
-/// The guard runs before the redirect, not merely somewhere in the script: an `overwrite=true`
-/// that truncates first and checks afterwards would have destroyed the file already.
-#[test]
-fn a_write_checks_for_a_symlink_before_it_opens_anything() {
-    for arguments in [
-        r#"{"name":"keys","source":"x"}"#,
-        r#"{"name":"keys","source":"x","overwrite":true}"#,
-    ] {
-        let (argv, _) = plugin_argv_for("plugin_write", arguments).unwrap();
-        let guard = argv[2].find(r#"if [ -L "$1" ]"#).unwrap();
-        let redirect = argv[2].find("printf %s \"$HOCUS_PLUGIN_SOURCE\"").unwrap();
-        assert!(guard < redirect, "{}", argv[2]);
-        // And before the `mkdir`, which walks through a symlinked module folder without
-        // complaining and so must not run first.
-        let mkdir = argv[2].find("mkdir -p").unwrap();
-        assert!(guard < mkdir, "{}", argv[2]);
-    }
-}
-
-/// A failed `mkdir` must not fall through to the write. It used to be one `&&` chain, which the
-/// guard's `if ... fi` would have broken: what follows the `;` after `fi` runs regardless.
-#[test]
-fn a_write_stops_at_the_first_step_that_fails() {
-    let (argv, _) = plugin_argv_for("plugin_write", r#"{"name":"keys","source":"x"}"#).unwrap();
-    assert!(
-        argv[2].contains(r#"mkdir -p "$2" || exit 1"#),
-        "{}",
-        argv[2]
-    );
-}
-
-/// The source travels in the environment, not in an argument: that keeps it out of `ps`, and
-/// makes it a shell variable that is never re-parsed.
-#[test]
-fn writing_a_plugin_passes_the_source_through_the_environment() {
-    let (argv, env) =
-        plugin_argv_for("plugin_write", r#"{"name":"keys","source":"local M = {}"}"#).unwrap();
-
-    assert_eq!(argv[0], "sh");
-    assert_eq!(argv[1], "-c");
-    assert_eq!(argv[3], "sh", "$0, so the file is $1 and the folder $2");
-    assert_eq!(argv[4], format!("{DIR}/keys.lua"));
-    assert_eq!(argv[5], DIR);
-    assert_eq!(env.get("HOCUS_PLUGIN_SOURCE").unwrap(), "local M = {}\n");
-    // Nothing the model wrote is in the script itself.
-    assert!(!argv[2].contains("local M"));
-}
-
-/// `set -C` is what makes `overwrite=false` mean something: the write fails rather than
-/// truncating a file that is already there.
-#[test]
-fn a_write_refuses_to_clobber_unless_overwrite_was_asked_for() {
-    let (guarded, _) = plugin_argv_for("plugin_write", r#"{"name":"keys","source":"x"}"#).unwrap();
-    assert!(guarded[2].contains("set -C"), "{}", guarded[2]);
-
-    let (unguarded, _) = plugin_argv_for(
-        "plugin_write",
-        r#"{"name":"keys","source":"x","overwrite":true}"#,
-    )
-    .unwrap();
-    assert!(!unguarded[2].contains("set -C"), "{}", unguarded[2]);
-
-    // Both create the folder, so writing the first plugin does not need one to exist.
-    assert!(guarded[2].contains("mkdir -p"));
-    assert!(unguarded[2].contains("mkdir -p"));
-}
-
-#[test]
 fn a_source_ends_in_exactly_one_newline_however_it_arrived() {
     for sent in [
         r#""local M = {}""#,
         r#""local M = {}\n""#,
         r#""local M = {}\n\n\n""#,
     ] {
-        let (_, env) = plugin_argv_for(
-            "plugin_write",
-            &format!(r#"{{"name":"keys","source":{sent}}}"#),
-        )
-        .unwrap();
-        assert_eq!(env.get("HOCUS_PLUGIN_SOURCE").unwrap(), "local M = {}\n");
+        let source =
+            plugin_source(&args(&format!(r#"{{"name":"keys","source":{sent}}}"#))).unwrap();
+        assert_eq!(source, "local M = {}\n");
     }
 }
 
+/// There is no size cap any more: the source no longer travels as one environment string.
 #[test]
-fn a_write_with_no_source_or_an_enormous_one_is_refused_before_any_command() {
-    assert!(plugin_argv_for("plugin_write", r#"{"name":"keys"}"#)
+fn a_write_with_no_source_is_refused_before_anything_is_touched() {
+    assert!(plugin_source(&args(r#"{"name":"keys"}"#))
         .unwrap_err()
         .contains("source"));
-    assert!(
-        plugin_argv_for("plugin_write", r#"{"name":"keys","source":"   "}"#)
-            .unwrap_err()
-            .contains("source")
-    );
+    assert!(plugin_source(&args(r#"{"name":"keys","source":"   "}"#))
+        .unwrap_err()
+        .contains("source"));
+    let huge = "x".repeat(200_000);
+    assert!(plugin_source(&args(
+        &serde_json::json!({ "name": "keys", "source": huge }).to_string()
+    ))
+    .is_ok());
+}
 
-    let huge = "x".repeat(MAX_PLUGIN_SOURCE_BYTES + 1);
-    let error = plugin_argv_for(
-        "plugin_write",
-        &serde_json::json!({ "name": "keys", "source": huge }).to_string(),
-    )
-    .unwrap_err();
-    assert!(error.contains("limit"), "{error}");
+/// A read is a page of the file, as `read_file` is: the `sed -n 'a,bp'` shape without the sed.
+#[test]
+fn a_read_is_a_page_of_lines() {
+    assert_eq!(
+        read_range(&args(r#"{"name":"keys"}"#)),
+        (1, FILE_TOOL_LINES)
+    );
+    assert_eq!(
+        read_range(&args(r#"{"name":"keys","start_line":10,"line_count":5}"#)),
+        (10, 14)
+    );
+    assert_eq!(read_range(&args(r#"{"name":"keys","start_line":0}"#)).0, 1);
+
+    let file = "one\ntwo\nthree\nfour\n";
+    assert_eq!(lines_in_range(file, 1, 2), "one\ntwo");
+    assert_eq!(lines_in_range(file, 3, 300), "three\nfour");
+    assert_eq!(lines_in_range(file, 10, 14), "", "past the end is no lines");
+    assert_eq!(lines_in_range(file, 2, 2), "two");
+}
+
+/// A listing answers in names, because a name is what every plugin tool takes back — handing
+/// over paths would invite the model to send one and be refused. One folder deep, for modules,
+/// and only Lua files.
+#[test]
+fn a_listing_is_names_one_folder_deep() {
+    let entry = |path: &str, is_dir: bool| FsEntry {
+        path: path.to_owned(),
+        metadata: Some(FileMetadata {
+            is_dir,
+            is_file: !is_dir,
+            ..Default::default()
+        }),
+    };
+    let entries = vec![
+        entry("/plugins/probe.lua", false),
+        entry("/plugins/notes.md", false),
+        entry("/plugins/app", true),
+        entry("/plugins/app/ui.lua", false),
+        FsEntry {
+            path: "/plugins/keys.lua".to_owned(),
+            metadata: None,
+        },
+    ];
+    assert_eq!(
+        listing_names("/plugins", &entries),
+        vec!["app/ui.lua", "keys.lua", "probe.lua"]
+    );
+    assert!(listing_names("/plugins", &[]).is_empty());
+}
+
+/// A write says what happened next: the reload to call, and the permissions it granted, so the
+/// model does not go looking for a prompt that will never come.
+#[test]
+fn a_write_report_names_the_next_step_and_what_it_granted() {
+    let plain = write_report("probe", &[]);
+    assert!(plain.contains("plugin_reload"), "{plain}");
+    assert!(!plain.contains("granted"), "{plain}");
+    let granted = write_report("probe.lua", &[PermissionType::ReadFiles]);
+    assert!(granted.contains("wrote probe.lua"), "{granted}");
+    assert!(granted.contains("granted it read_files"), "{granted}");
+    assert!(exists_report("probe").contains("overwrite=true"));
 }
 
 /// `summarize` is what the transcript shows, and a whole Lua file on that line would bury the

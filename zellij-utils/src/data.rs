@@ -2,6 +2,7 @@ use crate::home::default_layout_dir;
 use crate::input::actions::{Action, RunCommandAction};
 use crate::input::command::RunCommand;
 use crate::input::config::{ConversionError, KdlError};
+use crate::input::hooks::HookPoint;
 use crate::input::keybinds::Keybinds;
 use crate::input::layout::{
     FloatingPaneLayout, Layout, PercentOrFixed, Run, RunPlugin, RunPluginLocation,
@@ -939,6 +940,15 @@ pub struct FileMetadata {
     pub len: u64,
 }
 
+/// One entry of an `FsList` answer: the entry's path as the plugin would name it, and its
+/// metadata - `None` when the entry exists but could not be stat'ed, which is an answer and
+/// not an error.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsEntry {
+    pub path: String,
+    pub metadata: Option<FileMetadata>,
+}
+
 impl From<Metadata> for FileMetadata {
     fn from(metadata: Metadata) -> Self {
         FileMetadata {
@@ -963,7 +973,7 @@ pub struct StyledText {
 // every plugin built against it, in and out of this repo.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, EnumDiscriminants, Display, Serialize, Deserialize)]
-#[strum_discriminants(derive(EnumString, EnumIter, Hash, Serialize, Deserialize))]
+#[strum_discriminants(derive(EnumString, EnumIter, Display, Hash, Serialize, Deserialize))]
 #[strum_discriminants(name(EventType))]
 #[non_exhaustive]
 pub enum Event {
@@ -1117,6 +1127,76 @@ pub enum Event {
         pending: Vec<QueueJobInfo>,
         running: Vec<QueueJobInfo>,
     },
+    /// A hook point with a headless shape was reached. Sent only to the plugin bound to `point`
+    /// in `hooks { }`, which is loaded (without a pane) the first time it is needed and receives
+    /// every later firing. The payload keys are documented per point in `docs/LUA_PLUGINS.md`.
+    Hook {
+        point: HookPoint,
+        payload: BTreeMap<String, String>,
+    },
+}
+
+impl EventType {
+    /// The events `zellij events` streams: the session's state as it is reported to plugins.
+    /// Not here, on purpose: one client's input (`Key`, `Mouse`, `PastedText`), one plugin's
+    /// replies (`RunCommandResult`, `WebRequestResult`, `CustomMessage`, `Timer`) and the
+    /// render report, which has its own stream in `zellij subscribe`.
+    pub const CLI_STREAMABLE: &'static [EventType] = &[
+        EventType::ModeUpdate,
+        EventType::TabUpdate,
+        EventType::PaneUpdate,
+        EventType::SessionUpdate,
+        EventType::CommandPaneOpened,
+        EventType::CommandPaneExited,
+        EventType::CommandPaneReRun,
+        EventType::EditPaneOpened,
+        EventType::EditPaneExited,
+        EventType::PaneClosed,
+        EventType::CwdChanged,
+        EventType::CommandChanged,
+        EventType::HostFolderChanged,
+        EventType::FileSystemCreate,
+        EventType::FileSystemRead,
+        EventType::FileSystemUpdate,
+        EventType::FileSystemDelete,
+        EventType::WebServerStatus,
+        EventType::PluginConfigurationChanged,
+        EventType::QueueChanged,
+    ];
+
+    pub fn is_cli_streamable(&self) -> bool {
+        Self::CLI_STREAMABLE.contains(self)
+    }
+
+    /// A streamable event by either of its spellings, `PaneUpdate` or `pane_update`. `None` for
+    /// a name that is not an event, or an event that is not streamed.
+    pub fn from_cli_name(name: &str) -> Option<EventType> {
+        let name = name.trim();
+        let pascal: String = match name.contains('_') {
+            true => name
+                .split('_')
+                .map(|part| {
+                    let mut chars = part.chars();
+                    match chars.next() {
+                        Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
+                        None => String::new(),
+                    }
+                })
+                .collect(),
+            false => name.to_owned(),
+        };
+        pascal
+            .parse::<EventType>()
+            .ok()
+            .filter(EventType::is_cli_streamable)
+    }
+
+    pub fn cli_streamable_names() -> Vec<String> {
+        Self::CLI_STREAMABLE
+            .iter()
+            .map(EventType::to_string)
+            .collect()
+    }
 }
 
 /// How a queued job ended.
@@ -1222,6 +1302,10 @@ pub enum Permission {
     SharedPluginData,
     ReadFiles,
     WriteFiles,
+    /// Write to `/plugins`, the user's own plugin folder, and reload plugins by url. The
+    /// authority a plugin that writes other plugins needs, and nothing wider: `WriteFiles`
+    /// still covers the write itself, so a plugin that only reads `/plugins` needs `ReadFiles`.
+    AuthorPlugins,
 }
 
 impl PermissionType {
@@ -1262,6 +1346,9 @@ impl PermissionType {
             },
             PermissionType::ReadFiles => "Read files in its own folders".to_owned(),
             PermissionType::WriteFiles => "Write files in its own folders".to_owned(),
+            PermissionType::AuthorPlugins => {
+                "Write and reload plugins in your plugin folder".to_owned()
+            },
         }
     }
 }
@@ -2544,6 +2631,76 @@ impl SessionInfo {
     }
 }
 
+/// What the agent in a pane is doing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumString)]
+pub enum AgentState {
+    /// Working.
+    Busy,
+    /// Stopped and blocked on the user: a permission prompt, a question, a form.
+    Waiting,
+    /// Finished its turn and at its prompt.
+    Idle,
+    /// The agent's process exited; the pane holds what it left.
+    Exited,
+}
+
+impl AgentState {
+    /// `busy` as well as `Busy`.
+    pub fn parse_lenient(name: &str) -> Option<AgentState> {
+        let mut chars = name.trim().chars();
+        let first = chars.next()?.to_uppercase().collect::<String>();
+        let rest = chars.as_str().to_lowercase();
+        format!("{first}{rest}").parse().ok()
+    }
+}
+
+/// Who wrote a pane's agent record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumString)]
+pub enum AgentSource {
+    /// The pane was opened as an agent pane, and nothing has been heard from the agent since:
+    /// the state is what the session can see (running, exited), not what the agent says.
+    Spawned,
+    /// A person named the pane's agent by hand (hocus's `agent_register`), and nothing has been
+    /// heard from the agent itself: the kind is theirs, the state is a placeholder.
+    Registered,
+    /// The agent itself said so — its hooks through `zellij action agent-report`, or a plugin
+    /// speaking for it.
+    Reported,
+}
+
+/// The agent running in a pane: what it is, what it is doing, and who said so.
+///
+/// Carried on [`PaneInfo::agent`], so every reader of the pane manifest — plugins, `zellij
+/// events`, `list-panes --json` — sees the same answer to "is this an agent, and is it waiting
+/// on me". Written by the spawn path, by `PluginCommand::SetPaneAgent`, and by `zellij action
+/// agent-report`, which is what Claude Code's hooks call. A record is complete every time it is
+/// set; nothing merges.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AgentInfo {
+    /// `claude`, `codex`, … — the program, not a version of it.
+    pub kind: String,
+    pub state: AgentState,
+    #[serde(default = "AgentSource::spawned")]
+    pub source: AgentSource,
+    /// A few words on what it is doing: the tool it is running, mostly.
+    #[serde(default)]
+    pub detail: Option<String>,
+    /// The folder the agent is working in, which is not always the pane's: an agent told to
+    /// work in a worktree moved without the shell under it hearing.
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// The agent's own session id, where it has one, so a restart in the same pane can be
+    /// told from a pane that merely went quiet.
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+impl AgentSource {
+    fn spawned() -> AgentSource {
+        AgentSource::Spawned
+    }
+}
+
 /// Contains all the information for a currently opened tab.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct TabInfo {
@@ -2673,6 +2830,9 @@ pub struct PaneInfo {
     /// and anything keying on the path alone would quietly merge them.
     #[serde(default)]
     pub host: Option<String>,
+    /// The agent running in this pane, if the session knows of one. See [`AgentInfo`].
+    #[serde(default)]
+    pub agent: Option<AgentInfo>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -3514,6 +3674,12 @@ pub struct PipeMessage {
     pub payload: Option<String>,
     pub args: BTreeMap<String, String>,
     pub is_private: bool,
+    /// The pane `zellij pipe` was run in, when the source is a CLI pipe and the caller was
+    /// inside one: the client reads `ZELLIJ_PANE_ID` and the server carries it here, so no
+    /// integration has to hand-thread a `pane_id=` argument. Convenience, not authentication —
+    /// the variable is as trustworthy as the process that set it.
+    #[serde(default)]
+    pub pane_id: Option<PaneId>,
 }
 
 impl PipeMessage {
@@ -3530,6 +3696,7 @@ impl PipeMessage {
             payload: payload.clone(),
             args: args.clone().unwrap_or_default(),
             is_private,
+            pane_id: None,
         }
     }
 }
@@ -4606,6 +4773,37 @@ pub enum PluginCommand {
     FinishQueueJob {
         success: bool,
         payload: Option<String>,
+    },
+    /// Compile `source` as a Lua plugin without running it, and answer with the compile error if
+    /// there is one. `name` is what the error names, as the loader's own error would
+    /// (`keys.lua:3: ...`). Nothing is written or loaded: this is the check a writer runs before
+    /// a reload, so a plugin that cannot parse is refused where the writer can see it rather than
+    /// reported in a pane nobody is looking at.
+    CheckLuaPlugin {
+        name: String,
+        source: String,
+    },
+    /// Set what agent runs in `pane_id` and what it is doing, or clear it with `None`. The
+    /// record replaces the pane's whole one; every reader of the manifest sees it next report.
+    SetPaneAgent {
+        pane_id: PaneId,
+        agent: Option<AgentInfo>,
+    },
+    /// Reload every running instance of the plugin at `url` in place, opening nothing. For a
+    /// plugin that is not running this does nothing; `StartOrReloadPlugin` is the one that opens
+    /// a pane. Fires `BeforeClose` on the old instance first, for state worth keeping.
+    ReloadPluginByUrl(String),
+    /// The last `lines` lines of zellij's own log about the plugin `name`: what its
+    /// `zellij.log`/`print` wrote, tagged `[lua:<file>]`, and any loader error naming its file.
+    /// `name` is a plugin name as `plugin_write` spells it (`keys`, `hocus/weather`), resolved in
+    /// the user's plugin folder the way `zellij plugins log` resolves it, or a builtin's tag.
+    ///
+    /// Answers synchronously with the lines, or the reason there are none. The log file is
+    /// outside every root a plugin can read, and the server holds the only copy of its path,
+    /// which is why this is a command and not a file a plugin greps for itself.
+    ReadPluginLog {
+        name: String,
+        lines: usize,
     },
 }
 

@@ -61,7 +61,14 @@ impl CliAssets {
             } else if let Some(ref path) = self.config_file_path {
                 let default_config =
                     Config::from_default_assets().unwrap_or_else(|_| Default::default());
-                Config::from_path(path, Some(default_config.clone())).unwrap_or(default_config)
+                let overlay_dir = crate::home::get_config_overlay_dir(
+                    self.config_dir
+                        .clone()
+                        .or_else(crate::home::find_default_config_dir),
+                );
+                Config::from_path(path, Some(default_config.clone()))
+                    .unwrap_or(default_config)
+                    .with_overlay_dir(overlay_dir.as_deref())
             } else {
                 Config::from_default_assets().unwrap_or_else(|_| Default::default())
             }

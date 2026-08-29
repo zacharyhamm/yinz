@@ -28,6 +28,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
+use zellij_utils::data::AgentInfo;
 use zellij_utils::data::PaneContents;
 use zellij_utils::data::{
     Direction, KeyWithModifier, NewPanePlacement, OverlayKind, OverlayPlacement, PaneInfo,
@@ -503,6 +504,14 @@ pub trait Pane {
     fn get_pane_default_colors(&self) -> (Option<String>, Option<String>) {
         (None, None)
     }
+    /// The agent running in this pane, as the session knows it. Only terminal panes have one.
+    fn agent_info(&self) -> Option<&AgentInfo> {
+        None
+    }
+    /// Replace the pane's agent record; answers whether it changed.
+    fn set_agent_info(&mut self, _agent: Option<AgentInfo>) -> bool {
+        false
+    }
 
     fn right_boundary_x_coords(&self) -> usize {
         self.x() + self.cols()
@@ -973,7 +982,10 @@ pub enum GuestChoiceIndicator {
 #[derive(Clone, Debug)]
 pub enum AdjustedInput {
     WriteBytesToTerminal(Vec<u8>),
-    ReRunCommandInThisPane(RunCommand),
+    /// The pane is held and was asked to run its command again. The tab hands this to the
+    /// screen (`ScreenInstruction::RerunCommandPane`) rather than to the pty: the screen's
+    /// re-run is the one that fires `agent_start` for an exited agent coming back.
+    ReRunCommandInThisPane,
     /// Send `SIGCONT` to a pane whose root process was stopped by `^Z`. Nothing
     /// inside the pane can do this: the process is stopped, and a command pane
     /// has no shell above it to run `fg`.
@@ -4351,6 +4363,44 @@ impl Tab {
         }
         Ok(())
     }
+    /// Replace `pane_id`'s agent record, answering whether it changed. Unchanged is the common
+    /// case - a hook reporting `busy` on every tool call - and costs no manifest.
+    pub fn set_pane_agent(&mut self, pane_id: PaneId, agent: Option<AgentInfo>) -> bool {
+        let pane = self
+            .floating_panes
+            .get_mut(&pane_id)
+            .or_else(|| self.overlay_panes.get_mut(&pane_id))
+            .or_else(|| self.tiled_panes.get_pane_mut(pane_id))
+            .or_else(|| self.suppressed_panes.get_mut(&pane_id).map(|p| &mut p.pane));
+        pane.map(|pane| pane.set_agent_info(agent)).unwrap_or(false)
+    }
+    /// Whether `pane_id` has an agent record, whoever wrote it.
+    pub fn pane_is_agent(&self, pane_id: PaneId) -> bool {
+        self.pane_agent_info(pane_id).is_some()
+    }
+    /// `pane_id`'s agent record, wherever the pane is - the screen reads it before a change so
+    /// that a hook can be told what the record moved from.
+    pub fn pane_agent_info(&self, pane_id: PaneId) -> Option<AgentInfo> {
+        self.floating_panes
+            .get(&pane_id)
+            .or_else(|| self.overlay_panes.get(&pane_id))
+            .or_else(|| self.tiled_panes.get_pane(pane_id))
+            .or_else(|| self.suppressed_panes.get(&pane_id).map(|p| &p.pane))
+            .and_then(|pane| pane.agent_info().cloned())
+    }
+    /// The command `pane_id` runs, for a command pane; `None` for a shell, an editor or a
+    /// plugin pane. What tells a command pane's exit apart from any other close.
+    pub fn pane_run_command(&self, pane_id: PaneId) -> Option<RunCommand> {
+        self.floating_panes
+            .get(&pane_id)
+            .or_else(|| self.overlay_panes.get(&pane_id))
+            .or_else(|| self.tiled_panes.get_pane(pane_id))
+            .or_else(|| self.suppressed_panes.get(&pane_id).map(|p| &p.pane))
+            .and_then(|pane| match pane.invoked_with() {
+                Some(Run::Command(run_command)) => Some(run_command.clone()),
+                _ => None,
+            })
+    }
     pub fn has_pane_with_pid(&self, pid: &PaneId) -> bool {
         self.tiled_panes.panes_contain(pid)
             || self.floating_panes.panes_contain(pid)
@@ -4877,12 +4927,14 @@ impl Tab {
                             ))
                             .with_context(err_context)?;
                     },
-                    Some(AdjustedInput::ReRunCommandInThisPane(command)) => {
-                        self.pids_waiting_resize.insert(active_terminal_id);
+                    Some(AdjustedInput::ReRunCommandInThisPane) => {
+                        // Through the screen, which re-runs it with
+                        // `rerun_terminal_pane_with_id` and reads the agent record around the
+                        // restart. The screen's channel is unbounded, so a tab may send to it
+                        // from the screen thread.
                         self.senders
-                            .send_to_pty(PtyInstruction::ReRunCommandInPane(
-                                PaneId::Terminal(active_terminal_id),
-                                command,
+                            .send_to_screen(ScreenInstruction::RerunCommandPane(
+                                active_terminal_id,
                                 completion_tx,
                             ))
                             .with_context(err_context)?;
@@ -9369,6 +9421,7 @@ pub fn pane_info_for_pane(
     let (default_fg, default_bg) = pane.get_pane_default_colors();
     pane_info.default_fg = default_fg;
     pane_info.default_bg = default_bg;
+    pane_info.agent = pane.agent_info().cloned();
 
     match pane_id {
         PaneId::Terminal(terminal_id) => {

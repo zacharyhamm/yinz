@@ -7161,6 +7161,7 @@ impl PaneInfo {
         let is_selectable = bool_node!("is_selectable");
         let pane_info = PaneInfo {
             host: None,
+            agent: None,
             id,
             is_plugin,
             is_focused,

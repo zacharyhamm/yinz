@@ -216,3 +216,206 @@ fn hocus_writes_a_lua_plugin_and_loads_it() {
 
     zellij.quit();
 }
+
+/// The hook a plugin author writes for the loop below. It logs every firing on one line, so
+/// that the order the points fired in can be read off `zellij.log` - and, opened in place of the
+/// pane for `agent_exit`, it logs from `load`, where that point's payload arrives as the
+/// configuration.
+const AGENT_LOOP_HOOK: &str = r#"
+local zellij = require("zellij")
+local M = {}
+
+local function log_firing(point, payload)
+  local pane = payload.agent_pane_id or payload.exit_pane_id or "?"
+  local detail = payload.agent_state or payload.exit_code or payload.agent_exit_code or ""
+  zellij.log("fired " .. point .. " pane=" .. pane .. " " .. detail)
+end
+
+function M.load(config)
+  zellij.subscribe { "hook" }
+  if config.agent_pane_id then
+    log_firing("agent_exit", config)
+  else
+    zellij.log("loaded headless")
+  end
+end
+
+zellij.on("hook", function(e) log_firing(e.point, e.payload) end)
+
+function M.render() return "agent-loop hook is up" end
+
+return M
+"#;
+
+/// The agent's state as one `pane_update` event reports it for `terminal_id`, or `None` when
+/// the pane is not in the event or carries no record.
+fn agent_state_in(event_json: &str, terminal_id: u32) -> Option<String> {
+    let event: serde_json::Value = serde_json::from_str(event_json).ok()?;
+    event
+        .get("PaneUpdate")?
+        .get("panes")?
+        .as_object()?
+        .values()
+        .filter_map(|panes| panes.as_array())
+        .flatten()
+        .find(|pane| pane["id"] == terminal_id && pane["is_plugin"] == false)?
+        .get("agent")?
+        .get("state")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// The self-programming loop, end to end in one session: a hook is written into the plugin
+/// folder the way `zellij plugins write` writes it, bound and persisted with `zellij action
+/// set-hook --write`, and then fired by an agent that reports through `zellij action
+/// agent-report` from a pane `zellij run --block-until-exit` opened - with `zellij events`
+/// watching the agent's record change and `zellij.log` showing each firing in order.
+///
+/// Every piece is unit tested on its own; this is the one place all of them are proven to
+/// meet. The agent is a fake pty standing in for `claude`, driven the way its hook script
+/// would drive it: it reports busy, reports waiting, and exits.
+#[test]
+fn a_written_hook_is_bound_and_fired_by_a_reporting_agent_end_to_end() {
+    use zellij_integration_tests::{claim_first_terminal_and_wait_for_prompt, default_timeout};
+    use zellij_utils::cli::CliAction;
+
+    // A config dir of its own, so `--write` has a `config.d` to land in and the plugin folder
+    // is where a real install would keep it.
+    let config_dir = zellij_integration_tests::test_env::init()
+        .join("config")
+        .join("agent-hook-loop");
+    fs::create_dir_all(&config_dir).unwrap();
+    let plugin_dir = config_dir.join("plugins");
+    let zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(config_dir.clone())
+        .with_config(&format!("user_plugin_dir \"{}\"", plugin_dir.display()))
+        .start();
+    claim_first_terminal_and_wait_for_prompt(&zellij);
+
+    // 1. `zellij plugins write agent-loop < hook.lua`: the same function the command calls,
+    //    compiling the source before anything touches the disk.
+    let written = zellij_server::plugin_authoring::write(
+        &plugin_dir,
+        "agent-loop",
+        AGENT_LOOP_HOOK,
+        false,
+        true,
+    )
+    .expect("the hook is written");
+    assert_eq!(written, plugin_dir.join("agent-loop.lua"));
+
+    // 2. `zellij action set-hook <point> file:agent-loop.lua --write`, for every point the loop
+    //    passes through. A bare `file:` name is looked up in the plugin folder.
+    let points = ["agent_start", "agent_waiting", "pane_exit", "agent_exit"];
+    for point in points {
+        let (exit_code, reported) = zellij.run_cli_action_reporting(CliAction::SetHook {
+            point: point.to_owned(),
+            url: "file:agent-loop.lua".to_owned(),
+            write: true,
+        });
+        assert_eq!(exit_code, 0, "set-hook {point} failed: {reported}");
+    }
+    let managed = config_dir.join("config.d").join("zellij-managed.kdl");
+    let persisted = fs::read_to_string(&managed)
+        .unwrap_or_else(|e| panic!("{} was not written: {e}", managed.display()));
+    for point in points {
+        assert!(
+            persisted.contains(&format!("{point} \"file:agent-loop.lua\"")),
+            "{point} is not in the drop-in:\n{persisted}"
+        );
+    }
+
+    // 4 (first half). `zellij events --type pane_update` watches from before the agent starts,
+    //    so every state its record passes through is on the stream.
+    let events = zellij.stream_events(&["pane_update"]);
+    events.wait_for_event("PaneUpdate");
+
+    // 3. `zellij run --block-until-exit -- claude`: the pane holds on exit, so the exit reaches
+    //    the hooks, and the client returns with the command's status.
+    let agent = zellij.run_blocking_command_holding_on_exit(&["claude"]);
+    let agent_pty = zellij.expect_pty_spawn();
+    let terminal_id = agent_pty.terminal_id();
+    let pane_id = format!("terminal_{terminal_id}");
+    zellij.wait_until("the agent pane is open", |grid_snapshot| {
+        grid_snapshot.contains("claude")
+    });
+
+    // What the agent's hook script does: `zellij action agent-report --state ...` from inside
+    // the pane. The first report is the record appearing, which is `agent_start`; the move to
+    // `waiting` is `agent_waiting`.
+    let report = |state: &str, detail: Option<&str>| CliAction::AgentReport {
+        pane_id: Some(pane_id.clone()),
+        kind: Some("claude".to_owned()),
+        state: Some(state.to_owned()),
+        detail: detail.map(str::to_owned),
+        cwd: None,
+        hook_json: false,
+        clear: false,
+    };
+    assert_eq!(zellij.run_cli_action(report("busy", None)), 0);
+    assert_eq!(zellij.run_cli_action(report("waiting", Some("y/n"))), 0);
+
+    // The command exits. `pane_exit` fires, then `agent_exit` opens the hook in the pane's
+    // place, and the blocking client comes back with the status.
+    agent_pty.exit(Some(0));
+    assert_eq!(agent.wait_for_exit(), 0);
+    zellij.wait_until(
+        "the agent_exit hook stands in for the pane",
+        |grid_snapshot| grid_snapshot.contains("agent-loop hook is up"),
+    );
+
+    // 5. `zellij.log` has one line per firing, and the headless points reached one instance in
+    //    the order they fired. `agent_exit` opens an instance of its own, whose `load` runs on
+    //    a thread of its own while the headless instance is still replaying what it was sent
+    //    during its load - so where its line lands relative to the others is scheduling, not
+    //    the behaviour under test; that it fired, with the right payload, is.
+    let deadline = std::time::Instant::now() + default_timeout();
+    let log = loop {
+        let log = zellij_integration_tests::test_env::log_tail(2000);
+        if log.contains("[lua:agent-loop.lua] fired agent_exit") {
+            break log;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the agent_exit hook never logged its firing; the log's tail:\n{}",
+            zellij_integration_tests::test_env::log_tail(60)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let firing = |line: &str| {
+        log.find(&format!("[lua:agent-loop.lua] fired {line}"))
+            .unwrap_or_else(|| panic!("no firing logged as {line:?}; the log:\n{log}"))
+    };
+    let order = [
+        firing(&format!("agent_start pane={terminal_id} busy")),
+        firing(&format!("agent_waiting pane={terminal_id} waiting")),
+        firing(&format!("pane_exit pane={terminal_id} 0")),
+    ];
+    assert!(
+        order.windows(2).all(|pair| pair[0] < pair[1]),
+        "the hooks fired out of order (offsets {order:?} in the log):\n{log}"
+    );
+    firing(&format!("agent_exit pane={terminal_id} 0"));
+    // `agent_waiting` fired while the load `agent_start` began was still in flight, and
+    // reached that instance rather than loading a second one.
+    assert_eq!(
+        log.matches("[lua:agent-loop.lua] loaded headless").count(),
+        1,
+        "one headless instance serves every firing:\n{log}"
+    );
+
+    // 4 (second half). The stream saw the record move busy -> waiting -> exited.
+    let mut states: Vec<String> = vec![];
+    for (_, event_json) in events.streamed_events() {
+        if let Some(state) = agent_state_in(&event_json, terminal_id) {
+            if states.last() != Some(&state) {
+                states.push(state);
+            }
+        }
+    }
+    assert_eq!(
+        states,
+        ["Busy", "Waiting", "Exited"],
+        "the agent's states as `zellij events` streamed them"
+    );
+}

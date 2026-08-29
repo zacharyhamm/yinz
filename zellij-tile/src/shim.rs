@@ -14,21 +14,24 @@ use zellij_utils::plugin_api::generated_api::api::plugin_command::{
     hide_floating_panes_response, save_session_response, show_floating_panes_response,
 };
 use zellij_utils::plugin_api::plugin_command::{
-    dump_layout_response, dump_session_layout_response, get_focused_pane_info_response,
-    get_pane_cwd_response, get_pane_git_probe_response, get_pane_running_command_response,
-    get_session_list_response, parse_layout_response, CreateTokenResponse, ListTokensResponse,
+    dump_layout_response, dump_session_layout_response, fs_list_response, fs_metadata_response,
+    fs_mutate_response, fs_read_response, get_focused_pane_info_response, get_pane_cwd_response,
+    get_pane_git_probe_response, get_pane_running_command_response, get_session_list_response,
+    parse_layout_response, read_plugin_log_response, CreateTokenResponse, ListTokensResponse,
     ProtobufBreakPanesToNewTabResponse, ProtobufBreakPanesToTabWithIdResponse,
-    ProtobufBreakPanesToTabWithIndexResponse, ProtobufCurrentSessionLastSavedTimeResponse,
-    ProtobufDataApplyResponse, ProtobufDataCountResponse, ProtobufDataDefineResponse,
-    ProtobufDataFetchResponse, ProtobufDataUnwatchResponse, ProtobufDataWatchResponse,
-    ProtobufDeleteAllDeadSessionsResponse, ProtobufDeleteDeadSessionResponse,
-    ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse, ProtobufDumpSessionLayoutResponse,
-    ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse, ProtobufFocusOrCreateTabResponse,
-    ProtobufGenerateRandomNameResponse, ProtobufGetFocusedPaneInfoResponse,
-    ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneGitProbeResponse,
-    ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
-    ProtobufGetPluginAliasConfigurationResponse, ProtobufGetSessionEnvironmentVariablesResponse,
-    ProtobufGetSessionListResponse, ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
+    ProtobufBreakPanesToTabWithIndexResponse, ProtobufCheckLuaPluginResponse,
+    ProtobufCurrentSessionLastSavedTimeResponse, ProtobufDataApplyResponse,
+    ProtobufDataCountResponse, ProtobufDataDefineResponse, ProtobufDataFetchResponse,
+    ProtobufDataUnwatchResponse, ProtobufDataWatchResponse, ProtobufDeleteAllDeadSessionsResponse,
+    ProtobufDeleteDeadSessionResponse, ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse,
+    ProtobufDumpSessionLayoutResponse, ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse,
+    ProtobufFocusOrCreateTabResponse, ProtobufFsListResponse, ProtobufFsMetadataResponse,
+    ProtobufFsMutateResponse, ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse,
+    ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse,
+    ProtobufGetPaneGitProbeResponse, ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
+    ProtobufGetPaneRunningCommandResponse, ProtobufGetPluginAliasConfigurationResponse,
+    ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
+    ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
     ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
     ProtobufListNotificationsResponse, ProtobufListOrphanedPanesResponse,
     ProtobufListRecordingsResponse, ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse,
@@ -46,8 +49,8 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufOpenTerminalInPlaceOfPluginResponse, ProtobufOpenTerminalInPlaceResponse,
     ProtobufOpenTerminalNearPluginResponse, ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse,
     ProtobufOpenTerminalResponse, ProtobufParseLayoutResponse, ProtobufPluginCommand,
-    ProtobufQueueStatusResponse, ProtobufRenameLayoutResponse, ProtobufSaveLayoutResponse,
-    ProtobufSaveSessionResponse, ProtobufSearchRecordingsResponse,
+    ProtobufQueueStatusResponse, ProtobufReadPluginLogResponse, ProtobufRenameLayoutResponse,
+    ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse, ProtobufSearchRecordingsResponse,
     ProtobufShowFloatingPanesResponse, ProtobufWarpPaneResponse, RenameWebTokenResponse,
     RevokeAllWebTokensResponse, RevokeTokenResponse,
 };
@@ -2385,6 +2388,162 @@ fn dump_session_layout_impl(
     }
 }
 
+/// Compiles `source` as a Lua plugin without loading it. `Err` carries the compile error, which
+/// names `name` the way a load error would (`keys.lua:3: ...`). A plugin that compiles can still
+/// fail at load, so this is the check to run *before* a write, not a promise about the reload.
+pub fn check_lua_plugin(name: &str, source: &str) -> Result<(), String> {
+    let plugin_command = PluginCommand::CheckLuaPlugin {
+        name: name.to_string(),
+        source: source.to_string(),
+    };
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+    let response_bytes = bytes_from_stdin().map_err(|e| e.to_string())?;
+    let response = ProtobufCheckLuaPluginResponse::decode(response_bytes.as_slice())
+        .map_err(|e| e.to_string())?;
+    match response.error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Files, through the host
+// ---------------------------------------------------------------------------
+//
+// Paths are the plugin's: `/host` (its cwd), `/data`, `/cache`, `/tmp` and `/plugins` (the user's
+// plugin folder, when one is configured), or a relative path under `/host`. Anything else needs
+// `FullHdAccess`. Reading needs `ReadFiles`, writing `WriteFiles` - and writing under `/plugins`
+// `AuthorPlugins`. The host resolves symlinks and refuses a path that leaves its root, which is
+// what makes these safer than reaching the same folders through WASI directly. Each answers
+// synchronously, so a plugin can read a file in one expression.
+
+fn fs_command_response<T: prost::Message + Default>(
+    plugin_command: PluginCommand,
+) -> Result<T, String> {
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+    let response_bytes = bytes_from_stdin().map_err(|e| e.to_string())?;
+    T::decode(response_bytes.as_slice()).map_err(|e| e.to_string())
+}
+
+fn fs_mutate(plugin_command: PluginCommand) -> Result<(), String> {
+    let response: ProtobufFsMutateResponse = fs_command_response(plugin_command)?;
+    match response.result {
+        Some(fs_mutate_response::Result::Success(_)) => Ok(()),
+        Some(fs_mutate_response::Result::Error(error)) => Err(error),
+        None => Err("zellij answered with nothing".to_owned()),
+    }
+}
+
+/// The last `lines` lines of zellij's own log about the plugin `name` - what it logged, and
+/// any loader error naming its file - the way `zellij plugins log` reads them. Empty when the
+/// plugin has not logged yet; an error when the log or the plugin folder cannot be found.
+pub fn read_plugin_log(name: &str, lines: usize) -> Result<String, String> {
+    let response: ProtobufReadPluginLogResponse =
+        fs_command_response(PluginCommand::ReadPluginLog {
+            name: name.to_owned(),
+            lines,
+        })?;
+    match response.result {
+        Some(read_plugin_log_response::Result::Lines(lines)) => Ok(lines),
+        Some(read_plugin_log_response::Result::Error(error)) => Err(error),
+        None => Err("zellij answered with nothing".to_owned()),
+    }
+}
+
+/// The contents of `path`, up to `max_bytes` (the host's own cap otherwise).
+pub fn fs_read(path: &Path, max_bytes: Option<usize>) -> Result<Vec<u8>, String> {
+    let response: ProtobufFsReadResponse = fs_command_response(PluginCommand::FsRead {
+        path: path.to_path_buf(),
+        max_bytes,
+    })?;
+    match response.result {
+        Some(fs_read_response::Result::Contents(contents)) => Ok(contents),
+        Some(fs_read_response::Result::Error(error)) => Err(error),
+        None => Err("zellij answered with nothing".to_owned()),
+    }
+}
+
+/// The entries of the folder at `path`, one level deep.
+pub fn fs_list(path: &Path) -> Result<Vec<FsEntry>, String> {
+    let response: ProtobufFsListResponse = fs_command_response(PluginCommand::FsList {
+        path: path.to_path_buf(),
+    })?;
+    match response.result {
+        Some(fs_list_response::Result::Entries(list)) => Ok(list
+            .entries
+            .into_iter()
+            .map(|entry| FsEntry {
+                path: entry.path,
+                metadata: entry
+                    .metadata
+                    .as_ref()
+                    .and_then(Option::<FileMetadata>::from),
+            })
+            .collect()),
+        Some(fs_list_response::Result::Error(error)) => Err(error),
+        None => Err("zellij answered with nothing".to_owned()),
+    }
+}
+
+/// What is at `path`: `Ok(None)` when nothing is, which is an answer rather than an error.
+pub fn fs_metadata(path: &Path) -> Result<Option<FileMetadata>, String> {
+    let response: ProtobufFsMetadataResponse = fs_command_response(PluginCommand::FsMetadata {
+        path: path.to_path_buf(),
+    })?;
+    match response.result {
+        Some(fs_metadata_response::Result::Metadata(metadata)) => {
+            Ok(Option::<FileMetadata>::from(&metadata))
+        },
+        Some(fs_metadata_response::Result::NotFound(_)) => Ok(None),
+        Some(fs_metadata_response::Result::Error(error)) => Err(error),
+        None => Err("zellij answered with nothing".to_owned()),
+    }
+}
+
+/// Write `contents` to `path`, replacing the file - or adding to it with `append` - and making
+/// the folders above it first with `create_dirs`.
+pub fn fs_write(
+    path: &Path,
+    contents: &[u8],
+    append: bool,
+    create_dirs: bool,
+) -> Result<(), String> {
+    fs_mutate(PluginCommand::FsWrite {
+        path: path.to_path_buf(),
+        contents: contents.to_vec(),
+        append,
+        create_dirs,
+    })
+}
+
+/// Remove the file or - with `recursive` - the folder at `path`.
+pub fn fs_remove(path: &Path, recursive: bool) -> Result<(), String> {
+    fs_mutate(PluginCommand::FsRemove {
+        path: path.to_path_buf(),
+        recursive,
+    })
+}
+
+/// Make the folder at `path`, and with `all` every folder above it.
+pub fn fs_create_dir(path: &Path, all: bool) -> Result<(), String> {
+    fs_mutate(PluginCommand::FsCreateDir {
+        path: path.to_path_buf(),
+        all,
+    })
+}
+
+/// Move `from` to `to`, both under the same rules.
+pub fn fs_rename(from: &Path, to: &Path) -> Result<(), String> {
+    fs_mutate(PluginCommand::FsRename {
+        from: from.to_path_buf(),
+        to: to.to_path_buf(),
+    })
+}
+
 /// Parses a KDL layout string and returns LayoutMetadata
 pub fn parse_layout(layout_string: &str) -> Result<LayoutMetadata, LayoutParsingError> {
     let plugin_command = PluginCommand::ParseLayout(layout_string.to_string());
@@ -3435,6 +3594,24 @@ pub fn toggle_pane_borderless(pane_id: PaneId) {
 /// * `borderless` - true for borderless, false for bordered
 pub fn set_pane_borderless(pane_id: PaneId, borderless: bool) {
     let plugin_command = PluginCommand::SetPaneBorderless(pane_id, borderless);
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
+/// Reload every running instance of the plugin at `url` in place, opening nothing; a plugin
+/// that is not running is left alone. Needs `AuthorPlugins`.
+pub fn reload_plugin_by_url(url: &str) {
+    let plugin_command = PluginCommand::ReloadPluginByUrl(url.to_owned());
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
+/// Set what agent runs in `pane_id` and what it is doing, or clear the record with `None`. The
+/// record replaces the pane's whole one; every reader of the manifest sees it next report.
+pub fn set_pane_agent(pane_id: PaneId, agent: Option<AgentInfo>) {
+    let plugin_command = PluginCommand::SetPaneAgent { pane_id, agent };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
     unsafe { host_run_plugin_command() };

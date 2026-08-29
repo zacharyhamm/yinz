@@ -38,6 +38,17 @@ return M
 
 Drop it in your plugin folder - `~/.config/zellij/plugins/` - and load it by name:
 
+```sh
+zellij plugins write keys --file keys.lua   # compiles it first; --overwrite to replace
+zellij plugins check keys                   # the compile step on its own
+zellij plugins reload keys                  # in the running session, in a pane if it is not up
+zellij plugins log keys                     # what it logged
+zellij plugins dir                          # where these land
+```
+
+is the same loop from a shell - the one a coding agent in a pane has - and hocus's `plugin_*`
+tools (below) are it from inside the session. Either way the file goes in the folder, and
+
 ```kdl
 pane {
     plugin location="file:keys.lua" {
@@ -65,10 +76,16 @@ A bare `keys` with no `file:` is *not* looked for there: an unprefixed name is a
 and letting a file shadow one would make a single spelling mean two things.
 
 Hocus writes plugins into that folder itself, and that is the whole authoring loop: `plugin_write
-name=keys` puts the complete file there - approving the write grants whatever permissions the
-source asks for - then `plugin_reload name=keys` loads it and answers with its first render or
-the load error, and `plugin_log name=keys` has anything it logged. `plugin_docs` is this guide,
-`plugin_list` and `plugin_read` are the folder as it stands.
+name=keys` compiles the complete file and puts it there - a source that does not compile is
+refused with the error, before anyone is asked to approve it, and approving the write grants
+whatever permissions the source asks for - then `plugin_reload name=keys` loads it and answers
+with its first render or the load error, and `plugin_log name=keys` has anything it logged.
+`plugin_check` is the compile step on its own, for trying a fix before writing. `plugin_docs` is
+this guide, `plugin_list` and `plugin_read` are the folder as it stands.
+
+The compile is a host command any plugin can call: `zellij.check_lua_plugin { name = "keys.lua",
+source = src }` answers `nil` when the source compiles and the error text otherwise. It only
+compiles - a plugin that parses and then fails in `load` is a load error, seen on reload.
 
 The runtime is chosen by the file extension, so there is no new URL scheme: a `.lua` path is a Lua
 plugin and anything else is wasm.
@@ -290,6 +307,23 @@ so `pcall` it if a failure is an outcome rather than a bug. It needs
 One consequence worth knowing: a pane opened this way is an *agent* pane, so when its command
 exits it fires the `agent_exit` hook. A hook that spawns with this command is arranging its own
 next appearance.
+
+What the session knows about an agent pane rides on the pane itself: every `PaneInfo` in a
+`pane_update` has an `agent` field — `nil` for an ordinary pane, otherwise `{ kind, state, source,
+detail, cwd, session_id }` with `state` one of `Busy`, `Waiting`, `Idle`, `Exited`. The spawn
+path writes it, and so does Claude Code itself through its hooks (`docs/AGENT_HOOKS.md`). A plugin
+speaking for an agent writes it too:
+
+```lua
+zellij.set_pane_agent {
+  pane_id = zellij.terminal_pane(3),
+  agent = { kind = "codex", state = "Waiting", source = "Reported", detail = "y/n" },
+}
+zellij.set_pane_agent { pane_id = zellij.terminal_pane(3) }   -- no agent here any more
+```
+
+It needs `change_application_state`. A pane with a record fires `agent_exit` when its command
+exits, whoever wrote the record.
 
 ### Permissions
 
@@ -602,12 +636,23 @@ A `file:` path that is not there is looked for in the plugin folder, so a bare n
 written with `plugin_write name=my-agent-exit`. An absolute path works too, and means exactly
 what it says.
 
-The hook points so far:
+The hook points:
 
-| Point | When | The plugin is |
+| Point | When | Shape |
 |---|---|---|
 | `agent_exit` | an agent pane's command exited | opened **in place of** that pane |
-| `context_menu` | a right-click asked for a menu | run **headless** - it says what the menu contains, zellij draws it |
+| `agent_start` | a pane gained an agent record: spawned as an agent, or its agent reported for itself | headless, `hook` event |
+| `agent_waiting` | an agent's record moved to `waiting` - a permission prompt, a question | headless, `hook` event |
+| `pane_exit` | any command pane's command exited, held or not | headless, `hook` event |
+| `session_start` | the session's first client connected | headless, `hook` event |
+| `context_menu` | a right-click asked for a menu | headless, `context_menu_requested` event |
+
+A point has one of two shapes, and the shape is a fact about the point. `agent_exit` opens its
+plugin **in place of** the pane, once per firing, with the payload as the plugin's configuration.
+Every other point runs its plugin **headless**: one long-lived instance, loaded without a pane the
+first time the point fires, receives every later firing as an event.
+
+### The `agent_exit` hook
 
 The exited pane is *suppressed* behind the hook, not closed: its scrollback survives, and closing
 the hook pane is what brings it back. So a hook that wants to leave the pane alone just closes
@@ -623,6 +668,87 @@ empty:
 | `agent_cwd` | where the agent was working |
 | `agent_exit_code` | absent if the command was killed by a signal |
 | `agent_command` | the command that exited, for display |
+
+### Headless hooks
+
+`agent_start`, `agent_waiting`, `pane_exit` and `session_start` share one plugin shape. The plugin
+is loaded the first time its point fires and stays loaded; each firing is a `hook` event carrying
+the point's name and a string-to-string payload. A firing that arrives while that first load is
+still under way is held for the loading instance and delivered once it is up, in order - two
+points firing within a few milliseconds of each other reach one plugin, not two.
+
+**Quickstart.** A headless hook ships with zellij, `zellij:agent-policy`
+(`zellij-utils/assets/plugins/agent-policy.lua` in the source tree). It logs every firing it
+receives and raises a notification when an agent stops for a question. Nothing binds it by
+default. To see the shape work, from a shell in the session:
+
+```sh
+zellij action set-hook agent_waiting zellij:agent-policy --write
+zellij action set-hook agent_start zellij:agent-policy --write
+zellij run -- claude          # or type `claude` in a pane whose hooks are installed
+zellij plugins log agent-policy
+```
+
+The first `agent_start` loads the plugin and is delivered to it; each line it logs reads
+`[lua:agent-policy] hook agent_start agent_cwd=... agent_kind=claude ...`, and the next
+permission prompt in that pane raises a toast that focuses the pane when clicked. To make it
+yours, copy the file into your plugin folder as a plugin of its own - `plugin_write name=my-policy`
+through hocus, or `zellij plugins write my-policy < agent-policy.lua` - add
+`zellij.request_permission { "change_application_state" }` to its `load` (the shipped copy is a
+builtin and needs no grant; yours is not), and bind `file:my-policy.lua` instead. The whole plugin
+is:
+
+```lua
+local zellij = require("zellij")
+local M = {}
+
+function M.load(config)
+  zellij.subscribe { "hook" }
+  zellij.request_permission { "change_application_state" }   -- for a file: copy
+end
+
+zellij.on("hook", function(e)
+  zellij.log("hook " .. e.point .. " pane=" .. (e.payload.agent_pane_id or e.payload.exit_pane_id or "?"))
+  if e.point == "agent_waiting" then
+    zellij.notify {
+      message = (e.payload.agent_kind or "agent") .. " in pane " .. e.payload.agent_pane_id
+        .. ": " .. (e.payload.agent_detail or "is waiting for you"),
+      pane_id = zellij.terminal_pane(tonumber(e.payload.agent_pane_id)),
+    }
+  end
+end)
+
+return M
+```
+
+One plugin may be bound to several points; `e.point` tells them apart. The plugin has no pane,
+so `render` is never asked for and a permission prompt has nowhere to appear: request what you
+need in `load`, and the first grant is remembered.
+
+The payloads, every value a string:
+
+| Point | Keys |
+|---|---|
+| `agent_start`, `agent_waiting` | `agent_pane_id`, `agent_kind`, `agent_state` (`busy`/`waiting`/`idle`), `agent_previous_state` (absent for a first record), `agent_source` (`spawned`/`reported`), `agent_detail` (if any), `agent_cwd`, `agent_session_id` (if any), `agent_command` (if the pane is a command pane) |
+| `pane_exit` | `exit_pane_id`, `exit_code` (absent if killed by a signal), `exit_cwd`, `exit_command`, `exit_held` (`true` if the pane holds and can be re-run, `false` if it is closing) |
+| `session_start` | `session_name`, `client_id` |
+
+What fires `agent_start`: a pane created with an agent record (a plugin's `agent_spawn`), an
+agent record appearing on a pane that had none (`claude` typed at a shell, reporting through
+its hooks), a record whose last state was `exited` coming back (`RerunCommandPane`, the shipped
+`agent_exit` hook's Enter), and a new `session_id` in the same pane. `agent_waiting` fires on the
+edge into `waiting` only - a second `waiting` report with a new detail is the same wait.
+Clearing a record and moving to `exited` fire nothing; the exit is `agent_exit`'s and
+`pane_exit`'s. Enter typed into a held pane is the same road as `RerunCommandPane` - the tab
+asks the screen to re-run it - so an agent restarted by hand fires `agent_start` whether or not
+an `agent_exit` hook is bound.
+
+For a pane that is both, `pane_exit` fires before `agent_exit`, so an observer hears of the exit
+before the pane is covered.
+
+`session_start` fires when the first client connects. The first tab may not exist yet - a hook
+that wants to open panes should subscribe to `tab_update` and act on the first one; the point is
+for registering state, timers and subscriptions.
 
 ### The `context_menu` hook
 
@@ -707,8 +833,10 @@ builtin and so is granted privileged commands unconditionally, and yours will no
 through hocus, that request is granted when the write is approved, so the hook never stops on a
 permission prompt.
 
-Zellij does not rewrite your config, so the `hooks { ... }` line above is yours to add; hocus can
-write the plugin but not bind it.
+Zellij does not rewrite your own config file, so the `hooks { ... }` block above is yours to add -
+or, from a shell, `zellij action set-hook agent_exit file:my-agent-exit.lua --write` binds the
+point at once and persists the binding in `config.d/zellij-managed.kdl` beside your config, which
+is loaded with it. hocus can write the plugin but not bind it.
 
 Three notes on writing one:
 
@@ -759,6 +887,11 @@ wasm plugin has preopened:
 | `/data` | scratch for this instance, thrown away with the session |
 | `/cache` | this plugin's own folder, kept across sessions |
 | `/tmp` | zellij's temp folder, **shared with every other plugin and session** |
+| `/plugins` | the user's plugin folder - this guide's `~/.config/zellij/plugins/` - when the session has one |
+
+Zellij's own log, where `zellij.log` writes, is outside every root; `zellij.read_plugin_log(name,
+lines)` answers with a plugin's last `lines` lines of it - the same lines `zellij plugins log
+<name>` prints - and needs `author_plugins` rather than `read_files`.
 
 ```lua
 function M.load()
@@ -779,8 +912,12 @@ or ask `zellij.fs.metadata`, which answers nil for something that is not there. 
 answers in the root you asked about, so they can be handed straight back to `read`.
 
 Reading needs `read_files` and writing needs `write_files`, separately: a plugin that only reads
-your config should not be able to rewrite it. Reaching outside all four folders needs
-`full_hd_access` as well, and is refused without it.
+your config should not be able to rewrite it. Writing under `/plugins` needs `author_plugins` as
+well - that is the authority to put code where zellij will run it - and so does
+`zellij.reload_plugin_by_url("file:keys.lua")`, which reloads every running instance of a plugin
+in place without opening a pane (the old instance gets `before_close` first, for state worth
+keeping in `zellij.data`). Reaching outside all five folders needs `full_hd_access`, and is
+refused without it.
 
 Two things to know. A path is confined *after* symlinks are followed, so a link inside `/host`
 pointing elsewhere is refused rather than followed out. And `/tmp` is a real prefix here, so an

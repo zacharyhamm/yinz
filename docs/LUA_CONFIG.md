@@ -46,7 +46,9 @@ The builder covers the same sections as KDL:
 - `options`, `ui`, `web_client`, and `env` take tables.
 - `theme(name, palette)` adds or replaces a theme.
 - `plugin(alias, location, settings)`, `background_plugin(location, settings)`, and
-  `hook(name, location, settings)` configure plugins.
+  `hook(name, location, settings)` configure plugins. A hook `name` is any point in
+  `docs/LUA_PLUGINS.md`'s table: `agent_exit`, `agent_start`, `agent_waiting`, `pane_exit`,
+  `session_start`, `context_menu`.
 - `bind(mode, key, actions)` and `unbind(mode, key)` change keybindings.
 - `clear_options`, `clear_keybinds`, `clear_themes`, `clear_plugins`, `clear_hooks`, `clear_ui`,
   `clear_env`, `clear_web_client`, and `clear_background_plugins` discard inherited values.
@@ -56,9 +58,13 @@ read as KDL properties. For an action needing all forms, use
 `config.action(name, { args = {...}, props = {...}, children = {...} })`. `config.raw(kdl)` is the
 escape hatch for newly added KDL syntax that predates a documentation update.
 
-Zellij does not rewrite executable Lua. Plugin requests that normally persist a configuration or
-keybinding change still update the live session, but report that writing `config.lua` failed. Edit
-the Lua source to make such a change permanent.
+Zellij never rewrites executable Lua. What it is asked to persist - `zellij action reconfigure
+--write`, `zellij action set-hook --write`, a plugin's `reconfigure(kdl, true)` - goes into
+`config.d/zellij-managed.kdl` beside the config, whatever the config is written in; every `*.kdl`
+in `config.d/` is layered over the config in file-name order, so the managed file wins for the
+keys it sets and leaves the rest of `config.lua` alone. Plugin keybinding changes with
+`write_config_to_disk` are the one thing still written as a whole config file, and those are
+refused for Lua: they apply to the live session and report that writing `config.lua` failed.
 
 Only the selected top-level file is watched. A required module is re-evaluated the next time
 `config.lua` itself is saved.

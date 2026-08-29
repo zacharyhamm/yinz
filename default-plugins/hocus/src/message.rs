@@ -234,8 +234,10 @@ pub enum Plan {
 /// what `submit()` does — push a user message and start a request — so a
 /// scheduled run streams, calls tools and gets archived like any other turn.
 ///
-/// Not persisted: a reload drops jobs, the same way it drops the in-flight
-/// stream.
+/// Persisted as a `job` row in `shared:hocus` when armed and when it fires,
+/// so a reload restores it with its next run still due when it was; the
+/// countdown itself lives only here. See `State::restore_persisted`.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Job {
     pub id: u64,
     /// Seconds between runs.
@@ -247,6 +249,19 @@ pub struct Job {
     /// the user asked to be told about.
     pub show: bool,
     /// Whether this job can run confirmation-gated tools without asking.
+    pub auto_confirm: bool,
+}
+
+/// The scheduled run that currently owns the conversation, from the moment a
+/// job fires until its turn ends. A manual turn has none.
+///
+/// What `pump_tools` reads to answer a confirmation-gated tool call: a run
+/// with `auto_confirm` runs it, one without declines it rather than parking
+/// the conversation — and every other job behind it — on a `y`/`n` nobody
+/// may be there to press.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScheduledRun {
+    pub job_id: u64,
     pub auto_confirm: bool,
 }
 

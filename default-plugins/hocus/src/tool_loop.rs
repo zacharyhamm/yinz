@@ -37,8 +37,38 @@ impl State {
                 self.finish_head(refusal);
                 continue;
             }
+            // A plugin the loader would refuse is refused here, before anyone is asked to
+            // approve writing it: the compile error is the whole answer.
+            if let Some(refusal) = tools::uncompilable_write(&call) {
+                self.finish_head(refusal);
+                continue;
+            }
             let needs_confirmation = self.call_needs_confirmation(&call);
-            if needs_confirmation && !self.job_auto_confirm {
+            // A scheduled run with no authority of its own does not park: nobody
+            // may be there to press `y`, and a parked run would hold every other
+            // job in this chat behind it. The call is answered, not silently
+            // dropped - the model must see a reply for every call it made.
+            if let (true, Some(run)) = (needs_confirmation, self.scheduled_run) {
+                if !run.auto_confirm {
+                    self.log(
+                        "tool_confirm",
+                        serde_json::json!({
+                            "tool_call_id": call.id,
+                            "tool_name": call.name,
+                            "decision": "scheduled_decline",
+                            "job_id": run.job_id,
+                        }),
+                    );
+                    self.finish_head(format!(
+                        "declined: `{}` needs confirmation and this is a scheduled run, which \
+                         cannot ask. Schedule the job with auto_confirm to allow it, or leave \
+                         this for the user.",
+                        call.name
+                    ));
+                    continue;
+                }
+            }
+            if needs_confirmation && self.scheduled_run.is_none() {
                 self.status = Status::ConfirmingTool;
                 self.pin_to_bottom();
                 // The prompt renders into hocus's own pane, which is very
@@ -76,7 +106,7 @@ impl State {
         }
 
         let Ok(cfg) = self.cfg.clone() else {
-            self.job_auto_confirm = false;
+            self.scheduled_run = None;
             return;
         };
         // Tool results make a valid boundary for steering: every call from the
@@ -92,7 +122,7 @@ impl State {
         self.tool_rounds += 1;
         let budget = self.max_tool_rounds();
         if self.tool_rounds > budget {
-            self.job_auto_confirm = false;
+            self.scheduled_run = None;
             let err = format!("stopped after {budget} rounds of tool calls without a reply");
             self.messages.push(Message::error(err.clone()));
             self.log("error", serde_json::json!({"error": log::truncate(&err)}));
@@ -609,13 +639,16 @@ impl State {
 
     /// Run one of the plugin-authoring tools.
     ///
-    /// One of the five answers here and now — `plugin_docs`, from compiled-in text. The other
-    /// four shell out and answer later on `RunCommandResult`, exactly as the file tools do.
-    /// `plugin_reload` is among them even though `start_or_reload_plugin` is fire-and-forget:
-    /// what it waits for is `PLUGIN_SYMLINK_GUARD`, which only the host can run.
+    /// Every one answers here and now: `plugin_docs` from compiled-in text, `plugin_check` from
+    /// the host's compiler, `plugin_log` from the host's read of its own log, and the four that
+    /// touch the plugin folder through the host's `fs_*` commands against the `/plugins` root,
+    /// which answer synchronously.
+    /// A cleared `plugin_reload` is the one that changes state rather than answering: the load
+    /// is fire-and-forget, so the head stays pending until the pane has had time to show what
+    /// happened.
     ///
-    /// Everything refusable without running anything is refused here: no plugin folder, a bad
-    /// name, a source over the size cap.
+    /// Everything refusable without touching anything is refused first: no plugin folder, a bad
+    /// name, an empty source.
     pub(crate) fn start_plugin_tool(&mut self, call: &ToolCall) -> bool {
         let args = match tools::Args::parse(&call.arguments) {
             Ok(args) => args,
@@ -630,47 +663,118 @@ impl State {
             self.finish_head(lua_docs::docs(args.section.as_deref()));
             return true;
         }
+        // Likewise: the host compiles the source it is handed and nothing else is involved.
+        if call.name == "plugin_check" {
+            let result = match (args.name.as_deref(), args.source.as_deref()) {
+                (None, _) => "name is required".to_owned(),
+                (_, None) => "source is required: send the complete plugin file".to_owned(),
+                (Some(name), Some(source)) => match tools::compile_report(name, source) {
+                    Ok(report) | Err(report) => report,
+                },
+            };
+            self.finish_head(result);
+            return true;
+        }
 
         let dir = self.user_plugin_dir.clone();
+        if dir.trim().is_empty() {
+            self.finish_head(tools::NO_PLUGIN_FOLDER);
+            return true;
+        }
         // `plugin_list` names no plugin - it is the folder itself that is the target.
-        let target = match call.name.as_str() {
-            "plugin_list" => match dir.trim().is_empty() {
-                true => Err(tools::NO_PLUGIN_FOLDER.to_owned()),
-                false => Ok(dir.clone()),
-            },
-            _ => tools::resolve_plugin_file(&dir, args.name.as_deref()),
-        };
-        let target = match target {
-            Ok(target) => target,
-            Err(error) => {
+        if call.name == "plugin_list" {
+            let result = match tools::plugin_fs_list(tools::PLUGINS_ROOT) {
+                Ok(entries) => {
+                    let names = tools::listing_names(tools::PLUGINS_ROOT, &entries);
+                    match names.is_empty() {
+                        true => "no plugins yet".to_owned(),
+                        false => log::truncate_str(&names.join("\n"), MAX_TOOL_OUTPUT),
+                    }
+                },
+                Err(error) => error,
+            };
+            self.finish_head(result);
+            return true;
+        }
+
+        // Two spellings of one file: the real path, for the reload URL and the permission
+        // grant, and the `/plugins` path the host's file commands take. Both go through the
+        // same rules, so they cannot name different files.
+        let (target, fs_path) = match (
+            tools::resolve_plugin_file(&dir, args.name.as_deref()),
+            tools::plugin_fs_path(args.name.as_deref()),
+        ) {
+            (Ok(target), Ok(fs_path)) => (target, fs_path),
+            (Err(error), _) | (_, Err(error)) => {
                 self.finish_head(error);
                 return true;
             },
         };
+        let name = args.name.clone().unwrap_or_default();
 
-        let (argv, env) = match tools::plugin_argv(&call.name, &args, &dir, &target) {
-            Ok(argv) => argv,
-            Err(error) => {
-                self.finish_head(error);
-                return true;
+        match call.name.as_str() {
+            "plugin_read" => {
+                let (start, end) = tools::read_range(&args);
+                let result = match tools::plugin_fs_read(&fs_path) {
+                    Ok(contents) => {
+                        let lines = tools::lines_in_range(&contents, start, end);
+                        match lines.is_empty() {
+                            true => "no lines".to_owned(),
+                            false => log::truncate_str(&lines, MAX_TOOL_OUTPUT),
+                        }
+                    },
+                    Err(error) => error,
+                };
+                self.finish_head(result);
+                true
             },
-        };
-
-        let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
-        run_command_with_output_limit(
-            &borrowed,
-            env,
-            // `.` for the reason spelled out in `start_project_read`: the host rewrites a cwd
-            // under `/tmp`, `/host`, `/data` or `/cache` into the plugin's own folder of that
-            // name, and every path in the argv is absolute anyway.
-            std::path::PathBuf::from("."),
-            BTreeMap::from([("tool_call_id".to_owned(), call.id.clone())]),
-            MAX_TOOL_OUTPUT,
-        );
-        self.status = Status::AwaitingCommand;
-        self.pin_to_bottom();
-        self.arm_timer(FRAME_SECONDS);
-        false
+            "plugin_write" => {
+                let source = match tools::plugin_source(&args) {
+                    Ok(source) => source,
+                    Err(error) => {
+                        self.finish_head(error);
+                        return true;
+                    },
+                };
+                let result = match tools::plugin_fs_write(&fs_path, &source, args.overwrite) {
+                    Ok(true) => {
+                        // The user approved this source, and with it the permissions it asks
+                        // for - the confirmation said so. Granting them now is what keeps the
+                        // plugin from prompting in a pane nobody in this loop is looking at.
+                        let granted = tools::requested_permissions(&source);
+                        if !granted.is_empty() {
+                            tools::grant_permissions(&target, &granted);
+                        }
+                        tools::write_report(&name, &granted)
+                    },
+                    Ok(false) => tools::exists_report(&name),
+                    Err(error) => error,
+                };
+                self.finish_head(result);
+                true
+            },
+            "plugin_reload" => match tools::plugin_fs_exists(&fs_path) {
+                Ok(true) => self.start_plugin_load(),
+                Ok(false) => {
+                    self.finish_head(format!("{target}: no such plugin; write it first"));
+                    true
+                },
+                Err(error) => {
+                    self.finish_head(error);
+                    true
+                },
+            },
+            "plugin_log" => {
+                let lines = args.line_count.unwrap_or(tools::PLUGIN_LOG_LINES).max(1);
+                let answer = tools::plugin_log_answer(&name, tools::plugin_log_tail(&name, lines));
+                self.finish_head(log::truncate_str(&answer, MAX_TOOL_OUTPUT));
+                true
+            },
+            other => {
+                self.finish_head(format!("no such tool: {other}"));
+                true
+            },
+        }
     }
 
     /// The deferred half of `web_search`. Returns whether this response was one:
@@ -1346,10 +1450,16 @@ impl State {
             .retain(|id| !self.panes.iter().any(|pane| pane.pane_id == *id));
         // A pane that closed is a registration that no longer names anything. A
         // newly spawned pane is the exception until its first snapshot arrives.
+        let mut gone = Vec::new();
         self.manual_kinds.retain(|id, _| {
-            self.pending_agent_panes.contains(id)
-                || self.panes.iter().any(|pane| pane.pane_id == *id)
+            let keep = self.pending_agent_panes.contains(id)
+                || self.panes.iter().any(|pane| pane.pane_id == *id);
+            if !keep {
+                gone.push(*id);
+            }
+            keep
         });
+        self.forget_latches(gone);
         self.activity
             .retain(|id, _| self.panes.iter().any(|pane| pane.pane_id == *id));
         self.manual_kinds.len() != before
@@ -1372,6 +1482,15 @@ impl State {
             return format!("pane {pane_id} is not available");
         }
         self.manual_kinds.insert(pane_id, kind.to_owned());
+        self.persist_latch(pane_id, kind);
+        // The session's record too, so `list-panes`, `zellij events` and every other plugin
+        // see the registration, and so it outlives a hocus reload on its own.
+        let cwd = self
+            .panes
+            .iter()
+            .find(|pane| pane.pane_id == pane_id)
+            .and_then(|pane| pane.cwd.clone());
+        tools::report_pane_agent(pane_id, agents::registered_agent(kind, cwd));
         // hocus stays authoritative for the overrides; the daemon holds a copy
         // only to classify with, so it needs the new one before its next poll.
         self.send_manual_kinds();
@@ -1627,7 +1746,8 @@ impl State {
         focused: Option<u32>,
     ) {
         self.activity = activity;
-        self.summaries = summaries;
+        let before = std::mem::replace(&mut self.summaries, summaries);
+        self.persist_summaries(&before);
         self.hooks = hooks;
         let kinds_pruned = self.set_panes(panes);
         self.note_focus(focused);
@@ -1663,14 +1783,17 @@ impl State {
         let id = self.job_seq;
         let prompt_clone = prompt.clone();
         let show = args.show;
-        self.jobs.push(Job {
+        let job = Job {
             id,
             every,
             due_in: every,
             prompt,
             show,
             auto_confirm: args.auto_confirm,
-        });
+        };
+        let row = transitions::job_row(&job, self.chat_id, transitions::now_secs());
+        self.jobs.push(job);
+        self.persist_job(row);
         self.arm_timer(JOB_SECONDS);
         self.log(
             "job_schedule",
@@ -1693,21 +1816,26 @@ impl State {
     pub(crate) fn unschedule(&mut self, id: Option<u64>) -> String {
         let result = match id {
             Some(id) => {
-                let before = self.job_count();
+                let before = self.total_job_count();
                 for jobs in self.all_jobs_mut() {
                     jobs.retain(|job| job.id != id);
                 }
-                if self.job_count() == before {
+                self.held_jobs.retain(|_, jobs| !jobs.is_empty());
+                if self.total_job_count() == before {
                     format!("no job {id}")
                 } else {
+                    self.forget_jobs(vec![id]);
                     format!("cancelled job {id}")
                 }
             },
             None => {
-                let count = self.job_count();
+                let count = self.total_job_count();
+                let mut gone = Vec::new();
                 for jobs in self.all_jobs_mut() {
-                    jobs.clear();
+                    gone.extend(jobs.drain(..).map(|job| job.id));
                 }
+                self.held_jobs.clear();
+                self.forget_jobs(gone);
                 format!("cancelled {count} scheduled job(s)")
             },
         };
@@ -1722,9 +1850,10 @@ impl State {
     }
 
     /// The kill switch that doesn't need the model to cooperate. Every job in
-    /// every tab, from whichever tab it is typed in.
+    /// every tab, from whichever tab it is typed in - and every job held for
+    /// a chat that is not open, which no tab could reach.
     pub(crate) fn stop_jobs(&mut self) -> bool {
-        if self.job_count() == 0 {
+        if self.total_job_count() == 0 {
             return false;
         }
         let notice = self.unschedule(None);
@@ -1947,7 +2076,7 @@ impl State {
         // The model asked, but it is not getting an answer — the results are
         // recorded for the transcript's sake, not to be sent back.
         self.owes_reply = false;
-        self.job_auto_confirm = false;
+        self.scheduled_run = None;
         while !self.pending.is_empty() {
             self.finish_head("aborted by the user");
         }

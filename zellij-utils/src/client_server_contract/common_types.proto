@@ -295,6 +295,8 @@ message Action {
     ScrollToNextPromptAction scroll_to_next_prompt = 156;
     SelectCommandAtScrollPositionAction select_command_at_scroll_position = 157;
     CopyLastCommandOutputAction copy_last_command_output = 158;
+    SetPaneAgentAction set_pane_agent = 159;
+    ReconfigureAction reconfigure = 160;
   }
 }
 
@@ -771,6 +773,40 @@ message SetPaneColorAction {
   PaneId pane_id = 1;
   optional string fg = 2;
   optional string bg = 3;
+}
+
+message ReconfigureAction {
+  string config = 1;
+  bool write_to_disk = 2;
+}
+
+message SetPaneAgentAction {
+  PaneId pane_id = 1;
+  optional AgentInfo agent = 2;
+}
+
+message AgentInfo {
+  string kind = 1;
+  AgentState state = 2;
+  AgentSource source = 3;
+  optional string detail = 4;
+  optional string cwd = 5;
+  optional string session_id = 6;
+}
+
+enum AgentState {
+  AGENT_STATE_UNSPECIFIED = 0;
+  AGENT_STATE_BUSY = 1;
+  AGENT_STATE_WAITING = 2;
+  AGENT_STATE_IDLE = 3;
+  AGENT_STATE_EXITED = 4;
+}
+
+enum AgentSource {
+  AGENT_SOURCE_UNSPECIFIED = 0;
+  AGENT_SOURCE_SPAWNED = 1;
+  AGENT_SOURCE_REPORTED = 2;
+  AGENT_SOURCE_REGISTERED = 3;
 }
 
 // Supporting enums and messages

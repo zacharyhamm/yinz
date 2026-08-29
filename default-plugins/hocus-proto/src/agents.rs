@@ -79,6 +79,10 @@ pub struct AgentPane {
     /// no two readers can disagree about what is an agent.
     #[serde(default)]
     pub detected: Option<String>,
+    /// The session's own record of the agent here, off the pane manifest. Written by the
+    /// spawn path, a plugin, or the agent's hooks; the one answer every reader shares.
+    #[serde(default)]
+    pub agent: Option<AgentInfo>,
 }
 
 /// Every agent we know.
@@ -227,6 +231,11 @@ pub fn classify<'a>(
     if let Some(kind) = manual.get(&pane.pane_id) {
         return Some((kind.as_str(), "manual"));
     }
+    // The session's record first: a pane spawned as an agent, or one whose agent has reported,
+    // is an agent whatever its foreground command says right now.
+    if let Some(agent) = pane.agent.as_ref() {
+        return Some((agent.kind.as_str(), "auto"));
+    }
     detect_kind(&pane.title, pane.command.as_deref())
         .map(|kind| (kind, "auto"))
         .or_else(|| pane.detected.as_deref().map(|kind| (kind, "auto")))
@@ -364,35 +373,13 @@ pub fn activity_hash(activity: &Activity, pane_id: u32) -> Option<u64> {
 // What an agent says about itself
 // ---------------------------------------------------------------------------
 
-/// The event name that ends a session, and so ends a feed.
-pub const HOOK_SESSION_END: &str = "SessionEnd";
-
-/// The `Notification` kinds that mean the agent is blocked on the user.
-///
-/// Most notifications are not about being waited on — `auth_success` and the
-/// `quota_auto_resume_*` family say nothing about the turn, and `idle_prompt`
-/// fires a minute *after* a finished turn, which is idleness rather than a
-/// question. Naming the ones that count, rather than excluding the ones that do
-/// not, means a notification kind added in a later Claude Code cannot silently
-/// start drawing a `!`.
-const WAITING_NOTIFICATIONS: &[&str] = &[
-    "permission_prompt",
-    "elicitation_dialog",
-    "elicitation_url_dialog",
-    "agent_needs_input",
-    "worker_permission_prompt",
-];
-
-/// The longest tool hint a status cell will carry. A sidebar row has no room for
-/// an argument, and `tool_input` is free-form text of arbitrary size.
-const HOOK_DETAIL_CHARS: usize = 24;
+pub use zellij_tile::agent::{clean_hint, hook_detail, HOOK_DETAIL_CHARS, HOOK_SESSION_END};
+use zellij_tile::prelude::{AgentInfo, AgentSource, AgentState};
 
 /// What a Claude Code pane says it is doing, in the three states a row can draw.
 ///
-/// Deliberately coarser than the hook stream that feeds it: `PreToolUse` and
-/// `UserPromptSubmit` are both simply work, and the distinction between them
-/// lives in [`HookFeed::detail`] rather than in a variant nothing would render
-/// differently.
+/// The session's `AgentState` minus `Exited`, which a row draws from the pane's own status
+/// rather than from a feed: the feed is what the agent *says*, and an exited agent says nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HookPhase {
     /// The agent is working.
@@ -404,6 +391,18 @@ pub enum HookPhase {
     Idle,
 }
 
+impl HookPhase {
+    /// The phase a session-side state draws as, or `None` for an exited agent.
+    pub fn from_state(state: AgentState) -> Option<HookPhase> {
+        match state {
+            AgentState::Busy => Some(HookPhase::Busy),
+            AgentState::Waiting => Some(HookPhase::Waiting),
+            AgentState::Idle => Some(HookPhase::Idle),
+            AgentState::Exited => None,
+        }
+    }
+}
+
 /// What one pane's own hooks have last reported.
 ///
 /// A pane with one of these is not guessed at. The screen-diff heuristic beside it
@@ -411,14 +410,9 @@ pub enum HookPhase {
 /// edge — is inference from a picture; this is the agent saying so. Where the two
 /// disagree, this wins.
 ///
-/// **Nothing here expires on a clock.** That was the tempting design and it is wrong
-/// twice over: a permission prompt can sit unanswered all day without the pane's state
-/// having changed, and a ten-minute `cargo build` under one `PreToolUse` is a pane that
-/// is genuinely working while saying nothing. A feed ends when the session does
-/// (`SessionEnd`), when the pane closes, or when the pane stops being an agent at all —
-/// all three of which are observed rather than assumed. The cost is that a single
-/// dropped event leaves a pane mislabelled until the next one, which is a fair trade
-/// against a timer that confidently lies.
+/// The session carries the record itself (`PaneInfo::agent`), whichever road a report took;
+/// a feed is that record read back off the manifest, so nothing here expires on a clock and
+/// nothing here can disagree with what every other reader of the manifest sees.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HookFeed {
     pub phase: HookPhase,
@@ -435,6 +429,25 @@ pub struct HookFeed {
     pub cwd: Option<String>,
 }
 
+impl HookFeed {
+    /// The feed a pane's record reads as: one for a record the agent reported itself and is
+    /// not exited, none for a spawned-but-silent agent, whose state is the heuristic's to
+    /// judge, and none for an exited one.
+    pub fn from_agent(agent: &AgentInfo) -> Option<HookFeed> {
+        // `Registered` is a person's word for the kind and nothing about the state, so it is
+        // not a feed either.
+        if agent.source != AgentSource::Reported {
+            return None;
+        }
+        Some(HookFeed {
+            phase: HookPhase::from_state(agent.state)?,
+            detail: agent.detail.clone(),
+            session_id: agent.session_id.clone().unwrap_or_default(),
+            cwd: agent.cwd.clone(),
+        })
+    }
+}
+
 /// Pane id → what that pane's own hooks last said.
 pub type HookFeeds = BTreeMap<u32, HookFeed>;
 
@@ -445,78 +458,7 @@ pub type HookFeeds = BTreeMap<u32, HookFeed>;
 /// `SessionEnd` is `None` here too, and deliberately: it does not move a feed to a
 /// state, it ends one. Callers check [`HOOK_SESSION_END`] first.
 pub fn hook_phase(event: &crate::wire::HookEvent) -> Option<HookPhase> {
-    match event.hook_event_name.as_str() {
-        "SessionStart"
-            if matches!(event.source.as_deref(), Some("startup" | "resume" | "fork")) =>
-        {
-            Some(HookPhase::Idle)
-        },
-        "Stop" => Some(HookPhase::Idle),
-        "UserPromptSubmit" | "PreToolUse" | "PostToolUse" => Some(HookPhase::Busy),
-        "PermissionRequest" => Some(HookPhase::Waiting),
-        "Notification" => event
-            .notification_type
-            .as_deref()
-            .filter(|kind| WAITING_NOTIFICATIONS.contains(kind))
-            .map(|_| HookPhase::Waiting),
-        _ => None,
-    }
-}
-
-/// The few words a status cell shows for the tool a `PreToolUse` names.
-///
-/// The tool's own name, and one argument's worth of hint where the tool has an
-/// obvious one: which file, or which program. Everything else about `tool_input` is
-/// ignored rather than summarised — it is free-form text of arbitrary size that the
-/// agent's *input* can steer, so what little is taken is cut to
-/// [`HOOK_DETAIL_CHARS`] and stripped of anything that is not printable.
-///
-/// `None` for any event that is not a tool starting, which is what clears the hint
-/// when the tool finishes.
-pub fn hook_detail(event: &crate::wire::HookEvent) -> Option<String> {
-    if event.hook_event_name != "PreToolUse" {
-        return None;
-    }
-    let tool = clean_hint(event.tool_name.as_deref()?)?;
-    let input = event.tool_input.as_ref();
-    let hint = match tool.as_str() {
-        // The program, not the command line: a row has room for `git`, not for the
-        // rest of it.
-        "Bash" => input
-            .and_then(|input| input.get("command")?.as_str())
-            .and_then(|command| command.split_whitespace().next()),
-        "Read" | "Edit" | "Write" | "NotebookEdit" => input
-            .and_then(|input| input.get("file_path")?.as_str())
-            .map(|path| {
-                Path::new(path)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or(path)
-            }),
-        _ => None,
-    };
-    match hint.and_then(clean_hint) {
-        Some(hint) => Some(format!("{tool} {hint}")),
-        None => Some(tool),
-    }
-}
-
-/// One word of agent-supplied text, made safe to put in a row: printable characters
-/// only, no whitespace of any kind, and cut to a length a sidebar has.
-fn clean_hint(text: &str) -> Option<String> {
-    let mut chars = text
-        .chars()
-        .filter(|c| !c.is_control() && !c.is_whitespace());
-    let mut hint: String = chars.by_ref().take(HOOK_DETAIL_CHARS).collect();
-    if hint.is_empty() {
-        return None;
-    }
-    // A cut word is marked, so a truncated file name does not read as the whole one.
-    if chars.next().is_some() {
-        hint.pop();
-        hint.push('…');
-    }
-    Some(hint)
+    zellij_tile::agent::hook_state(event).and_then(HookPhase::from_state)
 }
 
 /// The status column of one agent row.
@@ -622,8 +564,128 @@ pub struct Summary {
     pub hash: u64,
 }
 
+/// The record `agent_register` writes for a pane: the kind a person gave it, `idle` as a
+/// placeholder for a state nobody has reported, and `Registered` so every reader knows which.
+/// The agent's own reports replace it whole, as any record replaces any other.
+pub fn registered_agent(kind: &str, cwd: Option<String>) -> AgentInfo {
+    AgentInfo {
+        kind: kind.to_owned(),
+        state: AgentState::Idle,
+        source: AgentSource::Registered,
+        detail: None,
+        cwd,
+        session_id: None,
+    }
+}
+
 /// Pane id → what the model last said about it.
 pub type Summaries = BTreeMap<u32, Summary>;
+
+/// The `agent_latch` and `agent_summary` rows in `shared:hocus`: what `agent_register` set by
+/// hand, and what the daemon last said about each idle pane, so a hocus reload keeps both.
+/// hocus is the only writer; see `store::agent_latch_def` and `store::agent_summary_def`.
+pub mod rows {
+    use super::{Summaries, Summary};
+    use std::collections::BTreeMap;
+    use zellij_tile::prelude::{DataRows, DataValue, Mutation, Pred};
+
+    pub const LATCH_ENTITY: &str = "agent_latch";
+    pub const SUMMARY_ENTITY: &str = "agent_summary";
+
+    fn pane_id_at(rows: &DataRows, row: &[DataValue]) -> Option<u32> {
+        match rows.get(row, "pane_id") {
+            Some(DataValue::Int(id)) => u32::try_from(*id).ok(),
+            _ => None,
+        }
+    }
+
+    fn text_at(rows: &DataRows, row: &[DataValue], column: &str) -> String {
+        match rows.get(row, column) {
+            Some(DataValue::Text(text)) => text.clone(),
+            _ => String::new(),
+        }
+    }
+
+    pub fn latch_mutation(pane_id: u32, kind: &str) -> Mutation {
+        Mutation::put(LATCH_ENTITY)
+            .uid(pane_id.to_string())
+            .set("pane_id", pane_id)
+            .set("kind", kind)
+            .build()
+    }
+
+    pub fn latch_delete_mutation(pane_ids: impl IntoIterator<Item = u32>) -> Mutation {
+        Mutation::delete(LATCH_ENTITY, Pred::is_in("pane_id", pane_ids))
+    }
+
+    pub fn latches_from_rows(rows: &DataRows) -> BTreeMap<u32, String> {
+        rows.rows
+            .iter()
+            .filter_map(|row| {
+                let kind = text_at(rows, row, "kind");
+                if kind.is_empty() {
+                    return None;
+                }
+                Some((pane_id_at(rows, row)?, kind))
+            })
+            .collect()
+    }
+
+    pub fn summary_mutation(pane_id: u32, summary: &Summary) -> Mutation {
+        Mutation::put(SUMMARY_ENTITY)
+            .uid(pane_id.to_string())
+            .set("pane_id", pane_id)
+            .set("text", summary.text.clone())
+            .set("title", summary.title.clone())
+            .set("awaiting", summary.awaiting)
+            .build()
+    }
+
+    pub fn summary_delete_mutation(pane_ids: impl IntoIterator<Item = u32>) -> Mutation {
+        Mutation::delete(SUMMARY_ENTITY, Pred::is_in("pane_id", pane_ids))
+    }
+
+    /// The summaries these rows describe, with no activity hash: the hash is a fact about a
+    /// run, and a restored summary is refreshed by the daemon on its own schedule.
+    pub fn summaries_from_rows(rows: &DataRows) -> Summaries {
+        rows.rows
+            .iter()
+            .filter_map(|row| {
+                Some((
+                    pane_id_at(rows, row)?,
+                    Summary {
+                        text: text_at(rows, row, "text"),
+                        title: text_at(rows, row, "title"),
+                        awaiting: matches!(rows.get(row, "awaiting"), Some(DataValue::Bool(true))),
+                        hash: 0,
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    /// The writes that turn `before` into `after`, ignoring the hash: an unchanged summary
+    /// produces no write, so a poll that changes nothing is silent.
+    pub fn summary_diff_mutations(before: &Summaries, after: &Summaries) -> Vec<Mutation> {
+        let same = |a: &Summary, b: &Summary| {
+            a.text == b.text && a.title == b.title && a.awaiting == b.awaiting
+        };
+        let mut mutations: Vec<Mutation> = after
+            .iter()
+            .filter(|(pane_id, summary)| !before.get(pane_id).is_some_and(|b| same(b, summary)))
+            .map(|(pane_id, summary)| summary_mutation(*pane_id, summary))
+            .collect();
+        let gone: Vec<u32> = before
+            .keys()
+            .filter(|pane_id| !after.contains_key(pane_id))
+            .copied()
+            .collect();
+        if !gone.is_empty() {
+            mutations.push(summary_delete_mutation(gone));
+        }
+        mutations
+    }
+}
 
 /// The name to give the pane this summary describes, or `None` when there is none worth
 /// giving. One rule, so the daemon and its tests cannot disagree about what an empty title
@@ -1332,6 +1394,20 @@ pub fn list_json(
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_registered_record_names_the_kind_and_nothing_it_does_not_know() {
+        let record = registered_agent("reviewer", Some("/work".to_owned()));
+        assert_eq!(record.kind, "reviewer");
+        assert_eq!(record.source, AgentSource::Registered);
+        assert_eq!(record.state, AgentState::Idle);
+        assert_eq!(record.cwd.as_deref(), Some("/work"));
+        assert!(record.detail.is_none() && record.session_id.is_none());
+        assert!(
+            HookFeed::from_agent(&record).is_none(),
+            "a person's word about the kind is not a hook feed"
+        );
+    }
+
     fn pane(pane_id: u32, title: &str, command: Option<&str>) -> AgentPane {
         AgentPane {
             pane_id,
@@ -1342,6 +1418,7 @@ mod tests {
             status: AgentStatus::Running,
             tab: None,
             detected: None,
+            agent: None,
         }
     }
 

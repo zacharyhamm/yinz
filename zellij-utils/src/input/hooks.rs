@@ -1,10 +1,14 @@
 //! Hooks: named points where zellij hands control to a plugin.
 //!
-//! A hook point is a moment in the session's life that a plugin can own - the first, and so
-//! far only, one being the moment an agent pane's command exits. Before this existed, that
-//! moment was a branch in the terminal emulator: `render_first_run_banner` painted a fixed
-//! question and `TerminalPane::adjust_input_to_terminal` implemented its two answers. Nothing
-//! could be added to it without editing the pane.
+//! A hook point is a moment in the session's life that a plugin can own. The first one was the
+//! moment an agent pane's command exits: before it existed, that moment was a branch in the
+//! terminal emulator - `render_first_run_banner` painted a fixed question and
+//! `TerminalPane::adjust_input_to_terminal` implemented its two answers - and nothing could be
+//! added to it without editing the pane.
+//!
+//! A point has one of two [shapes](HookShape), and the shape is a fact about the point rather
+//! than about the binding: `agent_exit` opens its plugin in place of the pane, every other point
+//! hands the moment to a long-lived headless plugin as `Event::Hook`.
 //!
 //! A hook point takes **one** plugin, not a list. Two plugins cannot both replace the pane,
 //! and a precedence rule between them would be a worse thing to explain than the restriction:
@@ -13,6 +17,7 @@
 //! ```kdl
 //! hooks {
 //!     agent_exit "file:my-agent-exit.lua"
+//!     agent_start "file:my-policies.lua"
 //! }
 //! ```
 //!
@@ -29,25 +34,77 @@ use super::layout::RunPluginOrAlias;
 /// A moment a plugin can be given control of.
 ///
 /// The KDL spelling is the snake_case name; `FromStr`/`Display` are the whole of the mapping,
-/// so adding a point is adding a variant and its name.
+/// so adding a point is adding a variant, its name and its [shape](HookPoint::shape). The serde
+/// spelling is the same name, so a Lua plugin reading `event.point` sees what it wrote in its
+/// config.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum HookPoint {
     /// An agent pane's command exited and the pane is holding. The hook plugin is opened in
     /// place of that pane, which is suppressed behind it rather than closed.
     AgentExit,
+    /// A pane gained an agent record: it was spawned as an agent, or the agent running in it
+    /// reported for itself the first time (or again, after exiting). Where "spawn the next agent
+    /// when this one starts" and "answer this prompt for it" policies live.
+    AgentStart,
+    /// An agent's record moved to `waiting`: it is blocked on a permission prompt or a question.
+    AgentWaiting,
+    /// Any command pane's command exited, held or not. `agent_exit` is the agent-only, pane-
+    /// replacing counterpart; this one fires first, for every command pane, to a headless plugin.
+    PaneExit,
+    /// The session's first client connected: the plugin thread is up and its background
+    /// plugins are loading. The first tab may not exist yet, so a hook that wants to open
+    /// panes should wait for the first `tab_update`.
+    SessionStart,
     /// A right-click asked for a context menu. The hook plugin is *not* opened at all: it runs
     /// headless, is handed the click as `Event::ContextMenuRequested`, and answers with
     /// `set_context_menu`. The menu itself is drawn by the server and is not a pane.
     ContextMenu,
 }
 
+/// How the plugin bound to a point is run when the point is reached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HookShape {
+    /// The plugin is opened in place of the pane the hook is about, with the payload as its
+    /// configuration - one instance per firing.
+    ReplacePane,
+    /// The plugin is long-lived and has no pane; the payload arrives as `Event::Hook` (or, for
+    /// `context_menu`, `Event::ContextMenuRequested`) - one instance for every firing.
+    Headless,
+}
+
 impl HookPoint {
-    pub const ALL: &'static [HookPoint] = &[HookPoint::AgentExit, HookPoint::ContextMenu];
+    pub const ALL: &'static [HookPoint] = &[
+        HookPoint::AgentExit,
+        HookPoint::AgentStart,
+        HookPoint::AgentWaiting,
+        HookPoint::PaneExit,
+        HookPoint::SessionStart,
+        HookPoint::ContextMenu,
+    ];
 
     pub fn as_str(&self) -> &'static str {
         match self {
             HookPoint::AgentExit => "agent_exit",
+            HookPoint::AgentStart => "agent_start",
+            HookPoint::AgentWaiting => "agent_waiting",
+            HookPoint::PaneExit => "pane_exit",
+            HookPoint::SessionStart => "session_start",
             HookPoint::ContextMenu => "context_menu",
+        }
+    }
+
+    /// The shape is a property of the point, not of the firing: a pane-replacing point needs a
+    /// pane the screen has already put in a state it can be replaced from, and a headless point
+    /// may have no pane at all. Letting a fire site choose would allow both mistakes.
+    pub fn shape(&self) -> HookShape {
+        match self {
+            HookPoint::AgentExit => HookShape::ReplacePane,
+            HookPoint::AgentStart
+            | HookPoint::AgentWaiting
+            | HookPoint::PaneExit
+            | HookPoint::SessionStart
+            | HookPoint::ContextMenu => HookShape::Headless,
         }
     }
 }
@@ -63,6 +120,10 @@ impl FromStr for HookPoint {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "agent_exit" | "agent-exit" => Ok(HookPoint::AgentExit),
+            "agent_start" | "agent-start" => Ok(HookPoint::AgentStart),
+            "agent_waiting" | "agent-waiting" => Ok(HookPoint::AgentWaiting),
+            "pane_exit" | "pane-exit" => Ok(HookPoint::PaneExit),
+            "session_start" | "session-start" => Ok(HookPoint::SessionStart),
             "context_menu" | "context-menu" => Ok(HookPoint::ContextMenu),
             _ => Err(format!(
                 "no such hook point: '{}'. Known hook points: {}",
@@ -172,9 +233,40 @@ mod tests {
 
     #[test]
     fn an_unknown_hook_point_names_the_ones_that_exist() {
+        // `agent_started` is the near miss for `agent_start`: the message has to list the real
+        // name next to the wrong one.
         let err = HookPoint::from_str("agent_started").unwrap_err();
         assert!(err.contains("agent_started"), "{err}");
         assert!(err.contains("agent_exit"), "{err}");
+        assert!(err.contains("agent_start,"), "{err}");
+    }
+
+    #[test]
+    fn a_dashed_spelling_is_the_same_point() {
+        for point in HookPoint::ALL {
+            let dashed = point.as_str().replace('_', "-");
+            assert_eq!(HookPoint::from_str(&dashed).as_ref(), Ok(point));
+        }
+    }
+
+    #[test]
+    fn each_point_has_a_shape() {
+        assert_eq!(HookPoint::AgentExit.shape(), HookShape::ReplacePane);
+        for point in HookPoint::ALL {
+            if *point != HookPoint::AgentExit {
+                assert_eq!(point.shape(), HookShape::Headless, "{point}");
+            }
+        }
+    }
+
+    #[test]
+    fn hook_point_serializes_as_its_name() {
+        // What `Event::Hook` carries to a plugin is the spelling the config uses.
+        for point in HookPoint::ALL {
+            let json = serde_json::to_string(point).unwrap();
+            assert_eq!(json, format!("\"{}\"", point.as_str()));
+            assert_eq!(serde_json::from_str::<HookPoint>(&json).unwrap(), *point);
+        }
     }
 
     #[test]

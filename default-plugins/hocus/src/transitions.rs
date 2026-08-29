@@ -1,5 +1,8 @@
-use crate::message::{Message, Reasoning, ReasoningKey, Role, Status, StreamState};
+use crate::message::{
+    Job, Message, Reasoning, ReasoningKey, Role, ScheduledRun, Status, StreamState,
+};
 use crate::*;
+use hocus_proto::jobs;
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
@@ -123,7 +126,7 @@ impl State {
             chat_id: self.chat_id.take(),
             saved: std::mem::take(&mut self.saved),
             view: std::mem::take(&mut self.view),
-            job_auto_confirm: std::mem::take(&mut self.job_auto_confirm),
+            scheduled_run: self.scheduled_run.take(),
             plan: std::mem::take(&mut self.plan),
             plugin_load: self.plugin_load.take(),
             draft: (String::new(), 0),
@@ -153,7 +156,7 @@ impl State {
         self.chat_id = chat.chat_id;
         self.saved = chat.saved;
         self.view = chat.view;
-        self.job_auto_confirm = chat.job_auto_confirm;
+        self.scheduled_run = chat.scheduled_run;
         self.plan = chat.plan;
         self.usage = chat.usage;
         self.plugin_load = chat.plugin_load;
@@ -236,7 +239,8 @@ impl State {
         self.job_count() > 0
     }
 
-    /// Jobs across every open chat, the foreground's first.
+    /// Jobs across every open chat, the foreground's first. Held jobs are not
+    /// counted: nothing is counting them down.
     pub(crate) fn job_count(&self) -> usize {
         self.jobs.len()
             + self
@@ -246,10 +250,37 @@ impl State {
                 .sum::<usize>()
     }
 
-    /// Every chat's job list, the foreground's first, for the operations that
-    /// reach across tabs: `unschedule` and `/stop_jobs`.
+    /// Every job hocus knows of: the open chats' and the held ones'.
+    pub(crate) fn total_job_count(&self) -> usize {
+        self.job_count() + self.held_jobs.values().map(Vec::len).sum::<usize>()
+    }
+
+    /// Whether `id` is a job in any chat, open or held - what stops a restore
+    /// from reading the same row in twice.
+    fn knows_job(&self, id: u64) -> bool {
+        self.jobs.iter().any(|job| job.id == id)
+            || self
+                .parked
+                .iter()
+                .any(|chat| chat.jobs.iter().any(|job| job.id == id))
+            || self
+                .held_jobs
+                .values()
+                .any(|jobs| jobs.iter().any(|job| job.id == id))
+    }
+
+    /// Every chat's job list, the foreground's first, then the held ones, for
+    /// the operations that reach across tabs: `unschedule` and `/stop_jobs`.
     pub(crate) fn all_jobs_mut(&mut self) -> impl Iterator<Item = &mut Vec<Job>> {
-        std::iter::once(&mut self.jobs).chain(self.parked.iter_mut().map(|chat| &mut chat.jobs))
+        std::iter::once(&mut self.jobs)
+            .chain(self.parked.iter_mut().map(|chat| &mut chat.jobs))
+            .chain(self.held_jobs.values_mut())
+    }
+
+    /// The jobs held for `chat_id`, for the chat that is being reopened; the
+    /// empty list when none are.
+    pub(crate) fn take_held_jobs(&mut self, chat_id: u64) -> Vec<Job> {
+        self.held_jobs.remove(&chat_id).unwrap_or_default()
     }
 
     /// Whether any chat has a question waiting for its turn.
@@ -549,6 +580,7 @@ impl State {
         if self.store().define_all(&store::shared_defs()).is_err() {
             return;
         }
+        self.restore_persisted();
         // `Rows` rather than `Ids`: the registry is small, and paging for the
         // rows after every change would be a second call for nothing. The limit
         // is explicit because the default hundred would silently lose the rest.
@@ -602,6 +634,135 @@ impl State {
     /// or returned an error by the time this returns.
     pub(crate) fn write_store(&mut self, mutations: Vec<Mutation>) -> Result<ApplyReport, String> {
         self.store().apply(mutations)
+    }
+
+    /// A write whose failure is worth a log line and nothing more: the state
+    /// it mirrors is still in memory, and the next write will try again.
+    fn write_store_quietly(&mut self, what: &str, mutations: Vec<Mutation>) {
+        if mutations.is_empty() {
+            return;
+        }
+        if let Err(error) = self.write_store(mutations) {
+            self.log_global(
+                "store_error",
+                serde_json::json!({"what": what, "error": log::truncate(&error)}),
+            );
+        }
+    }
+
+    /// Take back what the last hocus wrote: its scheduled jobs, the kinds the
+    /// user set by hand, and the daemon's last summaries. Read once, at load;
+    /// hocus is the only writer of these rows, so nothing watches them.
+    ///
+    /// A job follows the chat that armed it. A restart opens no chat, so a job
+    /// whose row names one is *held* under that id until `/history` reopens
+    /// it - see `held_jobs` - and only a job armed in a chat that was never
+    /// saved, which no archive can bring back, lands in the foreground. Its
+    /// countdown resumes from where the wall clock says it is.
+    pub(crate) fn restore_persisted(&mut self) {
+        let now = now_secs();
+        let fetch = |entity: &str| FetchRequest::entity(entity).limit(store::LIST_FETCH_LIMIT);
+        let fetched = self.store().fetch(&fetch(jobs::ENTITY)).ok();
+        if let Some(rows) = fetched {
+            let mut restored = 0;
+            let mut held = 0;
+            for row in jobs::from_rows(&rows) {
+                if self.knows_job(row.job_id) {
+                    continue;
+                }
+                self.job_seq = self.job_seq.max(row.job_id);
+                let job = Job {
+                    id: row.job_id,
+                    every: row.every,
+                    due_in: (row.next_due_at - now).max(0) as f64,
+                    prompt: row.prompt,
+                    show: row.show,
+                    auto_confirm: row.auto_confirm,
+                };
+                match row.chat_id {
+                    Some(chat_id) if self.chat_id != Some(chat_id) => {
+                        if let Some(index) = self
+                            .parked
+                            .iter()
+                            .position(|chat| chat.chat_id == Some(chat_id))
+                        {
+                            self.parked[index].jobs.push(job);
+                            restored += 1;
+                        } else {
+                            self.held_jobs.entry(chat_id).or_default().push(job);
+                            held += 1;
+                        }
+                    },
+                    _ => {
+                        self.jobs.push(job);
+                        restored += 1;
+                    },
+                }
+            }
+            if restored > 0 {
+                self.arm_timer(JOB_SECONDS);
+                self.messages.push(Message::notice(format!(
+                    "restored {restored} scheduled job(s)"
+                )));
+            }
+            if held > 0 {
+                self.messages.push(Message::notice(format!(
+                    "{held} scheduled job(s) wait in archived chats: /history reopens one with its jobs"
+                )));
+            }
+        }
+        let fetched = self.store().fetch(&fetch(agents::rows::LATCH_ENTITY)).ok();
+        if let Some(rows) = fetched {
+            let latches = agents::rows::latches_from_rows(&rows);
+            if !latches.is_empty() {
+                self.manual_kinds.extend(latches);
+                self.send_manual_kinds();
+            }
+        }
+        let fetched = self
+            .store()
+            .fetch(&fetch(agents::rows::SUMMARY_ENTITY))
+            .ok();
+        if let Some(rows) = fetched {
+            let summaries = agents::rows::summaries_from_rows(&rows);
+            if !summaries.is_empty() {
+                self.summaries = summaries;
+            }
+        }
+    }
+
+    pub(crate) fn persist_job(&mut self, row: jobs::JobRow) {
+        self.write_store_quietly("job", vec![jobs::to_mutation(&row)]);
+    }
+
+    pub(crate) fn forget_jobs(&mut self, job_ids: Vec<u64>) {
+        if job_ids.is_empty() {
+            return;
+        }
+        self.write_store_quietly("job", vec![jobs::delete_mutation(job_ids)]);
+    }
+
+    pub(crate) fn persist_latch(&mut self, pane_id: u32, kind: &str) {
+        self.write_store_quietly(
+            "agent_latch",
+            vec![agents::rows::latch_mutation(pane_id, kind)],
+        );
+    }
+
+    pub(crate) fn forget_latches(&mut self, pane_ids: Vec<u32>) {
+        if pane_ids.is_empty() {
+            return;
+        }
+        self.write_store_quietly(
+            "agent_latch",
+            vec![agents::rows::latch_delete_mutation(pane_ids)],
+        );
+    }
+
+    /// Mirror the daemon's summaries, writing only what changed.
+    pub(crate) fn persist_summaries(&mut self, before: &agents::Summaries) {
+        let mutations = agents::rows::summary_diff_mutations(before, &self.summaries);
+        self.write_store_quietly("agent_summary", mutations);
     }
 
     pub(crate) fn on_timer(&mut self, elapsed: f64) -> bool {
@@ -772,9 +933,9 @@ impl State {
     /// chat has to be switched to before it is shown, and only `on_timer`
     /// knows which chat this is running against.
     ///
-    /// ponytail: a scheduled run that calls a destructive tool parks on its y/n
-    /// prompt and holds every other job with it. Auto-declining confirmations
-    /// on scheduled runs is the fix if that ever bites.
+    /// A scheduled run that calls a confirmation-gated tool does not park on
+    /// its y/n prompt - `pump_tools` declines it unless the job was armed
+    /// with `auto_confirm` - so one such run cannot hold every other job.
     pub(crate) fn tick_jobs(&mut self, elapsed: f64) -> Option<Fired> {
         for job in &mut self.jobs {
             job.due_in -= elapsed;
@@ -785,13 +946,23 @@ impl State {
         let Ok(cfg) = self.cfg.clone() else {
             return None;
         };
+        let chat_id = self.chat_id;
+        let now = now_secs();
         let job = self.jobs.iter_mut().find(|job| job.due_in <= 0.0)?;
 
         job.due_in = job.every;
         let prompt = job.prompt.clone();
         let job_id = job.id;
         let show = job.show;
-        self.job_auto_confirm = job.auto_confirm;
+        let auto_confirm = job.auto_confirm;
+        let row = job_row(job, chat_id, now);
+        self.scheduled_run = Some(ScheduledRun {
+            job_id,
+            auto_confirm,
+        });
+        // The next due time moved, and that is the one moment a countdown
+        // reaches the store.
+        self.persist_job(row);
         // Mentions resolve at fire time, so "check @codex every minute" reads the
         // agent as it is now, not as it was when the job was armed.
         let mut fired = format!("[scheduled] {prompt}");
@@ -952,7 +1123,7 @@ impl State {
         }
 
         let content = text.clone();
-        self.job_auto_confirm = false;
+        self.scheduled_run = None;
         // No `[scheduled]`-style prefix, deliberately. A job's prefix exists
         // because the model is being handed words nobody typed; an ask *is* the
         // user's words, and marking them up would change what the model reads.
@@ -1056,7 +1227,7 @@ impl State {
             "cancel",
             serde_json::json!({"stream_id": stream_id.clone()}),
         );
-        self.job_auto_confirm = false;
+        self.scheduled_run = None;
         // Not dropped: the host still owes exactly one `done: true` chunk, and
         // `finishing` is what keeps it from being recorded as a second outcome.
         self.stream = Some(StreamState {
@@ -1112,12 +1283,14 @@ impl State {
         self.tool_rounds = 0;
         self.owes_reply = false;
         self.manual_head = false;
-        self.job_auto_confirm = false;
+        self.scheduled_run = None;
         self.plan = Plan::Off;
         self.pin_to_bottom();
         // A watcher armed for the conversation being thrown away has nothing
         // left to compare against, and would otherwise keep billing.
+        let gone: Vec<u64> = self.jobs.iter().map(|job| job.id).collect();
         self.jobs.clear();
+        self.forget_jobs(gone);
         self.asks.clear();
     }
 
@@ -1164,4 +1337,25 @@ impl State {
 /// code on every tokenizer this endpoint fronts.
 pub(crate) fn estimate_tokens(chars: usize) -> u64 {
     (chars / 4) as u64
+}
+
+/// Unix seconds now, or zero where there is no clock worth the name.
+pub(crate) fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// A job as the store holds it, due `job.due_in` seconds from `now`.
+pub(crate) fn job_row(job: &Job, chat_id: Option<u64>, now: i64) -> jobs::JobRow {
+    jobs::JobRow {
+        job_id: job.id,
+        chat_id,
+        every: job.every,
+        next_due_at: now + job.due_in.ceil() as i64,
+        prompt: job.prompt.clone(),
+        show: job.show,
+        auto_confirm: job.auto_confirm,
+    }
 }

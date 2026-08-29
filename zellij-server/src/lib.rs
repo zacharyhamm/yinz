@@ -22,6 +22,8 @@ pub mod nested_guest;
 pub mod notifications;
 mod pane_groups;
 mod plugins;
+pub use plugins::check_lua_plugin;
+pub mod plugin_authoring;
 mod pty;
 #[cfg(unix)]
 pub mod pty_host;
@@ -129,6 +131,8 @@ pub enum ServerInstruction {
     SwitchSession(ConnectToSession, ClientId, Option<NotificationEnd>),
     UnblockCliPipeInput(String),   // String -> Pipe name
     CliPipeOutput(String, String), // String -> Pipe name, String -> Output
+    /// One event for a `zellij events` client: its type by name, and the event as JSON.
+    EventUpdateToClient(ClientId, String, String),
     AssociatePipeWithClient {
         pipe_id: String,
         client_id: ClientId,
@@ -140,6 +144,13 @@ pub enum ServerInstruction {
         client_id: ClientId,
         config: String,
         write_config_to_disk: bool,
+    },
+    /// `zellij action reconfigure`: the same fragment, for every attached client rather than
+    /// the one that sent it, which is a CLI client about to exit.
+    ReconfigureAllClients {
+        config: String,
+        write_config_to_disk: bool,
+        completion: Option<NotificationEnd>,
     },
     ConfigWrittenToDisk(Config),
     FailedToWriteConfigToDisk(ClientId, Option<PathBuf>), // Pathbuf - file we failed to write
@@ -1395,6 +1406,18 @@ pub fn start_server_impl(
                     },
                 }
             },
+            ServerInstruction::EventUpdateToClient(client_id, event_type, event_json) => {
+                send_to_client!(
+                    client_id,
+                    os_input,
+                    ServerToClientMsg::EventUpdate {
+                        event_type: event_type.clone(),
+                        event_json: event_json.clone(),
+                    },
+                    session_state,
+                    session_data
+                );
+            },
             ServerInstruction::ClientExit(client_id, completion_tx) => {
                 attach_traces_waiting_for_first_render.remove(&client_id);
                 let _ = os_input.send_to_client(
@@ -1826,14 +1849,58 @@ pub fn start_server_impl(
                     .as_mut()
                     .unwrap()
                     .session_configuration
-                    .reconfigure_runtime_config(&client_id, config);
+                    .reconfigure_runtime_config(&client_id, config.clone());
+                let persistence = match write_config_to_disk {
+                    true => ConfigPersistence::Fragment(config),
+                    false => ConfigPersistence::None,
+                };
                 update_new_saved_config(
                     new_config,
-                    write_config_to_disk,
+                    persistence,
                     runtime_config_changed,
                     &session_data,
                     client_id,
                 );
+            },
+            ServerInstruction::ReconfigureAllClients {
+                config,
+                write_config_to_disk,
+                completion,
+            } => {
+                // Every client the session is drawing for. A CLI client is in this list too,
+                // and harmlessly: it has no configuration of its own and is about to leave.
+                let client_ids: Vec<ClientId> = {
+                    let state = session_state.read().unwrap();
+                    state
+                        .client_ids()
+                        .into_iter()
+                        .filter(|client_id| !state.is_watcher(client_id))
+                        .collect()
+                };
+                let mut write_pending = write_config_to_disk;
+                for client_id in client_ids {
+                    let (new_config, runtime_config_changed) = session_data
+                        .write()
+                        .unwrap()
+                        .as_mut()
+                        .unwrap()
+                        .session_configuration
+                        .reconfigure_runtime_config(&client_id, config.clone());
+                    // Written once: a write propagates the saved config to every client itself.
+                    let write_now = std::mem::take(&mut write_pending) && new_config.is_some();
+                    let persistence = match write_now {
+                        true => ConfigPersistence::Fragment(config.clone()),
+                        false => ConfigPersistence::None,
+                    };
+                    update_new_saved_config(
+                        new_config,
+                        persistence,
+                        runtime_config_changed,
+                        &session_data,
+                        client_id,
+                    );
+                }
+                drop(completion);
             },
             ServerInstruction::ConfigWrittenToDisk(new_config) => {
                 let changes = session_data
@@ -1908,7 +1975,10 @@ pub fn start_server_impl(
 
                 update_new_saved_config(
                     new_config,
-                    write_config_to_disk,
+                    match write_config_to_disk {
+                        true => ConfigPersistence::WholeConfig,
+                        false => ConfigPersistence::None,
+                    },
                     runtime_config_changed,
                     &session_data,
                     client_id,
@@ -2675,15 +2745,89 @@ fn report_changes_in_layout_dir(
     });
 }
 
+/// How a configuration change is kept, beyond the running session.
+enum ConfigPersistence {
+    /// Applied to the session only.
+    None,
+    /// The whole effective config rewrites the user's config file. Only `RebindKeys` still
+    /// does this - it has no fragment to write - and it is refused for a Lua config.
+    WholeConfig,
+    /// The requested KDL fragment goes into `config.d/zellij-managed.kdl`, whatever the
+    /// user's own config is written in. See `Config::write_managed_fragment`.
+    Fragment(String),
+}
+
 fn update_new_saved_config(
     new_config: Option<Config>,
-    write_config_to_disk: bool,
+    persistence: ConfigPersistence,
     runtime_config_changed: bool,
     session_data: &Arc<RwLock<Option<SessionMetaData>>>,
     client_id: ClientId,
 ) {
     if let Some(new_config) = new_config {
-        if write_config_to_disk {
+        if let ConfigPersistence::Fragment(fragment) = persistence {
+            let overlay_dir = {
+                let config_dir = session_data
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .config_dir
+                    .clone();
+                zellij_utils::home::get_config_overlay_dir(
+                    config_dir.or_else(zellij_utils::home::find_default_config_dir),
+                )
+            };
+            let written = match overlay_dir {
+                Some(dir) => Config::write_managed_fragment(&dir, &fragment).map_err(|e| {
+                    log::error!("Failed to persist the config fragment: {}", e);
+                    Some(dir.join(zellij_utils::input::config::MANAGED_CONFIG_FILE_NAME))
+                }),
+                None => {
+                    log::error!("No config directory to persist the config fragment in.");
+                    Err(None)
+                },
+            };
+            match written {
+                Ok(_) => {
+                    // The session's saved config is the running one now, and every client
+                    // hears that it was written.
+                    let changes = session_data
+                        .write()
+                        .unwrap()
+                        .as_mut()
+                        .unwrap()
+                        .session_configuration
+                        .change_saved_config(new_config);
+                    session_data
+                        .write()
+                        .unwrap()
+                        .as_mut()
+                        .unwrap()
+                        .propagate_configuration_changes(changes, true);
+                },
+                Err(file_path) => {
+                    session_data
+                        .read()
+                        .unwrap()
+                        .as_ref()
+                        .unwrap()
+                        .senders
+                        .send_to_plugin(PluginInstruction::FailedToWriteConfigToDisk { file_path })
+                        .unwrap();
+                    if runtime_config_changed {
+                        session_data
+                            .write()
+                            .unwrap()
+                            .as_mut()
+                            .unwrap()
+                            .propagate_configuration_changes(vec![(client_id, new_config)], false);
+                    }
+                },
+            }
+            return;
+        }
+        if matches!(persistence, ConfigPersistence::WholeConfig) {
             let clear_defaults = true;
             let config_file_path = session_data
                 .read()

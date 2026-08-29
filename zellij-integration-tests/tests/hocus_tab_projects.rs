@@ -33,14 +33,15 @@ load_plugins clear-defaults=true {
 fn a_tab_is_named_after_the_project_its_agent_is_in() {
     let repository = write_git_repository("tab-project", "trunk");
     // The tab bar has to be in the layout: `clear-defaults` above took it away
-    // along with everything else, and it is the thing under test.
+    // along with everything else, and it is the thing under test. hocus floats below it
+    // (`y=1`): an overlay at the top-left row would cover the very line the test reads.
     let layout = format!(
         r#"layout {{
     pane size=1 borderless=true {{
         plugin location="zellij:tab-bar"
     }}
     floating_panes {{
-        pane x=0 y=0 width="50%" height="100%" {{
+        pane x=0 y=1 width="50%" height="90%" {{
             plugin location="hocus" {{
                 overlay true
             }}

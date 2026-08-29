@@ -119,7 +119,7 @@ fn request_body_advertises_the_tools_when_they_are_enabled() {
     let mut cfg = test_config();
     cfg.tools = true;
     let body = body_value(&cfg, &[Message::user("hi")]);
-    assert_eq!(body["tools"].as_array().unwrap().len(), 65);
+    assert_eq!(body["tools"].as_array().unwrap().len(), 66);
 }
 
 #[test]
@@ -163,13 +163,17 @@ fn request_body_advertises_registered_extension_tools() {
 /// only ~200 of the ~1.5kb the five cost — the floor for a tool is its name, its schema
 /// keys and enough description to be usable, and five of them is simply that much. The new
 /// ceiling keeps ~1.4kb of headroom so it goes on measuring growth rather than forbidding it.
+///
+/// Raised again to 27kb when `agent_spawn` gained `env`, `permission_mode`, `resume` and
+/// `hooks` (R16): four arguments a launch genuinely needs, each already at the floor of a
+/// key and one short sentence.
 #[test]
-fn hocus_prompt_contract_keeps_the_tool_payload_under_26_kb() {
+fn hocus_prompt_contract_keeps_the_tool_payload_under_27_kb() {
     let mut cfg = test_config();
     cfg.tools = true;
     let body = request_body(&cfg, &[Message::user("hi")], true);
     assert!(
-        body.len() < 26_000,
+        body.len() < 27_000,
         "tool payload grew to {} bytes",
         body.len()
     );
@@ -581,7 +585,7 @@ fn acting_sends_the_body_it_always_did() {
     let transcript = [Message::user("hi")];
     let body: serde_json::Value =
         serde_json::from_slice(&request_body(&cfg, &transcript, true)).unwrap();
-    assert_eq!(body["tools"].as_array().unwrap().len(), 65);
+    assert_eq!(body["tools"].as_array().unwrap().len(), 66);
     assert!(!body["messages"][0]["content"]
         .as_str()
         .unwrap()

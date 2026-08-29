@@ -33,6 +33,7 @@ use tokio::sync::oneshot;
 use url::Url;
 use wasmi::{Caller, Linker};
 use zellij_utils::consts::ipc_connect;
+use zellij_utils::data::AgentInfo;
 use zellij_utils::data::EnqueueQueueJobResponse;
 use zellij_utils::data::{
     validate_namespace, DataApplyResponse, DataCountResponse, DataDefineResponse, DataError,
@@ -102,9 +103,10 @@ use zellij_utils::{
         plugin_command::{
             dump_layout_response, dump_session_layout_response, fs_list_response,
             fs_metadata_response, fs_mutate_response, fs_read_response,
-            hide_floating_panes_response, parse_layout_response, save_session_response,
-            show_floating_panes_response, ProtobufBreakPanesToNewTabResponse,
-            ProtobufBreakPanesToTabWithIdResponse, ProtobufBreakPanesToTabWithIndexResponse,
+            hide_floating_panes_response, parse_layout_response, read_plugin_log_response,
+            save_session_response, show_floating_panes_response,
+            ProtobufBreakPanesToNewTabResponse, ProtobufBreakPanesToTabWithIdResponse,
+            ProtobufBreakPanesToTabWithIndexResponse, ProtobufCheckLuaPluginResponse,
             ProtobufDataApplyResponse, ProtobufDataCountResponse, ProtobufDataDefineResponse,
             ProtobufDataFetchResponse, ProtobufDataUnwatchResponse, ProtobufDataWatchResponse,
             ProtobufDeleteAllDeadSessionsResponse, ProtobufDeleteDeadSessionResponse,
@@ -138,8 +140,8 @@ use zellij_utils::{
             ProtobufOpenTerminalInPlaceOfPluginResponse, ProtobufOpenTerminalInPlaceResponse,
             ProtobufOpenTerminalNearPluginResponse,
             ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse, ProtobufOpenTerminalResponse,
-            ProtobufParseLayoutResponse, ProtobufPluginCommand, ProtobufRenameLayoutResponse,
-            ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse,
+            ProtobufParseLayoutResponse, ProtobufPluginCommand, ProtobufReadPluginLogResponse,
+            ProtobufRenameLayoutResponse, ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse,
             ProtobufSearchRecordingsResponse, ProtobufShowFloatingPanesResponse,
             ProtobufWarpPaneResponse,
         },
@@ -232,6 +234,10 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::GenerateRandomName => generate_random_name(env),
             PluginCommand::DumpLayout(layout_name) => dump_layout(env, layout_name),
             PluginCommand::ParseLayout(layout_string) => parse_layout(env, layout_string),
+            PluginCommand::CheckLuaPlugin { name, source } => check_lua_plugin(env, name, source),
+            PluginCommand::SetPaneAgent { pane_id, agent } => set_pane_agent(env, pane_id, agent),
+            PluginCommand::ReloadPluginByUrl(url) => reload_plugin_by_url(env, url)?,
+            PluginCommand::ReadPluginLog { name, lines } => read_plugin_log(env, name, lines),
             PluginCommand::GetLayoutDir => get_layout_dir(env),
             PluginCommand::GetUserPluginDir => get_user_plugin_dir(env),
             PluginCommand::GetFocusedPaneInfo => get_focused_pane_info(env),
@@ -1510,6 +1516,55 @@ fn get_focused_pane_info(env: &mut PluginEnv) {
         .non_fatal();
 }
 
+fn check_lua_plugin(env: &mut PluginEnv, name: String, source: String) {
+    let response = ProtobufCheckLuaPluginResponse {
+        error: crate::plugins::lua::check_lua_plugin(&source, &name).err(),
+    };
+    wasi_write_object(env, &response.encode_to_vec())
+        .with_context(|| {
+            format!(
+                "failed to send check lua plugin response to plugin {}",
+                env.name()
+            )
+        })
+        .non_fatal();
+}
+
+/// The plugin `name`'s lines from zellij's own log, the way `zellij plugins log` reads them:
+/// `name` resolves in the user's plugin folder (a builtin's bare tag resolves the same way and
+/// is matched by `log_tail` on its stem), and the answer is the last `lines` matching lines.
+/// A folder that cannot be found, a name that is not a plugin name, or a log that is not there
+/// yet all come back as the error rather than as an empty answer, so "no lines yet" stays
+/// distinguishable from "could not look".
+fn read_plugin_log(env: &mut PluginEnv, name: String, lines: usize) {
+    let result = env
+        .user_plugin_dir
+        .clone()
+        .or_else(default_user_plugin_dir)
+        .ok_or_else(|| {
+            anyhow!("no plugin folder is configured; set `user_plugin_dir` in the Zellij config")
+        })
+        .and_then(|dir| {
+            zellij_utils::plugin_authoring::resolve_plugin_file(&dir, &name).map_err(|e| anyhow!(e))
+        })
+        .and_then(|path| {
+            crate::plugin_authoring::log_tail(
+                &zellij_utils::consts::ZELLIJ_TMP_LOG_FILE,
+                &path,
+                lines,
+            )
+        });
+    let response = ProtobufReadPluginLogResponse {
+        result: Some(match result {
+            Ok(lines) => read_plugin_log_response::Result::Lines(lines),
+            Err(e) => read_plugin_log_response::Result::Error(format!("{:#}", e)),
+        }),
+    };
+    wasi_write_object(env, &response.encode_to_vec())
+        .with_context(|| format!("failed to send log lines to plugin {}", env.name()))
+        .non_fatal();
+}
+
 fn parse_layout(env: &mut PluginEnv, layout_string: String) {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2488,10 +2543,15 @@ fn open_command_pane_in_git_checkout_near_plugin(
     let result: OpenCommandPaneInGitCheckoutResponse =
         prepare_git_checkout(env, source_directory, checkout).and_then(|cwd| {
             command_to_run.cwd = Some(cwd);
+            // The marker's value is the agent's kind - the program - which is what the pane's
+            // agent record starts from. See `agent_from_run` in `panes::terminal_pane`.
+            let kind =
+                zellij_utils::agent::agent_kind_of(&command_to_run.path, &command_to_run.args)
+                    .unwrap_or_else(|| "true".to_owned());
             spawn_command_pane_near_plugin(
                 env,
                 command_to_run,
-                BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), "true".to_owned())]),
+                BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), kind)]),
             )
             .ok_or_else(|| "Zellij did not open the agent pane".to_owned())
         });
@@ -4015,6 +4075,15 @@ fn start_or_reload_plugin(env: &PluginEnv, url: &str) -> Result<()> {
     Ok(())
 }
 
+fn reload_plugin_by_url(env: &PluginEnv, url: String) -> Result<()> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let run_plugin_or_alias = RunPluginOrAlias::from_url(&url, &None, None, Some(cwd))
+        .map_err(|e| anyhow!("Failed to parse plugin location: {}", e))?;
+    env.senders
+        .send_to_plugin(PluginInstruction::ReloadPluginByUrl(run_plugin_or_alias))
+        .with_context(|| format!("failed to reload plugin at {url}"))
+}
+
 fn close_terminal_pane(env: &PluginEnv, terminal_pane_id: u32) {
     let error_msg = || format!("failed to change tab focus in plugin {}", env.name());
     let action = Action::CloseTerminalPane {
@@ -5105,6 +5174,12 @@ fn set_pane_borderless(env: &PluginEnv, pane_id: PaneId, borderless: bool) {
         ));
 }
 
+fn set_pane_agent(env: &PluginEnv, pane_id: zellij_utils::data::PaneId, agent: Option<AgentInfo>) {
+    let _ =
+        env.senders
+            .send_to_screen(ScreenInstruction::SetPaneAgent(pane_id.into(), agent, None));
+}
+
 fn set_pane_color(env: &PluginEnv, pane_id: PaneId, fg: Option<String>, bg: Option<String>) {
     let _ = env
         .senders
@@ -5124,6 +5199,8 @@ struct ResolvedPath {
     /// True when the path named no virtual root and so points somewhere in the wider filesystem.
     /// Reaching one of these needs `FullHdAccess` on top of the read/write permission.
     escaped_roots: bool,
+    /// The virtual root the path was under, `None` for a path outside every root.
+    root: Option<&'static str>,
 }
 
 /// Resolve a plugin-visible path to a real one, refusing to leave the root it named.
@@ -5140,26 +5217,42 @@ struct ResolvedPath {
 ///
 /// A path naming no virtual root is left exactly as it was written and marked `escaped_roots`,
 /// so that the caller can ask for `FullHdAccess` rather than quietly rewriting it.
-fn resolve_plugin_fs_path(env: &PluginEnv, path: &Path) -> Result<ResolvedPath> {
-    let roots: [(&str, PathBuf); 4] = [
+/// The virtual root a plugin's own plugin folder is mounted at. Present only when the session
+/// has one configured or defaulted; a write under it needs `AuthorPlugins` on top of `WriteFiles`.
+pub const PLUGINS_FS_ROOT: &str = "/plugins";
+
+/// The folders a plugin may name, by their virtual roots. `/plugins` is the user's plugin folder
+/// and is absent when there is none, so nothing can be written into a folder nobody chose.
+fn fs_roots(env: &PluginEnv) -> Vec<(&'static str, PathBuf)> {
+    let mut roots = vec![
         ("/host", env.plugin_cwd.clone()),
         ("/data", env.plugin_own_data_dir.clone()),
         ("/cache", env.plugin_own_cache_dir.clone()),
         ("/tmp", ZELLIJ_TMP_DIR.to_path_buf()),
     ];
+    if let Some(user_plugin_dir) = env.user_plugin_dir.as_ref() {
+        roots.push((PLUGINS_FS_ROOT, user_plugin_dir.clone()));
+    }
+    roots
+}
 
-    let (root, relative) = match roots
-        .iter()
-        .find_map(|(prefix, root)| path.strip_prefix(prefix).ok().map(|rest| (root, rest)))
-    {
-        Some((root, rest)) => (root.clone(), rest.to_path_buf()),
+fn resolve_plugin_fs_path(env: &PluginEnv, path: &Path) -> Result<ResolvedPath> {
+    let roots = fs_roots(env);
+
+    let (prefix, root, relative) = match roots.iter().find_map(|(prefix, root)| {
+        path.strip_prefix(prefix)
+            .ok()
+            .map(|rest| (*prefix, root, rest))
+    }) {
+        Some((prefix, root, rest)) => (Some(prefix), root.clone(), rest.to_path_buf()),
         // A relative path is the plugin's cwd, the same reading `translate_plugin_path` gives it.
-        None if path.is_relative() => (env.plugin_cwd.clone(), path.to_path_buf()),
+        None if path.is_relative() => (Some("/host"), env.plugin_cwd.clone(), path.to_path_buf()),
         // An absolute path naming no root: passed through untouched, for `FullHdAccess` to judge.
         None => {
             return Ok(ResolvedPath {
                 real: path.to_path_buf(),
                 escaped_roots: true,
+                root: None,
             })
         },
     };
@@ -5198,6 +5291,22 @@ fn resolve_plugin_fs_path(env: &PluginEnv, path: &Path) -> Result<ResolvedPath> 
     };
 
     if !resolved.starts_with(&canonical_root) {
+        // Name the link when there is one: a plugin that wrote `link.lua` and is refused
+        // should hear that it is a link, not merely that it points somewhere.
+        let through_a_symlink = joined
+            .ancestors()
+            .take_while(|ancestor| ancestor.starts_with(&canonical_root))
+            .any(|ancestor| {
+                ancestor
+                    .symlink_metadata()
+                    .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            });
+        if through_a_symlink {
+            return Err(anyhow!(
+                "'{}' is a symlink pointing outside the plugin's own folders; refusing",
+                path.display()
+            ));
+        }
         return Err(anyhow!(
             "'{}' points outside the plugin's own folders",
             path.display()
@@ -5207,20 +5316,43 @@ fn resolve_plugin_fs_path(env: &PluginEnv, path: &Path) -> Result<ResolvedPath> 
     Ok(ResolvedPath {
         real: resolved,
         escaped_roots: false,
+        root: prefix,
     })
 }
 
-/// Resolve a path for one of the `Fs*` commands, applying the `FullHdAccess` rule.
+/// What an `Fs*` command is about to do with a path, for the rules that depend on it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FsIntent {
+    Read,
+    Write,
+}
+
+/// Resolve a path for one of the `Fs*` commands, applying the rules `command_permission`
+/// cannot: `FullHdAccess` for a path outside every root, and `AuthorPlugins` for a write under
+/// `/plugins`.
 ///
 /// Checked here rather than in `command_permission` because that only sees the command, and
-/// whether a path escapes the plugin's folders is not knowable without resolving it first. The
-/// data store does the same thing for `shared:` namespaces in `resolve_data_namespace`.
-fn resolve_fs_path_with_permission(env: &PluginEnv, path: &Path) -> Result<PathBuf> {
+/// where a path lands is not knowable without resolving it first. The data store does the same
+/// thing for `shared:` namespaces in `resolve_data_namespace`.
+fn resolve_fs_path_with_permission(
+    env: &PluginEnv,
+    path: &Path,
+    intent: FsIntent,
+) -> Result<PathBuf> {
     let resolved = resolve_plugin_fs_path(env, path)?;
     if resolved.escaped_roots && !has_permission(env, PermissionType::FullHdAccess) {
         return Err(anyhow!(
-            "'{}' is outside the plugin's own folders (/host, /data, /cache, /tmp), which needs \
-             the 'FullHdAccess' permission",
+            "'{}' is outside the plugin's own folders (/host, /data, /cache, /tmp, /plugins), \
+             which needs the 'FullHdAccess' permission",
+            path.display()
+        ));
+    }
+    if resolved.root == Some(PLUGINS_FS_ROOT)
+        && intent == FsIntent::Write
+        && !has_permission(env, PermissionType::AuthorPlugins)
+    {
+        return Err(anyhow!(
+            "'{}' is in the plugin folder, and writing there needs the 'AuthorPlugins' permission",
             path.display()
         ));
     }
@@ -5243,13 +5375,7 @@ fn has_permission(env: &PluginEnv, permission: PermissionType) -> bool {
 
 /// Re-spell a real path in the virtual root the plugin used, so that a listing can be fed back in.
 fn virtual_path(env: &PluginEnv, real: &Path, requested: &Path) -> PathBuf {
-    let roots: [(&str, PathBuf); 4] = [
-        ("/host", env.plugin_cwd.clone()),
-        ("/data", env.plugin_own_data_dir.clone()),
-        ("/cache", env.plugin_own_cache_dir.clone()),
-        ("/tmp", ZELLIJ_TMP_DIR.to_path_buf()),
-    ];
-    for (prefix, root) in roots.iter() {
+    for (prefix, root) in fs_roots(env).iter() {
         if !requested.starts_with(prefix) && !(requested.is_relative() && *prefix == "/host") {
             continue;
         }
@@ -5265,7 +5391,7 @@ fn fs_read(env: &mut PluginEnv, path: PathBuf, max_bytes: Option<usize>) {
     let cap = max_bytes
         .unwrap_or(MAX_FS_READ_BYTES)
         .min(MAX_FS_READ_BYTES);
-    let result = resolve_fs_path_with_permission(env, &path).and_then(|real| {
+    let result = resolve_fs_path_with_permission(env, &path, FsIntent::Read).and_then(|real| {
         let metadata =
             fs::metadata(&real).with_context(|| format!("failed to read '{}'", path.display()))?;
         if metadata.len() as usize > cap {
@@ -5291,7 +5417,7 @@ fn fs_read(env: &mut PluginEnv, path: PathBuf, max_bytes: Option<usize>) {
 }
 
 fn fs_list(env: &mut PluginEnv, path: PathBuf) {
-    let result = resolve_fs_path_with_permission(env, &path).and_then(|real| {
+    let result = resolve_fs_path_with_permission(env, &path, FsIntent::Read).and_then(|real| {
         let entries =
             fs::read_dir(&real).with_context(|| format!("failed to list '{}'", path.display()))?;
         let mut listed = vec![];
@@ -5322,7 +5448,7 @@ fn fs_list(env: &mut PluginEnv, path: PathBuf) {
 }
 
 fn fs_metadata(env: &mut PluginEnv, path: PathBuf) {
-    let result = resolve_fs_path_with_permission(env, &path).map(|real| {
+    let result = resolve_fs_path_with_permission(env, &path, FsIntent::Read).map(|real| {
         fs::symlink_metadata(&real)
             .ok()
             .map(|m| FileMetadata::from(m))
@@ -5347,7 +5473,7 @@ fn fs_write(
     append: bool,
     create_dirs: bool,
 ) {
-    let result = resolve_fs_path_with_permission(env, &path).and_then(|real| {
+    let result = resolve_fs_path_with_permission(env, &path, FsIntent::Write).and_then(|real| {
         if create_dirs {
             if let Some(parent) = real.parent() {
                 fs::create_dir_all(parent).with_context(|| {
@@ -5369,7 +5495,7 @@ fn fs_write(
 }
 
 fn fs_remove(env: &mut PluginEnv, path: PathBuf, recursive: bool) {
-    let result = resolve_fs_path_with_permission(env, &path).and_then(|real| {
+    let result = resolve_fs_path_with_permission(env, &path, FsIntent::Write).and_then(|real| {
         let metadata = fs::symlink_metadata(&real)
             .with_context(|| format!("failed to remove '{}'", path.display()))?;
         if metadata.is_dir() {
@@ -5387,7 +5513,7 @@ fn fs_remove(env: &mut PluginEnv, path: PathBuf, recursive: bool) {
 }
 
 fn fs_create_dir(env: &mut PluginEnv, path: PathBuf, all: bool) {
-    let result = resolve_fs_path_with_permission(env, &path).and_then(|real| {
+    let result = resolve_fs_path_with_permission(env, &path, FsIntent::Write).and_then(|real| {
         if all {
             fs::create_dir_all(&real)
         } else {
@@ -5401,16 +5527,17 @@ fn fs_create_dir(env: &mut PluginEnv, path: PathBuf, all: bool) {
 fn fs_rename(env: &mut PluginEnv, from: PathBuf, to: PathBuf) {
     // Both endpoints are resolved independently: renaming *out* of the plugin's folders is as
     // much of an escape as reading outside them.
-    let result = resolve_fs_path_with_permission(env, &from).and_then(|real_from| {
-        let real_to = resolve_fs_path_with_permission(env, &to)?;
-        fs::rename(&real_from, &real_to).with_context(|| {
-            format!(
-                "failed to rename '{}' to '{}'",
-                from.display(),
-                to.display()
-            )
-        })
-    });
+    let result =
+        resolve_fs_path_with_permission(env, &from, FsIntent::Write).and_then(|real_from| {
+            let real_to = resolve_fs_path_with_permission(env, &to, FsIntent::Write)?;
+            fs::rename(&real_from, &real_to).with_context(|| {
+                format!(
+                    "failed to rename '{}' to '{}'",
+                    from.display(),
+                    to.display()
+                )
+            })
+        });
     write_fs_mutate_response(env, result);
 }
 
@@ -7097,6 +7224,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::TogglePaneBorderless
         | CommandType::SetPaneBorderless
         | CommandType::SetPaneColor
+        | CommandType::SetPaneAgent
         | CommandType::GroupAndUngroupPanes
         | CommandType::HighlightAndUnhighlightPanes
         | CommandType::RevealPaneWithId
@@ -7209,6 +7337,13 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         // A job reporting on itself needs nothing, like `CloseSelf`: it runs headless, and a
         // permission prompt it raised would have no pane for anyone to answer it in.
         CommandType::FinishQueueJob => return None,
+        // Compiling a string of Lua touches nothing: no file is read or written and nothing runs.
+        CommandType::CheckLuaPlugin => return None,
+        // Reloading a plugin someone wrote is the second half of writing it.
+        CommandType::ReloadPluginByUrl => PermissionType::AuthorPlugins,
+        // Reading a plugin's log lines is the authoring loop's "what did it say" step, the same
+        // act as `zellij plugins log`; it is the log of the whole server, so not `ReadFiles`.
+        CommandType::ReadPluginLog => PermissionType::AuthorPlugins,
     })
 }
 
@@ -7260,6 +7395,7 @@ mod permission_tests {
             CommandType::ScanHostFolder,
             CommandType::WatchFilesystem,
             CommandType::FinishQueueJob,
+            CommandType::CheckLuaPlugin,
         ];
         for kind in CommandType::iter() {
             assert_eq!(

@@ -2117,7 +2117,9 @@ impl TryFrom<Action> for ProtobufAction {
             | Action::SaveSession
             | Action::ListTabs { .. }
             | Action::CurrentTabInfo { .. }
-            | Action::SetPaneColor { .. } => Err("Unsupported action"),
+            | Action::SetPaneColor { .. }
+            | Action::SetPaneAgent { .. }
+            | Action::Reconfigure { .. } => Err("Unsupported action"),
         }
     }
 }
@@ -3960,6 +3962,8 @@ pub(crate) mod tests {
                 | Action::DumpLayout
                 | Action::SaveSession
                 | Action::SetPaneColor { .. }
+                | Action::SetPaneAgent { .. }
+                | Action::Reconfigure { .. }
                 | Action::SwitchSession { .. }
                 | Action::WarpPane { .. }
                 | Action::AdoptPane { .. }

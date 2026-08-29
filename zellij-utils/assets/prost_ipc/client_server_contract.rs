@@ -120,7 +120,7 @@ pub struct RgbColor {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Action {
-    #[prost(oneof="action::ActionType", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 141, 142, 143, 144, 145, 146, 147, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158")]
+    #[prost(oneof="action::ActionType", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 141, 142, 143, 144, 145, 146, 147, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160")]
     pub action_type: ::core::option::Option<action::ActionType>,
 }
 /// Nested message and enum types in `Action`.
@@ -442,6 +442,10 @@ pub mod action {
         SelectCommandAtScrollPosition(super::SelectCommandAtScrollPositionAction),
         #[prost(message, tag="158")]
         CopyLastCommandOutput(super::CopyLastCommandOutputAction),
+        #[prost(message, tag="159")]
+        SetPaneAgent(super::SetPaneAgentAction),
+        #[prost(message, tag="160")]
+        Reconfigure(super::ReconfigureAction),
     }
 }
 // Action message definitions (all 92 variants)
@@ -1361,6 +1365,38 @@ pub struct SetPaneColorAction {
     pub fg: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="3")]
     pub bg: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ReconfigureAction {
+    #[prost(string, tag="1")]
+    pub config: ::prost::alloc::string::String,
+    #[prost(bool, tag="2")]
+    pub write_to_disk: bool,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SetPaneAgentAction {
+    #[prost(message, optional, tag="1")]
+    pub pane_id: ::core::option::Option<PaneId>,
+    #[prost(message, optional, tag="2")]
+    pub agent: ::core::option::Option<AgentInfo>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AgentInfo {
+    #[prost(string, tag="1")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(enumeration="AgentState", tag="2")]
+    pub state: i32,
+    #[prost(enumeration="AgentSource", tag="3")]
+    pub source: i32,
+    #[prost(string, optional, tag="4")]
+    pub detail: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="5")]
+    pub cwd: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="6")]
+    pub session_id: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -2642,6 +2678,73 @@ impl AnsiCode {
         }
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum AgentState {
+    Unspecified = 0,
+    Busy = 1,
+    Waiting = 2,
+    Idle = 3,
+    Exited = 4,
+}
+impl AgentState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            AgentState::Unspecified => "AGENT_STATE_UNSPECIFIED",
+            AgentState::Busy => "AGENT_STATE_BUSY",
+            AgentState::Waiting => "AGENT_STATE_WAITING",
+            AgentState::Idle => "AGENT_STATE_IDLE",
+            AgentState::Exited => "AGENT_STATE_EXITED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "AGENT_STATE_UNSPECIFIED" => Some(Self::Unspecified),
+            "AGENT_STATE_BUSY" => Some(Self::Busy),
+            "AGENT_STATE_WAITING" => Some(Self::Waiting),
+            "AGENT_STATE_IDLE" => Some(Self::Idle),
+            "AGENT_STATE_EXITED" => Some(Self::Exited),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum AgentSource {
+    Unspecified = 0,
+    Spawned = 1,
+    Reported = 2,
+    Registered = 3,
+}
+impl AgentSource {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            AgentSource::Unspecified => "AGENT_SOURCE_UNSPECIFIED",
+            AgentSource::Spawned => "AGENT_SOURCE_SPAWNED",
+            AgentSource::Reported => "AGENT_SOURCE_REPORTED",
+            AgentSource::Registered => "AGENT_SOURCE_REGISTERED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "AGENT_SOURCE_UNSPECIFIED" => Some(Self::Unspecified),
+            "AGENT_SOURCE_SPAWNED" => Some(Self::Spawned),
+            "AGENT_SOURCE_REPORTED" => Some(Self::Reported),
+            "AGENT_SOURCE_REGISTERED" => Some(Self::Registered),
+            _ => None,
+        }
+    }
+}
 /// Supporting enums and messages
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -3299,7 +3402,7 @@ impl ThemeHue {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientToServerMsg {
-    #[prost(oneof="client_to_server_msg::Message", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27")]
+    #[prost(oneof="client_to_server_msg::Message", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 28, 24, 25, 26, 27")]
     pub message: ::core::option::Option<client_to_server_msg::Message>,
 }
 /// Nested message and enum types in `ClientToServerMsg`.
@@ -3353,6 +3456,8 @@ pub mod client_to_server_msg {
         NestedSessionFrameFromHost(super::NestedSessionFrameFromHostMsg),
         #[prost(message, tag="23")]
         KittyGraphicsSupport(super::KittyGraphicsSupportMsg),
+        #[prost(message, tag="28")]
+        SubscribeToEvents(super::SubscribeToEventsMsg),
         #[prost(message, tag="24")]
         SixelSupport(super::SixelSupportMsg),
         #[prost(message, tag="25")]
@@ -3488,6 +3593,12 @@ pub struct SubscribeToPaneRendersMsg {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SubscribeToEventsMsg {
+    #[prost(string, repeated, tag="1")]
+    pub event_types: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DesktopNotificationResponseMsg {
     #[prost(bytes="vec", tag="1")]
     pub raw_bytes: ::prost::alloc::vec::Vec<u8>,
@@ -3578,7 +3689,7 @@ impl HostTerminalThemeIndication {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerToClientMsg {
-    #[prost(oneof="server_to_client_msg::Message", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19")]
+    #[prost(oneof="server_to_client_msg::Message", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20")]
     pub message: ::core::option::Option<server_to_client_msg::Message>,
 }
 /// Nested message and enum types in `ServerToClientMsg`.
@@ -3624,6 +3735,8 @@ pub mod server_to_client_msg {
         EmitNestedSessionFrame(super::EmitNestedSessionFrameMsg),
         #[prost(message, tag="19")]
         MobileState(super::MobileStateMsg),
+        #[prost(message, tag="20")]
+        EventUpdate(super::EventUpdateMsg),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -3722,6 +3835,14 @@ pub struct PaneRenderUpdateMsg {
 pub struct SubscribedPaneClosedMsg {
     #[prost(message, optional, tag="1")]
     pub pane_id: ::core::option::Option<PaneId>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EventUpdateMsg {
+    #[prost(string, tag="1")]
+    pub event_type: ::prost::alloc::string::String,
+    #[prost(string, tag="2")]
+    pub event_json: ::prost::alloc::string::String,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

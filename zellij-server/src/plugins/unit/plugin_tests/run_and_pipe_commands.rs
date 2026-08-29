@@ -319,6 +319,7 @@ pub fn unblock_input_plugin_command() {
         cwd: None,
         skip_cache: false,
         cli_client_id: client_id,
+        source_pane_id: None,
     });
     screen_thread.join().unwrap(); // this might take a while if the cache is cold
     teardown();
@@ -407,6 +408,7 @@ pub fn block_input_plugin_command() {
         cwd: None,
         skip_cache: false,
         cli_client_id: client_id,
+        source_pane_id: None,
     });
     screen_thread.join().unwrap(); // this might take a while if the cache is cold
     teardown();
@@ -501,6 +503,7 @@ pub fn pipe_output_plugin_command() {
         cwd: None,
         skip_cache: false,
         cli_client_id: client_id,
+        source_pane_id: None,
     });
     std::thread::sleep(std::time::Duration::from_millis(500));
     teardown();
@@ -588,6 +591,7 @@ pub fn pipe_message_to_plugin_plugin_command() {
         cwd: None,
         skip_cache: false,
         cli_client_id: client_id,
+        source_pane_id: None,
     });
     std::thread::sleep(std::time::Duration::from_millis(500));
     teardown();
@@ -1225,6 +1229,7 @@ pub fn cli_pipe_is_released_when_plugin_panics_while_handling_it() {
         cwd: None,
         skip_cache: false,
         cli_client_id: client_id,
+        source_pane_id: None,
     });
     received_server_instructions.wait_until_described(
         "the pipe to be released when the plugin crashes while handling it (otherwise the \

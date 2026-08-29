@@ -150,13 +150,15 @@ impl State {
         self.parked.iter().filter(|chat| chat.is_live()).count()
     }
 
-    /// Chats with something still outstanding, foreground and parked alike.
+    /// Chats with something still outstanding: foreground and parked alike,
+    /// and the archived ones whose jobs are held for their reopening.
     pub(crate) fn live_chat_ids(&self) -> Vec<u64> {
         self.parked
             .iter()
             .filter(|chat| chat.is_live())
             .filter_map(|chat| chat.chat_id)
             .chain(self.chat_id.filter(|_| self.is_in_flight()))
+            .chain(self.held_jobs.keys().copied())
             .collect()
     }
 
@@ -360,14 +362,28 @@ impl State {
             self.switch_to_tab(self.tab_of_parked(index));
             return;
         }
-        let Some(messages) = history::load(&self.private_store(), id) else {
+        let Some(mut messages) = history::load(&self.private_store(), id) else {
             return;
         };
+        // The jobs the chat was armed with when hocus last ran come back with
+        // it, and start counting down again from here.
+        let jobs = self.take_held_jobs(id);
+        if !jobs.is_empty() {
+            messages.push(Message::notice(format!(
+                "restored {} scheduled job(s)",
+                jobs.len()
+            )));
+        }
+        let arm = !jobs.is_empty();
         self.open_tab(Chat {
             messages,
             chat_id: Some(id),
+            jobs,
             ..Chat::default()
         });
+        if arm {
+            self.arm_timer(JOB_SECONDS);
+        }
         self.log_global("open_chat", serde_json::json!({"chat_id": id}));
     }
 
@@ -461,7 +477,12 @@ impl State {
             return;
         };
         self.with_parked(index, |state| state.stop_chat());
-        self.parked.remove(index);
+        let closed = self.parked.remove(index);
+        // A closed chat's jobs stop for good, as `/clear`'s do: nothing ticks
+        // them once the chat is gone, and a row left behind would come back at
+        // the next start as a job nobody remembers arming.
+        let gone: Vec<u64> = closed.jobs.iter().map(|job| job.id).collect();
+        self.forget_jobs(gone);
         if index < self.chat_tab {
             self.chat_tab -= 1;
         }

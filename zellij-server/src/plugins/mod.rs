@@ -6,6 +6,7 @@
 #![allow(clippy::useless_format)]
 #![allow(clippy::redundant_pattern_matching)]
 mod lua;
+pub use lua::check_lua_plugin;
 mod pinned_executor;
 mod pipes;
 mod plugin_limits;
@@ -35,7 +36,7 @@ use crate::session_layout_metadata::SessionLayoutMetadata;
 use crate::{pty::PtyInstruction, thread_bus::Bus, ClientId, ServerInstruction};
 use zellij_utils::data::PaneRenderReport;
 use zellij_utils::input::context_menu::ContextMenu;
-use zellij_utils::input::hooks::{HookPoint, Hooks};
+use zellij_utils::input::hooks::{HookPoint, HookShape, Hooks};
 use zellij_utils::input::layout::TabLayoutInfo;
 
 pub use wasm_bridge::PluginRenderAsset;
@@ -66,6 +67,10 @@ pub struct DumpSessionLayoutResponse {
     pub layout_result: Result<String, String>,
     pub metadata: Option<zellij_utils::data::LayoutMetadata>,
 }
+/// The plugin id a state report is addressed to when no plugin wants it but a `zellij events`
+/// client does. No plugin ever has this id, so the plugin thread loads nothing for it and the
+/// report reaches the CLI subscribers alone. See `WasmBridge::forward_events_to_cli_subscribers`.
+pub const CLI_EVENTS_ONLY_TARGET: PluginId = u32::MAX;
 
 #[derive(Clone, Debug, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PluginInstruction {
@@ -90,16 +95,20 @@ pub enum PluginInstruction {
         Option<OverlayPlacement>,
     ),
     LoadBackgroundPlugin(RunPluginOrAlias, ClientId),
-    /// A hook point was reached. The plugin bound to it - if any - is opened in place of
-    /// `pane_id`, which the screen has already put in a state it can be replaced from.
+    /// A hook point was reached. What happens to the plugin bound to it - if any - is the
+    /// point's [`HookShape`]: a `ReplacePane` point opens it in place of `pane_id`, which the
+    /// screen has already put in a state it can be replaced from; a `Headless` point hands the
+    /// payload to a long-lived instance as `Event::Hook`.
     ///
     /// Sent unconditionally by whoever reaches the hook point, so that the config lives in one
     /// place: an unbound point is a no-op here rather than a check at every call site.
     RunHook {
         point: HookPoint,
-        /// The pane the hook is about, and the pane it replaces.
-        pane_id: PaneId,
-        /// Handed to the plugin as its configuration, which is what `load(config)` receives.
+        /// The pane the hook is about - and for a `ReplacePane` point, the pane it replaces.
+        /// `None` for a point that is not about a pane, such as `session_start`.
+        pane_id: Option<PaneId>,
+        /// A `ReplacePane` plugin receives this as its configuration, which is what
+        /// `load(config)` receives; a `Headless` one as `Event::Hook { payload }`.
         payload: BTreeMap<String, String>,
         client_id: ClientId,
     },
@@ -125,6 +134,8 @@ pub enum PluginInstruction {
         Option<NotificationEnd>,
     ),
     ReloadPluginWithId(u32),
+    /// Reload every running instance at a location in place; nothing if none is running.
+    ReloadPluginByUrl(RunPluginOrAlias),
     Resize(PluginId, usize, usize), // plugin_id, columns, rows
     AddClient(ClientId),
     RemoveClient(ClientId),
@@ -170,6 +181,11 @@ pub enum PluginInstruction {
         String, // serialized payload
     ),
     PluginSubscribedToEvents(PluginId, ClientId, HashSet<EventType>),
+    /// A `zellij events` client asking for the session's state events, by name.
+    SubscribeCliClientToEvents {
+        client_id: ClientId,
+        event_types: Vec<String>,
+    },
     PermissionRequestResult(
         PluginId,
         Option<ClientId>,
@@ -198,6 +214,8 @@ pub enum PluginInstruction {
         cwd: Option<PathBuf>,
         skip_cache: bool,
         cli_client_id: ClientId,
+        /// The pane the pipe was run in, if the CLI client knew it.
+        source_pane_id: Option<PaneId>,
     },
     KeybindPipe {
         name: String,
@@ -393,6 +411,11 @@ pub(crate) fn plugin_thread_main(
             initiating_client_id,
         );
     }
+    // A session starts once. The hook fires for its first client, below, not here: a plugin
+    // loaded before any client is connected is loaded again for the first one that is
+    // (`WasmBridge::add_client`), and an event handed to the first instance would be lost with
+    // it.
+    let mut session_started = false;
 
     loop {
         let (event, mut err_ctx) = bus.recv().expect("failed to receive event on channel");
@@ -478,6 +501,7 @@ pub(crate) fn plugin_thread_main(
                     &mut wasm_bridge,
                     &bus,
                     &plugin_aliases,
+                    &shutdown_send,
                 );
             },
             PluginInstruction::RequestContextMenu { context, client_id } => {
@@ -583,6 +607,29 @@ pub(crate) fn plugin_thread_main(
             PluginInstruction::ReloadPluginWithId(plugin_id) => {
                 wasm_bridge.reload_plugin_with_id(plugin_id).non_fatal();
             },
+            PluginInstruction::ReloadPluginByUrl(mut run_plugin_or_alias) => {
+                run_plugin_or_alias.populate_run_plugin_if_needed(&plugin_aliases);
+                match run_plugin_or_alias.get_run_plugin() {
+                    Some(run_plugin) => match wasm_bridge.reload_plugin(&run_plugin) {
+                        Ok(()) => {},
+                        Err(e)
+                            if matches!(
+                                e.downcast_ref::<ZellijError>(),
+                                Some(ZellijError::PluginDoesNotExist)
+                            ) =>
+                        {
+                            log::warn!(
+                                "Nothing is running at {}, so there is nothing to reload",
+                                run_plugin.location
+                            );
+                        },
+                        Err(e) => Err::<(), _>(e).non_fatal(),
+                    },
+                    None => {
+                        log::error!("Failed to find plugin info for: {:?}", run_plugin_or_alias);
+                    },
+                }
+            },
             PluginInstruction::Resize(pid, new_columns, new_rows) => {
                 wasm_bridge.resize_plugin(pid, new_columns, new_rows, shutdown_send.clone())?;
             },
@@ -596,9 +643,34 @@ pub(crate) fn plugin_thread_main(
                     if result.is_ok() { "ok" } else { "error" }
                 );
                 result?;
+                if !session_started {
+                    session_started = true;
+                    // The session is up, in the sense that matters to a plugin: the thread
+                    // exists, its background plugins are loading, and there is a client to
+                    // load the hook plugin for. The screen may not have its first tab yet -
+                    // the hook's own suppressed pane is buffered until it does, like every
+                    // background plugin's.
+                    run_hook(
+                        HookPoint::SessionStart,
+                        None,
+                        session_start_payload(client_id),
+                        client_id,
+                        &hooks,
+                        &mut wasm_bridge,
+                        &bus,
+                        &plugin_aliases,
+                        &shutdown_send,
+                    );
+                }
             },
             PluginInstruction::RemoveClient(client_id) => {
                 wasm_bridge.remove_client(client_id);
+            },
+            PluginInstruction::SubscribeCliClientToEvents {
+                client_id,
+                event_types,
+            } => {
+                wasm_bridge.subscribe_cli_client_to_events(client_id, event_types);
             },
             PluginInstruction::NewTab(
                 cwd,
@@ -1030,6 +1102,7 @@ pub(crate) fn plugin_thread_main(
                 cwd,
                 skip_cache,
                 cli_client_id,
+                source_pane_id,
             } => {
                 let should_float = floating.unwrap_or(true);
                 let mut pipe_messages = vec![];
@@ -1069,6 +1142,13 @@ pub(crate) fn plugin_thread_main(
                             &mut pipe_messages,
                         );
                     },
+                }
+                let source_pane_id = source_pane_id.map(|pane_id| match pane_id {
+                    PaneId::Terminal(id) => zellij_utils::data::PaneId::Terminal(id),
+                    PaneId::Plugin(id) => zellij_utils::data::PaneId::Plugin(id),
+                });
+                for (_, _, message) in pipe_messages.iter_mut() {
+                    message.pane_id = source_pane_id.clone();
                 }
                 wasm_bridge.pipe_messages(pipe_messages, shutdown_send.clone(), None)?;
             },
@@ -1558,12 +1638,25 @@ fn pipe_to_specific_plugins(
     }
 }
 
-/// Open the plugin bound to `point` in place of `pane_id`.
+/// What the `session_start` hook is told: enough to address the session from a plugin that was
+/// loaded before any tab existed.
+fn session_start_payload(client_id: ClientId) -> BTreeMap<String, String> {
+    let mut payload = BTreeMap::new();
+    // The name lives in the server's environment; nothing on the bus carries it, and reading
+    // it here beats threading it through the thread's signature for one string.
+    if let Ok(session_name) = zellij_utils::envs::get_session_name() {
+        payload.insert("session_name".to_owned(), session_name);
+    }
+    payload.insert("client_id".to_owned(), client_id.to_string());
+    payload
+}
+
+/// Run the plugin bound to `point`, in the point's shape.
 ///
-/// The hook's payload becomes the plugin's configuration, and plugin identity is
-/// (location, configuration) - so a payload naming a different pane yields a separate
-/// instance, which is what makes two agents exiting at once get a hook pane each rather than
-/// fighting over one.
+/// A `ReplacePane` point opens the plugin in place of `pane_id`. The hook's payload becomes the
+/// plugin's configuration, and plugin identity is (location, configuration) - so a payload
+/// naming a different pane yields a separate instance, which is what makes two agents exiting
+/// at once get a hook pane each rather than fighting over one.
 ///
 /// Loaded and placed here rather than through `WasmBridge::get_or_load_plugins`, for the same
 /// reason `WasmBridge::launch_job` bypasses it: that function opens a pane only when it has to
@@ -1572,20 +1665,26 @@ fn pipe_to_specific_plugins(
 /// open". It is the wrong shape for a hook, whose whole contract is that a pane appears - a
 /// hook that quietly resolved to an existing instance would leave the pane it was fired for
 /// showing nothing but its exit code, which is exactly the failure it exists to replace.
+///
+/// A `Headless` point is the opposite shape, and [`deliver_to_headless_hook`] is where it is
+/// explained: one long-lived instance, found by its configured identity, receives every firing
+/// as `Event::Hook`.
+#[allow(clippy::too_many_arguments)]
 fn run_hook(
     point: HookPoint,
-    pane_id: PaneId,
+    pane_id: Option<PaneId>,
     payload: BTreeMap<String, String>,
     client_id: ClientId,
     hooks: &Hooks,
     wasm_bridge: &mut WasmBridge,
     bus: &Bus<PluginInstruction>,
     plugin_aliases: &PluginAliases,
+    shutdown_send: &tokio::sync::mpsc::Sender<()>,
 ) {
     let Some(run_plugin_or_alias) = hooks.get(point) else {
         // An unbound hook point. Every hook site fires unconditionally so that "is this
         // configured" is answered here and not at each of them.
-        log::info!("hook '{point}' is not bound to a plugin, so {pane_id:?} keeps its own screen");
+        log::info!("hook '{point}' is not bound to a plugin ({pane_id:?})");
         return;
     };
     // One line per hook, because until now every way this could come to nothing was silent:
@@ -1596,6 +1695,23 @@ fn run_hook(
         "running hook '{point}' for {pane_id:?}: {}",
         run_plugin_or_alias.location_string()
     );
+    if point.shape() == HookShape::Headless {
+        deliver_to_headless_hook(
+            point,
+            run_plugin_or_alias,
+            client_id,
+            Event::Hook { point, payload },
+            wasm_bridge,
+            bus,
+            plugin_aliases,
+            shutdown_send,
+        );
+        return;
+    }
+    let Some(pane_id) = pane_id else {
+        log::error!("hook '{point}' replaces a pane, and was fired without one");
+        return;
+    };
     let mut run_plugin_or_alias = run_plugin_or_alias.clone();
     run_plugin_or_alias.populate_run_plugin_if_needed(plugin_aliases);
     let cwd = run_plugin_or_alias.get_initial_cwd();
@@ -1640,16 +1756,16 @@ fn run_hook(
 /// Ask the `context_menu` hook plugin what a menu should say, and make sure the screen hears
 /// something either way.
 ///
-/// Three cases, and the third is the one worth reading twice:
+/// Two cases:
 ///
-/// 1. **No hook bound.** The configured items are sent straight back. The screen is holding an
-///    empty menu open waiting to hear, so staying silent here - which is what `run_hook` does for
-///    an unbound point - would leave the menu resolved only by its timeout.
-/// 2. **A hook bound and running.** It gets `Event::ContextMenuRequested` and answers with
-///    `set_context_menu` when it is ready.
-/// 3. **A hook bound but not running.** Also answered with the configured items, immediately. The
-///    plugin is loaded at session start precisely so this does not normally happen; loading one
-///    here would put a wasm/Lua load inside the window the user is already waiting through.
+/// 1. **No hook bound, or one that cannot be resolved.** The configured items are sent straight
+///    back. The screen is holding an empty menu open waiting to hear, so staying silent here -
+///    which is what `run_hook` does for an unbound point - would leave the menu resolved only by
+///    its timeout.
+/// 2. **A hook bound.** It gets `Event::ContextMenuRequested` through
+///    [`deliver_to_headless_hook`] - loaded first if this is the first right-click this client
+///    has made - and answers with `set_context_menu` when it is ready. The timeout still provides
+///    the configured fallback if it is slow.
 #[allow(clippy::too_many_arguments)]
 fn request_context_menu(
     context: ContextMenuContext,
@@ -1678,12 +1794,53 @@ fn request_context_menu(
         answer_with_configured_items();
         return;
     };
+    // The context already carries the items, stripped of their actions and carrying their ids -
+    // the screen put them there when it opened the menu, so that what the plugin is shown and what
+    // the screen re-attaches against cannot drift.
+    let delivered = deliver_to_headless_hook(
+        HookPoint::ContextMenu,
+        run_plugin_or_alias,
+        client_id,
+        Event::ContextMenuRequested(Box::new(context.clone())),
+        wasm_bridge,
+        bus,
+        plugin_aliases,
+        shutdown_send,
+    );
+    if !delivered {
+        answer_with_configured_items();
+    }
+}
+
+/// Hand `event` to the instance of the headless hook plugin bound to `point` that `client_id`
+/// can reach, loading it - suppressed, with no pane on screen - the first time. Answers whether
+/// anything could be addressed: false means the plugin did not resolve or did not load.
+///
+/// The instance is found by the plugin's *configured* identity, never by the payload: that is
+/// what makes one long-lived instance receive every firing, and it is the deliberate opposite
+/// of `run_hook`'s pane-replacing shape, where the payload is merged into the configuration and
+/// each firing is its own instance.
+///
+/// Loaded lazily rather than at session start, because every hook point is opt-in: loading a
+/// plugin into every session for a point most of them never bind would be a cost paid by
+/// everyone for the benefit of a few. An event sent to a plugin that is still loading is held
+/// by the bridge and delivered once the load completes.
+#[allow(clippy::too_many_arguments)]
+fn deliver_to_headless_hook(
+    point: HookPoint,
+    run_plugin_or_alias: &RunPluginOrAlias,
+    client_id: ClientId,
+    event: Event,
+    wasm_bridge: &mut WasmBridge,
+    bus: &Bus<PluginInstruction>,
+    plugin_aliases: &PluginAliases,
+    shutdown_send: &tokio::sync::mpsc::Sender<()>,
+) -> bool {
     let mut run_plugin_or_alias = run_plugin_or_alias.clone();
     run_plugin_or_alias.populate_run_plugin_if_needed(plugin_aliases);
     let Some(run_plugin) = run_plugin_or_alias.get_run_plugin() else {
-        log::error!("hook 'context_menu' names a plugin that could not be resolved");
-        answer_with_configured_items();
-        return;
+        log::error!("hook '{point}' names a plugin that could not be resolved");
+        return false;
     };
     let is_shared = PluginConfig::from_run_plugin(&run_plugin)
         .map(|plugin| plugin.is_shared())
@@ -1697,41 +1854,51 @@ fn request_context_menu(
     // instance, which every client can reach) counts. A shared hook still has to have been loaded
     // once: "every client can reach it" says nothing when there is nothing to reach, and taking
     // `is_shared` alone as proof of an instance would skip the load below and then dispatch to an
-    // empty list, leaving every right-click to the timeout.
+    // empty list, leaving the firing undelivered.
     let has_own_instance = !plugin_ids.is_empty()
         && (is_shared || plugin_ids.iter().any(|(_, cid)| *cid == Some(client_id)));
     if !has_own_instance {
-        // First right-click of the session (or first for this client): load the hook headless,
-        // then deliver this request to that new instance. The timeout still provides the
-        // configured fallback if it is slow.
-        //
-        // Lazily rather than at session start, because the menu is opt-in and off by default:
-        // loading a plugin into every session for a feature most of them never turn on would be a
-        // cost paid by everyone for the benefit of a few.
-        if let Some((plugin_id, loaded_client_id)) = load_background_plugin(
+        // A load already in flight is the instance: the bridge holds an event addressed to a
+        // loading plugin and applies it, when the load completes, to every connected client's
+        // instance - the loader provisions one per connected client, so a connected client is
+        // served by the load in flight (and a shared hook serves everyone). Loading again here
+        // split one hook's firings across two plugins whenever a second point fired within the
+        // first load's time - `agent_start` and `agent_waiting` a hundred milliseconds apart
+        // was enough.
+        let in_flight = wasm_bridge.loading_plugin_ids_for_plugin_location(
+            &run_plugin.location,
+            &run_plugin.configuration,
+        );
+        if let Some(plugin_id) = in_flight
+            .first()
+            .filter(|_| is_shared || wasm_bridge.client_is_connected(&client_id))
+        {
+            wasm_bridge
+                .update_plugins(
+                    vec![(Some(*plugin_id), Some(client_id), event)],
+                    shutdown_send.clone(),
+                )
+                .non_fatal();
+            return true;
+        }
+        let Some((plugin_id, loaded_client_id)) = load_background_plugin(
             run_plugin_or_alias.clone(),
             wasm_bridge,
             bus,
             plugin_aliases,
             client_id,
-        ) {
-            wasm_bridge
-                .update_plugins(
-                    vec![(
-                        Some(plugin_id),
-                        Some(loaded_client_id),
-                        Event::ContextMenuRequested(Box::new(context.clone())),
-                    )],
-                    shutdown_send.clone(),
-                )
-                .non_fatal();
-        }
-        return;
+        ) else {
+            return false;
+        };
+        wasm_bridge
+            .update_plugins(
+                vec![(Some(plugin_id), Some(loaded_client_id), event)],
+                shutdown_send.clone(),
+            )
+            .non_fatal();
+        return true;
     }
 
-    // The context already carries the items, stripped of their actions and carrying their ids -
-    // the screen put them there when it opened the menu, so that what the plugin is shown and what
-    // the screen re-attaches against cannot drift.
     let mut seen_plugin_ids = HashSet::new();
     let updates: Vec<_> = plugin_ids
         .into_iter()
@@ -1740,13 +1907,14 @@ fn request_context_menu(
             seen_plugin_ids.insert(plugin_id).then_some((
                 Some(plugin_id),
                 Some(client_id),
-                Event::ContextMenuRequested(Box::new(context.clone())),
+                event.clone(),
             ))
         })
         .collect();
     wasm_bridge
         .update_plugins(updates, shutdown_send.clone())
         .non_fatal();
+    true
 }
 
 fn load_background_plugin(

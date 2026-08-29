@@ -70,6 +70,17 @@ pub fn default_layout_dir() -> Option<PathBuf> {
     find_default_config_dir().map(|dir| dir.join("layouts"))
 }
 
+/// The drop-in folder beside the config file: every `*.kdl` in it is layered over the config,
+/// in file-name order, and it is where zellij itself writes what it is asked to persist
+/// (`zellij-managed.kdl`). Computed only, never created - see `get_user_plugin_dir`.
+pub fn get_config_overlay_dir(config_dir: Option<PathBuf>) -> Option<PathBuf> {
+    config_dir.map(|dir| dir.join(crate::input::config::CONFIG_OVERLAY_DIR_NAME))
+}
+
+pub fn default_config_overlay_dir() -> Option<PathBuf> {
+    get_config_overlay_dir(find_default_config_dir())
+}
+
 pub fn get_theme_dir(config_dir: Option<PathBuf>) -> Option<PathBuf> {
     config_dir.map(|dir| dir.join("themes"))
 }

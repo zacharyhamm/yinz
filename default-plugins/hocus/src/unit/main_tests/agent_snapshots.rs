@@ -88,6 +88,7 @@ fn a_daemon_that_announces_itself_is_heard_again() {
         payload: None,
         args: BTreeMap::new(),
         is_private: true,
+        pane_id: None,
     });
 
     state.pipe(agent_snapshot_with(1, panes_with_agent()));

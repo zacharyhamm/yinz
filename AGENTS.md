@@ -125,10 +125,13 @@ Neither suite is reliable enough for a single red run to be evidence. Before bel
 - **Known pre-existing failures**, confirmed against a stashed tree: `misc::quit_with_keybinding`
   (it waits for "Bye from Zellij!" but this fork puts a quit-confirmation modal in the way), the
   `nested_guest_modal` / `nested_hardening` / `nested_sessions` / `nested_session_handling_config`
-  group, and `stacked_pane_list::a_stack_list_survives_session_resurrection`. Two more, confirmed
-  on `main` at `c47f3a1d1`, the 10-second timeouts
-  `floating_pane_overlay::an_overlay_floating_pane_moves_to_another_tab_when_its_own_tab_closes`
-  and `hocus_tab_projects::a_tab_is_named_after_the_project_its_agent_is_in`.
+  group, and `stacked_pane_list::a_stack_list_survives_session_resurrection`. (Two more used to
+  be listed here - `floating_pane_overlay::an_overlay_floating_pane_moves_to_another_tab_when_its_own_tab_closes`
+  and `hocus_tab_projects::a_tab_is_named_after_the_project_its_agent_is_in` - and are fixed:
+  `75376d615` rewrote their layouts when the global panes went, and each test's own overlay
+  landed on the row it read. A floating pane at `y=0` covers the tab bar.) `tabs::move_tab_to_right`
+  was a race - the landed-on tab's status bar hears about Normal mode asynchronously since
+  `9003d98e6` - and now waits for the settled frame; see `docs/SELF_PROGRAMMING.md`.
 - **The two known-flaky `zellij-server` lib tests are fixed** and each now passes 20/20 in a
   loop: `screen_tests::cli_actions::send_cli_scroll_up_action` and
   `plugins::plugin_tests::keybinds::mode_update_payload_is_lightweight_for_opted_in_plugins`.
@@ -198,11 +201,19 @@ Read `docs/ARCHITECTURE.md` before changing server internals, and
 - Changing anything under `zellij-utils/assets/` (plugins, protobufs): regenerate with
   `cargo x proto` / `cargo x assets`, and CI's `assets --check` must pass.
 
+## Self-programming
+
+`docs/SELF_PROGRAMMING.md` summarises the workstream that made this fork drive and rewrite itself
+through coding agents - the goal, what landed where, proto numbers in use, and the plugin-loading
+lessons. Read it before touching agent records, `zellij events`, `config.d`, hooks or plugin
+authoring.
+
 ## Agent state from Claude Code hooks
 
 A `claude` running in a pane can report its own busy/waiting/idle state instead of being
 guessed at from its screen — `zellij hocus hooks install` wires Claude Code's hooks to
-`hocus-agentd`. See `docs/AGENT_HOOKS.md`. Unrelated to the `hooks { … }` config block
+`zellij action agent-report`, which sets the pane's agent record (`PaneInfo.agent`) for every
+reader of the manifest. See `docs/AGENT_HOOKS.md`. Unrelated to the `hooks { … }` config block
 (`zellij-utils/src/input/hooks.rs`), which binds a plugin to a moment in the session.
 
 ## Lua plugins

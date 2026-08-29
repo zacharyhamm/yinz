@@ -408,6 +408,7 @@ fn selection(plugin_id: u32) -> PipeMessage {
         ),
         args: BTreeMap::new(),
         is_private: true,
+        pane_id: None,
     }
 }
 

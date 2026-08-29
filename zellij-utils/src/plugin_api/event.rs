@@ -4,7 +4,8 @@ pub use super::generated_api::api::{
         event::Payload as ProtobufEventPayload,
         layout_parsing_error::ErrorType as ProtobufLayoutParsingErrorType,
         pane_scrollback_response, ActionCompletePayload as ProtobufActionCompletePayload,
-        ActivePaneScrollPayload as ProtobufActivePaneScrollPayload,
+        ActivePaneScrollPayload as ProtobufActivePaneScrollPayload, AgentInfo as ProtobufAgentInfo,
+        AgentSource as ProtobufAgentSource, AgentState as ProtobufAgentState,
         AvailableLayoutInfoPayload as ProtobufAvailableLayoutInfoPayload,
         ClientInfo as ProtobufClientInfo, ClientPaneHistory as ProtobufClientPaneHistory,
         ClientTabHistory as ProtobufClientTabHistory,
@@ -17,7 +18,7 @@ pub use super::generated_api::api::{
         CopyDestination as ProtobufCopyDestination, CwdChangedPayload as ProtobufCwdChangedPayload,
         Event as ProtobufEvent, EventNameList as ProtobufEventNameList,
         EventType as ProtobufEventType, FileMetadata as ProtobufFileMetadata,
-        HintTextPayload as ProtobufHintTextPayload,
+        HintTextPayload as ProtobufHintTextPayload, HookPayload as ProtobufHookPayload,
         HostTerminalThemeChangedPayload as ProtobufHostTerminalThemeChangedPayload,
         HostTerminalThemeIndication as ProtobufHostTerminalThemeIndication,
         InputModeKeybinds as ProtobufInputModeKeybinds, KdlError as ProtobufKdlError,
@@ -53,17 +54,19 @@ pub use super::generated_api::api::{
 };
 #[allow(hidden_glob_reexports)]
 use crate::data::{
-    ClientId, ClientInfo, ContextMenuContext, ContextMenuItem, ContextMenuLink, CopyDestination,
-    DataRows, Event, EventType, FileMetadata, HostTerminalThemeMode, InputMode, KeyWithModifier,
-    LayoutInfo, LayoutMetadata, ModeInfo, Mouse, PaneContents, PaneId, PaneInfo, PaneManifest,
-    PaneMetadata, PaneScrollbackResponse, PermissionStatus, PluginCapabilities, PluginInfo,
-    QueueJobInfo, QueueJobOutcome, QueueJobState, QueueSnapshot, SelectedText, SessionInfo, Style,
-    StyledText, TabInfo, TabMetadata, WebServerStatus, WebSharing,
+    AgentInfo, AgentSource, AgentState, ClientId, ClientInfo, ContextMenuContext, ContextMenuItem,
+    ContextMenuLink, CopyDestination, DataRows, Event, EventType, FileMetadata,
+    HostTerminalThemeMode, InputMode, KeyWithModifier, LayoutInfo, LayoutMetadata, ModeInfo, Mouse,
+    PaneContents, PaneId, PaneInfo, PaneManifest, PaneMetadata, PaneScrollbackResponse,
+    PermissionStatus, PluginCapabilities, PluginInfo, QueueJobInfo, QueueJobOutcome, QueueJobState,
+    QueueSnapshot, SelectedText, SessionInfo, Style, StyledText, TabInfo, TabMetadata,
+    WebServerStatus, WebSharing,
 };
 use crate::plugin_api::plugin_data::ProtobufRows as ProtobufDataRows;
 
 use crate::errors::prelude::*;
 use crate::input::actions::Action;
+use crate::input::hooks::HookPoint;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
@@ -686,6 +689,14 @@ impl TryFrom<ProtobufEvent> for Event {
                     })
                 },
                 _ => Err("Malformed payload for QueueJobStarted Event"),
+            },
+            Ok(ProtobufEventType::Hook) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::HookPayload(p)) => Ok(Event::Hook {
+                    point: HookPoint::from_str(&p.point)
+                        .map_err(|_| "Malformed hook point for Hook Event")?,
+                    payload: context_from_items(p.payload),
+                }),
+                _ => Err("Malformed payload for Hook Event"),
             },
             Ok(ProtobufEventType::QueueJobFinished) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::QueueJobFinishedPayload(p)) => {
@@ -1363,6 +1374,13 @@ impl TryFrom<Event> for ProtobufEvent {
                     },
                 )),
             }),
+            Event::Hook { point, payload } => Ok(ProtobufEvent {
+                name: ProtobufEventType::Hook as i32,
+                payload: Some(event::Payload::HookPayload(ProtobufHookPayload {
+                    point: point.as_str().to_owned(),
+                    payload: context_to_items(payload),
+                })),
+            }),
             Event::QueueJobFinished {
                 queue,
                 job_id,
@@ -1984,6 +2002,58 @@ impl TryFrom<Mouse> for MouseEventPayload {
     }
 }
 
+impl TryFrom<ProtobufAgentInfo> for AgentInfo {
+    type Error = &'static str;
+    fn try_from(protobuf: ProtobufAgentInfo) -> Result<Self, &'static str> {
+        let state = match ProtobufAgentState::try_from(protobuf.state) {
+            Ok(ProtobufAgentState::Busy) => AgentState::Busy,
+            Ok(ProtobufAgentState::Waiting) => AgentState::Waiting,
+            Ok(ProtobufAgentState::Idle) => AgentState::Idle,
+            Ok(ProtobufAgentState::Exited) => AgentState::Exited,
+            Err(_) => return Err("unknown agent state"),
+        };
+        let source = match ProtobufAgentSource::try_from(protobuf.source) {
+            Ok(ProtobufAgentSource::Spawned) => AgentSource::Spawned,
+            Ok(ProtobufAgentSource::Reported) => AgentSource::Reported,
+            Ok(ProtobufAgentSource::Registered) => AgentSource::Registered,
+            Err(_) => return Err("unknown agent source"),
+        };
+        Ok(AgentInfo {
+            kind: protobuf.kind,
+            state,
+            source,
+            detail: protobuf.detail,
+            cwd: protobuf.cwd,
+            session_id: protobuf.session_id,
+        })
+    }
+}
+
+impl TryFrom<AgentInfo> for ProtobufAgentInfo {
+    type Error = &'static str;
+    fn try_from(agent: AgentInfo) -> Result<Self, &'static str> {
+        let state = match agent.state {
+            AgentState::Busy => ProtobufAgentState::Busy,
+            AgentState::Waiting => ProtobufAgentState::Waiting,
+            AgentState::Idle => ProtobufAgentState::Idle,
+            AgentState::Exited => ProtobufAgentState::Exited,
+        };
+        let source = match agent.source {
+            AgentSource::Spawned => ProtobufAgentSource::Spawned,
+            AgentSource::Reported => ProtobufAgentSource::Reported,
+            AgentSource::Registered => ProtobufAgentSource::Registered,
+        };
+        Ok(ProtobufAgentInfo {
+            kind: agent.kind,
+            state: state as i32,
+            source: source as i32,
+            detail: agent.detail,
+            cwd: agent.cwd,
+            session_id: agent.session_id,
+        })
+    }
+}
+
 impl TryFrom<ProtobufPaneInfo> for PaneInfo {
     type Error = &'static str;
     fn try_from(protobuf_pane_info: ProtobufPaneInfo) -> Result<Self, &'static str> {
@@ -2026,6 +2096,10 @@ impl TryFrom<ProtobufPaneInfo> for PaneInfo {
             default_bg: protobuf_pane_info.default_bg,
             cwd: protobuf_pane_info.cwd,
             host: protobuf_pane_info.host,
+            agent: protobuf_pane_info
+                .agent
+                .map(AgentInfo::try_from)
+                .transpose()?,
         })
     }
 }
@@ -2073,6 +2147,10 @@ impl TryFrom<PaneInfo> for ProtobufPaneInfo {
             default_bg: pane_info.default_bg,
             cwd: pane_info.cwd,
             host: pane_info.host,
+            agent: pane_info
+                .agent
+                .map(ProtobufAgentInfo::try_from)
+                .transpose()?,
         })
     }
 }
@@ -2436,6 +2514,7 @@ impl TryFrom<ProtobufEventType> for EventType {
             ProtobufEventType::QueueJobStarted => EventType::QueueJobStarted,
             ProtobufEventType::QueueJobFinished => EventType::QueueJobFinished,
             ProtobufEventType::QueueChanged => EventType::QueueChanged,
+            ProtobufEventType::Hook => EventType::Hook,
         })
     }
 }
@@ -2501,6 +2580,7 @@ impl TryFrom<EventType> for ProtobufEventType {
             EventType::QueueJobStarted => ProtobufEventType::QueueJobStarted,
             EventType::QueueJobFinished => ProtobufEventType::QueueJobFinished,
             EventType::QueueChanged => ProtobufEventType::QueueChanged,
+            EventType::Hook => ProtobufEventType::Hook,
         })
     }
 }
@@ -2615,6 +2695,26 @@ fn serialize_mode_update_event() {
         mode_update_event, deserialized_event,
         "Event properly serialized/deserialized without change"
     );
+}
+
+#[test]
+fn serialize_hook_event() {
+    use prost::Message;
+    for point in HookPoint::ALL {
+        let hook_event = Event::Hook {
+            point: *point,
+            payload: BTreeMap::from([
+                ("agent_pane_id".to_owned(), "7".to_owned()),
+                ("agent_state".to_owned(), "waiting".to_owned()),
+            ]),
+        };
+        let protobuf_event: ProtobufEvent = hook_event.clone().try_into().unwrap();
+        let serialized_protobuf_event = protobuf_event.encode_to_vec();
+        let deserialized_protobuf_event: ProtobufEvent =
+            Message::decode(serialized_protobuf_event.as_slice()).unwrap();
+        let deserialized_event: Event = deserialized_protobuf_event.try_into().unwrap();
+        assert_eq!(hook_event, deserialized_event, "{point}");
+    }
 }
 
 #[test]
@@ -3020,6 +3120,7 @@ fn serialize_session_update_event_with_non_default_values() {
     let panes_list = vec![
         PaneInfo {
             host: None,
+            agent: None,
             id: 1,
             is_plugin: false,
             is_focused: true,
@@ -3049,6 +3150,7 @@ fn serialize_session_update_event_with_non_default_values() {
         },
         PaneInfo {
             host: None,
+            agent: None,
             id: 1,
             is_plugin: true,
             is_focused: true,
@@ -3844,7 +3946,11 @@ mod tests {
 
         #[hegel::composite]
         fn any_event(tc: &hegel::TestCase) -> Event {
-            match tc.draw(generators::integers::<u8>().max_value(35)) {
+            match tc.draw(generators::integers::<u8>().max_value(36)) {
+                36 => Event::Hook {
+                    point: tc.draw(generators::sampled_from(HookPoint::ALL.to_vec())),
+                    payload: context(tc),
+                },
                 34 => Event::ContextMenuRequested(Box::new(any_context_menu_context(tc))),
                 35 => Event::ContextMenuItemSelected {
                     label: strings(tc),
