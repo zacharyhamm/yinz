@@ -28,6 +28,7 @@ message ClientToServerMsg {
     SoftKeyboardVisibilityChangedMsg soft_keyboard_visibility_changed = 21;
     NestedSessionFrameFromHostMsg nested_session_frame_from_host = 22;
     KittyGraphicsSupportMsg kitty_graphics_support = 23;
+    SubscribeToEventsMsg subscribe_to_events = 28;
     SixelSupportMsg sixel_support = 24;
     RequestSessionListMsg request_session_list = 25;
     SetMobileRenderPreferencesMsg set_mobile_render_preferences = 26;
@@ -113,6 +114,10 @@ message SubscribeToPaneRendersMsg {
   repeated PaneId pane_ids = 1;
   optional uint32 scrollback = 2;
   bool ansi = 3;
+}
+
+message SubscribeToEventsMsg {
+  repeated string event_types = 1;
 }
 
 message DesktopNotificationResponseMsg {

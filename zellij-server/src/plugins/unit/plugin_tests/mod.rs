@@ -778,6 +778,7 @@ lazy_static! {
 use crate::panes::PaneId;
 
 mod break_panes_commands;
+mod cli_events;
 mod config_events;
 mod focused_pane_commands;
 mod highlights;

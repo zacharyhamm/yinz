@@ -35,6 +35,7 @@ fn server_message_name(msg: &ServerToClientMsg) -> String {
         ServerToClientMsg::ConfigFileUpdated => "ConfigFileUpdated",
         ServerToClientMsg::PaneRenderUpdate { .. } => "PaneRenderUpdate",
         ServerToClientMsg::SubscribedPaneClosed { .. } => "SubscribedPaneClosed",
+        ServerToClientMsg::EventUpdate { .. } => "EventUpdate",
         ServerToClientMsg::ForwardQueryToHost { .. } => "ForwardQueryToHost",
         ServerToClientMsg::MobileState { .. } => "MobileState",
         ServerToClientMsg::EmitNestedSessionFrame { .. } => "EmitNestedSessionFrame",
@@ -203,6 +204,9 @@ impl ServerConnection for FakeClientOsApi {
             let recorded = match msg {
                 ServerToClientMsg::Log { lines } | ServerToClientMsg::LogError { lines } => {
                     format!("{}: {}", server_message_name(msg), lines.join("\n"))
+                },
+                ServerToClientMsg::EventUpdate { event_type, .. } => {
+                    format!("{}: {}", server_message_name(msg), event_type)
                 },
                 _ => server_message_name(msg),
             };

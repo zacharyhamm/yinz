@@ -48,6 +48,22 @@ const DISALLOWED_GLOBALS: &[&str] = &["dofile", "loadfile", "load", "loadstring"
 
 /// Load a Lua plugin: build its interpreter, run the prelude, then run the plugin's own source
 /// and keep the table it returns.
+/// Compile `source` as a plugin chunk without running it, answering with the compile error.
+///
+/// This is the same interpreter shape `load_lua_plugin` builds, so what compiles here loads
+/// there — but only *compiles*: a plugin that parses and then fails in `load`, or returns
+/// something other than a table, is a runtime error this cannot see. The chunk is named as the
+/// loader would name it, so the error reads `keys.lua:3: ...` either way.
+pub fn check_lua_plugin(source: &str, chunk_name: &str) -> std::result::Result<(), String> {
+    let lua = Lua::new_with(plugin_stdlib(), mlua::LuaOptions::default())
+        .map_err(|e| format!("failed to create a Lua interpreter: {}", e))?;
+    lua.load(source)
+        .set_name(chunk_name)
+        .into_function()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 pub fn load_lua_plugin(source: &str, chunk_name: &str, env: PluginEnv) -> Result<LuaPlugin> {
     let lua = Lua::new_with(plugin_stdlib(), mlua::LuaOptions::default())
         .map_err(|e| anyhow!("failed to create a Lua interpreter: {}", e))?;

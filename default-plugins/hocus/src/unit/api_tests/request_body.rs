@@ -119,7 +119,7 @@ fn request_body_advertises_the_tools_when_they_are_enabled() {
     let mut cfg = test_config();
     cfg.tools = true;
     let body = body_value(&cfg, &[Message::user("hi")]);
-    assert_eq!(body["tools"].as_array().unwrap().len(), 65);
+    assert_eq!(body["tools"].as_array().unwrap().len(), 66);
 }
 
 #[test]
@@ -581,7 +581,7 @@ fn acting_sends_the_body_it_always_did() {
     let transcript = [Message::user("hi")];
     let body: serde_json::Value =
         serde_json::from_slice(&request_body(&cfg, &transcript, true)).unwrap();
-    assert_eq!(body["tools"].as_array().unwrap().len(), 65);
+    assert_eq!(body["tools"].as_array().unwrap().len(), 66);
     assert!(!body["messages"][0]["content"]
         .as_str()
         .unwrap()

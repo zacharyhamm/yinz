@@ -1551,17 +1551,19 @@ pub(crate) fn screen_thread_main(
             ScreenInstruction::HoldPane(id, exit_status, run_command) => {
                 let is_first_run = false;
                 let mut found = false;
+                let mut pane_is_agent = false;
                 {
                     for tab in screen.tabs.values_mut() {
                         if tab.get_all_pane_ids().contains(&id) {
                             tab.hold_pane(id, exit_status, is_first_run, run_command.clone());
                             found = true;
+                            pane_is_agent = tab.pane_is_agent(id);
                             break;
                         }
                     }
                 }
                 if found {
-                    screen.fire_agent_exit_hook(id, exit_status, &run_command);
+                    screen.fire_agent_exit_hook(id, exit_status, &run_command, pane_is_agent);
                 }
                 if !found {
                     pending_events_waiting_for_pane
@@ -4100,6 +4102,17 @@ pub(crate) fn screen_thread_main(
                 }
                 screen.render(None)?;
             },
+            ScreenInstruction::SetPaneAgent(pane_id, agent, _completion) => {
+                let changed = screen
+                    .tab_containing_pane_mut(pane_id)
+                    .map(|tab| tab.set_pane_agent(pane_id, agent))
+                    .unwrap_or(false);
+                // A report that repeats itself costs nothing; a changed one is news to every
+                // reader of the manifest.
+                if changed {
+                    screen.log_and_report_session_state()?;
+                }
+            },
             ScreenInstruction::SetPaneColor(pane_id, fg, bg, _completion) => {
                 if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
                     tab.set_pane_color(pane_id, fg, bg).non_fatal();
@@ -4612,6 +4625,13 @@ pub(crate) fn screen_thread_main(
             },
             ScreenInstruction::NotifyPaneClosedToSubscribers { pane_id } => {
                 screen.notify_pane_closed_to_subscribers(pane_id);
+            },
+            ScreenInstruction::SetCliEventSubscribersPresent(present) => {
+                screen.cli_event_subscribers_present = present;
+                if present {
+                    // A new subscriber gets the state as it stands, not the next change to it.
+                    screen.log_and_report_session_state()?;
+                }
             },
             ScreenInstruction::UpdateBackgroundPluginSubscriptions(
                 plugin_id,

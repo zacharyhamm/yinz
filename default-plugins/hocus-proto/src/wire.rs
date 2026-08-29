@@ -93,10 +93,9 @@ pub const STORE_QUERY: &str = "store_query";
 pub const AGENT_HOOK: &str = "agent_hook";
 /// The `--args` key naming the pane a hook fired in.
 ///
-/// The script has to say: `PipeSource::Cli` carries a pipe id and nothing else,
-/// and the server drops the calling pane for everything but an in-place plugin.
-/// What the script has instead is `ZELLIJ_PANE_ID`, which the server exports
-/// into every pane and which a hook process inherits from the agent it watches.
+/// Historical: a `zellij pipe` now carries the pane it was run in on the message itself
+/// (`PipeMessage::pane_id`, from the same `ZELLIJ_PANE_ID`), and the daemon reads that first.
+/// The argument is what a hook script from before that says instead, and is still honoured.
 pub const HOOK_PANE_ID: &str = "pane_id";
 
 /// → hocus: a question put to the running hocus, from a plugin or from
@@ -170,43 +169,9 @@ pub struct PollReply {
     pub hooks: agents::HookFeeds,
 }
 
-/// One Claude Code hook payload, forwarded whole by the generated hook script.
-///
-/// The field names are Claude Code's own, so the script has nothing to reshape and
-/// needs no `jq`: it reads its stdin and hands it over. Every field but the event
-/// name is optional and unknown ones are ignored, because Claude Code adds fields
-/// between versions and an unrecognised one must not cost us the event.
-///
-/// Deliberately *not* named for `input::hooks::HookPoint`, which is a different
-/// mechanism entirely — that one is zellij handing a moment of its own to a plugin.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HookEvent {
-    /// `SessionStart`, `PreToolUse`, `Stop`, … — see [`agents::hook_phase`].
-    pub hook_event_name: String,
-    /// Claude Code's own session id. Kept so a pane that is restarted in place can
-    /// be told from one that merely went quiet.
-    #[serde(default)]
-    pub session_id: String,
-    /// Why a `SessionStart` fired: `startup`, `resume`, `clear`, `compact`, or `fork`.
-    #[serde(default)]
-    pub source: Option<String>,
-    /// The folder Claude Code is working in, which is not always the pane's shell
-    /// folder — the agent is what moved, and this is the one that says where to.
-    #[serde(default)]
-    pub cwd: Option<String>,
-    /// Which notification this is, on a `Notification`. Most of them say nothing
-    /// about whether the user is being waited on; [`agents::hook_phase`] is where
-    /// the ones that do are named.
-    #[serde(default)]
-    pub notification_type: Option<String>,
-    /// The tool about to run, or just finished, on a `PreToolUse`/`PostToolUse`.
-    #[serde(default)]
-    pub tool_name: Option<String>,
-    /// That tool's arguments. Free-form, attacker-influenced text of arbitrary
-    /// size — whatever is taken from it is truncated hard and drawn as plain text.
-    #[serde(default)]
-    pub tool_input: Option<serde_json::Value>,
-}
+/// A Claude Code hook event, as its JSON arrives - the session's own reading of one, so the
+/// daemon and `zellij action agent-report` cannot disagree about what an event means.
+pub use zellij_tile::agent::HookEvent;
 
 /// Where the cursor is in the agents pane.
 ///

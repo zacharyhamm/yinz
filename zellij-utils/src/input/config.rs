@@ -184,27 +184,63 @@ pub enum ConversionError {
     UnknownInputMode(String),
 }
 
+/// Merge `fragment`'s top-level nodes into `managed`: a node replaces the one of the same
+/// name, unless both have children, in which case the children are merged by name, one level
+/// deep. See `Config::write_managed_fragment`.
+pub fn merge_kdl_fragment(managed: &mut kdl::KdlDocument, fragment: &kdl::KdlDocument) {
+    for node in fragment.nodes() {
+        let name = node.name().value();
+        let existing = managed
+            .nodes_mut()
+            .iter_mut()
+            .find(|candidate| candidate.name().value() == name);
+        match existing {
+            Some(target) if node.children().is_some() && target.children().is_some() => {
+                let target_children = target.ensure_children();
+                for child in node.children().map(|c| c.nodes()).unwrap_or_default() {
+                    let child_name = child.name().value();
+                    match target_children
+                        .nodes_mut()
+                        .iter_mut()
+                        .find(|candidate| candidate.name().value() == child_name)
+                    {
+                        Some(slot) => *slot = child.clone(),
+                        None => target_children.nodes_mut().push(child.clone()),
+                    }
+                }
+            },
+            Some(target) => *target = node.clone(),
+            None => managed.nodes_mut().push(node.clone()),
+        }
+    }
+}
+
 impl TryFrom<&CliArgs> for Config {
     type Error = ConfigError;
 
     fn try_from(opts: &CliArgs) -> ConfigResult {
-        if let Some(ref path) = opts.config {
-            let default_config = Config::from_default_assets()?;
-            return Config::from_path(path, Some(default_config));
-        }
-
         if let Some(Command::Setup(ref setup)) = opts.command {
             if setup.clean {
                 return Config::from_default_assets();
             }
         }
 
+        // The config *directory*, whichever file is read: the drop-ins hang off it, so a
+        // one-off `--config /somewhere/else.kdl` still gets the user's `config.d`, and never
+        // `/somewhere/config.d`.
         let config_dir = opts
             .config_dir
             .clone()
             .or_else(home::find_default_config_dir);
+        let overlay_dir = home::get_config_overlay_dir(config_dir.clone());
 
-        if let Some(ref config) = config_dir {
+        if let Some(ref path) = opts.config {
+            let default_config = Config::from_default_assets()?;
+            return Config::from_path(path, Some(default_config))
+                .map(|config| config.with_overlay_dir(overlay_dir.as_deref()));
+        }
+
+        let config = if let Some(ref config) = config_dir {
             let lua_path = config.join(DEFAULT_LUA_CONFIG_FILE_NAME);
             let path = if lua_path.exists() {
                 lua_path
@@ -213,17 +249,103 @@ impl TryFrom<&CliArgs> for Config {
             };
             if path.exists() {
                 let default_config = Config::from_default_assets()?;
-                Config::from_path(&path, Some(default_config))
+                Config::from_path(&path, Some(default_config))?
             } else {
-                Config::from_default_assets()
+                Config::from_default_assets()?
             }
         } else {
-            Config::from_default_assets()
-        }
+            Config::from_default_assets()?
+        };
+        Ok(config.with_overlay_dir(overlay_dir.as_deref()))
     }
 }
 
+/// The drop-in folder under the config dir. See `home::get_config_overlay_dir`.
+pub const CONFIG_OVERLAY_DIR_NAME: &str = "config.d";
+/// The drop-in zellij writes itself, for anything it is asked to persist: `zellij action
+/// reconfigure --write`, `zellij action set-hook --write`, a plugin's `reconfigure(kdl, true)`.
+/// A person's own config file - KDL or Lua - is never rewritten for those.
+pub const MANAGED_CONFIG_FILE_NAME: &str = "zellij-managed.kdl";
+
 impl Config {
+    /// Layer every `*.kdl` in `overlay_dir` over `self`, in file-name order, the way a config
+    /// file is layered over the defaults. A drop-in that does not parse is logged and skipped
+    /// rather than failing the whole config: a bad managed write must not brick the session.
+    /// `None`, or a folder that is not there, is no overlay.
+    pub fn with_overlay_dir(self, overlay_dir: Option<&Path>) -> Config {
+        let Some(overlay_dir) = overlay_dir else {
+            return self;
+        };
+        let Ok(entries) = std::fs::read_dir(overlay_dir) else {
+            return self;
+        };
+        let mut paths: Vec<PathBuf> = entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("kdl"))
+            .filter(|path| path.is_file())
+            .collect();
+        paths.sort();
+        paths.into_iter().fold(self, |config, path| {
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(e) => {
+                    log::error!("Skipping config drop-in {}: {}", path.display(), e);
+                    return config;
+                },
+            };
+            match Config::from_kdl(&text, Some(config.clone())) {
+                Ok(layered) => layered,
+                Err(e) => {
+                    log::error!("Skipping config drop-in {}: {}", path.display(), e);
+                    config
+                },
+            }
+        })
+    }
+
+    /// Persist a KDL `fragment` into `<overlay_dir>/zellij-managed.kdl`, and answer the path.
+    ///
+    /// The fragment is merged into what the file already holds by node: a top-level node
+    /// replaces the one of the same name - `mouse_mode false` sets that one option - except
+    /// that where both have children the children are merged by name, one level deep, so
+    /// `hooks { agent_exit "" }` unbinds one point and leaves the others. A `keybinds` mode
+    /// block is a child, so it is replaced whole. The merged file is parsed over the
+    /// defaults before anything is written, and the write is atomic, so the file on disk is
+    /// always one the loader accepts.
+    pub fn write_managed_fragment(overlay_dir: &Path, fragment: &str) -> Result<PathBuf, String> {
+        use kdl::KdlDocument;
+        let path = overlay_dir.join(MANAGED_CONFIG_FILE_NAME);
+        let fragment: KdlDocument = fragment
+            .parse()
+            .map_err(|e: kdl::KdlError| format!("the config fragment is not valid KDL: {e}"))?;
+        let mut managed: KdlDocument = match std::fs::read_to_string(&path) {
+            Ok(text) => text.parse().map_err(|e: kdl::KdlError| {
+                format!(
+                    "{} is not valid KDL; fix or remove it before zellij can write to it: {e}",
+                    path.display()
+                )
+            })?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => KdlDocument::new(),
+            Err(e) => return Err(format!("failed to read {}: {e}", path.display())),
+        };
+        merge_kdl_fragment(&mut managed, &fragment);
+        let text = managed.to_string();
+        let defaults = Config::from_default_assets().map_err(|e| e.to_string())?;
+        Config::from_kdl(&text, Some(defaults))
+            .map_err(|e| format!("the merged {} would not load: {e}", path.display()))?;
+        std::fs::create_dir_all(overlay_dir)
+            .map_err(|e| format!("failed to create {}: {e}", overlay_dir.display()))?;
+        let tmp = overlay_dir.join(format!(
+            ".{MANAGED_CONFIG_FILE_NAME}.{}",
+            std::process::id()
+        ));
+        std::fs::write(&tmp, &text)
+            .map_err(|e| format!("failed to write {}: {e}", tmp.display()))?;
+        std::fs::rename(&tmp, &path)
+            .map_err(|e| format!("failed to replace {}: {e}", path.display()))?;
+        Ok(path)
+    }
+
     pub fn theme_config(&self, theme_name: Option<&String>) -> Option<Styling> {
         match &theme_name {
             Some(theme_name) => self.themes.get_theme(theme_name).map(|theme| theme.palette),
@@ -515,6 +637,8 @@ pub async fn watch_config_file_changes<F, Fut>(
         }
     }
 
+    /// The theme dir and the `config.d` drop-in dir, as far as they exist: the two folders a
+    /// change in which is a change in the config. Watched together with the file.
     fn load_config_and_theme_dir(
         config_file_path: &Path,
         config_dir: Option<&Path>,
@@ -533,6 +657,15 @@ pub async fn watch_config_file_changes<F, Fut>(
             .ok()
     }
 
+    fn existing_overlay_dir(config_dir: Option<&Path>) -> Option<PathBuf> {
+        home::get_config_overlay_dir(
+            config_dir
+                .map(Path::to_path_buf)
+                .or_else(home::find_default_config_dir),
+        )
+        .filter(|dir| dir.exists())
+    }
+
     fn event_is_for_config_file(event: &Event, config_file_path: &Path) -> bool {
         event.paths.iter().any(|path| path == config_file_path)
     }
@@ -546,6 +679,7 @@ pub async fn watch_config_file_changes<F, Fut>(
         config_file_path: &Path,
         config_dir: Option<&Path>,
         watched_theme_dir: Option<&Path>,
+        watched_overlay_dir: Option<&Path>,
         on_config_change: &F,
     ) -> Option<bool>
     where
@@ -567,7 +701,10 @@ pub async fn watch_config_file_changes<F, Fut>(
                 },
             };
         on_config_change(new_config).await;
-        Some(new_theme_dir.as_deref() != watched_theme_dir)
+        // A drop-in folder that appeared since the watcher started needs watching too.
+        let overlay_dir_changed =
+            existing_overlay_dir(config_dir).as_deref() != watched_overlay_dir;
+        Some(new_theme_dir.as_deref() != watched_theme_dir || overlay_dir_changed)
     }
 
     loop {
@@ -575,6 +712,7 @@ pub async fn watch_config_file_changes<F, Fut>(
             let watched_theme_dir =
                 load_config_and_theme_dir(config_file_path.as_path(), config_dir)
                     .and_then(|(_, theme_dir)| theme_dir);
+            let watched_overlay_dir = existing_overlay_dir(config_dir);
             let (tx, mut rx) = mpsc::unbounded_channel();
 
             let mut watcher = match PollWatcher::new(
@@ -604,6 +742,15 @@ pub async fn watch_config_file_changes<F, Fut>(
                     );
                 }
             }
+            if let Some(watched_overlay_dir) = &watched_overlay_dir {
+                if let Err(e) = watcher.watch(watched_overlay_dir, RecursiveMode::NonRecursive) {
+                    log::error!(
+                        "Failed to watch config drop-in dir {:?}, continuing without it: {}",
+                        watched_overlay_dir,
+                        e,
+                    );
+                }
+            }
 
             while let Some(event_result) = rx.recv().await {
                 let event = match event_result {
@@ -624,6 +771,7 @@ pub async fn watch_config_file_changes<F, Fut>(
                             config_file_path.as_path(),
                             config_dir,
                             watched_theme_dir.as_deref(),
+                            watched_overlay_dir.as_deref(),
                             &on_config_change,
                         )
                         .await
@@ -631,13 +779,15 @@ pub async fn watch_config_file_changes<F, Fut>(
                     {
                         break;
                     }
-                } else if event_is_in_theme_dir(&event, watched_theme_dir.as_deref())
+                } else if (event_is_in_theme_dir(&event, watched_theme_dir.as_deref())
+                    || event_is_in_theme_dir(&event, watched_overlay_dir.as_deref()))
                     && (event.kind.is_remove() || event.kind.is_create() || event.kind.is_modify())
                 {
                     let should_restart_watcher = reload_config_after_change(
                         config_file_path.as_path(),
                         config_dir,
                         watched_theme_dir.as_deref(),
+                        watched_overlay_dir.as_deref(),
                         &on_config_change,
                     )
                     .await
@@ -1710,5 +1860,100 @@ mod config_test {
             Config::from_kdl("load_plugins {\n \"zellij:about\"\n}", Some(base.clone())).unwrap();
         let round_tripped = Config::from_kdl(&merged.to_string(false), Some(base)).unwrap();
         assert_eq!(names(&round_tripped), vec!["zellij:about", "zellij:link"]);
+    }
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+    use kdl::KdlDocument;
+
+    fn doc(text: &str) -> KdlDocument {
+        text.parse().unwrap()
+    }
+
+    /// A block replaces its namesake, except that blocks with children merge their children
+    /// by name - so one option, or one hook point, can be set without touching the rest.
+    #[test]
+    fn a_fragment_merges_by_block_and_then_by_child_name() {
+        let mut managed =
+            doc("mouse_mode true\ncopy_command \"x\"\nhooks {\n    agent_exit \"file:a.lua\"\n}\n");
+        merge_kdl_fragment(
+            &mut managed,
+            &doc("mouse_mode false\nhooks {\n    context_menu \"\"\n}\nload_plugins {\n    \"file:x.lua\"\n}\n"),
+        );
+        let text = managed.to_string();
+        assert!(text.contains("mouse_mode false"), "{text}");
+        assert!(!text.contains("mouse_mode true"), "{text}");
+        assert!(
+            text.contains("copy_command \"x\""),
+            "an untouched option stays: {text}"
+        );
+        assert!(text.contains("agent_exit \"file:a.lua\""), "{text}");
+        assert!(text.contains("context_menu \"\""), "{text}");
+        assert!(
+            text.contains("load_plugins"),
+            "a new block is appended: {text}"
+        );
+    }
+
+    #[test]
+    fn a_managed_fragment_is_written_merged_and_only_when_it_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let overlay_dir = dir.path().join(CONFIG_OVERLAY_DIR_NAME);
+        let path = Config::write_managed_fragment(&overlay_dir, "mouse_mode false\n").unwrap();
+        assert_eq!(path, overlay_dir.join(MANAGED_CONFIG_FILE_NAME));
+        Config::write_managed_fragment(&overlay_dir, "hooks {\n    agent_exit \"\"\n}\n").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("mouse_mode false") && text.contains("agent_exit \"\""),
+            "{text}"
+        );
+
+        let refused =
+            Config::write_managed_fragment(&overlay_dir, "hooks {\n    on_coffee \"x\"\n}\n")
+                .unwrap_err();
+        assert!(refused.contains("would not load"), "{refused}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            text,
+            "a refused write changes nothing"
+        );
+        assert!(Config::write_managed_fragment(&overlay_dir, "hooks {").is_err());
+    }
+
+    /// Drop-ins layer in file-name order over the config, and a broken one is skipped.
+    #[test]
+    fn drop_ins_layer_in_name_order_and_a_broken_one_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let overlay_dir = dir.path().join(CONFIG_OVERLAY_DIR_NAME);
+        std::fs::create_dir_all(&overlay_dir).unwrap();
+        std::fs::write(overlay_dir.join("10-a.kdl"), "mouse_mode false\n").unwrap();
+        std::fs::write(
+            overlay_dir.join("20-b.kdl"),
+            "mouse_mode true\nhooks {\n    agent_exit \"\"\n}\n",
+        )
+        .unwrap();
+        std::fs::write(overlay_dir.join("30-broken.kdl"), "hooks {").unwrap();
+        std::fs::write(overlay_dir.join("notes.txt"), "mouse_mode false\n").unwrap();
+        let config = Config::from_default_assets()
+            .unwrap()
+            .with_overlay_dir(Some(&overlay_dir));
+        assert_eq!(
+            config.options.mouse_mode,
+            Some(true),
+            "the later drop-in wins"
+        );
+        assert!(config
+            .hooks
+            .get(crate::input::hooks::HookPoint::AgentExit)
+            .is_none());
+        let untouched = Config::from_default_assets().unwrap();
+        assert_eq!(
+            untouched
+                .clone()
+                .with_overlay_dir(Some(&dir.path().join("missing"))),
+            untouched
+        );
     }
 }

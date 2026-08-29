@@ -52,6 +52,32 @@ fn the_docs_answer_even_with_no_plugin_folder() {
     assert!(!matches!(state.status, Status::AwaitingCommand));
 }
 
+/// `plugin_check` is answered from the host's compiler and nothing else, so it needs no folder
+/// and never defers. Off wasm the stand-in compiles everything; the answer's shape is the test.
+#[test]
+fn a_compile_check_answers_at_once_and_needs_no_folder() {
+    let mut state = ready_state();
+    assert!(run_file_tool(
+        &mut state,
+        "plugin_check",
+        r#"{"name":"keys","source":"return {}"}"#
+    ));
+    let results = tool_results(&state);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].content, "keys.lua compiles");
+    assert!(!matches!(state.status, Status::AwaitingCommand));
+
+    let mut state = ready_state();
+    assert!(run_file_tool(
+        &mut state,
+        "plugin_check",
+        r#"{"name":"keys"}"#
+    ));
+    assert!(tool_results(&state)[0]
+        .content
+        .contains("source is required"));
+}
+
 #[test]
 fn a_named_section_of_the_docs_is_served() {
     let mut state = ready_state();

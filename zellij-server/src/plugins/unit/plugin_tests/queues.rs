@@ -701,6 +701,7 @@ pub fn a_wasm_plugin_can_enqueue_and_be_a_job() {
         cwd: None,
         skip_cache: false,
         cli_client_id: harness.client_id,
+        source_pane_id: None,
     });
 
     harness.wait_for("enqueued job 1");

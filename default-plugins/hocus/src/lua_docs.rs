@@ -102,9 +102,10 @@ fn guide_section(heading: &str) -> Option<String> {
 fn index() -> String {
     let mut out = String::from(
         "Zellij Lua plugin reference. You write these yourself: `plugin_write` puts the complete \
-         file in the user's plugin folder, and approving that write grants the permissions the \
-         source asks for; `plugin_reload` loads it and answers with its first render or the load \
-         error; `plugin_log` has what it logged. Never ask another agent to write a plugin. Call \
+         file in the user's plugin folder after compiling it (`plugin_check` runs that compile \
+         on its own), and approving that write grants the permissions the source asks for; \
+         `plugin_reload` loads it and answers with its first render or the load error; \
+         `plugin_log` has what it logged. Never ask another agent to write a plugin. Call \
          plugin_docs with a `section` for the rest:\n\n",
     );
     for section in SECTIONS {

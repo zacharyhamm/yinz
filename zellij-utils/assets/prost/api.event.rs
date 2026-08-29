@@ -727,6 +727,24 @@ pub struct PaneInfo {
     /// the machine the pane runs on, unset for local panes
     #[prost(string, optional, tag="29")]
     pub host: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag="30")]
+    pub agent: ::core::option::Option<AgentInfo>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AgentInfo {
+    #[prost(string, tag="1")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(enumeration="AgentState", tag="2")]
+    pub state: i32,
+    #[prost(enumeration="AgentSource", tag="3")]
+    pub source: i32,
+    #[prost(string, optional, tag="4")]
+    pub detail: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="5")]
+    pub cwd: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="6")]
+    pub session_id: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1452,6 +1470,64 @@ impl MouseEventName {
             "MouseHover" => Some(Self::MouseHover),
             "MouseScrollLeft" => Some(Self::MouseScrollLeft),
             "MouseScrollRight" => Some(Self::MouseScrollRight),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum AgentState {
+    Busy = 0,
+    Waiting = 1,
+    Idle = 2,
+    Exited = 3,
+}
+impl AgentState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            AgentState::Busy => "Busy",
+            AgentState::Waiting => "Waiting",
+            AgentState::Idle => "Idle",
+            AgentState::Exited => "Exited",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "Busy" => Some(Self::Busy),
+            "Waiting" => Some(Self::Waiting),
+            "Idle" => Some(Self::Idle),
+            "Exited" => Some(Self::Exited),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum AgentSource {
+    Spawned = 0,
+    Reported = 1,
+}
+impl AgentSource {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            AgentSource::Spawned => "Spawned",
+            AgentSource::Reported => "Reported",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "Spawned" => Some(Self::Spawned),
+            "Reported" => Some(Self::Reported),
             _ => None,
         }
     }

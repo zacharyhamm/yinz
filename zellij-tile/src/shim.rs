@@ -18,17 +18,18 @@ use zellij_utils::plugin_api::plugin_command::{
     get_pane_cwd_response, get_pane_git_probe_response, get_pane_running_command_response,
     get_session_list_response, parse_layout_response, CreateTokenResponse, ListTokensResponse,
     ProtobufBreakPanesToNewTabResponse, ProtobufBreakPanesToTabWithIdResponse,
-    ProtobufBreakPanesToTabWithIndexResponse, ProtobufCurrentSessionLastSavedTimeResponse,
-    ProtobufDataApplyResponse, ProtobufDataCountResponse, ProtobufDataDefineResponse,
-    ProtobufDataFetchResponse, ProtobufDataUnwatchResponse, ProtobufDataWatchResponse,
-    ProtobufDeleteAllDeadSessionsResponse, ProtobufDeleteDeadSessionResponse,
-    ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse, ProtobufDumpSessionLayoutResponse,
-    ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse, ProtobufFocusOrCreateTabResponse,
-    ProtobufGenerateRandomNameResponse, ProtobufGetFocusedPaneInfoResponse,
-    ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneGitProbeResponse,
-    ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
-    ProtobufGetPluginAliasConfigurationResponse, ProtobufGetSessionEnvironmentVariablesResponse,
-    ProtobufGetSessionListResponse, ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
+    ProtobufBreakPanesToTabWithIndexResponse, ProtobufCheckLuaPluginResponse,
+    ProtobufCurrentSessionLastSavedTimeResponse, ProtobufDataApplyResponse,
+    ProtobufDataCountResponse, ProtobufDataDefineResponse, ProtobufDataFetchResponse,
+    ProtobufDataUnwatchResponse, ProtobufDataWatchResponse, ProtobufDeleteAllDeadSessionsResponse,
+    ProtobufDeleteDeadSessionResponse, ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse,
+    ProtobufDumpSessionLayoutResponse, ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse,
+    ProtobufFocusOrCreateTabResponse, ProtobufGenerateRandomNameResponse,
+    ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse,
+    ProtobufGetPaneGitProbeResponse, ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
+    ProtobufGetPaneRunningCommandResponse, ProtobufGetPluginAliasConfigurationResponse,
+    ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
+    ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
     ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
     ProtobufListNotificationsResponse, ProtobufListOrphanedPanesResponse,
     ProtobufListRecordingsResponse, ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse,
@@ -2385,6 +2386,26 @@ fn dump_session_layout_impl(
     }
 }
 
+/// Compiles `source` as a Lua plugin without loading it. `Err` carries the compile error, which
+/// names `name` the way a load error would (`keys.lua:3: ...`). A plugin that compiles can still
+/// fail at load, so this is the check to run *before* a write, not a promise about the reload.
+pub fn check_lua_plugin(name: &str, source: &str) -> Result<(), String> {
+    let plugin_command = PluginCommand::CheckLuaPlugin {
+        name: name.to_string(),
+        source: source.to_string(),
+    };
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+    let response_bytes = bytes_from_stdin().map_err(|e| e.to_string())?;
+    let response = ProtobufCheckLuaPluginResponse::decode(response_bytes.as_slice())
+        .map_err(|e| e.to_string())?;
+    match response.error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
 /// Parses a KDL layout string and returns LayoutMetadata
 pub fn parse_layout(layout_string: &str) -> Result<LayoutMetadata, LayoutParsingError> {
     let plugin_command = PluginCommand::ParseLayout(layout_string.to_string());
@@ -3435,6 +3456,24 @@ pub fn toggle_pane_borderless(pane_id: PaneId) {
 /// * `borderless` - true for borderless, false for bordered
 pub fn set_pane_borderless(pane_id: PaneId, borderless: bool) {
     let plugin_command = PluginCommand::SetPaneBorderless(pane_id, borderless);
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
+/// Reload every running instance of the plugin at `url` in place, opening nothing; a plugin
+/// that is not running is left alone. Needs `AuthorPlugins`.
+pub fn reload_plugin_by_url(url: &str) {
+    let plugin_command = PluginCommand::ReloadPluginByUrl(url.to_owned());
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
+/// Set what agent runs in `pane_id` and what it is doing, or clear the record with `None`. The
+/// record replaces the pane's whole one; every reader of the manifest sees it next report.
+pub fn set_pane_agent(pane_id: PaneId, agent: Option<AgentInfo>) {
+    let plugin_command = PluginCommand::SetPaneAgent { pane_id, agent };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
     unsafe { host_run_plugin_command() };

@@ -38,6 +38,17 @@ return M
 
 Drop it in your plugin folder - `~/.config/zellij/plugins/` - and load it by name:
 
+```sh
+zellij plugins write keys --file keys.lua   # compiles it first; --overwrite to replace
+zellij plugins check keys                   # the compile step on its own
+zellij plugins reload keys                  # in the running session, in a pane if it is not up
+zellij plugins log keys                     # what it logged
+zellij plugins dir                          # where these land
+```
+
+is the same loop from a shell - the one a coding agent in a pane has - and hocus's `plugin_*`
+tools (below) are it from inside the session. Either way the file goes in the folder, and
+
 ```kdl
 pane {
     plugin location="file:keys.lua" {
@@ -65,10 +76,16 @@ A bare `keys` with no `file:` is *not* looked for there: an unprefixed name is a
 and letting a file shadow one would make a single spelling mean two things.
 
 Hocus writes plugins into that folder itself, and that is the whole authoring loop: `plugin_write
-name=keys` puts the complete file there - approving the write grants whatever permissions the
-source asks for - then `plugin_reload name=keys` loads it and answers with its first render or
-the load error, and `plugin_log name=keys` has anything it logged. `plugin_docs` is this guide,
-`plugin_list` and `plugin_read` are the folder as it stands.
+name=keys` compiles the complete file and puts it there - a source that does not compile is
+refused with the error, before anyone is asked to approve it, and approving the write grants
+whatever permissions the source asks for - then `plugin_reload name=keys` loads it and answers
+with its first render or the load error, and `plugin_log name=keys` has anything it logged.
+`plugin_check` is the compile step on its own, for trying a fix before writing. `plugin_docs` is
+this guide, `plugin_list` and `plugin_read` are the folder as it stands.
+
+The compile is a host command any plugin can call: `zellij.check_lua_plugin { name = "keys.lua",
+source = src }` answers `nil` when the source compiles and the error text otherwise. It only
+compiles - a plugin that parses and then fails in `load` is a load error, seen on reload.
 
 The runtime is chosen by the file extension, so there is no new URL scheme: a `.lua` path is a Lua
 plugin and anything else is wasm.
@@ -290,6 +307,23 @@ so `pcall` it if a failure is an outcome rather than a bug. It needs
 One consequence worth knowing: a pane opened this way is an *agent* pane, so when its command
 exits it fires the `agent_exit` hook. A hook that spawns with this command is arranging its own
 next appearance.
+
+What the session knows about an agent pane rides on the pane itself: every `PaneInfo` in a
+`pane_update` has an `agent` field — `nil` for an ordinary pane, otherwise `{ kind, state, source,
+detail, cwd, session_id }` with `state` one of `Busy`, `Waiting`, `Idle`, `Exited`. The spawn
+path writes it, and so does Claude Code itself through its hooks (`docs/AGENT_HOOKS.md`). A plugin
+speaking for an agent writes it too:
+
+```lua
+zellij.set_pane_agent {
+  pane_id = zellij.terminal_pane(3),
+  agent = { kind = "codex", state = "Waiting", source = "Reported", detail = "y/n" },
+}
+zellij.set_pane_agent { pane_id = zellij.terminal_pane(3) }   -- no agent here any more
+```
+
+It needs `change_application_state`. A pane with a record fires `agent_exit` when its command
+exits, whoever wrote the record.
 
 ### Permissions
 
@@ -759,6 +793,7 @@ wasm plugin has preopened:
 | `/data` | scratch for this instance, thrown away with the session |
 | `/cache` | this plugin's own folder, kept across sessions |
 | `/tmp` | zellij's temp folder, **shared with every other plugin and session** |
+| `/plugins` | the user's plugin folder - this guide's `~/.config/zellij/plugins/` - when the session has one |
 
 ```lua
 function M.load()
@@ -779,8 +814,12 @@ or ask `zellij.fs.metadata`, which answers nil for something that is not there. 
 answers in the root you asked about, so they can be handed straight back to `read`.
 
 Reading needs `read_files` and writing needs `write_files`, separately: a plugin that only reads
-your config should not be able to rewrite it. Reaching outside all four folders needs
-`full_hd_access` as well, and is refused without it.
+your config should not be able to rewrite it. Writing under `/plugins` needs `author_plugins` as
+well - that is the authority to put code where zellij will run it - and so does
+`zellij.reload_plugin_by_url("file:keys.lua")`, which reloads every running instance of a plugin
+in place without opening a pane (the old instance gets `before_close` first, for state worth
+keeping in `zellij.data`). Reaching outside all five folders needs `full_hd_access`, and is
+refused without it.
 
 Two things to know. A path is confined *after* symlinks are followed, so a link inside `/host`
 pointing elsewhere is refused rather than followed out. And `/tmp` is a real prefix here, so an

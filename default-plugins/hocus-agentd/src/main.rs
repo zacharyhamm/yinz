@@ -393,10 +393,15 @@ impl ZellijPlugin for State {
             // session, on a `PipeSource::Cli` there is nothing to answer, and a
             // Claude Code that grows a field we have never seen must cost us
             // nothing.
-            let pane_id = pipe_message
-                .args
-                .get(wire::HOOK_PANE_ID)
-                .and_then(|id| id.parse::<u32>().ok());
+            // The session says which pane the pipe came from; the `pane_id=` argument is
+            // what a hook script from before it could say instead.
+            let pane_id = match pipe_message.pane_id {
+                Some(PaneId::Terminal(id)) => Some(id),
+                _ => pipe_message
+                    .args
+                    .get(wire::HOOK_PANE_ID)
+                    .and_then(|id| id.parse::<u32>().ok()),
+            };
             let event = pipe_message
                 .payload
                 .as_deref()
@@ -561,6 +566,14 @@ impl State {
     /// reading the screen. What it may no longer decide is whether the agent is
     /// blocked on the user; see `finish_summary_with`.
     fn on_hook(&mut self, pane_id: u32, event: &wire::HookEvent) {
+        // The session carries the record; the hook script now writes it there itself
+        // (`zellij action agent-report`), and this is the same write for a script from before
+        // that, so an old install lands in the same place.
+        match hocus_proto::agent::hook_outcome(CLAUDE, event) {
+            hocus_proto::agent::HookOutcome::Ended => report_agent(pane_id, None),
+            hocus_proto::agent::HookOutcome::Reported(agent) => report_agent(pane_id, Some(agent)),
+            hocus_proto::agent::HookOutcome::Nothing => {},
+        }
         if event.hook_event_name == agents::HOOK_SESSION_END {
             // The session is over, so there is nothing left reporting for this pane
             // and the heuristic takes it back. The pane itself may well live on - a
@@ -774,6 +787,23 @@ impl State {
             .filter_map(|pane| Some((pane.pane_id, pane.cwd.clone()?)))
             .collect();
         self.panes = Some(panes);
+        // The manifest's agent records are the feeds: what the agent reported, however the
+        // report travelled. A record from the spawn path is not a feed - the agent has said
+        // nothing, so the heuristic judges it - and an exited agent's feed is over.
+        for pane in self.panes.iter().flatten() {
+            let Some(agent) = pane.agent.as_ref() else {
+                continue;
+            };
+            match agents::HookFeed::from_agent(agent) {
+                Some(feed) => {
+                    self.hooks.insert(pane.pane_id, feed);
+                },
+                None if agent.state == AgentState::Exited => {
+                    self.hooks.remove(&pane.pane_id);
+                },
+                None => {},
+            }
+        }
         for (pane_id, cwd) in reported {
             self.record_cwd(pane_id, &cwd);
         }
@@ -1836,6 +1866,16 @@ impl State {
     }
 }
 
+/// Write a pane's agent record to the session. Off wasm there is no session, and the tests
+/// read the daemon's own feed instead.
+#[cfg(target_arch = "wasm32")]
+fn report_agent(pane_id: u32, agent: Option<AgentInfo>) {
+    set_pane_agent(PaneId::Terminal(pane_id), agent);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn report_agent(_pane_id: u32, _agent: Option<AgentInfo>) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1860,6 +1900,7 @@ mod tests {
             status: agents::AgentStatus::Running,
             tab: None,
             detected: None,
+            agent: None,
         }
     }
 
@@ -3476,6 +3517,7 @@ mod tests {
             payload: payload.map(str::to_owned),
             args,
             is_private: false,
+            pane_id: None,
         };
         let good_args = BTreeMap::from([(wire::HOOK_PANE_ID.to_owned(), "7".to_owned())]);
 

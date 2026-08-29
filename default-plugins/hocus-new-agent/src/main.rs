@@ -1169,6 +1169,7 @@ mod tests {
             status: agents::AgentStatus::Running,
             tab: Some((1, "work".to_owned())),
             detected: Some("cursor".to_owned()),
+            agent: None,
         };
         let command = duplicate_command(&pane, &BTreeMap::new()).unwrap();
 

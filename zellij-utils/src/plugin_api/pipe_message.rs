@@ -1,7 +1,7 @@
 pub use super::generated_api::api::pipe_message::{
     Arg as ProtobufArg, PipeMessage as ProtobufPipeMessage, PipeSource as ProtobufPipeSource,
 };
-use crate::data::{PipeMessage, PipeSource};
+use crate::data::{PaneId, PipeMessage, PipeSource};
 
 use std::convert::TryFrom;
 
@@ -36,6 +36,9 @@ impl TryFrom<ProtobufPipeMessage> for PipeMessage {
             payload,
             args,
             is_private,
+            pane_id: protobuf_pipe_message
+                .source_terminal_pane_id
+                .map(PaneId::Terminal),
         })
     }
 }
@@ -60,6 +63,11 @@ impl TryFrom<PipeMessage> for ProtobufPipeMessage {
             .map(|(key, value)| ProtobufArg { key, value })
             .collect();
         let is_private = pipe_message.is_private;
+        // A CLI pipe runs in a terminal; a plugin pane has no shell for it to run in.
+        let source_terminal_pane_id = match pipe_message.pane_id {
+            Some(PaneId::Terminal(id)) => Some(id),
+            _ => None,
+        };
         Ok(ProtobufPipeMessage {
             source,
             cli_source_id,
@@ -68,6 +76,36 @@ impl TryFrom<PipeMessage> for ProtobufPipeMessage {
             payload,
             args,
             is_private,
+            source_terminal_pane_id,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// Everything a pipe message carries survives the trip to a plugin and back, the pane it
+    /// was sent from included.
+    #[test]
+    fn a_pipe_message_round_trips_with_its_pane() {
+        for pane_id in [None, Some(PaneId::Terminal(7))] {
+            let mut message = PipeMessage::new(
+                PipeSource::Cli("pipe-1".to_owned()),
+                "agent_hook",
+                &Some("{}".to_owned()),
+                &Some(BTreeMap::from([("k".to_owned(), "v".to_owned())])),
+                false,
+            );
+            message.pane_id = pane_id;
+            let protobuf = ProtobufPipeMessage::try_from(message.clone()).unwrap();
+            assert_eq!(PipeMessage::try_from(protobuf).unwrap(), message);
+        }
+        // The wire has a slot for a terminal only: a plugin pane cannot run `zellij pipe`.
+        let mut from_plugin_pane = PipeMessage::new(PipeSource::Keybind, "x", &None, &None, true);
+        from_plugin_pane.pane_id = Some(PaneId::Plugin(2));
+        let protobuf = ProtobufPipeMessage::try_from(from_plugin_pane).unwrap();
+        assert_eq!(PipeMessage::try_from(protobuf).unwrap().pane_id, None);
     }
 }

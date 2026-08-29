@@ -4,7 +4,8 @@ pub use super::generated_api::api::{
         event::Payload as ProtobufEventPayload,
         layout_parsing_error::ErrorType as ProtobufLayoutParsingErrorType,
         pane_scrollback_response, ActionCompletePayload as ProtobufActionCompletePayload,
-        ActivePaneScrollPayload as ProtobufActivePaneScrollPayload,
+        ActivePaneScrollPayload as ProtobufActivePaneScrollPayload, AgentInfo as ProtobufAgentInfo,
+        AgentSource as ProtobufAgentSource, AgentState as ProtobufAgentState,
         AvailableLayoutInfoPayload as ProtobufAvailableLayoutInfoPayload,
         ClientInfo as ProtobufClientInfo, ClientPaneHistory as ProtobufClientPaneHistory,
         ClientTabHistory as ProtobufClientTabHistory,
@@ -53,12 +54,13 @@ pub use super::generated_api::api::{
 };
 #[allow(hidden_glob_reexports)]
 use crate::data::{
-    ClientId, ClientInfo, ContextMenuContext, ContextMenuItem, ContextMenuLink, CopyDestination,
-    DataRows, Event, EventType, FileMetadata, HostTerminalThemeMode, InputMode, KeyWithModifier,
-    LayoutInfo, LayoutMetadata, ModeInfo, Mouse, PaneContents, PaneId, PaneInfo, PaneManifest,
-    PaneMetadata, PaneScrollbackResponse, PermissionStatus, PluginCapabilities, PluginInfo,
-    QueueJobInfo, QueueJobOutcome, QueueJobState, QueueSnapshot, SelectedText, SessionInfo, Style,
-    StyledText, TabInfo, TabMetadata, WebServerStatus, WebSharing,
+    AgentInfo, AgentSource, AgentState, ClientId, ClientInfo, ContextMenuContext, ContextMenuItem,
+    ContextMenuLink, CopyDestination, DataRows, Event, EventType, FileMetadata,
+    HostTerminalThemeMode, InputMode, KeyWithModifier, LayoutInfo, LayoutMetadata, ModeInfo, Mouse,
+    PaneContents, PaneId, PaneInfo, PaneManifest, PaneMetadata, PaneScrollbackResponse,
+    PermissionStatus, PluginCapabilities, PluginInfo, QueueJobInfo, QueueJobOutcome, QueueJobState,
+    QueueSnapshot, SelectedText, SessionInfo, Style, StyledText, TabInfo, TabMetadata,
+    WebServerStatus, WebSharing,
 };
 use crate::plugin_api::plugin_data::ProtobufRows as ProtobufDataRows;
 
@@ -1984,6 +1986,56 @@ impl TryFrom<Mouse> for MouseEventPayload {
     }
 }
 
+impl TryFrom<ProtobufAgentInfo> for AgentInfo {
+    type Error = &'static str;
+    fn try_from(protobuf: ProtobufAgentInfo) -> Result<Self, &'static str> {
+        let state = match ProtobufAgentState::try_from(protobuf.state) {
+            Ok(ProtobufAgentState::Busy) => AgentState::Busy,
+            Ok(ProtobufAgentState::Waiting) => AgentState::Waiting,
+            Ok(ProtobufAgentState::Idle) => AgentState::Idle,
+            Ok(ProtobufAgentState::Exited) => AgentState::Exited,
+            Err(_) => return Err("unknown agent state"),
+        };
+        let source = match ProtobufAgentSource::try_from(protobuf.source) {
+            Ok(ProtobufAgentSource::Spawned) => AgentSource::Spawned,
+            Ok(ProtobufAgentSource::Reported) => AgentSource::Reported,
+            Err(_) => return Err("unknown agent source"),
+        };
+        Ok(AgentInfo {
+            kind: protobuf.kind,
+            state,
+            source,
+            detail: protobuf.detail,
+            cwd: protobuf.cwd,
+            session_id: protobuf.session_id,
+        })
+    }
+}
+
+impl TryFrom<AgentInfo> for ProtobufAgentInfo {
+    type Error = &'static str;
+    fn try_from(agent: AgentInfo) -> Result<Self, &'static str> {
+        let state = match agent.state {
+            AgentState::Busy => ProtobufAgentState::Busy,
+            AgentState::Waiting => ProtobufAgentState::Waiting,
+            AgentState::Idle => ProtobufAgentState::Idle,
+            AgentState::Exited => ProtobufAgentState::Exited,
+        };
+        let source = match agent.source {
+            AgentSource::Spawned => ProtobufAgentSource::Spawned,
+            AgentSource::Reported => ProtobufAgentSource::Reported,
+        };
+        Ok(ProtobufAgentInfo {
+            kind: agent.kind,
+            state: state as i32,
+            source: source as i32,
+            detail: agent.detail,
+            cwd: agent.cwd,
+            session_id: agent.session_id,
+        })
+    }
+}
+
 impl TryFrom<ProtobufPaneInfo> for PaneInfo {
     type Error = &'static str;
     fn try_from(protobuf_pane_info: ProtobufPaneInfo) -> Result<Self, &'static str> {
@@ -2026,6 +2078,10 @@ impl TryFrom<ProtobufPaneInfo> for PaneInfo {
             default_bg: protobuf_pane_info.default_bg,
             cwd: protobuf_pane_info.cwd,
             host: protobuf_pane_info.host,
+            agent: protobuf_pane_info
+                .agent
+                .map(AgentInfo::try_from)
+                .transpose()?,
         })
     }
 }
@@ -2073,6 +2129,10 @@ impl TryFrom<PaneInfo> for ProtobufPaneInfo {
             default_bg: pane_info.default_bg,
             cwd: pane_info.cwd,
             host: pane_info.host,
+            agent: pane_info
+                .agent
+                .map(ProtobufAgentInfo::try_from)
+                .transpose()?,
         })
     }
 }
@@ -3020,6 +3080,7 @@ fn serialize_session_update_event_with_non_default_values() {
     let panes_list = vec![
         PaneInfo {
             host: None,
+            agent: None,
             id: 1,
             is_plugin: false,
             is_focused: true,
@@ -3049,6 +3110,7 @@ fn serialize_session_update_event_with_non_default_values() {
         },
         PaneInfo {
             host: None,
+            agent: None,
             id: 1,
             is_plugin: true,
             is_focused: true,

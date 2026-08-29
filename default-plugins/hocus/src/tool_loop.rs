@@ -37,6 +37,12 @@ impl State {
                 self.finish_head(refusal);
                 continue;
             }
+            // A plugin the loader would refuse is refused here, before anyone is asked to
+            // approve writing it: the compile error is the whole answer.
+            if let Some(refusal) = tools::uncompilable_write(&call) {
+                self.finish_head(refusal);
+                continue;
+            }
             let needs_confirmation = self.call_needs_confirmation(&call);
             if needs_confirmation && !self.job_auto_confirm {
                 self.status = Status::ConfirmingTool;
@@ -609,8 +615,9 @@ impl State {
 
     /// Run one of the plugin-authoring tools.
     ///
-    /// One of the five answers here and now — `plugin_docs`, from compiled-in text. The other
-    /// four shell out and answer later on `RunCommandResult`, exactly as the file tools do.
+    /// Two of the seven answer here and now — `plugin_docs`, from compiled-in text, and
+    /// `plugin_check`, from the host's compiler. The other five shell out and answer later on
+    /// `RunCommandResult`, exactly as the file tools do.
     /// `plugin_reload` is among them even though `start_or_reload_plugin` is fire-and-forget:
     /// what it waits for is `PLUGIN_SYMLINK_GUARD`, which only the host can run.
     ///
@@ -628,6 +635,18 @@ impl State {
         // Needs no folder and touches no disk, so it answers even when nothing is configured.
         if call.name == "plugin_docs" {
             self.finish_head(lua_docs::docs(args.section.as_deref()));
+            return true;
+        }
+        // Likewise: the host compiles the source it is handed and nothing else is involved.
+        if call.name == "plugin_check" {
+            let result = match (args.name.as_deref(), args.source.as_deref()) {
+                (None, _) => "name is required".to_owned(),
+                (_, None) => "source is required: send the complete plugin file".to_owned(),
+                (Some(name), Some(source)) => match tools::compile_report(name, source) {
+                    Ok(report) | Err(report) => report,
+                },
+            };
+            self.finish_head(result);
             return true;
         }
 

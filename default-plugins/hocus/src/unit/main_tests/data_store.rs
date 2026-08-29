@@ -52,6 +52,7 @@ fn an_unknown_pipe_message_is_ignored() {
         payload: Some("{}".to_owned()),
         args: BTreeMap::new(),
         is_private: false,
+        pane_id: None,
     }));
     assert!(!state.panes.is_empty());
     assert_eq!(state.agent_seq, 0, "an unrelated message merges nothing");

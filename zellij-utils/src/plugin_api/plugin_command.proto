@@ -259,6 +259,9 @@ enum CommandName {
   GrantPluginPermissions = 269;
   SetContextMenu = 270;
   RegisterDefaultKeybindings = 271;
+  CheckLuaPlugin = 272;
+  SetPaneAgent = 273;
+  ReloadPluginByUrl = 274;
 }
 
 message PluginCommand {
@@ -458,6 +461,9 @@ message PluginCommand {
     GrantPluginPermissionsPayload grant_plugin_permissions_payload = 210;
     SetContextMenuPayload set_context_menu_payload = 211;
     string register_default_keybindings_payload = 212;
+    CheckLuaPluginPayload check_lua_plugin_payload = 213;
+    SetPaneAgentPayload set_pane_agent_payload = 214;
+    string reload_plugin_by_url_payload = 215;
   }
 }
 
@@ -1493,6 +1499,22 @@ message GetUserPluginDirPayload {}
 
 message GetUserPluginDirResponse {
   string user_plugin_dir = 1;
+}
+
+message CheckLuaPluginPayload {
+  string name = 1;
+  string source = 2;
+}
+
+message SetPaneAgentPayload {
+  PaneId pane_id = 1;
+  // Absent clears the record.
+  optional api.event.AgentInfo agent = 2;
+}
+
+message CheckLuaPluginResponse {
+  // Absent when the source compiled.
+  optional string error = 1;
 }
 
 message GetFocusedPaneInfoPayload {}

@@ -279,6 +279,7 @@ fn poll_reply_round_trips_through_json() {
             cwd: Some("/tmp/work".to_owned()),
             host: None,
             detected: None,
+            agent: None,
         }]),
         activity,
         manual_kinds: BTreeMap::new(),

@@ -381,6 +381,7 @@ impl<'a> PluginLoader<'a> {
             &self.plugin_own_data_dir,
             &self.plugin_own_cache_dir,
             &ZELLIJ_TMP_DIR,
+            self.user_plugin_dir.as_ref(),
             &self.plugin_config.location.to_string(),
             self.plugin_id,
             stdin_pipe.clone(),
@@ -482,6 +483,7 @@ impl<'a> PluginLoader<'a> {
             &self.plugin_own_data_dir,
             &self.plugin_own_cache_dir,
             &ZELLIJ_TMP_DIR,
+            self.user_plugin_dir.as_ref(),
             &self.plugin_config.location.to_string(),
             self.plugin_id,
             stdin_pipe.clone(),
@@ -555,18 +557,26 @@ impl<'a> PluginLoader<'a> {
         data_dir: &PathBuf,
         cache_dir: &PathBuf,
         tmp_dir: &PathBuf,
+        plugins_dir: Option<&PathBuf>,
         plugin_url: &String,
         plugin_id: PluginId,
         stdin_pipe: Arc<Mutex<VecDeque<u8>>>,
         stdout_pipe: Arc<Mutex<VecDeque<u8>>>,
     ) -> Result<WasiCtx> {
         let _err_context = || "Failed to create wasi_ctx".to_string();
-        let dirs = vec![
+        let mut dirs = vec![
             ("/host".to_owned(), host_dir.clone()),
             ("/data".to_owned(), data_dir.clone()),
             ("/cache".to_owned(), cache_dir.clone()),
             ("/tmp".to_owned(), tmp_dir.clone()),
         ];
+        // The user's plugin folder, for a plugin that writes plugins. Mounted like the others
+        // and gated, for writes, by `AuthorPlugins` in the host's `Fs*` commands; a wasm plugin
+        // reaching it through WASI directly holds whatever WASI grants, which is why the
+        // folder is only mounted when it already exists.
+        if let Some(plugins_dir) = plugins_dir {
+            dirs.push(("/plugins".to_owned(), plugins_dir.clone()));
+        }
         let dirs = dirs.into_iter().filter(|(_dir_name, dir)| {
             // note that this does not protect against TOCTOU errors
             // eg. if one or more of these folders existed at the time of check but was deleted

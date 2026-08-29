@@ -825,6 +825,9 @@ pub(crate) struct Screen {
     cached_layouts: Vec<LayoutInfo>,
     cached_layout_errors: Vec<LayoutWithError>,
     pane_render_subscribers: HashMap<ClientId, PaneRenderSubscription>,
+    /// Whether a `zellij events` client is listening, so pane and tab state is reported even
+    /// when no plugin asked for it. Set by the plugin thread, which keeps the subscribers.
+    pub(super) cli_event_subscribers_present: bool,
     background_plugin_subscriptions: HashMap<(PluginId, ClientId), HashSet<EventType>>,
     next_forward_token: u32,
     pending_forwarded_queries: HashMap<u32, PendingForwardEntry>,
@@ -1303,6 +1306,7 @@ impl Screen {
             cached_layouts: vec![],
             cached_layout_errors: vec![],
             pane_render_subscribers: HashMap::new(),
+            cli_event_subscribers_present: false,
             background_plugin_subscriptions: HashMap::new(),
             next_forward_token: 1, // 0 is reserved as the startup sentinel
             pending_forwarded_queries: HashMap::new(),
@@ -2797,21 +2801,30 @@ impl Screen {
     /// Fired unconditionally when the pane is an agent pane - whether a hook is bound is the
     /// plugin thread's question, so that the answer lives in one place.
     ///
+    /// An agent pane is one whose record says so (`pane_is_agent`, read off the pane's
+    /// `AgentInfo`, however it got there: the spawn path, a plugin, or the agent's own hooks),
+    /// or - for a pane spawned by an older plugin - one whose originating context carries the
+    /// marker. The hook is opened for the client that spawned the pane, or the first one where
+    /// nobody did.
     fn fire_agent_exit_hook(
         &self,
         pane_id: PaneId,
         exit_status: Option<i32>,
         run_command: &RunCommand,
+        pane_is_agent: bool,
     ) {
-        let Some(originating_plugin) = run_command.originating_plugin.as_ref() else {
-            return;
-        };
-        if !originating_plugin
-            .context
-            .contains_key(HOCUS_AGENT_PANE_CONTEXT)
-        {
+        let originating_plugin = run_command.originating_plugin.as_ref();
+        let context_says_agent = originating_plugin
+            .is_some_and(|plugin| plugin.context.contains_key(HOCUS_AGENT_PANE_CONTEXT));
+        if !(pane_is_agent || context_says_agent) {
             return;
         }
+        let Some(client_id) = originating_plugin
+            .map(|plugin| plugin.client_id)
+            .or_else(|| self.get_first_client_id())
+        else {
+            return;
+        };
         let PaneId::Terminal(terminal_pane_id) = pane_id else {
             return;
         };
@@ -2843,7 +2856,7 @@ impl Screen {
                 point: HookPoint::AgentExit,
                 pane_id,
                 payload,
-                client_id: originating_plugin.client_id,
+                client_id,
             })
             .non_fatal();
     }
@@ -4252,15 +4265,17 @@ fn replay_pending_plugin_events(
             ScreenInstruction::HoldPane(pane_id, exit_status, run_command) => {
                 let is_first_run = false;
                 let mut found = false;
+                let mut pane_is_agent = false;
                 for tab in screen.tabs.values_mut() {
                     if tab.get_all_pane_ids().contains(&pane_id) {
                         tab.hold_pane(pane_id, exit_status, is_first_run, run_command.clone());
                         found = true;
+                        pane_is_agent = tab.pane_is_agent(pane_id);
                         break;
                     }
                 }
                 if found {
-                    screen.fire_agent_exit_hook(pane_id, exit_status, &run_command);
+                    screen.fire_agent_exit_hook(pane_id, exit_status, &run_command, pane_is_agent);
                 }
                 if !found {
                     log::error!(

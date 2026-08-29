@@ -1,9 +1,9 @@
 use super::test_framework::*;
 use crate::data::{
-    BareKey, CommandOrPlugin, ConnectToSession, Direction, FloatingPaneCoordinates,
-    HostTerminalThemeMode, InputMode, KeyModifier, KeyWithModifier, LayoutInfo, LayoutMetadata,
-    NewPanePlacement, OriginatingPlugin, PaneId, PluginTag, RemotePaneHandoff, Resize,
-    WarpPlacement, WarpedPane, WarpedTab, WebSharing,
+    AgentInfo, AgentSource, AgentState, BareKey, CommandOrPlugin, ConnectToSession, Direction,
+    FloatingPaneCoordinates, HostTerminalThemeMode, InputMode, KeyModifier, KeyWithModifier,
+    LayoutInfo, LayoutMetadata, NewPanePlacement, OriginatingPlugin, PaneId, PluginTag,
+    RemotePaneHandoff, Resize, UnblockCondition, WarpPlacement, WarpedPane, WarpedTab, WebSharing,
 };
 use crate::input::actions::{Action, SearchDirection, SearchOption};
 use crate::input::cli_assets::CliAssets;
@@ -3159,6 +3159,23 @@ fn test_client_messages() {
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
+        action: Action::NewBlockingPane {
+            placement: NewPanePlacement::Tiled {
+                direction: None,
+                borderless: None
+            },
+            pane_name: None,
+            command: None,
+            unblock_condition: Some(UnblockCondition::OnExitFailure),
+            near_current_pane: false,
+            no_focus: false,
+            tab_id: None,
+        },
+        terminal_id: None,
+        client_id: Some(100),
+        is_cli_client: true,
+    });
+    test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::EditFile {
             payload: OpenFilePayload {
                 path: PathBuf::from("/file/path"),
@@ -3530,6 +3547,40 @@ fn test_client_messages() {
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
+        action: Action::SetPaneAgent {
+            pane_id: PaneId::Terminal(3),
+            agent: Some(AgentInfo {
+                kind: "claude".to_owned(),
+                state: AgentState::Waiting,
+                source: AgentSource::Reported,
+                detail: Some("Bash cargo".to_owned()),
+                cwd: Some("/work".to_owned()),
+                session_id: Some("s1".to_owned()),
+            }),
+        },
+        terminal_id: None,
+        client_id: Some(100),
+        is_cli_client: true,
+    });
+    test_client_roundtrip!(ClientToServerMsg::Action {
+        action: Action::Reconfigure {
+            config: "hooks {\n    agent_exit \"\"\n}\n".to_owned(),
+            write_to_disk: true,
+        },
+        terminal_id: None,
+        client_id: Some(100),
+        is_cli_client: true,
+    });
+    test_client_roundtrip!(ClientToServerMsg::Action {
+        action: Action::SetPaneAgent {
+            pane_id: PaneId::Terminal(3),
+            agent: None,
+        },
+        terminal_id: None,
+        client_id: Some(100),
+        is_cli_client: true,
+    });
+    test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::SetPaneColor {
             pane_id: PaneId::Terminal(0),
             fg: Some("#00e000".to_owned()),
@@ -3836,6 +3887,12 @@ fn test_client_messages() {
         },
         raw_bytes: "raw_bytes".as_bytes().to_vec(),
         is_kitty_keyboard_protocol: false,
+    });
+    test_client_roundtrip!(ClientToServerMsg::SubscribeToEvents {
+        event_types: vec![],
+    });
+    test_client_roundtrip!(ClientToServerMsg::SubscribeToEvents {
+        event_types: vec!["PaneUpdate".to_owned(), "cwd_changed".to_owned()],
     });
     test_client_roundtrip!(ClientToServerMsg::ClientExited);
     test_client_roundtrip!(ClientToServerMsg::KillSession);
@@ -4242,6 +4299,17 @@ fn test_server_messages() {
     test_server_roundtrip!(ServerToClientMsg::Exit {
         exit_reason: ExitReason::NormalDetached,
     });
+    // A blocking pane's status rides in the message payload: both signs, and zero, have to
+    // survive the trip so `zellij run --block-until-exit` exits with what its command did.
+    test_server_roundtrip!(ServerToClientMsg::Exit {
+        exit_reason: ExitReason::CustomExitStatus(42),
+    });
+    test_server_roundtrip!(ServerToClientMsg::Exit {
+        exit_reason: ExitReason::CustomExitStatus(0),
+    });
+    test_server_roundtrip!(ServerToClientMsg::Exit {
+        exit_reason: ExitReason::CustomExitStatus(-1),
+    });
     test_server_roundtrip!(ServerToClientMsg::Exit {
         exit_reason: ExitReason::ForceDetached,
     });
@@ -4316,6 +4384,14 @@ fn test_server_messages() {
             )),
             cwd: Some(PathBuf::from("/path/to/cwd")),
         }
+    });
+    test_server_roundtrip!(ServerToClientMsg::EventUpdate {
+        event_type: "CwdChanged".to_owned(),
+        event_json: r#"{"CwdChanged":[{"Terminal":3},"/tmp",[1]]}"#.to_owned(),
+    });
+    test_server_roundtrip!(ServerToClientMsg::EventUpdate {
+        event_type: String::new(),
+        event_json: String::new(),
     });
     test_server_roundtrip!(ServerToClientMsg::PaneRenderUpdate {
         pane_id: PaneId::Terminal(1),

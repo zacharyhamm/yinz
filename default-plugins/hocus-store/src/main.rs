@@ -300,6 +300,7 @@ mod tests {
             status: agents::AgentStatus::Running,
             tab: None,
             detected: None,
+            agent: None,
         }
     }
 

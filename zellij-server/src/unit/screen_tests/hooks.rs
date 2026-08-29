@@ -9,6 +9,7 @@ use super::*;
 use std::collections::BTreeMap;
 use zellij_utils::data::OriginatingPlugin;
 use zellij_utils::data::HOCUS_AGENT_PANE_CONTEXT;
+use zellij_utils::data::{AgentInfo, AgentSource, AgentState};
 use zellij_utils::input::hooks::HookPoint;
 
 fn agent_command(cwd: &str) -> RunCommand {
@@ -30,6 +31,16 @@ fn hooks_fired_by_holding(
     pane_id: u32,
     run_command: RunCommand,
 ) -> Vec<(HookPoint, PaneId, BTreeMap<String, String>)> {
+    hooks_fired_by_holding_after(pane_id, run_command, None)
+}
+
+/// As above, with an agent record set on the pane before it exits - the road a pane that was
+/// never spawned as an agent takes to becoming one, by its agent reporting for itself.
+fn hooks_fired_by_holding_after(
+    pane_id: u32,
+    run_command: RunCommand,
+    report: Option<AgentInfo>,
+) -> Vec<(HookPoint, PaneId, BTreeMap<String, String>)> {
     let size = Size { cols: 80, rows: 20 };
     let client_id = 10;
     let mut mock_screen = MockScreen::new(size);
@@ -48,6 +59,14 @@ fn hooks_fired_by_holding(
         false,
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
+    if let Some(agent) = report {
+        let _ = mock_screen.to_screen.send(ScreenInstruction::SetPaneAgent(
+            PaneId::Terminal(pane_id),
+            Some(agent),
+            None,
+        ));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
     let _ = mock_screen.to_screen.send(ScreenInstruction::HoldPane(
         PaneId::Terminal(pane_id),
         Some(0),
@@ -88,6 +107,31 @@ fn an_exiting_agent_pane_fires_the_agent_exit_hook() {
         payload.get("agent_exit_code").map(String::as_str),
         Some("0")
     );
+}
+
+/// A pane nobody spawned as an agent - `claude` typed at a shell - becomes one the moment its
+/// agent reports for itself, and so gets the exit hook like any other agent pane.
+#[test]
+fn a_pane_whose_agent_reported_for_itself_fires_the_hook_on_exit() {
+    let typed_by_hand = RunCommand {
+        command: PathBuf::from("claude"),
+        cwd: Some(PathBuf::from("/work")),
+        hold_on_close: true,
+        originating_plugin: None,
+        ..Default::default()
+    };
+    let report = AgentInfo {
+        kind: "claude".to_owned(),
+        state: AgentState::Busy,
+        source: AgentSource::Reported,
+        detail: None,
+        cwd: Some("/work".to_owned()),
+        session_id: Some("s1".to_owned()),
+    };
+    let fired = hooks_fired_by_holding_after(3, typed_by_hand, Some(report));
+    assert_eq!(fired.len(), 1, "expected exactly one hook, got: {fired:?}");
+    assert_eq!(fired[0].0, HookPoint::AgentExit);
+    assert_eq!(fired[0].1, PaneId::Terminal(3));
 }
 
 #[test]

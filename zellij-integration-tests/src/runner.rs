@@ -25,6 +25,7 @@ const GUEST_MODAL_TITLE: &str = "Nested Zellij session detected";
 pub struct TestRunner {
     size: Size,
     extra_config_kdl: String,
+    config_dir: Option<PathBuf>,
     layout: Option<LayoutInfo>,
     env: std::collections::HashMap<String, String>,
     stdout_tap: Option<crossbeam::channel::Sender<Vec<u8>>>,
@@ -36,11 +37,19 @@ impl TestRunner {
         TestRunner {
             size,
             extra_config_kdl: String::new(),
+            config_dir: None,
             layout: None,
             env: std::collections::HashMap::new(),
             stdout_tap: None,
             skip_concurrency_slot: false,
         }
+    }
+
+    /// The config directory the session is told about, where `config.d/` and `plugins/` are
+    /// looked for. Tests that persist configuration point this at a folder of their own.
+    pub fn with_config_dir(mut self, config_dir: PathBuf) -> Self {
+        self.config_dir = Some(config_dir);
+        self
     }
 
     pub fn with_config(mut self, extra_config_kdl: &str) -> Self {
@@ -72,6 +81,7 @@ impl TestRunner {
 
         let cli_args = CliArgs {
             config: Some(config_path),
+            config_dir: self.config_dir.clone(),
             data_dir: Some(data_dir),
             ..Default::default()
         };
@@ -345,9 +355,52 @@ pub struct CliClientHandle {
     thread: JoinHandle<i32>,
 }
 
+/// A `zellij events` client on this session. What it was sent is read off the fake client's
+/// message trail, where an `EventUpdate` is recorded with its event type.
+pub struct EventsClientHandle {
+    // Kept so the client thread is owned by something; it ends with the process, since the
+    // harness never ends a session.
+    _thread: JoinHandle<()>,
+    client: FakeClientHandle,
+}
+
+impl EventsClientHandle {
+    /// Every event type streamed so far, in order.
+    pub fn streamed_event_types(&self) -> Vec<String> {
+        self.client
+            .received_server_messages()
+            .iter()
+            .filter_map(|message| message.strip_prefix("EventUpdate: "))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Block until an event of `event_type` has been streamed.
+    pub fn wait_for_event(&self, event_type: &str) {
+        let deadline = std::time::Instant::now() + crate::default_timeout();
+        loop {
+            if self.streamed_event_types().iter().any(|t| t == event_type) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for a {event_type} event; streamed: {:?}",
+                self.streamed_event_types()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
 impl CliClientHandle {
     pub fn wait_for_exit(self) -> i32 {
         self.thread.join().expect("cli client thread panicked")
+    }
+
+    /// Whether the client has already returned. A test that asserts a client is *still*
+    /// waiting asks this after observing the thing that must not have released it.
+    pub fn is_finished(&self) -> bool {
+        self.thread.is_finished()
     }
 }
 
@@ -626,6 +679,41 @@ impl TestSession {
                     block_until_exit,
                 ))
                 .0,
+        }
+    }
+
+    /// `zellij run --blocking`: waits for the pane's command to exit, with no condition on the
+    /// status. Distinct from `run_blocking_command`, whose `--block-until-exit` sets one.
+    pub fn run_plain_blocking_command(&self, command: &[&str]) -> CliClientHandle {
+        let mut action = new_pane_cli_action(command, false, true, false, false);
+        if let CliAction::NewPane { blocking, .. } = &mut action {
+            *blocking = true;
+        }
+        CliClientHandle {
+            thread: self.spawn_cli_client(action).0,
+        }
+    }
+
+    /// `zellij events [--type ...]`, streaming until the session ends.
+    pub fn stream_events(&self, event_types: &[&str]) -> EventsClientHandle {
+        let (fake_client_os_api, client) = FakeClientOsApi::new(self.size, None);
+        let session_name = self.session_name.clone();
+        let events_cli = zellij_utils::cli::EventsCli {
+            event_type: event_types.iter().map(|t| t.to_string()).collect(),
+        };
+        let thread = std::thread::Builder::new()
+            .name("in_process_events_client".to_string())
+            .spawn(move || {
+                zellij_client::cli_client::start_events_client(
+                    Box::new(fake_client_os_api),
+                    &session_name,
+                    events_cli,
+                )
+            })
+            .unwrap();
+        EventsClientHandle {
+            _thread: thread,
+            client,
         }
     }
 

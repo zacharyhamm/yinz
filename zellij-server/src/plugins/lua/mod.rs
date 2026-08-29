@@ -20,7 +20,7 @@ mod response;
 #[cfg(test)]
 mod unit_tests;
 
-pub use loader::load_lua_plugin;
+pub use loader::{check_lua_plugin, load_lua_plugin};
 
 use std::cell::RefCell;
 

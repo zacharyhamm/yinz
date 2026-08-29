@@ -222,6 +222,11 @@ pub enum ClientToServerMsg {
         scrollback: Option<usize>,
         ansi: bool,
     },
+    /// `zellij events`: stream the session's state events, as plugins receive them. Event types
+    /// travel by name (`EventType::from_cli_name`); an empty list is every streamable one.
+    SubscribeToEvents {
+        event_types: Vec<String>,
+    },
     DesktopNotificationResponse {
         raw_bytes: Vec<u8>,
     },
@@ -307,6 +312,12 @@ pub enum ServerToClientMsg {
     },
     SubscribedPaneClosed {
         pane_id: PaneId,
+    },
+    /// One event for a `SubscribeToEvents` client: its type by name, and the `Event` as JSON.
+    /// JSON rather than a second protobuf mirror of `Event`, which already has one for plugins.
+    EventUpdate {
+        event_type: String,
+        event_json: String,
     },
     ForwardQueryToHost {
         token: u32,

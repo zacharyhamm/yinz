@@ -557,6 +557,28 @@ message PaneInfo {
     reserved 26, 27;
     optional string cwd = 28;
     optional string host = 29;   // the machine the pane runs on, unset for local panes
+    optional AgentInfo agent = 30;
+}
+
+message AgentInfo {
+    string kind = 1;
+    AgentState state = 2;
+    AgentSource source = 3;
+    optional string detail = 4;
+    optional string cwd = 5;
+    optional string session_id = 6;
+}
+
+enum AgentState {
+    Busy = 0;
+    Waiting = 1;
+    Idle = 2;
+    Exited = 3;
+}
+
+enum AgentSource {
+    Spawned = 0;
+    Reported = 1;
 }
 
 message IndexInPaneGroup {

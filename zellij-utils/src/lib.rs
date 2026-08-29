@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod animation;
 pub mod cli;
 pub mod client_server_contract;
@@ -15,6 +16,7 @@ pub mod kdl;
 pub mod nested_session_contract;
 pub mod pane_size;
 pub mod plugin_api;
+pub mod plugin_authoring;
 pub mod plugin_data;
 pub mod position;
 pub mod session_serialization;
