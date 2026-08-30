@@ -550,6 +550,7 @@ impl MockScreen {
             initial_floating_panes_layout,
             pane_ids,
             floating_pane_ids,
+            vec![],
             plugin_ids,
             tab_index,
             true,
@@ -643,6 +644,7 @@ impl MockScreen {
             initial_floating_panes_layout,
             pane_ids,
             floating_pane_ids,
+            vec![],
             plugin_ids,
             tab_index,
             true,
@@ -682,6 +684,7 @@ impl MockScreen {
             vec![], // floating_panes_layout
             pane_ids,
             vec![], // floating panes ids
+            vec![], // adopted agents
             plugin_ids,
             0,
             true,
@@ -731,6 +734,7 @@ impl MockScreen {
             vec![], // floating_panes_layout
             pane_ids,
             vec![], // floating panes ids
+            vec![], // adopted agents
             plugin_ids,
             tab_index,
             true,

@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use zellij_utils::consts::{session_info_folder_for_session, ZELLIJ_SOCK_DIR};
 use zellij_utils::data::{
-    Direction, Event, GetFocusedPaneInfoResponse, HostTerminalThemeMode, InputMode,
+    AgentInfo, Direction, Event, GetFocusedPaneInfoResponse, HostTerminalThemeMode, InputMode,
     NewPanePlacement, NotificationInfo, OverlayPlacement, PaneScrollbackResponse,
     PluginCapabilities, SessionInfo,
 };
@@ -42,6 +42,34 @@ use zellij_utils::ipc::{ClientAttributes, ServerToClientMsg};
 use zellij_utils::nested_session;
 use zellij_utils::nested_session::NestedSessionMessage;
 use zellij_utils::pane_size::Size;
+
+fn apply_pane_agent_report(
+    screen: &mut Screen,
+    pane_id: PaneId,
+    agent: Option<AgentInfo>,
+) -> Result<bool> {
+    // Read before the write: which hooks a change fires is a question about the edge, and the
+    // pane only answers whether anything changed.
+    let Some(previous) = screen
+        .tab_containing_pane(pane_id)
+        .map(|tab| tab.pane_agent_info(pane_id))
+    else {
+        return Ok(false);
+    };
+    let changed = screen
+        .tab_containing_pane_mut(pane_id)
+        .map(|tab| tab.set_pane_agent(pane_id, agent.clone()))
+        .unwrap_or(false);
+    // A report that repeats itself costs nothing; a changed one is news to every reader of the
+    // manifest.
+    if changed {
+        screen.fire_agent_state_hooks(pane_id, previous.as_ref(), agent.as_ref());
+        // Rebuild only the pane state. `SessionInfo` embeds that manifest and is synchronized by
+        // `report_pane_state`, but the tab state did not change.
+        screen.report_pane_state()?;
+    }
+    Ok(true)
+}
 
 // The box is here in order to make the
 // NewClient enum smaller
@@ -1787,6 +1815,7 @@ pub(crate) fn screen_thread_main(
                 floating_panes_layout,
                 new_pane_pids,
                 new_floating_pane_pids,
+                adopted_agents,
                 new_plugin_ids,
                 tab_id,
                 should_change_focus_to_new_tab,
@@ -1830,6 +1859,15 @@ pub(crate) fn screen_thread_main(
                     client_id,
                     blocking_terminal,
                 )?;
+                for (terminal_id, agent) in adopted_agents {
+                    let pane_id = PaneId::Terminal(terminal_id);
+                    if !apply_pane_agent_report(&mut screen, pane_id, Some(agent))? {
+                        Err::<(), _>(anyhow!(
+                            "adopted agent record refers to missing terminal pane {terminal_id}"
+                        ))
+                        .non_fatal();
+                    }
+                }
                 pending_tab_ids.remove(&tab_id);
                 if pending_tab_ids.is_empty() {
                     for (tab_index, client_id) in pending_tab_switches.drain() {
@@ -4133,30 +4171,17 @@ pub(crate) fn screen_thread_main(
                 screen.render(None)?;
             },
             ScreenInstruction::SetPaneAgent(pane_id, agent, _completion) => {
-                // Read before the write: which hooks a change fires is a question about the
-                // edge, and the pane only answers whether anything changed.
-                let Some(previous) = screen
-                    .tab_containing_pane(pane_id)
-                    .map(|tab| tab.pane_agent_info(pane_id))
-                else {
-                    pending_events_waiting_for_pane
-                        .entry(pane_id)
-                        .or_default()
-                        .push(ScreenInstruction::SetPaneAgent(pane_id, agent, _completion));
+                if !apply_pane_agent_report(&mut screen, pane_id, agent.clone())? {
+                    let pending_events =
+                        pending_events_waiting_for_pane.entry(pane_id).or_default();
+                    pending_events
+                        .retain(|event| !matches!(event, ScreenInstruction::SetPaneAgent(..)));
+                    pending_events.push(ScreenInstruction::SetPaneAgent(
+                        pane_id,
+                        agent,
+                        _completion,
+                    ));
                     continue;
-                };
-                let changed = screen
-                    .tab_containing_pane_mut(pane_id)
-                    .map(|tab| tab.set_pane_agent(pane_id, agent.clone()))
-                    .unwrap_or(false);
-                // A report that repeats itself costs nothing; a changed one is news to every
-                // reader of the manifest.
-                if changed {
-                    screen.fire_agent_state_hooks(pane_id, previous.as_ref(), agent.as_ref());
-                    // Rebuild only the pane state. `SessionInfo` embeds that
-                    // manifest and is synchronized by `report_pane_state`, but
-                    // the tab state did not change.
-                    screen.report_pane_state()?;
                 }
             },
             ScreenInstruction::SetPaneColor(pane_id, fg, bg, _completion) => {

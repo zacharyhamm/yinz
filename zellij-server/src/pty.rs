@@ -1623,6 +1623,19 @@ impl Pty {
                 spawned_ids(&new_floating_panes_pids),
             ),
         };
+        let adopted_agents = match &adopted_panes {
+            Some((tiled, floating)) => tiled
+                .iter()
+                .chain(floating)
+                .filter_map(|terminal| {
+                    terminal
+                        .agent
+                        .clone()
+                        .map(|agent| (terminal.terminal_id, agent))
+                })
+                .collect(),
+            None => vec![],
+        };
 
         // Track the first terminal_id if blocking is requested
         let first_initial_pane_terminal_id = if block_on_first_terminal && !new_pane_pids.is_empty()
@@ -1652,6 +1665,7 @@ impl Pty {
                 floating_panes_layout,
                 new_tab_pane_ids.clone(),
                 new_tab_floating_pane_ids.clone(),
+                adopted_agents,
                 plugin_ids,
                 tab_index,
                 should_change_focus_to_new_tab,
@@ -1666,16 +1680,6 @@ impl Pty {
         // then held, showing the status it exited with.
         if let Some((tiled, floating)) = adopted_panes {
             for terminal in tiled.into_iter().chain(floating) {
-                if let Some(agent) = terminal.agent {
-                    self.bus
-                        .senders
-                        .send_to_screen(ScreenInstruction::SetPaneAgent(
-                            PaneId::Terminal(terminal.terminal_id),
-                            Some(agent),
-                            None,
-                        ))
-                        .with_context(err_context)?;
-                }
                 if !terminal.replay.is_empty() {
                     self.bus
                         .senders
