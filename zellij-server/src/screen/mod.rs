@@ -2928,6 +2928,36 @@ impl Screen {
             .and_then(|tab| tab.pane_agent_info(pane_id));
         self.fire_agent_state_hooks(pane_id, previous.as_ref(), current.as_ref());
     }
+    /// Run a *different* command in an existing command pane, reusing its pane id.
+    pub fn run_command_in_pane_with_id(
+        &mut self,
+        terminal_pane_id: u32,
+        run_command: RunCommand,
+        keep_scrollback: bool,
+    ) {
+        let pane_id = PaneId::Terminal(terminal_pane_id);
+        // Read around the re-run rather than inside it: the pane resets its own record to
+        // `busy` when it restarts, and an exited agent coming back is an `agent_start`.
+        let previous = self
+            .tab_containing_pane(pane_id)
+            .and_then(|tab| tab.pane_agent_info(pane_id));
+        match self.tab_containing_pane_mut(pane_id) {
+            Some(tab) => {
+                tab.run_command_in_pane_with_id(terminal_pane_id, run_command, keep_scrollback)
+            },
+            None => {
+                log::error!(
+                    "Failed to find terminal pane with id: {} to run a command in",
+                    terminal_pane_id
+                );
+                return;
+            },
+        }
+        let current = self
+            .tab_containing_pane(pane_id)
+            .and_then(|tab| tab.pane_agent_info(pane_id));
+        self.fire_agent_state_hooks(pane_id, previous.as_ref(), current.as_ref());
+    }
     pub fn resize_pane_with_id(&mut self, resize: ResizeStrategy, pane_id: PaneId) -> Result<()> {
         match self.tab_containing_pane_mut(pane_id) {
             Some(tab) => tab.resize_pane_with_id(resize, pane_id).non_fatal(),

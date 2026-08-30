@@ -3164,3 +3164,230 @@ fn an_interval_re_arms_the_timer_from_the_timer_event() {
     .unwrap();
     assert_eq!(plugin.render(1, 20).unwrap(), b"nil");
 }
+
+// Pane workflows ------------------------------------------------------------------------------
+//
+// `zellij.pane_workflow` is pure prelude: it sequences `open_command_pane` /
+// `run_command_in_pane` calls off `command_pane_exited` events. These drive it end to end with
+// the pane-facing commands stubbed out in Lua, so what it *did* is read back from a log and
+// what *happened* is synthetic events - no pty, no screen.
+
+/// A plugin running one workflow over `steps`, with every outward pane command logged instead
+/// of dispatched. A `key` event cancels the workflow; `input_received` pushes a step "d".
+fn workflow_plugin(options: &str) -> super::LuaPlugin {
+    let source = format!(
+        r#"
+        local zellij = require("zellij")
+        local M = {{}}
+        M.log = {{}}
+        local function log(entry) table.insert(M.log, entry) end
+        zellij.open_command_pane = function(args)
+          log("open:" .. args[1].path)
+          return {{ Terminal = 7 }}
+        end
+        zellij.run_command_in_pane = function(args)
+          log("run:" .. args.command.path .. ":" .. tostring(args.keep_scrollback))
+        end
+        zellij.send_sigint_to_pane_id = function() log("sigint") end
+        zellij.send_sigkill_to_pane_id = function() log("sigkill") end
+        zellij.close_terminal_pane = function() log("close") end
+        zellij.write_chars_to_pane_id = function(chars) log("stdin:" .. chars) end
+        function M.load()
+          M.wf = zellij.pane_workflow {{
+            {options}
+            on_step = function(n, step, code) log("step" .. n .. "=" .. tostring(code)) end,
+            on_done = function(r) log("done:" .. r.status) end,
+          }}
+        end
+        function M.update(event)
+          if event.name == "key" then M.wf:cancel() end
+          if event.name == "input_received" then M.wf:push {{ path = "d" }} end
+          return false
+        end
+        function M.render() return table.concat(M.log, " ") end
+        return M
+        "#
+    );
+    let mut plugin = load(&source).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    plugin
+}
+
+fn workflow_context(step: &str) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("__wf".to_owned(), "wf1".to_owned()),
+        ("__step".to_owned(), step.to_owned()),
+    ])
+}
+
+fn step_exited(step: &str, code: Option<i32>) -> Event {
+    Event::CommandPaneExited(7, code, workflow_context(step))
+}
+
+fn logged(plugin: &mut super::LuaPlugin) -> String {
+    String::from_utf8(plugin.render(1, 10).unwrap()).unwrap()
+}
+
+#[test]
+fn a_pane_workflow_runs_each_step_in_the_same_pane() {
+    let mut plugin =
+        workflow_plugin(r#"steps = { { path = "a" }, { path = "b" }, { path = "c" } },"#);
+    plugin.update(&step_exited("1", Some(0))).unwrap();
+    plugin.update(&step_exited("2", Some(0))).unwrap();
+    plugin.update(&step_exited("3", Some(0))).unwrap();
+    assert_eq!(
+        logged(&mut plugin),
+        "open:a step1=0 run:b:true step2=0 run:c:true step3=0 done:success",
+        "one pane opened, every later step respawned into it, scrollback kept by default"
+    );
+}
+
+#[test]
+fn a_failing_step_ends_the_workflow_by_default() {
+    let mut plugin = workflow_plugin(r#"steps = { { path = "a" }, { path = "b" } },"#);
+    plugin.update(&step_exited("1", Some(2))).unwrap();
+    assert_eq!(
+        logged(&mut plugin),
+        "open:a step1=2 done:failed",
+        "step b never ran"
+    );
+}
+
+#[test]
+fn stop_on_failure_false_runs_on_through_a_failure() {
+    let mut plugin =
+        workflow_plugin(r#"steps = { { path = "a" }, { path = "b" } }, stop_on_failure = false,"#);
+    plugin.update(&step_exited("1", Some(2))).unwrap();
+    plugin.update(&step_exited("2", Some(0))).unwrap();
+    assert_eq!(
+        logged(&mut plugin),
+        "open:a step1=2 run:b:true step2=0 done:success"
+    );
+}
+
+#[test]
+fn cancelling_interrupts_the_running_step_and_reports_cancelled() {
+    let mut plugin = workflow_plugin(r#"steps = { { path = "a" }, { path = "b" } },"#);
+    plugin
+        .update(&Event::Key(KeyWithModifier::new(BareKey::Char('c'))))
+        .unwrap();
+    // The interrupted step's exit - killed, so no code - completes the cancellation.
+    plugin.update(&step_exited("1", None)).unwrap();
+    assert_eq!(
+        logged(&mut plugin),
+        "open:a sigint step1=nil done:cancelled",
+        "no further step ran"
+    );
+}
+
+#[test]
+fn a_step_timeout_escalates_from_sigint_to_sigkill() {
+    let mut plugin = workflow_plugin(
+        r#"steps = { { path = "a", timeout = 0 }, { path = "b" } }, kill_grace = 0,"#,
+    );
+    plugin.update(&Event::Timer(1.0)).unwrap();
+    plugin.update(&Event::Timer(1.0)).unwrap();
+    assert_eq!(logged(&mut plugin), "open:a sigint sigkill");
+    // The kill lands and the exit event arrives: a timed-out step is a failed step.
+    plugin.update(&step_exited("1", None)).unwrap();
+    assert_eq!(
+        logged(&mut plugin),
+        "open:a sigint sigkill step1=nil done:failed"
+    );
+}
+
+#[test]
+fn a_step_pushed_while_running_extends_the_workflow() {
+    let mut plugin = workflow_plugin(r#"steps = { { path = "a" }, { path = "b" } },"#);
+    plugin.update(&Event::InputReceived).unwrap();
+    plugin.update(&step_exited("1", Some(0))).unwrap();
+    plugin.update(&step_exited("2", Some(0))).unwrap();
+    plugin.update(&step_exited("3", Some(0))).unwrap();
+    assert_eq!(
+        logged(&mut plugin),
+        "open:a step1=0 run:b:true step2=0 run:d:true step3=0 done:success"
+    );
+}
+
+#[test]
+fn the_workflows_pane_closing_ends_it() {
+    let mut plugin = workflow_plugin(r#"steps = { { path = "a" }, { path = "b" } },"#);
+    plugin
+        .update(&Event::PaneClosed(zellij_utils::data::PaneId::Terminal(7)))
+        .unwrap();
+    assert_eq!(logged(&mut plugin), "open:a done:pane_closed");
+}
+
+#[test]
+fn a_stale_exit_from_an_earlier_step_is_ignored() {
+    // The user pressed ENTER on the held pane between steps, re-running a finished step; its
+    // second exit names a step the workflow has moved past and must not advance anything.
+    let mut plugin =
+        workflow_plugin(r#"steps = { { path = "a" }, { path = "b" }, { path = "c" } },"#);
+    plugin.update(&step_exited("1", Some(0))).unwrap();
+    plugin.update(&step_exited("1", Some(0))).unwrap();
+    assert_eq!(
+        logged(&mut plugin),
+        "open:a step1=0 run:b:true",
+        "the workflow is still waiting for step 2"
+    );
+}
+
+#[test]
+fn close_on_success_closes_the_pane_after_a_clean_run() {
+    let mut plugin = workflow_plugin(r#"steps = { { path = "a" } }, close_on_success = true,"#);
+    plugin.update(&step_exited("1", Some(0))).unwrap();
+    assert_eq!(logged(&mut plugin), "open:a step1=0 close done:success");
+}
+
+#[test]
+fn a_steps_stdin_is_written_when_the_step_starts() {
+    let mut plugin =
+        workflow_plugin(r#"steps = { { path = "a", stdin = "secret" }, { path = "b" } },"#);
+    plugin
+        .update(&Event::CommandPaneOpened(7, workflow_context("1")))
+        .unwrap();
+    assert_eq!(
+        logged(&mut plugin),
+        "open:a stdin:secret",
+        "the secret goes to the child's stdin, never into argv"
+    );
+}
+
+#[test]
+fn run_command_in_pane_takes_a_numeric_pane_id() {
+    // The named wrapper builds the `PaneId` and the struct payload; this drives it through the
+    // real marshaller to the host.
+    assert_marshals(
+        r#"zellij.run_command_in_pane {
+             pane_id = 3,
+             command = { path = "sh", args = { "-c", "true" } },
+             context = { step = "2" },
+             keep_scrollback = true,
+           }"#,
+    );
+}
+
+#[test]
+fn the_workflow_example_loads_and_runs_on_r() {
+    // `example-plugins/workflow.lua` is what the pane-workflows documentation points at, so it
+    // should not be allowed to rot. Pressing `r` starts the workflow, which opens a real
+    // command pane through the host - the marshalling most likely to be got wrong.
+    let source = example_plugin("workflow.lua");
+    let mut env = test_env();
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+    let mut plugin = load_lua_plugin(&source, "workflow.lua", env).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+
+    let rendered = String::from_utf8(plugin.render(12, 70).unwrap()).unwrap();
+    assert!(rendered.contains("r: run the workflow"), "got: {rendered}");
+
+    // With no pty behind the test env the pane id comes back empty, which the workflow reports
+    // as an error naming itself rather than starting half-blind.
+    let result = plugin.update(&Event::Key(KeyWithModifier::new(BareKey::Char('r'))));
+    let error = format!("{:?}", result);
+    assert!(
+        error.contains("pane_workflow") || result.is_ok(),
+        "pressing r must reach pane_workflow, got: {error}"
+    );
+}

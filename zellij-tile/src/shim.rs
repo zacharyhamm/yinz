@@ -2668,6 +2668,28 @@ pub fn rerun_command_pane(terminal_pane_id: u32) {
     unsafe { host_run_plugin_command() };
 }
 
+/// Run a *different* command in an existing command pane, reusing its pane id. The `context`
+/// round-trips on the resulting `CommandPaneExited`, so each step of a sequence can carry its
+/// own correlation keys. When the pane's current command is still running, the replacement
+/// starts when it exits (last write wins). `keep_scrollback` scrolls the previous command's
+/// output into history instead of erasing it.
+pub fn run_command_in_pane(
+    pane_id: PaneId,
+    command: CommandToRun,
+    context: BTreeMap<String, String>,
+    keep_scrollback: bool,
+) {
+    let plugin_command = PluginCommand::RunCommandInPane {
+        pane_id,
+        command,
+        context,
+        keep_scrollback,
+    };
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
 /// Sugar for close_terminal_pane and close_plugin_pane
 pub fn close_pane_with_id(pane_id: PaneId) {
     let plugin_command = match pane_id {

@@ -3084,6 +3084,44 @@ impl Grid {
         self.kitty_grid = KittyGrid::new(self.character_cell_size.clone(), kitty_image_store);
         self.kitty_parser.abort_pending();
     }
+    /// `reset_terminal_state`, except what is on screen is scrolled into `lines_above` and the
+    /// scrollback survives, so a command respawned in this pane appends to the transcript
+    /// instead of erasing it. Alternate-screen contents are still discarded: the primary
+    /// screen they were hiding is what gets preserved. Images anchored in the preserved lines
+    /// are dropped with the rest of the graphics state; the text remains.
+    pub fn reset_terminal_state_preserving_scrollback(&mut self) {
+        if let Some(mut alternate_screen_state) = self.alternate_screen_state.take() {
+            if let Some(image_ids_to_reap) = self.sixel_grid.clear() {
+                self.sixel_grid.reap_images(image_ids_to_reap);
+            }
+            self.kitty_grid.clear_all_placements();
+            alternate_screen_state.apply_contents_to(
+                &mut self.lines_above,
+                &mut self.viewport,
+                &mut self.cursor,
+                &mut self.sixel_grid,
+                &mut self.kitty_grid,
+                &mut self.supports_kitty_keyboard_protocol,
+            );
+        }
+        let mut preserved_lines = std::mem::take(&mut self.lines_above);
+        let mut screen_rows = std::mem::take(&mut self.viewport);
+        // Trailing untouched rows are screen padding, not output.
+        while screen_rows.back().is_some_and(|row| row.is_empty()) {
+            screen_rows.pop_back();
+        }
+        self.reset_terminal_state();
+        for row in screen_rows {
+            bounded_push(
+                &mut preserved_lines,
+                &mut self.sixel_grid,
+                &mut self.kitty_grid,
+                row,
+            );
+        }
+        self.lines_above = preserved_lines;
+        self.scrollback_buffer_lines = self.recalculate_scrollback_buffer_count();
+    }
     fn set_preceding_character(&mut self, terminal_character: TerminalCharacter) {
         self.preceding_char = Some(terminal_character);
     }

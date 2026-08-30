@@ -50,6 +50,9 @@ struct MockOsApi {
     /// trip to its broker, which is the only reason releasing a tab's panes one
     /// at a time was ever expensive.
     release_delay: Arc<Mutex<std::time::Duration>>,
+    /// Every command handed to `re_run_command_in_terminal`, so a test can see what a respawn
+    /// actually asked the OS to run - the `originating_plugin` it carried included.
+    rerun_commands: Arc<Mutex<Vec<RunCommand>>>,
 }
 
 impl MockOsApi {
@@ -69,7 +72,11 @@ impl MockOsApi {
             release_attempts: Arc::new(Mutex::new(Vec::new())),
             release_budgets: Arc::new(Mutex::new(Vec::new())),
             release_delay: Arc::new(Mutex::new(std::time::Duration::ZERO)),
+            rerun_commands: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+    fn rerun_commands(&self) -> Vec<RunCommand> {
+        self.rerun_commands.lock().unwrap().clone()
     }
     fn refuse_to_warp(&self, terminal_id: u32, why: &str) {
         self.warp_refusals
@@ -267,10 +274,11 @@ impl ServerOsApi for MockOsApi {
     fn re_run_command_in_terminal(
         &self,
         _: u32,
-        _: RunCommand,
+        run_command: RunCommand,
         _: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> anyhow::Result<(Box<dyn AsyncReader>, Option<u32>)> {
-        unimplemented!()
+        self.rerun_commands.lock().unwrap().push(run_command);
+        Ok((Box::new(crate::os_input_output::NullAsyncReader), None))
     }
     fn clear_terminal_id(&self, _: u32) -> anyhow::Result<()> {
         Ok(())
@@ -1609,5 +1617,103 @@ fn a_tab_release_that_fails_part_way_tells_every_pane_in_it() {
             .get(&3)
             .is_some_and(|message| message.contains("this tab could not be moved")),
         "the pane whose release failed must say so too, got: {messages:?}"
+    );
+}
+
+// A pane workflow's steps each carry their own context, and `rerun_command_in_pane` is where a
+// step's context either survives to its `CommandPaneExited` or is clobbered by the pane's
+// original one. The rule: an incoming `originating_plugin` wins and becomes the pane's record;
+// the stored record is only a fallback for a command that carries none (a user's ENTER re-run).
+
+fn step_origin(step: &str) -> zellij_utils::data::OriginatingPlugin {
+    zellij_utils::data::OriginatingPlugin::new(
+        2,
+        1,
+        std::collections::BTreeMap::from([("__step".to_owned(), step.to_owned())]),
+    )
+}
+
+fn collect_command_pane_rerun_steps(
+    rx: &channels::Receiver<(PluginInstruction, ErrorContext)>,
+) -> Vec<String> {
+    let mut steps = Vec::new();
+    while let Ok((instruction, _)) = rx.try_recv() {
+        if let PluginInstruction::Update(updates) = instruction {
+            for (_, _, event) in updates {
+                if let Event::CommandPaneReRun(_, context) = event {
+                    steps.push(context.get("__step").cloned().unwrap_or_default());
+                }
+            }
+        }
+    }
+    steps
+}
+
+#[test]
+fn a_respawn_commands_own_context_wins_over_the_panes_original() {
+    let mock = MockOsApi::new();
+    let (mut pty, plugin_rx) = make_pty_with_plugin_receiver(mock.clone());
+    pty.originating_plugins.insert(1, step_origin("1"));
+
+    let replacement = RunCommand {
+        command: PathBuf::from("step2"),
+        hold_on_close: true,
+        originating_plugin: Some(step_origin("2")),
+        ..Default::default()
+    };
+    pty.rerun_command_in_pane(PaneId::Terminal(1), replacement)
+        .unwrap();
+
+    let ran = mock.rerun_commands();
+    assert_eq!(
+        ran[0]
+            .originating_plugin
+            .as_ref()
+            .and_then(|origin| origin.context.get("__step"))
+            .map(String::as_str),
+        Some("2"),
+        "the spawned command keeps the context it came with"
+    );
+    assert_eq!(
+        pty.originating_plugins
+            .get(&1)
+            .and_then(|origin| origin.context.get("__step"))
+            .map(String::as_str),
+        Some("2"),
+        "the pane's record is updated, so later re-runs answer with the newest context"
+    );
+    assert_eq!(
+        collect_command_pane_rerun_steps(&plugin_rx),
+        vec!["2".to_owned()],
+        "the re-run event names the step that is actually starting"
+    );
+}
+
+#[test]
+fn a_respawn_without_a_context_falls_back_to_the_panes_original() {
+    let mock = MockOsApi::new();
+    let (mut pty, plugin_rx) = make_pty_with_plugin_receiver(mock.clone());
+    pty.originating_plugins.insert(1, step_origin("1"));
+
+    let same_command_again = RunCommand {
+        command: PathBuf::from("step1"),
+        hold_on_close: true,
+        ..Default::default()
+    };
+    pty.rerun_command_in_pane(PaneId::Terminal(1), same_command_again)
+        .unwrap();
+
+    assert_eq!(
+        mock.rerun_commands()[0]
+            .originating_plugin
+            .as_ref()
+            .and_then(|origin| origin.context.get("__step"))
+            .map(String::as_str),
+        Some("1"),
+        "a command carrying no origin inherits the pane's stored one"
+    );
+    assert_eq!(
+        collect_command_pane_rerun_steps(&plugin_rx),
+        vec!["1".to_owned()]
     );
 }

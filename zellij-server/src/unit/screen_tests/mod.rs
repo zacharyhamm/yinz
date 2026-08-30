@@ -2076,6 +2076,7 @@ mod cli_actions;
 mod cli_layouts_and_rename;
 mod cli_pane_and_tab_id;
 mod clients;
+mod command_respawn;
 mod context_menu;
 mod desktop_notifications;
 mod floating_panes;

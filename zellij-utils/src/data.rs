@@ -4341,6 +4341,17 @@ pub enum PluginCommand {
     ShowPaneWithId(PaneId, bool, bool), // bools -> should_float_if_hidden, should_focus_pane
     OpenCommandPaneBackground(CommandToRun, Context),
     RerunCommandPane(u32), // u32  - terminal pane id
+    /// Run a different command in an existing (held) command pane, reusing its pane id. The
+    /// `context` round-trips on the resulting `CommandPaneExited`, so each step of a sequence can
+    /// carry its own correlation keys. When the pane's current command is still running, the
+    /// replacement starts when it exits (last write wins).
+    RunCommandInPane {
+        pane_id: PaneId,
+        command: CommandToRun,
+        context: Context,
+        #[serde(default)]
+        keep_scrollback: bool,
+    },
     ResizePaneIdWithDirection(ResizeStrategy, PaneId),
     EditScrollbackForPaneWithId(PaneId),
     GetPaneScrollback {

@@ -1128,6 +1128,323 @@ function zellij.__load(plugin, config)
   end
 end
 
+-- Pane workflows -----------------------------------------------------------------------------
+---
+--- Run a sequence of commands in ONE pane: the pane starts the first step, and when a step
+--- exits the next replaces it in the same pane, scrolling the finished step's output into the
+--- pane's history. A step's result is its child's real exit status - no prompt detection, no
+--- sentinel markers - delivered to `on_step`; `on_done` fires once with the whole story.
+---
+---     local wf = zellij.pane_workflow {
+---       name = "sync-skills",          -- pane title
+---       floating = true,               -- or a FloatingPaneCoordinates table; default tiled
+---       steps = {
+---         { path = "ssh", args = { "host", "ls" }, timeout = 30 },
+---         { path = "scp", args = { "host:x", "/tmp/x" } },
+---       },
+---       on_step = function(n, step, exit_code) end,
+---       on_done = function(result) end,
+---       -- result = { status = "success"|"failed"|"cancelled"|"pane_closed",
+---       --            exit_codes = { 0, false, ... }, pane_id = 7, failed_step = 2|nil }
+---     }
+---     wf.pane_id          -- the terminal pane id, known immediately
+---     wf:push(step)       -- append a step while running (works from inside on_step)
+---     wf:cancel()         -- SIGINT, then SIGKILL after `kill_grace`; on_done says "cancelled"
+---
+--- A step is `{ path, args, cwd, remote_host, remote_default_shell, timeout, stdin, name }`.
+--- `cwd = "inherit"` uses the pane's last reported working directory. `stdin` is written to the
+--- step's child once it starts - the place for a secret, which must never go in `args` (argv is
+--- visible in the pane manifest and in serialized sessions). `timeout = seconds` ends a stuck
+--- step with SIGINT, then SIGKILL; leave it out for interactive steps.
+---
+--- Options: `stop_on_failure` (default true) ends the workflow on the first non-zero exit;
+--- `close_on_success` (default false) closes the pane after a fully clean run; `on_cancel =
+--- "close"` closes it after a cancel (default leaves it held); `keep_scrollback` (default true)
+--- keeps each step's output in the pane's history; `kill_grace` (default 5) is the seconds
+--- between SIGINT and SIGKILL.
+---
+--- Needs the `run_commands` permission; `change_application_state` too if any step has a
+--- `timeout` or `cancel` is used, `write_to_stdin` for `stdin`, and `read_application_state`
+--- for `cwd = "inherit"`. Between steps the pane is briefly held, so a user pressing ENTER on
+--- it can re-run the finished step; the workflow's next step then queues behind that re-run.
+
+--- Run a *different* command in an existing command pane, reusing its pane id - the primitive
+--- `pane_workflow` sequences with. `pane_id` is the terminal pane id as a number (or a PaneId
+--- table). The `context` round-trips on the resulting `command_pane_exited`. When the pane's
+--- current command is still running, the replacement starts when it exits (last write wins).
+function zellij.run_command_in_pane(args)
+  local pane_id = args.pane_id
+  if type(pane_id) == "number" then
+    pane_id = { Terminal = pane_id }
+  end
+  return dispatch("run_command_in_pane", {
+    pane_id = pane_id,
+    command = args.command,
+    context = args.context or {},
+    keep_scrollback = args.keep_scrollback or false,
+  })
+end
+
+local workflows = {} -- terminal pane id (number) -> workflow
+local workflow_count = 0
+local workflow_handlers_installed = false
+local pane_update_watched = false
+
+local Workflow = {}
+Workflow.__index = Workflow
+
+--- The CommandToRun for a step, with `cwd = "inherit"` resolved against what the pane last
+--- reported. Resolved at start time, not enqueue time: the previous step has run by then.
+local function step_command(wf, step)
+  local cwd = step.cwd
+  if cwd == "inherit" then
+    cwd = wf.last_cwd
+  end
+  return {
+    path = step.path,
+    args = step.args,
+    cwd = cwd,
+    remote_host = step.remote_host,
+    remote_default_shell = step.remote_default_shell,
+  }
+end
+
+--- `cwd = "inherit"` needs the pane manifest; watched lazily so workflows without it never
+--- need the `read_application_state` permission.
+local function watch_pane_cwds()
+  if pane_update_watched then
+    return
+  end
+  pane_update_watched = true
+  zellij.subscribe { "pane_update" }
+  zellij.on("pane_update", function(event)
+    for _, panes in pairs(event.panes or {}) do
+      for _, pane in ipairs(panes) do
+        local wf = not pane.is_plugin and workflows[pane.id]
+        if wf and pane.cwd then
+          wf.last_cwd = pane.cwd
+        end
+      end
+    end
+  end)
+end
+
+local function finish(wf, status)
+  if wf.pane_id then
+    workflows[wf.pane_id] = nil
+  end
+  wf.status = status
+  wf.deadline = nil
+  if
+    (status == "success" and wf.opts.close_on_success)
+    or (status == "cancelled" and wf.opts.on_cancel == "close")
+  then
+    pcall(zellij.close_terminal_pane, wf.pane_id)
+  end
+  if wf.opts.on_done then
+    pcall(wf.opts.on_done, {
+      status = status,
+      exit_codes = wf.exit_codes,
+      pane_id = wf.pane_id,
+      failed_step = wf.failed_step,
+    })
+  end
+end
+
+local function start_step(wf)
+  local step = wf.steps[wf.idx]
+  wf.phase = "running"
+  wf.deadline = nil
+  local context = { __wf = wf.id, __step = tostring(wf.idx) }
+  if wf.idx == 1 then
+    local opened
+    if wf.opts.floating then
+      local coords = type(wf.opts.floating) == "table" and wf.opts.floating or {}
+      opened = zellij.open_command_pane_floating { step_command(wf, step), coords, context }
+    else
+      opened = zellij.open_command_pane { step_command(wf, step), context }
+    end
+    local _, id = next(opened or {})
+    if not id then
+      error("pane_workflow: zellij did not answer with a pane id")
+    end
+    wf.pane_id = id
+    workflows[id] = wf
+    if wf.opts.name then
+      pcall(zellij.rename_terminal_pane, { pane_id = id, name = wf.opts.name })
+    end
+  else
+    zellij.run_command_in_pane {
+      pane_id = wf.pane_id,
+      command = step_command(wf, step),
+      context = context,
+      keep_scrollback = wf.opts.keep_scrollback,
+    }
+  end
+  if step.timeout then
+    -- `os.time` counts whole seconds, so the deadline is rounded up and the timer armed a
+    -- second past it: when the timer fires, the deadline is reliably due.
+    wf.deadline = os.time() + math.ceil(step.timeout)
+    arm(math.ceil(step.timeout) + 1)
+  end
+end
+
+local function on_step_exit(wf, event)
+  local step = wf.steps[wf.idx]
+  wf.exit_codes[wf.idx] = event.exit_code or false
+  wf.deadline = nil
+  wf.phase = "running"
+  if wf.opts.on_step then
+    pcall(wf.opts.on_step, wf.idx, step, event.exit_code)
+  end
+  if wf.status == "cancelling" then
+    finish(wf, "cancelled")
+  elseif wf.stop_on_failure and event.exit_code ~= 0 then
+    wf.failed_step = wf.idx
+    finish(wf, "failed")
+  elseif wf.idx >= #wf.steps then
+    finish(wf, "success")
+  else
+    wf.idx = wf.idx + 1
+    start_step(wf)
+  end
+end
+
+--- The workflow a pane event belongs to, or nil for anyone else's pane.
+local function workflow_for(event)
+  local wf = event.context and event.context.__wf and workflows[event.pane_id]
+  if wf and wf.id == event.context.__wf then
+    return wf
+  end
+  return nil
+end
+
+local function maybe_write_stdin(event)
+  local wf = workflow_for(event)
+  if not wf then
+    return
+  end
+  local step = wf.steps[tonumber(event.context.__step) or 0]
+  if step and step.stdin then
+    zellij.write_chars_to_pane_id(step.stdin, zellij.terminal_pane(event.pane_id))
+  end
+end
+
+--- SIGINT, then SIGKILL, then giving up: one escalation ladder serves both a step `timeout`
+--- and `cancel`. Reaching the end without an exit event means there was no child to kill.
+local function escalate(wf)
+  local target = zellij.terminal_pane(wf.pane_id)
+  if wf.phase == "running" then
+    pcall(zellij.send_sigint_to_pane_id, target)
+    wf.phase = "int_sent"
+  elseif wf.phase == "int_sent" then
+    pcall(zellij.send_sigkill_to_pane_id, target)
+    wf.phase = "kill_sent"
+  else
+    if wf.status ~= "cancelling" then
+      wf.failed_step = wf.idx
+    end
+    finish(wf, wf.status == "cancelling" and "cancelled" or "failed")
+    return
+  end
+  local grace = math.ceil(wf.opts.kill_grace or 5)
+  wf.deadline = os.time() + grace
+  arm(grace + 1)
+end
+
+local function install_workflow_handlers()
+  if workflow_handlers_installed then
+    return
+  end
+  workflow_handlers_installed = true
+  zellij.subscribe {
+    "command_pane_opened",
+    "command_pane_exited",
+    "command_pane_re_run",
+    "pane_closed",
+    "timer",
+  }
+  zellij.on("command_pane_exited", function(event)
+    local wf = workflow_for(event)
+    -- A stale exit - the user re-running a finished step from the held pane - names an
+    -- earlier step and is not the workflow advancing.
+    if wf and tonumber(event.context.__step) == wf.idx then
+      on_step_exit(wf, event)
+    end
+  end)
+  zellij.on("command_pane_opened", maybe_write_stdin)
+  zellij.on("command_pane_re_run", maybe_write_stdin)
+  zellij.on("pane_closed", function(event)
+    if type(event.value) ~= "table" then
+      return
+    end
+    local kind, id = next(event.value)
+    local wf = kind == "Terminal" and workflows[id]
+    if wf then
+      finish(wf, "pane_closed")
+    end
+  end)
+  zellij.on("timer", function()
+    local now = os.time()
+    for _, wf in pairs(workflows) do
+      if wf.deadline and now >= wf.deadline then
+        wf.deadline = nil
+        escalate(wf)
+      end
+    end
+  end)
+end
+
+function Workflow:push(step)
+  if self.status ~= "running" and self.status ~= "cancelling" then
+    return
+  end
+  table.insert(self.steps, step)
+  if step.cwd == "inherit" then
+    watch_pane_cwds()
+  end
+end
+
+function Workflow:cancel()
+  if self.status ~= "running" then
+    return
+  end
+  self.status = "cancelling"
+  escalate(self)
+end
+
+--- Start a workflow. Returns its handle immediately; `handle.pane_id` is already the pane.
+function zellij.pane_workflow(opts)
+  if type(opts) ~= "table" or type(opts.steps) ~= "table" or #opts.steps == 0 then
+    error("pane_workflow: needs a non-empty `steps` list")
+  end
+  for index, step in ipairs(opts.steps) do
+    if type(step) ~= "table" or (not step.path and not step.remote_default_shell) then
+      error("pane_workflow: step " .. index .. " needs a `path`")
+    end
+  end
+  install_workflow_handlers()
+  workflow_count = workflow_count + 1
+  local wf = setmetatable({
+    id = "wf" .. workflow_count,
+    opts = opts,
+    steps = opts.steps,
+    stop_on_failure = opts.stop_on_failure ~= false,
+    idx = 1,
+    exit_codes = {},
+    status = "running",
+    phase = "running",
+  }, Workflow)
+  wf.opts.keep_scrollback = opts.keep_scrollback ~= false
+  for _, step in ipairs(wf.steps) do
+    if step.cwd == "inherit" then
+      watch_pane_cwds()
+    end
+  end
+  start_step(wf)
+  return wf
+end
+
 --- Every other host command, without a hand-written wrapper each.
 ---
 --- The wrappers above are real fields and so take precedence; anything else is manufactured on

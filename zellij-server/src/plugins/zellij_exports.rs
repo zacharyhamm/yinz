@@ -582,6 +582,12 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::RerunCommandPane(terminal_pane_id) => {
                 rerun_command_pane(env, terminal_pane_id)
             },
+            PluginCommand::RunCommandInPane {
+                pane_id,
+                command,
+                context,
+                keep_scrollback,
+            } => run_command_in_pane(env, pane_id.into(), command, context, keep_scrollback),
             PluginCommand::ResizePaneIdWithDirection(resize, pane_id) => {
                 resize_pane_with_id(env, resize, pane_id.into())
             },
@@ -3056,6 +3062,47 @@ fn rerun_command_pane(env: &PluginEnv, terminal_pane_id: u32) {
     let _ = env
         .senders
         .send_to_screen(ScreenInstruction::RerunCommandPane(terminal_pane_id, None));
+}
+
+/// Run a *different* command in an existing command pane, reusing its pane id. The `context`
+/// round-trips on the resulting `CommandPaneExited`, addressed to this plugin.
+fn run_command_in_pane(
+    env: &PluginEnv,
+    pane_id: PaneId,
+    command_to_run: CommandToRun,
+    context: BTreeMap<String, String>,
+    keep_scrollback: bool,
+) {
+    let PaneId::Terminal(terminal_pane_id) = pane_id else {
+        log::error!("cannot run a command in a plugin pane");
+        return;
+    };
+    let cwd = command_to_run
+        .cwd
+        .map(|cwd| translate_plugin_path(env, cwd))
+        .or_else(|| Some(env.plugin_cwd.clone()));
+    let run_command = RunCommand {
+        command: command_to_run.path,
+        args: command_to_run.args,
+        cwd,
+        hold_on_close: true,
+        hold_on_start: false,
+        originating_plugin: Some(OriginatingPlugin::new(
+            env.plugin_id,
+            env.client_id,
+            context,
+        )),
+        use_terminal_title: false,
+        remote_host: command_to_run.remote_host,
+        remote_default_shell: command_to_run.remote_default_shell,
+    };
+    let _ = env
+        .senders
+        .send_to_screen(ScreenInstruction::RunCommandInPane(
+            terminal_pane_id,
+            run_command,
+            keep_scrollback,
+        ));
 }
 
 fn switch_tab_to(env: &PluginEnv, tab_idx: u32) {
@@ -6978,6 +7025,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::OpenCommandPaneBackground
         | CommandType::OpenCommandPaneInPlaceOfPaneId
         | CommandType::RunCommand
+        | CommandType::RunCommandInPane
         | CommandType::ExecCmd => PermissionType::RunCommands,
         CommandType::WebRequest | CommandType::CancelWebRequest => PermissionType::WebAccess,
         CommandType::Write

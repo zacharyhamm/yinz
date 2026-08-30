@@ -680,6 +680,8 @@ pub enum ScreenInstruction {
         host_notification_protocol: HostNotificationProtocol,
     },
     RerunCommandPane(u32, Option<NotificationEnd>), // u32 - terminal pane id
+    RunCommandInPane(u32, RunCommand, bool), // u32 - terminal pane id, bool - keep_scrollback;
+    // runs a *different* command in an existing command pane
     ResizePaneWithId(ResizeStrategy, PaneId),
     EditScrollbackForPaneWithId(PaneId, Option<NotificationEnd>),
     WriteToPaneId(Vec<u8>, PaneId, Option<NotificationEnd>),

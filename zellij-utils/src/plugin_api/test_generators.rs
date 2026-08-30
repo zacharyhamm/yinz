@@ -1663,6 +1663,12 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             PluginCommand::OpenCommandPaneBackground(commands_to_run(tc), context(tc))
         },
         CommandType::RerunCommandPane => PluginCommand::RerunCommandPane(u32s(tc)),
+        CommandType::RunCommandInPane => PluginCommand::RunCommandInPane {
+            pane_id: pane_id(tc),
+            command: commands_to_run(tc),
+            context: context(tc),
+            keep_scrollback: booleans(tc),
+        },
         CommandType::ResizePaneIdWithDirection => {
             PluginCommand::ResizePaneIdWithDirection(resize_strategies(tc), pane_id(tc))
         },
