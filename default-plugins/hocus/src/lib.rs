@@ -117,7 +117,7 @@ PageUp / PageDown        scroll the transcript
 Esc           hide hocus
 Ctrl+c        cancel a stream or tool, keep refining a
               plan, or clear the prompt
-y / n         confirm or decline a pending tool call
+y / n         run the pending tool call, or decline it and stop
 n             keep refining a plan hocus has written
 /plan <text>  plan before acting: read-only tools until
               you /execute the plan hocus writes
@@ -368,6 +368,10 @@ pub struct State {
     /// its own destination — the result is in the transcript for the next
     /// message to build on, but it answers no question — so only the model's
     /// calls set this, and only it makes an emptied queue start a request.
+    ///
+    /// A decline or an abort clears it: the calls are answered for the
+    /// transcript's sake, but the model's question waits on the user's next
+    /// message rather than being sent back.
     ///
     /// A flag rather than a per-call mark because the two kinds now mix in one
     /// queue: the model's calls land when its stream ends, which can be while a

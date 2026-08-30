@@ -2114,11 +2114,10 @@ impl State {
         let was_on = self.plan_mode_on();
 
         // The mode changes *first*, and the pending call is dealt with second.
-        // `decline_tool` answers the call and pumps the queue, and an emptied
-        // queue starts the model's follow-up request — which would go out with
-        // the whole tool set if the mode were still off when it left. Setting
-        // the mode first also puts the rest of the queue behind `pump_tools`'
-        // own read-only gate, so a batch is refused rather than half-run.
+        // `decline_tool` answers the whole batch and stops; the request that
+        // follows is `send_user_text` below, sending the prompt, and it has to
+        // go out as a planning request — with the read-only tool set — which it
+        // only does if the mode is already on when it leaves.
         self.plan = Plan::Planning;
 
         // Entering it while a destructive call is waiting on a y/n would leave
@@ -2255,27 +2254,57 @@ impl State {
         true
     }
 
+    /// `n` on a tool call: the call is answered, and so is every call queued
+    /// behind it, and then nothing happens until the user says something.
+    ///
+    /// The results are recorded because the model must see a reply for every
+    /// call it made or the next request is malformed — but they are not sent.
+    /// A "no" is the user taking the turn back: handing the decline straight to
+    /// the model would have it try something else on its own, and running the
+    /// rest of the batch would carry out calls nobody agreed to.
     pub(crate) fn decline_tool(&mut self) -> bool {
-        if self.pending.is_empty() {
+        let Some(head) = self.pending.front() else {
             return false;
+        };
+        self.log(
+            "tool_confirm",
+            serde_json::json!({
+                "tool_call_id": head.id,
+                "tool_name": head.name,
+                "decision": "decline",
+            }),
+        );
+        self.halt_tools(
+            "declined by the user",
+            "not run: the user declined an earlier call in this batch",
+        );
+        let notice = "declined — waiting for your next message";
+        self.messages.push(Message::notice(notice));
+        self.log("notice", serde_json::json!({"content": notice}));
+        self.pin_to_bottom();
+        // Something typed while the prompt was up *is* the next message, and it
+        // has been waiting on this answer. The timer would get to it eventually;
+        // this is the moment it was queued for.
+        if let Ok(cfg) = self.cfg.clone() {
+            self.start_queued_question(&cfg);
         }
-        self.drop_spotlight();
-        if let Some(head) = self.pending.front() {
-            self.log(
-                "tool_confirm",
-                serde_json::json!({
-                    "tool_call_id": head.id,
-                    "tool_name": head.name,
-                    "decision": "decline",
-                }),
-            );
-        }
-        self.status = Status::Idle;
-        // Recorded as the tool's result, not as a notice: the model must see a
-        // reply for every call it made or the next request is malformed.
-        self.finish_head("declined by the user");
-        self.pump_tools();
         true
+    }
+
+    /// Answer the head with `head_result` and everything behind it with
+    /// `rest_result`, and leave the queue empty without starting the model's
+    /// follow-up. Shared by the two exits that end a turn early — a decline and
+    /// an abort — so that neither can drift into pumping the queue.
+    fn halt_tools(&mut self, head_result: &str, rest_result: &str) {
+        self.drop_spotlight();
+        self.status = Status::Idle;
+        // The model asked, but it is not getting an answer — the results are
+        // recorded for the transcript's sake, not to be sent back.
+        self.owes_reply = false;
+        self.finish_head(head_result);
+        while !self.pending.is_empty() {
+            self.finish_head(rest_result);
+        }
     }
 
     /// Give up on the whole run. Every outstanding call still gets an answer, so
@@ -2284,15 +2313,8 @@ impl State {
     /// This is also the escape hatch for a dobbs call that never returns,
     /// which is why there is no timer.
     pub(crate) fn abort_tools(&mut self) -> bool {
-        self.drop_spotlight();
-        self.status = Status::Idle;
-        // The model asked, but it is not getting an answer — the results are
-        // recorded for the transcript's sake, not to be sent back.
-        self.owes_reply = false;
         self.scheduled_run = None;
-        while !self.pending.is_empty() {
-            self.finish_head("aborted by the user");
-        }
+        self.halt_tools("aborted by the user", "aborted by the user");
         self.messages.push(Message::notice("tools aborted"));
         self.log("notice", serde_json::json!({"content": "tools aborted"}));
         self.log("abort", serde_json::json!({"reason": "user"}));
