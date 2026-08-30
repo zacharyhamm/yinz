@@ -179,8 +179,8 @@ Benchmarks: see `.claude/skills/bench/SKILL.md` (`cargo x bench`).
 Read `docs/ARCHITECTURE.md` before changing server internals, and
 `docs/TERMINOLOGY.md` for pty/ANSI/CSI vocabulary.
 `docs/PLUGIN_RENDER_PIPELINE.md` is a standing write-up of why plugin input lags behind a busy
-plugin — the four FIFO queues a keystroke crosses, and the known fixes nobody has made yet. Read
-it before touching plugin event delivery or the plugin render path.
+plugin — the four FIFO queues a keystroke crosses, and which of the candidate fixes have landed
+and which have not. Read it before touching plugin event delivery or the plugin render path.
 
 ## Conventions
 

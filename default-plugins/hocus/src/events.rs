@@ -68,6 +68,23 @@ impl State {
         self.view.scroll.insert(self.client, lines);
     }
 
+    /// Record how far up the render could have gone, so the scroll keys know
+    /// when they have hit the top. One number for every client: the transcript
+    /// and the pane are the same for all of them.
+    pub(crate) fn set_max_scroll_offset(&mut self, lines: usize) {
+        self.view.max_offset = Some(lines);
+    }
+
+    /// Whether the last render's measurements still describe the transcript.
+    /// The cache it wrapped is the record of what it saw; a message that has
+    /// grown or arrived since (a stream chunk in the same batch as a wheel
+    /// notch, say) means the maximum it measured is out of date.
+    pub(crate) fn transcript_measured(&self) -> bool {
+        self.transcript_cache
+            .as_ref()
+            .is_some_and(|cache| cache.covers(&self.messages))
+    }
+
     /// The message whose first line this client's viewport is being held to, if
     /// any. `None` once they have scrolled for themselves — the anchor exists to
     /// save them a trip back up, not to take the scrollbar off them.

@@ -793,6 +793,7 @@ lazy_static! {
 
 use crate::panes::PaneId;
 
+mod batching;
 mod break_panes_commands;
 mod cli_events;
 mod config_events;

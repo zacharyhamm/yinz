@@ -20,7 +20,6 @@ use notify_debouncer_full::{notify::RecommendedWatcher, Debouncer, RecommendedCa
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
-    str::FromStr,
     sync::{Arc, Mutex},
 };
 use tokio::sync::mpsc::Sender;
@@ -1331,8 +1330,11 @@ impl WasmBridge {
     /// Hand every streamable event in `updates` to the `zellij events` clients that want it.
     ///
     /// A state report — `PaneUpdate`, `TabUpdate`, `ModeUpdate`, `SessionUpdate` — arrives here
-    /// as one copy per (plugin, client) it is addressed to, all alike but for the addressee, so
-    /// a batch forwards one of each. Everything else is a single entry to begin with.
+    /// as one copy per (plugin, client) it is addressed to, all alike but for the addressee, and
+    /// a batch merged on the plugin thread can carry several generations of one. Within a run of
+    /// consecutive reports only the newest of each kind is forwarded, since each describes the
+    /// whole state; a non-report event ends the run, so a key is never forwarded ahead of the
+    /// report that described the mode it was pressed in. Everything else is forwarded as is.
     fn forward_events_to_cli_subscribers(
         &self,
         updates: &[(Option<PluginId>, Option<ClientId>, Event)],
@@ -1340,43 +1342,62 @@ impl WasmBridge {
         if self.cli_event_subscribers.is_empty() {
             return;
         }
-        let mut forwarded_reports = HashSet::new();
-        for (_, _, event) in updates {
-            let event_type = EventType::from(event);
-            if !event_type.is_cli_streamable() {
-                continue;
-            }
-            let is_state_report = matches!(
+        let is_state_report = |event_type: &EventType| {
+            matches!(
                 event_type,
                 EventType::PaneUpdate
                     | EventType::TabUpdate
                     | EventType::ModeUpdate
                     | EventType::SessionUpdate
-            );
-            if is_state_report && !forwarded_reports.insert(event_type) {
+            )
+        };
+        // the newest index of each kind of report in the current run, in order of first
+        // appearance
+        let mut pending: Vec<(EventType, usize)> = vec![];
+        let flush = |pending: &mut Vec<(EventType, usize)>| {
+            for (event_type, index) in pending.drain(..) {
+                self.forward_event_to_cli_subscribers(event_type, &updates[index].2);
+            }
+        };
+        for (index, (_, _, event)) in updates.iter().enumerate() {
+            let event_type = EventType::from(event);
+            if !event_type.is_cli_streamable() {
                 continue;
             }
-            let event_json = match serde_json::to_string(event) {
-                Ok(event_json) => event_json,
-                Err(e) => {
-                    log::error!(
-                        "failed to serialize {} for a cli subscriber: {}",
-                        event_type,
-                        e
-                    );
-                    continue;
-                },
-            };
-            for (client_id, wanted) in &self.cli_event_subscribers {
-                if wanted.is_empty() || wanted.contains(&event_type) {
-                    let _ = self
-                        .senders
-                        .send_to_server(ServerInstruction::EventUpdateToClient(
-                            *client_id,
-                            event_type.to_string(),
-                            event_json.clone(),
-                        ));
+            if is_state_report(&event_type) {
+                match pending.iter_mut().find(|(kind, _)| *kind == event_type) {
+                    Some(slot) => slot.1 = index,
+                    None => pending.push((event_type, index)),
                 }
+            } else {
+                flush(&mut pending);
+                self.forward_event_to_cli_subscribers(event_type, event);
+            }
+        }
+        flush(&mut pending);
+    }
+
+    fn forward_event_to_cli_subscribers(&self, event_type: EventType, event: &Event) {
+        let event_json = match serde_json::to_string(event) {
+            Ok(event_json) => event_json,
+            Err(e) => {
+                log::error!(
+                    "failed to serialize {} for a cli subscriber: {}",
+                    event_type,
+                    e
+                );
+                return;
+            },
+        };
+        for (client_id, wanted) in &self.cli_event_subscribers {
+            if wanted.is_empty() || wanted.contains(&event_type) {
+                let _ = self
+                    .senders
+                    .send_to_server(ServerInstruction::EventUpdateToClient(
+                        *client_id,
+                        event_type.to_string(),
+                        event_json.clone(),
+                    ));
             }
         }
     }
@@ -1413,86 +1434,80 @@ impl WasmBridge {
             })
             .collect();
 
-        // Execute each plugin update on its respective pinned thread
+        // One job per plugin instance carrying every event of the batch it takes, so a batch of
+        // wheel notches costs one render per plugin rather than one per notch.
         let plugin_executor = self.plugin_executor.clone();
-        // let senders = self.senders.clone();
-        for (pid, cid, event) in updates.clone().into_iter() {
-            for (plugin_id, client_id, running_plugin, subscriptions) in &plugins_to_update {
-                let subs = subscriptions.lock().unwrap().clone();
-                let plugin_is_shared = self.shared_plugin_ids.contains(plugin_id);
-                // FIXME: This is very janky... Maybe I should write my own macro for Event -> EventType?
-                if let Ok(event_type) = EventType::from_str(&event.to_string()) {
-                    if (subs.contains(&event_type)
+        for (plugin_id, client_id, running_plugin, subscriptions) in &plugins_to_update {
+            let subs = subscriptions.lock().unwrap().clone();
+            let plugin_is_shared = self.shared_plugin_ids.contains(plugin_id);
+            let events: Vec<(ClientId, Event)> = updates
+                .iter()
+                .filter_map(|(pid, cid, event)| {
+                    let event_type = EventType::from(event);
+                    let wanted = (subs.contains(&event_type)
                         || event_type == EventType::PermissionRequestResult)
                         && Self::message_is_directed_at_plugin(
-                            pid,
-                            cid,
+                            *pid,
+                            *cid,
                             plugin_id,
                             client_id,
                             plugin_is_shared,
-                        )
-                    {
-                        // Execute directly on pinned thread (no async I/O needed for event processing)
-                        plugin_executor.execute_for_plugin(*plugin_id, {
-                            let plugin_id = *plugin_id;
-                            // for a shared plugin, the acting client is whoever the message was
-                            // directed at, not the client the instance is keyed under
-                            let client_id = if plugin_is_shared {
-                                cid.unwrap_or(*client_id)
-                            } else {
-                                *client_id
-                            };
-                            let render_clients = if plugin_is_shared {
-                                self.connected_clients.lock().unwrap().clone()
-                            } else {
-                                vec![client_id]
-                            };
-                            let running_plugin = running_plugin.clone();
-                            let event = event.clone();
-                            let _s = shutdown_sender.clone();
-                            let plugin_subs = subs.clone();
-                            move |senders,
-                                  _plugin_map,
-                                  _connected_clients,
-                                  _plugin_cache,
-                                  _engine| {
-                                let _s = _s; // guard to allow the task to complete before cleanup/shutdown
-                                let mut running_plugin = running_plugin.lock().unwrap();
-                                let mut plugin_render_assets = vec![];
-                                match apply_event_to_plugin(
-                                    plugin_id,
-                                    client_id,
-                                    &render_clients,
-                                    &mut running_plugin,
-                                    &event,
-                                    &mut plugin_render_assets,
-                                    senders.clone(),
-                                    &plugin_subs,
-                                ) {
-                                    Ok(()) => {
-                                        let _ = senders.send_to_screen(
-                                            ScreenInstruction::PluginBytes(plugin_render_assets),
-                                        );
-                                    },
-                                    Err(e) => {
-                                        log::error!("{:?}", e);
+                        );
+                    if !wanted {
+                        return None;
+                    }
+                    // for a shared plugin, the acting client is whoever the message was
+                    // directed at, not the client the instance is keyed under
+                    let acting_client_id = if plugin_is_shared {
+                        cid.unwrap_or(*client_id)
+                    } else {
+                        *client_id
+                    };
+                    Some((acting_client_id, event.clone()))
+                })
+                .collect();
+            if events.is_empty() {
+                continue;
+            }
+            let render_clients = if plugin_is_shared {
+                self.connected_clients.lock().unwrap().clone()
+            } else {
+                vec![*client_id]
+            };
+            // Execute directly on pinned thread (no async I/O needed for event processing)
+            plugin_executor.execute_for_plugin(*plugin_id, {
+                let plugin_id = *plugin_id;
+                let running_plugin = running_plugin.clone();
+                let _s = shutdown_sender.clone();
+                move |senders, _plugin_map, _connected_clients, _plugin_cache, _engine| {
+                    let _s = _s; // guard to allow the task to complete before cleanup/shutdown
+                    let mut running_plugin = running_plugin.lock().unwrap();
+                    let mut plugin_render_assets = vec![];
+                    match apply_events_to_plugin(
+                        plugin_id,
+                        &render_clients,
+                        &mut running_plugin,
+                        &events,
+                        &mut plugin_render_assets,
+                        senders.clone(),
+                        &subs,
+                    ) {
+                        Ok(()) => {
+                            let _ = senders.send_to_screen(ScreenInstruction::PluginBytes(
+                                plugin_render_assets,
+                            ));
+                        },
+                        Err(e) => {
+                            log::error!("{:?}", e);
 
-                                        // https://stackoverflow.com/questions/66450942/in-rust-is-there-a-way-to-make-literal-newlines-in-r-using-windows-c
-                                        let stringified_error =
-                                            format!("{:?}", e).replace("\n", "\n\r");
+                            // https://stackoverflow.com/questions/66450942/in-rust-is-there-a-way-to-make-literal-newlines-in-r-using-windows-c
+                            let stringified_error = format!("{:?}", e).replace("\n", "\n\r");
 
-                                        handle_plugin_crash(
-                                            plugin_id,
-                                            stringified_error,
-                                            senders.clone(),
-                                        );
-                                    },
-                                }
-                            }
-                        });
+                            handle_plugin_crash(plugin_id, stringified_error, senders.clone());
+                        },
                     }
                 }
-            }
+            });
         }
 
         // loop once more to update the cached events for the pending plugins (probably currently
@@ -2077,7 +2092,6 @@ impl WasmBridge {
         plugin_id: PluginId,
         shutdown_sender: Sender<()>,
     ) -> Result<()> {
-        let err_context = || "Failed to apply cached events to plugin".to_string();
         if let Some(events_or_pipe_messages) =
             self.cached_events_for_pending_plugins.remove(&plugin_id)
         {
@@ -2118,51 +2132,41 @@ impl WasmBridge {
                             for event_or_pipe_message in events_or_pipe_messages {
                                 match event_or_pipe_message {
                                     EventOrPipeMessage::Event(event) => {
-                                        match EventType::from_str(&event.to_string())
-                                            .with_context(err_context)
-                                        {
-                                            Ok(event_type) => {
-                                                if !subs.contains(&event_type) {
-                                                    continue;
-                                                }
-                                                let mut running_plugin =
-                                                    running_plugin.lock().unwrap();
-                                                let mut plugin_render_assets = vec![];
-                                                match apply_event_to_plugin(
-                                                    plugin_id,
-                                                    client_id,
-                                                    &render_clients,
-                                                    &mut running_plugin,
-                                                    &event,
-                                                    &mut plugin_render_assets,
-                                                    senders.clone(),
-                                                    &subs,
-                                                ) {
-                                                    Ok(()) => {
-                                                        let _ = senders.send_to_screen(
-                                                            ScreenInstruction::PluginBytes(
-                                                                plugin_render_assets,
-                                                            ),
-                                                        );
-                                                    },
-                                                    Err(e) => {
-                                                        log::error!("{:?}", e);
-                                                        // The same treatment the live event path
-                                                        // gives it: an error raised while the events
-                                                        // cached during a load replay is still the
-                                                        // plugin's error, and belongs in its pane.
-                                                        let stringified_error = format!("{:?}", e)
-                                                            .replace("\n", "\n\r");
-                                                        handle_plugin_crash(
-                                                            plugin_id,
-                                                            stringified_error,
-                                                            senders.clone(),
-                                                        );
-                                                    },
-                                                }
+                                        if !subs.contains(&EventType::from(&event)) {
+                                            continue;
+                                        }
+                                        let mut running_plugin = running_plugin.lock().unwrap();
+                                        let mut plugin_render_assets = vec![];
+                                        match apply_event_to_plugin(
+                                            plugin_id,
+                                            client_id,
+                                            &render_clients,
+                                            &mut running_plugin,
+                                            &event,
+                                            &mut plugin_render_assets,
+                                            senders.clone(),
+                                            &subs,
+                                        ) {
+                                            Ok(()) => {
+                                                let _ = senders.send_to_screen(
+                                                    ScreenInstruction::PluginBytes(
+                                                        plugin_render_assets,
+                                                    ),
+                                                );
                                             },
                                             Err(e) => {
-                                                log::error!("Failed to apply event: {:?}", e);
+                                                log::error!("{:?}", e);
+                                                // The same treatment the live event path gives
+                                                // it: an error raised while the events cached
+                                                // during a load replay is still the plugin's
+                                                // error, and belongs in its pane.
+                                                let stringified_error =
+                                                    format!("{:?}", e).replace("\n", "\n\r");
+                                                handle_plugin_crash(
+                                                    plugin_id,
+                                                    stringified_error,
+                                                    senders.clone(),
+                                                );
                                             },
                                         }
                                     },
@@ -2955,70 +2959,132 @@ pub fn apply_event_to_plugin(
     senders: ThreadSenders,
     plugin_subscriptions: &HashSet<EventType>,
 ) -> Result<()> {
-    // host commands issued while handling this event act on behalf of the client it was directed
-    // at (this only differs from the instance's owner for shared plugins)
-    running_plugin.env_mut().client_id = client_id;
+    apply_events_to_plugin(
+        plugin_id,
+        render_clients,
+        running_plugin,
+        &[(client_id, event.clone())],
+        plugin_render_assets,
+        senders,
+        plugin_subscriptions,
+    )
+}
+
+/// Deliver a batch of events to one plugin instance, in order, then render it once if any of
+/// them asked for it. Each event carries the client it acts for, which for a shared plugin
+/// differs from the instance's owner.
+///
+/// Rendering once per batch rather than once per event is what keeps a flood of wheel notches
+/// from costing a wasm `render()` per client per notch; the plugin still sees every event. A
+/// plugin that errors mid-batch is not handed the rest of it, but the CLI pipe changes the
+/// events before the error asked for are still delivered: a `zellij pipe` client one of them
+/// released must not stay blocked on a later event's failure.
+pub fn apply_events_to_plugin(
+    plugin_id: PluginId,
+    render_clients: &[ClientId],
+    running_plugin: &mut RunningPlugin,
+    events: &[(ClientId, Event)],
+    plugin_render_assets: &mut Vec<PluginRenderAsset>,
+    senders: ThreadSenders,
+    plugin_subscriptions: &HashSet<EventType>,
+) -> Result<()> {
     let rows = running_plugin.rows;
     let columns = running_plugin.columns;
-
     let err_context = || format!("Failed to apply event to plugin {plugin_id}");
-    match check_event_permission(running_plugin.env(), event) {
-        (PermissionStatus::Granted, _) => {
-            let mut event = event.clone();
-            if let Event::ModeUpdate(mode_info) = &mut event {
-                // A ModeUpdate that already names its base mode (Screen::change_mode sets it
-                // when a keybinding preset switches) must keep it: the plugin's env is updated
-                // asynchronously on reconfigure and may still hold the previous default mode.
-                if mode_info.base_mode.is_none() {
-                    mode_info.base_mode = Some(running_plugin.env().default_mode);
+
+    let mut should_render = false;
+    let mut handled_any = false;
+    let mut failure: Option<anyhow::Error> = None;
+    // The pipe changes each event asked for, read off the plugin as soon as that event returns.
+    // One drain at the end of the batch would merge them with unblock winning over block
+    // regardless of order (see `pipes_to_block_or_unblock`); drained per event, the last change
+    // to a pipe wins, as it did when every event was its own job.
+    let mut pipe_changes: HashMap<String, PipeStateChange> = HashMap::new();
+    for (client_id, event) in events {
+        // host commands issued while handling this event act on behalf of the client it was
+        // directed at (this only differs from the instance's owner for shared plugins)
+        running_plugin.env_mut().client_id = *client_id;
+        match check_event_permission(running_plugin.env(), event) {
+            (PermissionStatus::Granted, _) => {
+                let mut event = event.clone();
+                if let Event::ModeUpdate(mode_info) = &mut event {
+                    // A ModeUpdate that already names its base mode (Screen::change_mode sets it
+                    // when a keybinding preset switches) must keep it: the plugin's env is updated
+                    // asynchronously on reconfigure and may still hold the previous default mode.
+                    if mode_info.base_mode.is_none() {
+                        mode_info.base_mode = Some(running_plugin.env().default_mode);
+                    }
+                    if plugin_subscriptions.contains(&EventType::InitialKeybinds) {
+                        // Plugin caches keybindings via InitialKeybinds — send lightweight ModeUpdate
+                        mode_info.keybinds = vec![];
+                    } else {
+                        // Legacy plugin — send full keybindings as before
+                        mode_info.keybinds = running_plugin.env().keybinds.to_keybinds_vec();
+                    }
                 }
-                if plugin_subscriptions.contains(&EventType::InitialKeybinds) {
-                    // Plugin caches keybindings via InitialKeybinds — send lightweight ModeUpdate
-                    mode_info.keybinds = vec![];
-                } else {
-                    // Legacy plugin — send full keybindings as before
-                    mode_info.keybinds = running_plugin.env().keybinds.to_keybinds_vec();
+                handled_any = true;
+                let updated = running_plugin.update(&event).with_context(err_context);
+                pipe_changes.extend(pipes_to_block_or_unblock(running_plugin, None));
+                match updated {
+                    Ok(rendered) => should_render |= rendered,
+                    Err(e) => {
+                        failure = Some(e);
+                        break;
+                    },
                 }
-            }
-            let mut should_render = running_plugin.update(&event).with_context(err_context)?;
-            if let Event::PermissionRequestResult(..) = event {
-                // we always render in this case, otherwise the request permission screen stays on
-                // screen
-                should_render = true;
-            }
-            if rows > 0 && columns > 0 && should_render {
-                plugin_render_assets.append(&mut render_plugin_for_clients(
+                if let Event::PermissionRequestResult(..) = event {
+                    // we always render in this case, otherwise the request permission screen stays on
+                    // screen
+                    should_render = true;
+                }
+            },
+            (PermissionStatus::Denied, permission) => {
+                log::error!(
+                    "PluginId '{}' permission '{}' is not allowed - Event '{:?}' denied",
                     plugin_id,
-                    running_plugin,
-                    render_clients,
-                    None,
-                )?);
-            } else {
-                // This is a bit of a hack to get around the fact that plugins are allowed not to
-                // render and still unblock CLI pipes
-                let pipes_to_block_or_unblock = pipes_to_block_or_unblock(running_plugin, None);
-                let plugin_render_asset =
-                    PluginRenderAsset::new(plugin_id, running_plugin.env().owner_client_id, vec![])
-                        .with_pipes(pipes_to_block_or_unblock);
-                let _ = senders
-                    .send_to_plugin(PluginInstruction::UnblockCliPipes(vec![
-                        plugin_render_asset,
-                    ]))
-                    .context("failed to unblock input pipe");
+                    permission
+                        .map(|p| p.to_string())
+                        .unwrap_or("UNKNOWN".to_owned()),
+                    EventType::from(event)
+                );
+            },
+        }
+    }
+    if !handled_any {
+        return Ok(());
+    }
+    let mut rendered = None;
+    if failure.is_none() && rows > 0 && columns > 0 && should_render {
+        match render_plugin_for_clients(plugin_id, running_plugin, render_clients, None) {
+            Ok(assets) => rendered = Some(assets),
+            Err(e) => failure = Some(e),
+        }
+    }
+    match rendered {
+        Some(mut assets) => {
+            // the render's own drain sees only what `render()` itself changed, which is newer
+            // than anything the events asked for
+            if let Some(owner_asset) = assets.first_mut() {
+                pipe_changes.extend(std::mem::take(&mut owner_asset.cli_pipes));
+                owner_asset.cli_pipes = pipe_changes;
             }
+            plugin_render_assets.append(&mut assets);
         },
-        (PermissionStatus::Denied, permission) => {
-            log::error!(
-                "PluginId '{}' permission '{}' is not allowed - Event '{:?}' denied",
-                plugin_id,
-                permission
-                    .map(|p| p.to_string())
-                    .unwrap_or("UNKNOWN".to_owned()),
-                EventType::from_str(&event.to_string()).with_context(err_context)?
-            );
+        None => {
+            // This is a bit of a hack to get around the fact that plugins are allowed not to
+            // render and still unblock CLI pipes: the changes ride on a render asset, so a batch
+            // that renders nothing (or failed) sends an empty one.
+            let plugin_render_asset =
+                PluginRenderAsset::new(plugin_id, running_plugin.env().owner_client_id, vec![])
+                    .with_pipes(pipe_changes);
+            let _ = senders
+                .send_to_plugin(PluginInstruction::UnblockCliPipes(vec![
+                    plugin_render_asset,
+                ]))
+                .context("failed to unblock input pipe");
         },
     }
-    Ok(())
+    failure.map_or(Ok(()), Err)
 }
 
 pub fn handle_plugin_crash(plugin_id: PluginId, message: String, senders: ThreadSenders) {

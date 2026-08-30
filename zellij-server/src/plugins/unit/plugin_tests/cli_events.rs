@@ -5,7 +5,7 @@ use crate::plugins::CLI_EVENTS_ONLY_TARGET;
 use crate::ClientId;
 use std::path::PathBuf;
 use zellij_test_support::{default_timeout, Watched};
-use zellij_utils::data::{PaneId, PaneManifest};
+use zellij_utils::data::{InputMode, ModeInfo, PaneId, PaneManifest};
 
 fn forwarded(log: &[ServerInstruction]) -> Vec<(ClientId, String, String)> {
     log.iter()
@@ -81,6 +81,72 @@ pub fn a_cli_subscriber_gets_the_events_it_asked_for_once_each() {
             "the payload is the serde form of the event, keyed by its name: {event_json}"
         );
     }
+}
+
+/// Only a run of consecutive state reports collapses to its newest: a report is never moved
+/// past a non-report event, or a key would be forwarded ahead of the mode it was pressed in.
+#[test]
+#[serial(plugin_tests)]
+pub fn state_reports_collapse_per_run_without_reordering_other_events() {
+    let (plugin_thread_sender, server_receiver, _screen_receiver, teardown) =
+        create_plugin_thread_with_server_receiver(None, None);
+    let received = Watched::new(vec![]);
+    let server_thread = log_actions_in_thread!(
+        received,
+        ServerInstruction::EventUpdateToClient,
+        server_receiver,
+        4
+    );
+    let mode = |mode: InputMode| {
+        Event::ModeUpdate(ModeInfo {
+            mode,
+            ..Default::default()
+        })
+    };
+
+    let client_id: ClientId = 7;
+    let _ = plugin_thread_sender.send(PluginInstruction::SubscribeCliClientToEvents {
+        client_id,
+        event_types: vec!["mode_update".to_owned(), "cwd_changed".to_owned()],
+    });
+    // one batch, as the plugin thread would merge two `Update`s waiting on its bus into anyway
+    let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![
+        (Some(1), Some(1), mode(InputMode::Locked)),
+        (None, None, cwd_changed(3)),
+        (Some(1), Some(1), mode(InputMode::Locked)),
+        (Some(2), Some(1), mode(InputMode::Normal)),
+        (None, None, cwd_changed(4)),
+    ]));
+
+    let events = received.wait_until("four forwarded events", default_timeout(), |log| {
+        let events = forwarded(log);
+        (events.len() >= 4).then_some(events)
+    });
+    teardown();
+    server_thread.join().unwrap();
+
+    let types: Vec<&str> = events.iter().map(|(_, t, _)| t.as_str()).collect();
+    assert_eq!(
+        types,
+        vec!["ModeUpdate", "CwdChanged", "ModeUpdate", "CwdChanged"],
+        "{events:?}"
+    );
+    let modes: Vec<&str> = events
+        .iter()
+        .filter(|(_, t, _)| t == "ModeUpdate")
+        .map(|(_, _, json)| {
+            if json.contains("Locked") {
+                "Locked"
+            } else {
+                "Normal"
+            }
+        })
+        .collect();
+    assert_eq!(
+        modes,
+        vec!["Locked", "Normal"],
+        "the first report stayed ahead of the cwd change; the run of two collapsed to its newest"
+    );
 }
 
 /// A subscriber that has gone is forgotten with it; the ones still here are unaffected.
