@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::pty_host::client::PtyHostHandle;
-use crate::pty_host::remote::protocol::RemotePaneEntry;
+use crate::pty_host::remote::protocol::{RemotePaneEntry, ResumeRefusal};
 
 /// How much output to keep for a pane whose server is not currently connected.
 ///
@@ -247,10 +247,14 @@ impl PaneSession {
     ///
     /// It counts as attached from here — a second resume must be refused — but
     /// the pumps stay quiet until `resume_step` says it is caught up.
-    pub fn try_begin_attach(&self) -> Option<u64> {
-        let mut slot = self.wire.lock().ok()?;
-        if !matches!(*slot, WireState::Detached) {
-            return None;
+    pub fn try_begin_attach(&self) -> Result<u64, ResumeRefusal> {
+        let mut slot = self.wire.lock().map_err(|_| ResumeRefusal::Unknown)?;
+        match &*slot {
+            WireState::Detached => {},
+            WireState::Terminating => return Err(ResumeRefusal::Unknown),
+            WireState::Attaching(_) | WireState::Attached(_, _) => {
+                return Err(ResumeRefusal::AlreadyAttached);
+            },
         }
         let gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         *slot = WireState::Attaching(gen);
@@ -258,7 +262,7 @@ impl PaneSession {
         if let Ok(mut since) = self.disconnected_since.lock() {
             *since = None;
         }
-        Some(gen)
+        Ok(gen)
     }
 
     /// The next thing a resuming connection owes, or the news that it is done.

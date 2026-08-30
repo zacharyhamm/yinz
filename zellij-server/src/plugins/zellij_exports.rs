@@ -4626,7 +4626,7 @@ fn write_data_response(env: &mut PluginEnv, encoded: Vec<u8>, what: &str) {
 fn delete_dead_session_and_reply(env: &mut PluginEnv, session_name: String) {
     let response = match delete_dead_session(&session_name) {
         Ok(()) => DeleteDeadSessionResponse::Ok,
-        Err(e) => DeleteDeadSessionResponse::Err(e.to_string()),
+        Err(e) => DeleteDeadSessionResponse::Err(format!("{e:#}")),
     };
     let protobuf_response = ProtobufDeleteDeadSessionResponse::from(response);
     wasi_write_object(env, &protobuf_response.encode_to_vec())

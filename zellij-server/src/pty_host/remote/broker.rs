@@ -523,15 +523,20 @@ fn resume_pane(
             return Err(anyhow!("refused a resume for unknown pane {token}"));
         },
     };
-    let Some(generation) = session.try_begin_attach() else {
-        send(
-            wire,
-            &BrokerToServerMsg::ResumeRefused {
-                kind: ResumeRefusal::AlreadyAttached,
-                reason: format!("pane {token} already has a server attached"),
-            },
-        )?;
-        return Err(anyhow!("refused a duplicate resume for pane {token}"));
+    let generation = match session.try_begin_attach() {
+        Ok(generation) => generation,
+        Err(kind) => {
+            let reason = match kind {
+                ResumeRefusal::AlreadyAttached => {
+                    format!("pane {token} already has a server attached")
+                },
+                ResumeRefusal::Unknown => {
+                    format!("pane {token} was reclaimed and is being terminated")
+                },
+            };
+            send(wire, &BrokerToServerMsg::ResumeRefused { kind, reason })?;
+            return Err(anyhow!("refused a resume for pane {token}: {kind:?}"));
+        },
     };
 
     // Claimed before anything is sent, so a second resume is refused from here
