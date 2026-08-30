@@ -269,7 +269,7 @@ mod attaching {
     #[test]
     fn a_pane_being_caught_up_is_claimed_but_not_yet_writable() {
         let (session, _control, _master) = test_session();
-        let generation = session.begin_attach();
+        let generation = session.try_begin_attach().expect("claim failed");
 
         assert!(
             session.is_attached(),
@@ -295,7 +295,7 @@ mod attaching {
     #[test]
     fn output_produced_while_catching_up_is_replayed_not_dropped() {
         let (session, _control, _master) = test_session();
-        let generation = session.begin_attach();
+        let generation = session.try_begin_attach().expect("claim failed");
 
         // What a resume would send first.
         let (replay, _) = session.replay_from(0);
@@ -319,7 +319,7 @@ mod attaching {
     #[test]
     fn a_caught_up_connection_attaches_rather_than_replaying_forever() {
         let (session, _control, _master) = test_session();
-        let generation = session.begin_attach();
+        let generation = session.try_begin_attach().expect("claim failed");
         session.append_output(b"first");
 
         let sent = match session.resume_step(0, &wire(), generation) {
@@ -337,12 +337,37 @@ mod attaching {
     #[test]
     fn a_superseded_catch_up_is_told_so() {
         let (session, _control, _master) = test_session();
-        let generation = session.begin_attach();
-        let _newer = session.begin_attach();
+        let generation = session.try_begin_attach().expect("claim failed");
+        let _newer = session.attach(wire());
 
         assert!(matches!(
             session.resume_step(0, &wire(), generation),
             ResumeStep::Superseded
         ));
+    }
+
+    #[test]
+    fn only_one_resume_can_claim_a_detached_pane() {
+        let (session, _control, _master) = test_session();
+        assert!(session.try_begin_attach().is_some());
+        assert!(
+            session.try_begin_attach().is_none(),
+            "a second resume claimed a pane that was already being caught up"
+        );
+    }
+
+    #[test]
+    fn resume_and_reaping_are_mutually_exclusive() {
+        let (resumed, _control, _master) = test_session();
+        let generation = resumed.attach(wire());
+        resumed.detach_if(generation);
+        assert!(resumed.try_begin_attach().is_some());
+        assert!(!resumed.try_claim_expired_orphan(Duration::ZERO));
+
+        let (reaped, _control, _master) = test_session();
+        let generation = reaped.attach(wire());
+        reaped.detach_if(generation);
+        assert!(reaped.try_claim_expired_orphan(Duration::ZERO));
+        assert!(reaped.try_begin_attach().is_none());
     }
 }

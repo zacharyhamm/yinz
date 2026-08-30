@@ -523,7 +523,7 @@ fn resume_pane(
             return Err(anyhow!("refused a resume for unknown pane {token}"));
         },
     };
-    if session.is_attached() {
+    let Some(generation) = session.try_begin_attach() else {
         send(
             wire,
             &BrokerToServerMsg::ResumeRefused {
@@ -532,12 +532,11 @@ fn resume_pane(
             },
         )?;
         return Err(anyhow!("refused a duplicate resume for pane {token}"));
-    }
+    };
 
     // Claimed before anything is sent, so a second resume is refused from here
     // on — but not yet writable by the pumps, which would let new output
     // overtake the catch-up below.
-    let generation = session.begin_attach();
     // From here the pane is spoken for, so nothing may return without either
     // finishing the attach or giving the claim back. A pane abandoned mid-resume
     // would refuse every later reconnect and, having had its orphan clock
