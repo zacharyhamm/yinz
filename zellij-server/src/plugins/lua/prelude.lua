@@ -1163,9 +1163,10 @@ end
 --- keeps each step's output in the pane's history; `kill_grace` (default 5) is the seconds
 --- between SIGINT and SIGKILL.
 ---
---- Needs the `run_commands` permission; `change_application_state` too if any step has a
---- `timeout` or `cancel` is used, `write_to_stdin` for `stdin`, and `read_application_state`
---- for `cwd = "inherit"`. Between steps the pane is briefly held, so a user pressing ENTER on
+--- Needs `run_commands` to start a step and `read_application_state` to hear that one
+--- finished - `command_pane_exited` is gated on it, so without it a workflow stops after its
+--- first step. `change_application_state` too if any step has a `timeout` or `cancel` is used,
+--- and `write_to_stdin` for `stdin`. Between steps the pane is briefly held, so a user pressing ENTER on
 --- it can re-run the finished step; the workflow's next step then queues behind that re-run.
 
 --- Run a *different* command in an existing command pane, reusing its pane id - the primitive

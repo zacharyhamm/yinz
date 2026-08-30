@@ -360,8 +360,10 @@ pane manifest and in serialized sessions. `cwd = "inherit"` uses the pane's last
 working directory. Other options: `close_on_success`, `on_cancel = "close"`, `keep_scrollback =
 false` to wipe between steps, `kill_grace` (seconds between SIGINT and SIGKILL, default 5).
 
-It needs `run_commands`; `change_application_state` too if any step has a `timeout` or `cancel`
-is used, `write_to_stdin` for `stdin`, and `read_application_state` for `cwd = "inherit"`.
+It needs `run_commands` to start a step and `read_application_state` to hear that one finished:
+`command_pane_exited` is gated on the latter, so a workflow without it runs its first step and
+then waits forever. `change_application_state` too if any step has a `timeout` or `cancel` is
+used, and `write_to_stdin` for `stdin`.
 Between steps the pane is briefly held, so a user pressing ENTER on it re-runs the finished
 step; the workflow's next step then queues behind that re-run. The workflow is plugin state: it
 does not survive a plugin reload or session resurrection.
