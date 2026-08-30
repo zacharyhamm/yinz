@@ -217,8 +217,9 @@ fn clean(
 
 /// The text of an item, or an error naming why it cannot be one.
 fn clean_text(text: &str) -> Result<String, String> {
+    let text = crate::text::sanitize(text);
     let text = text.trim();
-    if text.is_empty() || text.chars().any(char::is_control) {
+    if text.is_empty() {
         return Err("todo text must contain visible characters".to_owned());
     }
     Ok(text.to_owned())
@@ -836,7 +837,7 @@ pub fn plan_add(
     root: &str,
     text: &str,
     parent_id: Option<u64>,
-) -> Result<Vec<Mutation>, String> {
+) -> Result<(Vec<Mutation>, String), String> {
     let text = clean_text(text)?;
     let (open, all) = counts(list);
     if open >= MAX_OPEN {
@@ -863,7 +864,7 @@ pub fn plan_add(
 
     let mut put = Mutation::put("todo")
         .set("root", root)
-        .set("text", text)
+        .set("text", text.clone())
         .set("done", false);
     if let Some(parent_id) = parent_id {
         put = put.set("parent_id", parent_id);
@@ -881,7 +882,7 @@ pub fn plan_add(
             mutations.push(open_mutation(&reopen));
         }
     }
-    Ok(mutations)
+    Ok((mutations, text))
 }
 
 fn is_done(items: &[Item], id: u64) -> bool {
@@ -1283,7 +1284,8 @@ mod tests {
     #[test]
     fn planning_an_add_writes_one_row() {
         let list = List::default();
-        let mutations = plan_add(&list, "/work", "ship it", None).expect("planned");
+        let (mutations, text) = plan_add(&list, "/work", "ship it", None).expect("planned");
+        assert_eq!(text, "ship it");
         assert_eq!(
             mutations,
             vec![Mutation::put("todo")
@@ -1302,7 +1304,7 @@ mod tests {
             next_id: 3,
             items: vec![done(item(1, "top", vec![done(item(2, "middle", vec![]))]))],
         };
-        let mutations = plan_add(&list, "/work", "more work", Some(2)).expect("planned");
+        let (mutations, _) = plan_add(&list, "/work", "more work", Some(2)).expect("planned");
         assert_eq!(mutations.len(), 2);
         assert_eq!(
             mutations[1],
@@ -1318,7 +1320,7 @@ mod tests {
             next_id: 2,
             items: vec![item(1, "top", vec![])],
         };
-        let mutations = plan_add(&list, "/work", "more", Some(1)).expect("planned");
+        let (mutations, _) = plan_add(&list, "/work", "more", Some(1)).expect("planned");
         assert_eq!(mutations.len(), 1);
     }
 
@@ -1445,7 +1447,7 @@ mod tests {
         let mut parent = None;
         for text in ["top", "under top", "deeper"] {
             let list = materialize(&backend, "/work");
-            let mutations = plan_add(&list, "/work", text, parent).expect("planned");
+            let (mutations, _) = plan_add(&list, "/work", text, parent).expect("planned");
             let report = backend.apply(mutations).expect("applied");
             parent = Some(report.ids[0] as u64);
             let under = expected_parent(&expected);
@@ -1769,7 +1771,16 @@ mod tests {
     fn text_that_is_empty_is_refused() {
         let mut saved = Store::new();
         assert!(add(&mut saved, "/work/hocus", "   ", None).is_err());
+        assert!(add(&mut saved, "/work/hocus", "\n\t\u{1b}\u{7}", None).is_err());
         assert!(saved.is_empty());
+    }
+
+    #[test]
+    fn markdown_is_preserved_while_control_characters_are_removed() {
+        assert_eq!(
+            clean_text(" \n**ship it**\n\t- 日本語\u{1b}\u{7} "),
+            Ok("**ship it**\n    - 日本語".to_owned())
+        );
     }
 
     #[test]

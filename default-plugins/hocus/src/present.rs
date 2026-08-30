@@ -610,13 +610,18 @@ fn todo_list(value: &Value) -> Option<String> {
 fn todo_items(items: &[Value], depth: usize, out: &mut String) {
     for item in items {
         let box_ = if flag(item, "done") { "[x]" } else { "[ ]" };
-        out.push_str(&format!(
-            "{}- {box_} `{}` {}\n",
-            "  ".repeat(depth),
-            number(item, "id"),
-            inline(&text(item, "text"))
-        ));
+        let indent = "  ".repeat(depth);
+        out.push_str(&format!("{indent}- {box_} `{}`\n", number(item, "id")));
+        markdown_body(&text(item, "text"), &format!("{indent}  "), out);
         todo_items(array(item, "children"), depth + 1, out);
+    }
+}
+
+fn markdown_body(text: &str, indent: &str, out: &mut String) {
+    for line in text.split('\n') {
+        out.push_str(indent);
+        out.push_str(line);
+        out.push('\n');
     }
 }
 
@@ -633,11 +638,11 @@ fn todo_search(value: &Value) -> Option<String> {
             name => name,
         };
         out.push_str(&format!(
-            "- {box_} `{}` {} — _{}_\n",
+            "- {box_} `{}` — _{}_\n",
             number(found, "id"),
-            inline(&text(found, "text")),
             inline(&project)
         ));
+        markdown_body(&text(found, "text"), "  ", &mut out);
     }
     if flag(value, "truncated") {
         out.push_str("\n_more matches were cut; narrow the query_\n");
@@ -753,7 +758,7 @@ fn spawned(value: &Value, registered: Option<&str>) -> Option<String> {
 }
 
 fn todo_written(name: &str, value: &Value) -> Option<String> {
-    let item = format!("`{}` {}", number(value, "id"), inline(&text(value, "text")));
+    let item = format!("`{}`", number(value, "id"));
     let project = text(value, "project");
     let mut out = match name {
         "todo_add" => format!("Added {item}"),
@@ -778,6 +783,9 @@ fn todo_written(name: &str, value: &Value) -> Option<String> {
             }
         }
     }
+    out.push('\n');
+    out.push_str(&text(value, "text"));
+    out.push('\n');
     Some(out)
 }
 

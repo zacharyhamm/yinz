@@ -1287,7 +1287,7 @@ impl State {
         match call.name.as_str() {
             "todo_add" => {
                 let text = args.text.as_deref().ok_or("text is required")?;
-                let mutations = todos::plan_add(&list, &root, text, args.parent_id)?;
+                let (mutations, text) = todos::plan_add(&list, &root, text, args.parent_id)?;
                 let report = backend.apply(mutations)?;
                 Ok(serde_json::json!({
                     "project": name,
