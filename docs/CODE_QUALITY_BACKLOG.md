@@ -16,7 +16,10 @@ completion includes focused regression coverage and a passing `cargo x ci check`
   `new_pane` — and the stale bundled-curl dependency (`8.4.0 → 8.21.0`). The second round re-verified
   the items below still hold at their cited locations, except **#35**, which the concurrency re-audit
   reassessed as *no defect* (the state it names is single-threaded; at most one tolerated trailing
-  tick) — close it rather than fix it.
+  tick) — close it rather than fix it. The **#4** fix was rebased over the executor's input-priority
+  queue (`pick_next_job`, see `docs/PLUGIN_RENDER_PIPELINE.md` §4): the single lock now also covers
+  the "own thread while one exists" placement policy, and the unload contract ("only the last
+  per-client cleanup unregisters") relies on that pick preserving per-plugin FIFO order.
 
 ## Next up
 
