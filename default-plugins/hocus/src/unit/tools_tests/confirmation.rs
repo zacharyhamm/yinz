@@ -111,6 +111,8 @@ fn whatever_stops_for_a_confirmation_can_say_what_it_will_do() {
         call("new_pane", r#"{"command":"htop"}"#),
         call("new_pane", r#"{"command":["bash","-lc","id"]}"#),
         call("new_pane", r#"{"command":""}"#),
+        call("new_pane", r#"{"command":"","args":["htop"]}"#),
+        call("new_pane", r#"{"command":["","htop"]}"#),
         call("new_pane", "not json at all"),
         call("schedule", r#"{"prompt":"check ci","auto_confirm":true}"#),
         call("schedule", r#"{"prompt":"check ci"}"#),
@@ -258,6 +260,27 @@ fn a_local_pane_stops_only_when_it_names_a_command() {
         consequence(&call("new_pane", r#"{"command":["bash","-lc","id"]}"#)),
         Some("opens a new pane running `bash` on this machine".into())
     );
+}
+
+/// A leading empty word is skipped, not read as the program: the prompt names
+/// the program that will actually run. The dispatcher reads the same
+/// `program_and_args`, so a call confirmed as `htop` cannot open a bare shell.
+#[test]
+fn a_leading_empty_word_does_not_hide_the_command_from_the_prompt() {
+    for arguments in [
+        r#"{"command":"","args":["htop"]}"#,
+        r#"{"command":["","htop"]}"#,
+    ] {
+        assert!(
+            call_needs_confirmation(&call("new_pane", arguments)),
+            "{arguments}"
+        );
+        assert_eq!(
+            consequence(&call("new_pane", arguments)),
+            Some("opens a new pane running `htop` on this machine".into()),
+            "{arguments}"
+        );
+    }
 }
 
 /// Arguments the model got wrong are not a bare pane — they are a call nobody
