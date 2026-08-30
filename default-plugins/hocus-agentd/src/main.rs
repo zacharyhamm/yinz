@@ -955,13 +955,19 @@ impl State {
             }
         }
         if let Some((kind, text)) = agents::run_entry(event) {
-            run.revision += 1;
-            run.entries.push(agents::RunEntry {
-                revision: run.revision,
-                kind,
-                text,
-            });
-            changed = true;
+            if run
+                .entries
+                .last()
+                .is_none_or(|entry| entry.kind != kind || entry.text != text)
+            {
+                run.revision += 1;
+                run.entries.push(agents::RunEntry {
+                    revision: run.revision,
+                    kind,
+                    text,
+                });
+                changed = true;
+            }
         }
         if changed {
             self.dirty_runs.insert(run.id.clone(), run.clone());
@@ -1368,6 +1374,20 @@ impl State {
             .filter_map(|pane| Some((pane.pane_id, pane.cwd.clone()?)))
             .collect();
         self.panes = Some(panes);
+        let exited_runs: Vec<u32> = self
+            .panes
+            .iter()
+            .flatten()
+            .filter(|pane| {
+                pane.agent
+                    .as_ref()
+                    .is_some_and(|agent| agent.state == AgentState::Exited)
+            })
+            .map(|pane| pane.pane_id)
+            .collect();
+        for pane_id in exited_runs {
+            self.finish_run(pane_id, agents::RunOutcome::Closed, now_ms());
+        }
         // The manifest's agent records are the feeds: what the agent reported, however the
         // report travelled. A record from the spawn path is not a feed - the agent has said
         // nothing, so the heuristic judges it - and an exited agent's feed is over.
@@ -2857,6 +2877,16 @@ mod tests {
             }],
         );
         state.rebuild_panes();
+        assert!(
+            state.runs.is_empty(),
+            "the exited agent's run is no longer active"
+        );
+        let archived = state
+            .dirty_runs
+            .values()
+            .find(|run| run.pane_id == 7 && run.ended_at_ms.is_some())
+            .expect("the run was archived");
+        assert_eq!(archived.outcome, agents::RunOutcome::Closed);
         assert!(
             !state.hooks.contains_key(&7),
             "the feed is over, so the heuristic has the pane back"
@@ -4814,6 +4844,16 @@ mod tests {
             panes: Some(vec![pane(7, "claude", "/work")]),
             ..State::default()
         };
+        feed(
+            &mut state,
+            7,
+            &wire::HookEvent {
+                prompt: Some("implement history".to_owned()),
+                ..hook("UserPromptSubmit")
+            },
+            None,
+        );
+        // A spawned Claude with the same user-level hook installed reports each event twice.
         feed(
             &mut state,
             7,

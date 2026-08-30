@@ -221,6 +221,34 @@ fn a_selection_message_is_how_hocus_learns_the_agent_lists_id() {
     assert_eq!(state.agents_plugin, Some(AGENTS_PANE));
 }
 
+#[test]
+fn a_selected_agent_picks_up_its_run_when_the_first_header_arrives() {
+    let mut state = state_with_summary(2);
+    assert!(!state.pipe(selection(AGENTS_PANE, Some(3))));
+    assert_eq!(state.selected_run, None);
+
+    let mut run = agents::AgentRunHeader {
+        id: "claude:session-1".to_owned(),
+        pane_id: 3,
+        session_id: "session-1".to_owned(),
+        kind: "claude".to_owned(),
+        cwd: Some("/work/hocus".to_owned()),
+        started_at_ms: 10,
+        ended_at_ms: None,
+        outcome: agents::RunOutcome::Active,
+        revision: 1,
+        summary: None,
+        title: "hook history".to_owned(),
+    };
+    state.merge_run_headers(vec![run.clone()]);
+    assert_eq!(state.selected_run.as_deref(), Some("claude:session-1"));
+
+    run.id = "claude:session-2".to_owned();
+    run.session_id = "session-2".to_owned();
+    state.merge_run_headers(vec![run]);
+    assert_eq!(state.selected_run.as_deref(), Some("claude:session-2"));
+}
+
 /// One `AGENT_SELECTION` from the agents pane.
 fn selection(plugin_id: u32, pane_id: Option<u32>) -> PipeMessage {
     PipeMessage {
