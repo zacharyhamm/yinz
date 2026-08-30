@@ -1964,7 +1964,7 @@ fn help_line(state: &State) -> &'static str {
     // Esc hides from every one of these; Ctrl-c is what interrupts, and when a tool
     // and a stream are both outstanding it takes the tool first.
     match state.status {
-        Status::ConfirmingTool => "<y> yes  <n> no  run this?  <Ctrl c> abort  <Esc> hide",
+        Status::ConfirmingTool => "<y> yes  <n> no  <PgUp/PgDn> scroll  <Ctrl c> abort  <Esc> hide",
         Status::AwaitingCommand => "running…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::AwaitingSearch => "searching…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
         Status::AwaitingLinear => "reading linear…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
@@ -3257,6 +3257,39 @@ mod tests {
             "mouse scrolling behaves the same way"
         );
         assert!(help_line(&state).contains("<y> yes  <n> no"));
+    }
+
+    #[test]
+    fn a_tall_confirmation_scrolls_through_the_transcript_viewport() {
+        let source = (1..=20)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut state = State {
+            status: Status::ConfirmingTool,
+            ..Default::default()
+        };
+        state.pending.push_back(crate::ToolCall {
+            id: "a".into(),
+            name: "plugin_write".into(),
+            arguments: serde_json::json!({ "name": "keys", "source": source }).to_string(),
+        });
+
+        render(&mut state);
+        assert_eq!(state.scroll_offset(), 0, "the footer starts in view");
+        assert!(state.scroll_up(usize::MAX));
+        render(&mut state);
+        assert!(!state.scroll_up(1), "the full prompt has a reachable top");
+        assert!(state.scroll_offset() > 0);
+
+        state.scroll_down(usize::MAX);
+        render(&mut state);
+        assert_eq!(
+            state.scroll_offset(),
+            0,
+            "and its footer is reachable again"
+        );
+        assert!(help_line(&state).contains("<PgUp/PgDn> scroll"));
     }
 
     /// Every other client goes on being held by it.

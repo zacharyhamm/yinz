@@ -360,7 +360,7 @@ pub fn permission_names(permissions: &[PermissionType]) -> Vec<String> {
         .collect()
 }
 
-/// How many lines of a plugin's source a confirmation shows before cutting it short.
+/// How many lines of source a toast keeps before summarizing the rest.
 const SOURCE_PREVIEW_LINES: usize = 20;
 
 /// The call's arguments as one `key: value` line each, so the thing being agreed
@@ -373,7 +373,7 @@ const SOURCE_PREVIEW_LINES: usize = 20;
 /// Strings lose their quotes; everything else is compact JSON. Arguments that do
 /// not parse as an object are handed back verbatim, for the same reason
 /// `consequence` does not go quiet on them.
-pub fn argument_lines(call: &ToolCall) -> Vec<String> {
+fn argument_lines_with_source_limit(call: &ToolCall, source_limit: Option<usize>) -> Vec<String> {
     let arguments = call.arguments.trim();
     if arguments.is_empty() || arguments == "{}" {
         return Vec::new();
@@ -384,20 +384,24 @@ pub fn argument_lines(call: &ToolCall) -> Vec<String> {
     fields
         .iter()
         .flat_map(|(key, value)| match value {
-            // A plugin's source is the one argument worth several lines: it is what the user is
-            // actually agreeing to, and one enormous `source: local zellij = ...` line would
-            // make the prompt worth nothing. Cut short, because a prompt taller than the pane
-            // cannot be read either.
-            Value::String(text) if key == "source" => {
+            // Code and other multiline values read as a block. `split` keeps a trailing empty
+            // row, which matters for inputs where the final newline is part of what will run.
+            Value::String(text) if key == "source" || text.contains('\n') => {
                 let mut lines = vec![format!("{key}:")];
+                let mut text_lines = text.split('\n');
                 lines.extend(
-                    text.lines()
-                        .take(SOURCE_PREVIEW_LINES)
+                    text_lines
+                        .by_ref()
+                        .take(
+                            source_limit
+                                .filter(|_| key == "source")
+                                .unwrap_or(usize::MAX),
+                        )
                         .map(|line| format!("  {line}")),
                 );
-                let total = text.lines().count();
-                if total > SOURCE_PREVIEW_LINES {
-                    lines.push(format!("  … {} more lines", total - SOURCE_PREVIEW_LINES));
+                let hidden = text_lines.count();
+                if hidden > 0 {
+                    lines.push(format!("  … {hidden} more lines"));
                 }
                 lines
             },
@@ -407,11 +411,20 @@ pub fn argument_lines(call: &ToolCall) -> Vec<String> {
         .collect()
 }
 
+pub fn argument_lines(call: &ToolCall) -> Vec<String> {
+    argument_lines_with_source_limit(call, None)
+}
+
+pub(crate) fn toast_argument_lines(call: &ToolCall) -> Vec<String> {
+    argument_lines_with_source_limit(call, Some(SOURCE_PREVIEW_LINES))
+}
+
 /// The whole confirmation block: what is being run, what it will do, and what it
 /// was given, one line each.
 ///
-/// The pane prompt and the toast both render this, so the two cannot drift into
-/// telling the user different things about the same call.
+/// The pane prompt renders this in full so the user can inspect everything they
+/// are agreeing to.
+#[cfg(test)]
 pub fn confirmation_detail(call: &ToolCall) -> Vec<String> {
     let mut lines = vec![call.name.clone()];
     lines.extend(
@@ -438,12 +451,18 @@ pub fn confirmation_body(call: &ToolCall) -> Vec<(String, bool)> {
     lines
 }
 
-/// The confirmation as a toast: the same block behind a line saying who is
+/// The confirmation as a toast: a bounded preview behind a line saying who is
 /// asking, since a toast is read from a pane that has nothing to do with hocus.
-#[cfg(test)]
 pub fn confirmation_toast(call: &ToolCall) -> String {
-    let mut lines = vec![TOAST_HEADLINE.to_owned()];
-    lines.extend(confirmation_detail(call));
+    let mut lines = vec![TOAST_HEADLINE.to_owned(), call.name.clone()];
+    if let Some(consequence) = consequence(call) {
+        lines.push(format!("  {consequence}"));
+    }
+    lines.extend(
+        toast_argument_lines(call)
+            .into_iter()
+            .map(|line| format!("  {line}")),
+    );
     lines.join("\n")
 }
 
