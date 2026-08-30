@@ -599,8 +599,14 @@ impl WasmBridge {
         self.cached_events_for_pending_plugins.remove(&pid);
         self.cached_resizes_for_pending_plugins.remove(&pid);
 
-        // Schedule cleanup on each plugin's pinned thread
-        for ((plugin_id, client_id), (running_plugin, subscriptions, workers)) in plugins_to_cleanup
+        // Schedule cleanup on each plugin's pinned thread. Every (plugin, client)
+        // pair gets its own job, and they all run on the plugin's one pinned thread
+        // in this order; only the last one may unregister the plugin, because a job
+        // submitted for an unregistered plugin is dropped — see
+        // `PinnedExecutor::execute_plugin_unload`.
+        let last_cleanup = plugins_to_cleanup.len().saturating_sub(1);
+        for (index, ((plugin_id, client_id), (running_plugin, subscriptions, workers))) in
+            plugins_to_cleanup.into_iter().enumerate()
         {
             // Clear key intercepts if needed (on main thread is OK)
             if running_plugin.lock().unwrap().intercepting_key_presses() {
@@ -622,49 +628,57 @@ impl WasmBridge {
                 drop(worker_sender.send(MessageToWorker::Exit));
             }
 
-            self.plugin_executor.execute_plugin_unload(
-                plugin_id,
-                move |senders, _plugin_map, _connected_clients, _plugin_cache, _engine| {
-                    let subscriptions_guard = subscriptions.lock().unwrap();
-                    let needs_before_close = subscriptions_guard.contains(&EventType::BeforeClose);
-                    drop(subscriptions_guard); // Release lock before calling plugin
+            let cleanup = move |senders: ThreadSenders,
+                                _plugin_map: Arc<Mutex<PluginMap>>,
+                                _connected_clients: Arc<Mutex<Vec<ClientId>>>,
+                                _plugin_cache: PluginCache,
+                                _engine: Engine| {
+                let subscriptions_guard = subscriptions.lock().unwrap();
+                let needs_before_close = subscriptions_guard.contains(&EventType::BeforeClose);
+                drop(subscriptions_guard); // Release lock before calling plugin
 
-                    if needs_before_close {
-                        let mut rp = running_plugin.lock().unwrap();
-                        match apply_before_close_event_to_plugin(
-                            plugin_id,
-                            client_id,
-                            &mut rp,
-                            senders.clone(),
-                        ) {
-                            Ok(()) => {},
-                            Err(e) => {
-                                log::error!("{:?}", e);
-                                let stringified_error = format!("{:?}", e).replace("\n", "\n\r");
-                                handle_plugin_crash(plugin_id, stringified_error, senders.clone());
-                            },
-                        }
-                        let cache_dir = rp.env().plugin_own_data_dir.clone();
-                        drop(rp); // Release lock before filesystem operation
-                        if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
-                            log::error!("Failed to remove cache dir for plugin: {:?}", e);
-                        }
-                    } else {
-                        let cache_dir = running_plugin
-                            .lock()
-                            .unwrap()
-                            .env()
-                            .plugin_own_data_dir
-                            .clone();
-                        if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
-                            log::error!("Failed to remove cache dir for plugin: {:?}", e);
-                        }
+                if needs_before_close {
+                    let mut rp = running_plugin.lock().unwrap();
+                    match apply_before_close_event_to_plugin(
+                        plugin_id,
+                        client_id,
+                        &mut rp,
+                        senders.clone(),
+                    ) {
+                        Ok(()) => {},
+                        Err(e) => {
+                            log::error!("{:?}", e);
+                            let stringified_error = format!("{:?}", e).replace("\n", "\n\r");
+                            handle_plugin_crash(plugin_id, stringified_error, senders.clone());
+                        },
                     }
+                    let cache_dir = rp.env().plugin_own_data_dir.clone();
+                    drop(rp); // Release lock before filesystem operation
+                    if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
+                        log::error!("Failed to remove cache dir for plugin: {:?}", e);
+                    }
+                } else {
+                    let cache_dir = running_plugin
+                        .lock()
+                        .unwrap()
+                        .env()
+                        .plugin_own_data_dir
+                        .clone();
+                    if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
+                        log::error!("Failed to remove cache dir for plugin: {:?}", e);
+                    }
+                }
 
-                    drop(running_plugin);
-                    drop(subscriptions);
-                },
-            );
+                drop(running_plugin);
+                drop(subscriptions);
+            };
+            if index == last_cleanup {
+                self.plugin_executor
+                    .execute_plugin_unload(plugin_id, cleanup);
+            } else {
+                self.plugin_executor
+                    .execute_for_plugin_tagged(plugin_id, "unload", false, cleanup);
+            }
         }
 
         // Main thread cleanup

@@ -42,6 +42,12 @@ pub struct PinnedExecutor {
 /// half. The inverse index is gone as well: it existed only so per-thread load
 /// could be read under its own lock, and keeping two maps in lock-step was a
 /// desync waiting to happen.
+///
+/// What the lock does not do is order jobs against unregistration: a plugin's
+/// assignment goes away when its `execute_plugin_unload` job finishes, and any job
+/// submitted for that plugin afterwards is dropped with a log line. A caller with
+/// several cleanup jobs for one plugin (one per client, in `WasmBridge::unload_plugin`)
+/// must therefore unregister from the last one only; see `execute_plugin_unload`.
 struct ExecutorState {
     // Sparse: Some(thread) for a live slot, None for a reclaimed one. A vacant slot
     // is reused before the vector grows, so churning `max_threads` plugins through
@@ -572,6 +578,15 @@ impl PinnedExecutor {
     /// Unload a plugin: execute cleanup work, then unregister and potentially shrink pool
     /// This combines cleanup execution + unregistration for plugin unloading
     /// Requires Arc<Self> so we can clone it into the closure for unregistration
+    ///
+    /// The plugin is unregistered when *this* job finishes, and a job submitted for
+    /// an unregistered plugin is dropped. A caller that queues several cleanup jobs
+    /// for one plugin must therefore submit all but the last through
+    /// `execute_for_plugin` and only the last through this method: jobs for one
+    /// plugin run in FIFO order on its pinned thread, so the unregister then lands
+    /// after every cleanup. The worker's input-priority pick (`pick_next_job`)
+    /// keeps that promise — it reorders only *between* plugins, never one plugin's
+    /// own jobs — so this contract and that scheduling depend on each other.
     pub fn execute_plugin_unload(
         self: &Arc<Self>,
         plugin_id: u32,
@@ -585,8 +600,10 @@ impl PinnedExecutor {
             + 'static,
     ) {
         let executor = self.clone();
-        self.execute_for_plugin(
+        self.execute_for_plugin_tagged(
             plugin_id,
+            "unload",
+            false,
             move |senders, plugin_map, connected_clients, plugin_cache, engine| {
                 // Execute the cleanup work
                 f(senders, plugin_map, connected_clients, plugin_cache, engine);
@@ -1237,6 +1254,121 @@ mod tests {
         sequence.lock().unwrap().push("after");
 
         assert_eq!(*sequence.lock().unwrap(), vec!["cleanup", "after"]);
+    }
+
+    /// `WasmBridge::unload_plugin` queues one cleanup per client of a plugin. Only
+    /// the last may go through `execute_plugin_unload`: the jobs are FIFO on the
+    /// plugin's thread, so every earlier cleanup (via `execute_for_plugin`) has
+    /// run by the time the last one unregisters the plugin.
+    #[test]
+    fn several_cleanups_all_run_when_only_the_last_unregisters() {
+        let executor = create_test_executor(4);
+        let (tx_load, rx_load) = channel();
+        executor.execute_plugin_load(1, make_signaling_job(tx_load));
+        rx_load
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Load should complete");
+
+        let (tx, rx) = channel();
+        executor.execute_for_plugin(1, make_signaling_job(tx.clone()));
+        executor.execute_for_plugin(1, make_signaling_job(tx.clone()));
+        executor.execute_plugin_unload(1, make_signaling_job(tx));
+        for n in 1..=3 {
+            rx.recv_timeout(Duration::from_secs(5))
+                .unwrap_or_else(|_| panic!("cleanup {n} of 3 never ran"));
+        }
+        // The channel closing is the last job having dropped its sender.
+        assert!(rx.recv_timeout(Duration::from_secs(5)).is_err());
+    }
+
+    /// The same contract with the input-priority pick in play: an input job for a
+    /// thread-mate must not let the unload overtake this plugin's earlier cleanups.
+    /// Per-plugin order is what `execute_plugin_unload`'s "last one unregisters"
+    /// relies on.
+    #[test]
+    fn cleanups_stay_ordered_when_a_thread_mate_has_input_waiting() {
+        let executor = create_test_executor(1);
+        executor.register_plugin(1);
+        executor.register_plugin(2);
+
+        let (started_tx, started_rx) = channel();
+        let barrier = Arc::new(Barrier::new(2));
+        let barrier_clone = barrier.clone();
+        executor.execute_for_plugin(2, move |_s, _p, _c, _ca, _e| {
+            started_tx.send(()).unwrap();
+            barrier_clone.wait();
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the blocker job should start");
+
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = channel();
+        let record = |label: &'static str| {
+            let order = order.clone();
+            let tx = tx.clone();
+            move |_s: ThreadSenders,
+                  _p: Arc<Mutex<PluginMap>>,
+                  _c: Arc<Mutex<Vec<ClientId>>>,
+                  _ca: PluginCache,
+                  _e: Engine| {
+                order.lock().unwrap().push(label);
+                tx.send(()).unwrap();
+            }
+        };
+        executor.execute_for_plugin(1, record("cleanup-1"));
+        executor.execute_for_plugin_tagged(2, "key", true, record("input-2"));
+        executor.execute_for_plugin(1, record("cleanup-2"));
+        executor.execute_plugin_unload(1, record("unload-1"));
+        drop(tx);
+
+        barrier.wait();
+        for _ in 0..4 {
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("queued job should complete");
+        }
+
+        let order = order.lock().unwrap().clone();
+        let position = |label: &str| order.iter().position(|l| *l == label).unwrap();
+        assert!(
+            position("cleanup-1") < position("cleanup-2")
+                && position("cleanup-2") < position("unload-1"),
+            "plugin 1's jobs must run in submission order, got {order:?}"
+        );
+    }
+
+    /// The shape `unload_plugin` must avoid: once an unload job has finished, the
+    /// plugin is unregistered and a later job for it is dropped rather than run.
+    #[test]
+    fn a_job_submitted_after_the_unload_finished_is_dropped() {
+        let executor = create_test_executor(4);
+        let (tx_load, rx_load) = channel();
+        executor.execute_plugin_load(1, make_signaling_job(tx_load));
+        rx_load
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Load should complete");
+
+        let (tx_unload, rx_unload) = channel();
+        executor.execute_plugin_unload(1, make_signaling_job(tx_unload));
+        rx_unload
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Unload should complete");
+        // The unregister runs after the signal, on the same thread; wait for it.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while executor.state.lock().unwrap().assignments.contains_key(&1) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "plugin 1 never unregistered"
+            );
+            thread::yield_now();
+        }
+
+        let (tx_late, rx_late) = channel();
+        executor.execute_plugin_unload(1, make_signaling_job(tx_late));
+        assert!(
+            rx_late.recv_timeout(Duration::from_millis(500)).is_err(),
+            "a job for an unregistered plugin must not run"
+        );
     }
 
     #[test]
