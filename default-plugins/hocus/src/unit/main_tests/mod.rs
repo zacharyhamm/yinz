@@ -296,6 +296,27 @@ fn idle_state() -> State {
     }
 }
 
+#[test]
+fn mode_updates_keep_kitty_graphics_support_per_client() {
+    let mut state = idle_state();
+    let mode_update = |supported| {
+        let mut mode_info = ModeInfo::default();
+        mode_info.capabilities.kitty_graphics = supported;
+        Event::ModeUpdate(mode_info)
+    };
+
+    state.client = 1;
+    assert!(state.handle(mode_update(true)));
+    state.client = 2;
+    assert!(!state.handle(mode_update(false)));
+    assert_eq!(state.kitty_graphics, BTreeSet::from([1]));
+
+    assert!(state.handle(mode_update(true)));
+    state.client = 1;
+    assert!(state.handle(mode_update(false)));
+    assert_eq!(state.kitty_graphics, BTreeSet::from([2]));
+}
+
 fn schedule_call(arguments: &str) -> ToolCall {
     ToolCall {
         id: "1".into(),

@@ -362,10 +362,10 @@ pub struct State {
     /// the splash is up - and stops it the moment the chat has a message in it, the pane is set
     /// aside, or the pane is too small for the picture.
     pub(crate) wand_drawing: bool,
-    /// Whether the host terminal can display kitty graphics, as last reported in a `ModeUpdate`.
-    /// Starts false: the answer comes from a probe the client sends at startup, so it arrives
-    /// after hocus has already drawn its first frame.
-    pub(crate) kitty_graphics: bool,
+    /// Clients whose host terminal can display kitty graphics, as last reported in their
+    /// `ModeUpdate`. An absent client starts false: the answer comes from a probe the client sends
+    /// at startup, after hocus has already drawn its first frame.
+    pub(crate) kitty_graphics: BTreeSet<ClientId>,
     tool_calls: ToolCallAccumulator,
     /// Calls the model asked for that have not been answered yet. The head is
     /// the one being confirmed or executed.
@@ -784,7 +784,7 @@ impl Default for State {
             wand_frame: 0,
             wand_drawing: false,
             wand_transmitted: BTreeSet::new(),
-            kitty_graphics: false,
+            kitty_graphics: BTreeSet::new(),
             tool_calls: ToolCallAccumulator::default(),
             pending: VecDeque::new(),
             spotlight: None,
@@ -1002,9 +1002,8 @@ impl ZellijPlugin for State {
         // or when a resize makes it fit. Arm before printing, while stdout is still safe for a
         // host call; the tick will stop immediately if this render does not draw the wand.
         self.arm_timer(FRAME_SECONDS);
-        // Called once per attached client, each pass with a different client
-        // set here. Only `view` differs between them; everything else on screen
-        // is the one conversation everyone shares.
+        // Called once per attached client, each pass with a different client set here. Their view
+        // and terminal capabilities differ; the conversation itself is shared.
         self.client = get_plugin_ids().client_id;
         ui::render(self, rows, cols);
     }
@@ -1209,14 +1208,11 @@ impl State {
             // from a probe the client sends at startup, so it lands after the first render and
             // flips the empty-chat splash over from text to the real wand.
             Event::ModeUpdate(mode_info) => {
-                let supported = mode_info.capabilities.kitty_graphics;
-                let changed = self.kitty_graphics != supported;
-                self.kitty_graphics = supported;
-                // The pixels in a pane belong to the old answer; make the next draw resend them.
-                if changed {
-                    self.wand_transmitted.clear();
+                if mode_info.capabilities.kitty_graphics {
+                    self.kitty_graphics.insert(self.client)
+                } else {
+                    self.kitty_graphics.remove(&self.client)
                 }
-                changed
             },
             Event::PaneUpdate(manifest) => self.on_panes(manifest),
             Event::SessionUpdate(sessions, _) => self.on_sessions(sessions),

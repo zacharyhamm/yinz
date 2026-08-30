@@ -11,7 +11,7 @@
 
 use zellij_tile::prelude::*;
 
-/// The frames, in loop order. 132KB in the wasm, and they are the whole asset.
+/// The frames, in loop order. They are the whole runtime asset.
 pub const FRAMES: [&[u8]; 12] = [
     include_bytes!("../assets/wand/frame-00.png"),
     include_bytes!("../assets/wand/frame-01.png"),
@@ -27,11 +27,11 @@ pub const FRAMES: [&[u8]; 12] = [
     include_bytes!("../assets/wand/frame-11.png"),
 ];
 
-/// The cell box the image is placed over. The artwork's aspect is 0.90 and a terminal cell is
-/// about half as wide as it is tall, so this is the ratio that shows it undistorted -
+/// The cell box the image is placed over. The artwork is padded to this aspect and a terminal
+/// cell is about half as wide as it is tall, so this shows it undistorted -
 /// `gen_frames.py` prints the number to keep these two honest with each other.
-pub const WAND_COLS: usize = 20;
-pub const WAND_ROWS: usize = 11;
+pub const WAND_COLS: usize = 10;
+pub const WAND_ROWS: usize = 6;
 
 /// Image ids for the frames. Arbitrary, but under `MAX_IMAGE_ID` so the whole id rides in the
 /// placeholder cell's foreground colour, and high enough to leave room below for anything else
@@ -69,10 +69,19 @@ pub fn frame_bytes(frame: usize, x: usize, y: usize, transmit: bool) -> String {
     bytes
 }
 
-/// The wand as text, for a terminal that cannot show the image. Four columns of sparkles rising
-/// beside a drawn wand, on the same tick as the real thing.
+/// Delete every wand frame and release its pixel data from this client's pane image store.
+pub fn delete_bytes() -> String {
+    format!(
+        "\u{1b}_Ga=d,d=R,q=2,x={},y={}\u{1b}\\",
+        image_id(0),
+        image_id(FRAMES.len() - 1)
+    )
+}
+
+/// The wand as text, for a terminal that cannot show the image. Three arcane marks twinkle out
+/// of step beside it, on the same tick as the real thing.
 pub fn fallback_lines(frame: usize) -> Vec<String> {
-    const SPARKS: [char; 4] = ['\u{b7}', '\u{22c6}', '\u{2727}', '\u{2726}'];
+    const SPARKS: [char; 5] = ['\u{b7}', '\u{22c6}', '\u{2727}', '\u{2726}', '\u{25cb}'];
     const ART: [&str; 5] = ["   \u{2726}", "  \u{2571}", " \u{2571}", "\u{2571}", ""];
     let mut lines = Vec::with_capacity(ART.len());
     for (row, art) in ART.iter().enumerate() {
@@ -87,11 +96,12 @@ pub fn fallback_lines(frame: usize) -> Vec<String> {
             }
         };
         lines.push(format!(
-            "{}{} {} {}",
+            "{}{}{} {} {}",
             art,
-            " ".repeat(6usize.saturating_sub(art.chars().count())),
+            " ".repeat(5usize.saturating_sub(art.chars().count())),
             spark(0),
-            spark(1)
+            spark(1),
+            spark(2)
         ));
     }
     lines
@@ -118,6 +128,7 @@ mod tests {
 
     #[test]
     fn every_frame_draws_the_same_block_of_cells_at_the_same_place() {
+        assert_eq!((WAND_COLS, WAND_ROWS), (10, 6));
         for frame in 0..FRAMES.len() {
             let bytes = frame_bytes(frame, 3, 2, false);
             assert_eq!(bytes.matches('\u{10EEEE}').count(), WAND_COLS * WAND_ROWS);
@@ -131,6 +142,14 @@ mod tests {
         let ids: std::collections::BTreeSet<u32> = (0..FRAMES.len()).map(image_id).collect();
         assert_eq!(ids.len(), FRAMES.len());
         assert!(ids.iter().all(|id| *id <= MAX_IMAGE_ID));
+    }
+
+    #[test]
+    fn deleting_the_wand_frees_the_whole_image_id_range() {
+        assert_eq!(
+            delete_bytes(),
+            "\u{1b}_Ga=d,d=R,q=2,x=45056,y=45067\u{1b}\\"
+        );
     }
 
     #[test]
