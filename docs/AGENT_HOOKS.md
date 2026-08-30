@@ -50,9 +50,16 @@ zellij action agent-report --hook-json --kind codex < "$payload" # a codex
 `agent-report` reads the event, works out what it means (`zellij-utils/src/agent.rs`,
 `hook_outcome`) and sets the pane's **agent record** — `PaneInfo.agent`: the kind,
 the state, the tool it is running, what it is blocked on, its folder and its session id. The
-pane is `$ZELLIJ_PANE_ID`, which the action reads itself. Every reader of the pane manifest
-then sees the same answer: plugins on `PaneUpdate`, `zellij events`, `zellij action list-panes
---json`, and hocus's agents list. The record is complete every time it is set; nothing merges.
+action normally reads the pane from `$ZELLIJ_PANE_ID`. A locally supervised pane also inherits
+`$ZELLIJ_PANE_REF`, the stable id of its pty-host: before routing an implicit report, the action
+asks that supervisor for the pane's current session and terminal id. An `Attach` re-keys both,
+so hooks keep reporting after the pane is warped even though the process environment still holds
+the session-local values it started with. Explicit `--session` or `--pane-id` targets still win;
+non-detachable and remote panes keep the existing environment route. The pane's current agent
+record travels in both `AdoptPane` and `AdoptTab`, so the receiving session has it before the next
+hook fires. Every reader of the pane manifest then sees the same answer: plugins on `PaneUpdate`,
+`zellij events`, `zellij action list-panes --json`, and hocus's agents list. The record is complete
+every time it is set; nothing merges.
 
 **The same command also broadcasts the event itself**, whole, on the `agent_hook` pipe. A
 record is deliberately smaller than an event: the agent's own final message on a `Stop`, the

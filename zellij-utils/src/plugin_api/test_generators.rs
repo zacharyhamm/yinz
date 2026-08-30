@@ -647,6 +647,7 @@ pub(crate) fn warped_panes(tc: &hegel::TestCase) -> WarpedPane {
             received: tc.draw(generators::integers::<u64>()),
             cmd: run_commands(tc),
         }),
+        agent: optional_agent_infos(tc),
     }
 }
 

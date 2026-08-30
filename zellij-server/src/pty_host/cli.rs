@@ -279,6 +279,7 @@ pub fn adopt_payload(host_id: &str) -> Result<WarpedPane> {
         // machine's runtime directory. Remote survivors are found by asking the
         // broker holding them — see `remote_adopt_payload`.
         remote: None,
+        agent: None,
     })
 }
 
@@ -435,6 +436,7 @@ fn warped_pane_from_entry(
                 ..Default::default()
             },
         }),
+        agent: None,
     })
 }
 

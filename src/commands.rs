@@ -202,10 +202,24 @@ fn find_indexed_session(
 ///
 /// Checks session to send the action to and attaches with client
 pub(crate) fn send_action_to_session(
-    cli_action: zellij_utils::cli::CliAction,
-    requested_session_name: Option<String>,
+    mut cli_action: zellij_utils::cli::CliAction,
+    mut requested_session_name: Option<String>,
     config: Option<Config>,
 ) {
+    if let Err(e) = retarget_implicit_agent_report(
+        &mut cli_action,
+        &mut requested_session_name,
+        std::env::var(zellij_server::pty_host::PANE_REF_ENV_KEY).ok(),
+        |pane_ref| {
+            zellij_server::pty_host::client::query(&zellij_server::pty_host::protocol::socket_path(
+                pane_ref,
+            ))
+            .map_err(|e| format!("could not resolve pane {pane_ref}: {e:#}"))
+        },
+    ) {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
     match get_active_session() {
         ActiveSession::None => {
             eprintln!("There is no active session!");
@@ -250,6 +264,58 @@ pub(crate) fn send_action_to_session(
             }
         },
     };
+}
+
+/// Resolve the stable supervisor reference before choosing which session receives a report.
+///
+/// A warped process keeps the session name and terminal id it was born with in its environment,
+/// while its supervisor is re-keyed to the adopting session and id. Explicit CLI targets still
+/// win; this only replaces the implicit environment-based route used by agent hooks.
+fn retarget_implicit_agent_report(
+    cli_action: &mut zellij_utils::cli::CliAction,
+    requested_session_name: &mut Option<String>,
+    pane_ref: Option<String>,
+    query: impl FnOnce(
+        &str,
+    )
+        -> std::result::Result<zellij_server::pty_host::protocol::HostStatus, String>,
+) -> std::result::Result<(), String> {
+    let zellij_utils::cli::CliAction::AgentReport {
+        pane_id: pane_id @ None,
+        ..
+    } = cli_action
+    else {
+        return Ok(());
+    };
+    if requested_session_name.is_some() {
+        return Ok(());
+    }
+    let Some(pane_ref) = pane_ref else {
+        return Ok(());
+    };
+    if pane_ref.len() != 12 || !pane_ref.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "invalid {}",
+            zellij_server::pty_host::PANE_REF_ENV_KEY
+        ));
+    }
+
+    let status = query(&pane_ref)?;
+    if status.host_id != pane_ref {
+        return Err(format!(
+            "pane reference {pane_ref} resolved to supervisor {}",
+            status.host_id
+        ));
+    }
+    if !status.attached {
+        return Err(format!("pane {pane_ref} is currently between sessions"));
+    }
+    let session_name = status
+        .session_name
+        .ok_or_else(|| format!("pane {pane_ref} has no owning session"))?;
+    *pane_id = Some(status.terminal_id.to_string());
+    *requested_session_name = Some(session_name);
+    Ok(())
 }
 /// The session a `zellij subscribe` / `zellij events` client attaches to: the one running, the
 /// one asked for, or the one this shell is inside. Anything else is an error naming the choices,
@@ -1151,14 +1217,97 @@ fn format_duration(duration_us: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{named_session_exists_or_error, sessions_to_delete};
+    use super::{
+        named_session_exists_or_error, retarget_implicit_agent_report, sessions_to_delete,
+    };
     use std::{cell::Cell, io, time::Duration};
+    use zellij_server::pty_host::protocol::HostStatus;
+    use zellij_utils::cli::CliAction;
     use zellij_utils::sessions::{
         session_listing_error_message, unresponsive_session_message, SessionProbe,
     };
 
     fn session(name: &str) -> (String, Duration) {
         (name.to_owned(), Duration::default())
+    }
+
+    fn agent_report(pane_id: Option<&str>) -> CliAction {
+        CliAction::AgentReport {
+            pane_id: pane_id.map(str::to_owned),
+            kind: Some("codex".to_owned()),
+            state: Some("busy".to_owned()),
+            detail: None,
+            cwd: None,
+            hook_json: false,
+            clear: false,
+        }
+    }
+
+    fn pane_status(attached: bool) -> HostStatus {
+        HostStatus {
+            host_id: "abcdef012345".to_owned(),
+            session_name: Some("after-warp".to_owned()),
+            terminal_id: 42,
+            command: "codex".to_owned(),
+            cwd: Some("/work".into()),
+            child_pid: Some(10),
+            host_pid: 11,
+            started_at_unix: 0,
+            attached,
+            child_exit_status: None,
+            buffered_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn implicit_agent_reports_follow_the_supervisor_after_a_warp() {
+        let mut action = agent_report(None);
+        let mut session = None;
+        retarget_implicit_agent_report(
+            &mut action,
+            &mut session,
+            Some("abcdef012345".to_owned()),
+            |_| Ok(pane_status(true)),
+        )
+        .unwrap();
+
+        assert_eq!(session.as_deref(), Some("after-warp"));
+        assert!(matches!(
+            action,
+            CliAction::AgentReport {
+                pane_id: Some(ref pane_id),
+                ..
+            } if pane_id == "42"
+        ));
+    }
+
+    #[test]
+    fn stable_agent_reports_never_fall_back_to_a_detached_or_explicit_target() {
+        let mut detached = agent_report(None);
+        assert!(retarget_implicit_agent_report(
+            &mut detached,
+            &mut None,
+            Some("abcdef012345".to_owned()),
+            |_| Ok(pane_status(false)),
+        )
+        .unwrap_err()
+        .contains("between sessions"));
+
+        let mut explicit = agent_report(Some("7"));
+        retarget_implicit_agent_report(
+            &mut explicit,
+            &mut None,
+            Some("abcdef012345".to_owned()),
+            |_| panic!("an explicit pane must not query the supervisor"),
+        )
+        .unwrap();
+        assert!(matches!(
+            explicit,
+            CliAction::AgentReport {
+                pane_id: Some(ref pane_id),
+                ..
+            } if pane_id == "7"
+        ));
     }
 
     #[test]

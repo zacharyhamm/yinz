@@ -98,10 +98,17 @@ fn spawn_and_read_output() {
 
     let server = make_server();
     let test_message = "hello_zellij_test";
+    std::env::set_var(
+        crate::pty_host::PANE_REF_ENV_KEY,
+        "an-outer-panes-reference",
+    );
 
     let cmd = RunCommand {
-        command: PathBuf::from("echo"),
-        args: vec![test_message.to_string()],
+        command: PathBuf::from("sh"),
+        args: vec![
+            "-c".to_owned(),
+            format!("echo {test_message} ref=[$ZELLIJ_PANE_REF]"),
+        ],
         ..Default::default()
     };
     let action = TerminalAction::RunCommand(cmd);
@@ -157,6 +164,11 @@ fn spawn_and_read_output() {
         test_message,
         output_str
     );
+    assert!(
+        output_str.contains("ref=[]"),
+        "an in-process pane reused an outer pane's supervisor: {output_str:?}"
+    );
+    std::env::remove_var(crate::pty_host::PANE_REF_ENV_KEY);
 }
 
 #[cfg(unix)]

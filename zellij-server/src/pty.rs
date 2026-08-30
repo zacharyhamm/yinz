@@ -30,7 +30,7 @@ use crate::pty_host::remote::protocol::ChildSignal;
 use tokio::task::JoinHandle;
 use zellij_utils::{
     data::{
-        CommandOrPlugin, Event, FloatingPaneCoordinates, GetPaneCwdResponse,
+        AgentInfo, CommandOrPlugin, Event, FloatingPaneCoordinates, GetPaneCwdResponse,
         GetPaneGitProbeResponse, GetPanePidResponse, GetPaneRunningCommandResponse,
         NewPanePlacement, OriginatingPlugin, OverlayPlacement, PaneGitProbe, SessionInfo,
         WarpPlacement, WarpedPane, WarpedTab,
@@ -117,6 +117,7 @@ pub struct AdoptedTabPanes {
 pub struct AdoptedTabTerminal {
     pub terminal_id: u32,
     pub cmd: RunCommand,
+    pub agent: Option<AgentInfo>,
     /// `Some` when the child has already exited, so the pane arrives held
     /// showing the status it exited with rather than pretending to run.
     pub child_exit_status: Option<Option<i32>>,
@@ -1665,6 +1666,16 @@ impl Pty {
         // then held, showing the status it exited with.
         if let Some((tiled, floating)) = adopted_panes {
             for terminal in tiled.into_iter().chain(floating) {
+                if let Some(agent) = terminal.agent {
+                    self.bus
+                        .senders
+                        .send_to_screen(ScreenInstruction::SetPaneAgent(
+                            PaneId::Terminal(terminal.terminal_id),
+                            Some(agent),
+                            None,
+                        ))
+                        .with_context(err_context)?;
+                }
                 if !terminal.replay.is_empty() {
                     self.bus
                         .senders

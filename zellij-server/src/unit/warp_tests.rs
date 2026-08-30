@@ -206,6 +206,7 @@ fn adopting_times_out_rather_than_waiting_on_a_pty_thread_that_never_answers() {
             contents: None,
             borderless: false,
             remote: None,
+            agent: None,
         }),
         WarpPlacement::NewTab,
         TEST_TIMEOUT,
@@ -249,6 +250,7 @@ fn a_pty_side_refusal_to_adopt_comes_back_verbatim() {
             contents: None,
             borderless: false,
             remote: None,
+            agent: None,
         }),
         WarpPlacement::NewTab,
         Duration::from_secs(5),
@@ -406,6 +408,7 @@ fn remote_pane(host: &str, pane_token: &str) -> WarpedPane {
             received: 0,
             cmd: Default::default(),
         }),
+        agent: None,
     }
 }
 

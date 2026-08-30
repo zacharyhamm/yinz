@@ -945,6 +945,7 @@ message AdoptPaneAction {
   // See `WarpedPane.remote`. A remote pane's process is on another machine, so
   // there is no local supervisor socket to name.
   optional RemotePaneHandoff remote = 7;
+  optional AgentInfo agent = 8;
 }
 
 // One pane of a tab moving between sessions: which supervisor to attach to,
@@ -962,6 +963,7 @@ message WarpedPane {
   // address that means anything — the two fields above name a local supervisor
   // socket, and a remote pane has none.
   optional RemotePaneHandoff remote = 6;
+  optional AgentInfo agent = 7;
 }
 
 // How to pick a remote pane back up from the broker holding it.

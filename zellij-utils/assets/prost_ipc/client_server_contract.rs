@@ -1553,6 +1553,8 @@ pub struct AdoptPaneAction {
     /// there is no local supervisor socket to name.
     #[prost(message, optional, tag="7")]
     pub remote: ::core::option::Option<RemotePaneHandoff>,
+    #[prost(message, optional, tag="8")]
+    pub agent: ::core::option::Option<AgentInfo>,
 }
 /// One pane of a tab moving between sessions: which supervisor to attach to,
 /// plus the terminal state that supervisor cannot report. The same shape as the
@@ -1577,6 +1579,8 @@ pub struct WarpedPane {
     /// socket, and a remote pane has none.
     #[prost(message, optional, tag="6")]
     pub remote: ::core::option::Option<RemotePaneHandoff>,
+    #[prost(message, optional, tag="7")]
+    pub agent: ::core::option::Option<AgentInfo>,
 }
 /// How to pick a remote pane back up from the broker holding it.
 ///

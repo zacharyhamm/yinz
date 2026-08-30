@@ -249,6 +249,7 @@ impl Screen {
                 .map(Self::fit_to_warp_budget);
             let title = Some(pane.current_title());
             let borderless = pane.borderless();
+            let agent = pane.agent_info().cloned();
             // Asked before the pane goes, closed after: while the pane is still
             // suppressed behind it, closing the editor would swap the pane back
             // into the grid rather than close anything.
@@ -264,6 +265,7 @@ impl Screen {
                 contents,
                 borderless,
                 remote: address.remote.clone(),
+                agent,
             }));
             break;
         }
@@ -501,6 +503,9 @@ impl Screen {
                     .get_pane_with_id(*pane_id)
                     .and_then(|pane| pane.serialize(scrollback_lines))
                     .map(|contents| Self::fit_to_budget(contents, budget)),
+                agent: tab
+                    .get_pane_with_id(*pane_id)
+                    .and_then(|pane| pane.agent_info().cloned()),
             }
         };
         let tiled_panes: Vec<WarpedPane> = prepared.tiled_panes.iter().map(warped_pane).collect();
@@ -628,6 +633,13 @@ impl Screen {
                 false,
             ))
             .with_context(err_context)?;
+
+        if let Some(agent) = payload.agent {
+            self.bus
+                .senders
+                .send_to_screen(ScreenInstruction::SetPaneAgent(pane_id, Some(agent), None))
+                .with_context(err_context)?;
+        }
 
         // The transferred screen first, then whatever the supervisor caught during
         // the hand-off, then live output. `NewPane` is ahead of these on the same
@@ -789,6 +801,7 @@ impl Screen {
                 AdoptedTabTerminal {
                     terminal_id: adopted.terminal_id,
                     cmd: adopted.cmd,
+                    agent: pane.agent,
                     child_exit_status: adopted.child_exit_status,
                     replay,
                 }

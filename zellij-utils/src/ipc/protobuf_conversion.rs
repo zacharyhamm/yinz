@@ -1003,20 +1003,22 @@ fn warped_pane_to_protobuf(
         contents: pane.contents.clone(),
         borderless: pane.borderless,
         remote: pane.remote.as_ref().map(remote_handoff_to_protobuf),
+        agent: pane.agent.clone().map(agent_info_to_proto),
     }
 }
 
 fn warped_pane_from_protobuf(
     pane: crate::client_server_contract::client_server_contract::WarpedPane,
-) -> crate::data::WarpedPane {
-    crate::data::WarpedPane {
+) -> Result<crate::data::WarpedPane> {
+    Ok(crate::data::WarpedPane {
         host_id: pane.host_id,
         control_socket: std::path::PathBuf::from(pane.control_socket),
         title: pane.title,
         contents: pane.contents,
         borderless: pane.borderless,
         remote: pane.remote.and_then(remote_handoff_from_protobuf),
-    }
+        agent: pane.agent.map(agent_info_from_proto).transpose()?,
+    })
 }
 
 /// The address of a pane whose process is on another machine.
@@ -1688,6 +1690,7 @@ impl TryFrom<crate::input::actions::Action>
                     borderless: payload.borderless,
                     placement: ProtobufWarpPlacement::from(placement) as i32,
                     remote: payload.remote.as_ref().map(remote_handoff_to_protobuf),
+                    agent: payload.agent.clone().map(agent_info_to_proto),
                 })
             },
             crate::input::actions::Action::WarpTab {
@@ -2671,6 +2674,11 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                             .remote
                             .clone()
                             .and_then(remote_handoff_from_protobuf),
+                        agent: adopt_pane_action
+                            .agent
+                            .clone()
+                            .map(agent_info_from_proto)
+                            .transpose()?,
                     }),
                 })
             },
@@ -2700,12 +2708,12 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                         .tiled_panes
                         .into_iter()
                         .map(warped_pane_from_protobuf)
-                        .collect(),
+                        .collect::<Result<Vec<_>>>()?,
                     floating_panes: adopt_tab_action
                         .floating_panes
                         .into_iter()
                         .map(warped_pane_from_protobuf)
-                        .collect(),
+                        .collect::<Result<Vec<_>>>()?,
                     hide_floating_panes: adopt_tab_action.hide_floating_panes,
                 }),
             }),

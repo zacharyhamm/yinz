@@ -144,6 +144,51 @@ fn warp_focused_pane_expecting_success(
     assert_eq!(exit_code, 0, "the warp was refused: {reported}");
 }
 
+fn report_waiting_agent(zellij: &TestSession, terminal_id: u32) {
+    let (exit_code, reported) = zellij.run_cli_action_reporting(CliAction::AgentReport {
+        pane_id: Some(format!("terminal_{terminal_id}")),
+        kind: Some("codex".to_owned()),
+        state: Some("waiting".to_owned()),
+        detail: Some("permission prompt".to_owned()),
+        cwd: None,
+        hook_json: false,
+        clear: false,
+    });
+    assert_eq!(exit_code, 0, "the agent report was refused: {reported}");
+}
+
+fn assert_waiting_agent(zellij: &TestSession, terminal_id: Option<u32>) {
+    let (exit_code, listed) = zellij.run_cli_action_reporting(CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: true,
+        geometry: false,
+        all: true,
+        json: true,
+    });
+    assert_eq!(exit_code, 0, "list-panes failed: {listed}");
+    let panes: serde_json::Value = serde_json::from_str(&listed)
+        .unwrap_or_else(|e| panic!("list-panes --json did not answer with JSON: {e}\n{listed}"));
+    let matching: Vec<_> = panes
+        .as_array()
+        .expect("list-panes should return an array")
+        .iter()
+        .filter(|pane| {
+            pane["agent"]["kind"] == "codex"
+                && terminal_id.is_none_or(|terminal_id| pane["id"] == terminal_id)
+        })
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "the warped agent pane should be listed exactly once: {panes}"
+    );
+    let pane = matching[0];
+    assert_eq!(pane["agent"]["state"], "Waiting", "{pane}");
+    assert_eq!(pane["agent"]["source"], "Reported", "{pane}");
+    assert_eq!(pane["agent"]["detail"], "permission prompt", "{pane}");
+}
+
 /// The stacked pane list's entries, top to bottom, as they are drawn.
 ///
 /// A stack list keeps one member on screen and parks the rest, so what is on
@@ -164,6 +209,8 @@ fn stack_list_entries(zellij: &TestSession) -> Vec<String> {
 fn a_pane_keeps_its_process_when_it_moves_between_sessions() {
     let ((sender, _sender_shell), (receiver, _receiver_shell)) = sender_and_receiver();
     let travelling = split_off_a_pane(&sender, "here before the warp");
+    report_waiting_agent(&sender, travelling.terminal_id());
+    assert_waiting_agent(&sender, Some(travelling.terminal_id()));
 
     warp_focused_pane_expecting_success(&sender, &receiver, false);
 
@@ -172,6 +219,7 @@ fn a_pane_keeps_its_process_when_it_moves_between_sessions() {
         !arrived.is_exited(),
         "the pane's process was killed rather than handed over",
     );
+    assert_waiting_agent(&receiver, Some(arrived.terminal_id()));
 
     sender.wait_until("the pane to leave the sending session", |grid_snapshot| {
         !grid_snapshot.contains("here before the warp")
@@ -316,6 +364,8 @@ fn a_tab_of_local_and_remote_panes_warps_whole() {
     let ((sender, _sender_shell), (receiver, _receiver_shell)) = sender_and_receiver();
     let local = split_off_a_pane(&sender, "local pane");
     let remote = split_off_a_remote_pane(&sender, "remote pane");
+    report_waiting_agent(&sender, local.terminal_id());
+    assert_waiting_agent(&sender, Some(local.terminal_id()));
 
     let (exit_code, reported) = sender.run_cli_action_reporting(CliAction::WarpTab {
         to_session: Some(receiver.session_name().to_owned()),
@@ -330,6 +380,7 @@ fn a_tab_of_local_and_remote_panes_warps_whole() {
     sender.wait_until("both panes to leave", |grid_snapshot| {
         !grid_snapshot.contains("local pane") && !grid_snapshot.contains("remote pane")
     });
+    assert_waiting_agent(&receiver, None);
 
     // Exactly one of the tab's panes went by the broker and the rest did not,
     // which is the whole point of the mixed tab: one released set, two roads.
