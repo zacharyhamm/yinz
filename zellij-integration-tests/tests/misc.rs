@@ -93,8 +93,15 @@ fn next_swap_layout() {
             && !grid_snapshot.contains("BASE")
     });
     zellij.send_stdin(&keys::alt(']'));
+    zellij.wait_until("swap layout advanced to three columns", |grid_snapshot| {
+        grid_snapshot.status_bar_appears()
+            && grid_snapshot.contains("THREE-COLUMNS")
+            && !grid_snapshot.contains("VERTICAL")
+    });
+    zellij.send_stdin(&keys::alt(']'));
     let grid_snapshot = zellij.wait_until("swap layout advanced to horizontal", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
+            && !grid_snapshot.contains("THREE-COLUMNS")
             && !grid_snapshot.contains("VERTICAL")
             && grid_snapshot.contains("HORIZONTAL")
     });
