@@ -14,14 +14,8 @@ use wasmi::Engine;
 /// A dynamic thread pool that pins jobs to specific threads based on plugin_id
 /// Starts with 1 thread and expands when threads are busy, shrinks when plugins unload
 pub struct PinnedExecutor {
-    // Sparse vector - Some(thread) for active threads, None for removed threads
-    execution_threads: Arc<Mutex<Vec<Option<ExecutionThread>>>>,
-
-    // Maps plugin_id -> thread_index (permanent assignment)
-    plugin_assignments: Arc<Mutex<HashMap<u32, usize>>>,
-
-    // Maps thread_index -> set of plugin_ids assigned to it
-    thread_plugins: Arc<Mutex<HashMap<usize, HashSet<u32>>>>,
+    // All pool bookkeeping under one lock. See `ExecutorState`.
+    state: Arc<Mutex<ExecutorState>>,
 
     // Maximum threads allowed
     max_threads: usize,
@@ -32,6 +26,38 @@ pub struct PinnedExecutor {
     connected_clients: Arc<Mutex<Vec<ClientId>>>,
     plugin_cache: PluginCache,
     engine: Engine,
+}
+
+/// The pool's mutable bookkeeping, behind a single mutex.
+///
+/// These three maps were once three separate mutexes, and `register_plugin` and
+/// the pool-shrink path took two of them in opposite orders — an ABBA inversion
+/// that could wedge the plugin thread and an execution thread permanently, which
+/// then blocked session shutdown on `plugin_thread.join()`. Holding them under one
+/// lock makes the ordering unrepresentable, and also closes the check-then-act
+/// window `execute_for_plugin` had between looking up a plugin's thread and using
+/// it. Spawning a thread for a growing pool happens under this lock too: the
+/// old code dropped the thread lock to spawn while still holding the other two,
+/// which was the inversion's other half.
+struct ExecutorState {
+    // Sparse: Some(thread) for a live slot, None for a reclaimed one. A vacant slot
+    // is reused before the vector grows, so churning `max_threads` plugins through
+    // load/unload cannot strand every later plugin on thread 0.
+    threads: Vec<Option<ExecutionThread>>,
+    // plugin_id -> its pinned thread index.
+    assignments: HashMap<u32, usize>,
+    // thread index -> the set of plugin_ids pinned to it.
+    thread_plugins: HashMap<usize, HashSet<u32>>,
+}
+
+impl ExecutorState {
+    /// How many plugins are pinned to `thread_idx`.
+    fn load_of(&self, thread_idx: usize) -> usize {
+        self.thread_plugins
+            .get(&thread_idx)
+            .map(|s| s.len())
+            .unwrap_or(0)
+    }
 }
 
 struct ExecutionThread {
@@ -244,9 +270,11 @@ impl PinnedExecutor {
         );
 
         PinnedExecutor {
-            execution_threads: Arc::new(Mutex::new(vec![Some(thread_0)])),
-            plugin_assignments: Arc::new(Mutex::new(HashMap::new())),
-            thread_plugins: Arc::new(Mutex::new(HashMap::new())),
+            state: Arc::new(Mutex::new(ExecutorState {
+                threads: vec![Some(thread_0)],
+                assignments: HashMap::new(),
+                thread_plugins: HashMap::new(),
+            })),
             max_threads,
             senders: senders.clone(),
             plugin_map: plugin_map.clone(),
@@ -254,6 +282,20 @@ impl PinnedExecutor {
             plugin_cache: plugin_cache.clone(),
             engine: engine.clone(),
         }
+    }
+
+    /// Build a fresh execution thread named for the slot it will occupy, using this
+    /// executor's shared state. The static `spawn_thread` still does the work; this
+    /// only supplies the clones so callers holding the state lock stay terse.
+    fn build_thread(&self, thread_idx: usize) -> ExecutionThread {
+        Self::spawn_thread(
+            thread_idx,
+            self.senders.clone(),
+            self.plugin_map.clone(),
+            self.connected_clients.clone(),
+            self.plugin_cache.clone(),
+            self.engine.clone(),
+        )
     }
 
     fn spawn_thread(
@@ -376,86 +418,70 @@ impl PinnedExecutor {
     /// Register a plugin and assign it to a thread
     /// Called from wasm_bridge when loading a plugin
     pub fn register_plugin(&self, plugin_id: u32) -> usize {
-        let mut assignments = self.plugin_assignments.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
 
         // If already assigned (shouldn't happen, but defensive)
-        if let Some(&thread_idx) = assignments.get(&plugin_id) {
+        if let Some(&thread_idx) = state.assignments.get(&plugin_id) {
             return thread_idx;
         }
-
-        let mut thread_plugins = self.thread_plugins.lock().unwrap();
-        let threads = self.execution_threads.lock().unwrap();
 
         // A thread of one's own while threads are to be had: a plugin's jobs
         // queue strictly behind its thread-mates', so co-tenancy is what a busy
         // plugin's latency is made of. The old policy preferred any *currently
         // idle* thread, which at load time — when every thread is idle — piled
-        // the whole session onto thread 0.
-        let empty_thread = threads
+        // the whole session onto thread 0. See `docs/PLUGIN_RENDER_PIPELINE.md`.
+        let empty_thread = state
+            .threads
             .iter()
             .enumerate()
-            .filter(|(_, t)| t.is_some())
-            .map(|(idx, _)| idx)
-            .find(|idx| {
-                thread_plugins
-                    .get(idx)
-                    .map(|s| s.is_empty())
-                    .unwrap_or(true)
-            });
+            .filter_map(|(idx, t)| t.as_ref().map(|_| idx))
+            .find(|&idx| state.load_of(idx) == 0);
 
         let thread_idx = if let Some(idx) = empty_thread {
             idx
-        } else if let Some(idx) = threads.iter().position(Option::is_none) {
-            // Recreate a worker removed after its last plugin unloaded.
-            drop(threads);
-            self.add_thread(idx);
+        } else if state.threads.iter().flatten().count() < self.max_threads {
+            // Every live thread has a tenant and we may grow: reuse the first vacant
+            // slot left by a prior shrink, else append. Counting live threads (not the
+            // vector length, which includes reclaimed `None` slots) is what keeps a
+            // churned pool from being wrongly seen as full and pinning everything on
+            // thread 0. The spawn happens under the lock on purpose; see
+            // `ExecutorState`.
+            let idx = state
+                .threads
+                .iter()
+                .position(Option::is_none)
+                .unwrap_or(state.threads.len());
+            let new_thread = self.build_thread(idx);
+            if idx < state.threads.len() {
+                state.threads[idx] = Some(new_thread);
+            } else {
+                state.threads.push(Some(new_thread));
+            }
             idx
-        } else if threads.len() < self.max_threads {
-            // Every existing thread has a tenant - spawn a new one
-            let new_idx = threads.len();
-            drop(threads); // Release lock before spawning
-            self.add_thread(new_idx);
-            new_idx
         } else {
-            // At max capacity, assign to least-loaded thread
-            threads
+            // At capacity: assign to the least-loaded live thread.
+            state
+                .threads
                 .iter()
                 .enumerate()
                 .filter_map(|(idx, t)| t.as_ref().map(|_| idx))
-                .min_by_key(|&idx| thread_plugins.get(&idx).map(|s| s.len()).unwrap_or(0))
-                .unwrap_or_else(|| {
-                    log::error!("Failed to find free thread to run the plugin!");
-                    0 // this is a misconfiguration, but we don't want to crash the app
-                      // if it happens
-                })
+                .min_by_key(|&idx| state.load_of(idx))
+                // Unreachable: this branch runs only when live threads >=
+                // max_threads >= 1, and thread 0 is never reclaimed
+                // (`unregister_plugin` shrinks from index 1 up), so there is always
+                // a live thread to pick. The `0` only spares an `unwrap`.
+                .unwrap_or(0)
         };
 
         // Update mappings
-        assignments.insert(plugin_id, thread_idx);
-        thread_plugins
+        state.assignments.insert(plugin_id, thread_idx);
+        state
+            .thread_plugins
             .entry(thread_idx)
             .or_default()
             .insert(plugin_id);
 
         thread_idx
-    }
-
-    fn add_thread(&self, thread_idx: usize) {
-        let mut threads = self.execution_threads.lock().unwrap();
-        let new_thread = Self::spawn_thread(
-            thread_idx,
-            self.senders.clone(),
-            self.plugin_map.clone(),
-            self.connected_clients.clone(),
-            self.plugin_cache.clone(),
-            self.engine.clone(),
-        );
-
-        // Extend vector if needed
-        while threads.len() <= thread_idx {
-            threads.push(None);
-        }
-        threads[thread_idx] = Some(new_thread);
     }
 
     /// Execute job pinned to plugin's assigned thread
@@ -492,20 +518,16 @@ impl PinnedExecutor {
             ) + Send
             + 'static,
     {
-        // Look up assigned thread
-        let thread_idx = {
-            let assignments = self.plugin_assignments.lock().unwrap();
-            assignments.get(&plugin_id).copied()
-        };
-        let Some(thread_idx) = thread_idx else {
+        // One continuous lock over the lookup and the send: the assignment and the
+        // thread it names are read together, so a concurrent unregister/shrink cannot
+        // reclaim the slot between the two and strand this job. The channel is
+        // unbounded, so sending under the lock never blocks.
+        let state = self.state.lock().unwrap();
+        let Some(&thread_idx) = state.assignments.get(&plugin_id) else {
             log::error!("Failed to find thread for plugin with id: {}", plugin_id);
             return;
         };
-
-        // Get thread and mark as busy
-        let threads = self.execution_threads.lock().unwrap();
-        let thread = threads[thread_idx].as_ref();
-        let Some(thread) = thread else {
+        let Some(Some(thread)) = state.threads.get(thread_idx) else {
             log::error!("Failed to find thread for plugin with id: {}", plugin_id);
             return;
         };
@@ -578,64 +600,44 @@ impl PinnedExecutor {
         );
     }
 
-    /// Unregister a plugin and potentially shrink the pool
-    /// Called from wasm_bridge after plugin cleanup is complete
+    /// Unregister a plugin and shrink the pool if that left a thread idle.
+    /// Called from wasm_bridge after plugin cleanup is complete.
+    ///
+    /// The shrink is folded in under the same lock rather than being a second
+    /// method that re-locks: separating them is exactly what created the ABBA
+    /// inversion this refactor removes.
     pub fn unregister_plugin(&self, plugin_id: u32) {
-        let mut assignments = self.plugin_assignments.lock().unwrap();
-        let mut thread_plugins = self.thread_plugins.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
 
-        if let Some(thread_idx) = assignments.remove(&plugin_id) {
-            if let Some(plugins) = thread_plugins.get_mut(&thread_idx) {
+        if let Some(thread_idx) = state.assignments.remove(&plugin_id) {
+            if let Some(plugins) = state.thread_plugins.get_mut(&thread_idx) {
                 plugins.remove(&plugin_id);
             }
         }
 
-        drop(assignments);
-        drop(thread_plugins);
-
-        // Try to shrink the pool
-        self.try_shrink_pool();
-    }
-
-    fn try_shrink_pool(&self) {
-        let mut threads = self.execution_threads.lock().unwrap();
-        let thread_plugins = self.thread_plugins.lock().unwrap();
-
-        // Find threads with no assigned plugins (except thread 0, always keep it)
-        let threads_to_remove: Vec<usize> = threads
-            .iter()
-            .enumerate()
-            .skip(1) // Never remove thread 0
-            .filter_map(|(idx, thread_opt)| {
-                if thread_opt.is_some() {
-                    let has_plugins = thread_plugins
-                        .get(&idx)
-                        .map(|s| !s.is_empty())
-                        .unwrap_or(false);
-                    if !has_plugins {
-                        Some(idx)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
+        // Reclaim any now-idle thread other than thread 0, leaving a `None` in its
+        // slot for `register_plugin` to reuse. Indices are collected first so the
+        // vector is only borrowed mutably once the read pass is done.
+        let idle: Vec<usize> = (1..state.threads.len())
+            .filter(|&idx| {
+                let live = state.threads.get(idx).map(Option::is_some).unwrap_or(false);
+                live && state.load_of(idx) == 0
             })
             .collect();
-
-        // Shutdown and remove idle threads
-        for idx in threads_to_remove {
-            if let Some(thread) = threads[idx].take() {
+        for idx in idle {
+            if let Some(thread) = state.threads[idx].take() {
                 let _ = thread.sender.send(Job::Shutdown);
             }
+            state.thread_plugins.remove(&idx);
         }
     }
 
     #[cfg(test)]
     pub fn thread_count(&self) -> usize {
-        self.execution_threads
+        self.state
             .lock()
             .unwrap()
+            .threads
             .iter()
             .filter(|t| t.is_some())
             .count()
@@ -644,10 +646,10 @@ impl PinnedExecutor {
 
 impl Drop for PinnedExecutor {
     fn drop(&mut self) {
-        let mut threads = self.execution_threads.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
 
         // Send shutdown to all threads
-        for thread in threads.iter_mut().flatten() {
+        for thread in state.threads.iter_mut().flatten() {
             let _ = thread.sender.send(Job::Shutdown);
         }
     }
@@ -1717,5 +1719,82 @@ mod tests {
         );
 
         drop(executor);
+    }
+
+    /// The regression for the ABBA deadlock: `register_plugin` and the shrink path
+    /// once took two mutexes in opposite orders. Hammering both from several threads
+    /// would wedge under the old design; the watchdog turns that hang into a failure
+    /// instead of letting the test run forever.
+    ///
+    /// Every registration here lands on an empty thread while one can be spawned, so
+    /// the growth, vacant-slot reuse and reclaim paths — the ones the shrink lock
+    /// used to guard — are all exercised and the cap assertion is not vacuous.
+    #[test]
+    fn concurrent_register_and_unregister_do_not_deadlock() {
+        let executor = create_test_executor(4);
+        let barrier = Arc::new(Barrier::new(4));
+        let (done_tx, done_rx) = channel();
+
+        let mut handles = Vec::new();
+        for t in 0..4u32 {
+            let exec = executor.clone();
+            let barrier = barrier.clone();
+            let done_tx = done_tx.clone();
+            handles.push(thread::spawn(move || {
+                barrier.wait(); // start all four at once, to maximise contention
+                for i in 0..250u32 {
+                    let plugin_id = t * 10_000 + i;
+                    exec.register_plugin(plugin_id);
+                    exec.unregister_plugin(plugin_id);
+                }
+                done_tx.send(t).unwrap();
+            }));
+        }
+        drop(done_tx);
+
+        for _ in 0..4 {
+            done_rx
+                .recv_timeout(Duration::from_secs(20))
+                .expect("register/unregister deadlocked");
+        }
+        for h in handles {
+            h.join().expect("a worker thread panicked");
+        }
+        assert!(executor.thread_count() >= 1);
+        assert!(
+            executor.thread_count() <= 4,
+            "the pool never exceeds its cap"
+        );
+    }
+
+    /// The regression for sparse-pool starvation: a reclaimed thread left a `None`
+    /// tombstone that the old length-based growth never reused, so `threads.len()`
+    /// ratcheted up to `max_threads` and later plugins were pinned onto thread 0.
+    /// The reclaimed slot must be reused on the next growth, and the pool must not
+    /// ratchet past its live count.
+    #[test]
+    fn a_reclaimed_thread_slot_is_reused_on_the_next_growth() {
+        let executor = create_test_executor(4);
+
+        assert_eq!(executor.register_plugin(0), 0);
+        assert_eq!(
+            executor.register_plugin(1),
+            1,
+            "a fresh thread is spawned while thread 0 has a tenant"
+        );
+        assert_eq!(executor.thread_count(), 2);
+
+        // Reclaim thread 1 by unregistering its only plugin — leaves a `None` at 1.
+        executor.unregister_plugin(1);
+        assert_eq!(executor.thread_count(), 1, "the idle thread is reclaimed");
+
+        // Grow again: the reclaimed slot must be reused. The old growth returned
+        // index 2.
+        assert_eq!(
+            executor.register_plugin(2),
+            1,
+            "the reclaimed slot must be reused, not grown past"
+        );
+        assert_eq!(executor.thread_count(), 2, "the pool did not ratchet up");
     }
 }
