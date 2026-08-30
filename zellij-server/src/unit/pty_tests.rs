@@ -1145,6 +1145,57 @@ fn a_local_pane_announces_no_host() {
     );
 }
 
+/// A respawn is the one moment a pane's host can change, so unlike the first report it has to
+/// be able to say `None` — a workflow step that moves from a remote host back to this machine
+/// would otherwise leave the pane attributed to the host it left.
+#[test]
+fn a_respawn_back_onto_this_machine_retracts_the_panes_host() {
+    let mock = MockOsApi::new();
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
+
+    pty.rerun_command_in_pane(
+        PaneId::Terminal(7),
+        RunCommand {
+            command: PathBuf::from("step2"),
+            hold_on_close: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        collect_pane_host_instructions(&screen_rx),
+        vec![(7, None)],
+        "the pane's host should be retracted, exactly once"
+    );
+}
+
+/// And a respawn that stays put says so in a single update. A `forget` followed by a `report`
+/// would be two, and a plugin reading the pair would see the pane briefly claim to be local.
+#[test]
+fn a_respawn_on_the_same_host_reports_it_once_and_never_blips() {
+    let mock = MockOsApi::new();
+    mock.set_remote_host(7, "build-box");
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
+
+    pty.rerun_command_in_pane(
+        PaneId::Terminal(7),
+        RunCommand {
+            command: PathBuf::from("step2"),
+            hold_on_close: true,
+            remote_host: Some("build-box".to_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        collect_pane_host_instructions(&screen_rx),
+        vec![(7, Some("build-box".to_owned()))],
+        "one update naming the host, with no host-less one before it"
+    );
+}
+
 /// A cwd is a path on one machine. Handing a local pane's cwd to a pane that
 /// runs elsewhere names a directory that need not exist there — and for a pane
 /// that asked for a login shell it is worse than useless: an unset cwd is
