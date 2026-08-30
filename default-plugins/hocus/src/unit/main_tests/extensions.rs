@@ -137,13 +137,18 @@ fn extension_safety_drives_planning_and_confirmation() {
     assert!(!automatic.tool_is_read_only("weather_forecast"));
     assert!(!automatic.call_needs_confirmation(&call("1", "weather_forecast", "{}")));
 
-    let confirming = extension_state("confirm", Some("contacts the weather service"));
-    let call = call("1", "weather_forecast", "{}");
+    let mut confirming = extension_state("confirm", Some("contacts the weather service"));
+    let call = call("1", "weather_forecast", r#"{"city":"Chicago"}"#);
     assert!(confirming.call_needs_confirmation(&call));
-    assert!(confirming
-        .confirmation_detail(&call)
-        .iter()
-        .any(|line| line.contains("contacts the weather service")));
+    confirming.pending.push_back(call);
+    confirming.status = Status::ConfirmingTool;
+    assert_eq!(
+        confirming.confirmation_prompt().unwrap().detail,
+        vec![
+            ("contacts the weather service".to_owned(), true),
+            ("city: Chicago".to_owned(), false),
+        ]
+    );
 }
 
 #[test]
