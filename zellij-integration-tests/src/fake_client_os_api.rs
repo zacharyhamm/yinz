@@ -104,7 +104,7 @@ impl FakeClientHandle {
     pub fn quit_client(&self) {
         if let Some(sender) = self.send_instructions_to_server.lock().unwrap().as_mut() {
             let _ = sender.send_client_msg(ClientToServerMsg::Action {
-                action: Action::Quit,
+                action: Action::Detach,
                 terminal_id: None,
                 client_id: None,
                 is_cli_client: false,
