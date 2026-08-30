@@ -1460,6 +1460,28 @@ fn a_local_pane_is_spawned_exactly_as_before() {
     std::env::remove_var("SSH_TTY");
 }
 
+/// A pane keeps this reference in its process environment while its per-session
+/// name and terminal id change. The named supervisor socket resolves it to the
+/// pane's current owner after a warp.
+#[test]
+fn a_local_pane_inherits_its_stable_supervisor_reference() {
+    let (mut host, host_id, control_socket) = TestHost::start();
+    assert!(
+        control_socket.is_some(),
+        "the supervisor needs a named socket"
+    );
+    let (_child_pid, mut master) = host.spawn(sh("echo pane_ref=[$ZELLIJ_PANE_REF]"));
+
+    let output = read_until(&mut master, "pane_ref=");
+    assert!(
+        output.contains(&format!("pane_ref=[{host_id}]")),
+        "the pane should inherit its supervisor's stable id: {output:?}"
+    );
+
+    host.send(&ServerToHostMsg::Terminate);
+    host.join();
+}
+
 /// The frozen `SSH_*` of whichever ssh session started the broker are inherited
 /// by every pane on that machine. They describe a connection this pane has no
 /// part in, so a remote login drops them rather than passing them on.
@@ -1468,9 +1490,14 @@ fn a_login_session_scrubs_the_brokers_frozen_ssh_variables() {
     std::env::set_var("SSH_CLIENT", "10.0.0.1 4242 22");
     std::env::set_var("SSH_AUTH_SOCK", "/tmp/agent-from-the-bootstrap");
     std::env::set_var("ZELLIJ_SESSION_NAME", "a-session-on-the-asking-machine");
+    std::env::set_var(
+        crate::pty_host::PANE_REF_ENV_KEY,
+        "an-outer-panes-reference",
+    );
     let (mut host, _host_id, _sock) = TestHost::start();
     let (_child_pid, mut master) = host.spawn_with_env(
-        sh("echo client=[$SSH_CLIENT] agent=[$SSH_AUTH_SOCK] sess=[$ZELLIJ_SESSION_NAME]"),
+        sh("echo client=[$SSH_CLIENT] agent=[$SSH_AUTH_SOCK] \
+             sess=[$ZELLIJ_SESSION_NAME] ref=[$ZELLIJ_PANE_REF]"),
         None,
         None,
         None,
@@ -1479,7 +1506,7 @@ fn a_login_session_scrubs_the_brokers_frozen_ssh_variables() {
     );
 
     let output = read_until(&mut master, "client=");
-    for absent in ["client=[]", "agent=[]", "sess=[]"] {
+    for absent in ["client=[]", "agent=[]", "sess=[]", "ref=[]"] {
         assert!(
             output.contains(absent),
             "expected {absent} in a remote login's environment: {output:?}"
@@ -1491,6 +1518,7 @@ fn a_login_session_scrubs_the_brokers_frozen_ssh_variables() {
     std::env::remove_var("SSH_CLIENT");
     std::env::remove_var("SSH_AUTH_SOCK");
     std::env::remove_var("ZELLIJ_SESSION_NAME");
+    std::env::remove_var(crate::pty_host::PANE_REF_ENV_KEY);
 }
 
 /// `^Z` in a command pane stops the pane's root process, and nothing inside the

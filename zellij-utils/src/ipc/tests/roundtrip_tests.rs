@@ -107,6 +107,7 @@ fn a_remote_handoff_without_a_command_arrives_as_no_remote_pane() {
                 received: 4096,
                 cmd,
             }),
+            agent: None,
         })),
     };
 
@@ -966,6 +967,15 @@ fn test_client_messages() {
                 contents: None,
                 borderless: false,
                 remote: None,
+                agent: Some(AgentInfo {
+                    kind: "codex".to_owned(),
+                    state: AgentState::Waiting,
+                    source: AgentSource::Reported,
+                    detail: None,
+                    waiting_on: Some("approval".to_owned()),
+                    cwd: Some("/work".to_owned()),
+                    session_id: Some("agent-session".to_owned()),
+                }),
             }),
             placement: WarpPlacement::NewTab,
         },
@@ -998,6 +1008,7 @@ fn test_client_messages() {
                         ..Default::default()
                     },
                 }),
+                agent: None,
             }),
             placement: WarpPlacement::NewTab,
         },
@@ -1016,6 +1027,7 @@ fn test_client_messages() {
                 contents: Some("\u{1b}[38;5;9mred\u{1b}[m ".repeat(200_000)),
                 borderless: true,
                 remote: None,
+                agent: None,
             }),
             placement: WarpPlacement::Floating,
         },
@@ -1107,6 +1119,7 @@ fn test_client_messages() {
                         contents: Some("\u{1b}[38;5;9mred\u{1b}[m ".repeat(100_000)),
                         borderless: false,
                         remote: None,
+                        agent: None,
                     },
                     // A pane whose process is on another machine, in a tab
                     // otherwise full of local ones. The mix is the point: a tab
@@ -1131,6 +1144,7 @@ fn test_client_messages() {
                                 ..Default::default()
                             },
                         }),
+                        agent: None,
                     },
                 ],
                 floating_panes: vec![WarpedPane {
@@ -1140,6 +1154,7 @@ fn test_client_messages() {
                     contents: None,
                     borderless: false,
                     remote: None,
+                    agent: None,
                 }],
                 hide_floating_panes: true,
             }),

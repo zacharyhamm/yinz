@@ -3659,8 +3659,8 @@ pub enum WarpPlacement {
 ///
 /// Deliberately small. The running process, its command and its exit status are
 /// all held by the pty-host, and the adopting server learns them from the
-/// `AttachAck` — so this carries only what lives in the *terminal emulator*: the
-/// screen, and how the pane was presented.
+/// `AttachAck` — so this carries what lives in the *terminal emulator* plus the
+/// server-side agent record attached to that process.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub struct WarpedPane {
     /// Identifies the supervisor, for error messages and `pty-host adopt`.
@@ -3681,6 +3681,9 @@ pub struct WarpedPane {
     /// address that means anything: the two fields above name a local
     /// supervisor socket, and there is none.
     pub remote: Option<RemotePaneHandoff>,
+    /// The agent record belongs to the running process, so it moves with it.
+    #[serde(default)]
+    pub agent: Option<AgentInfo>,
 }
 
 /// How to pick a remote pane back up from the broker that has been holding it.

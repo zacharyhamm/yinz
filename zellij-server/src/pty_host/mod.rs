@@ -60,6 +60,11 @@ fn secure_socket_with(
 /// The argv flag that turns this binary into a supervisor.
 pub const PTY_HOST_FLAG: &str = "--pty-host";
 
+/// The pane's stable supervisor id, inherited by everything running inside it.
+///
+/// Session names and terminal ids change when a pane is warped; this one does not.
+pub const PANE_REF_ENV_KEY: &str = "ZELLIJ_PANE_REF";
+
 /// Used when the config says nothing. Kept here so there is one place to flip.
 pub const DEFAULT_DETACHABLE_PANES: bool = true;
 

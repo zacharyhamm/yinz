@@ -352,6 +352,11 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
         ChildEnv {
             vars: &env,
             login_session,
+            pane_ref: if login_session {
+                None
+            } else {
+                listener.as_ref().map(|_| ctx.host_id.as_str())
+            },
         },
         job_control,
         &event_tx,
@@ -1039,6 +1044,9 @@ fn install_signal_forwarder(event_tx: Sender<HostEvent>, wake_tx: UnixStream) {
 struct ChildEnv<'a> {
     vars: &'a [(String, String)],
     login_session: bool,
+    /// Present only when the named socket exists, because that socket is how a
+    /// descendant resolves the reference after the pane moves.
+    pane_ref: Option<&'a str>,
 }
 
 /// Create the pty and fork the child. This is `handle_openpty`
@@ -1163,6 +1171,16 @@ fn start_session(
     }
     for (name, value) in child_env.vars {
         command.env(name, value);
+    }
+    match child_env.pane_ref {
+        Some(pane_ref) => {
+            command.env(super::PANE_REF_ENV_KEY, pane_ref);
+        },
+        None => {
+            // A nested zellij can inherit its outer pane's reference. Never let
+            // a child without its own named supervisor route reports through it.
+            command.env_remove(super::PANE_REF_ENV_KEY);
+        },
     }
     if child_env.login_session {
         // The one variable only this process can answer, and only now: the pane's

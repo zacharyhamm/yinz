@@ -76,6 +76,7 @@ pub const SCRUBBED_VARS: &[&str] = &[
     "ZELLIJ",
     "ZELLIJ_SESSION_NAME",
     "ZELLIJ_PANE_ID",
+    super::super::PANE_REF_ENV_KEY,
     "ZELLIJ_SOCKET_DIR",
 ];
 
