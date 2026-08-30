@@ -162,10 +162,11 @@ What one hook event cost, as measured (each × its own amplification):
    clone of **every known session's** `SessionInfo`. Fixed: the handler skips the reflow and the
    report for a connection that never attached (`is_client_attached`), and a real detach reports
    once, via `resize_to_clients`.
-2. **`SetPaneAgent` reported the whole session per record flip.** A working agent flips its
-   record's `detail` on every `PreToolUse`/`PostToolUse`. The record lives in `PaneInfo`, so
-   only the pane manifest is news; `report_pane_state` (`screen/plugin_state.rs`) now sends just
-   that, not `TabUpdate` + `SessionUpdate` + the session-info dump.
+2. **`SetPaneAgent` rebuilt tab state per record flip.** A working agent flips its record's
+   `detail` on every `PreToolUse`/`PostToolUse`. `report_pane_state` (`screen/plugin_state.rs`)
+   now rebuilds only the pane manifest. It also mirrors that manifest into the cached
+   `SessionInfo`, its background snapshot and `SessionUpdate`, because `SessionInfo` embeds it;
+   the redundant `TabUpdate` remains gone.
 3. **hocus-agentd republished an unchanged world.** `publish()` ran unconditionally on
    `PaneUpdate`, `TabUpdate`, `CommandChanged`, `CwdChanged`, the 5s heartbeat and every hook —
    each a full clone + `serde_json::to_string` piped to every subscriber (hocus, hocus-store,
@@ -191,9 +192,11 @@ above landed.
   told how many were sent. Both honor `ZELLIJ_BIN` for a checkout build.
 
 Storm at 3/s for 30 s against a fresh one-tab session with hocus open and one client attached,
-debug build, before the three fixes and after:
+debug build, before the three fixes and after the original fan-out fix. The latter predates the
+consistency correction that restored one `SessionUpdate` per changed agent record because
+`SessionInfo` embeds the pane manifest:
 
-| metric | before | after |
+| metric | before | after original fan-out fix |
 |---|---|---|
 | full session-state reports during the run | 1210 | 23 |
 | hocus executor jobs / 10 s | 804 (247 `SessionUpdate`, 262 `PaneUpdate`, 238 `TabUpdate`) | 60 (30 `PaneUpdate`, 30 `pipe:agent_hook`) |
@@ -201,9 +204,9 @@ debug build, before the three fixes and after:
 | hocus max queue wait | 653 ms | 18 ms |
 | plugin-thread CPU per hook, all threads | ~700 ms | ~70–140 ms |
 
-(The residual per-hook cost is the one intended `PaneUpdate` plus the per-plugin `agent_hook`
-pipe. Spreading plugins one-per-thread trades a little total CPU for the latency isolation —
-hocus no longer shares a queue with anything.)
+(Current per-hook work is the intended `PaneUpdate`, the required `SessionUpdate`, and the
+per-plugin `agent_hook` pipe. Spreading plugins one-per-thread trades a little total CPU for the
+latency isolation — hocus no longer shares a queue with anything.)
 
 ## A deferred hocus item
 
