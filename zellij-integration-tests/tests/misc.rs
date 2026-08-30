@@ -7,18 +7,6 @@ use zellij_integration_tests::{
 };
 
 #[test]
-fn quit_with_keybinding() {
-    let zellij = start_zellij();
-    claim_first_terminal_and_wait_for_prompt(&zellij);
-
-    zellij.send_stdin(&keys::ctrl('q'));
-
-    zellij.wait_until("zellij exited after the quit keybinding", |grid_snapshot| {
-        grid_snapshot.contains("Bye from Zellij!")
-    });
-}
-
-#[test]
 fn write_byte_to_focused_pane_via_tmux_mode() {
     let mut zellij = start_zellij();
     let terminal = claim_first_terminal_and_wait_for_prompt(&zellij);

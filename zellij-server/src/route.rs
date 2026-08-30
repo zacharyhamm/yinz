@@ -2478,28 +2478,32 @@ pub(crate) fn route_thread_main(
                     // Check if this is a watcher client and ignore input messages
                     let is_watcher = session_state.read().unwrap().is_watcher(&client_id);
                     if is_watcher {
-                        match &instruction {
+                        let should_exit = match &instruction {
                             ClientToServerMsg::Key { key, .. } => {
-                                if (key.bare_key == BareKey::Char('q')
+                                (key.bare_key == BareKey::Char('q')
                                     && key.key_modifiers.contains(&KeyModifier::Ctrl))
                                     || key.bare_key == BareKey::Esc
                                     || (key.bare_key == BareKey::Char('c')
                                         && key.key_modifiers.contains(&KeyModifier::Ctrl))
-                                {
-                                    let _ = os_input.send_to_client(
-                                        client_id,
-                                        ServerToClientMsg::Exit {
-                                            exit_reason: ExitReason::Normal,
-                                        },
-                                    );
-                                    let _ = senders.as_ref().map(|s| {
-                                        s.send_to_screen(ScreenInstruction::RemoveWatcherClient(
-                                            client_id,
-                                        ))
-                                    });
-                                    should_break = true;
-                                }
                             },
+                            ClientToServerMsg::Action { action, .. } => {
+                                matches!(action, Action::Quit | Action::Detach)
+                            },
+                            _ => false,
+                        };
+                        if should_exit {
+                            let _ = os_input.send_to_client(
+                                client_id,
+                                ServerToClientMsg::Exit {
+                                    exit_reason: ExitReason::Normal,
+                                },
+                            );
+                            let _ = senders.as_ref().map(|s| {
+                                s.send_to_screen(ScreenInstruction::RemoveWatcherClient(client_id))
+                            });
+                            return Ok(true);
+                        }
+                        match &instruction {
                             ClientToServerMsg::TerminalResize { new_size } => {
                                 // For watchers: send size to Screen for rendering adjustments, but
                                 // this does not affect the screen size
@@ -2516,7 +2520,7 @@ pub(crate) fn route_thread_main(
                             },
                         }
                         // don't do anything else for watchers
-                        return Ok(should_break);
+                        return Ok(false);
                     }
 
                     match instruction {

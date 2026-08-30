@@ -55,7 +55,7 @@ fn send_command_through_the_cli() {
     });
     command_terminal.output(b"foo\r\nfoo\r\n");
     let grid_snapshot = zellij.wait_until("command re-ran", |grid_snapshot| {
-        grid_snapshot.text.matches("foo").count() >= 2
+        grid_snapshot.text.matches("foo").count() >= 2 && !grid_snapshot.contains("EXIT CODE")
     });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();
