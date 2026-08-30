@@ -1417,14 +1417,19 @@ pub(crate) fn screen_thread_main(
             },
             ScreenInstruction::ClearScroll(client_id) => {
                 let was_scrolled = screen.active_pane_is_scrolled(client_id);
+                let mut scroll_was_cleared = was_scrolled;
                 active_tab_and_connected_client_id!(
                     screen,
                     client_id,
-                    |tab: &mut Tab, client_id: ClientId| tab
-                        .clear_active_terminal_scroll(client_id), ?
+                    |tab: &mut Tab, client_id: ClientId| -> Result<()> {
+                        scroll_was_cleared = tab.clear_active_terminal_scroll(client_id)?;
+                        Ok(())
+                    }, ?
                 );
                 screen.sync_scroll_mode_if_scroll_changed(client_id, was_scrolled)?;
-                screen.render(None)?;
+                if scroll_was_cleared {
+                    screen.render(None)?;
+                }
             },
             ScreenInstruction::CloseFocusedPane(client_id, completion_tx) => {
                 let old_pane_id = screen.get_active_pane_id(&client_id);

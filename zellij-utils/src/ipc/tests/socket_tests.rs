@@ -560,3 +560,22 @@ fn a_probe_timeout_is_an_unresponsive_server_not_an_absent_one() {
         SessionProbe::Unresponsive
     );
 }
+
+#[test]
+fn only_a_missing_listener_is_an_absent_session() {
+    use crate::sessions::{classify_probe_connect_error, SessionProbe};
+    use std::io::ErrorKind;
+
+    assert_eq!(
+        classify_probe_connect_error(ErrorKind::NotFound),
+        Ok(SessionProbe::Absent)
+    );
+    assert_eq!(
+        classify_probe_connect_error(ErrorKind::ConnectionRefused),
+        Ok(SessionProbe::Absent)
+    );
+    assert_eq!(
+        classify_probe_connect_error(ErrorKind::PermissionDenied),
+        Err(ErrorKind::PermissionDenied)
+    );
+}

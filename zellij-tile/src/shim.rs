@@ -270,12 +270,8 @@ pub fn get_plugin_alias_configuration(alias: &str) -> BTreeMap<String, String> {
 /// Returns the focused pane ID and tab index for the client associated with this plugin.
 pub fn get_focused_pane_info() -> Result<(usize, PaneId), String> {
     let plugin_command = PluginCommand::GetFocusedPaneInfo;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let protobuf_response =
-        ProtobufGetFocusedPaneInfoResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
+    let protobuf_response: ProtobufGetFocusedPaneInfoResponse =
+        command_response(plugin_command, "GetFocusedPaneInfo")?;
 
     match protobuf_response.result {
         Some(get_focused_pane_info_response::Result::FocusedPaneInfo(info)) => {
@@ -3414,12 +3410,8 @@ where
         config,
         context,
     };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let protobuf_response =
-        ProtobufEnqueueQueueJobResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
+    let protobuf_response: ProtobufEnqueueQueueJobResponse =
+        command_response(plugin_command, "EnqueueQueueJob")?;
     match EnqueueQueueJobResponse::try_from(protobuf_response) {
         Ok(EnqueueQueueJobResponse::Ok(job_id)) => Ok(job_id),
         Ok(EnqueueQueueJobResponse::Err(error)) => Err(error),
@@ -3929,6 +3921,15 @@ mod tests {
         set_test_command_response(Err("stdin closed".to_owned()));
     }
 
+    fn enqueue_test_job() -> Result<u64, String> {
+        enqueue_queue_job(
+            "test-queue",
+            "file:/plugin.wasm",
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+    }
+
     #[test]
     fn plugin_queries_return_stdin_read_errors() {
         let pane_id = PaneId::Terminal(1);
@@ -3953,6 +3954,16 @@ mod tests {
             get_pane_git_probe(pane_id).unwrap_err(),
             "Failed to read the GetPaneGitProbe response: stdin closed"
         );
+        fail_next_read();
+        assert_eq!(
+            get_focused_pane_info().unwrap_err(),
+            "Failed to read the GetFocusedPaneInfo response: stdin closed"
+        );
+        fail_next_read();
+        assert_eq!(
+            enqueue_test_job().unwrap_err(),
+            "Failed to read the EnqueueQueueJob response: stdin closed"
+        );
     }
 
     #[test]
@@ -3972,6 +3983,16 @@ mod tests {
         assert!(get_session_list()
             .unwrap_err()
             .starts_with("Malformed GetSessionList response:"));
+
+        set_test_command_response(Ok(vec![0xff]));
+        assert!(get_focused_pane_info()
+            .unwrap_err()
+            .starts_with("Malformed GetFocusedPaneInfo response:"));
+
+        set_test_command_response(Ok(vec![0xff]));
+        assert!(enqueue_test_job()
+            .unwrap_err()
+            .starts_with("Malformed EnqueueQueueJob response:"));
     }
 
     #[test]
@@ -3995,6 +4016,18 @@ mod tests {
             GetPaneGitProbeResponse::Err(expected.clone()),
         ));
         assert_eq!(get_pane_git_probe(pane_id), Err(expected));
+
+        let focused_permission_error = "Permission denied: ReadApplicationState".to_owned();
+        respond(ProtobufGetFocusedPaneInfoResponse::from(
+            GetFocusedPaneInfoResponse::Err(focused_permission_error.clone()),
+        ));
+        assert_eq!(get_focused_pane_info(), Err(focused_permission_error));
+
+        let enqueue_permission_error = "Permission denied: MessageAndLaunchOtherPlugins".to_owned();
+        respond(ProtobufEnqueueQueueJobResponse::from(
+            EnqueueQueueJobResponse::Err(enqueue_permission_error.clone()),
+        ));
+        assert_eq!(enqueue_test_job(), Err(enqueue_permission_error));
     }
 
     #[test]
@@ -4033,5 +4066,18 @@ mod tests {
             GetPaneGitProbeResponse::Ok(probe.clone()),
         ));
         assert_eq!(get_pane_git_probe(pane_id), Ok(probe));
+
+        respond(ProtobufGetFocusedPaneInfoResponse::from(
+            GetFocusedPaneInfoResponse::Ok {
+                tab_index: 7,
+                pane_id: PaneId::Plugin(42),
+            },
+        ));
+        assert_eq!(get_focused_pane_info(), Ok((7, PaneId::Plugin(42))));
+
+        respond(ProtobufEnqueueQueueJobResponse::from(
+            EnqueueQueueJobResponse::Ok(99),
+        ));
+        assert_eq!(enqueue_test_job(), Ok(99));
     }
 }

@@ -40,7 +40,7 @@ fn probe_sockets<T: Send + 'static>(candidates: Vec<(String, T)>) -> Vec<(String
                 // not offered for attaching — attaching to it would hang — but
                 // it is not forgotten either: `session_status` still reports it,
                 // so nothing creates a new session over its socket.
-                if assert_socket(&name) == SessionProbe::Alive {
+                if matches!(assert_socket(&name), Ok(SessionProbe::Alive)) {
                     Some((name, extra))
                 } else {
                     None
@@ -218,7 +218,7 @@ pub enum SessionProbe {
 /// "Alive" here means *answering*, which is the property callers actually need —
 /// a server that cannot reply to `ConnStatus` cannot accept a client either.
 #[cfg(unix)]
-fn assert_socket(name: &str) -> SessionProbe {
+fn assert_socket(name: &str) -> Result<SessionProbe, io::ErrorKind> {
     use crate::consts::ipc_connect;
     use interprocess::local_socket::prelude::*;
     let path = &*ZELLIJ_SOCK_DIR.join(name);
@@ -248,27 +248,32 @@ fn assert_socket(name: &str) -> SessionProbe {
                 "attach trace: probe {name:?} reply {status:?} after {:?}",
                 started_at.elapsed()
             );
-            status
-        },
-        Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
-            log::info!(
-                "attach trace: probe {name:?} connection refused after {:?}",
-                started_at.elapsed()
-            );
-            // Nobody is listening, so the socket outlived its server: clean it up.
-            // Deliberately not reachable from the timeout above — a wedged server
-            // is still running, and deleting its socket would strand it with no
-            // way for any client to ever find it again.
-            drop(fs::remove_file(path));
-            SessionProbe::Absent
+            Ok(status)
         },
         Err(e) => {
+            let kind = e.kind();
             log::info!(
                 "attach trace: probe {name:?} connect failed after {:?}: {e}",
-                started_at.elapsed()
+                started_at.elapsed(),
             );
-            SessionProbe::Absent
+            if kind == io::ErrorKind::ConnectionRefused {
+                // Nobody is listening, so the socket outlived its server: clean it up.
+                // Deliberately not reachable from the timeout above — a wedged server
+                // is still running, and deleting its socket would strand it with no
+                // way for any client to ever find it again.
+                drop(fs::remove_file(path));
+            }
+            classify_probe_connect_error(kind)
         },
+    }
+}
+
+pub(crate) fn classify_probe_connect_error(
+    kind: io::ErrorKind,
+) -> Result<SessionProbe, io::ErrorKind> {
+    match kind {
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => Ok(SessionProbe::Absent),
+        kind => Err(kind),
     }
 }
 
@@ -288,8 +293,8 @@ pub(crate) fn classify_probe_reply(reply: IpcRecv<ServerToClientMsg>) -> Session
 }
 
 #[cfg(not(unix))]
-fn assert_socket(_name: &str) -> SessionProbe {
-    SessionProbe::Alive
+fn assert_socket(_name: &str) -> Result<SessionProbe, io::ErrorKind> {
+    Ok(SessionProbe::Alive)
 }
 
 /// Probe one named session directly, without sweeping the socket directory.
@@ -301,7 +306,7 @@ fn assert_socket(_name: &str) -> SessionProbe {
 pub fn session_status(name: &str) -> Result<SessionProbe, io::ErrorKind> {
     let path = ZELLIJ_SOCK_DIR.join(name);
     match fs::metadata(&path) {
-        Ok(metadata) if is_ipc_socket(&metadata.file_type()) => Ok(assert_socket(name)),
+        Ok(metadata) if is_ipc_socket(&metadata.file_type()) => assert_socket(name),
         Ok(_) => Ok(SessionProbe::Absent),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(SessionProbe::Absent),
         Err(e) => Err(e.kind()),
