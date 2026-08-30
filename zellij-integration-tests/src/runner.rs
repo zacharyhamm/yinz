@@ -859,7 +859,8 @@ fn replace_unique_session_name(text: &str) -> String {
 }
 
 fn strip_swap_layout_indication(text: &str) -> String {
-    let swap_layout_name = "BASE|VERTICAL|HORIZONTAL|STACKED|STAGGERED|ENLARGED|SPREAD";
+    let swap_layout_name =
+        "BASE|VERTICAL|THREE-COLUMNS|HORIZONTAL|STACKED|STAGGERED|ENLARGED|SPREAD";
     let powerline_separated_or_plain = |prefix: &str| {
         regex::Regex::new(&format!(
             "{} [\u{e0b0}]? ?(?:{}) ?[\u{e0b0}]?[ ]*\n",
