@@ -7,6 +7,7 @@ use zellij_client::os_input_output::{
     SignalSource, StdioAccess, TtyControl,
 };
 use zellij_utils::data::Palette;
+use zellij_utils::input::actions::Action;
 use zellij_utils::ipc::{
     ClientToServerMsg, IpcReceiverWithContext, IpcRecv, IpcSenderWithContext, ServerToClientMsg,
 };
@@ -82,11 +83,33 @@ pub struct FakeClientHandle {
     pub stdin_tx: crossbeam::channel::Sender<Vec<u8>>,
     pub signal_tx: crossbeam::channel::Sender<SignalEvent>,
     pub received_server_messages: Arc<Mutex<Vec<String>>>,
+    send_instructions_to_server: Arc<Mutex<Option<IpcSenderWithContext<ClientToServerMsg>>>>,
 }
 
 impl FakeClientHandle {
     pub fn received_server_messages(&self) -> Vec<String> {
         self.received_server_messages.lock().unwrap().clone()
+    }
+
+    pub fn kill_session(&self) {
+        self.send_instructions_to_server
+            .lock()
+            .unwrap()
+            .as_mut()
+            .expect("client is not connected")
+            .send_client_msg(ClientToServerMsg::KillSession)
+            .expect("failed to kill test session");
+    }
+
+    pub fn quit_client(&self) {
+        if let Some(sender) = self.send_instructions_to_server.lock().unwrap().as_mut() {
+            let _ = sender.send_client_msg(ClientToServerMsg::Action {
+                action: Action::Quit,
+                terminal_id: None,
+                client_id: None,
+                is_cli_client: false,
+            });
+        }
     }
 }
 
@@ -127,6 +150,7 @@ impl FakeClientOsApi {
             stdin_tx,
             signal_tx,
             received_server_messages,
+            send_instructions_to_server: fake_client_os_api.send_instructions_to_server.clone(),
         };
         (fake_client_os_api, fake_client_handle)
     }

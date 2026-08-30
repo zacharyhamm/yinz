@@ -120,16 +120,10 @@ Neither suite is reliable enough for a single red run to be evidence. Before bel
   handful (`no_focus`, `no_ui_fullscreen`) time out at 60s under load and pass alone at any width.
   Note also that this machine is shared: a sibling worktree running its own suite contends for the
   same cores, so check for another `cargo x integration-test` before believing a red run.
-- **Known pre-existing failures**, confirmed against a stashed tree: `misc::quit_with_keybinding`
-  (it waits for "Bye from Zellij!" but this fork puts a quit-confirmation modal in the way), the
-  `nested_guest_modal` / `nested_hardening` / `nested_sessions` / `nested_session_handling_config`
-  group, and `stacked_pane_list::a_stack_list_survives_session_resurrection`. (Two more used to
-  be listed here - `floating_pane_overlay::an_overlay_floating_pane_moves_to_another_tab_when_its_own_tab_closes`
-  and `hocus_tab_projects::a_tab_is_named_after_the_project_its_agent_is_in` - and are fixed:
-  `75376d615` rewrote their layouts when the global panes went, and each test's own overlay
-  landed on the row it read. A floating pane at `y=0` covers the tab bar.) `tabs::move_tab_to_right`
-  was a race - the landed-on tab's status bar hears about Normal mode asynchronously since
-  `9003d98e6` - and now waits for the settled frame; see `docs/SELF_PROGRAMMING.md`.
+- **There are no known pre-existing integration failures.** The former quit, nested-session and
+  resurrection failures shared a stale harness teardown: it typed the now-confirmed quit binding
+  and silently ignored join timeouts. Teardown now uses lifecycle IPC and treats timeout as a test
+  failure, so do not dismiss those tests when they are red.
 - **The two known-flaky `zellij-server` lib tests are fixed** and each now passes 20/20 in a
   loop: `screen_tests::cli_actions::send_cli_scroll_up_action` and
   `plugins::plugin_tests::keybinds::mode_update_payload_is_lightweight_for_opted_in_plugins`.

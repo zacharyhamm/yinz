@@ -4065,7 +4065,9 @@ pub(crate) fn screen_thread_main(
                 screen.resolve_default_theme_mode().non_fatal();
             },
             ScreenInstruction::RerunCommandPane(terminal_pane_id, completion_tx) => {
-                screen.rerun_command_pane_with_id(terminal_pane_id, completion_tx)
+                screen.rerun_command_pane_with_id(terminal_pane_id, completion_tx);
+                screen.log_and_report_session_state()?;
+                screen.render(None)?;
             },
             ScreenInstruction::ResizePaneWithId(resize, pane_id) => {
                 screen.resize_pane_with_id(resize, pane_id)?;

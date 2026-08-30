@@ -293,7 +293,13 @@ impl TestClient {
     }
 
     pub fn quit(mut self) {
-        self.send_stdin(&keys::ctrl('q'));
+        if self
+            .thread
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished())
+        {
+            self.fake_client_handle.quit_client();
+        }
         self.join();
     }
 
@@ -316,8 +322,10 @@ fn join_client_thread_with_timeout(
     match done_rx.recv_timeout(CLIENT_JOIN_TIMEOUT) {
         Ok(Ok(reconnect)) => reconnect,
         Ok(Err(_)) => panic!("client thread panicked"),
-        Err(mpsc::RecvTimeoutError::Timeout) => None,
-        Err(mpsc::RecvTimeoutError::Disconnected) => None,
+        Err(mpsc::RecvTimeoutError::Timeout) => panic!("timed out waiting for client thread"),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("client join watchdog disconnected")
+        },
     }
 }
 
@@ -333,7 +341,10 @@ fn join_server_thread_with_timeout(join_handle: JoinHandle<()>) {
     match done_rx.recv_timeout(CLIENT_JOIN_TIMEOUT) {
         Ok(Ok(())) => {},
         Ok(Err(_)) => panic!("server thread panicked"),
-        Err(_) => {},
+        Err(mpsc::RecvTimeoutError::Timeout) => panic!("timed out waiting for server thread"),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("server join watchdog disconnected")
+        },
     }
 }
 
@@ -790,7 +801,7 @@ impl TestSession {
 
     pub fn quit(&mut self) {
         if self.main_client.thread.is_some() {
-            self.send_stdin(&keys::ctrl('q'));
+            self.main_client.fake_client_handle.kill_session();
             self.main_client.join();
         }
         if let Some(server_thread) = self.server_thread.lock().unwrap().take() {
@@ -802,8 +813,8 @@ impl TestSession {
         let _ = self
             .main_client
             .fake_client_handle
-            .stdin_tx
-            .send(keys::ctrl('q').to_vec());
+            .signal_tx
+            .send(SignalEvent::Quit);
     }
 }
 
