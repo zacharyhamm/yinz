@@ -1038,10 +1038,12 @@ impl MouseHandler {
                 .with_context(err_context)
             },
             MouseAction::ResizeScrollUp { pane_id } => {
-                Self::handle_resize_scroll_up(tab, pane_id, client_id).with_context(err_context)
+                Self::handle_resize_scroll(tab, pane_id, Resize::Increase, client_id)
+                    .with_context(err_context)
             },
             MouseAction::ResizeScrollDown { pane_id } => {
-                Self::handle_resize_scroll_down(tab, pane_id, client_id).with_context(err_context)
+                Self::handle_resize_scroll(tab, pane_id, Resize::Decrease, client_id)
+                    .with_context(err_context)
             },
             MouseAction::ScrollToPreviousPrompt { pane_id } => {
                 Self::handle_prompt_jump(tab, pane_id, true, event, client_id)
@@ -1710,6 +1712,17 @@ impl MouseHandler {
             }
             if let Some(pane_id) = ctx.pane_id_at_position {
                 if event.ctrl {
+                    // a modal is sized by the plugin that asked the question, so a scroll over one
+                    // is nothing at all - the same answer the ctrl-left-press branch below gives a
+                    // modal frame, and for the same reason: falling through would resize whatever
+                    // is behind it instead of the pane under the pointer
+                    let is_fixed_size_overlay = ctx
+                        .clicked_pane
+                        .as_ref()
+                        .is_some_and(|details| details.is_overlay && !details.overlay_is_resizable);
+                    if is_fixed_size_overlay {
+                        return Ok(MouseAction::NoAction);
+                    }
                     if event.wheel_up {
                         return Ok(MouseAction::ResizeScrollUp { pane_id });
                     }
@@ -2192,57 +2205,38 @@ impl MouseHandler {
         Ok(MouseEffect::default())
     }
 
-    fn handle_resize_scroll_up(
+    /// One notch of a ctrl+scroll resize, applied to whichever collection holds `pane_id`.
+    ///
+    /// The overlay branch comes first, the same order `Tab::resize` dispatches in and for the same
+    /// reason: an overlay is in neither of the other two collections, so without a branch of its
+    /// own a scroll over one fell through to the *tiled* one and handed
+    /// `stacked_resize_pane_with_id` a pane id that collection does not hold - while the overlay's
+    /// frame advertised the gesture all along (`OverlayPanes::render` draws it as floating, so the
+    /// hint offers `Ctrl <MouseScroll>`).
+    ///
+    /// `direction: None` moves all four borders, and `geom_resized_within` halves a directionless
+    /// `change_by`, so a notch is 2 columns and 1 row on every side - the floating layer's step.
+    fn handle_resize_scroll(
         tab: &mut Tab,
         pane_id: PaneId,
+        resize: Resize,
         client_id: ClientId,
     ) -> Result<MouseEffect> {
-        let err_context = || format!("failed to handle resize scroll up for pane {pane_id:?}");
-
-        let is_floating = tab.floating_panes.panes_contain(&pane_id);
+        let err_context =
+            || format!("failed to handle resize scroll {resize:?} for pane {pane_id:?}");
 
         let strategy = ResizeStrategy {
-            resize: Resize::Increase,
+            resize,
             direction: None,
             invert_on_boundaries: false,
         };
 
-        if is_floating {
-            Self::resize_floating_pane_with_strategies(tab, pane_id, &[strategy], (5, 2))
+        if tab.overlay_panes.panes_contain(&pane_id) {
+            // No swap-layout damage flag and no stack dissolve: an overlay is part of no swap
+            // layout, and the collection re-renders and re-ptys itself.
+            Self::resize_overlay_with_strategies(tab, pane_id, &[strategy], (5, 2))
                 .with_context(err_context)?;
-            tab.swap_layouts.set_is_floating_damaged();
-        } else {
-            let active_pane_id = tab
-                .get_active_pane_id(client_id)
-                .ok_or_else(|| anyhow!("Failed to find active pane"))?;
-
-            tab.dissolve_stack_lists_for_classic_mutation();
-            Self::resize_tiled_pane_with_stacked_resize(tab, active_pane_id, &strategy)
-                .with_context(err_context)?;
-            tab.tiled_panes.reapply_pane_frames();
-            tab.swap_layouts.set_is_tiled_damaged();
-        }
-
-        tab.set_force_render();
-        Ok(MouseEffect::state_changed())
-    }
-
-    fn handle_resize_scroll_down(
-        tab: &mut Tab,
-        pane_id: PaneId,
-        client_id: ClientId,
-    ) -> Result<MouseEffect> {
-        let err_context = || format!("failed to handle resize scroll down for pane {pane_id:?}");
-
-        let is_floating = tab.floating_panes.panes_contain(&pane_id);
-
-        let strategy = ResizeStrategy {
-            resize: Resize::Decrease,
-            direction: None,
-            invert_on_boundaries: false,
-        };
-
-        if is_floating {
+        } else if tab.floating_panes.panes_contain(&pane_id) {
             Self::resize_floating_pane_with_strategies(tab, pane_id, &[strategy], (5, 2))
                 .with_context(err_context)?;
             tab.swap_layouts.set_is_floating_damaged();
@@ -2570,6 +2564,68 @@ mod tests {
             matches!(action, MouseAction::StartMovingOverlay { .. }),
             "got {action:?}"
         );
+    }
+
+    /// The scroll half of the ctrl-drag pair above: the overlay under the pointer is the pane that
+    /// resizes. Without this the action still carried the overlay's id, but
+    /// `handle_resize_scroll` knew only the floating and tiled collections and fell through to
+    /// resizing whatever the client was focused on.
+    #[test]
+    fn a_ctrl_scroll_over_a_resizable_overlay_asks_for_a_resize() {
+        let overlay = PaneId::Terminal(9);
+        let mut context = mouse_event_context(true);
+        context.pane_id_at_position = Some(overlay);
+        context.active_pane_id = Some(PaneId::Terminal(1));
+        context.clicked_pane = Some(ClickedPaneDetails {
+            is_overlay: true,
+            overlay_is_resizable: true,
+            ..content_click_on(overlay)
+        });
+
+        let position = Position::new(1, 1);
+        assert_eq!(
+            MouseHandler::determine_mouse_action(
+                &MouseEvent::new_ctrl_scroll_up_event(position),
+                &context
+            )
+            .unwrap(),
+            MouseAction::ResizeScrollUp { pane_id: overlay }
+        );
+        assert_eq!(
+            MouseHandler::determine_mouse_action(
+                &MouseEvent::new_ctrl_scroll_down_event(position),
+                &context
+            )
+            .unwrap(),
+            MouseAction::ResizeScrollDown { pane_id: overlay }
+        );
+    }
+
+    /// A modal's size is the plugin's, so the scroll is nothing at all - and in particular not a
+    /// plain scroll and not a resize of the pane behind it, which is where a fall-through would
+    /// land it.
+    #[test]
+    fn a_ctrl_scroll_over_a_modal_does_nothing() {
+        let modal = PaneId::Terminal(9);
+        let mut context = mouse_event_context(true);
+        context.pane_id_at_position = Some(modal);
+        context.active_pane_id = Some(PaneId::Terminal(1));
+        context.clicked_pane = Some(ClickedPaneDetails {
+            is_overlay: true,
+            overlay_is_resizable: false,
+            ..content_click_on(modal)
+        });
+
+        let position = Position::new(1, 1);
+        for event in [
+            MouseEvent::new_ctrl_scroll_up_event(position),
+            MouseEvent::new_ctrl_scroll_down_event(position),
+        ] {
+            assert_eq!(
+                MouseHandler::determine_mouse_action(&event, &context).unwrap(),
+                MouseAction::NoAction
+            );
+        }
     }
 
     #[test]

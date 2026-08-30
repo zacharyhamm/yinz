@@ -2127,6 +2127,154 @@ fn a_ctrl_drag_on_an_overlay_frame_resizes_it() {
     );
 }
 
+/// The other mouse gesture the overlay's frame advertises. `OverlayPanes::render` draws the frame
+/// as a floating one, so the hint has always read `Ctrl <MouseScroll> or Ctrl <drag borders> to
+/// resize` - but only the drag half was wired up, and `handle_resize_scroll` knew none of the
+/// overlay collection.
+#[test]
+fn a_ctrl_scroll_on_an_overlay_resizes_it() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    // taller than `overlay_coordinates()`, whose 4 rows are already under `MIN_TERMINAL_HEIGHT`:
+    // this test scrolls both ways, and a shrink that starts under the minimum cannot move
+    open_overlay_with(
+        &mut screen,
+        2,
+        FloatingPaneCoordinates {
+            height: Some(PercentOrFixed::Fixed(8)),
+            ..overlay_coordinates()
+        },
+    );
+
+    let before = floating_geom(&screen, 2);
+    // somewhere in the overlay's contents, well inside its frame
+    let inside = Position::new(before.y as i32 + 1, before.x as u16 + 4);
+
+    screen.handle_mouse_event(MouseEvent::new_ctrl_scroll_up_event(inside), 1);
+
+    let grown = floating_geom(&screen, 2);
+    // `direction: None` moves all four borders, and `geom_resized_within` halves a directionless
+    // `change_by`, so one notch is 2 columns and 1 row on each side - the floating layer's step
+    assert_eq!(
+        (
+            grown.x,
+            grown.y,
+            grown.cols.as_usize(),
+            grown.rows.as_usize()
+        ),
+        (
+            before.x - 2,
+            before.y - 1,
+            before.cols.as_usize() + 4,
+            before.rows.as_usize() + 2
+        ),
+        "the overlay grew on all four sides: {before:?} -> {grown:?}"
+    );
+
+    screen.handle_mouse_event(MouseEvent::new_ctrl_scroll_down_event(inside), 1);
+    assert_eq!(
+        floating_geom(&screen, 2),
+        before,
+        "and a notch the other way puts it back"
+    );
+}
+
+/// The regression the missing branch actually caused. An overlay is in neither the floating nor
+/// the tiled collection, so the scroll fell through to the tiled branch and resized whatever the
+/// client was focused on - which, since an overlay holds the keyboard, meant handing the tiled
+/// collection a pane id it does not hold.
+#[test]
+fn a_ctrl_scroll_on_an_overlay_leaves_the_panes_behind_it_alone() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .vertical_split(PaneId::Terminal(2), None, 1, None, None)
+        .expect("TEST");
+    open_overlay_with(&mut screen, 3, overlay_coordinates());
+
+    let tiled_before: Vec<PaneGeom> = [PaneId::Terminal(1), PaneId::Terminal(2)]
+        .iter()
+        .map(|id| {
+            screen.tabs[&0]
+                .get_pane_with_id(*id)
+                .expect("TEST")
+                .position_and_size()
+        })
+        .collect();
+    assert_eq!(
+        screen.tabs[&0].get_active_pane_id(1),
+        Some(PaneId::Terminal(3)),
+        "pre-condition: the overlay has the keyboard"
+    );
+
+    let overlay_before = floating_geom(&screen, 3);
+    let inside = Position::new(overlay_before.y as i32 + 1, overlay_before.x as u16 + 4);
+    screen.handle_mouse_event(MouseEvent::new_ctrl_scroll_up_event(inside), 1);
+
+    assert_ne!(
+        floating_geom(&screen, 3),
+        overlay_before,
+        "the overlay under the pointer is what resized"
+    );
+    let tiled_after: Vec<PaneGeom> = [PaneId::Terminal(1), PaneId::Terminal(2)]
+        .iter()
+        .map(|id| {
+            screen.tabs[&0]
+                .get_pane_with_id(*id)
+                .expect("TEST")
+                .position_and_size()
+        })
+        .collect();
+    assert_eq!(
+        tiled_before, tiled_after,
+        "the tiled panes behind the overlay are untouched"
+    );
+}
+
+/// A modal is sized to the question it is asking, so the scroll is nothing at all - and in
+/// particular it does not fall through to the pane behind it, the way it used to.
+#[test]
+fn a_ctrl_scroll_on_a_modal_changes_nothing() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    let modal = PaneId::Terminal(2);
+    open_modal_terminal_in_tab(&mut screen, 0, modal);
+
+    let before: Vec<PaneGeom> = [PaneId::Terminal(1), modal]
+        .iter()
+        .map(|id| {
+            screen.tabs[&0]
+                .get_pane_with_id(*id)
+                .expect("TEST")
+                .position_and_size()
+        })
+        .collect();
+
+    let modal_geom = before[1];
+    let inside = Position::new(modal_geom.y as i32 + 1, modal_geom.x as u16 + 4);
+    screen.handle_mouse_event(MouseEvent::new_ctrl_scroll_up_event(inside), 1);
+    screen.handle_mouse_event(MouseEvent::new_ctrl_scroll_down_event(inside), 1);
+
+    let after: Vec<PaneGeom> = [PaneId::Terminal(1), modal]
+        .iter()
+        .map(|id| {
+            screen.tabs[&0]
+                .get_pane_with_id(*id)
+                .expect("TEST")
+                .position_and_size()
+        })
+        .collect();
+    assert_eq!(
+        before, after,
+        "neither the modal nor the pane behind it moved"
+    );
+}
+
 /// A modal keeps the size its plugin asked for, so the same keystroke changes nothing anywhere -
 /// not the modal, and not the pane behind it.
 #[test]

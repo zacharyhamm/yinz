@@ -76,9 +76,15 @@
 //! is the same trade the drag already makes for position, and it is what "the user said so" has
 //! to mean if it is to survive a re-resolution at all.
 //!
+//! There are three ways in, and they all end at `resize_pane_with_strategies`: the keyboard
+//! (`Tab::resize`), a ctrl-drag of a corner, and ctrl+MouseScroll - which the frame has always
+//! advertised, since an overlay's frame is drawn as a floating one.
+//!
 //! A **modal is not resizable** (`is_resizable`). It is drawn because something needs an answer
 //! now, its content is sized to that question, and there is no case of it sitting over something
-//! the user is trying to read. It is still draggable, like any other overlay.
+//! the user is trying to read. It is still draggable, like any other overlay. Because it cannot be
+//! resized, it also does not say it can: `render` withholds the frame's help text from a modal,
+//! that text being nothing but the resize hint.
 //!
 //! Neither claim is placement, and neither survives a move on its own: `extract_pane` drops the
 //! wrapper holding them, and a plugin that re-places itself would answer the move by putting the
@@ -1512,10 +1518,17 @@ impl OverlayPanes {
             let pane_has_guest_modal = pane.has_guest_modal_for_any_client();
             // +1 because 0 is reserved for non-floating panes
             let z_index = Some(z_index_offset + index + 1);
-            let show_help_text = active_panes.iter().any(|(client_id, active_id)| {
-                active_id == &pane.pid()
-                    && help_text_visible.get(client_id).copied().unwrap_or(false)
-            });
+            // The frame's help text is nothing but the resize hint, and a modal is not resizable
+            // (`is_resizable`), so withholding it is exactly the right amount of silence: an
+            // overlay must not offer a `Ctrl <MouseScroll>` / `Ctrl <drag borders>` that both
+            // paths then refuse. Read off `kind` rather than `self.is_resizable`, which would want
+            // `self` back while `overlay` still holds it.
+            let is_resizable = !matches!(kind, OverlayKind::Modal);
+            let show_help_text = is_resizable
+                && active_panes.iter().any(|(client_id, active_id)| {
+                    active_id == &pane.pid()
+                        && help_text_visible.get(client_id).copied().unwrap_or(false)
+                });
 
             let mut pane_contents_and_ui = PaneContentsAndUi::new(
                 pane,
