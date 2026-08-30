@@ -16,8 +16,8 @@ use zellij_utils::plugin_api::generated_api::api::plugin_command::{
 use zellij_utils::plugin_api::plugin_command::{
     dump_layout_response, dump_session_layout_response, fs_list_response, fs_metadata_response,
     fs_mutate_response, fs_read_response, get_focused_pane_info_response, get_pane_cwd_response,
-    get_pane_git_probe_response, get_pane_running_command_response, get_session_list_response,
-    parse_layout_response, read_plugin_log_response, ProtobufBreakPanesToNewTabResponse,
+    get_pane_git_probe_response, get_pane_running_command_response, parse_layout_response,
+    read_plugin_log_response, ProtobufBreakPanesToNewTabResponse,
     ProtobufBreakPanesToTabWithIdResponse, ProtobufBreakPanesToTabWithIndexResponse,
     ProtobufCheckLuaPluginResponse, ProtobufCurrentSessionLastSavedTimeResponse,
     ProtobufDataApplyResponse, ProtobufDataCountResponse, ProtobufDataDefineResponse,
@@ -2410,14 +2410,42 @@ pub fn check_lua_plugin(name: &str, source: &str) -> Result<(), String> {
 // what makes these safer than reaching the same folders through WASI directly. Each answers
 // synchronously, so a plugin can read a file in one expression.
 
+fn command_response<T: prost::Message + Default>(
+    plugin_command: PluginCommand,
+    what: &str,
+) -> Result<T, String> {
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command
+        .try_into()
+        .map_err(|e| format!("Failed to encode the {what} request: {e}"))?;
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+    let response_bytes = command_response_bytes(what)?;
+    T::decode(response_bytes.as_slice()).map_err(|e| format!("Malformed {what} response: {e}"))
+}
+
+fn command_response_bytes(what: &str) -> Result<Vec<u8>, String> {
+    #[cfg(test)]
+    if let Some(response) = TEST_COMMAND_RESPONSE.with(|response| response.borrow_mut().take()) {
+        return response.map_err(|e| format!("Failed to read the {what} response: {e}"));
+    }
+    bytes_from_stdin().map_err(|e| format!("Failed to read the {what} response: {e}"))
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_COMMAND_RESPONSE: std::cell::RefCell<Option<Result<Vec<u8>, String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_test_command_response(response: Result<Vec<u8>, String>) {
+    TEST_COMMAND_RESPONSE.with(|slot| *slot.borrow_mut() = Some(response));
+}
+
 fn fs_command_response<T: prost::Message + Default>(
     plugin_command: PluginCommand,
 ) -> Result<T, String> {
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-    let response_bytes = bytes_from_stdin().map_err(|e| e.to_string())?;
-    T::decode(response_bytes.as_slice()).map_err(|e| e.to_string())
+    command_response(plugin_command, "filesystem command")
 }
 
 fn fs_mutate(plugin_command: PluginCommand) -> Result<(), String> {
@@ -2825,13 +2853,8 @@ pub fn get_pane_pid(pane_id: PaneId) -> Result<i32, String> {
 /// ```
 pub fn get_pane_running_command(pane_id: PaneId) -> Result<Vec<String>, String> {
     let plugin_command = PluginCommand::GetPaneRunningCommand { pane_id };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let protobuf_response =
-        ProtobufGetPaneRunningCommandResponse::decode(bytes_from_stdin().unwrap().as_slice())
-            .unwrap();
+    let protobuf_response: ProtobufGetPaneRunningCommandResponse =
+        command_response(plugin_command, "GetPaneRunningCommand")?;
 
     match protobuf_response.result {
         Some(get_pane_running_command_response::Result::Command(cmd)) => Ok(cmd.args),
@@ -2846,34 +2869,14 @@ pub fn get_pane_running_command(pane_id: PaneId) -> Result<Vec<String>, String> 
 /// * `ReadApplicationState`
 pub fn get_session_list() -> Result<SessionListSnapshot, String> {
     let plugin_command = PluginCommand::GetSessionList;
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
+    let protobuf_response: ProtobufGetSessionListResponse =
+        command_response(plugin_command, "GetSessionList")?;
 
-    let protobuf_response =
-        ProtobufGetSessionListResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
-
-    match protobuf_response.result {
-        Some(get_session_list_response::Result::Snapshot(snapshot)) => {
-            let mut live_sessions = Vec::new();
-            for manifest in snapshot.live_sessions {
-                match SessionInfo::try_from(manifest) {
-                    Ok(si) => live_sessions.push(si),
-                    Err(e) => return Err(format!("Malformed session manifest: {}", e)),
-                }
-            }
-            let resurrectable_sessions = snapshot
-                .resurrectable_sessions
-                .into_iter()
-                .map(<(String, std::time::Duration)>::from)
-                .collect();
-            Ok(SessionListSnapshot {
-                live_sessions,
-                resurrectable_sessions,
-            })
-        },
-        Some(get_session_list_response::Result::Error(err)) => Err(err),
-        None => Err("Empty response from server".to_string()),
+    match GetSessionListResponse::try_from(protobuf_response)
+        .map_err(|e| format!("Malformed GetSessionList response: {e}"))?
+    {
+        GetSessionListResponse::Ok(snapshot) => Ok(snapshot),
+        GetSessionListResponse::Err(error) => Err(error),
     }
 }
 
@@ -2909,12 +2912,8 @@ pub fn get_session_list() -> Result<SessionListSnapshot, String> {
 /// ```
 pub fn get_pane_cwd(pane_id: PaneId) -> Result<PathBuf, String> {
     let plugin_command = PluginCommand::GetPaneCwd { pane_id };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let protobuf_response =
-        ProtobufGetPaneCwdResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
+    let protobuf_response: ProtobufGetPaneCwdResponse =
+        command_response(plugin_command, "GetPaneCwd")?;
 
     match protobuf_response.result {
         Some(get_pane_cwd_response::Result::Cwd(cwd_str)) => Ok(PathBuf::from(cwd_str)),
@@ -2940,21 +2939,11 @@ pub fn get_pane_cwd(pane_id: PaneId) -> Result<PathBuf, String> {
 /// * `ReadApplicationState`
 pub fn get_pane_git_probe(pane_id: PaneId) -> Result<PaneGitProbe, String> {
     let plugin_command = PluginCommand::GetPaneGitProbe { pane_id };
-    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
-    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
-    unsafe { host_run_plugin_command() };
-
-    let protobuf_response =
-        ProtobufGetPaneGitProbeResponse::decode(bytes_from_stdin().unwrap().as_slice()).unwrap();
+    let protobuf_response: ProtobufGetPaneGitProbeResponse =
+        command_response(plugin_command, "GetPaneGitProbe")?;
 
     match protobuf_response.result {
-        Some(get_pane_git_probe_response::Result::Probe(probe)) => Ok(PaneGitProbe {
-            host: probe.host,
-            cwd: probe.cwd,
-            exit_code: probe.exit_code,
-            metadata: probe.metadata,
-            config: probe.config,
-        }),
+        Some(get_pane_git_probe_response::Result::Probe(probe)) => Ok(probe.into()),
         Some(get_pane_git_probe_response::Result::Error(err)) => Err(err),
         None => Err("Empty response from server".to_string()),
     }
@@ -3927,3 +3916,122 @@ extern "C" {
 
 #[cfg(not(target_arch = "wasm32"))]
 unsafe fn host_run_plugin_command() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn respond(message: impl prost::Message) {
+        set_test_command_response(Ok(message.encode_to_vec()));
+    }
+
+    fn fail_next_read() {
+        set_test_command_response(Err("stdin closed".to_owned()));
+    }
+
+    #[test]
+    fn plugin_queries_return_stdin_read_errors() {
+        let pane_id = PaneId::Terminal(1);
+
+        fail_next_read();
+        assert_eq!(
+            get_pane_running_command(pane_id).unwrap_err(),
+            "Failed to read the GetPaneRunningCommand response: stdin closed"
+        );
+        fail_next_read();
+        assert_eq!(
+            get_session_list().unwrap_err(),
+            "Failed to read the GetSessionList response: stdin closed"
+        );
+        fail_next_read();
+        assert_eq!(
+            get_pane_cwd(pane_id).unwrap_err(),
+            "Failed to read the GetPaneCwd response: stdin closed"
+        );
+        fail_next_read();
+        assert_eq!(
+            get_pane_git_probe(pane_id).unwrap_err(),
+            "Failed to read the GetPaneGitProbe response: stdin closed"
+        );
+    }
+
+    #[test]
+    fn plugin_queries_return_truncated_and_malformed_protobuf_errors() {
+        let mut truncated =
+            ProtobufGetPaneRunningCommandResponse::from(GetPaneRunningCommandResponse::Ok(vec![
+                "sh".to_owned(),
+            ]))
+            .encode_to_vec();
+        truncated.pop();
+        set_test_command_response(Ok(truncated));
+        assert!(get_pane_running_command(PaneId::Terminal(1))
+            .unwrap_err()
+            .starts_with("Malformed GetPaneRunningCommand response:"));
+
+        set_test_command_response(Ok(vec![0xff]));
+        assert!(get_session_list()
+            .unwrap_err()
+            .starts_with("Malformed GetSessionList response:"));
+    }
+
+    #[test]
+    fn plugin_queries_preserve_server_errors() {
+        let pane_id = PaneId::Terminal(1);
+        let expected = "server refused the query".to_owned();
+
+        respond(ProtobufGetPaneRunningCommandResponse::from(
+            GetPaneRunningCommandResponse::Err(expected.clone()),
+        ));
+        assert_eq!(get_pane_running_command(pane_id), Err(expected.clone()));
+        respond(ProtobufGetSessionListResponse::from(
+            GetSessionListResponse::Err(expected.clone()),
+        ));
+        assert_eq!(get_session_list(), Err(expected.clone()));
+        respond(ProtobufGetPaneCwdResponse::from(GetPaneCwdResponse::Err(
+            expected.clone(),
+        )));
+        assert_eq!(get_pane_cwd(pane_id), Err(expected.clone()));
+        respond(ProtobufGetPaneGitProbeResponse::from(
+            GetPaneGitProbeResponse::Err(expected.clone()),
+        ));
+        assert_eq!(get_pane_git_probe(pane_id), Err(expected));
+    }
+
+    #[test]
+    fn plugin_queries_decode_valid_responses() {
+        let pane_id = PaneId::Terminal(1);
+
+        let command = vec!["sh".to_owned(), "-l".to_owned()];
+        respond(ProtobufGetPaneRunningCommandResponse::from(
+            GetPaneRunningCommandResponse::Ok(command.clone()),
+        ));
+        assert_eq!(get_pane_running_command(pane_id), Ok(command));
+
+        let sessions = SessionListSnapshot {
+            live_sessions: vec![],
+            resurrectable_sessions: vec![("dead".to_owned(), std::time::Duration::from_secs(3))],
+        };
+        respond(ProtobufGetSessionListResponse::from(
+            GetSessionListResponse::Ok(sessions.clone()),
+        ));
+        assert_eq!(get_session_list(), Ok(sessions));
+
+        let cwd = PathBuf::from("/tmp/work");
+        respond(ProtobufGetPaneCwdResponse::from(GetPaneCwdResponse::Ok(
+            cwd.clone(),
+        )));
+        assert_eq!(get_pane_cwd(pane_id), Ok(cwd));
+
+        let probe = PaneGitProbe {
+            host: "buildbox".to_owned(),
+            cwd: "/repo".to_owned(),
+            exit_code: Some(0),
+            metadata: b"main\0origin/main\0".to_vec(),
+            config: b"remote.origin.url\0git@example/repo\0".to_vec(),
+        };
+        respond(ProtobufGetPaneGitProbeResponse::from(
+            GetPaneGitProbeResponse::Ok(probe.clone()),
+        ));
+        assert_eq!(get_pane_git_probe(pane_id), Ok(probe));
+    }
+}
