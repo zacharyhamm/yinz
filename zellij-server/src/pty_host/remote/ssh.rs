@@ -37,6 +37,7 @@ use super::protocol::{
     self, BrokerToServerMsg, Frame, RemotePaneEntry, ResumeRefusal, ServerToBrokerMsg,
     REMOTE_PROTOCOL_VERSION,
 };
+use crate::pty_host::ensure_secure_dir;
 use crate::pty_host::protocol::{
     check_socket_path_length, new_host_id, SpawnFailureKind, WireWinsize,
     SSH_CONTROL_PATH_RENAME_MARGIN,
@@ -105,14 +106,9 @@ fn local_socket_dir() -> PathBuf {
 /// machine that has not opened a remote pane before.
 fn ensure_local_socket_dir() -> Result<PathBuf> {
     let dir = local_socket_dir();
-    std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // Owner only: a control socket is an authenticated connection to
-        // another machine, and anything that can reach it can use it.
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-    }
+    // Owner only: a control socket is an authenticated connection to another
+    // machine, and anything that can reach it can use it.
+    ensure_secure_dir(&dir)?;
     Ok(dir)
 }
 
