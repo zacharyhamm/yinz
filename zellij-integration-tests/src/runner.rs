@@ -803,6 +803,8 @@ impl TestSession {
         if self.main_client.thread.is_some() {
             self.main_client.fake_client_handle.kill_session();
             self.main_client.join();
+        } else {
+            zellij_utils::sessions::kill_session(&self.session_name);
         }
         if let Some(server_thread) = self.server_thread.lock().unwrap().take() {
             join_server_thread_with_timeout(server_thread);
