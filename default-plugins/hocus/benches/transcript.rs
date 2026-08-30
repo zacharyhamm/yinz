@@ -116,6 +116,17 @@ fn bench(c: &mut Criterion) {
                 });
             },
         );
+
+        // One wheel notch on a warm, idle chat: scroll then redraw. Expected flat in `count`
+        // — the memo is keyed on the messages, not on the viewport, so scrolling must never
+        // re-wrap anything.
+        group.bench_with_input(BenchmarkId::new("scroll_frame", count), &count, |b, _| {
+            let mut state = warmed(count);
+            b.iter(|| {
+                black_box(state.scroll_up(3));
+                black_box(ui::cached_transcript(&mut state, COLS));
+            });
+        });
     }
 
     group.finish();

@@ -972,6 +972,18 @@ impl TranscriptCache {
         self.keys.is_empty()
     }
 
+    /// Whether the cache describes exactly these messages — nothing appended,
+    /// grown, swapped or removed since it was last brought up to date. What a
+    /// scroll key checks before trusting the maximum the last render measured.
+    pub fn covers(&self, messages: &[crate::Message]) -> bool {
+        self.keys.len() == messages.len()
+            && self
+                .keys
+                .iter()
+                .zip(messages)
+                .all(|(key, message)| *key == message_key(message))
+    }
+
     /// Drop everything from `index` onward, so the next render re-draws it.
     ///
     /// For the callers that change a message's text without changing its
@@ -1614,6 +1626,9 @@ struct Window {
     /// The top row is the anchored line, so the viewport has stopped following
     /// the tail.
     frozen: bool,
+    /// The largest `offset` this transcript and height allow: what the scroll
+    /// keys clamp against until the next render measures again.
+    max_offset: usize,
 }
 
 /// Which lines to draw out of `total`, in a viewport `height` rows tall.
@@ -1649,6 +1664,7 @@ fn transcript_window(
         end,
         offset,
         frozen: anchor_line == Some(start),
+        max_offset,
     }
 }
 
@@ -1822,6 +1838,7 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
             Some(cols),
             None,
         );
+        state.set_max_scroll_offset(0);
         return;
     }
 
@@ -1830,6 +1847,7 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
         end,
         offset,
         frozen,
+        max_offset,
     } = transcript_window(total, height, scroll_offset, anchor_line);
 
     for (index, position) in (start..end).enumerate() {
@@ -1844,6 +1862,7 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
     // window can be written back. The render is the only thing that knows where
     // a client actually ended up, and the key handler has to start from there.
     state.set_scroll_offset(offset);
+    state.set_max_scroll_offset(max_offset);
 
     // The badge prints over the top row, and while frozen that row is the first
     // line of the reply — the one line the anchor exists to keep on screen.
@@ -3110,6 +3129,52 @@ mod tests {
             reply_start(&state),
             "the reply's first line is on the top row"
         );
+    }
+
+    /// The render measures the transcript; once the client is at the top, more
+    /// notches change nothing and the plugin says so rather than re-rendering
+    /// the same frame for each of them.
+    #[test]
+    fn scrolling_up_past_the_top_does_not_ask_for_a_render() {
+        let mut state = state_mid_reply();
+        state.view.anchor = None;
+        render(&mut state);
+        let total = transcript(&state.messages, RENDER_COLS).lines.len();
+
+        assert!(state.scroll_up(100), "the first scroll moves");
+        assert_eq!(
+            state.scroll_offset(),
+            total - RENDER_HEIGHT,
+            "clamped to the top"
+        );
+        assert!(!state.scroll_up(1), "already at the top");
+        assert!(!state.on_mouse(Mouse::ScrollUp(3)), "the wheel too");
+        assert!(
+            !state.on_key(KeyWithModifier::new(BareKey::PageUp)),
+            "and PageUp"
+        );
+
+        render(&mut state);
+        assert_eq!(
+            state.scroll_offset(),
+            total - RENDER_HEIGHT,
+            "the render agrees"
+        );
+    }
+
+    /// A transcript that grows re-renders, and the render moves the top.
+    #[test]
+    fn a_grown_transcript_lets_you_scroll_further() {
+        let mut state = state_mid_reply();
+        state.view.anchor = None;
+        render(&mut state);
+        assert!(state.scroll_up(100));
+        assert!(!state.scroll_up(1), "at the top");
+
+        state.messages.push(Message::user("and then?"));
+        render(&mut state);
+
+        assert!(state.scroll_up(1), "there is more above now");
     }
 
     /// The reply goes on arriving and the pane does not move.
