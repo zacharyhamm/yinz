@@ -11,6 +11,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+base64 = { version = "0.22", default-features = false, features = ["std"] }
 fuzzy-matcher = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }

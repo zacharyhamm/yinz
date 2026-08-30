@@ -4,7 +4,7 @@ use std::time::Instant;
 use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
 use crate::panes::{
     grid::Grid,
-    kitty_graphics::KittyImageStore,
+    kitty_graphics::{InterceptorResult, KittyApcInterceptor, KittyHostSupport, KittyImageStore},
     sixel::SixelImageStore,
     terminal_pane::{BRACKETED_PASTE_BEGIN, BRACKETED_PASTE_END},
     FrameColorOverride, LinkHandler, PaneId,
@@ -70,6 +70,7 @@ macro_rules! get_or_create_grid {
                 explicitly_disable_kitty_keyboard_protocol,
             );
             grid.hide_cursor();
+            grid.update_kitty_host_support($self.kitty_host_support);
             grid
         })
     }};
@@ -94,6 +95,12 @@ pub(crate) struct PluginPane {
     link_handler: Rc<RefCell<LinkHandler>>,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     vte_parsers: HashMap<ClientId, vte::Parser>,
+    /// One per client, like the vte parser beside it: a plugin frame can in principle end
+    /// mid-sequence, and each client's frames are a stream of their own.
+    kitty_interceptors: HashMap<ClientId, KittyApcInterceptor>,
+    /// What the host terminals can display, as last pushed down from `Screen`. Held on the pane
+    /// as well as on each grid so a client that attaches later gets a correctly-configured grid.
+    kitty_host_support: KittyHostSupport,
     grids: HashMap<ClientId, Grid>,
     cursor_visibility: HashMap<ClientId, Option<(usize, usize)>>,
     prev_pane_name: String,
@@ -160,6 +167,8 @@ impl PluginPane {
             sixel_image_store,
             kitty_image_store,
             vte_parsers: HashMap::new(),
+            kitty_interceptors: HashMap::new(),
+            kitty_host_support: KittyHostSupport::Supported,
             grids: HashMap::new(),
             cursor_visibility: HashMap::new(),
             style,
@@ -252,8 +261,58 @@ impl Pane for PluginPane {
         grid.render_full_viewport();
 
         let vte_parser = self.vte_parsers.entry(client_id).or_default();
+        let interceptor = self
+            .kitty_interceptors
+            .entry(client_id)
+            .or_insert_with(KittyApcInterceptor::new);
 
-        vte_parser.advance(grid, &vte_bytes);
+        // Kitty graphics arrive as APC, which vte parses into its ignore-string state and drops,
+        // so - exactly as `TerminalPane::handle_pty_bytes` does - the bytes are run past an
+        // interceptor first and the captured commands handed to the grid directly. None of the
+        // pause/forward machinery from that method applies here: a plugin pane has no pty, so
+        // there is nothing to forward a query to and nothing to replay afterwards.
+        let mut forwarded: Vec<u8> = Vec::with_capacity(vte_bytes.len());
+        let mut index = 0;
+        while index < vte_bytes.len() {
+            // Between sequences every non-escape byte is forwarded unchanged, so the whole run up
+            // to the next escape can be copied at once rather than driven through the state
+            // machine a byte at a time. A plugin frame is almost entirely such runs.
+            if interceptor.is_in_ground_state() {
+                let rest = &vte_bytes[index..];
+                let run_length = rest
+                    .iter()
+                    .position(|byte| *byte == 0x1b)
+                    .unwrap_or(rest.len());
+                if run_length > 0 {
+                    forwarded.extend_from_slice(&rest[..run_length]);
+                    index += run_length;
+                    continue;
+                }
+            }
+            let byte = vte_bytes[index];
+            index += 1;
+            match interceptor.advance(byte) {
+                InterceptorResult::Forward(fwd) => forwarded.extend_from_slice(fwd.as_slice()),
+                InterceptorResult::Swallow => {},
+                InterceptorResult::Captured(command) => {
+                    // Everything before the command has to reach the grid first: a placement is
+                    // positioned by where the cursor is when it arrives.
+                    if !forwarded.is_empty() {
+                        vte_parser.advance(grid, &forwarded);
+                        forwarded.clear();
+                    }
+                    grid.handle_kitty_apc(&command);
+                    // A plugin has no pty to answer on, so a reply or a forwarded query has
+                    // nowhere to go and would otherwise accumulate for the life of the pane.
+                    // Plugins should pass `q=2`; this is the belt for the ones that do not.
+                    grid.pending_messages_to_pty.clear();
+                    grid.pending_forwarded_queries.clear();
+                },
+            }
+        }
+        if !forwarded.is_empty() {
+            vte_parser.advance(grid, &forwarded);
+        }
 
         self.should_render.insert(client_id, true);
     }
@@ -877,6 +936,12 @@ impl Pane for PluginPane {
             grid.update_theme(theme);
         }
     }
+    fn update_kitty_host_support(&mut self, supported: KittyHostSupport) {
+        self.kitty_host_support = supported;
+        for grid in self.grids.values_mut() {
+            grid.update_kitty_host_support(supported);
+        }
+    }
     fn update_arrow_fonts(&mut self, should_support_arrow_fonts: bool) {
         self.arrow_fonts = should_support_arrow_fonts;
         for grid in self.grids.values_mut() {
@@ -1056,10 +1121,22 @@ impl PluginPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zellij_tile::ui_components::{image_row, place_image_sequence, png_transmit_sequence};
     use zellij_utils::channels;
     use zellij_utils::pane_size::Dimension;
 
     fn test_plugin_pane(rows: usize, cols: usize, content_offset: Offset) -> PluginPane {
+        test_plugin_pane_with_cell_size(rows, cols, content_offset, None)
+    }
+
+    /// Placeholder placements are only resolved once the character cell size is known
+    /// (`Grid::kitty_refresh_placeholder_placements`), so an image test has to supply one.
+    fn test_plugin_pane_with_cell_size(
+        rows: usize,
+        cols: usize,
+        content_offset: Offset,
+        cell_size: Option<SizeInPixels>,
+    ) -> PluginPane {
         let (plugin_tx, _plugin_rx) = channels::unbounded();
         let geom = PaneGeom {
             rows: Dimension::fixed(rows),
@@ -1077,7 +1154,7 @@ mod tests {
             Rc::new(RefCell::new(Palette::default())),
             Rc::new(RefCell::new(HashMap::new())),
             Rc::new(RefCell::new(LinkHandler::new())),
-            Rc::new(RefCell::new(None)),
+            Rc::new(RefCell::new(cell_size)),
             vec![],
             Style::default(),
             None,
@@ -1193,5 +1270,170 @@ mod tests {
         let content_rows = pane.get_content_rows();
         pane.show_cursor(1, Some((0, content_rows)));
         assert_eq!(pane.cursor_coordinates(Some(1)), None);
+    }
+
+    /// The frame a plugin drawing an image emits, built with the very helpers a plugin calls -
+    /// `zellij-tile` is a dev-dependency for exactly this. A second, hand-written copy of the
+    /// escape sequences here would pass while the two halves disagreed.
+    fn image_frame(id: u32, cols: usize, png: &[u8]) -> Vec<u8> {
+        let mut frame = png_transmit_sequence(id, png);
+        frame.push_str(&place_image_sequence(id, cols, 1));
+        frame.push_str(&image_row(id, 0, cols));
+        frame.into_bytes()
+    }
+
+    /// A PNG wide enough that its base64 does not fit in one command, so `transmit_png` has to
+    /// chunk it - which is the shape hocus's wand frames arrive in.
+    fn chunky_png() -> Vec<u8> {
+        let (width, height) = (64u32, 64u32);
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().expect("png header");
+            // Noise rather than a flat colour: a flat image compresses to a single chunk and the
+            // chunking test would silently stop testing chunking.
+            let pixels: Vec<u8> = (0..(width * height * 4))
+                .map(|index| (index.wrapping_mul(2_654_435_761) >> 13) as u8)
+                .collect();
+            writer.write_image_data(&pixels).expect("png data");
+        }
+        png
+    }
+
+    /// A 2x2 PNG, small enough to go over in one command.
+    fn tiny_png() -> Vec<u8> {
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, 2, 2);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().expect("png header");
+            writer.write_image_data(&[0; 16]).expect("png data");
+        }
+        png
+    }
+
+    fn kitty_chunks(pane: &mut PluginPane, client_id: ClientId) -> Vec<KittyImageChunk> {
+        pane.render(Some(client_id))
+            .expect("render failed")
+            .map(|(_, _, _, kitty)| kitty)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_plugin_can_place_an_image_with_unicode_placeholders() {
+        let mut pane = test_plugin_pane_with_cell_size(
+            10,
+            10,
+            Offset::default(),
+            Some(SizeInPixels {
+                width: 8,
+                height: 16,
+            }),
+        );
+        pane.handle_plugin_bytes(1, image_frame(42, 2, &tiny_png()));
+        let chunks = kitty_chunks(&mut pane, 1);
+        // A contiguous placeholder run resolves to one chunk covering the cells it spans, not one
+        // chunk per cell.
+        assert_eq!(chunks.len(), 1, "{chunks:?}");
+        assert_eq!(chunks[0].dest_cells, (2, 1));
+        assert_eq!((chunks[0].cell_x, chunks[0].cell_y), (0, 0));
+    }
+
+    #[test]
+    fn a_plugins_image_survives_the_viewport_reset_between_frames() {
+        let mut pane = test_plugin_pane_with_cell_size(
+            10,
+            10,
+            Offset::default(),
+            Some(SizeInPixels {
+                width: 8,
+                height: 16,
+            }),
+        );
+        // The pixels are transmitted once; every later frame is only the placeholder cells, which
+        // is the whole reason a plugin can afford to redraw an image at ten frames a second.
+        pane.handle_plugin_bytes(1, image_frame(42, 2, &tiny_png()));
+        let first = kitty_chunks(&mut pane, 1);
+        pane.handle_plugin_bytes(1, image_row(42, 0, 2).into_bytes());
+        let second = kitty_chunks(&mut pane, 1);
+        assert_eq!(second.len(), first.len());
+        // The placement uid is stable across the rebuild, so the host diff does not retransmit.
+        assert_eq!(
+            second.first().map(|chunk| chunk.placement_uid),
+            first.first().map(|chunk| chunk.placement_uid)
+        );
+    }
+
+    #[test]
+    fn a_plugins_image_is_dropped_when_the_host_terminal_cannot_show_one() {
+        let mut pane = test_plugin_pane_with_cell_size(
+            10,
+            10,
+            Offset::default(),
+            Some(SizeInPixels {
+                width: 8,
+                height: 16,
+            }),
+        );
+        pane.update_kitty_host_support(KittyHostSupport::ProtocolDisabled);
+        pane.handle_plugin_bytes(1, image_frame(42, 2, &tiny_png()));
+        assert!(kitty_chunks(&mut pane, 1).is_empty());
+    }
+
+    /// A PNG wide enough that its base64 does not fit in one command, so the transmission has to
+    /// be chunked - which is the shape `zellij-tile`'s `transmit_png` actually emits and the shape
+    /// hocus's wand frames arrive in.
+    #[test]
+    fn a_plugin_can_transmit_a_png_across_several_chunks() {
+        let mut pane = test_plugin_pane_with_cell_size(
+            10,
+            10,
+            Offset::default(),
+            Some(SizeInPixels {
+                width: 8,
+                height: 16,
+            }),
+        );
+        pane.handle_plugin_bytes(1, image_frame(0xb000, 2, &chunky_png()));
+        assert_eq!(kitty_chunks(&mut pane, 1).len(), 1);
+    }
+
+    #[test]
+    fn a_png_whose_later_chunks_never_arrived_is_not_placed() {
+        // The complement of the test above, and what makes it mean something: a PNG cut off after
+        // its first chunk does not decode, so a placement appearing at all is proof that the
+        // chunks were reassembled rather than that the first one happened to be enough.
+        let mut pane = test_plugin_pane_with_cell_size(
+            10,
+            10,
+            Offset::default(),
+            Some(SizeInPixels {
+                width: 8,
+                height: 16,
+            }),
+        );
+        let png = chunky_png();
+        let whole = png_transmit_sequence(0xb000, &png);
+        // Everything up to the end of the first command, which by itself is not a PNG.
+        let first_chunk_end = whole.find("\u{1b}\\").expect("a terminated command") + 2;
+        assert!(first_chunk_end < whole.len(), "the fixture did not chunk");
+        let mut frame = whole[..first_chunk_end].to_owned();
+        frame.push_str(&place_image_sequence(0xb000, 2, 1));
+        frame.push_str(&image_row(0xb000, 0, 2));
+        pane.handle_plugin_bytes(1, frame.into_bytes());
+        assert!(kitty_chunks(&mut pane, 1).is_empty());
+    }
+
+    #[test]
+    fn a_plugins_kitty_replies_are_dropped_rather_than_queued_for_a_pty_it_does_not_have() {
+        let mut pane = test_plugin_pane(10, 10, Offset::default());
+        // `q` omitted, so the grid would ordinarily answer this - onto a queue nobody drains.
+        pane.handle_plugin_bytes(1, b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec());
+        let grid = pane.grids.get(&1).expect("grid");
+        assert!(grid.pending_messages_to_pty.is_empty());
+        assert!(grid.pending_forwarded_queries.is_empty());
     }
 }

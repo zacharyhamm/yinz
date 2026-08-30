@@ -458,7 +458,9 @@ impl State {
     /// `on_chunk` no longer asks for a render of its own and this is what
     /// repaints the arriving reply.
     pub(crate) fn wants_frames(&self) -> bool {
-        self.is_loading() || self.is_receiving()
+        // `wand_drawing` is set by the render that drew it, so the splash keeps its own clock
+        // running and nothing else has to know the rules for when it is on screen.
+        self.is_loading() || self.is_receiving() || self.wand_drawing
     }
 
     /// The spinner and its phrase, or `None` when nothing is being waited on.
@@ -923,6 +925,7 @@ impl State {
         let frames = self.wants_frames();
         if frames {
             self.tick += 1;
+            self.wand_frame = self.wand_frame.wrapping_add(1);
         }
         let fired = asked || fired;
         // A parked chat's plugin load keeps the chain running at frame rate even when nothing on

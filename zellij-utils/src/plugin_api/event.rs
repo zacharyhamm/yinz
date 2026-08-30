@@ -2215,6 +2215,7 @@ impl TryFrom<ProtobufModeUpdatePayload> for ModeInfo {
         let shell = protobuf_mode_update_payload.shell.map(PathBuf::from);
         let capabilities = PluginCapabilities {
             arrow_fonts: protobuf_mode_update_payload.arrow_fonts_support,
+            kitty_graphics: protobuf_mode_update_payload.kitty_graphics_support,
         };
         let currently_marking_pane_group =
             protobuf_mode_update_payload.currently_marking_pane_group;
@@ -2274,6 +2275,7 @@ impl TryFrom<ModeInfo> for ProtobufModeUpdatePayload {
             .and_then(|mode| ProtobufInputMode::try_from(mode).ok());
         let style: ProtobufStyle = mode_info.style.try_into()?;
         let arrow_fonts_support: bool = mode_info.capabilities.arrow_fonts;
+        let kitty_graphics_support: bool = mode_info.capabilities.kitty_graphics;
         let session_name = mode_info.session_name;
         let editor = mode_info.editor.map(|e| e.display().to_string());
         let shell = mode_info.shell.map(|s| s.display().to_string());
@@ -2325,6 +2327,7 @@ impl TryFrom<ModeInfo> for ProtobufModeUpdatePayload {
             style: Some(style),
             keybinds: protobuf_input_mode_keybinds,
             arrow_fonts_support,
+            kitty_graphics_support,
             session_name,
             base_mode: base_mode.map(|b_m| b_m as i32),
             editor,
@@ -2702,7 +2705,10 @@ fn serialize_mode_update_event_with_non_default_values() {
             rounded_corners: true,
             hide_session_name: false,
         },
-        capabilities: PluginCapabilities { arrow_fonts: false },
+        capabilities: PluginCapabilities {
+            arrow_fonts: false,
+            kitty_graphics: true,
+        },
         session_name: Some("my awesome test session".to_owned()),
         base_mode: Some(InputMode::Locked),
         editor: Some(PathBuf::from("my_awesome_editor")),

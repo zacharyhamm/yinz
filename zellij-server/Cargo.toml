@@ -73,6 +73,10 @@ nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "sign
 signal-hook = { workspace = true }
 
 [dev-dependencies]
+# Test-only, and deliberately: the plugin-pane image tests drive the real helpers a plugin calls
+# rather than a second hand-written copy of the escape sequences, which is the only way the two
+# halves can be shown to agree. `zellij-tile` depends on `zellij-utils` alone, so this is acyclic.
+zellij-tile = { path = "../zellij-tile" }
 criterion = { workspace = true }
 hegeltest = "0.29.3"
 tokio = { workspace = true, features = ["sync", "test-util"] }

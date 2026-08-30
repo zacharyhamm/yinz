@@ -13,6 +13,7 @@ mod home_unix;
 compile_error!("Zellij does not support Windows");
 pub mod input;
 pub mod kdl;
+pub mod kitty_placeholders;
 pub mod nested_session_contract;
 pub mod pane_size;
 pub mod plugin_api;

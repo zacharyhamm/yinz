@@ -212,6 +212,9 @@ pub(crate) fn screen_thread_main(
             PluginCapabilities {
                 //  ¯\_(ツ)_/¯
                 arrow_fonts: !arrow_fonts,
+                // Not known until a client's startup probe answers; see
+                // `Screen::update_kitty_graphics_support`.
+                kitty_graphics: false,
             },
             &config.keybinds,
             config_options.default_mode,
