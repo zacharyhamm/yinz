@@ -2000,6 +2000,87 @@ fn can_load_swap_layouts_from_a_different_file() {
 }
 
 #[test]
+fn bundled_three_column_layouts_are_balanced() {
+    use crate::pane_size::{PaneGeom, Size};
+    use std::path::Path;
+
+    for (layout_name, ui_pane_count) in [
+        ("default", 2),
+        ("compact", 1),
+        ("classic", 2),
+        ("strider", 3),
+    ] {
+        let (layout_path, raw_layout, raw_swap_layout) =
+            Layout::stringified_from_default_assets(Path::new(layout_name)).unwrap();
+        let (swap_layout_path, raw_swap_layout) = raw_swap_layout.unwrap();
+        let layout = Layout::from_kdl(
+            &raw_layout,
+            Some(layout_path),
+            Some((&swap_layout_path, &raw_swap_layout)),
+            None,
+        )
+        .unwrap();
+        let three_columns_index = layout
+            .swap_tiled_layouts
+            .iter()
+            .position(|(_, name)| name.as_deref() == Some("three-columns"))
+            .unwrap();
+        assert_eq!(
+            layout.swap_tiled_layouts[three_columns_index - 1]
+                .1
+                .as_deref(),
+            Some("vertical")
+        );
+        let three_columns = &layout.swap_tiled_layouts[three_columns_index].0;
+        let display_area = PaneGeom::from(&Size {
+            cols: 120,
+            rows: 40,
+        });
+
+        for terminal_pane_count in 1..=10 {
+            let total_pane_count = terminal_pane_count + ui_pane_count;
+            let pane_layout = three_columns
+                .iter()
+                .find_map(|(constraint, layout)| match constraint {
+                    LayoutConstraint::MaxPanes(max_panes) if total_pane_count <= *max_panes => {
+                        Some(layout)
+                    },
+                    _ => None,
+                })
+                .unwrap();
+            let positioned_panes = pane_layout
+                .position_panes_in_space(&display_area, Some(total_pane_count), false, false)
+                .unwrap();
+            let mut columns = BTreeMap::<usize, Vec<usize>>::new();
+            for (pane, geom) in positioned_panes {
+                if Run::is_terminal(&pane.run) {
+                    columns
+                        .entry(geom.x)
+                        .or_default()
+                        .push(geom.cols.as_usize());
+                }
+            }
+
+            let column_count = terminal_pane_count.min(3);
+            assert_eq!(columns.len(), column_count, "{layout_name}");
+            let panes_per_column: Vec<_> = columns.values().map(Vec::len).collect();
+            let evenly_distributed: Vec<_> = (0..column_count)
+                .map(|column| {
+                    terminal_pane_count / column_count
+                        + usize::from(column < terminal_pane_count % column_count)
+                })
+                .collect();
+            assert_eq!(panes_per_column, evenly_distributed, "{layout_name}");
+            let widths: Vec<_> = columns.values().flatten().copied().collect();
+            assert!(
+                widths.iter().max().unwrap() - widths.iter().min().unwrap() <= 1,
+                "{layout_name}"
+            );
+        }
+    }
+}
+
+#[test]
 fn can_define_stacked_children_for_pane_node() {
     let kdl_layout = r#"
         layout {
