@@ -359,6 +359,10 @@ plugins {
     // returns to the corner. It works on a pane you have dragged, too.
     hocus location="zellij:hocus" {
         shared true
+        // DeepSeek v4 defaults to high-effort thinking. Disable it for shorter,
+        // more direct tool runs; both keys are omitted from API requests unless set.
+        // thinking "disabled"
+        // reasoning_effort "low"
     }
     // The agent list, bound to Ctrl e a above — its own overlay pane, beside the
     // conversation or in its place. Sized by hocus's `width` and `height`, above.

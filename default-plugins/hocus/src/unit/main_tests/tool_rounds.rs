@@ -1,10 +1,9 @@
 use super::*;
 
-/// One round short of the cap the model still gets a request — but a
-/// tool-free one, so the answer comes from the results already in hand
-/// instead of the turn dead-ending on an error.
+/// The cap is checked only after the last batch's results are recorded, and it
+/// does not buy one more large request in the hope that the model stops itself.
 #[test]
-fn the_last_round_asks_without_tools() {
+fn the_last_round_records_its_results_and_stops() {
     let mut state = ready_state();
     state.tool_rounds = state.max_tool_rounds() - 1;
 
@@ -12,28 +11,16 @@ fn the_last_round_asks_without_tools() {
     state.on_chunk("hocus-1", &frame, false, None);
     state.on_chunk("hocus-1", b"", true, None);
 
-    assert!(state.is_receiving(), "asked again");
+    assert!(!state.is_receiving(), "no follow-up request");
     assert_eq!(state.tool_rounds, state.max_tool_rounds());
-    // Last is the streaming placeholder; the notice sits just before it.
-    let notice = &state.messages[state.messages.len() - 2];
-    assert_eq!(notice.role, Role::Notice);
-    assert!(notice.content.contains("tool budget spent"));
-}
-
-/// Past the cap the model called a tool it was no longer offered. Nothing
-/// left to try, so the turn stops.
-#[test]
-fn a_model_that_calls_tools_it_was_not_offered_is_stopped() {
-    let mut state = ready_state();
-    state.tool_rounds = state.max_tool_rounds();
-
-    let frame = tool_call_frame("call_1", "list_session", "{}");
-    state.on_chunk("hocus-1", &frame, false, None);
-    state.on_chunk("hocus-1", b"", true, None);
-
-    assert!(matches!(state.status, Status::Idle), "no follow-up request");
+    assert_eq!(tool_results(&state).len(), 1, "the last result was kept");
     assert_eq!(state.messages.last().unwrap().role, Role::Error);
-    assert!(state.messages.last().unwrap().content.contains("rounds"));
+    assert!(state
+        .messages
+        .last()
+        .unwrap()
+        .content
+        .contains("type continue"));
 }
 
 /// The whole of the DeepSeek bug, end to end: a thinking model streams its
@@ -93,7 +80,6 @@ fn thinking_that_preceded_a_tool_call_survives_onto_the_message_and_the_wire() {
     let body = String::from_utf8(api::request_body_with_project(
         cfg,
         &state.messages,
-        true,
         None,
         false,
     ))

@@ -1092,15 +1092,6 @@ impl State {
     /// message and for the follow-up after tool results, which differ only in
     /// what was appended before the call.
     pub(crate) fn start_request(&mut self, cfg: &Config) {
-        // The last round of the budget goes out without tools, so the model has
-        // to answer from what it already collected instead of dead-ending on the
-        // cap with nothing to show the user.
-        let allow_tools = self.tool_rounds < self.max_tool_rounds();
-        if !allow_tools {
-            self.messages.push(Message::notice(
-                "tool budget spent — answering without tools",
-            ));
-        }
         // The placeholder streamed text appends into. request_body skips empty
         // assistant messages, so it never reaches the wire.
         self.reply_at = Some(self.messages.len());
@@ -1128,7 +1119,6 @@ impl State {
         let body = api::request_body_with_project_and_tools(
             cfg,
             &self.messages,
-            allow_tools,
             project,
             self.is_planning(),
             &extension_specs,
@@ -1142,7 +1132,7 @@ impl State {
                 "stream_id": stream_id,
                 "message_count": self.messages.len(),
                 "body_bytes": body_len,
-                "allow_tools": allow_tools,
+                "allow_tools": cfg.tools,
             }),
         );
 
@@ -1404,6 +1394,32 @@ impl State {
                         if !self.tools_busy() {
                             self.pump_tools();
                         }
+                    } else if let Some(reply_at) = self.reply_at.filter(|at| {
+                        self.messages.get(*at).is_some_and(|message| {
+                            message.content.contains("<｜｜DSML｜｜tool_calls>")
+                        })
+                    }) {
+                        let message = &mut self.messages[reply_at];
+                        let marker = message
+                            .content
+                            .find("<｜｜DSML｜｜tool_calls>")
+                            .expect("the branch found the marker");
+                        message.content.truncate(marker);
+                        message.content.truncate(message.content.trim_end().len());
+                        if let Some(cache) = self.transcript_cache.as_mut() {
+                            cache.invalidate_from(reply_at);
+                        }
+                        self.context_cache = None;
+                        self.pop_empty_placeholder();
+                        let error = "the endpoint returned a tool call as text instead of structured tool_calls; no tool was run. Retry, or set `thinking \"disabled\"` for DeepSeek";
+                        self.messages.push(Message::error(error));
+                        self.log(
+                            "api_error",
+                            serde_json::json!({
+                                "stream_id": stream_id,
+                                "error": error,
+                            }),
+                        );
                     } else if self.reply_is_empty() {
                         self.pop_empty_placeholder();
                         self.messages

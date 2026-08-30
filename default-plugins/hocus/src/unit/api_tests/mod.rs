@@ -22,6 +22,8 @@ fn test_config() -> Config {
         linear_api_key_env: linear::DEFAULT_API_KEY_ENV.into(),
         linear_api_key: None,
         system_prompt: None,
+        thinking: None,
+        reasoning_effort: None,
         // Off in most fixtures so the assertions can compare whole bodies.
         tools: false,
         max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
@@ -45,7 +47,7 @@ fn call(id: &str, name: &str, arguments: &str) -> ToolCall {
 // -- request_body -------------------------------------------------------
 
 fn body_value(cfg: &Config, transcript: &[Message]) -> serde_json::Value {
-    serde_json::from_slice(&request_body(cfg, transcript, true)).unwrap()
+    serde_json::from_slice(&request_body(cfg, transcript)).unwrap()
 }
 
 // -- SseParser ----------------------------------------------------------
