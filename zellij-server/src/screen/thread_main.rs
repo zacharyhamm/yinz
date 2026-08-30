@@ -1814,6 +1814,11 @@ pub(crate) fn screen_thread_main(
                 completion_tx
                     .as_mut()
                     .map(|c| c.set_affected_tab_id(tab_id));
+                let new_terminal_pane_ids: Vec<_> = new_pane_pids
+                    .iter()
+                    .chain(&new_floating_pane_pids)
+                    .map(|(terminal_id, _)| PaneId::Terminal(*terminal_id))
+                    .collect();
                 screen.apply_layout(
                     layout,
                     floating_panes_layout,
@@ -1846,6 +1851,14 @@ pub(crate) fn screen_thread_main(
                         // Convert ID → position for pending_tab_switches (which stores positions)
                         if let Some(tab_position) = screen.get_tab_position_by_id(tab_id) {
                             pending_tab_switches.insert((tab_position, client_id_to_switch));
+                        }
+                    }
+                }
+
+                for pane_id in new_terminal_pane_ids {
+                    if let Some(pending_events) = pending_events_waiting_for_pane.remove(&pane_id) {
+                        for event in pending_events {
+                            screen.bus.senders.send_to_screen(event).non_fatal();
                         }
                     }
                 }
@@ -4122,9 +4135,16 @@ pub(crate) fn screen_thread_main(
             ScreenInstruction::SetPaneAgent(pane_id, agent, _completion) => {
                 // Read before the write: which hooks a change fires is a question about the
                 // edge, and the pane only answers whether anything changed.
-                let previous = screen
+                let Some(previous) = screen
                     .tab_containing_pane(pane_id)
-                    .and_then(|tab| tab.pane_agent_info(pane_id));
+                    .map(|tab| tab.pane_agent_info(pane_id))
+                else {
+                    pending_events_waiting_for_pane
+                        .entry(pane_id)
+                        .or_default()
+                        .push(ScreenInstruction::SetPaneAgent(pane_id, agent, _completion));
+                    continue;
+                };
                 let changed = screen
                     .tab_containing_pane_mut(pane_id)
                     .map(|tab| tab.set_pane_agent(pane_id, agent.clone()))
