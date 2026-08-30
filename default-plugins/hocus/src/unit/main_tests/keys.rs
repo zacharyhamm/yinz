@@ -106,6 +106,19 @@ fn esc_at_the_confirmation_prompt_hides_with_the_call_still_pending() {
     assert_eq!(state.pending.len(), 1, "and the call still waits on it");
 }
 
+/// The key the user actually presses: `n` at the prompt answers the call and
+/// leaves the chat waiting on them, not on the model.
+#[test]
+fn n_at_the_confirmation_prompt_declines_and_waits() {
+    let mut state = confirming_state();
+
+    state.on_key(KeyWithModifier::new(BareKey::Char('n')));
+
+    assert!(matches!(state.status, Status::Idle));
+    assert!(state.pending.is_empty(), "the call was answered");
+    assert!(!state.is_receiving(), "and no follow-up request went out");
+}
+
 #[test]
 fn ctrl_c_cancels_the_stream() {
     let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");

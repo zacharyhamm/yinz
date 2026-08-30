@@ -169,11 +169,11 @@ fn switching_to_planning_declines_a_pending_call() {
     assert_eq!(answered[0].content, "declined by the user");
 }
 
-/// Declining the pending call empties the queue, and an emptied queue starts the
-/// model's follow-up request. That request must already be a planning one — the
-/// mode has to be set before the call is answered, not after.
+/// Declining answers the whole batch and stops, and the request that follows
+/// is the `/plan` prompt itself. That request must already be a planning one —
+/// the mode has to be set before the prompt is sent, not after.
 #[test]
-fn the_follow_up_after_that_decline_is_already_a_planning_request() {
+fn switching_to_planning_answers_the_whole_batch_and_sends_the_plan_prompt() {
     // A two-call batch parked on the first one's y/n, as `pump_tools` leaves it.
     let calls: Vec<ToolCall> = [("call_1", "clear_pane", 1), ("call_2", "close_pane", 2)]
         .into_iter()
@@ -202,12 +202,17 @@ fn the_follow_up_after_that_decline_is_already_a_planning_request() {
     let results = tool_results(&state);
     assert_eq!(results.len(), 2, "every call the model made was answered");
     assert!(
-        results[1]
-            .content
-            .starts_with("refused: planning mode is on"),
-        "the rest of the batch met the gate rather than running: {}",
+        results[1].content.starts_with("not run"),
+        "the rest of the batch was answered rather than run: {}",
         results[1].content,
     );
+    assert!(state.is_receiving(), "the planning prompt went out");
+    let last_user = state
+        .messages
+        .iter()
+        .rfind(|message| message.role == Role::User)
+        .unwrap();
+    assert_eq!(last_user.content, "work out an approach");
 }
 
 // -- enforcement --------------------------------------------------------
@@ -508,6 +513,8 @@ fn n_keeps_planning() {
     assert!(state.is_planning(), "still planning");
     assert!(!state.awaiting_plan());
     assert_eq!(state.messages.last().unwrap().role, Role::Notice);
+    assert!(!state.is_receiving(), "no request went out");
+    assert!(matches!(state.status, Status::Idle));
 }
 
 /// Typing at a plan is how you correct one, so the question stops being asked
