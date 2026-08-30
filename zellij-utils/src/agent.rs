@@ -315,6 +315,10 @@ pub struct HookEvent {
     /// the user is being waited on; [`hook_state`] is where the ones that do are named.
     #[serde(default)]
     pub notification_type: Option<String>,
+    /// The provider's identity for one tool call. Accept the alternate `tool_call_id` spelling
+    /// so both hook formats reach one deduplication path.
+    #[serde(default, alias = "tool_call_id")]
+    pub tool_use_id: Option<String>,
     /// The tool about to run, or just finished, on a `PreToolUse`/`PostToolUse`.
     #[serde(default)]
     pub tool_name: Option<String>,
@@ -384,6 +388,7 @@ impl HookEvent {
             source: self.source.clone(),
             cwd: self.cwd.clone(),
             notification_type: self.notification_type.clone(),
+            tool_use_id: self.tool_use_id.clone(),
             tool_name: self.tool_name.clone(),
             tool_input: self.tool_input.as_ref().map(|input| {
                 let mut budget = PRUNED_INPUT_BUDGET;
@@ -1206,6 +1211,19 @@ mod tests {
         };
         let json = serde_json::to_string(&event.pruned()).expect("a pruned event serializes");
         assert!(json.len() < HOOK_BROADCAST_MAX_BYTES, "{}", json.len());
+    }
+
+    #[test]
+    fn tool_call_identity_accepts_both_provider_spellings_and_survives_pruning() {
+        let claude: HookEvent =
+            serde_json::from_str(r#"{"hook_event_name":"PreToolUse","tool_use_id":"tool-1"}"#)
+                .expect("Claude's spelling parses");
+        let alias: HookEvent =
+            serde_json::from_str(r#"{"hook_event_name":"PreToolUse","tool_call_id":"tool-2"}"#)
+                .expect("the alternate spelling parses");
+
+        assert_eq!(claude.tool_use_id.as_deref(), Some("tool-1"));
+        assert_eq!(alias.pruned().tool_use_id.as_deref(), Some("tool-2"));
     }
 
     #[test]

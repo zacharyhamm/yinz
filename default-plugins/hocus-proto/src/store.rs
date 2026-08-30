@@ -185,12 +185,13 @@ pub fn agent_summary_def() -> EntityDef {
         .attr(AttrDef::boolean("awaiting").required().default(false))
 }
 
-/// One hook-backed agent session. The selected panel fetches `payload`; the other columns are
-/// only the cheap predicates and ordering needed to page an unlimited archive.
+/// One hook-backed agent session. Archive pages fetch `header`; only the selected row fetches
+/// `payload`, while the scalar columns provide cheap predicates and ordering.
 pub fn agent_run_def() -> EntityDef {
     EntityDef::new("agent_run", 1)
         .attr(AttrDef::int("pane_id").indexed().required())
         .attr(AttrDef::text("session_id").indexed().required().default(""))
+        .attr(AttrDef::text("zellij_session_name").indexed())
         .attr(AttrDef::text("kind").required())
         .attr(
             AttrDef::boolean("active")
@@ -199,6 +200,7 @@ pub fn agent_run_def() -> EntityDef {
                 .default(true),
         )
         .attr(AttrDef::int("started_at_ms").required())
+        .attr(AttrDef::json("header"))
         .attr(AttrDef::json("payload").required())
 }
 

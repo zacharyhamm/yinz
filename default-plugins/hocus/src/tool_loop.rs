@@ -1987,13 +1987,25 @@ impl State {
                 {
                     *existing = run;
                 } else {
+                    if self
+                        .archive_loaded_through
+                        .as_ref()
+                        .is_some_and(|(started_at_ms, id)| {
+                            (std::cmp::Reverse(run.started_at_ms), run.id.as_str())
+                                < (std::cmp::Reverse(*started_at_ms), id.as_str())
+                        })
+                    {
+                        self.archive_offset = self.archive_offset.saturating_add(1);
+                    }
                     self.archived_runs.insert(0, run);
-                    self.archive_offset = self.archive_offset.saturating_add(1);
                 }
             }
         }
-        self.archived_runs
-            .sort_by_key(|run| std::cmp::Reverse(run.started_at_ms));
+        self.archived_runs.sort_by(|a, b| {
+            b.started_at_ms
+                .cmp(&a.started_at_ms)
+                .then_with(|| a.id.cmp(&b.id))
+        });
         if let Some(run) = self
             .selected_agent
             .and_then(|pane_id| self.active_runs.get(&pane_id))

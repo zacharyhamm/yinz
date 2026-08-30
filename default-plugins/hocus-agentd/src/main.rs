@@ -214,6 +214,7 @@ struct State {
     summaries: agents::Summaries,
     /// Hook-backed runs currently attached to a pane. Completed runs live in the shared store;
     /// dirty completed rows ride the snapshot that announces their end.
+    zellij_session_name: Option<String>,
     runs: BTreeMap<u32, agents::AgentRun>,
     dirty_runs: BTreeMap<String, agents::AgentRun>,
     /// What each Claude Code pane has said about *itself*, over its own hooks.
@@ -368,6 +369,7 @@ impl ZellijPlugin for State {
             EventType::TabUpdate,
             EventType::CommandChanged,
             EventType::CwdChanged,
+            EventType::SessionUpdate,
             EventType::RunCommandResult,
             EventType::WebRequestResult,
             EventType::Timer,
@@ -387,18 +389,7 @@ impl ZellijPlugin for State {
         // dropped — and a dropped one would block on a read that never completes.
         self.env = get_session_environment_variables();
 
-        let store = store::Host::shared();
-        if store.define_all(&store::shared_defs()).is_ok() {
-            if let Ok(rows) = store.fetch(
-                &FetchRequest::entity(agents::rows::RUN_ENTITY)
-                    .filter(Pred::eq("active", true))
-                    .limit(MAX_FETCH_ROWS),
-            ) {
-                for run in agents::rows::runs_from_rows(&rows) {
-                    self.runs.insert(run.pane_id, run);
-                }
-            }
-        }
+        let _ = store::Host::shared().define_all(&store::shared_defs());
 
         self.bootstrap();
         set_timeout(ACTIVITY_SECONDS);
@@ -433,6 +424,15 @@ impl ZellijPlugin for State {
                 // than in five seconds.
                 self.refresh_remote_repositories();
                 self.publish();
+            },
+            Event::SessionUpdate(sessions, _) => {
+                if let Some(name) = sessions
+                    .into_iter()
+                    .find(|session| session.is_current_session)
+                    .map(|session| session.name)
+                {
+                    self.set_zellij_session_name(name);
+                }
             },
             Event::RunCommandResult(exit_code, stdout, _, context) => {
                 self.finish_git_probe(exit_code, stdout, context);
@@ -566,9 +566,23 @@ impl State {
     }
 
     fn bootstrap(&mut self) {
-        let Some((panes, focused, focused_plugin)) = poll::gather() else {
+        let Some(poll::StartupSnapshot {
+            session_name,
+            panes,
+            focused,
+            focused_plugin,
+        }) = poll::gather()
+        else {
             return;
         };
+        self.set_zellij_session_name(session_name.clone());
+        if let Ok(rows) = store::Host::shared()
+            .fetch(&agents::rows::active_runs_request(&session_name).limit(MAX_FETCH_ROWS))
+        {
+            for run in agents::rows::runs_from_rows(&rows) {
+                self.runs.entry(run.pane_id).or_insert(run);
+            }
+        }
         self.focused = focused;
         self.focused_plugin = focused_plugin;
         self.bootstrapped = true;
@@ -592,6 +606,20 @@ impl State {
         self.rejoin_cwds();
         self.settle_latches();
         self.resolve_repositories();
+    }
+
+    fn set_zellij_session_name(&mut self, name: String) {
+        if self.zellij_session_name.as_ref() == Some(&name) {
+            return;
+        }
+        self.zellij_session_name = Some(name.clone());
+        for run in self.runs.values_mut() {
+            run.zellij_session_name = name.clone();
+            self.dirty_runs.insert(run.id.clone(), run.clone());
+        }
+        for run in self.dirty_runs.values_mut() {
+            run.zellij_session_name = name.clone();
+        }
     }
 
     /// Record where a pane is, whatever named it — the manifest, a `CwdChanged`,
@@ -926,12 +954,14 @@ impl State {
             return;
         }
         let new_run = !self.runs.contains_key(&pane_id);
+        let zellij_session_name = self.zellij_session_name.clone().unwrap_or_default();
         let run = self
             .runs
             .entry(pane_id)
             .or_insert_with(|| agents::AgentRun {
                 id: agents::run_id(kind, pane_id, &event.session_id, now_ms),
                 pane_id,
+                zellij_session_name,
                 session_id: event.session_id.clone(),
                 kind: kind.to_owned(),
                 cwd: event.cwd.clone(),
@@ -955,14 +985,22 @@ impl State {
             }
         }
         if let Some((kind, text)) = agents::run_entry(event) {
-            if run
-                .entries
-                .last()
-                .is_none_or(|entry| entry.kind != kind || entry.text != text)
-            {
+            let event_id = agents::run_event_id(event);
+            let duplicate = match event_id.as_ref() {
+                Some(event_id) => run
+                    .entries
+                    .iter()
+                    .any(|entry| entry.event_id.as_ref() == Some(event_id)),
+                None => run
+                    .entries
+                    .last()
+                    .is_some_and(|entry| entry.kind == kind && entry.text == text),
+            };
+            if !duplicate {
                 run.revision += 1;
                 run.entries.push(agents::RunEntry {
                     revision: run.revision,
+                    event_id,
                     kind,
                     text,
                 });
@@ -984,7 +1022,7 @@ impl State {
     }
 
     fn persist_dirty_runs(&mut self) {
-        if self.dirty_runs.is_empty() {
+        if self.dirty_runs.is_empty() || self.zellij_session_name.is_none() {
             return;
         }
         let mutations = self
@@ -4924,6 +4962,41 @@ mod tests {
             .expect("archived run");
         assert_eq!(completed.outcome, agents::RunOutcome::Completed);
         assert!(state.runs.is_empty());
+    }
+
+    #[test]
+    fn duplicate_delivery_is_dropped_but_repeated_tool_calls_are_kept() {
+        let mut state = State::default();
+        let call = |id: &str, event: &str| wire::HookEvent {
+            tool_use_id: Some(id.to_owned()),
+            ..tool_hook(event, "Bash", serde_json::json!({"command": "cargo test"}))
+        };
+
+        feed(&mut state, 7, &call("tool-1", "PreToolUse"), None);
+        feed(&mut state, 7, &call("tool-1", "PreToolUse"), None);
+        feed(&mut state, 7, &call("tool-1", "PostToolUse"), None);
+        feed(&mut state, 7, &call("tool-2", "PreToolUse"), None);
+
+        let run = &state.runs[&7];
+        assert_eq!(run.entries.len(), 2);
+        assert_eq!(run.entries[0].text, "Bash cargo");
+        assert_eq!(run.entries[1].text, "Bash cargo");
+        assert_ne!(run.entries[0].event_id, run.entries[1].event_id);
+    }
+
+    #[test]
+    fn active_runs_follow_a_zellij_session_rename() {
+        let mut state = State::default();
+        feed(&mut state, 7, &hook("UserPromptSubmit"), None);
+
+        state.set_zellij_session_name("first".to_owned());
+        assert_eq!(state.runs[&7].zellij_session_name, "first");
+        state.set_zellij_session_name("renamed".to_owned());
+        assert_eq!(state.runs[&7].zellij_session_name, "renamed");
+        assert_eq!(
+            state.dirty_runs[&state.runs[&7].id].zellij_session_name,
+            "renamed"
+        );
     }
 
     /// No settle wait and no cooldown: a `Stop` fires once per turn, so it *is* the edge,
