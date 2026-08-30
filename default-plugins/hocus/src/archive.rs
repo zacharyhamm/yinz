@@ -197,7 +197,7 @@ impl State {
 
     /// The agent strip as the hocus-agents pane should draw it.
     pub(crate) fn current_strip(&self) -> agents::Strip {
-        let rows = agents::strip_rows(
+        let mut rows = agents::strip_rows(
             &self.panes,
             &self.manual_kinds,
             &self.activity,
@@ -206,6 +206,17 @@ impl State {
             &self.summaries,
             &self.hooks,
         );
+        if !self.archived_runs.is_empty() || self.archive_more {
+            rows.push(agents::StripRow::Project("archive".to_owned()));
+            rows.extend(self.archived_runs.iter().map(|run| agents::StripRow::Run {
+                run_id: run.id.clone(),
+                text: format!("{} · {}", run.kind, run.title),
+                kind: run.kind.clone(),
+            }));
+            if self.archive_more {
+                rows.push(agents::StripRow::MoreRuns);
+            }
+        }
         // Only the summaries with a row to sit under. A summary outlives the pane it is about -
         // that is deliberate, it is an account of a moment - but the box is drawn *for the
         // selected row*, and a summary no row names can never be selected.

@@ -12,9 +12,11 @@ use hocus_proto::location::Location;
 use hocus_proto::panes::{
     focused_pane, focused_plugin_pane, manifest_pane_ids, pane_geometry, terminal_panes,
 };
+use hocus_proto::store::{self, Backend};
 use hocus_proto::wire::{self, PollReply, PollRequest};
 use hocus_proto::{agents, projects};
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::{SystemTime, UNIX_EPOCH};
 use zellij_tile::prelude::*;
 
 const ACTIVITY_SECONDS: f64 = 5.0;
@@ -210,6 +212,10 @@ struct State {
     env: BTreeMap<String, String>,
     /// What the model last said about each agent's pane.
     summaries: agents::Summaries,
+    /// Hook-backed runs currently attached to a pane. Completed runs live in the shared store;
+    /// dirty completed rows ride the snapshot that announces their end.
+    runs: BTreeMap<u32, agents::AgentRun>,
+    dirty_runs: BTreeMap<String, agents::AgentRun>,
     /// What each Claude Code pane has said about *itself*, over its own hooks.
     ///
     /// The one thing in this daemon that is reported rather than inferred. Where a
@@ -336,6 +342,13 @@ fn summary_materially_changed(previous: &str, current: &str) -> bool {
     agents::changed_materially(previous, current, SUMMARY_CHANGE_FACTOR)
 }
 
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or_default()
+}
+
 #[derive(Default)]
 struct GitProbe {
     id: u64,
@@ -373,6 +386,19 @@ impl ZellijPlugin for State {
         // unconditionally, so this value-returning call is actually answered rather than
         // dropped — and a dropped one would block on a read that never completes.
         self.env = get_session_environment_variables();
+
+        let store = store::Host::shared();
+        if store.define_all(&store::shared_defs()).is_ok() {
+            if let Ok(rows) = store.fetch(
+                &FetchRequest::entity(agents::rows::RUN_ENTITY)
+                    .filter(Pred::eq("active", true))
+                    .limit(MAX_FETCH_ROWS),
+            ) {
+                for run in agents::rows::runs_from_rows(&rows) {
+                    self.runs.insert(run.pane_id, run);
+                }
+            }
+        }
 
         self.bootstrap();
         set_timeout(ACTIVITY_SECONDS);
@@ -443,6 +469,7 @@ impl ZellijPlugin for State {
             },
             _ => {},
         }
+        self.persist_dirty_runs();
         // Never rendered, so never asks to be.
         false
     }
@@ -657,6 +684,7 @@ impl State {
             |pane_id, text| notify_with_pane_id(text, PaneId::Terminal(pane_id)),
             Self::on_turn_end,
         );
+        self.persist_dirty_runs();
     }
 
     /// The same for a `claude`, which is what all but one of the tests below are about.
@@ -685,6 +713,7 @@ impl State {
             hocus_proto::agent::HookOutcome::Reported(agent) => report_agent(pane_id, Some(agent)),
             hocus_proto::agent::HookOutcome::Nothing => {},
         }
+        self.record_run_event(pane_id, kind, event, now_ms());
         if event.hook_event_name == agents::HOOK_SESSION_END {
             // The session is over, so there is nothing left reporting for this pane
             // and the heuristic takes it back. The pane itself may well live on - a
@@ -883,6 +912,119 @@ impl State {
         }
     }
 
+    fn record_run_event(&mut self, pane_id: u32, kind: &str, event: &wire::HookEvent, now_ms: i64) {
+        let changed_session = self.runs.get(&pane_id).is_some_and(|run| {
+            !run.session_id.is_empty()
+                && !event.session_id.is_empty()
+                && run.session_id != event.session_id
+        });
+        if changed_session {
+            self.finish_run(pane_id, agents::RunOutcome::Replaced, now_ms);
+        }
+        if event.hook_event_name == agents::HOOK_SESSION_END {
+            self.finish_run(pane_id, agents::RunOutcome::Completed, now_ms);
+            return;
+        }
+        let new_run = !self.runs.contains_key(&pane_id);
+        let run = self
+            .runs
+            .entry(pane_id)
+            .or_insert_with(|| agents::AgentRun {
+                id: agents::run_id(kind, pane_id, &event.session_id, now_ms),
+                pane_id,
+                session_id: event.session_id.clone(),
+                kind: kind.to_owned(),
+                cwd: event.cwd.clone(),
+                started_at_ms: now_ms,
+                ended_at_ms: None,
+                outcome: agents::RunOutcome::Active,
+                revision: 0,
+                summarized_revision: 0,
+                summary: None,
+                entries: Vec::new(),
+            });
+        let mut changed = new_run;
+        if !event.session_id.is_empty() && run.session_id.is_empty() {
+            run.session_id = event.session_id.clone();
+            changed = true;
+        }
+        if let Some(cwd) = event.cwd.as_ref().filter(|cwd| !cwd.is_empty()) {
+            if run.cwd.as_ref() != Some(cwd) {
+                run.cwd = Some(cwd.clone());
+                changed = true;
+            }
+        }
+        if let Some((kind, text)) = agents::run_entry(event) {
+            run.revision += 1;
+            run.entries.push(agents::RunEntry {
+                revision: run.revision,
+                kind,
+                text,
+            });
+            changed = true;
+        }
+        if changed {
+            self.dirty_runs.insert(run.id.clone(), run.clone());
+        }
+    }
+
+    fn finish_run(&mut self, pane_id: u32, outcome: agents::RunOutcome, now_ms: i64) {
+        let Some(mut run) = self.runs.remove(&pane_id) else {
+            return;
+        };
+        run.outcome = outcome;
+        run.ended_at_ms = Some(now_ms);
+        self.dirty_runs.insert(run.id.clone(), run.clone());
+    }
+
+    fn persist_dirty_runs(&mut self) {
+        if self.dirty_runs.is_empty() {
+            return;
+        }
+        let mutations = self
+            .dirty_runs
+            .values()
+            .map(agents::rows::run_mutation)
+            .collect();
+        if store::Host::shared().apply(mutations).is_ok() {
+            self.dirty_runs.clear();
+        }
+    }
+
+    /// The last accepted run summary followed by the meaningful hook events since it.
+    /// The prompt remains a separate request field, so trimming a long turn keeps the newest
+    /// steps and final result without losing what the user asked.
+    fn run_summary_text(&self, pane_id: u32, fallback: &str) -> String {
+        let Some(run) = self.runs.get(&pane_id) else {
+            return agents::tail(fallback, agents::SUMMARY_LINES, agents::SUMMARY_CHARS);
+        };
+        let delta = run
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.revision > run.summarized_revision
+                    && entry.kind != agents::RunEntryKind::Prompt
+            })
+            .map(|entry| format!("{}: {}", entry.kind.label(), entry.text))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let delta = agents::tail(&delta, agents::SUMMARY_LINES, agents::SUMMARY_CHARS);
+        match run.summary.as_ref().filter(|_| run.summarized_revision > 0) {
+            Some(summary) => format!("previous summary: {}\n\n{delta}", summary.text),
+            None if !delta.is_empty() => delta,
+            None => agents::tail(fallback, agents::SUMMARY_LINES, agents::SUMMARY_CHARS),
+        }
+    }
+
+    fn attach_run_summary(&mut self, pane_id: u32, summary: &agents::Summary) {
+        let Some(run) = self.runs.get_mut(&pane_id) else {
+            return;
+        };
+        run.summary = Some(summary.clone());
+        run.summarized_revision = run.revision;
+        self.dirty_runs.insert(run.id.clone(), run.clone());
+    }
+
     /// A turn just ended in a pane that reports for itself: describe it.
     ///
     /// This is the whole of what the hook feed buys over the screen heuristic for
@@ -977,7 +1119,7 @@ impl State {
             self.finish_local_summary_with(pane_id, message, toast);
             return;
         };
-        let message = agents::tail(message, agents::SUMMARY_LINES, agents::SUMMARY_CHARS);
+        let message = self.run_summary_text(pane_id, message);
         let body = agents::turn_summary_request_body(
             &endpoint.model,
             kind,
@@ -1052,6 +1194,7 @@ impl State {
                 &agents::summary_toast(pane_id, kind.as_deref(), &summary),
             );
         }
+        self.attach_run_summary(pane_id, &summary);
         self.summaries.insert(pane_id, summary);
         self.publish();
     }
@@ -1161,6 +1304,15 @@ impl State {
         // list as "closed" cost it its folder, the branch probed from that
         // folder, and the latch that made it an agent at all.
         let live = manifest_pane_ids(&self.manifest);
+        let closed_runs: Vec<u32> = self
+            .runs
+            .keys()
+            .filter(|id| !live.contains(id))
+            .copied()
+            .collect();
+        for pane_id in closed_runs {
+            self.finish_run(pane_id, agents::RunOutcome::Closed, now_ms());
+        }
         self.commands.retain(|id, _| live.contains(id));
         self.cwds.retain(|id, _| live.contains(id));
         self.hosts.retain(|id, _| live.contains(id));
@@ -1206,6 +1358,7 @@ impl State {
         // new run pauses once. See `waiting_marker`. Out of the loop above only because it
         // borrows `self` whole.
         for pane_id in forgotten {
+            self.finish_run(pane_id, agents::RunOutcome::Replaced, now_ms());
             self.forget_agent(pane_id);
         }
         // Anything the manifest itself carries is news, and worth taking before
@@ -1330,6 +1483,7 @@ impl State {
                 // The verdict that the agent is gone, not merely quiet. What we last knew
                 // about it describes a session that has ended, so it goes now rather than on
                 // the next heartbeat — and a settling this pane still owed goes with it.
+                self.finish_run(pane_id, agents::RunOutcome::Closed, now_ms());
                 self.forget_agent(pane_id);
                 found_something_new = true;
             }
@@ -2099,6 +2253,7 @@ impl State {
         if let Some(tail) = tail {
             self.summary_baselines.insert(pane_id, tail);
         }
+        self.attach_run_summary(pane_id, &summary);
         self.summaries.insert(pane_id, summary);
         self.publish();
     }
@@ -2354,6 +2509,17 @@ impl State {
             focused_plugin: self.focused_plugin,
             summaries: self.summaries.clone(),
             hooks: self.hooks.clone(),
+            runs: self
+                .runs
+                .values()
+                .map(agents::AgentRun::header)
+                .chain(
+                    self.dirty_runs
+                        .values()
+                        .filter(|run| run.ended_at_ms.is_some())
+                        .map(agents::AgentRun::header),
+                )
+                .collect(),
         };
         let Ok(payload) = serde_json::to_string(&reply) else {
             return;
@@ -4640,6 +4806,84 @@ mod tests {
         assert!(user.contains(REPLY), "the agent's own words");
         assert!(user.contains("fix the flaky test"), "and the question");
         assert!(user.contains("Folder: /work."));
+    }
+
+    #[test]
+    fn a_run_keeps_key_events_and_rolls_accepted_summaries_forward() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        feed(
+            &mut state,
+            7,
+            &wire::HookEvent {
+                prompt: Some("implement history".to_owned()),
+                ..hook("UserPromptSubmit")
+            },
+            None,
+        );
+        feed(
+            &mut state,
+            7,
+            &tool_hook(
+                "PreToolUse",
+                "ExitPlanMode",
+                serde_json::json!({"plan": "persist the important events"}),
+            ),
+            None,
+        );
+        let (_, first) = feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
+        assert_eq!(first.len(), 1);
+        finish(
+            &mut state,
+            200,
+            &reply("History was implemented.", false),
+            &context(7, 1),
+        );
+
+        let run = &state.runs[&7];
+        assert_eq!(
+            run.entries
+                .iter()
+                .map(|entry| entry.kind)
+                .collect::<Vec<_>>(),
+            [
+                agents::RunEntryKind::Prompt,
+                agents::RunEntryKind::Plan,
+                agents::RunEntryKind::Result,
+            ]
+        );
+        assert_eq!(
+            run.summary.as_ref().map(|s| s.text.as_str()),
+            Some("History was implemented.")
+        );
+        assert_eq!(run.summarized_revision, run.revision);
+
+        feed(
+            &mut state,
+            7,
+            &wire::HookEvent {
+                prompt: Some("add the archive".to_owned()),
+                ..hook("UserPromptSubmit")
+            },
+            None,
+        );
+        let (_, second) = feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
+        let body: serde_json::Value = serde_json::from_slice(&second[0].1).expect("valid JSON");
+        let user = body["messages"][1]["content"].as_str().expect("a string");
+        assert!(user.contains("previous summary: History was implemented."));
+        assert!(user.contains("--- the user asked ---\nadd the archive"));
+        assert!(user.contains("result: I ran the test suite"));
+
+        feed(&mut state, 7, &hook(agents::HOOK_SESSION_END), None);
+        let completed = state
+            .dirty_runs
+            .values()
+            .find(|run| run.ended_at_ms.is_some())
+            .expect("archived run");
+        assert_eq!(completed.outcome, agents::RunOutcome::Completed);
+        assert!(state.runs.is_empty());
     }
 
     /// No settle wait and no cooldown: a `Stop` fires once per turn, so it *is* the edge,

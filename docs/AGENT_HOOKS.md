@@ -199,9 +199,9 @@ the idle summary no longer comes from the screen at all:
   no baseline comparison. A `Stop` fires once per turn, so it *is* the edge, and it
   cannot ask twice about one turn. There is no cooldown either: three short questions in
   a minute are owed three answers.
-- **The input is prose written for a person**, plus the `UserPromptSubmit` that asked for
-  it. A description of an answer written without sight of the question is half a
-  description.
+- **The input is the run so far.** The request carries the latest `UserPromptSubmit`, the
+  prior accepted summary, and the meaningful hook events since it. That keeps each request
+  bounded while a long session's summary rolls forward at every turn end.
 - **`awaiting` is not asked for.** The feed already knows, so asking would only create a
   disagreement to resolve.
 - **The screen stops asking about these panes.** Two answers per turn, one of them a
@@ -221,6 +221,27 @@ the idle summary no longer comes from the screen at all:
   lands as `idle` the moment it ends; there is simply no sentence to make one out of. An
   `Interrupt` is the same, and deliberately makes no request at all: a turn the user
   cancelled has nothing to describe.
+
+### The run history is retained
+
+The same hook stream also builds one durable run per agent `session_id`. It stores metadata
+(agent kind, pane, folder and timestamps) and only the events useful after the fact:
+
+- prompts and plans;
+- commands, edits and writes;
+- waits, errors and subagent boundaries;
+- final results, failed turns and interruptions.
+
+Reads, successful tool completions and routine lifecycle events are omitted. Tool output is
+never stored. The exact retained entries stay in `shared:hocus` for the life of the Zellij
+session; summarization advances `summarized_revision` but does not replace or delete them.
+Legacy hook scripts without a session id get a pane-and-start-time fallback id.
+
+The agents panel shows active runs on their live agent rows and completed runs under an
+`archive` header, newest first. It loads 50 archive rows at a time; select `load older runs…`
+and press Enter for the next page. Selecting a row fetches that run's full history. PageUp and
+PageDown move through its compact timeline while the rolling summary stays pinned. Enter still
+focuses and hides the panel for a live agent; an archived row has no pane to focus.
 
 ### A waiting agent interrupts
 
@@ -279,7 +300,8 @@ so without that the feed would never end, and the screen heuristic behind it sta
 a pane parked on `waiting · Bash rm` for the life of the session.
 
 A `session_id` that changes in the same pane is a session replaced rather than ended —
-`/clear` — and drops the summary, the in-flight request and the held prompt with it.
+`/clear` — and drops the live summary, in-flight request and held prompt. The previous run is
+closed as `replaced` and remains in the archive.
 
 A script from before v4 of the installer pipes the event to hocus-agentd and nothing else
 (`zellij pipe --name agent_hook`); the daemon writes the same record through
@@ -296,7 +318,9 @@ added. `zellij hocus hooks status` says when the installed script is old.
 | Carrying it on the pane | `zellij-server/src/panes/terminal_pane.rs` (`agent`, `agent_from_run`), `screen/thread_main.rs` (`SetPaneAgent`), `screen/mod.rs` (`fire_agent_exit_hook`, `fire_agent_state_hooks`, `agent_hook_edges`) |
 | What a row draws | `default-plugins/hocus-proto/src/agents.rs` (`HookFeed::from_agent`, `status_cell`, `waiting_marker`, `kind_cell`, `HOOK_MARKER`) |
 | What a wait says, and the summary | same (`waiting_toast`, `turn_summary_request_body`, `local_summary`) |
-| Receiving the broadcast, publishing, toasting | `default-plugins/hocus-agentd/src/main.rs` (`on_hook_with`, `on_turn_end_with`, `finish_local_summary_with`) |
+| Run types, reduction and rendering | same (`AgentRun`, `run_entry`, `run_box`, `rows::run_mutation`) |
+| Receiving the broadcast, persisting, publishing, toasting | `default-plugins/hocus-agentd/src/main.rs` (`on_hook_with`, `record_run_event`, `on_turn_end_with`, `finish_local_summary_with`) |
+| Archive paging and selection | `default-plugins/hocus/src/transitions.rs`, `default-plugins/hocus-agents/src/main.rs` |
 
 The pipe's name and its two arguments — the pane, and the kind — are spelled once, in
 `zellij_utils::agent`; `hocus_proto::wire` re-exports all three, so the two ends of a broadcast

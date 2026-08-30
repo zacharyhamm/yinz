@@ -403,6 +403,7 @@ fn selection(plugin_id: u32) -> PipeMessage {
             serde_json::to_string(&hocus_proto::wire::Selection {
                 plugin_id,
                 pane_id: None,
+                run_id: None,
             })
             .expect("serialize"),
         ),

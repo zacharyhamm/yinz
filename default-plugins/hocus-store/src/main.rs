@@ -323,6 +323,7 @@ mod tests {
             hooks: agents::HookFeeds::new(),
             focused_plugin: None,
             summaries: agents::Summaries::new(),
+            runs: Vec::new(),
         })
         .expect("serialize")
     }

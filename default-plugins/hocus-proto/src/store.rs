@@ -185,6 +185,23 @@ pub fn agent_summary_def() -> EntityDef {
         .attr(AttrDef::boolean("awaiting").required().default(false))
 }
 
+/// One hook-backed agent session. The selected panel fetches `payload`; the other columns are
+/// only the cheap predicates and ordering needed to page an unlimited archive.
+pub fn agent_run_def() -> EntityDef {
+    EntityDef::new("agent_run", 1)
+        .attr(AttrDef::int("pane_id").indexed().required())
+        .attr(AttrDef::text("session_id").indexed().required().default(""))
+        .attr(AttrDef::text("kind").required())
+        .attr(
+            AttrDef::boolean("active")
+                .indexed()
+                .required()
+                .default(true),
+        )
+        .attr(AttrDef::int("started_at_ms").required())
+        .attr(AttrDef::json("payload").required())
+}
+
 /// Every entity in [`SHARED`]. Both plugins declare all of them on load — the
 /// job, latch and summary rows are hocus's alone to write, but a declaration
 /// has to agree wherever it is made.
@@ -196,6 +213,7 @@ pub fn shared_defs() -> Vec<EntityDef> {
         job_def(),
         agent_latch_def(),
         agent_summary_def(),
+        agent_run_def(),
     ]
 }
 

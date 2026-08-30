@@ -729,6 +729,49 @@ impl State {
                 self.summaries = summaries;
             }
         }
+        self.load_more_agent_runs();
+    }
+
+    pub(crate) fn load_more_agent_runs(&mut self) {
+        const PAGE: u32 = 50;
+        let Ok(rows) = self.store().fetch(
+            &FetchRequest::entity(agents::rows::RUN_ENTITY)
+                .filter(Pred::eq("active", false))
+                .sort_by("started_at_ms", SortDir::Desc)
+                .limit(PAGE)
+                .offset(self.archive_offset),
+        ) else {
+            return;
+        };
+        let count = rows.len() as u32;
+        for header in agents::rows::run_headers_from_rows(&rows) {
+            if !self.archived_runs.iter().any(|run| run.id == header.id) {
+                self.archived_runs.push(header);
+            }
+        }
+        self.archive_offset = self.archive_offset.saturating_add(count);
+        self.archive_more = rows.truncated;
+    }
+
+    pub(crate) fn send_run_detail(&self, plugin_id: u32, run_id: &str) {
+        let Ok(rows) = self.store().fetch(
+            &FetchRequest::entity(agents::rows::RUN_ENTITY)
+                .filter(Pred::eq("uid", run_id))
+                .limit(1),
+        ) else {
+            return;
+        };
+        let Some(run) = agents::rows::runs_from_rows(&rows).into_iter().next() else {
+            return;
+        };
+        let Ok(payload) = serde_json::to_string(&run) else {
+            return;
+        };
+        pipe_message_to_plugin(
+            MessageToPlugin::new(wire::AGENT_RUN_DETAIL)
+                .with_destination_plugin_id(plugin_id)
+                .with_payload(payload),
+        );
     }
 
     pub(crate) fn persist_job(&mut self, row: jobs::JobRow) {

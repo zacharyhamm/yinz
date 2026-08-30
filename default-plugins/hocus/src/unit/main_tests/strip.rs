@@ -142,6 +142,37 @@ fn the_strip_carries_the_summary_of_every_agent_on_it() {
     assert!(summary.awaiting, "and the claim the `!` marker makes");
 }
 
+#[test]
+fn completed_runs_are_nested_under_the_archive_and_page_on_demand() {
+    let mut state = state_with_panes();
+    state.archived_runs.push(agents::AgentRunHeader {
+        id: "claude:session-1".to_owned(),
+        pane_id: 3,
+        session_id: "session-1".to_owned(),
+        kind: "claude".to_owned(),
+        cwd: Some("/work/hocus".to_owned()),
+        started_at_ms: 10,
+        ended_at_ms: Some(20),
+        outcome: agents::RunOutcome::Completed,
+        revision: 4,
+        summary: None,
+        title: "hook history".to_owned(),
+    });
+    state.archive_more = true;
+
+    let rows = state.current_strip().rows;
+    assert!(matches!(
+        &rows[rows.len() - 3],
+        agents::StripRow::Project(name) if name == "archive"
+    ));
+    assert!(matches!(
+        &rows[rows.len() - 2],
+        agents::StripRow::Run { run_id, text, .. }
+            if run_id == "claude:session-1" && text == "claude · hook history"
+    ));
+    assert!(matches!(rows.last(), Some(agents::StripRow::MoreRuns)));
+}
+
 /// What is carried is the *last* thing the daemon made of an agent, so one that
 /// has gone back to work goes on carrying it: the box is an account of a moment,
 /// which is why its header names the pane.
@@ -196,7 +227,12 @@ fn selection(plugin_id: u32, pane_id: Option<u32>) -> PipeMessage {
         source: PipeSource::Plugin(plugin_id),
         name: wire::AGENT_SELECTION.to_owned(),
         payload: Some(
-            serde_json::to_string(&wire::Selection { plugin_id, pane_id }).expect("serialize"),
+            serde_json::to_string(&wire::Selection {
+                plugin_id,
+                pane_id,
+                run_id: None,
+            })
+            .expect("serialize"),
         ),
         args: BTreeMap::new(),
         is_private: true,
