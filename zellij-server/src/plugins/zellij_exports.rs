@@ -68,7 +68,9 @@ use zellij_utils::home::{absolute_lexical, default_layout_dir, default_user_plug
 use zellij_utils::input::permission::PermissionCache;
 use zellij_utils::ipc::{ClientToServerMsg, IpcSenderWithContext};
 use zellij_utils::plugin_data_store;
-use zellij_utils::sessions::generate_random_name as generate_random_name_impl;
+use zellij_utils::sessions::{
+    generate_random_name as generate_random_name_impl, validate_session_name,
+};
 
 use crate::{panes::PaneId, screen::ScreenInstruction};
 use kdl::KdlDocument;
@@ -457,7 +459,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 connect_to_session.layout,
                 connect_to_session.cwd,
             )?,
-            PluginCommand::DeleteDeadSession(session_name) => delete_dead_session(session_name)?,
+            PluginCommand::DeleteDeadSession(session_name) => delete_dead_session(&session_name)?,
             PluginCommand::DeleteAllDeadSessions => delete_all_dead_sessions()?,
             PluginCommand::OpenFileInPlace(file_to_open, context) => {
                 open_file_in_place(env, file_to_open, context)
@@ -3072,7 +3074,20 @@ fn switch_tab_to(env: &PluginEnv, tab_idx: u32) {
         .non_fatal();
 }
 
+fn timeout_duration(secs: f64) -> Result<Duration> {
+    Duration::try_from_secs_f64(secs).map_err(anyError::new)
+}
+
 fn set_timeout(env: &PluginEnv, secs: f64) {
+    let duration = match timeout_duration(secs) {
+        Ok(duration) => duration,
+        Err(e) => {
+            Err::<(), _>(e)
+                .with_context(|| format!("invalid timeout of {secs} s for plugin {}", env.name()))
+                .non_fatal();
+            return;
+        },
+    };
     let send_plugin_instructions = env.senders.to_plugin.clone();
     let update_target = Some(env.plugin_id);
     let client_id = env.client_id;
@@ -3080,7 +3095,7 @@ fn set_timeout(env: &PluginEnv, secs: f64) {
     // Use tokio runtime for async I/O (timer operation)
     get_tokio_runtime().spawn(async move {
         let start_time = Instant::now();
-        tokio::time::sleep(Duration::from_secs_f64(secs)).await;
+        tokio::time::sleep(duration).await;
         // FIXME: The way that elapsed time is being calculated here is not exact; it doesn't take into account the
         // time it takes an event to actually reach the plugin after it's sent to the `wasm` thread.
         let elapsed_time = Instant::now().duration_since(start_time).as_secs_f64();
@@ -3108,6 +3123,10 @@ fn set_timeout(env: &PluginEnv, secs: f64) {
 
 fn exec_cmd(env: &PluginEnv, mut command_line: Vec<String>) {
     log::warn!("The ExecCmd plugin command is deprecated and will be removed in a future version. Please use RunCmd instead (it has all the things and can even show you STDOUT/STDERR and an exit code!)");
+    if command_line.is_empty() {
+        log::warn!("Cannot execute an empty command");
+        return;
+    }
     let err_context = || {
         format!(
             "failed to execute command on host for plugin '{}'",
@@ -3745,8 +3764,13 @@ fn switch_session(
     Ok(())
 }
 
-fn delete_dead_session(session_name: String) -> Result<()> {
-    std::fs::remove_dir_all(&*ZELLIJ_SESSION_INFO_CACHE_DIR.join(&session_name))
+fn delete_dead_session(session_name: &str) -> Result<()> {
+    delete_dead_session_in(&ZELLIJ_SESSION_INFO_CACHE_DIR, session_name)
+}
+
+fn delete_dead_session_in(session_info_cache_dir: &Path, session_name: &str) -> Result<()> {
+    validate_session_name(session_name).map_err(|e| anyhow!(e))?;
+    std::fs::remove_dir_all(session_info_cache_dir.join(session_name))
         .with_context(|| format!("Failed to delete dead session: {:?}", session_name))
 }
 
@@ -3786,7 +3810,7 @@ fn delete_all_dead_sessions() -> Result<()> {
         },
     };
     for session in dead_sessions {
-        delete_dead_session(session)?;
+        delete_dead_session(&session)?;
     }
     Ok(())
 }
@@ -4600,18 +4624,48 @@ fn write_data_response(env: &mut PluginEnv, encoded: Vec<u8>, what: &str) {
 }
 
 fn delete_dead_session_and_reply(env: &mut PluginEnv, session_name: String) {
-    let response =
-        match std::fs::remove_dir_all(&*ZELLIJ_SESSION_INFO_CACHE_DIR.join(&session_name)) {
-            Ok(()) => DeleteDeadSessionResponse::Ok,
-            Err(e) => DeleteDeadSessionResponse::Err(format!(
-                "Failed to delete dead session {}: {}",
-                session_name, e
-            )),
-        };
+    let response = match delete_dead_session(&session_name) {
+        Ok(()) => DeleteDeadSessionResponse::Ok,
+        Err(e) => DeleteDeadSessionResponse::Err(e.to_string()),
+    };
     let protobuf_response = ProtobufDeleteDeadSessionResponse::from(response);
     wasi_write_object(env, &protobuf_response.encode_to_vec())
         .with_context(|| "failed to write delete_dead_session response".to_string())
         .non_fatal();
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+
+    #[test]
+    fn dead_session_deletion_stays_inside_its_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().join("cache");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(cache.join("valid")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("sentinel"), "keep").unwrap();
+
+        delete_dead_session_in(&cache, "valid").unwrap();
+        assert!(!cache.join("valid").exists());
+
+        for invalid in ["", ".", "..", "../outside", outside.to_str().unwrap()] {
+            assert!(
+                delete_dead_session_in(&cache, invalid).is_err(),
+                "{invalid:?}"
+            );
+        }
+        assert!(outside.join("sentinel").exists());
+    }
+
+    #[test]
+    fn invalid_plugin_timeouts_are_rejected() {
+        for invalid in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, f64::MAX] {
+            assert!(timeout_duration(invalid).is_err(), "{invalid}");
+        }
+        assert_eq!(timeout_duration(0.5).unwrap(), Duration::from_millis(500));
+    }
 }
 
 fn delete_all_dead_sessions_and_reply(env: &mut PluginEnv) {

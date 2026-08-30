@@ -107,12 +107,14 @@ enum WireState {
     /// Accepted, being brought up to date. `is_attached`, but not writable.
     Attaching(u64),
     Attached(super::broker::Wire, u64),
+    /// Claimed by the orphan reaper, but not yet terminated.
+    Terminating,
 }
 
 impl WireState {
     fn generation(&self) -> Option<u64> {
         match self {
-            WireState::Detached => None,
+            WireState::Detached | WireState::Terminating => None,
             WireState::Attaching(gen) | WireState::Attached(_, gen) => Some(*gen),
         }
     }
@@ -223,7 +225,7 @@ impl PaneSession {
         match self.wire.lock() {
             Ok(slot) => match &*slot {
                 WireState::Attached(wire, gen) => Some((wire.clone(), *gen)),
-                WireState::Attaching(_) | WireState::Detached => None,
+                WireState::Attaching(_) | WireState::Detached | WireState::Terminating => None,
             },
             Err(_) => None,
         }
@@ -245,15 +247,18 @@ impl PaneSession {
     ///
     /// It counts as attached from here — a second resume must be refused — but
     /// the pumps stay quiet until `resume_step` says it is caught up.
-    pub fn begin_attach(&self) -> u64 {
-        let gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        if let Ok(mut slot) = self.wire.lock() {
-            *slot = WireState::Attaching(gen);
+    pub fn try_begin_attach(&self) -> Option<u64> {
+        let mut slot = self.wire.lock().ok()?;
+        if !matches!(*slot, WireState::Detached) {
+            return None;
         }
+        let gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        *slot = WireState::Attaching(gen);
+        drop(slot);
         if let Ok(mut since) = self.disconnected_since.lock() {
             *since = None;
         }
-        gen
+        Some(gen)
     }
 
     /// The next thing a resuming connection owes, or the news that it is done.
@@ -389,6 +394,23 @@ impl PaneSession {
             .ok()
             .and_then(|since| since.map(|t| t.elapsed()))
     }
+
+    fn try_claim_expired_orphan(&self, timeout: Duration) -> bool {
+        let Ok(mut slot) = self.wire.lock() else {
+            return false;
+        };
+        if !matches!(*slot, WireState::Detached) {
+            return false;
+        }
+        let Ok(since) = self.disconnected_since.lock() else {
+            return false;
+        };
+        if !since.is_some_and(|started| started.elapsed() >= timeout) {
+            return false;
+        }
+        *slot = WireState::Terminating;
+        true
+    }
 }
 
 /// Every pane this broker holds.
@@ -450,9 +472,7 @@ impl PaneRegistry {
         let expired: Vec<Arc<PaneSession>> = match self.panes.lock() {
             Ok(panes) => panes
                 .values()
-                .filter(|s| {
-                    !s.is_attached() && s.orphaned_for().is_some_and(|elapsed| elapsed >= timeout)
-                })
+                .filter(|session| session.try_claim_expired_orphan(timeout))
                 .cloned()
                 .collect(),
             Err(_) => return 0,
