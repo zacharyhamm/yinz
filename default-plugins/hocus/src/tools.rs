@@ -3415,7 +3415,11 @@ mod host {
         let cwd = args.cwd.clone().map(PathBuf::from);
 
         let opened = match words.split_first() {
-            Some((path, rest)) => {
+            // `command_words` yields `[""]` for `command=""`, which is a command
+            // in form only; `call_needs_confirmation` already reads it as a bare
+            // shell, and dispatching it as a command would open a held
+            // "Command not found" pane instead.
+            Some((path, rest)) if !path.is_empty() => {
                 let command = CommandToRun {
                     path: PathBuf::from(path),
                     args: rest.to_vec(),
@@ -3432,7 +3436,7 @@ mod host {
             },
             // No command: a plain shell. `open_terminal*` wants a cwd, and the
             // focused pane's is the one the user would expect to land in.
-            None => {
+            _ => {
                 let path = cwd.unwrap_or_else(focused_cwd);
                 // A new tab comes with a shell pane already, so opening one
                 // inside it would leave the user with two. Report the tab and
