@@ -83,16 +83,16 @@ fn no_agents_says_none() {
 #[test]
 fn todos_become_a_nested_checklist_keeping_their_ids() {
     let raw = r#"{"project":"hocus","root":"/w/h","open":2,"done":1,
-        "items":[{"id":1,"text":"**parent**\n\n- detail",
-        "children":[{"id":2,"text":"`child`"}]}]}"#;
+        "items":[{"id":1,"text":"title\n---\n\n- detail",
+        "children":[{"id":2,"text":"    code"}]}]}"#;
     let shown = present(&call("todo_list", "{}"), raw).expect("presented");
     assert!(shown.starts_with("## todos — hocus\n\n"), "{shown}");
     assert!(shown.contains("2 open, 1 done"), "{shown}");
     assert!(
-        shown.contains("- [ ] `1`\n  **parent**\n  \n  - detail\n"),
+        shown.contains("- [ ] `1`\n\n  title\n  ---\n  \n  - detail\n"),
         "{shown}"
     );
-    assert!(shown.contains("  - [ ] `2`\n    `child`\n"), "{shown}");
+    assert!(shown.contains("  - [ ] `2`\n\n        code\n"), "{shown}");
 }
 
 #[test]
@@ -100,19 +100,16 @@ fn a_done_todo_is_ticked() {
     let raw = r#"{"project":"h","open":0,"done":1,
         "items":[{"id":1,"text":"t","done":true}]}"#;
     let shown = present(&call("todo_list", "{}"), raw).expect("presented");
-    assert!(shown.contains("- [x] `1`\n  t"), "{shown}");
+    assert!(shown.contains("- [x] `1`\n\n  t"), "{shown}");
 }
 
 #[test]
 fn todo_search_keeps_markdown_in_each_result() {
     let raw = r#"{"query":"ship","matches":[
-        {"id":2,"text":"**ship it**\n\n```\nnow\n```","project":"hocus"}]}"#;
+        {"id":2,"text":"2. ship it\n\n    now","project":"hocus"}]}"#;
     let shown = present(&call("todo_search", "{}"), raw).expect("presented");
-    assert!(shown.contains("- [ ] `2` — _hocus_\n"), "{shown}");
-    assert!(
-        shown.contains("  **ship it**\n  \n  ```\n  now\n  ```\n"),
-        "{shown}"
-    );
+    assert!(shown.contains("- [ ] `2` — _hocus_\n\n"), "{shown}");
+    assert!(shown.contains("  2. ship it\n  \n      now\n"), "{shown}");
 }
 
 #[test]

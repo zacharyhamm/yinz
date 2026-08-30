@@ -618,6 +618,7 @@ fn todo_items(items: &[Value], depth: usize, out: &mut String) {
 }
 
 fn markdown_body(text: &str, indent: &str, out: &mut String) {
+    out.push('\n');
     for line in text.split('\n') {
         out.push_str(indent);
         out.push_str(line);
