@@ -14,10 +14,21 @@ use crate::{
     history, Confirmation, Picker, PickerKind, Plan, PromptKind, Role, RowKind, State, Status,
 };
 
-/// Below this we can't lay out a title, a transcript row and an input row,
-/// so we say so instead of rendering nonsense.
+/// What the whole layout costs: the input row, one transcript row, the title
+/// bar, the help line and the two rules around the input box. At this many rows
+/// and above the conversation is drawn entire; below it `chrome_for` gives the
+/// rows away in order of what matters least.
+///
+/// A comfort threshold rather than a refusal, and the size `overlay` places a
+/// pane at (`MIN_PANE_ROWS` is this plus the frame around it).
 pub(crate) const MIN_ROWS: usize = 6;
+/// The columns the conversation wants: enough for a wrapped sentence and the
+/// frames around the boxes. Like `MIN_ROWS`, what `overlay` sizes a pane to
+/// rather than a floor anything is refused below.
 pub(crate) const MIN_COLS: usize = 24;
+/// The one hard floor: a prompt and a character after it. Below this there is
+/// nowhere to type, and nothing a conversation could be.
+const MIN_INPUT_COLS: usize = 4;
 /// Rows the input box may grow to before it starts scrolling internally.
 const INPUT_MAX_ROWS: usize = 5;
 
@@ -1096,11 +1107,71 @@ fn styled(line: &VLine) -> Text {
 // Render
 // ---------------------------------------------------------------------------
 
+/// Which chrome the rows on offer can pay for.
+///
+/// **The conversation degrades rather than refusing to draw.** A pane hocus can
+/// be given is now as small as the terminal is (`overlay::MIN_PANE_ROWS`), and
+/// "pane too small" in place of the conversation is worse than a conversation
+/// with less around it. What goes first is what matters least: the rules around
+/// the input box, then the help line, then the title bar. The input row and one
+/// transcript row are what is left, and the input row is never given up - a
+/// conversation you cannot type into is not one.
+///
+/// At `MIN_ROWS` rows and above this is everything, so the layout there is
+/// exactly the layout it has always been.
+///
+/// | rows | drawn |
+/// |---|---|
+/// | ≥ 6 | everything |
+/// | 5 | no rules |
+/// | 4 | no rules, no help line |
+/// | 3 | and no title bar |
+/// | 2 | a transcript row and the input |
+/// | 1 | the input |
+/// | 0 | nothing |
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Chrome {
+    title: bool,
+    transcript: bool,
+    help: bool,
+    rules: bool,
+}
+
+fn chrome_for(rows: usize) -> Chrome {
+    Chrome {
+        title: rows >= 4,
+        transcript: rows >= 2,
+        help: rows >= 5,
+        rules: rows >= MIN_ROWS,
+    }
+}
+
+/// Where the conversation is drawn: the row it starts on, once the title bar has
+/// taken its own, and how many rows it has once the help line has taken its.
+///
+/// One place, because `render` and `chat_layout` have to agree on it - the same
+/// rule that keeps `place_cursor` and `render_chat` on `ChatLayout::input_y`.
+fn body_of(chrome: Chrome, rows: usize) -> (usize, usize) {
+    let y = usize::from(chrome.title);
+    (y, rows.saturating_sub(y + usize::from(chrome.help)))
+}
+
 pub fn render(state: &mut State, rows: usize, cols: usize) {
-    if rows < MIN_ROWS || cols < MIN_COLS {
+    // The only refusal left, and it is about columns: `chrome_for` answers for
+    // every height, but a pane too narrow for a prompt and a character has
+    // nowhere to put either.
+    if rows == 0 || cols < MIN_INPUT_COLS {
         state.chat_tab_width = 0;
         show_cursor(None);
-        print_text_with_coordinates(Text::new("pane too small"), 0, 0, Some(cols), None);
+        if rows > 0 {
+            print_text_with_coordinates(
+                Text::new(truncate_to_width("too small", cols)),
+                0,
+                0,
+                Some(cols),
+                None,
+            );
+        }
         return;
     }
 
@@ -1120,12 +1191,12 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
     // The agent strip that used to own the top third is its own pane now
     // (hocus-agents, split off above this one); the conversation has the whole
     // body below the title.
-    let body_y = 1;
-    let body_rows = rows.saturating_sub(body_y + 1);
+    let chrome = chrome_for(rows);
+    let (body_y, body_rows) = body_of(chrome, rows);
     let layout = state
         .picker
         .is_none()
-        .then(|| chat_layout(state, body_rows, cols));
+        .then(|| chat_layout(state, body_rows, cols, chrome));
 
     if state.picker.is_some() {
         show_cursor(None);
@@ -1134,14 +1205,21 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
         // the render output stream in order.
         place_cursor(state, layout, layout.input_y(body_y));
     }
-    render_title(state, cols);
+    match chrome.title {
+        true => render_title(state, cols),
+        // The bar is not drawn, so it must not go on taking the keys it would
+        // have drawn: `chat_tab_width` is what says whether a key is the bar's.
+        false => state.chat_tab_width = 0,
+    }
 
     // History and models take the top half and leave the conversation visible.
     if let Some(picker) = &state.picker {
-        // Leave the chat enough room for both input rules and one text row.
+        // Leave the chat enough room for both input rules and one text row -
+        // and, in a body too short for that, the one row the input box is on.
         let picker_rows = (body_rows / 2)
             .max(1)
-            .min(body_rows.saturating_sub(3).max(1));
+            .min(body_rows.saturating_sub(3).max(1))
+            .min(body_rows.saturating_sub(1));
         let ruled = picker_rows > 1;
         render_picker(picker, body_y, picker_rows - usize::from(ruled), cols, true);
         if ruled {
@@ -1155,10 +1233,16 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
         }
 
         let chat_y = body_y + picker_rows;
-        let layout = chat_layout(state, body_rows.saturating_sub(picker_rows), cols);
+        let layout = chat_layout(state, body_rows.saturating_sub(picker_rows), cols, chrome);
         state.transcript_rows = layout.transcript_rows;
         render_chat(state, chat_y, cols, &layout);
+    } else {
+        let layout = layout.expect("non-picker layout");
+        state.transcript_rows = layout.transcript_rows;
+        render_chat(state, body_y, cols, &layout);
+    }
 
+    if chrome.help {
         print_text_with_coordinates(
             Text::new(help_line(state)).dim_range(..),
             0,
@@ -1166,20 +1250,7 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
             Some(cols),
             None,
         );
-        return;
     }
-
-    let layout = layout.expect("non-picker layout");
-    state.transcript_rows = layout.transcript_rows;
-
-    render_chat(state, body_y, cols, &layout);
-    print_text_with_coordinates(
-        Text::new(help_line(state)).dim_range(..),
-        0,
-        rows - 1,
-        Some(cols),
-        None,
-    );
 }
 
 /// How the conversation lays out in the rows below the title: the transcript on
@@ -1190,22 +1261,35 @@ struct ChatLayout {
     /// cursor finds the cell it belongs in.
     input_lines: Vec<WrappedLine>,
     transcript_rows: usize,
+    /// What the pane's height can pay for. Held here rather than passed around
+    /// so `input_y` answers with it: the rules are a row above the box, and the
+    /// cursor and the box must not disagree about whether it is there.
+    chrome: Chrome,
 }
 
 impl ChatLayout {
     /// The first row of the input box, given the first row of the whole body.
     fn input_y(&self, y: usize) -> usize {
-        y + self.transcript_rows + 1
+        y + self.transcript_rows + usize::from(self.chrome.rules)
+    }
+
+    /// The rows the box and its rules take together. The tests' way of asking
+    /// whether a body was spent exactly; `render_chat` draws from `input_y`.
+    #[cfg(test)]
+    fn input_rows(&self) -> usize {
+        self.input_lines.len() + 2 * usize::from(self.chrome.rules)
     }
 }
 
-fn chat_layout(state: &State, height: usize, cols: usize) -> ChatLayout {
+fn chat_layout(state: &State, height: usize, cols: usize, chrome: Chrome) -> ChatLayout {
     let input_text = format!("{}{}", prompt(state), state.input.get_text());
     let all_input_lines = wrap_input(&input_text, cols);
     // Cap against the rows actually available, not just INPUT_MAX_ROWS: in a
     // minimum-height body a tall input would otherwise be laid out past the
-    // last row. The two held back rows are the rules around the box.
-    let room_for_input = height.saturating_sub(2).max(1);
+    // last row. The held back rows are the rules around the box, where the pane
+    // is tall enough to be drawing them.
+    let rules = 2 * usize::from(chrome.rules);
+    let room_for_input = height.saturating_sub(rules).max(1);
     let input_rows = all_input_lines
         .len()
         .clamp(1, INPUT_MAX_ROWS.min(room_for_input));
@@ -1217,7 +1301,8 @@ fn chat_layout(state: &State, height: usize, cols: usize) -> ChatLayout {
     let end = (cursor_row + 1).max(input_rows).min(all_input_lines.len());
     ChatLayout {
         input_lines: all_input_lines[end - input_rows..end].to_vec(),
-        transcript_rows: height.saturating_sub(2 + input_rows),
+        transcript_rows: height.saturating_sub(rules + input_rows),
+        chrome,
     }
 }
 
@@ -1225,21 +1310,25 @@ fn chat_layout(state: &State, height: usize, cols: usize) -> ChatLayout {
 /// starting at `y`. The caller places the cursor, because that has to happen
 /// before anything is printed.
 fn render_chat(state: &mut State, y: usize, cols: usize, layout: &ChatLayout) {
-    if let Err(error) = &state.cfg {
-        render_config_banner(error, y, layout.transcript_rows, cols);
-    } else {
-        render_transcript(state, y, layout.transcript_rows, cols);
+    if layout.chrome.transcript {
+        if let Err(error) = &state.cfg {
+            render_config_banner(error, y, layout.transcript_rows, cols);
+        } else {
+            render_transcript(state, y, layout.transcript_rows, cols);
+        }
     }
 
     let input_y = layout.input_y(y);
     let rule = "─".repeat(cols);
-    print_text_with_coordinates(
-        Text::new(&rule).dim_range(..),
-        0,
-        input_y - 1,
-        Some(cols),
-        None,
-    );
+    if layout.chrome.rules {
+        print_text_with_coordinates(
+            Text::new(&rule).dim_range(..),
+            0,
+            input_y - 1,
+            Some(cols),
+            None,
+        );
+    }
     for (index, line) in layout.input_lines.iter().enumerate() {
         // `opaque()` paints the theme's unselected background across the whole
         // width the coordinates give, which is what makes the box read as a box
@@ -1252,13 +1341,15 @@ fn render_chat(state: &mut State, y: usize, cols: usize, layout: &ChatLayout) {
             None,
         );
     }
-    print_text_with_coordinates(
-        Text::new(&rule).dim_range(..),
-        0,
-        input_y + layout.input_lines.len(),
-        Some(cols),
-        None,
-    );
+    if layout.chrome.rules {
+        print_text_with_coordinates(
+            Text::new(&rule).dim_range(..),
+            0,
+            input_y + layout.input_lines.len(),
+            Some(cols),
+            None,
+        );
+    }
 }
 
 /// The top row: the tab bar on the left, one cell per open chat, and the status
@@ -2135,7 +2226,7 @@ mod tests {
                 .join("\n"),
         );
 
-        let tail = chat_layout(&state, 8, 24);
+        let tail = chat_layout(&state, 8, 24, full_chrome());
         assert_eq!(tail.input_lines.first().unwrap().text, "line 5");
         assert!(cursor_cell(
             &tail.input_lines,
@@ -2144,7 +2235,7 @@ mod tests {
         .is_some());
 
         state.input.move_to_start();
-        let head = chat_layout(&state, 8, 24);
+        let head = chat_layout(&state, 8, 24, full_chrome());
         assert_eq!(head.input_lines.first().unwrap().text, "> line 0");
         assert_eq!(
             cursor_cell(&head.input_lines, PROMPT.chars().count()),
@@ -2154,9 +2245,140 @@ mod tests {
 
     #[test]
     fn the_input_rules_fit_inside_the_chat_layout() {
-        let layout = chat_layout(&State::default(), 4, 24);
+        let layout = chat_layout(&State::default(), 4, 24, full_chrome());
 
-        assert_eq!(layout.transcript_rows + layout.input_lines.len() + 2, 4);
+        assert_eq!(layout.transcript_rows + layout.input_rows(), 4);
+    }
+
+    // -- degrading into a small pane ----------------------------------------
+    //
+    // The pane hocus is given is as small as the terminal is (see
+    // `overlay::MIN_PANE_ROWS`), so "pane too small" in place of the
+    // conversation is a refusal the user can do nothing about. What is drawn
+    // gets thinner instead.
+
+    /// The layout a pane with rows to spare gets, which is every one of these
+    /// tests' starting point.
+    fn full_chrome() -> Chrome {
+        chrome_for(MIN_ROWS)
+    }
+
+    #[test]
+    fn chrome_is_given_up_in_order_of_what_matters_least() {
+        let all = Chrome {
+            title: true,
+            transcript: true,
+            help: true,
+            rules: true,
+        };
+        assert_eq!(chrome_for(MIN_ROWS), all, "the whole layout at {MIN_ROWS}");
+        assert_eq!(chrome_for(40), all, "and at any height above it");
+        assert_eq!(
+            chrome_for(5),
+            Chrome {
+                rules: false,
+                ..all
+            },
+            "the rules go first"
+        );
+        assert_eq!(
+            chrome_for(4),
+            Chrome {
+                rules: false,
+                help: false,
+                ..all
+            },
+            "then the help line"
+        );
+        assert_eq!(
+            chrome_for(3),
+            Chrome {
+                title: false,
+                transcript: true,
+                help: false,
+                rules: false
+            },
+            "then the title bar"
+        );
+        assert_eq!(
+            chrome_for(2),
+            Chrome {
+                title: false,
+                transcript: true,
+                help: false,
+                rules: false
+            },
+            "a transcript row and the input"
+        );
+        assert_eq!(
+            chrome_for(1),
+            Chrome {
+                title: false,
+                transcript: false,
+                help: false,
+                rules: false
+            },
+            "the input alone"
+        );
+        assert_eq!(chrome_for(0), chrome_for(1), "and nothing at all");
+    }
+
+    /// Whatever is drawn is drawn *inside* the pane: the input box is the one
+    /// thing never given up, so the row it lands on is the assertion that
+    /// matters. It is also where the cursor goes.
+    #[test]
+    fn a_short_pane_drops_chrome_rather_than_refusing() {
+        let mut state = State {
+            perms: true,
+            ..Default::default()
+        };
+        state.input.set_text("typing".to_owned());
+        for rows in 1..=(MIN_ROWS + 2) {
+            for cols in [MIN_INPUT_COLS, 12, 40] {
+                let chrome = chrome_for(rows);
+                let (body_y, body_rows) = body_of(chrome, rows);
+                let layout = chat_layout(&state, body_rows, cols, chrome);
+                let at = format!("{rows}x{cols}");
+
+                assert!(!layout.input_lines.is_empty(), "nowhere to type at {at}");
+                assert_eq!(
+                    layout.transcript_rows + layout.input_rows(),
+                    body_rows,
+                    "the body is spent exactly at {at}"
+                );
+                assert!(
+                    layout.input_y(body_y) + layout.input_lines.len() <= rows,
+                    "the input box runs past the last row at {at}"
+                );
+                assert!(
+                    chrome.transcript || layout.transcript_rows == 0,
+                    "a transcript row in a pane with no room for one at {at}"
+                );
+                // and it renders, with a picker over it and without: a pane
+                // this small used to say "too small" and draw nothing at all
+                super::render(&mut state, rows, cols);
+                let picker = state.picker.take();
+                state.picker = Some(Picker {
+                    entries: vec![crate::PickerRow::item("a model")],
+                    selected: 0,
+                    kind: PickerKind::Models,
+                });
+                super::render(&mut state, rows, cols);
+                state.picker = picker;
+            }
+        }
+    }
+
+    #[test]
+    fn a_one_row_pane_is_the_input_box() {
+        let chrome = chrome_for(1);
+        let (body_y, body_rows) = body_of(chrome, 1);
+        let layout = chat_layout(&State::default(), body_rows, 24, chrome);
+
+        assert_eq!((body_y, body_rows), (0, 1), "no title, no help line");
+        assert_eq!(layout.transcript_rows, 0);
+        assert_eq!(layout.input_lines.len(), 1);
+        assert_eq!(layout.input_y(body_y), 0, "the one row there is");
     }
 
     // -- transcript_lines ---------------------------------------------------

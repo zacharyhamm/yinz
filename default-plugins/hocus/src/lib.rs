@@ -667,6 +667,24 @@ pub struct State {
     /// The anchor's rectangle as the last `PaneUpdate` reported it - what a re-tile is detected
     /// against, and what the placement is computed away from.
     pub(crate) anchor_rect: Option<overlay::Rect>,
+    /// The panes Ctrl-o has toured since the cycle last wrapped.
+    ///
+    /// What makes a repeat press walk to a *different* pane instead of re-picking the best one:
+    /// the ranking is a function of rectangles, so it answers the same pane twice whenever nothing
+    /// overlaps or the manifest has not caught up. Pruned to the panes still on the tab by
+    /// `track_anchor`, and emptied when the cycle comes round.
+    pub(crate) warp_visited: Vec<PaneId>,
+    /// How far into the anchor's corner ordering the conversation is.
+    ///
+    /// Reset to 0 by a press that reaches a new pane, advanced by a press that has none left to
+    /// reach - which is what turns "nowhere better to go" from a no-op into the next corner. Kept
+    /// across a re-tile, so the conversation follows its pane at the same corner.
+    pub(crate) warp_step: usize,
+    /// The rectangle the last placement asked for.
+    ///
+    /// The reference for "did this press actually move me?", and better than the manifest for
+    /// ranking because it is never stale - two presses can arrive between two `PaneUpdate`s.
+    pub(crate) placed_rect: Option<overlay::Rect>,
     /// Every pane on our tab from the last `PaneUpdate`, our own entry included.
     ///
     /// What Ctrl-o ranks. `TabUpdate` reports the surface but not the panes on it, so the manifest
@@ -810,6 +828,9 @@ impl Default for State {
             placed_against: (0, 0),
             anchor: None,
             anchor_rect: None,
+            warp_visited: Vec::new(),
+            warp_step: 0,
+            placed_rect: None,
             tab_panes: Vec::new(),
             #[cfg(test)]
             last_placement: None,
