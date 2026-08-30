@@ -86,6 +86,21 @@ fn an_idle_timer_tick_stops_without_repainting() {
 }
 
 #[test]
+fn a_hidden_wand_stops_its_timer_chain() {
+    let mut state = idle_state();
+    state.wand_drawing = true;
+    state.hidden = true;
+    state.timer_armed = true;
+
+    assert!(!state.on_timer(FRAME_SECONDS), "no hidden redraw");
+    assert!(
+        !state.timer_armed,
+        "the decorative clock stops while hidden"
+    );
+    assert_eq!(state.wand_frame, 0, "the hidden wand does not advance");
+}
+
+#[test]
 fn the_timer_chain_continues_while_waiting() {
     let mut state = ready_state();
     state.timer_armed = true;

@@ -78,10 +78,10 @@ pub fn place_image_sequence(id: u32, cols: usize, rows: usize) -> String {
 /// copies of `U+10EEEE`, each followed by the diacritics naming its row and column in the image.
 ///
 /// Returned rather than printed so a caller can compose it into a line it is building - the
-/// foreground is reset at the end, so it is safe to concatenate.
+/// foreground and underline colour are reset around it, so it is safe to concatenate.
 pub fn image_row(id: u32, row: usize, cols: usize) -> String {
     let (red, green, blue) = ((id >> 16) as u8, (id >> 8) as u8, id as u8);
-    let mut line = format!("\u{1b}[38;2;{};{};{}m", red, green, blue);
+    let mut line = format!("\u{1b}[59;38;2;{};{};{}m", red, green, blue);
     let row_mark = match ROWCOLUMN_DIACRITICS.get(row) {
         Some(mark) => *mark,
         // Beyond the table the row cannot be spelled at all, so an empty string is the honest
@@ -96,7 +96,7 @@ pub fn image_row(id: u32, row: usize, cols: usize) -> String {
         line.push(row_mark);
         line.push(*column_mark);
     }
-    line.push_str("\u{1b}[39m");
+    line.push_str("\u{1b}[39;59m");
     line
 }
 

@@ -925,9 +925,6 @@ impl ZellijPlugin for State {
         ]);
         set_selectable(true);
         set_self_mouse_selection_support(true);
-        // One tick, so the empty-chat wand has something to start from: `wants_frames` cannot say
-        // yes until a render has happened, and by then it is too late to arm from there.
-        self.arm_timer(FRAME_SECONDS);
 
         // Nothing permission-gated may be called here. The host drops a denied
         // command and writes nothing back, so a value-returning call such as
@@ -1001,6 +998,10 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
+        // A render can expose the wand without an update first: on initial draw, after `/clear`,
+        // or when a resize makes it fit. Arm before printing, while stdout is still safe for a
+        // host call; the tick will stop immediately if this render does not draw the wand.
+        self.arm_timer(FRAME_SECONDS);
         // Called once per attached client, each pass with a different client
         // set here. Only `view` differs between them; everything else on screen
         // is the one conversation everyone shares.
