@@ -301,6 +301,49 @@ enum UserAction {
     Ignore,
 }
 
+const RELEASE_CONFIG: &str = "example/default.kdl";
+
+fn git_status(sh: &Shell) -> anyhow::Result<String> {
+    cmd!(sh, "git status --porcelain --untracked-files=all")
+        .read()
+        .context("failed to inspect the release worktree")
+}
+
+fn ensure_clean_release_worktree(sh: &Shell) -> anyhow::Result<()> {
+    let status = git_status(sh)?;
+    if !status.is_empty() {
+        anyhow::bail!("release requires a clean worktree:\n{status}");
+    }
+    Ok(())
+}
+
+fn stage_release_changes(sh: &Shell) -> anyhow::Result<bool> {
+    let status = git_status(sh)?;
+    let unexpected = status
+        .lines()
+        .filter(|entry| entry.get(3..) != Some(RELEASE_CONFIG))
+        .collect::<Vec<_>>();
+    if !unexpected.is_empty() {
+        anyhow::bail!(
+            "release generation changed unexpected files:\n{}",
+            unexpected.join("\n")
+        );
+    }
+    if status.is_empty() {
+        return Ok(false);
+    }
+
+    cmd!(sh, "git add -- {RELEASE_CONFIG}")
+        .run()
+        .context("failed to stage the generated release config")?;
+    Ok(
+        !cmd!(sh, "git diff --cached --name-only -- {RELEASE_CONFIG}")
+            .read()
+            .context("failed to inspect staged release changes")?
+            .is_empty(),
+    )
+}
+
 /// Make a zellij release and publish all crates.
 pub fn publish(sh: &Shell, flags: flags::Publish) -> anyhow::Result<()> {
     let err_context = "failed to publish zellij";
@@ -332,9 +375,10 @@ pub fn publish(sh: &Shell, flags: flags::Publish) -> anyhow::Result<()> {
         anyhow::bail!("flag '--no-push' can only be used with '--cargo-registry'");
     }
 
-    sh.change_dir(crate::project_root());
-    let cargo = crate::cargo().context(err_context)?;
     let project_dir = crate::project_root();
+    sh.change_dir(&project_dir);
+    ensure_clean_release_worktree(sh).context(err_context)?;
+    let cargo = crate::cargo().context(err_context)?;
     let manifest = sh
         .read_file(project_dir.join("Cargo.toml"))
         .context(err_context)?
@@ -381,6 +425,7 @@ pub fn publish(sh: &Shell, flags: flags::Publish) -> anyhow::Result<()> {
         }
     }
 
+    let mut release_commit_created = false;
     if !skip_build {
         // Clean project
         cmd!(sh, "{cargo} clean").run().context(err_context)?;
@@ -408,18 +453,14 @@ pub fn publish(sh: &Shell, flags: flags::Publish) -> anyhow::Result<()> {
         )
         .context(err_context)?;
 
-        // Commit changes. The plugin build no longer touches the tree, so there may be nothing
-        // to commit beyond the default config copy above; git refuses an empty commit.
-        let dirty = !cmd!(sh, "git status --porcelain")
-            .read()
-            .context(err_context)?
-            .trim()
-            .is_empty();
-        if dirty {
-            cmd!(sh, "git commit -aem")
+        // Commit only the generated config. The plugin build no longer touches the tree, so
+        // there may be nothing to commit beyond the default config copy above.
+        if stage_release_changes(sh).context(err_context)? {
+            cmd!(sh, "git commit -em")
                 .arg(format!("chore(release): v{}", version))
                 .run()
                 .context(err_context)?;
+            release_commit_created = true;
         } else {
             println!("Nothing to commit for the release; tagging HEAD");
         }
@@ -530,7 +571,7 @@ pub fn publish(sh: &Shell, flags: flags::Publish) -> anyhow::Result<()> {
     // program. When dry-running we need to undo the release commit first!
     let result = closure();
 
-    if flags.dry_run && !skip_build {
+    if flags.dry_run && release_commit_created {
         cmd!(sh, "git reset --hard HEAD~1")
             .run()
             .context(err_context)?;
@@ -541,8 +582,30 @@ pub fn publish(sh: &Shell, flags: flags::Publish) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::prune_builtins;
+    use super::{
+        ensure_clean_release_worktree, prune_builtins, stage_release_changes, RELEASE_CONFIG,
+    };
     use std::fs;
+    use tempfile::TempDir;
+    use xshell::{cmd, Shell};
+
+    fn git_repo() -> (TempDir, Shell) {
+        let root = tempfile::tempdir().unwrap();
+        let sh = Shell::new().unwrap();
+        sh.change_dir(root.path());
+        cmd!(sh, "git init --quiet").run().unwrap();
+        cmd!(sh, "git config user.email release-test@example.com")
+            .run()
+            .unwrap();
+        cmd!(sh, "git config user.name ReleaseTest").run().unwrap();
+        cmd!(sh, "git config commit.gpgsign false").run().unwrap();
+        fs::create_dir_all(root.path().join("example")).unwrap();
+        fs::write(root.path().join(RELEASE_CONFIG), "original").unwrap();
+        fs::write(root.path().join("tracked.txt"), "original").unwrap();
+        cmd!(sh, "git add -- .").run().unwrap();
+        cmd!(sh, "git commit --quiet -m initial").run().unwrap();
+        (root, sh)
+    }
 
     /// Only wasm nothing produces any more goes; sibling version folders are somebody else's.
     #[test]
@@ -563,5 +626,55 @@ mod tests {
         assert!(!current.join("share.wasm").exists());
         assert!(current.join("notes.txt").is_file());
         assert!(other.join("share.wasm").is_file());
+    }
+
+    #[test]
+    fn release_git_preflight_rejects_every_dirty_state() {
+        for (state, path) in [
+            ("untracked", "untracked.txt"),
+            ("unstaged", "tracked.txt"),
+            ("staged", "tracked.txt"),
+        ] {
+            let (root, sh) = git_repo();
+            match state {
+                "untracked" => fs::write(root.path().join("untracked.txt"), "dirty").unwrap(),
+                "unstaged" => fs::write(root.path().join("tracked.txt"), "dirty").unwrap(),
+                "staged" => {
+                    fs::write(root.path().join("tracked.txt"), "dirty").unwrap();
+                    cmd!(sh, "git add -- tracked.txt").run().unwrap();
+                },
+                _ => unreachable!(),
+            }
+
+            let error = ensure_clean_release_worktree(&sh).unwrap_err().to_string();
+            assert!(error.contains(path), "{state}: {error}");
+        }
+    }
+
+    #[test]
+    fn release_git_stages_only_the_generated_config() {
+        let (root, sh) = git_repo();
+        fs::write(root.path().join(RELEASE_CONFIG), "generated").unwrap();
+
+        assert!(stage_release_changes(&sh).unwrap());
+        assert_eq!(
+            cmd!(sh, "git diff --cached --name-only").read().unwrap(),
+            RELEASE_CONFIG
+        );
+
+        cmd!(sh, "git reset --quiet").run().unwrap();
+        fs::write(root.path().join("tracked.txt"), "unexpected").unwrap();
+        let error = stage_release_changes(&sh).unwrap_err().to_string();
+        assert!(error.contains("tracked.txt"), "{error}");
+        assert!(cmd!(sh, "git diff --cached --name-only")
+            .read()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn release_git_noop_does_not_claim_a_commit() {
+        let (_root, sh) = git_repo();
+        assert!(!stage_release_changes(&sh).unwrap());
     }
 }

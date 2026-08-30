@@ -371,25 +371,35 @@ fn attach_with_session_index(config_options: Options, index: usize, create: bool
     }
 }
 
+fn named_session_exists_or_error(
+    session_name: &str,
+    probe: Result<SessionProbe, std::io::ErrorKind>,
+) -> Result<bool, String> {
+    match probe {
+        Ok(SessionProbe::Alive) => Ok(true),
+        Ok(SessionProbe::Absent) => Ok(false),
+        Ok(SessionProbe::Unresponsive) => Err(unresponsive_session_message(session_name)),
+        Err(kind) => Err(session_listing_error_message(kind)),
+    }
+}
+
 fn attach_with_session_name(
     session_name: Option<String>,
     config_options: Options,
     create: bool,
 ) -> ClientInfo {
     match &session_name {
-        Some(session) if create => match session_status(session) {
-            Ok(SessionProbe::Alive) => ClientInfo::Attach(session_name.unwrap(), config_options),
-            Ok(SessionProbe::Absent) => ClientInfo::New(session_name.unwrap(), None, None),
-            // Neither attach (it would hang) nor create (it would unlink the
-            // live server's socket).
-            Ok(SessionProbe::Unresponsive) => {
-                eprintln!("{}", unresponsive_session_message(session));
-                process::exit(1);
-            },
-            Err(kind) => {
-                eprintln!("{}", session_listing_error_message(kind));
-                process::exit(1);
-            },
+        Some(session) if create => {
+            let session_exists = named_session_exists_or_error(session, session_status(session))
+                .unwrap_or_else(|error| {
+                    eprintln!("{error}");
+                    process::exit(1);
+                });
+            if session_exists {
+                ClientInfo::Attach(session_name.unwrap(), config_options)
+            } else {
+                ClientInfo::New(session_name.unwrap(), None, None)
+            }
         },
         Some(prefix) => match match_session_name(prefix) {
             Ok(SessionNameMatch::UniquePrefix(s)) | Ok(SessionNameMatch::Exact(s)) => {
@@ -530,18 +540,16 @@ pub(crate) fn start_client(opts: CliArgs) {
                     create || should_create_detached,
                 )
             } else {
-                let session_exists =
-                    match session_name.as_ref().and_then(|s| session_status(s).ok()) {
-                        Some(SessionProbe::Alive) => true,
-                        // Every branch below either attaches (hangs) or creates
-                        // or resurrects (unlinks the live socket); none is safe.
-                        Some(SessionProbe::Unresponsive) => {
-                            let name = session_name.as_deref().unwrap_or_default();
-                            eprintln!("{}", unresponsive_session_message(name));
-                            process::exit(1);
-                        },
-                        Some(SessionProbe::Absent) | None => false,
-                    };
+                let session_exists = session_name
+                    .as_deref()
+                    .map(|session_name| {
+                        named_session_exists_or_error(session_name, session_status(session_name))
+                            .unwrap_or_else(|error| {
+                                eprintln!("{error}");
+                                process::exit(1);
+                            })
+                    })
+                    .unwrap_or(false);
                 let resurrection_layout =
                     session_name
                         .as_ref()
@@ -1143,8 +1151,11 @@ fn format_duration(duration_us: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::sessions_to_delete;
+    use super::{named_session_exists_or_error, sessions_to_delete};
     use std::{cell::Cell, io, time::Duration};
+    use zellij_utils::sessions::{
+        session_listing_error_message, unresponsive_session_message, SessionProbe,
+    };
 
     fn session(name: &str) -> (String, Duration) {
         (name.to_owned(), Duration::default())
@@ -1181,5 +1192,25 @@ mod tests {
 
         assert_eq!(sessions, eligible);
         assert!(!discovery_called.get());
+    }
+
+    #[test]
+    fn only_an_absent_named_session_allows_creation() {
+        let creation_allowed = |probe| {
+            named_session_exists_or_error("named", probe).map(|session_exists| !session_exists)
+        };
+
+        assert_eq!(creation_allowed(Ok(SessionProbe::Alive)), Ok(false));
+        assert_eq!(creation_allowed(Ok(SessionProbe::Absent)), Ok(true));
+        assert_eq!(
+            creation_allowed(Ok(SessionProbe::Unresponsive)),
+            Err(unresponsive_session_message("named"))
+        );
+        assert_eq!(
+            creation_allowed(Err(io::ErrorKind::PermissionDenied)),
+            Err(session_listing_error_message(
+                io::ErrorKind::PermissionDenied
+            ))
+        );
     }
 }

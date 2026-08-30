@@ -7288,12 +7288,14 @@ impl Tab {
         }
     }
 
-    pub fn clear_active_terminal_scroll(&mut self, client_id: ClientId) -> Result<()> {
+    pub fn clear_active_terminal_scroll(&mut self, client_id: ClientId) -> Result<bool> {
         // TODO: is this a thing?
         let err_context =
             || format!("failed to clear scroll in active pane for client {client_id}");
 
+        let mut was_scrolled = false;
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
+            was_scrolled = active_pane.is_scrolled();
             active_pane.clear_scroll();
             if !active_pane.is_scrolled() {
                 if let PaneId::Terminal(raw_fd) = active_pane.pid() {
@@ -7302,7 +7304,7 @@ impl Tab {
                 }
             }
         }
-        Ok(())
+        Ok(was_scrolled)
     }
 
     pub fn handle_scrollwheel_up(

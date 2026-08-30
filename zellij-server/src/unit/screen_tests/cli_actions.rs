@@ -30,9 +30,22 @@ pub fn send_cli_write_chars_action_to_screen() {
         pane_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
-    std::thread::sleep(std::time::Duration::from_millis(100)); // give time for actions to be
+    let write = received_pty_instructions.wait_until(
+        "the CLI characters to reach the pty writer",
+        zellij_test_support::default_timeout(),
+        |instructions| {
+            instructions
+                .iter()
+                .find_map(|instruction| match instruction {
+                    PtyWriteInstruction::Write(bytes, pane_id, _) => {
+                        Some((bytes.clone(), *pane_id))
+                    },
+                    _ => None,
+                })
+        },
+    );
     mock_screen.teardown(vec![pty_writer_thread, screen_thread]);
-    assert_snapshot!(format!("{:?}", *received_pty_instructions.lock()));
+    assert_eq!(write, (b"input from the cli".to_vec(), 0));
 }
 
 #[test]
@@ -57,9 +70,112 @@ pub fn send_cli_write_action_to_screen() {
         pane_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
-    std::thread::sleep(std::time::Duration::from_millis(100)); // give time for actions to be
+    let write = received_pty_instructions.wait_until(
+        "the CLI bytes to reach the pty writer",
+        zellij_test_support::default_timeout(),
+        |instructions| {
+            instructions
+                .iter()
+                .find_map(|instruction| match instruction {
+                    PtyWriteInstruction::Write(bytes, pane_id, _) => {
+                        Some((bytes.clone(), *pane_id))
+                    },
+                    _ => None,
+                })
+        },
+    );
     mock_screen.teardown(vec![pty_writer_thread, screen_thread]);
-    assert_snapshot!(format!("{:?}", *received_pty_instructions.lock()));
+    assert_eq!(write, (b"foo".to_vec(), 0));
+}
+
+#[test]
+pub fn write_only_requests_a_clear_scroll_render_when_scrolled() {
+    let size = Size { cols: 80, rows: 10 };
+    let client_id = 1;
+    let mut mock_screen = MockScreen::new(size);
+    let session_metadata = mock_screen.clone_session_metadata();
+    let pty_writer_receiver = mock_screen.pty_writer_receiver.take().unwrap();
+    let received_pty_instructions = Watched::new(vec![]);
+    let pty_writer_thread = log_actions_in_thread!(
+        received_pty_instructions,
+        PtyWriteInstruction::Exit,
+        pty_writer_receiver
+    );
+    let received_background_jobs = mock_screen.received_background_jobs.clone();
+    let screen_thread = mock_screen.run(None, vec![]);
+
+    let background_job_barrier = |marker_client_id| {
+        let marker = BackgroundJob::ClearHelpText {
+            client_id: marker_client_id,
+        };
+        mock_screen
+            .to_background_jobs
+            .send(marker.clone())
+            .expect("failed to send background-job barrier");
+        received_background_jobs.wait_until(
+            "the background-job barrier",
+            zellij_test_support::default_timeout(),
+            |jobs| jobs.iter().position(|job| job == &marker),
+        )
+    };
+
+    let unscrolled_start = background_job_barrier(100);
+    send_cli_action_to_server(
+        &session_metadata,
+        CliAction::WriteChars {
+            chars: "unscrolled".into(),
+            pane_id: None,
+        },
+        client_id,
+    );
+    let unscrolled_end = background_job_barrier(101);
+    let unscrolled_render_requests = received_background_jobs.lock()
+        [unscrolled_start + 1..unscrolled_end]
+        .iter()
+        .filter(|job| **job == BackgroundJob::RenderToClients)
+        .count();
+
+    let mut pane_contents = String::new();
+    for line in 0..20 {
+        pane_contents.push_str(&format!("fill pane {line}\n\r"));
+    }
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::PtyBytes(
+            0,
+            pane_contents.as_bytes().to_vec(),
+        ))
+        .expect("failed to fill pane");
+    for _ in 0..2 {
+        send_cli_action_to_server(
+            &session_metadata,
+            CliAction::ScrollUp { pane_id: None },
+            client_id,
+        );
+    }
+
+    let scrolled_start = background_job_barrier(102);
+    send_cli_action_to_server(
+        &session_metadata,
+        CliAction::WriteChars {
+            chars: "scrolled".into(),
+            pane_id: None,
+        },
+        client_id,
+    );
+    let scrolled_end = background_job_barrier(103);
+    let scrolled_render_requests = received_background_jobs.lock()
+        [scrolled_start + 1..scrolled_end]
+        .iter()
+        .filter(|job| **job == BackgroundJob::RenderToClients)
+        .count();
+
+    mock_screen.teardown(vec![pty_writer_thread, screen_thread]);
+
+    // These count synchronous render requests from fixed instruction paths, not asynchronous
+    // frames, so scheduler-side render coalescing cannot change the totals.
+    assert_eq!(unscrolled_render_requests, 1);
+    assert_eq!(scrolled_render_requests, 2);
 }
 
 #[test]

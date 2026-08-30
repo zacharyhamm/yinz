@@ -830,8 +830,10 @@ impl Pane for TerminalPane {
         }
     }
     fn clear_scroll(&mut self) {
-        self.grid.reset_viewport();
-        self.set_should_render(true);
+        if self.grid.is_scrolled {
+            self.grid.reset_viewport();
+            self.set_should_render(true);
+        }
     }
     fn is_scrolled(&self) -> bool {
         self.grid.is_scrolled
