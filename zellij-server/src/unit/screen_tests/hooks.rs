@@ -100,6 +100,63 @@ fn hooks_fired_by(steps: Vec<ScreenInstruction>) -> Vec<Fired> {
         .collect()
 }
 
+/// A hook-driven agent record flips several times a second under a working
+/// agent. The pane manifest and the `SessionInfo` that embeds it must agree,
+/// without rebuilding or broadcasting unchanged tab state.
+#[test]
+fn a_changed_agent_record_reports_pane_and_session_state() {
+    let (mut screen, background_jobs) = screen_with_background_jobs(Size { cols: 80, rows: 20 });
+    let (to_plugin, plugin_receiver): ChannelWithContext<PluginInstruction> = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    new_tab(&mut screen, 1, 0);
+    drain_background_jobs(&background_jobs);
+    plugin_receiver.try_iter().for_each(drop);
+
+    let pane_id = PaneId::Terminal(1);
+    let waiting = report(AgentState::Waiting, Some("s1"));
+    assert!(screen
+        .tab_containing_pane_mut(pane_id)
+        .expect("pane exists")
+        .set_pane_agent(pane_id, Some(waiting.clone())));
+    screen.report_pane_state().expect("pane state reports");
+
+    let cached = screen
+        .peer_sessions_cache
+        .get("zellij-test")
+        .expect("current session stays cached");
+    assert!(cached
+        .panes
+        .panes
+        .values()
+        .flatten()
+        .any(|pane| { pane.id == 1 && pane.agent.as_ref() == Some(&waiting) }));
+    let (_, reported) = match background_jobs.try_recv().expect("session info reported").0 {
+        BackgroundJob::ReportSessionInfo(name, session_info) => (name, session_info),
+        job => panic!("expected session info report, got {job:?}"),
+    };
+    assert_eq!(reported.panes, cached.panes);
+
+    let events: Vec<Event> = plugin_receiver
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PluginInstruction::Update(updates) => updates,
+            _ => vec![],
+        })
+        .map(|(_, _, event)| event)
+        .collect();
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, Event::TabUpdate(..))));
+    let session = events
+        .iter()
+        .find_map(|event| match event {
+            Event::SessionUpdate(sessions, _) => sessions.first(),
+            _ => None,
+        })
+        .expect("session subscribers are updated");
+    assert_eq!(session.panes, cached.panes);
+}
+
 fn points(fired: &[Fired]) -> Vec<HookPoint> {
     fired.iter().map(|(point, _, _)| *point).collect()
 }

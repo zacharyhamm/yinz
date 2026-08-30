@@ -1,44 +1,59 @@
 # The plugin render pipeline, and why input lags behind it
 
 This is a write-up of structural problems in how Zellij delivers events to plugins and gets
-their output back on screen. Of the candidate fixes at the end, 1 and 2 (batching on the plugin
-thread, one render per plugin per batch) are done and marked so; 3 to 5 are not. It was written
-while fixing hocus's input lag during a streaming reply, where the costs below were the
-amplifier rather than the cause — the cause was hocus redrawing its whole transcript ten times a
-second, which is fixed. What follows is what remains, so the work can be picked up deliberately
-rather than rediscovered.
+their output back on screen. Of the candidate fixes at the end, 1, 2 and 4 (batching on the
+plugin thread, one render per plugin per batch, input priority in the executor) are done and
+marked so; 3 and 5 are not. It was written while fixing hocus's input lag during a streaming
+reply, where the costs below were the amplifier rather than the cause — the cause was hocus
+redrawing its whole transcript ten times a second, which is fixed. A second round of lag ("hocus
+is laggy while agents work") turned out to be a different amplifier again, the agent-hook
+fan-out — measured, fixed and written up in its own section below, along with the
+instrumentation that now makes this whole pipeline measurable instead of guessable.
 
-The short version: **a keystroke aimed at a plugin pane crosses four strictly-FIFO queues, and
-nothing anywhere gives it priority over the traffic already in them.** A plugin receiving a lot
-of events fills those queues with its own work, and the user's typing waits behind it.
+The short version: **a keystroke aimed at a plugin pane crosses several FIFO queues, and until
+the executor learned to prefer input, nothing anywhere gave it priority over the traffic already
+in them.** A plugin receiving a lot of events fills those queues with its own work, and the
+user's typing waits behind it. (One correction to this doc's original claim: the *screen*
+thread's bus is not one strict FIFO — it is two receivers, an unbounded lane for the route
+thread and a bounded(50) lane for pty+plugin traffic (`lib.rs:2107-2112`), joined by a
+random-pick `crossbeam::Select`, so a keystroke does not wait behind every queued `PluginBytes`
+there. The bounded lane matters the other way around: a sender into a full screen queue blocks —
+see the executor note below.)
 
 ## The path a keystroke takes
 
 1. **The route thread.** `route_action` sends `ScreenInstruction::WriteCharacter` and then
-   *blocks* waiting for it to complete — `route.rs:300-325`, with the wait at `route.rs:2342`
+   *blocks* waiting for it to complete — `route.rs:309-326`, with the wait at `route.rs:2362`
    and `ACTION_COMPLETION_TIMEOUT` (1 second) at `route.rs:55`. While blocked, this thread is
    not reading the next keystroke off the client's socket, so one slow key delays the key after
-   it. `Action::Write` also sends a `ClearScroll` first, making it two round-trips.
+   it. `Action::Write` also sends a `ClearScroll` first, making it two round-trips — and every
+   non-mouse action additionally broadcasts an `Event::InputReceived` update to the plugin
+   thread before dispatch (`route.rs:279-289`).
 
-2. **The screen thread** (unbounded, `lib.rs:2209`). The key waits behind everything already
-   queued, including every `PluginBytes` message. Each of those is not cheap: `handle_plugin_bytes`
+2. **The screen thread** (two lanes, `lib.rs:2107-2112`: unbounded for the route thread,
+   bounded(50) for pty+plugin, random-pick select — see the intro's correction). Each
+   `PluginBytes` is not cheap: `handle_plugin_bytes`
    (`panes/plugin_pane.rs:236-256`) throws away the plugin's entire viewport and re-parses the
    new one through VTE, synchronously. Superseded renders for the same pane are not dropped,
    even though each one discards the previous viewport anyway.
 
    Reaching the plugin, the key becomes `PluginInstruction::Update(vec![(pid, client, Event::Key)])`
-   at `tab/mod.rs:4943`.
+   at `tab/mod.rs:4970`. Notably, the plugin-pane key path does *not* set `should_update_ui`,
+   so `log_and_report_session_state` is not on it.
 
-3. **The plugin thread** (unbounded, `lib.rs:2216`, loop after `drain_updates` in `plugins/mod.rs`). `Event::Key`
+3. **The plugin thread** (unbounded, `lib.rs:2114`, loop after `drain_updates` in `plugins/mod.rs`). `Event::Key`
    is the *same* `PluginInstruction::Update` variant as every other event — streamed HTTP
-   chunks, pane updates, timers (`plugins/mod.rs:504`). `Bus::recv` (`thread_bus.rs:220`) is a
-   plain `crossbeam::Select` with no priority. There is no way to say a key matters more.
+   chunks (already coalesced at the producer into ≥8 KiB slices, `background_jobs.rs`), pane
+   updates, timers (`plugins/mod.rs:126`). `Bus::recv` (`thread_bus.rs:221`) is a plain
+   `crossbeam::Select` with no priority; the priority now lives one hop later, in the executor
+   (candidate 4 below).
 
-4. **The pinned executor** (unbounded `std::sync::mpsc`, `pinned_executor.rs:104`). Each plugin
-   is permanently assigned to one thread (`pinned_executor.rs:146-205`); the pool is
-   `num_cpus::get().clamp(4, 16)` (`wasm_bridge.rs:273`), and plugins assigned while all threads
-   are idle commonly land together on thread 0. The key's job queues behind the plugin's pending
-   jobs, each of which holds `running_plugin.lock()` across its `update()` **and** its `render()`.
+4. **The pinned executor** (unbounded `std::sync::mpsc`, `pinned_executor.rs`). Each plugin is
+   permanently assigned to one thread; the pool is `num_cpus::get().clamp(4, 16)`
+   (`wasm_bridge.rs:272`). A plugin now gets an empty thread while one exists, workers pick
+   input-bearing plugins' jobs first (per-plugin order preserved — see candidate 4), and the
+   plugin's lock is dropped before the bounded screen send. The lock still spans a batch's
+   `update()`s **and** its `render()`.
 
 ## What makes those queues deep
 
@@ -108,19 +123,91 @@ until pending plugins have rendered, with a 100 ms timeout.
    consecutive state reports to the newest of each kind, since merged batches can carry several,
    without moving a report past the non-report events around it.
 
-3. **Drop superseded `PluginBytes` on the screen thread** (`screen/thread_main.rs:290`). For a
+3. **Drop superseded `PluginBytes` on the screen thread** (`screen/thread_main.rs:276`). For a
    given `(plugin_id, client_id)`, only the newest asset can matter — `handle_plugin_bytes`
    discards the previous viewport regardless. Every one dropped is a full VTE parse removed from
    the keystroke's critical path.
 
-4. **A priority lane for input.** The honest fix for the head-of-line blocking. Either a
-   separate high-priority channel the plugin thread's `Select` prefers, or splitting
-   `Event::Key`/`Event::Mouse` out of `PluginInstruction::Update` so they can be. This is the
-   only change that bounds keystroke latency rather than merely reducing the queue depth it
-   waits behind.
+4. **A priority lane for input.** *Done, in the executor rather than on the plugin thread's
+   bus.* Every executor job now carries a tag — its plugin, a label for the stats log, and
+   whether the batch holds a `Key`/`InterceptedKeyPress`/`Mouse`/`PastedText`
+   (`pinned_executor.rs`, `JobTag`;
+   `update_plugins` sets it via `summarize_batch_for_stats`). Each worker keeps its queue
+   locally and picks the next job with `pick_next_job`: per-plugin order is absolute (the
+   `batching.rs` invariants), but a plugin with an input job waiting anywhere in its queue goes
+   ahead of its thread-mates. Two more changes serve the same goal: `register_plugin` now gives
+   a plugin an empty thread while one exists (idle-time loads used to pile everything onto
+   thread 0, so a keystroke queued behind every daemon's work), and the events/pipe jobs drop
+   the plugin's lock before sending `PluginBytes` into the bounded screen channel, so a lagging
+   screen thread can no longer stall the plugin's whole queue transitively. What remains undone
+   of the original idea: a lane on the *plugin thread's* bus itself, which matters only when
+   that thread's drain loop is the bottleneck — the measurements below say the executor was.
 
 5. **Reconsider the route thread's blocking wait** (`route.rs:2342`). A key that does not need a
    completion signal should not stall the client's whole input loop for up to a second.
+
+## The agent-hook fan-out, and how to measure this pipeline
+
+The second round of "typing in hocus is laggy" (2026-08) was not the streaming path at all. With
+two coding agents working in panes, their `zellij action agent-report --hook-json` hooks fired
+~3/s, and the live session's server burned ~85% of a core — ~95% of it on the plugin executor
+threads, ~1.5 CPU-seconds per hook event. Typing waited behind all of it.
+
+What one hook event cost, as measured (each × its own amplification):
+
+1. **Every departing connection re-broadcast the whole session.** A hook's CLI client — and
+   every session *probe*, which is a connection too — ended in `ScreenInstruction::RemoveClient`,
+   whose handler reported the full session state three times over (`remove_client` itself,
+   `resize_to_clients`, and once more directly). At ~3.3 connections per hook that was ~10 full
+   reports per hook, each a fresh `PaneManifest` + `TabInfo`s + a `SessionUpdate` carrying a
+   clone of **every known session's** `SessionInfo`. Fixed: the handler skips the reflow and the
+   report for a connection that never attached (`is_client_attached`), and a real detach reports
+   once, via `resize_to_clients`.
+2. **`SetPaneAgent` rebuilt tab state per record flip.** A working agent flips its record's
+   `detail` on every `PreToolUse`/`PostToolUse`. `report_pane_state` (`screen/plugin_state.rs`)
+   now rebuilds only the pane manifest. It also mirrors that manifest into the cached
+   `SessionInfo`, its background snapshot and `SessionUpdate`, because `SessionInfo` embeds it;
+   the redundant `TabUpdate` remains gone.
+3. **hocus-agentd republished an unchanged world.** `publish()` ran unconditionally on
+   `PaneUpdate`, `TabUpdate`, `CommandChanged`, `CwdChanged`, the 5s heartbeat and every hook —
+   each a full clone + `serde_json::to_string` piped to every subscriber (hocus, hocus-store,
+   hocus-agents), each of whom parsed and merged it. Now a snapshot identical to the last one
+   sent is withheld (`last_published`), except to a subscriber that just arrived.
+
+Still deliberately unfixed: the `agent_hook` `KeybindPipe` broadcast to every plugin (≤64 KiB,
+one encode/decode per plugin per hook, ~1.5 ms per plugin in a debug build) — cheap once the
+above landed.
+
+### Measuring it
+
+- **Executor stats, always on.** Each worker logs one line per ~10 s to the zellij log
+  (`plugin-exec-N job stats (last 10.0s): hocus[5]: 60 jobs, run 527ms (max 17ms PaneUpdate),
+  wait 464ms (max 17ms) [PaneUpdate×30 473ms, pipe:agent_hook×29 41ms]`): per plugin, job count,
+  run and queue-wait time, and the breakdown by job label. An input-bearing job that waited
+  ≥100 ms is logged the moment it starts — that wait *is* keystroke latency.
+- **`scripts/hook-storm.sh <pane_id> [rate] [secs]`** fires synthetic
+  `PreToolUse`/`PostToolUse` hook events at a pane (default 3/s × 30 s, the measured live rate),
+  flipping the record each time like a real agent.
+- **`scripts/plugin-thread-cpu.sh <session> [secs] [hooks]`** samples the server's
+  `plugin-exec-*`/`screen` threads' CPU per second from `/proc` and totals it, per hook when
+  told how many were sent. Both honor `ZELLIJ_BIN` for a checkout build.
+
+Storm at 3/s for 30 s against a fresh one-tab session with hocus open and one client attached,
+debug build, before the three fixes and after the original fan-out fix. The latter predates the
+consistency correction that restored one `SessionUpdate` per changed agent record because
+`SessionInfo` embeds the pane manifest:
+
+| metric | before | after original fan-out fix |
+|---|---|---|
+| full session-state reports during the run | 1210 | 23 |
+| hocus executor jobs / 10 s | 804 (247 `SessionUpdate`, 262 `PaneUpdate`, 238 `TabUpdate`) | 60 (30 `PaneUpdate`, 30 `pipe:agent_hook`) |
+| hocus run time / 10 s | 4.1 s | 0.5 s |
+| hocus max queue wait | 653 ms | 18 ms |
+| plugin-thread CPU per hook, all threads | ~700 ms | ~70–140 ms |
+
+(Current per-hook work is the intended `PaneUpdate`, the required `SessionUpdate`, and the
+per-plugin `agent_hook` pipe. Spreading plugins one-per-thread trades a little total CPU for the
+latency isolation — hocus no longer shares a queue with anything.)
 
 ## A deferred hocus item
 

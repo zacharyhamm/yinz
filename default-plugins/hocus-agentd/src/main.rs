@@ -196,6 +196,12 @@ struct State {
     /// session the title and working folder of every pane.
     subscribers: Vec<u32>,
     seq: u64,
+    /// The last snapshot that actually went out, verbatim. Most host events end
+    /// in `publish()` whether or not they moved anything a subscriber can see —
+    /// a `PaneUpdate` and the `TabUpdate` behind it, the 5s heartbeat, every
+    /// hook — and each snapshot costs every subscriber a parse and a merge. An
+    /// identical snapshot is withheld instead; see `publish`.
+    last_published: Option<String>,
     /// The session environment, for resolving the summary endpoint's API key.
     ///
     /// Read once and kept: the environment a plugin sees is the one captured when the
@@ -502,8 +508,10 @@ impl ZellijPlugin for State {
                 self.manual_kinds = request.manual_kinds;
                 self.resolve_repositories();
             }
-            // Answer immediately: a hocus that just opened wants the snapshot now.
-            self.publish();
+            // Answer immediately: a hocus that just opened wants the snapshot now,
+            // and it being the one we already sent everyone else is no reason to
+            // withhold it from someone who never got it.
+            self.publish_forced();
         }
         false
     }
@@ -2326,8 +2334,17 @@ impl State {
     }
 
     fn publish(&mut self) {
+        self.publish_with_force(false);
+    }
+
+    /// `publish` even when nothing changed: for a subscriber that just arrived
+    /// and holds no snapshot at all, to whom "unchanged" means nothing.
+    fn publish_forced(&mut self) {
+        self.publish_with_force(true);
+    }
+
+    fn publish_with_force(&mut self, force: bool) {
         self.refresh_title_prefixes();
-        self.seq += 1;
         let reply = PollReply {
             panes: self.panes.clone(),
             activity: self.activity.clone(),
@@ -2341,6 +2358,15 @@ impl State {
         let Ok(payload) = serde_json::to_string(&reply) else {
             return;
         };
+        // Withheld when identical to what already went out. Nearly every host
+        // event ends here — PaneUpdate and the TabUpdate right behind it, the
+        // heartbeat, every hook — and a snapshot that says nothing new still
+        // costs every subscriber a JSON parse and a full merge. Compared as the
+        // serialized string so the check can never drift from what is sent.
+        if !force && self.last_published.as_deref() == Some(payload.as_str()) {
+            return;
+        }
+        self.seq += 1;
         // Addressed by plugin id, never by url: `with_plugin_url("zellij:hocus")`
         // would *launch* hocus, which is precisely what a background monitor
         // must not do. No subscribers means there is simply nobody to notify;
@@ -2353,6 +2379,7 @@ impl State {
                     .with_args(BTreeMap::from([("seq".to_owned(), self.seq.to_string())])),
             );
         }
+        self.last_published = Some(payload);
     }
 }
 
@@ -4035,6 +4062,57 @@ mod tests {
         assert!(state.latched.is_empty());
         assert!(state.hooks.is_empty());
         assert_eq!(state.seq, 0);
+    }
+
+    #[test]
+    fn an_unchanged_world_is_not_republished() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        state.publish();
+        assert_eq!(state.seq, 1, "the first snapshot goes out");
+
+        state.publish();
+        assert_eq!(state.seq, 1, "nothing moved, so nothing is sent");
+
+        state.update(Event::PaneUpdate(sized_manifest(7, 24, 80)));
+        let seq = state.seq;
+        state.update(Event::PaneUpdate(sized_manifest(7, 24, 80)));
+        assert_eq!(
+            state.seq, seq,
+            "a PaneUpdate that changes nothing a subscriber sees publishes nothing"
+        );
+    }
+
+    #[test]
+    fn a_new_subscriber_gets_the_unchanged_snapshot_anyway() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        state.publish();
+        let seq = state.seq;
+
+        // What AGENT_SUBSCRIBE runs: the world is unchanged, but the asker has
+        // no snapshot at all, so it goes out (and to everyone, renumbered).
+        state.publish_forced();
+        assert_eq!(state.seq, seq + 1);
+    }
+
+    #[test]
+    fn a_real_change_after_a_withheld_publish_still_goes_out() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        state.publish();
+        state.publish();
+        let seq = state.seq;
+
+        state.manual_kinds.insert(7, "codex".to_owned());
+        state.publish();
+        assert_eq!(state.seq, seq + 1);
     }
 
     #[test]
