@@ -176,6 +176,34 @@ fn a_silent_stream_reports_that_nothing_came_back() {
 }
 
 #[test]
+fn a_dsml_tool_call_in_text_is_hidden_and_never_run() {
+    let mut state = ready_state();
+    let content = "Useful preamble.\n\n<｜｜DSML｜｜tool_calls>\n<｜｜DSML｜｜invoke name=\"search_files\">bad</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜tool_calls>";
+    let frame = format!(
+        "data: {}\n",
+        serde_json::json!({"choices": [{"delta": {"content": content}}]})
+    );
+    state.on_chunk("hocus-1", frame.as_bytes(), false, None);
+    ui::render(&mut state, 24, 80);
+
+    state.on_chunk("hocus-1", b"", true, None);
+
+    assert!(state.pending.is_empty(), "text is never an executable call");
+    assert_eq!(state.messages[1].content, "Useful preamble.");
+    assert_eq!(state.messages.last().unwrap().role, Role::Error);
+    assert!(state
+        .messages
+        .last()
+        .unwrap()
+        .content
+        .contains("no tool was run"));
+    assert!(state
+        .messages
+        .iter()
+        .all(|message| !message.content.contains("DSML")));
+}
+
+#[test]
 fn finishing_swallows_the_terminator_without_a_second_outcome() {
     // What a cancel leaves behind: notice already recorded, terminator due.
     let mut state = State {
