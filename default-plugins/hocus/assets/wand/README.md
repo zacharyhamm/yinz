@@ -1,11 +1,13 @@
 # The wand animation
 
-The twelve frames hocus loops on an empty chat, drawn with the kitty graphics protocol.
+The twelve 10x6-cell frames hocus loops on an empty chat, drawn with the kitty graphics protocol.
+The wand sweeps through a layered glow, curved trail, orbiting sigils, coloured dust and a
+once-per-loop radial burst.
 
 `gen_frames.py` is the source of truth: stdlib only, deterministic, and it measures its own
-canvas from the drawing, so tuning the sweep or the trail cannot start clipping a sparkle. It
-writes SVG; the PNGs are what the plugin embeds, because the server already decodes PNG (`f=100`)
-and shipping a GIF would mean a GIF decoder for one asset.
+canvas from the drawing, so tuning an effect cannot start clipping a sparkle. It pads that canvas
+to the terminal-cell aspect and writes SVG; the PNGs are what the plugin embeds, because the
+server already decodes PNG (`f=100`) and shipping a GIF would mean a GIF decoder for one asset.
 
 To regenerate after editing the script:
 

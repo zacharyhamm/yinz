@@ -400,7 +400,10 @@ enum Wand {
 /// The largest form that fits, or `None` when even the text one does not. A pane too small for
 /// either is left exactly as bare as it used to be.
 fn wand_form(state: &State, height: usize, cols: usize) -> Option<Wand> {
-    if state.kitty_graphics && cols >= wand::MIN_COLS && height >= wand::MIN_ROWS {
+    if state.kitty_graphics.contains(&state.client)
+        && cols >= wand::MIN_COLS
+        && height >= wand::MIN_ROWS
+    {
         Some(Wand::Image)
     } else if height >= wand::fallback_lines(0).len() + 2 && cols >= 16 {
         Some(Wand::Text)
@@ -418,7 +421,7 @@ fn wand_height(state: &State, height: usize, cols: usize) -> usize {
     }
 }
 
-/// Draw the wand, centred, in whichever form fits.
+/// Draw the wand against the left edge, in whichever form fits.
 ///
 /// Sets `wand_drawing`, which is what `wants_frames` reads to keep the animation going. It cannot
 /// arm the timer itself: a host call writes to the plugin's stdout and then has the host read
@@ -435,19 +438,11 @@ fn render_wand(state: &mut State, y: usize, height: usize, cols: usize) {
         // The pixels ride on this client's first frame and are referred to by placeholder cells
         // from then on, which is what makes redrawing at ten frames a second affordable.
         let transmit = state.wand_transmitted.insert(state.client);
-        let x = cols.saturating_sub(wand::WAND_COLS) / 2;
-        print!("{}", wand::frame_bytes(frame, x, y, transmit));
+        print!("{}", wand::frame_bytes(frame, 0, y, transmit));
         return;
     }
     for (row, line) in wand::fallback_lines(frame).into_iter().enumerate() {
-        let indent = cols.saturating_sub(12) / 2;
-        print_text_with_coordinates(
-            Text::new(format!("{}{}", " ".repeat(indent), line)).dim_range(..),
-            0,
-            y + row,
-            Some(cols),
-            None,
-        );
+        print_text_with_coordinates(Text::new(line).dim_range(..), 0, y + row, Some(cols), None);
     }
 }
 
@@ -795,6 +790,9 @@ fn body_of(chrome: Chrome, rows: usize) -> (usize, usize) {
 }
 
 pub fn render(state: &mut State, rows: usize, cols: usize) {
+    // Only render_wand sets this again. Every early return therefore stops a wand that is no
+    // longer visible instead of leaving its timer chain running forever.
+    state.wand_drawing = false;
     // The only refusal left, and it is about columns: `chrome_for` answers for
     // every height, but a pane too narrow for a prompt and a character has
     // nowhere to put either.
@@ -1490,11 +1488,12 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
     // a client actually ended up, and the key handler has to start from there.
     state.set_scroll_offset(offset);
     state.set_max_scroll_offset(max_offset);
-    // The chat has something in it, so the splash is gone: stop its clock, and forget that the
-    // frames were ever sent. The images were only kept alive by the placeholder cells that
-    // referred to them, so a chat that empties again has to transmit them afresh.
+    // The chat has something in it, so the splash is gone: stop its clock and free this client's
+    // virtual placements. Every client renders separately and must release its own image store.
     state.wand_drawing = false;
-    state.wand_transmitted.clear();
+    if state.wand_transmitted.remove(&state.client) {
+        print!("{}", wand::delete_bytes());
+    }
 
     // The badge prints over the top row, and while frozen that row is the first
     // line of the reply — the one line the anchor exists to keep on screen.
@@ -1651,6 +1650,7 @@ fn cursor_cell(lines: &[WrappedLine], cursor: usize) -> Option<(usize, usize)> {
 mod tests {
     use super::*;
     use crate::Message;
+    use std::collections::BTreeSet;
 
     /// Most of these care only about the wrapping, not about where each message
     /// starts in it.
@@ -2721,10 +2721,11 @@ mod tests {
     const WAND_COLS: usize = wand::MIN_COLS + 6;
 
     fn empty_state(kitty_graphics: bool) -> State {
-        State {
-            kitty_graphics,
-            ..Default::default()
+        let mut state = State::default();
+        if kitty_graphics {
+            state.kitty_graphics.insert(state.client);
         }
+        state
     }
 
     #[test]
@@ -2750,6 +2751,21 @@ mod tests {
         let after_first = state.wand_transmitted.clone();
         render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
         assert_eq!(state.wand_transmitted, after_first);
+    }
+
+    #[test]
+    fn kitty_graphics_support_is_scoped_to_the_rendering_client() {
+        let mut state = State::default();
+        state.kitty_graphics.insert(1);
+
+        state.client = 1;
+        render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
+        assert!(state.wand_transmitted.contains(&1));
+
+        state.client = 2;
+        render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
+        assert_eq!(wand_form(&state, WAND_HEIGHT, WAND_COLS), Some(Wand::Text));
+        assert!(!state.wand_transmitted.contains(&2));
     }
 
     #[test]
@@ -2786,15 +2802,43 @@ mod tests {
     }
 
     #[test]
-    fn the_first_message_stops_the_wand_and_forgets_that_it_was_sent() {
+    fn an_early_render_return_clears_a_stale_wand_clock() {
+        let mut state = State {
+            wand_drawing: true,
+            ..Default::default()
+        };
+        super::render(&mut state, 1, 1);
+        assert!(!state.wand_drawing);
+
+        state.wand_drawing = true;
+        state.perms = true;
+        super::render(&mut state, WAND_HEIGHT, WAND_COLS);
+        assert!(
+            !state.wand_drawing,
+            "an invalid configuration renders its banner instead of the wand"
+        );
+    }
+
+    #[test]
+    fn the_first_message_stops_the_wand_and_releases_each_clients_images() {
         let mut state = empty_state(true);
+        state.client = 1;
+        state.kitty_graphics.insert(1);
+        render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
+        state.client = 2;
+        state.kitty_graphics.insert(2);
         render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
         assert!(state.wand_drawing);
-        // The images were kept alive only by the placeholder cells; once those stop being drawn
-        // the next splash has to transmit them again.
+        assert_eq!(state.wand_transmitted, BTreeSet::from([1, 2]));
+
         state.messages.push(Message::user("hello"));
+        state.client = 1;
         render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
         assert!(!state.wand_drawing);
+        assert_eq!(state.wand_transmitted, BTreeSet::from([2]));
+
+        state.client = 2;
+        render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
         assert!(state.wand_transmitted.is_empty());
     }
 
@@ -2808,7 +2852,7 @@ mod tests {
             .iter()
             .flat_map(|frame| frame.iter().map(|line| line.chars().count()))
             .collect();
-        assert_eq!(widths.len(), 1, "{widths:?}");
+        assert_eq!(widths, BTreeSet::from([10]));
     }
 
     // -- rendering the window -----------------------------------------------
