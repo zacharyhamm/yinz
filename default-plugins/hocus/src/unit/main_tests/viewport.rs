@@ -88,6 +88,43 @@ fn each_client_scrolls_its_own_copy() {
     assert_eq!(state.scroll_offset(), 0);
 }
 
+/// The measured maximum is deliberately *one* number for every client, unlike
+/// the positions around it. The host renders a shared plugin off a single
+/// instance at a single size (`render_plugin_for_clients` reads `rows`/`cols`
+/// once, then loops the clients) and the session is reflowed to the smallest
+/// attached client, so every client measures the same transcript against the
+/// same height and would only ever write the same number back. What stays per
+/// client is where each of them is standing in it.
+#[test]
+fn two_clients_share_one_measured_maximum_but_not_a_position() {
+    let mut state = State {
+        client: 1,
+        messages: vec![Message::user("hi"), Message::assistant("there")],
+        ..Default::default()
+    };
+    ui::cached_transcript(&mut state, 40);
+    state.set_max_scroll_offset(5);
+
+    assert!(state.scroll_up(5), "client 1 up to the measured top");
+    assert!(!state.scroll_up(1), "and clamped there");
+    assert_eq!(state.scroll_offset(), 5);
+
+    state.client = 2;
+    assert_eq!(state.scroll_offset(), 0, "client 2 was never moved");
+    assert!(
+        state.scroll_up(9),
+        "and reaches the same top from its own place"
+    );
+    assert_eq!(
+        state.scroll_offset(),
+        5,
+        "clamped by the same maximum, not by client 1's position"
+    );
+
+    state.client = 1;
+    assert_eq!(state.scroll_offset(), 5, "client 1 stayed where it was");
+}
+
 /// The anchor is what stops an arriving reply scrolling its own first line
 /// off the top, and scrolling by hand is how you say you don't want it.
 #[test]

@@ -72,7 +72,15 @@ fn logger_source(permissions: &[&str]) -> String {
       zellij.block_cli_pipe_input("batch_pipe")
       return true
     end
-    function M.render() return table.concat(lines, "\n") end
+    -- The size and the acting client head every frame, before the log, so that
+    -- `logged_after_ready` never sees them. A shared plugin is rendered once per
+    -- client off one instance, and the head is how a test reads back the size
+    -- each of those passes was given.
+    function M.render(rows, cols)
+      local head = "size " .. rows .. "x" .. cols
+        .. " client=" .. zellij.get_plugin_ids().client_id
+      return head .. "\n" .. table.concat(lines, "\n")
+    end
     return M
 "#
     )
@@ -285,6 +293,16 @@ fn key(c: char) -> Event {
     Event::Key(KeyWithModifier::new(BareKey::Char(c)))
 }
 
+/// The `size RxC` head the logger prints before its log: the dimensions `render` was called
+/// with, and the client the pass was made for.
+fn size_and_client_of(frame: &str) -> (&str, &str) {
+    let head = frame.lines().next().expect("every frame has a head line");
+    let (size, client) = head
+        .split_once(" client=")
+        .unwrap_or_else(|| panic!("no size head in frame:\n{frame}"));
+    (size, client)
+}
+
 /// The lines of `frame` after the plugin's `ready` line: what the batch made it log.
 fn logged_after_ready(frame: &str) -> Vec<&str> {
     frame
@@ -308,6 +326,16 @@ pub fn a_batch_of_scrolls_renders_once() {
         vec!["scroll_up 3 client=1"; 20],
         "every notch was delivered, in order, with its count"
     );
+    // Counting renders is the point here, and the count is a property of the code rather than of
+    // the scheduler: the batch goes in as *one* `Update`, and `drain_updates` can only merge
+    // adjacent `Update`s, never split one - so one instruction is one `update_plugins` call, one
+    // job, one `PluginBytes`. Nothing else can produce a scroll-bearing frame either: the logger
+    // subscribes only to what this test sends, and it asks for no permissions, so the render a
+    // permission answer forces never fires. This is why the general rule against render counts
+    // (AGENTS.md) does not apply - and why the content assertion above cannot stand in for it:
+    // the plugin logs the same twenty lines whether or not they were batched, so that assertion
+    // passes on the un-batched code too. The property under test is the *absence* of the
+    // nineteen intermediate frames.
     let renders_of_the_batch = harness
         .plugin_bytes()
         .into_iter()
@@ -338,6 +366,7 @@ pub fn a_shared_plugin_sees_each_event_under_its_acting_client() {
         ],
         "each event ran as the client it was directed at"
     );
+    // One `Update` in, so one render out, deterministically - see `a_batch_of_scrolls_renders_once`.
     let renders_of_the_batch: Vec<_> = harness
         .plugin_bytes()
         .into_iter()
@@ -353,6 +382,47 @@ pub fn a_shared_plugin_sees_each_event_under_its_acting_client() {
         clients,
         vec![1, 2],
         "with a frame for every attached client"
+    );
+}
+
+/// One instance, one size, every client.
+///
+/// `render_plugin_for_clients` reads `rows`/`columns` off the instance once and then loops the
+/// clients, and the session itself is reflowed to the *smallest* attached client
+/// (`screen/sizing.rs`), so two terminals of different sizes do not give one plugin two
+/// viewports. hocus leans on exactly this: it keeps a single `transcript_rows` and a single
+/// measured `max_offset` for every client, and per-client state there would be dead weight.
+/// If that ever stops being true, hocus's viewport bookkeeping is silently wrong — so fail
+/// here, next to the host code that decides it, rather than there.
+#[test]
+#[serial(plugin_tests)]
+pub fn a_shared_plugin_renders_every_client_at_one_size() {
+    let harness = Harness::new();
+    harness.load_logger(&[("shared", "true")], &[]);
+    harness.add_client(2);
+
+    harness.update(vec![(1, scroll_up(3))]);
+
+    harness.wait_for("scroll_up 3 client=1");
+    let batch = harness
+        .plugin_bytes()
+        .into_iter()
+        .find(|assets| assets.iter().any(|(_, frame)| frame.contains("scroll_up")))
+        .expect("the batch rendered");
+
+    let mut heads: Vec<(&str, &str)> = batch
+        .iter()
+        .map(|(_, frame)| size_and_client_of(frame))
+        .collect();
+    heads.sort_by_key(|(_, client)| *client);
+    let sizes: Vec<&str> = heads.iter().map(|(size, _)| *size).collect();
+    let clients: Vec<&str> = heads.iter().map(|(_, client)| *client).collect();
+
+    assert_eq!(clients, vec!["1", "2"], "a pass for each attached client");
+    assert_eq!(
+        sizes,
+        vec!["size 20x80"; 2],
+        "rendered at the instance's one size, not at a size of their own"
     );
 }
 
