@@ -7,6 +7,23 @@ fn request_body_always_streams() {
     assert_eq!(body["model"], json!("gpt-4o-mini"));
 }
 
+#[test]
+fn request_body_omits_unconfigured_reasoning_controls() {
+    let body = body_value(&test_config(), &[]);
+    assert!(body.get("thinking").is_none());
+    assert!(body.get("reasoning_effort").is_none());
+}
+
+#[test]
+fn request_body_sends_configured_reasoning_controls() {
+    let mut cfg = test_config();
+    cfg.thinking = Some("disabled".into());
+    cfg.reasoning_effort = Some("low".into());
+    let body = body_value(&cfg, &[]);
+    assert_eq!(body["thinking"], json!({"type": "disabled"}));
+    assert_eq!(body["reasoning_effort"], json!("low"));
+}
+
 /// Without this the stream never says what it cost, and the context size in
 /// the title stays a guess for the life of the chat.
 #[test]
@@ -57,7 +74,7 @@ fn request_body_adds_the_tool_first_policy_when_tools_are_enabled() {
 fn hocus_prompt_contract_keeps_global_routing_rules() {
     assert_eq!(
         TOOL_FIRST_PROMPT,
-        "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_tab`/`warp_pane` move current items out; `warp_tab_here`/`warp_pane_here` move listed items in. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` first, then `plugin_write` (its confirmation grants the permissions the source asks for), `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; `plugin_list`/`plugin_read` read the user's plugin folder. Make independent calls together."
+        "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_tab`/`warp_pane` move current items out; `warp_tab_here`/`warp_pane_here` move listed items in. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` is authoritative, so read only the relevant sections, then `plugin_write` (its confirmation grants the permissions the source asks for), `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list`/`plugin_read` read the user's plugin folder. Make independent calls together."
     );
 }
 
@@ -137,7 +154,6 @@ fn request_body_advertises_registered_extension_tools() {
     let body: serde_json::Value = serde_json::from_slice(&request_body_with_project_and_tools(
         &cfg,
         &[Message::user("hi")],
-        true,
         None,
         false,
         std::slice::from_ref(&extension),
@@ -175,7 +191,7 @@ fn request_body_advertises_registered_extension_tools() {
 fn hocus_prompt_contract_keeps_the_tool_payload_under_29_kb() {
     let mut cfg = test_config();
     cfg.tools = true;
-    let body = request_body(&cfg, &[Message::user("hi")], true);
+    let body = request_body(&cfg, &[Message::user("hi")]);
     assert!(
         body.len() < 29_000,
         "tool payload grew to {} bytes",
@@ -188,7 +204,6 @@ fn request_body_adds_the_active_project_to_the_system_message() {
     let body: serde_json::Value = serde_json::from_slice(&request_body_with_project(
         &test_config(),
         &[Message::user("hi")],
-        true,
         Some(("hocus", "/work/hocus")),
         false,
     ))
@@ -203,20 +218,6 @@ fn request_body_adds_the_active_project_to_the_system_message() {
 fn request_body_omits_the_tools_when_they_are_disabled() {
     let body = body_value(&test_config(), &[Message::user("hi")]);
     assert!(body.get("tools").is_none());
-}
-
-/// The last round of the tool budget: the tools are withheld even though the
-/// config enables them, and the prompt says why so the model answers rather
-/// than claiming it cannot proceed.
-#[test]
-fn request_body_omits_the_tools_on_the_final_round() {
-    let mut cfg = test_config();
-    cfg.tools = true;
-    let body: serde_json::Value =
-        serde_json::from_slice(&request_body(&cfg, &[Message::user("hi")], false)).unwrap();
-    assert!(body.get("tools").is_none());
-    let system = body["messages"][0]["content"].as_str().unwrap();
-    assert!(system.contains("budget for this turn is spent"), "{system}");
 }
 
 #[test]
@@ -291,7 +292,7 @@ fn request_body_sends_the_raw_result_not_its_presentation() {
         })
     );
     assert!(
-        !String::from_utf8_lossy(&request_body(&test_config(), &transcript, true))
+        !String::from_utf8_lossy(&request_body(&test_config(), &transcript))
             .contains("Opened pane 7"),
         "the presentation must not reach the model"
     );
@@ -425,7 +426,7 @@ fn a_transcript_with_no_thinking_sends_neither_reasoning_field() {
         Message::tool_calls(vec![call("call_1", "new_pane", "{}")]),
         Message::tool_result("call_1", "opened"),
     ];
-    let body = String::from_utf8(request_body(&test_config(), &transcript, true)).unwrap();
+    let body = String::from_utf8(request_body(&test_config(), &transcript)).unwrap();
     assert!(
         !body.contains("reasoning"),
         "an endpoint that never sent thinking must get the request it always \
@@ -518,7 +519,7 @@ fn planning_mode_advertises_only_the_read_only_tools() {
     let mut cfg = test_config();
     cfg.tools = true;
     let body: serde_json::Value =
-        serde_json::from_slice(&request_body_planning(&cfg, &[Message::user("hi")], true)).unwrap();
+        serde_json::from_slice(&request_body_planning(&cfg, &[Message::user("hi")])).unwrap();
     let names: Vec<&str> = body["tools"]
         .as_array()
         .unwrap()
@@ -541,28 +542,13 @@ fn the_plan_prompt_follows_the_configured_one() {
     cfg.tools = true;
     cfg.system_prompt = Some("Be terse.".to_owned());
     let body: serde_json::Value =
-        serde_json::from_slice(&request_body_planning(&cfg, &[Message::user("hi")], true)).unwrap();
+        serde_json::from_slice(&request_body_planning(&cfg, &[Message::user("hi")])).unwrap();
     let system = body["messages"][0]["content"].as_str().unwrap();
     assert!(system.contains("Planning mode."), "{system}");
     assert!(
         system.find("Be terse.").unwrap() < system.find("Planning mode.").unwrap(),
         "{system}",
     );
-}
-
-/// The budget is the harder limit of the two: spending it withholds every tool,
-/// read-only ones included, and both sentences are still owed to the model.
-#[test]
-fn a_spent_budget_still_wins_in_planning_mode() {
-    let mut cfg = test_config();
-    cfg.tools = true;
-    let body: serde_json::Value =
-        serde_json::from_slice(&request_body_planning(&cfg, &[Message::user("hi")], false))
-            .unwrap();
-    assert!(body.get("tools").is_none());
-    let system = body["messages"][0]["content"].as_str().unwrap();
-    assert!(system.contains("Planning mode."), "{system}");
-    assert!(system.contains("tool budget"), "{system}");
 }
 
 /// Planning mode has to say what it is even where there were never any tools to
@@ -573,7 +559,7 @@ fn the_plan_prompt_survives_tools_being_switched_off() {
     cfg.tools = false;
     cfg.system_prompt = None;
     let body: serde_json::Value =
-        serde_json::from_slice(&request_body_planning(&cfg, &[Message::user("hi")], true)).unwrap();
+        serde_json::from_slice(&request_body_planning(&cfg, &[Message::user("hi")])).unwrap();
     assert!(body["messages"][0]["content"]
         .as_str()
         .unwrap()
@@ -587,8 +573,7 @@ fn acting_sends_the_body_it_always_did() {
     let mut cfg = test_config();
     cfg.tools = true;
     let transcript = [Message::user("hi")];
-    let body: serde_json::Value =
-        serde_json::from_slice(&request_body(&cfg, &transcript, true)).unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&request_body(&cfg, &transcript)).unwrap();
     assert_eq!(body["tools"].as_array().unwrap().len(), 71);
     assert!(!body["messages"][0]["content"]
         .as_str()

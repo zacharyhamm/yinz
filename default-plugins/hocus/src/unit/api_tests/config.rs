@@ -88,6 +88,31 @@ fn resolve_reads_the_system_prompt_from_kdl_only() {
 }
 
 #[test]
+fn resolve_reads_and_normalises_reasoning_controls() {
+    let cfg = Config::resolve(
+        &map(&[("thinking", "DISABLED"), ("reasoning_effort", "XHIGH")]),
+        &map(&[("OPENAI_API_KEY", "sk-1")]),
+    )
+    .unwrap();
+    assert_eq!(cfg.thinking.as_deref(), Some("disabled"));
+    assert_eq!(cfg.reasoning_effort.as_deref(), Some("xhigh"));
+}
+
+#[test]
+fn resolve_rejects_invalid_reasoning_controls() {
+    let env = map(&[("OPENAI_API_KEY", "sk-1")]);
+    for (key, value) in [("thinking", "sometimes"), ("reasoning_effort", "huge")] {
+        let error = Config::resolve(&map(&[(key, value)]), &env).unwrap_err();
+        assert!(error.message.contains(key), "{}", error.message);
+        assert!(
+            error.message.contains("must be one of"),
+            "{}",
+            error.message
+        );
+    }
+}
+
+#[test]
 fn resolve_leaves_tools_on_unless_kdl_explicitly_says_false() {
     let env = map(&[("OPENAI_API_KEY", "sk-1")]);
     assert!(Config::resolve(&map(&[]), &env).unwrap().tools);
