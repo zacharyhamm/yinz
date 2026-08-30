@@ -69,8 +69,10 @@ fn two_servers_do_not_share_a_forward_socket_for_the_same_host() {
 
 /// A host beginning with `-` reaches `ssh`'s argv in option position, so
 /// `-oProxyCommand=…` would run an arbitrary local command. Ordinary
-/// destinations must still pass. This runs no ssh — it pins the guard that both
-/// `bootstrap` and `start_forward` call before ever building a `Command`.
+/// destinations must still pass — including ssh_config aliases with `/` or `+`
+/// in them and `ssh://` URIs, the only inline form that carries a port. This
+/// runs no ssh — it pins the guard that both `bootstrap` and `start_forward`
+/// call before ever building a `Command`.
 #[test]
 fn validate_ssh_host_rejects_option_lookalikes_and_junk_but_allows_real_hosts() {
     let rejected = [
@@ -79,8 +81,6 @@ fn validate_ssh_host_rejects_option_lookalikes_and_junk_but_allows_real_hosts() 
         "-ltoor",
         "--",
         "host with spaces",
-        "host;rm -rf /",
-        "$(id)",
         "host\nlogin",
     ];
     for host in rejected {
@@ -97,7 +97,9 @@ fn validate_ssh_host_rejects_option_lookalikes_and_junk_but_allows_real_hosts() 
         "user@[2001:db8::1]",
         "user@[fe80::1%eth0]",
         "192.168.1.10",
-        "user@host:2222",
+        "ssh://user@host:2222",
+        "work/build",
+        "gpu+a100",
     ];
     for host in allowed {
         assert!(

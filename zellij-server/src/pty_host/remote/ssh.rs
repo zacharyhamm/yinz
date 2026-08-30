@@ -514,11 +514,17 @@ impl Reconnector for RemoteHosts {
 /// `host` reaches `ssh`'s argv in option position, and there is no portable
 /// `--` end-of-options terminator that also works for the destination, so a
 /// value like `-oProxyCommand=sh -c '…'` would run an arbitrary *local* command.
-/// The leading-`-` check is the load-bearing one; the character allow-list is
-/// defense in depth against anything that has no place in a `[user@]host[:port]`
-/// destination. Every ssh spawn in this module funnels through `bootstrap` and
-/// `start_forward`, so validating at the top of both covers the open and the
-/// reconnect paths alike.
+/// The leading-`-` check is the load-bearing one: ssh's option parsing only
+/// reads a *leading* `-` as an option, so nothing later in the string can turn
+/// a destination into one. Whitespace and control characters are refused as
+/// defense in depth. Everything else is left to ssh itself, because a
+/// destination can be `[user@]host`, an ssh_config alias (which may contain
+/// `/`, `+`, `~`, …), or an `ssh://user@host:port` URI — the only inline form
+/// that carries a port, since this module never splits `host:port` into `-p`.
+/// The host is passed as one argv element, never through a shell, so shell
+/// metacharacters are inert. Every ssh spawn in this module funnels through
+/// `bootstrap` and `start_forward`, so validating at the top of both covers the
+/// open and the reconnect paths alike.
 fn validate_ssh_host(host: &str) -> Result<()> {
     if host.is_empty() {
         return Err(anyhow!("refusing to ssh: the remote host is empty"));
@@ -529,13 +535,7 @@ fn validate_ssh_host(host: &str) -> Result<()> {
              interpreted as an ssh option, not a destination"
         ));
     }
-    // Covers hostnames, ssh-config aliases, IPv4, bracketed IPv6 with an optional
-    // zone id (`%`), and a `user@` prefix — and excludes whitespace and shell
-    // metacharacters, which no real destination contains.
-    let allowed = |c: char| {
-        c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@' | ':' | '[' | ']' | '%')
-    };
-    if let Some(bad) = host.chars().find(|&c| !allowed(c)) {
+    if let Some(bad) = host.chars().find(|c| c.is_whitespace() || c.is_control()) {
         return Err(anyhow!(
             "refusing remote host {host:?}: it contains {bad:?}, which is not valid \
              in a remote host"
