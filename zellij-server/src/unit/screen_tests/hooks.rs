@@ -100,6 +100,71 @@ fn hooks_fired_by(steps: Vec<ScreenInstruction>) -> Vec<Fired> {
         .collect()
 }
 
+/// Every `Event` delivered to the plugin thread by `steps` (in order), plus
+/// the hook points that fired — the latter prove a step actually took effect.
+fn plugin_events_and_hooks_fired_by(steps: Vec<ScreenInstruction>) -> (Vec<Event>, Vec<HookPoint>) {
+    let size = Size { cols: 80, rows: 20 };
+    let mut mock_screen = MockScreen::new(size);
+    let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
+    let screen_thread = mock_screen.run(None, vec![]);
+    for step in steps {
+        let _ = mock_screen.to_screen.send(step);
+    }
+    mock_screen.teardown(vec![screen_thread]);
+    let mut events = vec![];
+    let mut hook_points = vec![];
+    for (instruction, _) in plugin_receiver.try_iter() {
+        match instruction {
+            PluginInstruction::Update(updates) => {
+                events.extend(updates.into_iter().map(|(_, _, event)| event));
+            },
+            PluginInstruction::RunHook { point, .. } => hook_points.push(point),
+            _ => {},
+        }
+    }
+    (events, hook_points)
+}
+
+/// A hook-driven agent record flips several times a second under a working
+/// agent, and each flip used to broadcast the whole session's state — pane
+/// manifest, tab infos and every known session's `SessionInfo` — at every
+/// subscribed plugin. Only the pane manifest carries the record, so a record
+/// change reports only the pane state; see `report_pane_state`. The mock
+/// session has no plugin panes, so `PaneUpdate`/`TabUpdate` have no targets
+/// here — the broadcast `SessionUpdate` is the observable half, and a record
+/// change must not add one.
+#[test]
+fn a_changed_agent_record_reports_pane_state_only() {
+    let count_updates = |events: &[Event]| {
+        (
+            events
+                .iter()
+                .filter(|e| matches!(e, Event::SessionUpdate(..)))
+                .count(),
+            events
+                .iter()
+                .filter(|e| matches!(e, Event::TabUpdate(..)))
+                .count(),
+        )
+    };
+    let (baseline_events, _) = plugin_events_and_hooks_fired_by(vec![new_pane(1, None)]);
+    let (events, hook_points) = plugin_events_and_hooks_fired_by(vec![
+        new_pane(1, None),
+        set_agent(1, Some(report(AgentState::Busy, Some("s1")))),
+        set_agent(1, Some(report(AgentState::Waiting, Some("s1")))),
+    ]);
+    assert!(
+        hook_points.contains(&HookPoint::AgentStart)
+            && hook_points.contains(&HookPoint::AgentWaiting),
+        "both record changes were seen and fired their hooks"
+    );
+    assert_eq!(
+        count_updates(&events),
+        count_updates(&baseline_events),
+        "a record change adds no SessionUpdate and no TabUpdate"
+    );
+}
+
 fn points(fired: &[Fired]) -> Vec<HookPoint> {
     fired.iter().map(|(point, _, _)| *point).collect()
 }

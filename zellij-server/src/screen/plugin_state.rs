@@ -343,6 +343,19 @@ impl Screen {
         result
     }
 
+    /// The pane half of `log_and_report_session_state`, alone.
+    ///
+    /// An agent record lives on a pane, so a changed record is news to
+    /// `PaneUpdate` readers and to nobody else: the tab list and the session
+    /// list did not move, and broadcasting them anyway made every agent hook
+    /// event cost every plugin a `TabUpdate` and a `SessionUpdate` — the
+    /// latter carrying a clone of every known session's manifest.
+    pub(super) fn report_pane_state(&mut self) -> Result<()> {
+        self.update_active_pane_ids();
+        self.generate_and_report_pane_state()?;
+        Ok(())
+    }
+
     pub(super) fn log_and_report_session_state(&mut self) -> Result<()> {
         let err_context = || "Failed to log and report session state".to_string();
 

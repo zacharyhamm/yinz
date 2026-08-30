@@ -2009,8 +2009,20 @@ impl Screen {
             self.update_all_clients_nesting_mode_info();
             self.broadcast_ancestry_update_to_guests();
         }
-        self.log_and_report_session_state().non_fatal();
+        // Deliberately no session-state report here. The `RemoveClient` handler
+        // reports once, through `resize_to_clients`, and only for a client that
+        // was actually attached — reporting here as well made every departing
+        // connection cost the session two extra full-manifest broadcasts.
         Ok(())
+    }
+
+    /// Whether this client id belongs to a connection the screen actually knows —
+    /// an attached client or a watcher. A session probe or a one-shot CLI action
+    /// client connects and disconnects without ever attaching, and none of the
+    /// screen's per-client bookkeeping applies to it.
+    pub fn is_client_attached(&self, client_id: ClientId) -> bool {
+        self.active_tab_ids.contains_key(&client_id)
+            || self.watcher_clients.contains_key(&client_id)
     }
 
     pub fn add_watcher_client(&mut self, client_id: ClientId) -> Result<()> {

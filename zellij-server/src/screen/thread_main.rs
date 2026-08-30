@@ -2299,11 +2299,20 @@ pub(crate) fn screen_thread_main(
             },
             ScreenInstruction::RemoveClient(client_id) => {
                 attach_traces_waiting_for_first_render.remove(&client_id);
+                // A connection that never attached — a session probe, a one-shot
+                // CLI action client, a hook's `zellij action agent-report` — has
+                // no screen state, and its departure must not cost the session a
+                // reflow and a full session-state broadcast. At several such
+                // connections per hook event, those broadcasts were most of the
+                // plugin threads' load while an agent worked.
+                let was_attached = screen.is_client_attached(client_id);
                 screen.remove_client(client_id).non_fatal();
-                // the departing client may have been the one constraining the screen size
-                screen.resize_to_clients().non_fatal();
-                screen.log_and_report_session_state().non_fatal();
-                screen.render(None).non_fatal();
+                if was_attached {
+                    // the departing client may have been the one constraining the
+                    // screen size; resize_to_clients also reports session state.
+                    screen.resize_to_clients().non_fatal();
+                    screen.render(None).non_fatal();
+                }
             },
             ScreenInstruction::UpdateSearch(
                 c,
@@ -4119,7 +4128,12 @@ pub(crate) fn screen_thread_main(
                 // reader of the manifest.
                 if changed {
                     screen.fire_agent_state_hooks(pane_id, previous.as_ref(), agent.as_ref());
-                    screen.log_and_report_session_state()?;
+                    // Only the pane state: the record lives in `PaneInfo`, and a
+                    // hook-driven record flips several times a second under a
+                    // working agent — the full session-state fan-out here was a
+                    // measured driver of plugin-thread load. See
+                    // `report_pane_state`.
+                    screen.report_pane_state()?;
                 }
             },
             ScreenInstruction::SetPaneColor(pane_id, fg, bg, _completion) => {

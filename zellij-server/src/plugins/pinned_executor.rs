@@ -3,11 +3,12 @@ use crate::plugins::plugin_map::PluginMap;
 use crate::plugins::wasm_bridge::PluginCache;
 use crate::ClientId;
 use crate::ThreadSenders;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 use wasmi::Engine;
 
 /// A dynamic thread pool that pins jobs to specific threads based on plugin_id
@@ -41,20 +42,176 @@ struct ExecutionThread {
     jobs_in_flight: Arc<AtomicUsize>, // Busy state tracking
 }
 
+type JobWork = Box<
+    dyn FnOnce(ThreadSenders, Arc<Mutex<PluginMap>>, Arc<Mutex<Vec<ClientId>>>, PluginCache, Engine)
+        + Send
+        + 'static,
+>;
+
+/// What the executor knows about a queued job beyond its closure: whose it is,
+/// a short label for the stats log ("Key", "PaneUpdate×2", "pipe:agent_hook"),
+/// and whether it carries user input — the one kind of job whose queue wait is
+/// somebody's keystroke latency.
+struct JobTag {
+    plugin_id: u32,
+    label: String,
+    is_input: bool,
+}
+
 enum Job {
-    Work(
-        Box<
-            dyn FnOnce(
-                    ThreadSenders,
-                    Arc<Mutex<PluginMap>>,
-                    Arc<Mutex<Vec<ClientId>>>,
-                    PluginCache,
-                    Engine,
-                ) + Send
-                + 'static,
-        >,
-    ),
+    Work {
+        tag: JobTag,
+        enqueued_at: Instant,
+        work: JobWork,
+    },
     Shutdown, // Signal to exit the worker loop
+}
+
+/// How long a worker accumulates job stats before logging one summary line.
+const STATS_LOG_EVERY: Duration = Duration::from_secs(10);
+
+/// An input-bearing job that waited this long in the queue gets its own log
+/// line the moment it starts: that wait is user-visible latency, and the
+/// summary's max would smear it across ten seconds of other traffic.
+const INPUT_WAIT_WARNING: Duration = Duration::from_millis(100);
+
+/// One plugin's share of a worker's stats window.
+#[derive(Default)]
+struct PluginJobStats {
+    jobs: u64,
+    wait_total: Duration,
+    wait_max: Duration,
+    run_total: Duration,
+    run_max: Duration,
+    run_max_label: String,
+    /// Job count and run time per label, so the summary can say *what* the
+    /// jobs were, not only how many. Capped; the excess pools under "other".
+    by_label: Vec<(String, u64, Duration)>,
+}
+
+/// Labels tracked individually per plugin per window before pooling.
+const MAX_TRACKED_LABELS: usize = 12;
+
+fn record_job(
+    stats: &mut HashMap<u32, PluginJobStats>,
+    tag: &JobTag,
+    waited: Duration,
+    ran: Duration,
+) {
+    let entry = stats.entry(tag.plugin_id).or_default();
+    entry.jobs += 1;
+    entry.wait_total += waited;
+    entry.wait_max = entry.wait_max.max(waited);
+    entry.run_total += ran;
+    if ran >= entry.run_max {
+        entry.run_max = ran;
+        entry.run_max_label = tag.label.clone();
+    }
+    let slot = match entry
+        .by_label
+        .iter()
+        .position(|(label, _, _)| *label == tag.label)
+    {
+        Some(index) => Some(index),
+        None if entry.by_label.len() < MAX_TRACKED_LABELS => {
+            entry.by_label.push((tag.label.clone(), 0, Duration::ZERO));
+            Some(entry.by_label.len() - 1)
+        },
+        None => entry
+            .by_label
+            .iter()
+            .position(|(label, _, _)| label == "other")
+            .or_else(|| {
+                entry.by_label.push(("other".to_owned(), 0, Duration::ZERO));
+                Some(entry.by_label.len() - 1)
+            }),
+    };
+    if let Some(index) = slot {
+        let (_, count, run) = &mut entry.by_label[index];
+        *count += 1;
+        *run += ran;
+    }
+}
+
+/// Which pending job runs next.
+///
+/// The invariant is per-plugin FIFO: the only job of a plugin that may run is
+/// its *oldest* queued one, so a plugin sees its events in the order they were
+/// sent — `plugin_tests/batching.rs` pins that ordering end to end. Between
+/// plugins the pick prefers one with an input job waiting anywhere in its
+/// queue: an input job's wait is a person's keystroke latency, and without
+/// this it queues behind every other plugin's already-submitted work.
+fn pick_next_job(pending: &VecDeque<(JobTag, Instant, JobWork)>) -> Option<usize> {
+    pending.front()?;
+    let urgent_plugins: HashSet<u32> = pending
+        .iter()
+        .filter(|(tag, _, _)| tag.is_input)
+        .map(|(tag, _, _)| tag.plugin_id)
+        .collect();
+    if !urgent_plugins.is_empty() {
+        let mut seen: HashSet<u32> = HashSet::new();
+        for (index, (tag, _, _)) in pending.iter().enumerate() {
+            let is_oldest_of_its_plugin = seen.insert(tag.plugin_id);
+            if is_oldest_of_its_plugin && urgent_plugins.contains(&tag.plugin_id) {
+                return Some(index);
+            }
+        }
+    }
+    Some(0)
+}
+
+/// "location[id]", or "plugin[id]" for one already gone from the map.
+fn plugin_name(plugin_map: &Arc<Mutex<PluginMap>>, plugin_id: u32) -> String {
+    let location = plugin_map
+        .lock()
+        .unwrap()
+        .run_plugin_of_plugin_id(plugin_id)
+        .map(|run_plugin| run_plugin.location.to_string());
+    match location {
+        Some(location) => format!("{location}[{plugin_id}]"),
+        None => format!("plugin[{plugin_id}]"),
+    }
+}
+
+/// One line per window per worker, heaviest plugin first, then reset. This is
+/// the measurement `docs/PLUGIN_RENDER_PIPELINE.md` points at: what each plugin
+/// cost this thread, and how long jobs sat in its queue.
+fn log_job_stats(
+    thread_idx: usize,
+    window: Duration,
+    stats: &mut HashMap<u32, PluginJobStats>,
+    plugin_map: &Arc<Mutex<PluginMap>>,
+) {
+    let mut entries: Vec<(u32, PluginJobStats)> = stats.drain().collect();
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.1.run_total));
+    let summary: Vec<String> = entries
+        .iter()
+        .map(|(plugin_id, s)| {
+            let mut by_label = s.by_label.clone();
+            by_label.sort_by_key(|entry| std::cmp::Reverse(entry.2));
+            let labels: Vec<String> = by_label
+                .iter()
+                .map(|(label, count, run)| format!("{label}×{count} {}ms", run.as_millis()))
+                .collect();
+            format!(
+                "{}: {} jobs, run {}ms (max {}ms {}), wait {}ms (max {}ms) [{}]",
+                plugin_name(plugin_map, *plugin_id),
+                s.jobs,
+                s.run_total.as_millis(),
+                s.run_max.as_millis(),
+                s.run_max_label,
+                s.wait_total.as_millis(),
+                s.wait_max.as_millis(),
+                labels.join(", "),
+            )
+        })
+        .collect();
+    log::info!(
+        "plugin-exec-{} job stats (last {:.1}s): {}",
+        thread_idx,
+        window.as_secs_f64(),
+        summary.join("; ")
+    );
 }
 
 impl PinnedExecutor {
@@ -114,19 +271,71 @@ impl PinnedExecutor {
                     let connected_clients = connected_clients;
                     let plugin_cache = plugin_cache;
                     let engine = engine;
-                    while let Ok(job) = receiver.recv() {
-                        match job {
-                            Job::Work(work) => {
-                                work(
-                                    senders.clone(),
-                                    plugin_map.clone(),
-                                    connected_clients.clone(),
-                                    plugin_cache.clone(),
-                                    engine.clone(),
-                                );
-                                jobs_in_flight_clone.fetch_sub(1, Ordering::SeqCst);
-                            },
-                            Job::Shutdown => break,
+                    let mut stats: HashMap<u32, PluginJobStats> = HashMap::new();
+                    let mut stats_since = Instant::now();
+                    // Jobs taken off the channel but not yet run. Held locally so
+                    // the pick below can see what is waiting: strict channel FIFO
+                    // would make a keystroke wait behind every other plugin's
+                    // queued work. Per-plugin order is still absolute — only the
+                    // interleaving *between* plugins is rearranged.
+                    let mut pending: VecDeque<(JobTag, Instant, JobWork)> = VecDeque::new();
+                    let mut shutting_down = false;
+                    loop {
+                        if pending.is_empty() && !shutting_down {
+                            match receiver.recv() {
+                                Ok(Job::Work {
+                                    tag,
+                                    enqueued_at,
+                                    work,
+                                }) => pending.push_back((tag, enqueued_at, work)),
+                                Ok(Job::Shutdown) => shutting_down = true,
+                                Err(_) => break,
+                            }
+                        }
+                        // Everything already queued, so an input job that just
+                        // arrived is visible to this pick.
+                        while let Ok(job) = receiver.try_recv() {
+                            match job {
+                                Job::Work {
+                                    tag,
+                                    enqueued_at,
+                                    work,
+                                } => pending.push_back((tag, enqueued_at, work)),
+                                Job::Shutdown => shutting_down = true,
+                            }
+                        }
+                        let Some(index) = pick_next_job(&pending) else {
+                            if shutting_down {
+                                break;
+                            }
+                            continue;
+                        };
+                        let Some((tag, enqueued_at, work)) = pending.remove(index) else {
+                            continue;
+                        };
+                        let waited = enqueued_at.elapsed();
+                        if tag.is_input && waited >= INPUT_WAIT_WARNING {
+                            log::info!(
+                                "plugin-exec-{}: input job ({}) for {} waited {}ms in the executor queue",
+                                thread_idx,
+                                tag.label,
+                                plugin_name(&plugin_map, tag.plugin_id),
+                                waited.as_millis()
+                            );
+                        }
+                        let started = Instant::now();
+                        work(
+                            senders.clone(),
+                            plugin_map.clone(),
+                            connected_clients.clone(),
+                            plugin_cache.clone(),
+                            engine.clone(),
+                        );
+                        jobs_in_flight_clone.fetch_sub(1, Ordering::SeqCst);
+                        record_job(&mut stats, &tag, waited, started.elapsed());
+                        if stats_since.elapsed() >= STATS_LOG_EVERY {
+                            log_job_stats(thread_idx, stats_since.elapsed(), &mut stats, &plugin_map);
+                            stats_since = Instant::now();
                         }
                     }
                 }
@@ -154,45 +363,43 @@ impl PinnedExecutor {
         let mut thread_plugins = self.thread_plugins.lock().unwrap();
         let threads = self.execution_threads.lock().unwrap();
 
-        // Find a non-busy thread with assigned plugins (prefer reusing threads)
-        let mut best_thread: Option<(usize, usize)> = None; // (index, load)
+        // A thread of one's own while threads are to be had: a plugin's jobs
+        // queue strictly behind its thread-mates', so co-tenancy is what a busy
+        // plugin's latency is made of. The old policy preferred any *currently
+        // idle* thread, which at load time — when every thread is idle — piled
+        // the whole session onto thread 0.
+        let empty_thread = threads
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.is_some())
+            .map(|(idx, _)| idx)
+            .find(|idx| {
+                thread_plugins
+                    .get(idx)
+                    .map(|s| s.is_empty())
+                    .unwrap_or(true)
+            });
 
-        for (idx, thread_opt) in threads.iter().enumerate() {
-            if let Some(thread) = thread_opt {
-                let is_busy = thread.jobs_in_flight.load(Ordering::SeqCst) > 0;
-                if !is_busy {
-                    let load = thread_plugins.get(&idx).map(|s| s.len()).unwrap_or(0);
-                    if best_thread.is_none() || best_thread.map(|b| load < b.1).unwrap_or(false) {
-                        best_thread = Some((idx, load));
-                    }
-                }
-            }
-        }
-
-        let thread_idx = if let Some((idx, _)) = best_thread {
-            // Found a non-busy thread
+        let thread_idx = if let Some(idx) = empty_thread {
             idx
+        } else if threads.len() < self.max_threads {
+            // Every existing thread has a tenant - spawn a new one
+            let new_idx = self.next_thread_idx.fetch_add(1, Ordering::SeqCst);
+            drop(threads); // Release lock before spawning
+            self.add_thread(new_idx);
+            new_idx
         } else {
-            // All threads are busy - need to expand
-            if threads.len() < self.max_threads {
-                // Spawn a new thread
-                let new_idx = self.next_thread_idx.fetch_add(1, Ordering::SeqCst);
-                drop(threads); // Release lock before spawning
-                self.add_thread(new_idx);
-                new_idx
-            } else {
-                // At max capacity, assign to least-loaded thread
-                threads
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(idx, t)| t.as_ref().map(|_| idx))
-                    .min_by_key(|&idx| thread_plugins.get(&idx).map(|s| s.len()).unwrap_or(0))
-                    .unwrap_or_else(|| {
-                        log::error!("Failed to find free thread to run the plugin!");
-                        0 // this is a misconfiguration, but we don't want to crash the app
-                          // if it happens
-                    })
-            }
+            // At max capacity, assign to least-loaded thread
+            threads
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, t)| t.as_ref().map(|_| idx))
+                .min_by_key(|&idx| thread_plugins.get(&idx).map(|s| s.len()).unwrap_or(0))
+                .unwrap_or_else(|| {
+                    log::error!("Failed to find free thread to run the plugin!");
+                    0 // this is a misconfiguration, but we don't want to crash the app
+                      // if it happens
+                })
         };
 
         // Update mappings
@@ -235,6 +442,28 @@ impl PinnedExecutor {
             ) + Send
             + 'static,
     {
+        self.execute_for_plugin_tagged(plugin_id, "job", false, f);
+    }
+
+    /// `execute_for_plugin` with a label for the worker's stats log, and
+    /// whether the job carries user input (whose queue wait is keystroke
+    /// latency and is logged on its own past `INPUT_WAIT_WARNING`).
+    pub fn execute_for_plugin_tagged<F>(
+        &self,
+        plugin_id: u32,
+        label: impl Into<String>,
+        is_input: bool,
+        f: F,
+    ) where
+        F: FnOnce(
+                ThreadSenders,
+                Arc<Mutex<PluginMap>>,
+                Arc<Mutex<Vec<ClientId>>>,
+                PluginCache,
+                Engine,
+            ) + Send
+            + 'static,
+    {
         // Look up assigned thread
         let thread_idx = {
             let assignments = self.plugin_assignments.lock().unwrap();
@@ -257,7 +486,15 @@ impl PinnedExecutor {
         thread.jobs_in_flight.fetch_add(1, Ordering::SeqCst);
 
         // Send work
-        let job = Job::Work(Box::new(f));
+        let job = Job::Work {
+            tag: JobTag {
+                plugin_id,
+                label: label.into(),
+                is_input,
+            },
+            enqueued_at: Instant::now(),
+            work: Box::new(f),
+        };
         if thread.sender.send(job).is_err() {
             // Thread died unexpectedly - this is a critical error
             thread.jobs_in_flight.fetch_sub(1, Ordering::SeqCst);
@@ -505,14 +742,127 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_plugins_share_thread_when_idle() {
-        let executor = create_test_executor(4);
-        let thread_idx1 = executor.register_plugin(1);
-        let thread_idx2 = executor.register_plugin(2);
-        assert_eq!(thread_idx1, 0);
+    fn test_plugins_spread_across_threads_before_sharing() {
+        // A plugin's jobs queue strictly behind its thread-mates', so plugins
+        // only share a thread once every thread has a tenant. The old policy
+        // put everything registered at an idle moment on thread 0.
+        let executor = create_test_executor(3);
+        assert_eq!(executor.register_plugin(1), 0);
         assert_eq!(
-            thread_idx2, 0,
-            "Second plugin should share thread 0 when idle"
+            executor.register_plugin(2),
+            1,
+            "own thread while one can be spawned"
+        );
+        assert_eq!(executor.register_plugin(3), 2);
+        let fourth = executor.register_plugin(4);
+        assert!(
+            fourth <= 2,
+            "at capacity, the least-loaded thread is shared"
+        );
+        assert_eq!(executor.thread_count(), 3, "never exceeds max_threads");
+    }
+
+    #[test]
+    fn test_input_jobs_run_before_other_plugins_queued_work() {
+        // One thread, two plugins. While the thread is held, plugin 2 queues a
+        // pile of work and plugin 1 queues a normal job and then an input job.
+        // The input job makes plugin 1's *whole queue* go first — but never
+        // reorders plugin 1's own jobs, which is the per-plugin FIFO the
+        // batching tests pin.
+        let executor = create_test_executor(1);
+        executor.register_plugin(1);
+        executor.register_plugin(2);
+
+        let (started_tx, started_rx) = channel();
+        let barrier = Arc::new(Barrier::new(2));
+        let barrier_clone = barrier.clone();
+        executor.execute_for_plugin(2, move |_s, _p, _c, _ca, _e| {
+            started_tx.send(()).unwrap();
+            barrier_clone.wait();
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the blocker job should start");
+
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = channel();
+        let queue = |plugin_id: u32, label: &'static str, is_input: bool| {
+            let order = order.clone();
+            let tx = tx.clone();
+            executor.execute_for_plugin_tagged(
+                plugin_id,
+                label,
+                is_input,
+                move |_s, _p, _c, _ca, _e| {
+                    order.lock().unwrap().push(label);
+                    tx.send(()).unwrap();
+                },
+            );
+        };
+        queue(2, "b1", false);
+        queue(2, "b2", false);
+        queue(1, "a1", false);
+        queue(1, "a2-input", true);
+
+        barrier.wait();
+        for _ in 0..4 {
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("queued job should complete");
+        }
+
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec!["a1", "a2-input", "b1", "b2"],
+            "the input-bearing plugin's queue runs first, in its own order"
+        );
+    }
+
+    #[test]
+    fn test_without_input_jobs_the_queue_stays_fifo() {
+        let executor = create_test_executor(1);
+        executor.register_plugin(1);
+        executor.register_plugin(2);
+
+        let (started_tx, started_rx) = channel();
+        let barrier = Arc::new(Barrier::new(2));
+        let barrier_clone = barrier.clone();
+        executor.execute_for_plugin(2, move |_s, _p, _c, _ca, _e| {
+            started_tx.send(()).unwrap();
+            barrier_clone.wait();
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the blocker job should start");
+
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = channel();
+        let queue = |plugin_id: u32, label: &'static str| {
+            let order = order.clone();
+            let tx = tx.clone();
+            executor.execute_for_plugin_tagged(
+                plugin_id,
+                label,
+                false,
+                move |_s, _p, _c, _ca, _e| {
+                    order.lock().unwrap().push(label);
+                    tx.send(()).unwrap();
+                },
+            );
+        };
+        queue(2, "b1");
+        queue(1, "a1");
+        queue(2, "b2");
+
+        barrier.wait();
+        for _ in 0..3 {
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("queued job should complete");
+        }
+
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec!["b1", "a1", "b2"],
+            "no input anywhere means plain arrival order"
         );
     }
 
@@ -600,36 +950,21 @@ mod tests {
 
     #[test]
     fn test_load_balancing_prefers_least_loaded() {
-        let executor = create_test_executor(3);
+        let executor = create_test_executor(2);
 
-        // Register plugins 1, 2, 3 to thread 0 (when idle)
-        executor.register_plugin(1);
-        executor.register_plugin(2);
-        executor.register_plugin(3);
+        // The first two get threads of their own.
+        assert_eq!(executor.register_plugin(1), 0);
+        assert_eq!(executor.register_plugin(2), 1);
 
-        // Make thread 0 busy
-        let barrier = Arc::new(Barrier::new(2));
-        let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(1, move |_s, _p, _c, _ca, _e| {
-            barrier_clone.wait();
-        });
-        thread::sleep(Duration::from_millis(50));
-
-        // Register plugin 4 while thread 0 is busy (spawns thread 1)
-        let thread_idx4 = executor.register_plugin(4);
-        assert_eq!(thread_idx4, 1);
-
-        // Release barrier
-        barrier.wait();
-        thread::sleep(Duration::from_millis(50));
-
-        // Register plugin 5 when both threads idle
-        // Thread 0 has 3 plugins, thread 1 has 1 plugin
-        let thread_idx5 = executor.register_plugin(5);
-        assert_eq!(
-            thread_idx5, 1,
-            "Plugin 5 should be assigned to less loaded thread 1"
+        // At capacity, each newcomer lands on the least-loaded thread, so the
+        // tenancy stays balanced.
+        let third = executor.register_plugin(3);
+        let fourth = executor.register_plugin(4);
+        assert_ne!(
+            third, fourth,
+            "with one tenant each, consecutive registrations balance out"
         );
+        assert_eq!(executor.thread_count(), 2, "never exceeds max_threads");
     }
 
     #[test]
