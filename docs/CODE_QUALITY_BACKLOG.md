@@ -1,20 +1,24 @@
 # Code quality backlog
 
-This checklist contains the unresolved findings from the systematic code-quality audit. The three
-higher-ranked findings were fixed in the audit change set and are intentionally omitted here.
+This checklist contains the unresolved findings from the systematic code-quality audits. Findings
+fixed in an audit change set are removed from the list rather than kept as checked boxes.
 
 Scores use `(impact x urgency) / effort`, with each input rated from 1 to 5. Re-score an item when
 new evidence changes its reach, frequency, or implementation cost. Unless an item says otherwise,
 completion includes focused regression coverage and a passing `cargo x ci check`.
 
-## Next up
+## Resolved
 
-- [ ] **#4 Fix plugin executor lock ordering and sparse-pool growth** — high, 8.0 (`I4/U4/E2`)
-  - Evidence: `zellij-server/src/plugins/pinned_executor.rs:146,335` locks
-    `thread_plugins` and `execution_threads` in opposite orders, while pool growth uses vector
-    length instead of vacant slots.
-  - Complete when all executor paths use one lock order, removed slots can be reused, and a
-    concurrent register/unregister test cannot deadlock or strand work on thread 0.
+- **First round** (commit `a32e6a1de`): the three top-ranked findings.
+- **Second round** (2026-08-30 re-audit): **#4** (executor lock ordering / sparse-pool growth) and
+  **#19** (ssh option-injection host), plus two findings first surfaced that round — the theme
+  hex-color parse panic (`kdl/mod.rs`, `input/theme.rs`) and the unconfirmed command-bearing hocus
+  `new_pane` — and the stale bundled-curl dependency (`8.4.0 → 8.21.0`). The second round re-verified
+  the items below still hold at their cited locations, except **#35**, which the concurrency re-audit
+  reassessed as *no defect* (the state it names is single-threaded; at most one tolerated trailing
+  tick) — close it rather than fix it.
+
+## Next up
 
 - [ ] **#5 Keep release publishing from committing unrelated work** — high, 8.0 (`I4/U2/E1`)
   - Evidence: `xtask/src/pipelines.rs:419` runs `git commit -a` after only checking whether the
@@ -103,12 +107,6 @@ completion includes focused regression coverage and a passing `cargo x ci check`
     modification times, which are unreliable across checkout and rebase operations.
   - Complete when the handoff gate forces code generation and fails on a tracked generated diff;
     ordinary builds may retain the fast mtime shortcut.
-
-- [ ] **#19 Terminate SSH option parsing before the host argument** — high, 4.0 (`I4/U1/E1`)
-  - Evidence: `zellij-server/src/pty_host/remote/ssh.rs:518,639` passes a configured host directly
-    after options, so a host beginning with `-` can be interpreted as another SSH option.
-  - Complete when both bootstrap and forwarding commands terminate option parsing and tests cover
-    a dash-prefixed host without spawning real SSH.
 
 ## Medium priority
 
@@ -213,5 +211,203 @@ completion includes focused regression coverage and a passing `cargo x ci check`
 - [ ] **#35 Close the nested-session reannouncement wakeup window** — low, 1.0 (`I2/U1/E2`)
   - Evidence: nested guest state is updated across announcement and liveness paths in
     `zellij-server/src/screen/nested.rs:130` without one generation/lock governing the recheck.
-  - Complete when reannouncement cannot be lost between observation and wait registration, with a
-    deterministic concurrency regression test.
+  - Reassessed in the second round as **no defect**: `NestedGuestTracker` is a single-threaded
+    `&mut self` field of `Screen`; the only reachable artefact is one trailing `NestedGuestPingTick`
+    that `on_tick` already treats as a no-op. Close it (or downgrade to a comment documenting the
+    invariant) rather than fix it.
+
+## New findings (second audit round, 2026-08-30)
+
+The 10-dimension re-audit surfaced these beyond the first round's list. Scored the same way; the
+top three of the merged pool (executor #4, ssh #19, theme panic) plus the curl bump were fixed in
+this change set and are not repeated here. The strongest unfixed findings follow, highest score
+first within each band.
+
+### Critical / high
+
+- [ ] **#36 Gate per-frame pane-content materialization on a real subscriber** — critical, 12.5
+  (`I5/U5/E2`)
+  - Evidence: `Tab::render_panes` (`zellij-server/src/panes/tiled_panes/mod.rs:1279`, and the
+    floating/overlay twins) builds a `PaneContents` — a `Vec<String>` of the whole viewport — for
+    every pane on every ~10 ms repaint, clones it per client, ships it to the plugin thread and
+    full-string-diffs it there (`plugins/wasm_bridge.rs:1853`), none of it gated on any plugin having
+    subscribed to `EventType::PaneRenderReport`. Only the ANSI variant is gated. The `frame`
+    benchmark bypasses `render_panes`, so this cost is unmeasured.
+  - Complete when the materialization and the `PaneRenderReport` send are skipped unless a plugin
+    subscribes, mirroring the existing ANSI gate, with the calls moved below the `panes_to_hide`
+    check and contents shared by `Arc` rather than cloned per client.
+
+- [ ] **#37 Interrupt a runaway plugin instead of hanging the session** — critical, 6.7
+  (`I5/U4/E3`)
+  - Evidence: `get_engine()` returns `wasmi::Engine::default()` (`zellij-server/src/lib.rs:2743`) with
+    no fuel or epoch limit, and wasm runs with the per-plugin `running_plugin` mutex held
+    (`plugins/wasm_bridge.rs:1484`) while the plugin thread blocks on that same mutex to unload
+    (`:606`). A plugin whose `update` never returns hangs all plugin UI and blocks
+    `SessionMetaData::drop`'s `plugin_thread.join()` — unrecoverable without `kill -9`, and this fork
+    ships an agent that writes plugins.
+  - Complete when the engine enforces a fuel/epoch budget that traps a runaway guest into
+    `handle_plugin_crash`, and the unload path does not block indefinitely on `running_plugin`.
+
+- [ ] **#38 Answer a denied plugin command with an error, not silence** — high, 10.0 (`I5/U4/E2`)
+  - Evidence: the permission-denied arm at `zellij-server/src/plugins/zellij_exports.rs:878` logs and
+    returns `Ok(())` without writing the response the guest is mid-call waiting for, so the wasm
+    shim reads an empty pipe and `.unwrap()`s a decode failure (`zellij-tile/src/shim.rs:271` and
+    peers) — trapping the plugin during the normal first-run permission grant. Lua plugins get a
+    raised error instead, so the two runtimes diverge on the most common failure. Root cause behind
+    the open **#9**.
+  - Complete when the denied branch writes the response type's error variant (the `oneof { ok |
+    error }` shapes already exist) and the shim maps it to `Err`, with a test per answering command.
+
+- [ ] **#39 Fix the release publish loop's `publish = false` crate halt** — high, 16.0 (`I4/U4/E1`)
+  - Evidence: `xtask/src/pipelines.rs:451` skips only crates whose path contains `plugin`/`xtask`, so
+    `zellij-test-support` (`publish = false`) is entered and `cargo publish --locked` run in it, which
+    cargo rejects — after the tag has already been pushed (`:436`).
+  - Complete when the publish set is filtered on each crate's own `package.publish` (via `cargo
+    metadata`) and asserted before the tag is pushed.
+
+- [ ] **#40 Secure the main session socket the way the pty-host sockets are** — high, 8.0
+  (`I4/U4/E2`)
+  - Evidence: `zellij-server/src/lib.rs:857` binds the session socket with the process umask and only
+    then narrows it to `0o1700`, discarding the chmod result with `drop(...)`; the hardened
+    `secure_socket_with` from `e91a35176` was applied to every pty-host socket but not here. A
+    connection accepted in the window becomes a full, unauthenticated client (`:869`).
+  - Complete when this bind fails closed through the same helper and the server asserts `0o700` on
+    `ZELLIJ_SOCK_DIR` itself rather than relying on the client.
+
+- [ ] **#41 Give the remote pty broker a logger and a non-null stderr** — high, 8.0 (`I4/U4/E2`)
+  - Evidence: the `--pty-broker serve` branch (`src/main.rs:36`) never calls `configure_logger()` and
+    `spawn_detached_broker` points both stdio streams at `Stdio::null()`
+    (`zellij-server/src/pty_host/remote/broker.rs:1013`), so every remote-side failure (bind, perms,
+    accept, mid-stream death) is written nowhere; the caller sees only a generic timeout.
+  - Complete when the broker initialises logging to the remote machine's own log dir and its detached
+    child's stderr goes there rather than to `/dev/null`.
+
+- [ ] **#42 Serialize `#[serial]` plugin tests under the runner the gate uses** — high, 8.0
+  (`I4/U4/E2`)
+  - Evidence: 203 `#[serial(plugin_tests)]` annotations serialize via a process-global mutex, but
+    `cargo x test` runs nextest, which gives every test its own process — so they run fully parallel
+    while all setting the same `ZELLIJ_SESSION_NAME` (`plugins/unit/plugin_tests/mod.rs:419` and
+    peers) and dropping their `TempDir` guards before use. The most likely source of unattributable
+    plugin-test flakes.
+  - Complete when a nextest `[test-groups]` entry serializes the plugin-test binary, or each test
+    derives a unique session name and binds its temp dirs for the test's lifetime.
+
+### Medium
+
+- [ ] **#43 Recover poison and catch panics at the plugin executor boundary** — high, 4.0
+  (`I4/U2/E2`)
+  - Evidence: the loader closures lock `plugin_map` with `.unwrap()` across large fallible work on
+    detached execution threads (`plugins/wasm_bridge.rs:457,514,976,1154`); one panic poisons the
+    mutex and the plugin thread's next `.lock().unwrap()` re-panics into `fatal()`, aborting the
+    whole session for one bad plugin.
+  - Complete when these boundaries recover poison (`unwrap_or_else(|p| p.into_inner())`) and the
+    executor job runs inside `catch_unwind`, routing a panic to `handle_plugin_crash`.
+
+- [ ] **#44 Drop the outbound lock before the blocking warp handshake** — high, 6.0 (`I4/U3/E2`)
+  - Evidence: `release_for_warp` (`zellij-server/src/pty_host/remote/conn.rs:395`) holds the `outbound`
+    mutex across a blocking `write_all` plus a read loop bounded only by a ~5 s deadline, while
+    `write_input` (`:191`) — reached from the screen and pty-writer threads — blocks on that same
+    mutex. A remote warp over a slow link freezes the whole UI for up to ~10 s.
+  - Complete when the release marks the connection and drops the guard before the blocking handshake
+    (or runs it on a cloned fd) so `write_input` fails fast instead of blocking.
+
+- [ ] **#45 Serialize plugin loads without holding `plugin_map` across compilation** — high, 4.0
+  (`I4/U3/E3`)
+  - Evidence: every load path locks the process-wide `plugin_map` before `PluginLoader::start_plugin`
+    (`plugins/wasm_bridge.rs:1154`), which compiles and instantiates the wasm; the plugin thread
+    contends for the same mutex, so N concurrent loads take N × compile time and no instruction is
+    processed during any cold load. The code already logs the wait.
+  - Complete when compilation/instantiation happens outside the lock and `plugin_map` is taken only
+    for the final insert.
+
+- [ ] **#46 Cap the plugin stdout pipe** — medium, 4.5 (`I3/U3/E2`)
+  - Evidence: a plugin's WASI stdout is an unbounded host-side `VecDeque<u8>`
+    (`plugins/plugin_map.rs:461`, wired at `plugin_loader.rs:610`) outside the wasm resource limiter,
+    and the reader `read_to_end`s it with no cap (`zellij_exports.rs:6851`), so a plugin looping on
+    `fd_write` can OOM the server.
+  - Complete when the pipe is capped (sized like `MAX_IPC_FRAME_LEN`) on both the write and read
+    sides.
+
+- [ ] **#47 Preserve `anyhow` context chains at log sites** — medium, 6.0 (`I4/U3/E2`)
+  - Evidence: ~80 `log::error!("...: {}", e)` sites format an `anyhow::Error` with `{}` (Display),
+    printing only the outer message and discarding every `.context()` layer; the densest cluster is
+    `zellij-server/src/session_recorder.rs` (20 identical `"failed to record events: {}"`), whose
+    underlying store propagates raw `rusqlite` errors with no `.context()`.
+  - Complete when the pattern converts to `.with_context(...).non_fatal()` (or at least `{:#}`),
+    starting with the recorder, per `docs/ERROR_HANDLING.md`.
+
+- [ ] **#48 One appender per log file** — medium, 9.0 (`I3/U3/E1`)
+  - Evidence: `zellij-utils/src/logging.rs:47,60` build two independent `RollingFileAppender`s over the
+    same `zellij.log` with their own byte counters and rollers, so whichever rolls first renames the
+    file out from under the other — plugin diagnostics (the sole sink for plugin stderr) silently
+    stop after the first rotation.
+  - Complete when one appender backs both names, or the plugin sink gets its own file.
+
+- [ ] **#49 Gate or demote the attach-startup traces** — medium, 4.5 (`I3/U3/E2`)
+  - Evidence: ~100 `log::info!("attach trace: ...")` lines (commit `ff3e2698e`) fire unconditionally on
+    the client and session-probe paths (`zellij-utils/src/sessions.rs:222`,
+    `zellij-client/src/lib.rs`), so ordinary `zellij action` traffic — every agent hook — floods the
+    log and pushes the roll, unlike the server render traces which are correctly gated behind a flag.
+  - Complete when these are gated the same way (a flag or env var) or demoted to `debug`.
+
+- [ ] **#50 Return `Option` from the tiled focus/move helpers** — medium, 4.5 (`I3/U3/E2`)
+  - Evidence: `next_selectable_pane_id`/`previous_selectable_pane_id`
+    (`zellij-server/src/panes/tiled_panes/tiled_pane_grid.rs:898`) and `move_active_pane`
+    (`tiled_panes/mod.rs:2540`) unwrap the position lookup / active id; on a floating-only layout
+    `move-pane` reaches the tiled branch with no selectable tiled pane and panics. The floating twin
+    already returns `Option`.
+  - Complete when the tiled helpers return `Option` and the caller guards on
+    `has_selectable_tiled_panes`.
+
+- [ ] **#51 Make plugin decode failures localizable and forward-compatible** — medium, 4.0
+  (`I4/U3/E3`)
+  - Evidence: no plugin/host version handshake exists — `plugin_version()` and `PLUGIN_MISMATCH`
+    (`zellij-tile/src/lib.rs`) are exported but never called — and `update()`/`pipe()` `.unwrap()` an
+    undecodable event, so a version-skewed plugin traps rather than skipping an event it does not
+    understand. Six protobuf decode arms also return byte-identical error strings
+    (`plugin_api/plugin_command.rs:1121,1130,1886` and peers), so the failures are unlocalizable.
+  - Complete when load compares `plugin_version` against the host and surfaces `PLUGIN_MISMATCH`,
+    `update`/`pipe` skip an undecodable frame with a log line, and the duplicated decode error
+    strings name their variant (the last part is a one-hour fix on its own).
+
+- [ ] **#52 Untrusted terminal output should not unlink shm or probe arbitrary paths** — medium, 3.0
+  (`I3/U2/E2`)
+  - Evidence: a kitty-graphics `t=s` command `shm_unlink`s a base64 name from the escape sequence even
+    when the read failed (`zellij-server/src/panes/kitty_graphics/parser.rs:697`), and `t=f` opens
+    and reads an unconstrained `PathBuf` (`:758`) with distinguishable success/failure — a
+    filesystem oracle and a destructive primitive driven from any program writing to a pane,
+    including a remote host over the fork's ssh panes.
+  - Complete when `shm_unlink` runs only on a successful `shm_open` of a single-component name, and
+    file reads are constrained (home/temp, or require the `tty-graphics-protocol` marker as deletes
+    already do).
+
+### Structural (larger, recorded for sequencing)
+
+- [ ] **#53 Break the `zellij-tile` → `zellij-utils` dependency** — high, 3.0 (`I4/U3/E4`)
+  - Evidence: the third-party plugin SDK depends on the host's kitchen-sink crate, so a 503-line wasm
+    plugin resolves 156 crates including `clap`, `kdl`, `vte` and `backtrace`, and host-internal type
+    churn is a plugin-API break; shipped builtin wasm is ~1.4 MB each.
+  - Complete when the plugin wire contract (`data`, `plugin_api`, `pane_size`, the errors prelude,
+    `agent`) lives in a small contract crate that `zellij-tile` and the host share, with `cli`/`kdl`/
+    `setup` left host-only.
+
+- [ ] **#54 Extract the dispatch god-functions into testable handlers** — high, 5.0 (`I5/U4/E4`)
+  - Evidence: `route_action` (`zellij-server/src/route.rs:264`, ~2.2k lines, 9 params) and
+    `screen_thread_main` (`screen/thread_main.rs:49`, ~4.9k lines, 266 inline match arms) carry the
+    server's whole control flow with no unit-testable seam; both are top-churn files.
+  - Complete when arm bodies move to named per-domain handlers in reviewable batches, leaving thin
+    dispatchers, and the 9 params become a context struct.
+
+- [ ] **#55 Move `ScreenContext` out of `zellij-utils` and de-duplicate the command hierarchies** —
+  high, 3.0 (`I4/U3/E5`)
+  - Evidence: one command lives in six hand-synced hierarchies (`CliAction` 84, `Action` 158,
+    `PluginCommand` 236, `ScreenInstruction` 266, `ScreenContext` 274, the permission table), edited
+    across 13+ files per feature; `ScreenContext` is a 274-variant mirror of the server-private
+    `ScreenInstruction` declared in the shared `errors.rs` — a layering leak.
+  - Complete when `ScreenContext` moves into `zellij-server` and the `Action`/`PluginCommand`
+    conversions and permission table are generated from the proto rather than hand-mirrored.
+
+Also re-verified as still valid and unfixed this round: **#5, #6, #8, #9, #12, #13, #14, #18, #20,
+#23, #24, #25, #29, #30, #31, #34** (each at its cited location). The prior-round security commits
+`e91a35176`/`6bd6bca3b` held up where they were applied; #40 and #46 are the gaps they did not
+reach.
