@@ -106,6 +106,12 @@ fn whatever_stops_for_a_confirmation_can_say_what_it_will_do() {
         call("new_remote_pane", r#"{"remote_host":"box"}"#),
         call("new_remote_pane", r#"{"remote_host":"box","command":""}"#),
         call("new_remote_pane", "not json at all"),
+        // `new_pane` answers per call the same way: a named command stops, a bare
+        // pane does not, and a call nobody can read stops.
+        call("new_pane", r#"{"command":"htop"}"#),
+        call("new_pane", r#"{"command":["bash","-lc","id"]}"#),
+        call("new_pane", r#"{"command":""}"#),
+        call("new_pane", "not json at all"),
         call("schedule", r#"{"prompt":"check ci","auto_confirm":true}"#),
         call("schedule", r#"{"prompt":"check ci"}"#),
     ];
@@ -216,6 +222,51 @@ fn a_remote_pane_only_says_anything_when_it_names_a_command() {
     assert!(call_needs_confirmation(&call(
         "new_remote_pane",
         r#"{"remote_host":"box","command":"htop"}"#
+    )));
+}
+
+/// A local `new_pane` that names a command runs a model-chosen program on this
+/// machine, so it must stop for a y/n — leaving it unconfirmed was a
+/// prompt-injection path straight to local execution. A bare pane (a shell the
+/// user drives) still does not stop, exactly like `new_remote_pane`.
+#[test]
+fn a_local_pane_stops_only_when_it_names_a_command() {
+    // Bare pane: no command, no prompt.
+    assert!(!call_needs_confirmation(&call("new_pane", "{}")));
+    assert_eq!(consequence(&call("new_pane", "{}")), None);
+    // An empty command is a shell in form only — treat it as the bare case.
+    assert!(!call_needs_confirmation(&call(
+        "new_pane",
+        r#"{"command":""}"#
+    )));
+    assert_eq!(consequence(&call("new_pane", r#"{"command":""}"#)), None);
+    // A named command stops and says what it will run.
+    assert!(call_needs_confirmation(&call(
+        "new_pane",
+        r#"{"command":"htop"}"#
+    )));
+    assert_eq!(
+        consequence(&call("new_pane", r#"{"command":"htop"}"#)),
+        Some("opens a new pane running `htop` on this machine".into())
+    );
+    // The whole argv sent as one array is the other accepted shape.
+    assert!(call_needs_confirmation(&call(
+        "new_pane",
+        r#"{"command":["bash","-lc","id"]}"#
+    )));
+    assert_eq!(
+        consequence(&call("new_pane", r#"{"command":["bash","-lc","id"]}"#)),
+        Some("opens a new pane running `bash` on this machine".into())
+    );
+}
+
+/// Arguments the model got wrong are not a bare pane — they are a call nobody
+/// can read, the one case that most needs a human to look at it.
+#[test]
+fn a_local_pane_whose_arguments_do_not_parse_still_stops() {
+    assert!(call_needs_confirmation(&call(
+        "new_pane",
+        "not json at all"
     )));
 }
 

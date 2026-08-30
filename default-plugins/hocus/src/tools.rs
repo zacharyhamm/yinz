@@ -51,6 +51,11 @@ pub struct ToolCall {
 /// that stops.
 pub fn call_needs_confirmation(call: &ToolCall) -> bool {
     match call.name.as_str() {
+        // Opening a bare pane is a shell the user drives, like `zellij action
+        // new-pane`, and does not ask. Naming a `command` up front is the model
+        // choosing what runs on this machine — that is the confirmable part, and
+        // leaving it unconfirmed is a prompt-injection path to local execution.
+        "new_pane" => new_pane_runs_a_command(call),
         // A login shell on another machine runs nothing the model chose — it is
         // `new_pane`, one machine along, and that does not ask either. Making
         // that shell do something still goes through `send_input`, which does.
@@ -70,6 +75,19 @@ pub fn call_needs_confirmation(call: &ToolCall) -> bool {
 /// prompt — the one case `consequence`'s doc singles out as needing one most.
 fn opens_a_bare_remote_shell(call: &ToolCall) -> bool {
     Args::parse(&call.arguments).is_ok_and(|args| args.command_words().iter().all(String::is_empty))
+}
+
+/// True when `new_pane`'s arguments name a program to run, rather than opening a
+/// bare shell.
+///
+/// The `unwrap_or(true)` is load-bearing, the mirror image of
+/// `opens_a_bare_remote_shell`'s `is_ok_and`: arguments we cannot read might name
+/// any command, so the safe reading is "this runs something" and it gets the
+/// prompt. A well-formed call with no command is the one shape that does not stop.
+fn new_pane_runs_a_command(call: &ToolCall) -> bool {
+    Args::parse(&call.arguments)
+        .map(|args| args.command_words().iter().any(|word| !word.is_empty()))
+        .unwrap_or(true)
 }
 
 /// Tools that need explicit confirmation before dispatch whatever they are
@@ -223,6 +241,21 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
             format!("takes a tab from {session} into this one")
         },
         "adopt_orphaned_pane" => "takes an orphaned pane into this session".to_owned(),
+        // Only the shape that stops: a bare pane (a shell, no command) is not
+        // confirmed, so it has nothing to say here. See `call_needs_confirmation`.
+        "new_pane" if new_pane_runs_a_command(call) => {
+            match args
+                .command_words()
+                .into_iter()
+                .find(|word| !word.is_empty())
+            {
+                Some(program) => format!("opens a new pane running `{program}` on this machine"),
+                // Arguments that would not parse still stop (see
+                // `new_pane_runs_a_command`); the prompt goes up without the
+                // program name rather than going quiet.
+                None => "opens a new pane running a command on this machine".to_owned(),
+            }
+        },
         // Only the shape that stops: a bare login shell is not confirmed, so it
         // has nothing to say here. See `call_needs_confirmation`.
         "new_remote_pane" if !opens_a_bare_remote_shell(call) => {

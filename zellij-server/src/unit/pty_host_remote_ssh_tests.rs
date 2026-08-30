@@ -67,6 +67,46 @@ fn two_servers_do_not_share_a_forward_socket_for_the_same_host() {
     );
 }
 
+/// A host beginning with `-` reaches `ssh`'s argv in option position, so
+/// `-oProxyCommand=…` would run an arbitrary local command. Ordinary
+/// destinations must still pass. This runs no ssh — it pins the guard that both
+/// `bootstrap` and `start_forward` call before ever building a `Command`.
+#[test]
+fn validate_ssh_host_rejects_option_lookalikes_and_junk_but_allows_real_hosts() {
+    let rejected = [
+        "",
+        "-oProxyCommand=sh -c 'id'",
+        "-ltoor",
+        "--",
+        "host with spaces",
+        "host;rm -rf /",
+        "$(id)",
+        "host\nlogin",
+    ];
+    for host in rejected {
+        assert!(
+            validate_ssh_host(host).is_err(),
+            "expected {host:?} to be rejected as a remote host"
+        );
+    }
+
+    let allowed = [
+        "build-box",
+        "example.com",
+        "me@build-box.example.com",
+        "user@[2001:db8::1]",
+        "user@[fe80::1%eth0]",
+        "192.168.1.10",
+        "user@host:2222",
+    ];
+    for host in allowed {
+        assert!(
+            validate_ssh_host(host).is_ok(),
+            "expected {host:?} to be accepted as a remote host"
+        );
+    }
+}
+
 /// The regression above only holds if each server actually gets a distinct id —
 /// a derived `Default` would hand every one of them the same empty string and
 /// quietly restore the collision.
