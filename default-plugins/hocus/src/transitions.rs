@@ -1300,27 +1300,47 @@ impl State {
         self.asks.clear();
     }
 
-    /// Scroll toward older messages, for the client that asked. Clamped at
-    /// render against the real line count, which the key handler doesn't know.
-    pub(crate) fn scroll_up(&mut self, lines: usize) -> bool {
-        self.release();
-        *self.view.scroll.entry(self.client).or_default() += lines;
-        true
+    /// Scroll toward older messages, for the client that asked. Clamped here
+    /// against what the last render measured, and again at render against the
+    /// real line count; says whether anything on screen changes, so a wheel
+    /// spinning against the top does not cost a render per notch.
+    ///
+    /// The measurement is only trusted while the transcript is what the render
+    /// saw. A chunk that lands in the same batch as the notch grows the
+    /// transcript before anything renders, and clamping against the old
+    /// maximum would eat the notch that reaches the new lines.
+    pub fn scroll_up(&mut self, lines: usize) -> bool {
+        let released = self.release();
+        let max_offset = self.view.max_offset.filter(|_| self.transcript_measured());
+        let offset = self.view.scroll.entry(self.client).or_default();
+        let target = match max_offset {
+            // never below where we already are: the render may have put us
+            // past a maximum it has since stopped believing in
+            Some(max) => (*offset + lines).min(max.max(*offset)),
+            None => *offset + lines,
+        };
+        let moved = target > *offset;
+        *offset = target;
+        released || moved
     }
 
-    pub(crate) fn scroll_down(&mut self, lines: usize) -> bool {
-        self.release();
+    /// Scroll toward the tail. At the bottom already, an already-released
+    /// client has nothing to show for it, and says so.
+    pub fn scroll_down(&mut self, lines: usize) -> bool {
+        let released = self.release();
         let offset = self.view.scroll.entry(self.client).or_default();
+        let moved = *offset > 0;
         *offset = offset.saturating_sub(lines);
-        true
+        released || moved
     }
 
     /// Hand the viewport to the client that just scrolled: whatever the arriving
     /// reply is doing, it stops being the thing that decides where they are
     /// looking. Until the next `pin_to_bottom`, which is the next time the
-    /// conversation changes under them.
-    fn release(&mut self) {
-        self.view.released.insert(self.client);
+    /// conversation changes under them. True when this changed anything — a
+    /// release drops the anchor for that client, which is visible.
+    fn release(&mut self) -> bool {
+        self.view.released.insert(self.client)
     }
 
     pub(crate) fn log(&mut self, kind: &str, payload: serde_json::Value) {
