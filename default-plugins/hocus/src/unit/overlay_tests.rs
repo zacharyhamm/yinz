@@ -576,6 +576,135 @@ fn a_pane_never_collapses_to_nothing_on_a_tiny_screen() {
 }
 
 // ---------------------------------------------------------------------------
+// The minimum size, which is a guarantee rather than a request
+// ---------------------------------------------------------------------------
+//
+// Every surface gets a pane hocus can draw a conversation in: the padding gives way first, then
+// the configured size, and what is left is the whole of the screen. Below the minimum the pane is
+// as big as the screen allows and `ui::render` drops chrome to fit - what must never happen is a
+// pane off the edge of the screen, a pane of nothing, or a pane the server has to clip back.
+
+/// Both rectangles on one surface, as `(x, y, width, height)`.
+fn both(rows: usize, cols: usize, chat_visible: bool) -> [(usize, usize, usize, usize); 2] {
+    let (chat, agents) = overlay_geometry(&BTreeMap::new(), rows, cols, chat_visible)
+        .unwrap_or_else(|| panic!("some geometry at {rows}x{cols}"));
+    [rect(&chat), rect(&agents)]
+}
+
+#[test]
+fn every_surface_gets_a_pane_that_meets_the_minimum() {
+    for rows in 1..=40 {
+        for cols in 1..=120 {
+            for chat_visible in [true, false] {
+                // what one pane may have of this screen, which is all the minimum can ask for
+                let budget = match chat_visible {
+                    true => cols / 2,
+                    false => cols,
+                }
+                .max(1);
+                let (min_w, min_h) = (MIN_PANE_COLS.min(budget), MIN_PANE_ROWS.min(rows));
+                for (x, y, w, h) in both(rows, cols, chat_visible) {
+                    let at = format!("{rows}x{cols} chat_visible={chat_visible}: {x},{y} {w}x{h}");
+                    assert!(w > 0 && h > 0, "a pane of nothing at {at}");
+                    assert!(x + w <= cols, "off the right-hand edge at {at}");
+                    assert!(y + h <= rows, "off the bottom at {at}");
+                    assert!(w >= min_w, "narrower than {min_w} at {at}");
+                    assert!(h >= min_h, "shorter than {min_h} at {at}");
+                }
+            }
+        }
+    }
+}
+
+/// The pair are two panes side by side, at every size. A single column cannot hold two of
+/// anything, which is the one surface where they are allowed to share.
+#[test]
+fn the_two_panes_never_overlap() {
+    for rows in 1..=40 {
+        for cols in 2..=120 {
+            let [(chat_x, _, chat_w, _), (agents_x, _, _, _)] = both(rows, cols, true);
+            assert!(
+                chat_x + chat_w <= agents_x,
+                "the panes overlap at {rows}x{cols}: {chat_x}+{chat_w} into {agents_x}"
+            );
+        }
+    }
+}
+
+/// Which of the three gives way first, stated as the test: the padding is an inset, and an inset
+/// is worth less than a pane anybody can read.
+#[test]
+fn the_pad_shrinks_before_the_panes_do() {
+    let [(x, _, w, _), (agents_x, _, agents_w, _)] = both(24, 60, true);
+    assert!(
+        x < DEFAULT_PAD,
+        "the configured padding does not fit two panes across 60 columns, so it gave way: {x}"
+    );
+    assert!(
+        w >= MIN_PANE_COLS && agents_w >= MIN_PANE_COLS,
+        "{w} {agents_w}"
+    );
+    assert!(agents_x + agents_w <= 60, "and the pair is still on screen");
+
+    assert_eq!(
+        both(50, 200, true)[0].0,
+        DEFAULT_PAD,
+        "a screen with room for both keeps the padding it was given"
+    );
+}
+
+/// The one deliberate behaviour change: a configured size under the minimum is raised to it. A
+/// `width` under 26 already was; a `height` under 8 is now, because three rows of pane is one row
+/// of conversation and nothing can be said in it.
+#[test]
+fn a_configured_size_below_the_minimum_is_raised() {
+    let (chat, _) = beside(&config(&[("height", "2"), ("width", "5")]), 50, 200);
+    let (_, _, w, h) = rect(&chat);
+    assert_eq!((w, h), (MIN_PANE_COLS, MIN_PANE_ROWS));
+}
+
+/// The two placements must never disagree about the size, at any surface - it is the same
+/// arithmetic, and this is what says so.
+#[test]
+fn the_clear_placement_is_the_same_size_as_the_corner_one() {
+    for (rows, cols) in [
+        (50, 200),
+        (24, 80),
+        (24, 60),
+        (24, 50),
+        (10, 80),
+        (8, 80),
+        (6, 40),
+    ] {
+        for chat_visible in [true, false] {
+            let (chat, _) = overlay_geometry(&BTreeMap::new(), rows, cols, chat_visible)
+                .unwrap_or_else(|| panic!("some geometry at {rows}x{cols}"));
+            let (_, _, w, h) = rect(&chat);
+            for alone in [true, false] {
+                for step in 0..4 {
+                    let clear = chat_placement(
+                        &BTreeMap::new(),
+                        rows,
+                        cols,
+                        chat_visible,
+                        Some(at(0, 0, cols, rows / 2)),
+                        alone,
+                        step,
+                    )
+                    .expect("some geometry");
+                    assert_eq!(
+                        (clear.cols, clear.rows),
+                        (w, h),
+                        "{rows}x{cols} alone={alone} step={step}"
+                    );
+                    assert!(clear.x + clear.cols <= cols && clear.y + clear.rows <= rows);
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Which client's `TabUpdate` is a move order
 // ---------------------------------------------------------------------------
 
@@ -1006,7 +1135,7 @@ fn pick_anchor_skips_the_focused_pane() {
         tiled(2, 150, 0, 50, 50, false),
     ];
     assert_eq!(
-        pick_anchor(at(3, 14, 60, 33), &panes, None),
+        pick_anchor(at(3, 14, 60, 33), &panes, &[]),
         Some(PaneId::Terminal(2))
     );
 }
@@ -1021,7 +1150,7 @@ fn pick_anchor_prefers_the_pane_hocus_is_covering() {
         tiled(3, 100, 25, 100, 25, true),
     ];
     assert_eq!(
-        pick_anchor(at(3, 14, 60, 33), &panes, None),
+        pick_anchor(at(3, 14, 60, 33), &panes, &[]),
         Some(PaneId::Terminal(1))
     );
 }
@@ -1035,7 +1164,7 @@ fn pick_anchor_breaks_ties_by_the_larger_pane() {
         tiled(3, 100, 20, 100, 30, false),
     ];
     assert_eq!(
-        pick_anchor(at(3, 14, 60, 33), &panes, None),
+        pick_anchor(at(3, 14, 60, 33), &panes, &[]),
         Some(PaneId::Terminal(3))
     );
 }
@@ -1062,20 +1191,38 @@ fn pick_anchor_ignores_floating_suppressed_and_unselectable_panes() {
         tiled(5, 100, 0, 100, 10, false),
     ];
     assert_eq!(
-        pick_anchor(at(3, 14, 60, 33), &panes, None),
+        pick_anchor(at(3, 14, 60, 33), &panes, &[]),
         Some(PaneId::Terminal(5))
     );
 }
 
+/// The tour is what makes a repeat press walk: a pane already visited is out of the running even
+/// when the ranking still says it is the best place to be.
 #[test]
-fn pick_anchor_is_a_no_op_when_the_best_pane_is_the_current_anchor() {
+fn pick_anchor_skips_panes_already_visited() {
     let panes = vec![
-        tiled(1, 0, 0, 100, 50, true),
-        tiled(2, 100, 0, 100, 50, false),
+        tiled(1, 0, 0, 100, 25, false),
+        tiled(2, 0, 25, 100, 25, false),
+        tiled(3, 100, 0, 100, 50, true),
     ];
     assert_eq!(
-        pick_anchor(at(103, 14, 60, 33), &panes, Some(PaneId::Terminal(2))),
-        None
+        pick_anchor(at(3, 14, 60, 33), &panes, &[]),
+        Some(PaneId::Terminal(2)),
+        "the pane the conversation is covering most"
+    );
+    assert_eq!(
+        pick_anchor(at(3, 14, 60, 33), &panes, &[PaneId::Terminal(2)]),
+        Some(PaneId::Terminal(1)),
+        "and then the next one, rather than the same one again"
+    );
+    assert_eq!(
+        pick_anchor(
+            at(3, 14, 60, 33),
+            &panes,
+            &[PaneId::Terminal(2), PaneId::Terminal(1)]
+        ),
+        None,
+        "every candidate toured: there is no pane left to be sent clear of"
     );
 }
 
@@ -1088,15 +1235,15 @@ fn pick_anchor_falls_back_to_the_only_tiled_pane() {
         overlay_pane(7, 3, 14, 60, 33),
     ];
     assert_eq!(
-        pick_anchor(at(3, 14, 60, 33), &panes, None),
+        pick_anchor(at(3, 14, 60, 33), &panes, &[]),
         Some(PaneId::Terminal(1))
     );
     assert_eq!(
-        pick_anchor(at(3, 14, 60, 33), &panes, Some(PaneId::Terminal(1))),
+        pick_anchor(at(3, 14, 60, 33), &panes, &[PaneId::Terminal(1)]),
         None,
-        "and still nowhere to go on a second press"
+        "and nowhere left once it has been toured - the press walks the corners instead"
     );
-    assert_eq!(pick_anchor(at(3, 14, 60, 33), &[], None), None);
+    assert_eq!(pick_anchor(at(3, 14, 60, 33), &[], &[]), None);
 }
 
 #[test]
@@ -1113,9 +1260,12 @@ fn sole_tiled_pane_counts_only_the_layout() {
     assert!(!sole_tiled_pane(&[]));
 }
 
-/// The clear placement on the standard 50x200 surface, with the conversation on screen.
+/// The clear placement on the standard 50x200 surface, with the conversation on screen: the first
+/// corner of the order the anchor implies.
 fn clear_of(anchor: Rect, alone: bool) -> (usize, usize, usize, usize) {
-    rect(&clear_geometry(&BTreeMap::new(), 50, 200, true, anchor, alone).expect("some geometry"))
+    let placed = chat_placement(&BTreeMap::new(), 50, 200, true, Some(anchor), alone, 0)
+        .expect("some geometry");
+    (placed.x, placed.y, placed.cols, placed.rows)
 }
 
 /// The corner placement's `(width, height)`, which the clear placement must never depart from.
@@ -1126,7 +1276,7 @@ fn corner_size() -> (usize, usize) {
 }
 
 #[test]
-fn clear_geometry_goes_right_of_a_pane_on_the_left() {
+fn the_clear_placement_goes_right_of_a_pane_on_the_left() {
     let (w, h) = corner_size();
     assert_eq!(
         clear_of(at(0, 0, 100, 50), false),
@@ -1136,7 +1286,7 @@ fn clear_geometry_goes_right_of_a_pane_on_the_left() {
 }
 
 #[test]
-fn clear_geometry_goes_left_of_a_pane_on_the_right() {
+fn the_clear_placement_goes_left_of_a_pane_on_the_right() {
     let (w, h) = corner_size();
     assert_eq!(
         clear_of(at(100, 0, 100, 50), false),
@@ -1146,7 +1296,7 @@ fn clear_geometry_goes_left_of_a_pane_on_the_right() {
 }
 
 #[test]
-fn clear_geometry_goes_top_right_when_the_pane_is_the_only_one() {
+fn the_clear_placement_goes_top_right_when_the_pane_is_the_only_one() {
     let (w, h) = corner_size();
     assert_eq!(
         clear_of(at(0, 0, 200, 50), true),
@@ -1156,7 +1306,7 @@ fn clear_geometry_goes_top_right_when_the_pane_is_the_only_one() {
 }
 
 #[test]
-fn clear_geometry_picks_the_vertical_slot_that_hides_the_least() {
+fn the_clear_placement_picks_the_vertical_slot_that_hides_the_least() {
     let (w, h) = corner_size();
     // a full-width band, so neither horizontal slot helps and only the row is left to choose
     let (_, low_band_y, _, _) = clear_of(at(0, 30, 200, 20), false);
@@ -1178,7 +1328,7 @@ fn clear_geometry_picks_the_vertical_slot_that_hides_the_least() {
 }
 
 #[test]
-fn clear_geometry_still_chooses_a_row_when_the_column_was_forced() {
+fn the_clear_placement_still_chooses_a_row_when_the_column_was_forced() {
     let (w, h) = corner_size();
     // centred left, so the conversation is sent right - and wide enough that the right-hand slot
     // is still on top of it, which leaves the row to make up the difference
@@ -1190,7 +1340,7 @@ fn clear_geometry_still_chooses_a_row_when_the_column_was_forced() {
 }
 
 #[test]
-fn clear_geometry_leaves_a_centred_pane_in_the_default_corner() {
+fn the_clear_placement_leaves_a_centred_pane_in_the_default_corner() {
     let (w, h) = corner_size();
     assert_eq!(
         clear_of(at(0, 0, 200, 50), false),
@@ -1200,7 +1350,7 @@ fn clear_geometry_leaves_a_centred_pane_in_the_default_corner() {
 }
 
 #[test]
-fn clear_geometry_is_never_clamped_to_the_pane() {
+fn the_clear_placement_is_never_clamped_to_the_pane() {
     let (w, h) = corner_size();
     assert_eq!(
         clear_of(at(0, 46, 10, 4), false),
@@ -1210,16 +1360,51 @@ fn clear_geometry_is_never_clamped_to_the_pane() {
 }
 
 #[test]
-fn clear_geometry_has_nothing_to_say_without_a_surface_or_a_pane() {
+fn the_clear_placement_has_nothing_to_say_without_a_surface() {
     assert_eq!(
-        clear_geometry(&BTreeMap::new(), 0, 200, true, at(0, 0, 100, 50), false),
+        chat_placement(
+            &BTreeMap::new(),
+            0,
+            200,
+            true,
+            Some(at(0, 0, 100, 50)),
+            false,
+            0
+        ),
         None
     );
+    let (w, h) = corner_size();
     assert_eq!(
-        clear_geometry(&BTreeMap::new(), 50, 200, true, at(0, 0, 0, 6), false),
-        None,
-        "nothing at all for a pane with no size"
+        clear_of(at(0, 0, 0, 6), false),
+        (DEFAULT_PAD, 50 - DEFAULT_PAD - h, w, h),
+        "a pane with no size is no anchor at all, and the corner is where that leaves us"
     );
+}
+
+/// The refactor's regression net: the corner the cycle starts at is the one the placement has
+/// always chosen, for every fixture above.
+#[test]
+fn the_first_corner_of_the_order_is_where_the_placement_goes() {
+    let pad = DEFAULT_PAD;
+    let size = corner_size();
+    for (anchor, alone) in [
+        (at(0, 0, 100, 50), false),
+        (at(100, 0, 100, 50), false),
+        (at(0, 0, 200, 50), true),
+        (at(0, 30, 200, 20), false),
+        (at(0, 0, 200, 20), false),
+        (at(0, 30, 170, 20), false),
+        (at(0, 0, 200, 50), false),
+        (at(0, 46, 10, 4), false),
+    ] {
+        let order = corner_order(Some(anchor), alone, 50, 200, pad, size);
+        let first = corner_rect(order[0], 50, 200, pad, size);
+        assert_eq!(
+            (first.x, first.y, first.cols, first.rows),
+            clear_of(anchor, alone),
+            "{anchor:?} alone={alone}"
+        );
+    }
 }
 
 /// A hocus over a two-pane tab: the focused pane on the left, where the corner is, and another
@@ -1271,9 +1456,13 @@ fn ctrl_o_moves_the_conversation_clear_of_the_largest_unfocused_pane() {
         x + w <= 100,
         "clear of pane 2, which starts at 100: {x} {w}"
     );
+    // The best corner for pane 2 is the bottom-left one, which is where the conversation already
+    // was - so the press takes the next corner of that pane's ordering rather than restating
+    // where it is. A press moves; see `State::reposition`.
     assert_eq!(
         (x, y, w, h),
-        (DEFAULT_PAD, 50 - DEFAULT_PAD - corner_h, corner_w, corner_h)
+        (DEFAULT_PAD, DEFAULT_PAD, corner_w, corner_h),
+        "the left-hand column pane 2 leaves free, one corner along"
     );
 }
 
@@ -1339,19 +1528,238 @@ fn ctrl_o_with_one_tiled_pane_moves_to_the_top_right() {
     );
 }
 
+/// The bug this whole cycle exists for: two tiled panes with the other one focused is the
+/// commonest layout there is, and it offers exactly one candidate - so every press after the first
+/// used to re-pick that same pane and do nothing at all.
 #[test]
-fn ctrl_o_twice_on_the_same_best_pane_does_not_re_place() {
+fn ctrl_o_twice_on_the_same_pane_moves_to_the_next_corner() {
     let mut state = two_pane_state();
     state.on_key(ctrl_o());
-    let first = state.last_placement.clone();
+    let first = placed_chat(&state);
     state.last_placement = None;
 
     state.on_key(ctrl_o());
 
-    assert_eq!(state.anchor, Some(PaneId::Terminal(2)));
+    assert_eq!(state.anchor, Some(PaneId::Terminal(2)), "the same anchor");
+    let second = placed_chat(&state);
+    assert_ne!(second, first, "and a different place to be");
+    assert_eq!(
+        (second.2, second.3),
+        (first.2, first.3),
+        "the same size - a press moves the conversation, it does not resize it"
+    );
+    assert!(
+        second.0 + second.2 <= 100 || second.1 + second.3 <= 50,
+        "still on the screen: {second:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// The cycle: every press moves the conversation somewhere else.
+
+/// Drive `presses` Ctrl-o presses without feeding a fresh manifest between them - which is what
+/// the user does, and what the ranking alone cannot answer - and collect where each one landed.
+fn walk(state: &mut State, presses: usize) -> Vec<(usize, usize, usize, usize)> {
+    (0..presses)
+        .map(|press| {
+            state.last_placement = None;
+            state.on_key(ctrl_o());
+            state
+                .last_placement
+                .as_ref()
+                .unwrap_or_else(|| panic!("press {press} placed nothing"));
+            placed_chat(state)
+        })
+        .collect()
+}
+
+/// The invariant, stated as the test: on every layout, every press lands somewhere new, on the
+/// screen, at the size the corner placement gives.
+#[test]
+fn ctrl_o_always_moves_the_conversation() {
+    let one = vec![
+        overlay_pane(7, 3, 14, 60, 33),
+        tiled(1, 0, 0, 200, 50, true),
+    ];
+    let four = vec![
+        overlay_pane(7, 3, 14, 60, 33),
+        tiled(1, 0, 0, 100, 25, true),
+        tiled(2, 100, 0, 100, 25, false),
+        tiled(3, 0, 25, 100, 25, false),
+        tiled(4, 100, 25, 100, 25, false),
+    ];
+    let (corner_w, corner_h) = corner_size();
+    for (name, panes) in [
+        ("one pane", one),
+        ("two panes", two_panes()),
+        ("four panes", four),
+    ] {
+        let mut state = placed_state();
+        state.on_panes(manifest(0, panes));
+
+        let walked = walk(&mut state, 8);
+
+        for pair in walked.windows(2) {
+            assert_ne!(pair[0], pair[1], "a press that went nowhere, on {name}");
+        }
+        for (x, y, w, h) in walked {
+            assert_eq!((w, h), (corner_w, corner_h), "resized on {name}");
+            assert!(x + w <= 200 && y + h <= 50, "off screen on {name}: {x} {y}");
+        }
+    }
+}
+
+/// Panes first, corners second: the walk is still "show me the next pane" for as long as there is
+/// a pane it has not shown.
+#[test]
+fn ctrl_o_tours_every_pane_before_it_cycles_corners() {
+    let mut state = placed_state();
+    state.on_panes(manifest(
+        0,
+        vec![
+            overlay_pane(7, 3, 14, 60, 33),
+            tiled(1, 0, 0, 100, 25, true),
+            tiled(2, 100, 0, 100, 25, false),
+            tiled(3, 0, 25, 100, 25, false),
+            tiled(4, 100, 25, 100, 25, false),
+        ],
+    ));
+
+    let mut anchored = Vec::new();
+    for _ in 0..3 {
+        state.on_key(ctrl_o());
+        anchored.push(state.anchor.expect("an anchor"));
+    }
+
+    assert_eq!(anchored.len(), 3);
+    let mut distinct = anchored.clone();
+    distinct.sort_by_key(|id| format!("{id:?}"));
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        3,
+        "three presses, three panes: {anchored:?}"
+    );
+    assert!(
+        !anchored.contains(&PaneId::Terminal(1)),
+        "and never the pane the user is working in: {anchored:?}"
+    );
+}
+
+/// One tiled pane: a single destination used to be the whole of the story, so the second press had
+/// nowhere to go. Now it walks the four corners and comes back round.
+#[test]
+fn ctrl_o_cycles_the_corners_when_there_is_one_pane() {
+    let mut state = placed_state();
+    state.on_panes(manifest(
+        0,
+        vec![
+            overlay_pane(7, 3, 14, 60, 33),
+            tiled(1, 0, 0, 200, 50, true),
+        ],
+    ));
+
+    let walked = walk(&mut state, 5);
+
+    let mut corners = walked[..4].to_vec();
+    corners.sort();
+    corners.dedup();
+    assert_eq!(corners.len(), 4, "four presses, four corners: {walked:?}");
+    assert_eq!(walked[4], walked[0], "and the fifth is back at the first");
+}
+
+/// A tab of nothing but overlays: no candidate, no anchor, and today nothing happened at all.
+#[test]
+fn ctrl_o_moves_with_no_tiled_panes_at_all() {
+    let mut state = placed_state();
+    state.on_panes(manifest(0, vec![overlay_pane(7, 3, 14, 60, 33)]));
+
+    let walked = walk(&mut state, 4);
+
+    assert_eq!(state.anchor, None, "there was nothing to anchor to");
+    let mut corners = walked.clone();
+    corners.sort();
+    corners.dedup();
+    assert_eq!(corners.len(), 4, "the four plain corners: {walked:?}");
+}
+
+/// The one press that is allowed to do nothing: a panel the size of the screen, where all four
+/// corners are the same rectangle. One column of surface is the smallest way to say it.
+#[test]
+fn ctrl_o_does_nothing_when_every_corner_is_the_same_rectangle() {
+    let mut state = State {
+        own_plugin_id: 7,
+        ..Default::default()
+    };
+    state.on_tabs(vec![TabInfo {
+        position: 0,
+        tab_id: 0,
+        active: true,
+        display_area_rows: 8,
+        display_area_columns: 1,
+        ..TabInfo::default()
+    }]);
+    state.on_panes(manifest(0, vec![overlay_pane(7, 0, 0, 1, 8)]));
+    let filling = chat_placement(&state.kdl, 8, 1, true, None, false, 0).expect("a rectangle");
+    for step in 0..4 {
+        assert_eq!(
+            chat_placement(&state.kdl, 8, 1, true, None, false, step),
+            Some(filling),
+            "every corner is the whole of the screen"
+        );
+    }
+    state.last_placement = None;
+
+    state.on_key(ctrl_o());
+
     assert_eq!(
         state.last_placement, None,
-        "nowhere better to go: {first:?}"
+        "nowhere to go, so nothing is asked of the server"
+    );
+}
+
+/// A pane the tour has visited and the user has since closed must not hold its slot: the press
+/// that came round to it would find it gone and go nowhere new.
+#[test]
+fn a_closed_pane_does_not_hold_a_slot_in_the_tour() {
+    let mut state = placed_state();
+    let panes = vec![
+        overlay_pane(7, 3, 14, 60, 33),
+        tiled(1, 0, 0, 100, 50, true),
+        tiled(2, 100, 0, 50, 50, false),
+        tiled(3, 150, 0, 50, 50, false),
+    ];
+    state.on_panes(manifest(0, panes));
+
+    state.on_key(ctrl_o());
+    state.on_key(ctrl_o());
+    assert_eq!(
+        state.warp_visited.len(),
+        2,
+        "two panes toured: {:?}",
+        state.warp_visited
+    );
+
+    // pane 2 closed, and pane 3 took its room
+    state.on_panes(manifest(
+        0,
+        vec![
+            overlay_pane(7, 3, 14, 60, 33),
+            tiled(1, 0, 0, 100, 50, true),
+            tiled(3, 100, 0, 100, 50, false),
+        ],
+    ));
+
+    assert_eq!(
+        state.warp_visited,
+        vec![PaneId::Terminal(3)],
+        "the pane that is gone is out of the tour"
+    );
+    state.on_key(ctrl_o());
+    assert_eq!(
+        state.anchor,
+        Some(PaneId::Terminal(3)),
+        "and it is not offered again"
     );
 }
 
