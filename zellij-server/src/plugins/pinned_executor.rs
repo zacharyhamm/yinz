@@ -23,9 +23,6 @@ pub struct PinnedExecutor {
     // Maps thread_index -> set of plugin_ids assigned to it
     thread_plugins: Arc<Mutex<HashMap<usize, HashSet<u32>>>>,
 
-    // Next thread index to use when spawning (monotonically increasing)
-    next_thread_idx: AtomicUsize,
-
     // Maximum threads allowed
     max_threads: usize,
 
@@ -47,6 +44,8 @@ type JobWork = Box<
         + Send
         + 'static,
 >;
+
+type PendingJob = (JobTag, Instant, JobWork);
 
 /// What the executor knows about a queued job beyond its closure: whose it is,
 /// a short label for the stats log ("Key", "PaneUpdate×2", "pipe:agent_hook"),
@@ -133,6 +132,18 @@ fn record_job(
     }
 }
 
+/// Queue a job and update the input-priority metadata with it.
+fn push_pending(
+    pending: &mut VecDeque<PendingJob>,
+    pending_input_jobs: &mut HashMap<u32, usize>,
+    job: PendingJob,
+) {
+    if job.0.is_input {
+        *pending_input_jobs.entry(job.0.plugin_id).or_default() += 1;
+    }
+    pending.push_back(job);
+}
+
 /// Which pending job runs next.
 ///
 /// The invariant is per-plugin FIFO: the only job of a plugin that may run is
@@ -141,32 +152,28 @@ fn record_job(
 /// plugins the pick prefers one with an input job waiting anywhere in its
 /// queue: an input job's wait is a person's keystroke latency, and without
 /// this it queues behind every other plugin's already-submitted work.
-fn pick_next_job(pending: &VecDeque<(JobTag, Instant, JobWork)>) -> Option<usize> {
+fn pick_next_job(
+    pending: &VecDeque<PendingJob>,
+    pending_input_jobs: &HashMap<u32, usize>,
+) -> Option<usize> {
     pending.front()?;
-    let urgent_plugins: HashSet<u32> = pending
-        .iter()
-        .filter(|(tag, _, _)| tag.is_input)
-        .map(|(tag, _, _)| tag.plugin_id)
-        .collect();
-    if !urgent_plugins.is_empty() {
-        let mut seen: HashSet<u32> = HashSet::new();
-        for (index, (tag, _, _)) in pending.iter().enumerate() {
-            let is_oldest_of_its_plugin = seen.insert(tag.plugin_id);
-            if is_oldest_of_its_plugin && urgent_plugins.contains(&tag.plugin_id) {
-                return Some(index);
-            }
-        }
+    if pending_input_jobs.is_empty() {
+        return Some(0);
     }
-    Some(0)
+    let index = pending
+        .iter()
+        .position(|(tag, _, _)| pending_input_jobs.contains_key(&tag.plugin_id));
+    debug_assert!(index.is_some(), "pending input metadata is out of sync");
+    index.or(Some(0))
 }
 
-/// "location[id]", or "plugin[id]" for one already gone from the map.
+/// "location[id]", or "plugin[id]" when the map is busy or the plugin is gone.
 fn plugin_name(plugin_map: &Arc<Mutex<PluginMap>>, plugin_id: u32) -> String {
-    let location = plugin_map
-        .lock()
-        .unwrap()
-        .run_plugin_of_plugin_id(plugin_id)
-        .map(|run_plugin| run_plugin.location.to_string());
+    let location = plugin_map.try_lock().ok().and_then(|plugin_map| {
+        plugin_map
+            .run_plugin_of_plugin_id(plugin_id)
+            .map(|run_plugin| run_plugin.location.to_string())
+    });
     match location {
         Some(location) => format!("{location}[{plugin_id}]"),
         None => format!("plugin[{plugin_id}]"),
@@ -240,7 +247,6 @@ impl PinnedExecutor {
             execution_threads: Arc::new(Mutex::new(vec![Some(thread_0)])),
             plugin_assignments: Arc::new(Mutex::new(HashMap::new())),
             thread_plugins: Arc::new(Mutex::new(HashMap::new())),
-            next_thread_idx: AtomicUsize::new(1), // Next will be index 1
             max_threads,
             senders: senders.clone(),
             plugin_map: plugin_map.clone(),
@@ -278,7 +284,8 @@ impl PinnedExecutor {
                     // would make a keystroke wait behind every other plugin's
                     // queued work. Per-plugin order is still absolute — only the
                     // interleaving *between* plugins is rearranged.
-                    let mut pending: VecDeque<(JobTag, Instant, JobWork)> = VecDeque::new();
+                    let mut pending: VecDeque<PendingJob> = VecDeque::new();
+                    let mut pending_input_jobs: HashMap<u32, usize> = HashMap::new();
                     let mut shutting_down = false;
                     loop {
                         if pending.is_empty() && !shutting_down {
@@ -287,7 +294,11 @@ impl PinnedExecutor {
                                     tag,
                                     enqueued_at,
                                     work,
-                                }) => pending.push_back((tag, enqueued_at, work)),
+                                }) => push_pending(
+                                    &mut pending,
+                                    &mut pending_input_jobs,
+                                    (tag, enqueued_at, work),
+                                ),
                                 Ok(Job::Shutdown) => shutting_down = true,
                                 Err(_) => break,
                             }
@@ -300,11 +311,15 @@ impl PinnedExecutor {
                                     tag,
                                     enqueued_at,
                                     work,
-                                } => pending.push_back((tag, enqueued_at, work)),
+                                } => push_pending(
+                                    &mut pending,
+                                    &mut pending_input_jobs,
+                                    (tag, enqueued_at, work),
+                                ),
                                 Job::Shutdown => shutting_down = true,
                             }
                         }
-                        let Some(index) = pick_next_job(&pending) else {
+                        let Some(index) = pick_next_job(&pending, &pending_input_jobs) else {
                             if shutting_down {
                                 break;
                             }
@@ -313,6 +328,14 @@ impl PinnedExecutor {
                         let Some((tag, enqueued_at, work)) = pending.remove(index) else {
                             continue;
                         };
+                        if tag.is_input {
+                            if let Some(count) = pending_input_jobs.get_mut(&tag.plugin_id) {
+                                *count -= 1;
+                                if *count == 0 {
+                                    pending_input_jobs.remove(&tag.plugin_id);
+                                }
+                            }
+                        }
                         let waited = enqueued_at.elapsed();
                         if tag.is_input && waited >= INPUT_WAIT_WARNING {
                             log::info!(
@@ -382,9 +405,14 @@ impl PinnedExecutor {
 
         let thread_idx = if let Some(idx) = empty_thread {
             idx
+        } else if let Some(idx) = threads.iter().position(Option::is_none) {
+            // Recreate a worker removed after its last plugin unloaded.
+            drop(threads);
+            self.add_thread(idx);
+            idx
         } else if threads.len() < self.max_threads {
             // Every existing thread has a tenant - spawn a new one
-            let new_idx = self.next_thread_idx.fetch_add(1, Ordering::SeqCst);
+            let new_idx = threads.len();
             drop(threads); // Release lock before spawning
             self.add_thread(new_idx);
             new_idx
@@ -742,6 +770,21 @@ mod tests {
     }
 
     #[test]
+    fn test_plugin_name_does_not_wait_for_plugin_map() {
+        let (_senders, plugin_map, _clients, _cache, _engine) = create_test_dependencies();
+        let plugin_map_guard = plugin_map.lock().unwrap();
+        let plugin_map_clone = plugin_map.clone();
+        let (tx, rx) = channel();
+        let lookup = thread::spawn(move || tx.send(plugin_name(&plugin_map_clone, 42)).unwrap());
+
+        let name = rx.recv_timeout(Duration::from_secs(1));
+        drop(plugin_map_guard);
+        lookup.join().unwrap();
+
+        assert_eq!(name.unwrap(), "plugin[42]");
+    }
+
+    #[test]
     fn test_plugins_spread_across_threads_before_sharing() {
         // A plugin's jobs queue strictly behind its thread-mates', so plugins
         // only share a thread once every thread has a tenant. The old policy
@@ -760,6 +803,19 @@ mod tests {
             "at capacity, the least-loaded thread is shared"
         );
         assert_eq!(executor.thread_count(), 3, "never exceeds max_threads");
+    }
+
+    #[test]
+    fn test_vacant_thread_slot_is_reused_before_sharing() {
+        let executor = create_test_executor(2);
+        assert_eq!(executor.register_plugin(1), 0);
+        assert_eq!(executor.register_plugin(2), 1);
+
+        executor.unregister_plugin(2);
+
+        assert_eq!(executor.thread_count(), 1);
+        assert_eq!(executor.register_plugin(3), 1);
+        assert_eq!(executor.thread_count(), 2);
     }
 
     #[test]
@@ -803,16 +859,19 @@ mod tests {
         queue(2, "b2", false);
         queue(1, "a1", false);
         queue(1, "a2-input", true);
+        queue(2, "b3", false);
+        queue(1, "a3", false);
+        queue(1, "a4-input", true);
 
         barrier.wait();
-        for _ in 0..4 {
+        for _ in 0..7 {
             rx.recv_timeout(Duration::from_secs(5))
                 .expect("queued job should complete");
         }
 
         assert_eq!(
             *order.lock().unwrap(),
-            vec!["a1", "a2-input", "b1", "b2"],
+            vec!["a1", "a2-input", "a3", "a4-input", "b1", "b2", "b3"],
             "the input-bearing plugin's queue runs first, in its own order"
         );
     }
