@@ -104,7 +104,19 @@ pub fn write_only_requests_a_clear_scroll_render_when_scrolled() {
     let received_background_jobs = mock_screen.received_background_jobs.clone();
     let screen_thread = mock_screen.run(None, vec![]);
 
-    let background_job_barrier = |marker_client_id| {
+    let render_count_barrier = |marker_client_id| {
+        let (screen_barrier_tx, screen_barrier_rx) = crossbeam::channel::bounded(1);
+        mock_screen
+            .to_screen
+            .send(ScreenInstruction::GetPaneInfo {
+                pane_id: PaneId::Terminal(0),
+                response_channel: screen_barrier_tx,
+            })
+            .expect("failed to send screen barrier");
+        screen_barrier_rx
+            .recv_timeout(zellij_test_support::default_timeout())
+            .expect("screen barrier timed out");
+
         let marker = BackgroundJob::ClearHelpText {
             client_id: marker_client_id,
         };
@@ -119,7 +131,7 @@ pub fn write_only_requests_a_clear_scroll_render_when_scrolled() {
         )
     };
 
-    let unscrolled_start = background_job_barrier(100);
+    let unscrolled_start = render_count_barrier(100);
     send_cli_action_to_server(
         &session_metadata,
         CliAction::WriteChars {
@@ -128,7 +140,7 @@ pub fn write_only_requests_a_clear_scroll_render_when_scrolled() {
         },
         client_id,
     );
-    let unscrolled_end = background_job_barrier(101);
+    let unscrolled_end = render_count_barrier(101);
     let unscrolled_render_requests = received_background_jobs.lock()
         [unscrolled_start + 1..unscrolled_end]
         .iter()
@@ -154,7 +166,7 @@ pub fn write_only_requests_a_clear_scroll_render_when_scrolled() {
         );
     }
 
-    let scrolled_start = background_job_barrier(102);
+    let scrolled_start = render_count_barrier(102);
     send_cli_action_to_server(
         &session_metadata,
         CliAction::WriteChars {
@@ -163,7 +175,7 @@ pub fn write_only_requests_a_clear_scroll_render_when_scrolled() {
         },
         client_id,
     );
-    let scrolled_end = background_job_barrier(103);
+    let scrolled_end = render_count_barrier(103);
     let scrolled_render_requests = received_background_jobs.lock()
         [scrolled_start + 1..scrolled_end]
         .iter()
