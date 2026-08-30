@@ -2316,7 +2316,18 @@ impl Tab {
                     is_first_run,
                     run_command,
                 ) => {
-                    self.hold_pane(terminal_id, exit_status, is_first_run, run_command);
+                    // No exit hooks are fired for this replay (this is a tab-internal catch-up,
+                    // not the live/buffered-plugin paths in Screen that bracket a hold with
+                    // hooks), so a queued respawn can start immediately as before.
+                    if let Some((terminal_pane_id, run_command, keep_scrollback)) =
+                        self.hold_pane(terminal_id, exit_status, is_first_run, run_command)
+                    {
+                        self.run_command_in_pane_with_id(
+                            terminal_pane_id,
+                            run_command,
+                            keep_scrollback,
+                        );
+                    }
                 },
             }
         }
@@ -6736,13 +6747,18 @@ impl Tab {
             None
         }
     }
+    /// Returns a replacement command that arrived while this one was still running, so the
+    /// caller can start it only after firing this exit's hooks - starting it here, before the
+    /// caller's hooks run, would fire them against the replacement instead of the pane that
+    /// actually exited, and would skip `agent_start` since it wouldn't go through
+    /// `Screen::run_command_in_pane_with_id`.
     pub fn hold_pane(
         &mut self,
         id: PaneId,
         exit_status: Option<i32>,
         is_first_run: bool,
         run_command: RunCommand,
-    ) {
+    ) -> Option<(u32, RunCommand, bool)> {
         if self.is_pending {
             self.pending_instructions
                 .push(BufferedTabInstruction::HoldPane(
@@ -6751,7 +6767,7 @@ impl Tab {
                     is_first_run,
                     run_command,
                 ));
-            return;
+            return None;
         }
         if self.floating_panes.panes_contain(&id) {
             self.floating_panes
@@ -6764,13 +6780,27 @@ impl Tab {
         } else if let Some(pane) = self.suppressed_panes.get_mut(&id) {
             pane.pane.hold(exit_status, is_first_run, run_command);
         }
-        // A replacement command that arrived while this one was still running starts now that
-        // the pane is held.
-        if let (PaneId::Terminal(terminal_pane_id), Some((run_command, keep_scrollback))) =
-            (id, self.pending_command_respawns.remove(&id))
-        {
-            self.run_command_in_pane_with_id(terminal_pane_id, run_command, keep_scrollback);
+        if let PaneId::Terminal(terminal_pane_id) = id {
+            self.pending_command_respawns
+                .remove(&id)
+                .map(|(run_command, keep_scrollback)| {
+                    (terminal_pane_id, run_command, keep_scrollback)
+                })
+        } else {
+            None
         }
+    }
+    /// Detach any respawn queued for `id` from this tab, so it can be carried to another tab
+    /// the pane is about to move into. Only needed when a pane crosses tabs - a same-tab move
+    /// (eg. a float/embed toggle) never extracts the pane, so the entry stays valid where it
+    /// is.
+    pub fn take_pending_respawn(&mut self, id: PaneId) -> Option<(RunCommand, bool)> {
+        self.pending_command_respawns.remove(&id)
+    }
+    /// Re-home a respawn entry taken from another tab via `take_pending_respawn`, once the
+    /// pane itself has landed here.
+    pub fn restore_pending_respawn(&mut self, id: PaneId, entry: (RunCommand, bool)) {
+        self.pending_command_respawns.insert(id, entry);
     }
     /// Mark a pane's root process stopped or running.
     ///

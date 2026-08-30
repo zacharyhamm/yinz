@@ -448,7 +448,8 @@ pub(crate) fn screen_thread_main(
                             )?;
                             if let Some(hold_for_command) = hold_for_command {
                                 let is_first_run = true;
-                                active_tab.hold_pane(pid, None, is_first_run, hold_for_command);
+                                let _ =
+                                    active_tab.hold_pane(pid, None, is_first_run, hold_for_command);
                             }
                         } else {
                             log::error!("Tab index not found: {:?}", tab_index);
@@ -502,7 +503,8 @@ pub(crate) fn screen_thread_main(
                                 }
                                 if let Some(hold_for_command) = hold_for_command {
                                     let is_first_run = true;
-                                    tab.hold_pane(pid, None, is_first_run, hold_for_command);
+                                    let _ =
+                                        tab.hold_pane(pid, None, is_first_run, hold_for_command);
                                 }
                                 found = true;
                                 break;
@@ -1586,10 +1588,12 @@ pub(crate) fn screen_thread_main(
                 let is_first_run = false;
                 let mut found = false;
                 let mut pane_is_agent = false;
+                let mut queued_respawn = None;
                 {
                     for tab in screen.tabs.values_mut() {
                         if tab.get_all_pane_ids().contains(&id) {
-                            tab.hold_pane(id, exit_status, is_first_run, run_command.clone());
+                            queued_respawn =
+                                tab.hold_pane(id, exit_status, is_first_run, run_command.clone());
                             found = true;
                             pane_is_agent = tab.pane_is_agent(id);
                             break;
@@ -1601,6 +1605,15 @@ pub(crate) fn screen_thread_main(
                     // hears of the exit before it covers the pane.
                     screen.fire_pane_exit_hook(id, exit_status, &run_command, true);
                     screen.fire_agent_exit_hook(id, exit_status, &run_command, pane_is_agent);
+                    // Only after the exit hooks have seen this exit does a queued replacement
+                    // start, and it starts through Screen so agent_start fires for it too.
+                    if let Some((terminal_pane_id, run_command, keep_scrollback)) = queued_respawn {
+                        screen.run_command_in_pane_with_id(
+                            terminal_pane_id,
+                            run_command,
+                            keep_scrollback,
+                        );
+                    }
                 }
                 if !found {
                     pending_events_waiting_for_pane
@@ -1638,8 +1651,10 @@ pub(crate) fn screen_thread_main(
                 screen.log_and_report_session_state()?;
             },
             ScreenInstruction::UpdatePaneHost(terminal_id, host) => {
-                // A pane's host never changes while it lives, so this arrives
-                // once when it is created and once more when it is closed.
+                // Usually arrives once when a pane is created and once more when it is
+                // closed - but a workflow step can respawn a pane's command on a different
+                // remote host, so this can also arrive again mid-life with a changed (or
+                // newly-absent) host.
                 for tab in screen.tabs.values_mut() {
                     if let Some(pane) = tab.get_pane_with_id_mut(PaneId::Terminal(terminal_id)) {
                         pane.set_remote_host(host.clone());

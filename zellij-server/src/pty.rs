@@ -516,6 +516,26 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                                     .send_to_screen(instruction)
                                     .with_context(err_context)?;
                                 if let Some(run_command) = run_command {
+                                    if let Some(originating_plugin) =
+                                        run_command.originating_plugin.clone()
+                                    {
+                                        // A pane that never started still has to report a
+                                        // terminal step result, or a workflow with no timeout
+                                        // waits forever for an exit that will never come.
+                                        let update_event = Event::CommandPaneExited(
+                                            terminal_id,
+                                            Some(2),
+                                            originating_plugin.context.clone(),
+                                        );
+                                        pty.bus
+                                            .senders
+                                            .send_to_plugin(PluginInstruction::Update(vec![(
+                                                Some(originating_plugin.plugin_id),
+                                                Some(originating_plugin.client_id),
+                                                update_event,
+                                            )]))
+                                            .with_context(err_context)?;
+                                    }
                                     send_pane_error_to_screen(
                                         pty.bus.senders.clone(),
                                         terminal_id,
@@ -893,6 +913,26 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     Err(err) => match pane_start_failure(&err) {
                         Some((terminal_id, message)) => {
                             if run_command.hold_on_close {
+                                if let Some(originating_plugin) =
+                                    run_command.originating_plugin.clone()
+                                {
+                                    // A replacement that never started still has to report a
+                                    // terminal step result, or a workflow with no timeout waits
+                                    // forever for an exit that will never come.
+                                    let update_event = Event::CommandPaneExited(
+                                        terminal_id,
+                                        Some(2),
+                                        originating_plugin.context.clone(),
+                                    );
+                                    pty.bus
+                                        .senders
+                                        .send_to_plugin(PluginInstruction::Update(vec![(
+                                            Some(originating_plugin.plugin_id),
+                                            Some(originating_plugin.client_id),
+                                            update_event,
+                                        )]))
+                                        .with_context(err_context)?;
+                                }
                                 send_pane_error_to_screen(
                                     pty.bus.senders.clone(),
                                     terminal_id,
@@ -1387,6 +1427,25 @@ impl Pty {
         let quit_cb = Box::new({
             let senders = self.bus.senders.clone();
             move |pane_id, exit_status, command| {
+                // Edit panes are never held on close, so this always precedes the ClosePane
+                // below: a plugin watching for both EditPaneExited and the pane's own close
+                // broadcast sees the edit result first, rather than racing it against the
+                // screen's own FIFO on a different thread.
+                if let PaneId::Terminal(pane_id) = pane_id {
+                    if let Some(originating_edit_plugin) = originating_edit_plugin.as_ref() {
+                        let update_event = Event::EditPaneExited(
+                            pane_id,
+                            exit_status,
+                            originating_edit_plugin.context.clone(),
+                        );
+                        let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
+                            Some(originating_edit_plugin.plugin_id),
+                            Some(originating_edit_plugin.client_id),
+                            update_event,
+                        )]));
+                    }
+                }
+
                 // The screen learns of the exit before the originating plugin does: the screen
                 // queue is one FIFO, so anything the plugin sends in reaction to the event - a
                 // `RunCommandInPane` for the next step of a sequence - lands after the pane's
@@ -1418,18 +1477,6 @@ impl Pty {
                         let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
                             Some(originating_command_plugin.plugin_id),
                             Some(originating_command_plugin.client_id),
-                            update_event,
-                        )]));
-                    }
-                    if let Some(originating_edit_plugin) = originating_edit_plugin.as_ref() {
-                        let update_event = Event::EditPaneExited(
-                            pane_id,
-                            exit_status,
-                            originating_edit_plugin.context.clone(),
-                        );
-                        let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                            Some(originating_edit_plugin.plugin_id),
-                            Some(originating_edit_plugin.client_id),
                             update_event,
                         )]));
                     }
@@ -2670,6 +2717,11 @@ impl Pty {
                         )]))
                         .with_context(err_context)?;
                 }
+                // A workflow step can move a pane between hosts; clear the previous host
+                // first so a remote-to-local rerun does not leave the pane's reported host
+                // stale (report_terminal_host only sends when there is a new host to report).
+                self.forget_terminal_host(id);
+                self.report_terminal_host(id);
                 Ok(())
             },
             _ => Err(anyhow!("cannot respawn plugin panes")).with_context(err_context),

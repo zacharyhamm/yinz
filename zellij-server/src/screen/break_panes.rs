@@ -8,7 +8,7 @@ use crate::pty::PtyInstruction;
 use crate::tab::{AcceptedPane, ExtractedPanePlacement, Pane};
 use crate::ClientId;
 use zellij_utils::data::{Direction, Event};
-use zellij_utils::input::command::TerminalAction;
+use zellij_utils::input::command::{RunCommand, TerminalAction};
 use zellij_utils::input::layout::Layout;
 use zellij_utils::pane_size::PaneGeom;
 
@@ -34,6 +34,7 @@ impl Screen {
             || active_tab.get_visible_selectable_floating_panes_count() > 0
             || active_tab.pane_is_stack_list_member(&active_pane_id)
         {
+            let carried_respawn = active_tab.take_pending_respawn(active_pane_id);
             let active_pane = active_tab
                 .extract_pane(active_pane_id, false)
                 .with_context(err_context)?;
@@ -80,6 +81,11 @@ impl Screen {
                     tiled_panes_layout.ignore_run_instruction(active_pane_run_instruction.clone());
                 },
             }
+            if let Some(entry) = carried_respawn {
+                if let Some(tab) = self.tabs.get_mut(&tab_index) {
+                    tab.restore_pending_respawn(active_pane_id, entry);
+                }
+            }
             let should_change_focus_to_new_tab = true;
             self.bus.senders.send_to_plugin(PluginInstruction::NewTab(
                 None,
@@ -115,7 +121,11 @@ impl Screen {
         let err_context = || "failed break multiple panes to a new tab".to_string();
 
         let all_tabs = self.get_tabs_mut();
-        let mut extracted_panes: Vec<(ExtractedPanePlacement, Box<dyn Pane>)> = vec![];
+        let mut extracted_panes: Vec<(
+            ExtractedPanePlacement,
+            Box<dyn Pane>,
+            Option<(RunCommand, bool)>,
+        )> = vec![];
         for pane_id in pane_ids {
             for tab in all_tabs.values_mut() {
                 if !tab.has_pane_with_pid(&pane_id) {
@@ -123,11 +133,14 @@ impl Screen {
                 }
                 // read before the extraction, which forgets that this was an overlay
                 let placement = tab.placement_for_extraction(pane_id);
+                let carried_respawn = tab.take_pending_respawn(pane_id);
                 // here we pass None instead of the client_id we have because we do not need to
                 // necessarily trigger a relayout for this tab
                 if let Some(pane) = tab.extract_pane(pane_id, true).take() {
-                    extracted_panes.push((placement, pane));
+                    extracted_panes.push((placement, pane, carried_respawn));
                     break;
+                } else if let Some(entry) = carried_respawn {
+                    tab.restore_pending_respawn(pane_id, entry);
                 }
             }
         }
@@ -148,7 +161,7 @@ impl Screen {
             tab.name = new_tab_name.clone();
         }
         let tab_size = tab.size;
-        for (placement, mut pane) in extracted_panes {
+        for (placement, mut pane, carried_respawn) in extracted_panes {
             let run_instruction = pane.invoked_with().clone();
             let pane_id = pane.pid();
             let without_relayout = true;
@@ -173,6 +186,9 @@ impl Screen {
                 // here we pass None instead of the ClientId, because we do not want this pane to be
                 // necessarily focused
                 tab.add_tiled_pane(pane, pane_id, without_relayout, None)?;
+            }
+            if let Some(entry) = carried_respawn {
+                tab.restore_pending_respawn(pane_id, entry);
             }
             tiled_panes_layout.ignore_run_instruction(run_instruction.clone());
         }
@@ -203,6 +219,7 @@ impl Screen {
                 pane_to_break_is_floating,
                 overlay_placement,
                 overlay_carry,
+                carried_respawn,
             ) = {
                 let active_tab = self.get_active_tab_mut(client_id)?;
                 let active_pane_id = active_tab
@@ -214,6 +231,7 @@ impl Screen {
                 // half that goes with it
                 let overlay_placement = active_tab.overlay_placement_for(active_pane_id);
                 let overlay_carry = active_tab.overlay_carry_for(active_pane_id);
+                let carried_respawn = active_tab.take_pending_respawn(active_pane_id);
                 let active_pane = active_tab
                     .extract_pane(active_pane_id, false)
                     .with_context(err_context)?;
@@ -223,6 +241,7 @@ impl Screen {
                     pane_to_break_is_floating,
                     overlay_placement,
                     overlay_carry,
+                    carried_respawn,
                 )
             };
             // the plugins in the tab the pane lands in need the client's mode, not just
@@ -272,6 +291,9 @@ impl Screen {
                     false,
                     Some(client_id),
                 )?;
+            }
+            if let Some(entry) = carried_respawn {
+                new_active_tab.restore_pending_respawn(active_pane_id, entry);
             }
 
             self.log_and_report_session_state()?;
@@ -362,8 +384,12 @@ impl Screen {
 
         // remember where each pane came from, so that a destination that refuses it can
         // be recovered from rather than losing the pane
-        let mut extracted: Vec<(usize, ExtractedPanePlacement, Box<dyn Pane>)> =
-            Vec::with_capacity(to_extract.len());
+        let mut extracted: Vec<(
+            usize,
+            ExtractedPanePlacement,
+            Box<dyn Pane>,
+            Option<(RunCommand, bool)>,
+        )> = Vec::with_capacity(to_extract.len());
         {
             let all_tabs = self.get_tabs_mut();
             'panes: for pane_id in to_extract {
@@ -375,26 +401,39 @@ impl Screen {
                     // *before* the extraction: it is what drops an overlay's kind and
                     // coordinates, and "not floating" would land a modal here as a tiled pane
                     let placement = tab.placement_for_extraction(pane_id);
+                    let carried_respawn = tab.take_pending_respawn(pane_id);
                     // dont_swap_if_suppressed, and no client_id: we do not need to
                     // necessarily trigger a relayout for the source tab
                     if let Some(pane) = tab.extract_pane(pane_id, true) {
-                        extracted.push((source_tab_id, placement, pane));
+                        extracted.push((source_tab_id, placement, pane, carried_respawn));
                         continue 'panes;
+                    } else if let Some(entry) = carried_respawn {
+                        tab.restore_pending_respawn(pane_id, entry);
                     }
                 }
                 outcome.not_found.push(pane_id);
             }
         }
 
-        let mut refused: Vec<(usize, ExtractedPanePlacement, Box<dyn Pane>)> = vec![];
+        let mut refused: Vec<(
+            usize,
+            ExtractedPanePlacement,
+            Box<dyn Pane>,
+            Option<(RunCommand, bool)>,
+        )> = vec![];
         match self.get_tab_by_id_mut(tab_id) {
             Some(destination) => {
-                for (source_tab_id, placement, pane) in extracted {
+                for (source_tab_id, placement, pane, carried_respawn) in extracted {
                     let pane_id = pane.pid();
                     match destination.accept_extracted_pane(pane, placement.clone()) {
-                        AcceptedPane::Accepted => outcome.moved.push(pane_id),
+                        AcceptedPane::Accepted => {
+                            outcome.moved.push(pane_id);
+                            if let Some(entry) = carried_respawn {
+                                destination.restore_pending_respawn(pane_id, entry);
+                            }
+                        },
                         AcceptedPane::NoRoom(pane) => {
-                            refused.push((source_tab_id, placement, pane))
+                            refused.push((source_tab_id, placement, pane, carried_respawn))
                         },
                         AcceptedPane::LostInAdd => outcome.closed.push(pane_id),
                     }
@@ -412,7 +451,7 @@ impl Screen {
 
         // put back anything the destination would not take - as what it was, so a refusal does
         // not quietly demote a modal in the tab it never left
-        for (source_tab_id, placement, pane) in refused {
+        for (source_tab_id, placement, pane, carried_respawn) in refused {
             let pane_id = pane.pid();
             let put_back = match self.get_tab_by_id_mut(source_tab_id) {
                 Some(source) => source.accept_extracted_pane(pane, placement),
@@ -424,13 +463,20 @@ impl Screen {
                         "Tab {tab_id} had no room for pane {pane_id:?}; returned it to tab {source_tab_id}"
                     );
                     outcome.returned_to_source.push(pane_id);
+                    if let Some(entry) = carried_respawn {
+                        if let Some(source) = self.get_tab_by_id_mut(source_tab_id) {
+                            source.restore_pending_respawn(pane_id, entry);
+                        }
+                    }
                 },
                 AcceptedPane::NoRoom(..) | AcceptedPane::LostInAdd => {
                     // Last resort: the pane fits nowhere. Dropping the box here is only
                     // safe because `close_homeless_pane` below tears the pane down
                     // first - the same order `close_tab_by_id` uses for the panes of a
                     // tab it removes. Dropping it *without* that is the bug this
-                    // function exists to fix.
+                    // function exists to fix. A pending respawn is dropped along with it,
+                    // matching `Tab::close_pane`'s own cleanup for a pane that closes
+                    // outright.
                     log::error!(
                         "Pane {pane_id:?} fits in neither tab {tab_id} nor tab {source_tab_id}; closing it"
                     );
