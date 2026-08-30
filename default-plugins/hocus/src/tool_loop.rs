@@ -210,22 +210,19 @@ impl State {
         lines
     }
 
-    pub(crate) fn confirmation_detail(&self, call: &ToolCall) -> Vec<String> {
-        if self.extensions.tool(&call.name).is_none() {
-            return tools::confirmation_detail(call);
+    pub(crate) fn confirmation_toast(&self, call: &ToolCall) -> String {
+        let Some(tool) = self.extensions.tool(&call.name) else {
+            return tools::confirmation_toast(call);
+        };
+        let mut lines = vec![tools::TOAST_HEADLINE.to_owned(), call.name.clone()];
+        if let Some(consequence) = &tool.consequence {
+            lines.push(format!("  {consequence}"));
         }
-        let mut lines = vec![call.name.clone()];
         lines.extend(
-            self.confirmation_body(call)
+            tools::toast_argument_lines(call)
                 .into_iter()
-                .map(|(line, _)| format!("  {line}")),
+                .map(|line| format!("  {line}")),
         );
-        lines
-    }
-
-    fn confirmation_toast(&self, call: &ToolCall) -> String {
-        let mut lines = vec![tools::TOAST_HEADLINE.to_owned()];
-        lines.extend(self.confirmation_detail(call));
         lines.join("\n")
     }
 

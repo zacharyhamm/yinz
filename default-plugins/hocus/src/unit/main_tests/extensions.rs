@@ -152,6 +152,20 @@ fn extension_safety_drives_planning_and_confirmation() {
 }
 
 #[test]
+fn extension_confirmation_toasts_bound_source_arguments() {
+    let state = extension_state("confirm", Some("writes the forecast extension"));
+    let source: Vec<String> = (0..50).map(|n| format!("-- line {n}")).collect();
+    let toast = state.confirmation_toast(&call(
+        "1",
+        "weather_forecast",
+        &serde_json::json!({ "source": source.join("\n") }).to_string(),
+    ));
+    assert!(toast.contains("writes the forecast extension"), "{toast}");
+    assert!(toast.contains("30 more lines"), "{toast}");
+    assert!(!toast.contains("-- line 49"), "{toast}");
+}
+
+#[test]
 fn extension_specs_join_normal_requests_and_read_only_specs_join_plans() {
     let mut state = extension_state("read_only", None);
     let read_only = state.extensions.specs(true);
