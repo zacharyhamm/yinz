@@ -2114,17 +2114,27 @@ impl State {
         let was_on = self.plan_mode_on();
 
         // The mode changes *first*, and the pending call is dealt with second.
-        // `decline_tool` answers the whole batch and stops; the request that
-        // follows is `send_user_text` below, sending the prompt, and it has to
-        // go out as a planning request — with the read-only tool set — which it
-        // only does if the mode is already on when it leaves.
+        // `decline_head` answers the whole batch and sends nothing; the request
+        // that follows is `send_user_text` below, sending the prompt, and it has
+        // to go out as a planning request — with the read-only tool set — which
+        // it only does if the mode is already on when it leaves.
         self.plan = Plan::Planning;
 
         // Entering it while a destructive call is waiting on a y/n would leave
         // that call armed inside the mode that exists to disarm it. Declining is
         // the honest reading of "stop acting, start planning", and it keeps the
         // transcript valid — the model gets a result for the call it made.
-        let declined = !was_on && self.is_confirming() && self.decline_tool();
+        //
+        // `decline_head` rather than `decline_tool`: the prompt typed after
+        // `/plan` is the question this turn is about, so the queue is left alone
+        // and `send_user_text` below is what goes out. Anything queued earlier
+        // follows it through the usual drain, once the planning reply settles.
+        let declined = !was_on
+            && self.is_confirming()
+            && self.decline_head(
+                "not run: the user switched to planning mode, so this tool is withheld. \
+                 Finish the plan; the user can approve it and you will get the tool back.",
+            );
 
         // Only on the way in: an established mode does not announce itself again
         // in front of every prompt typed inside it.
@@ -2263,6 +2273,28 @@ impl State {
     /// the model would have it try something else on its own, and running the
     /// rest of the batch would carry out calls nobody agreed to.
     pub(crate) fn decline_tool(&mut self) -> bool {
+        if !self.decline_head("not run: the user declined an earlier call in this batch") {
+            return false;
+        }
+        // Something typed while the prompt was up *is* the next message, and it
+        // has been waiting on this answer. The timer would get to it eventually;
+        // this is the moment it was queued for. Through `drain_asks` rather than
+        // past it: the one-stream-slot and open-picker guards hold here too.
+        if !self.drain_asks() {
+            // Only when nothing went out — with a question in flight the chat is
+            // waiting on the model again, not on the user.
+            let notice = "declined — waiting for your next message";
+            self.messages.push(Message::notice(notice));
+            self.log("notice", serde_json::json!({"content": notice}));
+        }
+        self.pin_to_bottom();
+        true
+    }
+
+    /// Answer the head as declined and halt the batch behind it, saying nothing
+    /// and sending nothing. The two callers differ only in what that batch is
+    /// told: `n` says the user declined, `/plan` says the tools are withheld.
+    fn decline_head(&mut self, rest_result: &str) -> bool {
         let Some(head) = self.pending.front() else {
             return false;
         };
@@ -2274,20 +2306,7 @@ impl State {
                 "decision": "decline",
             }),
         );
-        self.halt_tools(
-            "declined by the user",
-            "not run: the user declined an earlier call in this batch",
-        );
-        let notice = "declined — waiting for your next message";
-        self.messages.push(Message::notice(notice));
-        self.log("notice", serde_json::json!({"content": notice}));
-        self.pin_to_bottom();
-        // Something typed while the prompt was up *is* the next message, and it
-        // has been waiting on this answer. The timer would get to it eventually;
-        // this is the moment it was queued for.
-        if let Ok(cfg) = self.cfg.clone() {
-            self.start_queued_question(&cfg);
-        }
+        self.halt_tools("declined by the user", rest_result);
         true
     }
 

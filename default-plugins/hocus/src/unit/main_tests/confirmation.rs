@@ -216,6 +216,13 @@ fn a_question_queued_behind_the_prompt_goes_out_on_the_decline() {
         .rfind(|message| message.role == Role::User)
         .unwrap();
     assert_eq!(last_user.content, "actually, leave that pane");
+    assert!(
+        !state
+            .messages
+            .iter()
+            .any(|message| message.content.starts_with("declined — waiting")),
+        "and hocus does not claim to be waiting while that question is in flight",
+    );
 }
 
 #[test]
