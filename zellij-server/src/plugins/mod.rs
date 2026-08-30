@@ -45,10 +45,10 @@ use wasm_bridge::WasmBridge;
 use zellij_utils::{
     data::{
         ClientInfo, CommandOrPlugin, ContextMenuContext, Event, EventType, FloatingPaneCoordinates,
-        InputMode, LayoutInfo, LayoutWithError, MessageToPlugin, OverlayPlacement,
+        InputMode, LayoutInfo, LayoutWithError, MessageToPlugin, Mouse, OverlayPlacement,
         PermissionStatus, PermissionType, PipeMessage, PipeSource,
     },
-    errors::{prelude::*, ContextType, PluginContext},
+    errors::{prelude::*, ContextType, ErrorContext, PluginContext},
     input::{
         actions::Action,
         command::TerminalAction,
@@ -413,8 +413,20 @@ pub(crate) fn plugin_thread_main(
     // it.
     let mut session_started = false;
 
+    // The one message `drain_updates` pulled off the bus that was not an `Update`; it is
+    // handled by the next iteration, in the order it arrived.
+    let mut queued: Option<(PluginInstruction, ErrorContext)> = None;
     loop {
-        let (event, mut err_ctx) = bus.recv().expect("failed to receive event on channel");
+        let (event, mut err_ctx) = match queued.take() {
+            Some(next) => next,
+            None => bus.recv().expect("failed to receive event on channel"),
+        };
+        let event = match event {
+            PluginInstruction::Update(updates) => {
+                PluginInstruction::Update(drain_updates(&bus, updates, &mut queued))
+            },
+            other => other,
+        };
         err_ctx.add_call(ContextType::Plugin((&event).into()));
         match event {
             PluginInstruction::Load(
@@ -2005,6 +2017,61 @@ pub(crate) fn add_suppressed_plugin_pane(
 }
 
 const EXIT_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// How many queued `Update` messages one pass merges before letting the other instruction
+/// kinds through. A wheel flood is a few hundred messages at most; anything past that is
+/// starving a `Load`, a pipe or `Exit` waiting behind it.
+const MAX_UPDATE_DRAIN: usize = 256;
+
+type PluginUpdate = (Option<PluginId>, Option<ClientId>, Event);
+
+/// Merge the `Update`s already waiting on the bus into the one just taken, so a flood of wheel
+/// notches costs one `update_plugins` call (and one render per plugin) instead of one each.
+///
+/// Only *adjacent* `Update`s merge, so nothing is reordered: the first message of another kind
+/// stops the drain and is left in `queued` for the caller to handle next. Every event is kept
+/// and delivered in order with its count — `tab-bar` and `strider` step once per event and
+/// would misbehave if two `ScrollUp(3)`s became a `ScrollUp(6)`. The one exception is hovers,
+/// see `coalesce_hovers`.
+fn drain_updates(
+    bus: &Bus<PluginInstruction>,
+    mut updates: Vec<PluginUpdate>,
+    queued: &mut Option<(PluginInstruction, ErrorContext)>,
+) -> Vec<PluginUpdate> {
+    let mut drained = 0;
+    while drained < MAX_UPDATE_DRAIN {
+        match bus.try_recv() {
+            Some((PluginInstruction::Update(more), _)) => {
+                updates.extend(more);
+                drained += 1;
+            },
+            Some(other) => {
+                *queued = Some(other);
+                break;
+            },
+            None => break,
+        }
+    }
+    coalesce_hovers(updates)
+}
+
+/// A hover is a position sample, so only the newest one per (plugin, client) means anything:
+/// earlier samples in the same batch are dropped. Nothing else is touched.
+fn coalesce_hovers(mut updates: Vec<PluginUpdate>) -> Vec<PluginUpdate> {
+    if updates.len() < 2 {
+        return updates;
+    }
+    let mut seen: HashSet<(Option<PluginId>, Option<ClientId>)> = HashSet::new();
+    let mut keep = vec![true; updates.len()];
+    for (index, (plugin_id, client_id, event)) in updates.iter().enumerate().rev() {
+        if let Event::Mouse(Mouse::Hover(..)) = event {
+            keep[index] = seen.insert((*plugin_id, *client_id));
+        }
+    }
+    let mut keep = keep.into_iter();
+    updates.retain(|_| keep.next().unwrap_or(true));
+    updates
+}
 
 #[path = "./unit/plugin_tests/mod.rs"]
 #[cfg(test)]

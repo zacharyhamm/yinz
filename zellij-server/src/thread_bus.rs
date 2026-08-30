@@ -228,6 +228,12 @@ impl<T> Bus<T> {
         oper.recv(&self.receivers[idx])
     }
 
+    /// A message that is already waiting, without blocking for one. Lets a thread drain what
+    /// has queued up behind the message it just took.
+    pub fn try_recv(&self) -> Option<(T, ErrorContext)> {
+        self.receivers.iter().find_map(|r| r.try_recv().ok())
+    }
+
     pub fn recv_timeout(
         &self,
         timeout: std::time::Duration,

@@ -261,6 +261,15 @@ pub(crate) struct View {
     /// transcript being re-wrapped at a new width and the viewport changing
     /// height; both move line numbers, neither moves messages.
     anchor: Option<usize>,
+    /// How far up the last render could have gone: transcript lines beyond the
+    /// pane's height. Lets a scroll that cannot move say so instead of asking
+    /// for a frame identical to the last one — over-scrolling past the top is
+    /// what a flick of the wheel does most of the time. `None` until a render
+    /// has measured the transcript, trusted only while the transcript cache
+    /// still matches the messages (`State::transcript_measured`), and only ever
+    /// advisory: the render still clamps, so a stale value could at worst cost
+    /// a missed notch, never a wrong frame.
+    max_offset: Option<usize>,
 }
 
 impl View {

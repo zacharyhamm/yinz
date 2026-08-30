@@ -149,6 +149,11 @@ Two rules learned the hard way, both from tests that were flaky for years:
   coalesce, so *which* frame is last and *how many* arrive are properties of the scheduler, not of
   the behaviour under test. Wait for a frame whose **content** shows the state you mean —
   `wait_for_settled_render` in `unit/screen_tests/mod.rs` does exactly this.
+  The rule is about coalescing a test does not control. It does not reach a batch the test itself
+  hands over as a single instruction, where the render count is fixed by the code path rather than
+  by timing — `plugins/unit/plugin_tests/batching.rs` counts renders on purpose, because "N events
+  cost one render" *is* the behaviour, and no single frame's content can express it. Counting
+  there is fine as long as the test can say why the count cannot vary, in a comment.
 - **A sleep is not a synchronisation primitive.** Instructions sent to the screen or plugin thread
   are drained in order, so ordering never needs a sleep; only *observing the result* does, and
   that is what `wait_until` is for.
@@ -179,8 +184,8 @@ Benchmarks: see `.claude/skills/bench/SKILL.md` (`cargo x bench`).
 Read `docs/ARCHITECTURE.md` before changing server internals, and
 `docs/TERMINOLOGY.md` for pty/ANSI/CSI vocabulary.
 `docs/PLUGIN_RENDER_PIPELINE.md` is a standing write-up of why plugin input lags behind a busy
-plugin — the four FIFO queues a keystroke crosses, and the known fixes nobody has made yet. Read
-it before touching plugin event delivery or the plugin render path.
+plugin — the four FIFO queues a keystroke crosses, and which of the candidate fixes have landed
+and which have not. Read it before touching plugin event delivery or the plugin render path.
 
 ## Conventions
 

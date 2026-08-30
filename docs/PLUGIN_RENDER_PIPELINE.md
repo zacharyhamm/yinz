@@ -1,10 +1,12 @@
 # The plugin render pipeline, and why input lags behind it
 
 This is a write-up of structural problems in how Zellij delivers events to plugins and gets
-their output back on screen. None of it is fixed. It was written while fixing hocus's input
-lag during a streaming reply, where the costs below were the amplifier rather than the cause —
-the cause was hocus redrawing its whole transcript ten times a second, which is fixed. What
-follows is what remains, so the work can be picked up deliberately rather than rediscovered.
+their output back on screen. Of the candidate fixes at the end, 1 and 2 (batching on the plugin
+thread, one render per plugin per batch) are done and marked so; 3 to 5 are not. It was written
+while fixing hocus's input lag during a streaming reply, where the costs below were the
+amplifier rather than the cause — the cause was hocus redrawing its whole transcript ten times a
+second, which is fixed. What follows is what remains, so the work can be picked up deliberately
+rather than rediscovered.
 
 The short version: **a keystroke aimed at a plugin pane crosses four strictly-FIFO queues, and
 nothing anywhere gives it priority over the traffic already in them.** A plugin receiving a lot
@@ -27,7 +29,7 @@ of events fills those queues with its own work, and the user's typing waits behi
    Reaching the plugin, the key becomes `PluginInstruction::Update(vec![(pid, client, Event::Key)])`
    at `tab/mod.rs:4943`.
 
-3. **The plugin thread** (unbounded, `lib.rs:2216`, loop at `plugins/mod.rs:397`). `Event::Key`
+3. **The plugin thread** (unbounded, `lib.rs:2216`, loop after `drain_updates` in `plugins/mod.rs`). `Event::Key`
    is the *same* `PluginInstruction::Update` variant as every other event — streamed HTTP
    chunks, pane updates, timers (`plugins/mod.rs:504`). `Bus::recv` (`thread_bus.rs:220`) is a
    plain `crossbeam::Select` with no priority. There is no way to say a key matters more.
@@ -40,24 +42,27 @@ of events fills those queues with its own work, and the user's typing waits behi
 
 ## What makes those queues deep
 
-**One `update()`, one full `render()` and one `PluginBytes` per event, per plugin.**
-`update_plugins` (`wasm_bridge.rs:1266`) does not batch: the `Vec` it receives is walked in a
-nested loop (`:1298`), and each matching event becomes its own executor job (`:1317`) ending in
-its own `send_to_screen(ScreenInstruction::PluginBytes(..))` (`:1352`). `apply_event_to_plugin`
-(`:2764`) calls the guest `update`, and if it returns true, `render_plugin_for_clients` (`:2735`)
-re-renders the whole viewport, once per client. There is no dirty-marking and no coalescing: ten
-events that each ask for a repaint produce ten renders and ten VTE re-parses, even when they
-arrived together and only the last one's output would ever have been seen.
+**One `update()`, one full `render()` and one `PluginBytes` per event, per plugin — as it
+was.** `update_plugins` (`wasm_bridge.rs`) used to walk the `Vec` it received in a nested loop,
+and each matching event became its own executor job ending in its own
+`send_to_screen(ScreenInstruction::PluginBytes(..))`: `apply_event_to_plugin` called the guest
+`update`, and if it returned true, `render_plugin_for_clients` re-rendered the whole viewport,
+once per client. Ten events that each asked for a repaint produced ten renders and ten VTE
+re-parses, even when they arrived together and only the last one's output would ever have been
+seen. Candidates 1 and 2 below fixed this: the plugin thread merges the `Update`s waiting on its
+bus, and a plugin gets its share of the batch in one job and renders once at the end.
 
-The same shape holds for pipe messages (`wasm_bridge.rs:1503-1590`).
+The per-message shape still holds for pipe messages (`WasmBridge::pipe_messages`).
 
 **Every render asset sends a message back.** `screen/render.rs:30` returns `UnblockCliPipes` to
-the plugin thread per asset, and `wasm_bridge.rs:2820` sends one from the *non*-rendering branch
-too. So each event costs at least two plugin-thread messages, not one.
+the plugin thread per asset, and `apply_events_to_plugin` (`wasm_bridge.rs`) sends one from the
+*non*-rendering branch too. So each batch a plugin takes costs at least two plugin-thread
+messages, not one — per batch now rather than per event, but still there.
 
-**Copies.** `updates.clone()` at `wasm_bridge.rs:1298`, `event.clone()` at `:1331`, and again
-into `cached_events_for_pending_plugins` at `:1379`. A streamed HTTP body is cloned at least
-twice on the way to the plugin.
+**Copies.** `update_plugins` (`wasm_bridge.rs`) clones each event into the per-plugin batch it
+hands the executor (`event.clone()` while collecting `events`), and again into
+`cached_events_for_pending_plugins` for every plugin still loading. A streamed HTTP body is
+cloned at least twice on the way to the plugin.
 
 **Renaming a pane is expensive.** `ScreenInstruction::RenamePane`
 (`screen/thread_main.rs:3310`) re-renders and calls `log_and_report_session_state()`, which
@@ -80,17 +85,28 @@ until pending plugins have rendered, with a 100 ms timeout.
 
 ## Candidate fixes, roughly in the order they look worth doing
 
-1. **Drain and merge on the plugin thread.** After `bus.recv()` (`plugins/mod.rs:397`),
-   `try_recv` the rest of the queue and merge consecutive `Update(..)` batches into one
-   `update_plugins` call. Collapses a backlog into a single pass. Does not reorder anything, so
-   it is safe, but on its own it does not help a key that is genuinely behind other events.
+1. **Drain and merge on the plugin thread.** *Done.* After `bus.recv()`, `drain_updates`
+   (`plugins/mod.rs`, next to the thread's loop) `Bus::try_recv`s the `Update(..)` messages
+   waiting behind it — at most `MAX_UPDATE_DRAIN` per pass — and merges them into one
+   `update_plugins` call. The first message of another kind stops the drain and is handled next,
+   so nothing is reordered. Events are never merged (`tab-bar` and `strider` step once per
+   *event*, not per line), with one exception: `coalesce_hovers` keeps only the newest
+   `Mouse::Hover` per (plugin, client) in a batch, since a hover is a position sample. On its own
+   this still does not help a key that is genuinely behind other events.
 
-2. **Dirty-mark and render once per drained batch.** Change `apply_event_to_plugin`
-   (`wasm_bridge.rs:2799-2811`) to record that the plugin wants a repaint rather than producing
-   one, and render each dirty plugin once after the batch. This is the single biggest structural
-   win: it decouples "how many events arrived" from "how many times we render and re-parse a
-   viewport". Needs care around `pipes_to_block_or_unblock`, which currently rides on the
-   per-event render asset.
+2. **Dirty-mark and render once per drained batch.** *Done.* `update_plugins`
+   (`wasm_bridge.rs`) now submits one executor job per plugin instance carrying every event of
+   the batch that plugin takes, and `apply_events_to_plugin` runs them in order — each under the
+   client it was directed at — and renders once at the end if any asked to. This decouples "how
+   many events arrived" from "how many times we render and re-parse a viewport": a wheel flood
+   of N notches is N cheap `update()` calls and one `render()` per client. The plugin's pending
+   CLI pipe changes are drained after *each* event (`pipes_to_block_or_unblock`) and merged so
+   the last change to a pipe wins — one drain per batch would let an unblock override a later
+   block — and the merged set rides on that one render, or on the one `UnblockCliPipes` when
+   nothing rendered. A guest error mid-batch drops the rest of the batch but still delivers the
+   pipe changes made before it. `forward_events_to_cli_subscribers` collapses a run of
+   consecutive state reports to the newest of each kind, since merged batches can carry several,
+   without moving a report past the non-report events around it.
 
 3. **Drop superseded `PluginBytes` on the screen thread** (`screen/thread_main.rs:290`). For a
    given `(plugin_id, client_id)`, only the newest asset can matter — `handle_plugin_bytes`
