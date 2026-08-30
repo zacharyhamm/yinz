@@ -4128,11 +4128,9 @@ pub(crate) fn screen_thread_main(
                 // reader of the manifest.
                 if changed {
                     screen.fire_agent_state_hooks(pane_id, previous.as_ref(), agent.as_ref());
-                    // Only the pane state: the record lives in `PaneInfo`, and a
-                    // hook-driven record flips several times a second under a
-                    // working agent — the full session-state fan-out here was a
-                    // measured driver of plugin-thread load. See
-                    // `report_pane_state`.
+                    // Rebuild only the pane state. `SessionInfo` embeds that
+                    // manifest and is synchronized by `report_pane_state`, but
+                    // the tab state did not change.
                     screen.report_pane_state()?;
                 }
             },
