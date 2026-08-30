@@ -1,10 +1,42 @@
 use crate::ipc::{
-    ClientToServerMsg, IpcReceiverWithContext, IpcRecv, IpcSenderWithContext, ServerToClientMsg,
+    send_protobuf_client_to_server, send_protobuf_server_to_client, ClientToServerMsg,
+    IpcReceiverWithContext, IpcRecv, IpcSenderWithContext, IpcStream, ServerToClientMsg,
 };
 use crate::pane_size::Size;
 use interprocess::local_socket::{prelude::*, ListenerOptions};
 
 use std::sync::atomic::{AtomicU32, Ordering};
+
+struct FlushFailingStream;
+
+impl std::io::Read for FlushFailingStream {
+    fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+        Ok(0)
+    }
+}
+
+impl std::io::Write for FlushFailingStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "flush failed",
+        ))
+    }
+}
+
+impl IpcStream for FlushFailingStream {
+    fn try_clone_stream(&self) -> std::io::Result<Box<dyn IpcStream>> {
+        Ok(Box::new(Self))
+    }
+}
+
+fn flush_failing_sender<T: serde::Serialize>() -> IpcSenderWithContext<T> {
+    IpcSenderWithContext::from_boxed(Box::new(FlushFailingStream))
+}
 
 static IPC_COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -31,6 +63,29 @@ fn connect_stream(name: &IpcName) -> interprocess::local_socket::Stream {
     use interprocess::local_socket::{GenericFilePath, Stream as LocalSocketStream};
     LocalSocketStream::connect(name.as_path().to_fs_name::<GenericFilePath>().unwrap())
         .expect("connect failed")
+}
+
+#[test]
+fn send_apis_propagate_flush_failures() {
+    let errors = [
+        flush_failing_sender::<ClientToServerMsg>()
+            .send_client_msg(ClientToServerMsg::ConnStatus)
+            .unwrap_err(),
+        flush_failing_sender::<ServerToClientMsg>()
+            .send_server_msg(ServerToClientMsg::Connected)
+            .unwrap_err(),
+        send_protobuf_client_to_server(&mut flush_failing_sender(), ClientToServerMsg::ConnStatus)
+            .unwrap_err(),
+        send_protobuf_server_to_client(&mut flush_failing_sender(), ServerToClientMsg::Connected)
+            .unwrap_err(),
+    ];
+
+    for error in errors {
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().map(|e| e.kind()),
+            Some(std::io::ErrorKind::BrokenPipe)
+        );
+    }
 }
 
 fn try_connect(name: &IpcName) -> std::io::Result<interprocess::local_socket::Stream> {

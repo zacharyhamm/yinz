@@ -329,14 +329,14 @@ impl<T: Serialize> IpcSenderWithContext<T> {
     pub fn send_client_msg(&mut self, msg: ClientToServerMsg) -> Result<()> {
         let proto_msg: ProtoClientToServerMsg = msg.try_into()?;
         write_protobuf_message(&mut self.sender, &proto_msg)?;
-        let _ = self.sender.flush();
+        self.sender.flush()?;
         Ok(())
     }
 
     pub fn send_server_msg(&mut self, msg: ServerToClientMsg) -> Result<()> {
         let proto_msg: ProtoServerToClientMsg = msg.into();
         write_protobuf_message(&mut self.sender, &proto_msg)?;
-        let _ = self.sender.flush();
+        self.sender.flush()?;
         Ok(())
     }
 
@@ -539,20 +539,14 @@ pub fn send_protobuf_client_to_server(
     sender: &mut IpcSenderWithContext<ClientToServerMsg>,
     msg: ClientToServerMsg,
 ) -> Result<()> {
-    let proto_msg: ProtoClientToServerMsg = msg.try_into()?;
-    write_protobuf_message(&mut sender.sender, &proto_msg)?;
-    let _ = sender.sender.flush();
-    Ok(())
+    sender.send_client_msg(msg)
 }
 
 pub fn send_protobuf_server_to_client(
     sender: &mut IpcSenderWithContext<ServerToClientMsg>,
     msg: ServerToClientMsg,
 ) -> Result<()> {
-    let proto_msg: ProtoServerToClientMsg = msg.into();
-    write_protobuf_message(&mut sender.sender, &proto_msg)?;
-    let _ = sender.sender.flush();
-    Ok(())
+    sender.send_server_msg(msg)
 }
 
 pub fn recv_protobuf_client_to_server(
