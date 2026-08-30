@@ -3548,9 +3548,8 @@ pub fn change_overlay_coordinates(
 /// Once the user has dragged or resized an overlay with the mouse, the server keeps their
 /// position or size and takes only the rest from `change_overlay_coordinates` - a plugin that
 /// re-places itself on every resize would otherwise undo every step of the drag. A key the user
-/// pressed is as much theirs as the drag was, so this variant reclaims both: the overlay goes
-/// where the coordinates say, and the plugin's later placements move it again until the next
-/// drag.
+/// pressed to move it is as much theirs as the drag was, so this variant reclaims the position;
+/// the independently user-stated size remains unchanged.
 pub fn change_overlay_coordinates_overriding_user_placement(
     pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
 ) {
