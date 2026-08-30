@@ -68,8 +68,10 @@ function M.load(config)
   M.host = config.host
   M.skill = config.skill
   zellij.subscribe { "key", "permission_request_result" }
-  -- `timeout`/`cancel` escalate with signals, which is `change_application_state`.
-  zellij.request_permission { "run_commands", "change_application_state" }
+  -- `read_application_state` is what delivers `command_pane_exited`, which is how a workflow
+  -- learns a step finished - without it the sequence stops after step one. `timeout`/`cancel`
+  -- escalate with signals, which is `change_application_state`.
+  zellij.request_permission { "run_commands", "read_application_state", "change_application_state" }
 end
 
 zellij.on("key", function(event)
