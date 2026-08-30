@@ -33,11 +33,7 @@ pub const DEFAULT_MAX_TOOL_ROUNDS: usize = 50;
 /// How many search results the model gets. A SearxNG page is ~25, and every one
 /// of them is paid for on every subsequent turn of the conversation.
 pub const SEARCH_RESULTS: usize = 8;
-const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_tab`/`warp_pane` move current items out; `warp_tab_here`/`warp_pane_here` move listed items in. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` first, then `plugin_write` (its confirmation grants the permissions the source asks for), `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; `plugin_list`/`plugin_read` read the user's plugin folder. Make independent calls together.";
-/// Sent in place of the tool set on the last round of the tool budget, so the
-/// model answers from what it has instead of insisting it needs another call.
-const BUDGET_SPENT_PROMPT: &str =
-    "The tool budget for this turn is spent. Answer now from the tool results you already have.";
+const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_tab`/`warp_pane` move current items out; `warp_tab_here`/`warp_pane_here` move listed items in. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` is authoritative, so read only the relevant sections, then `plugin_write` (its confirmation grants the permissions the source asks for), `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list`/`plugin_read` read the user's plugin folder. Make independent calls together.";
 /// Sent in planning mode, where the tool set is narrowed to the ones that only
 /// read. Says so explicitly: a model that believes a missing tool is an
 /// oversight spends the turn asking for it back.
@@ -85,6 +81,12 @@ pub struct Config {
     pub linear_api_key_env: String,
     pub linear_api_key: Option<String>,
     pub system_prompt: Option<String>,
+    /// DeepSeek's opt-in thinking control. Omitted for endpoints that do not
+    /// understand it.
+    pub thinking: Option<String>,
+    /// Optional reasoning effort, using the union of the values accepted by
+    /// DeepSeek and OpenAI-compatible reasoning endpoints.
+    pub reasoning_effort: Option<String>,
     /// Whether to advertise the Zellij tool set. On by default, but hocus points
     /// at arbitrary endpoints and plenty of local models fail outright when sent
     /// a `tools` array, so it needs an off switch.
@@ -154,6 +156,26 @@ impl Config {
         // a missing Linear key must never stop hocus from starting.
         let linear_api_key = non_empty(env, &linear_api_key_env);
         let system_prompt = non_empty(kdl, "system_prompt");
+        let thinking =
+            enum_setting(kdl, "thinking", &["enabled", "disabled"]).map_err(|message| {
+                ConfigError {
+                    message,
+                    base_url: base_url.clone(),
+                    model: model.clone(),
+                    api_key_env: api_key_env.clone(),
+                }
+            })?;
+        let reasoning_effort = enum_setting(
+            kdl,
+            "reasoning_effort",
+            &["low", "medium", "high", "xhigh", "max"],
+        )
+        .map_err(|message| ConfigError {
+            message,
+            base_url: base_url.clone(),
+            model: model.clone(),
+            api_key_env: api_key_env.clone(),
+        })?;
         // Anything but an explicit "false" leaves tools on: a typo should not
         // silently disable them.
         let tools =
@@ -190,6 +212,8 @@ impl Config {
                 linear_api_key_env,
                 linear_api_key,
                 system_prompt,
+                thinking,
+                reasoning_effort,
                 tools,
                 max_tool_rounds,
                 reasoning_echo,
@@ -266,20 +290,17 @@ pub fn models_headers(cfg: &Config) -> BTreeMap<String, String> {
     ])
 }
 
-/// `allow_tools` is the caller's tool budget, not its configuration: with it
-/// false the tool set is withheld even though `cfg.tools` is on, which leaves
-/// the model no move but to reply in text.
 #[cfg(test)]
-pub fn request_body(cfg: &Config, transcript: &[Message], allow_tools: bool) -> Vec<u8> {
-    request_body_with_project(cfg, transcript, allow_tools, None, false)
+pub fn request_body(cfg: &Config, transcript: &[Message]) -> Vec<u8> {
+    request_body_with_project(cfg, transcript, None, false)
 }
 
 /// The same, in planning mode. A second wrapper rather than a fifth argument on
 /// the one above, so the dozen tests that predate planning mode go on asserting
 /// what they always did against an untouched call.
 #[cfg(test)]
-pub fn request_body_planning(cfg: &Config, transcript: &[Message], allow_tools: bool) -> Vec<u8> {
-    request_body_with_project(cfg, transcript, allow_tools, None, true)
+pub fn request_body_planning(cfg: &Config, transcript: &[Message]) -> Vec<u8> {
+    request_body_with_project(cfg, transcript, None, true)
 }
 
 /// The request as it goes on the wire.
@@ -295,6 +316,10 @@ pub fn request_body_planning(cfg: &Config, transcript: &[Message], allow_tools: 
 #[derive(Serialize)]
 struct ChatRequest<'a> {
     model: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<Thinking<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'a str>,
     stream: bool,
     /// Asks for a final `usage` chunk, which is the only way a streamed
     /// completion reports how many tokens the context is. OpenAI, OpenRouter,
@@ -311,6 +336,12 @@ struct ChatRequest<'a> {
 #[derive(Serialize)]
 struct StreamOptions {
     include_usage: bool,
+}
+
+#[derive(Serialize)]
+struct Thinking<'a> {
+    #[serde(rename = "type")]
+    kind: &'a str,
 }
 
 /// One message, in whichever of the three shapes the endpoint expects. An enum
@@ -373,22 +404,19 @@ impl<'a> WireMessage<'a> {
 pub fn request_body_with_project(
     cfg: &Config,
     transcript: &[Message],
-    allow_tools: bool,
     project: Option<(&str, &str)>,
     plan: bool,
 ) -> Vec<u8> {
-    request_body_with_project_and_tools(cfg, transcript, allow_tools, project, plan, &[])
+    request_body_with_project_and_tools(cfg, transcript, project, plan, &[])
 }
 
 pub fn request_body_with_project_and_tools(
     cfg: &Config,
     transcript: &[Message],
-    allow_tools: bool,
     project: Option<(&str, &str)>,
     plan: bool,
     extension_tools: &[Value],
 ) -> Vec<u8> {
-    let send_tools = cfg.tools && allow_tools;
     let mut messages: Vec<WireMessage> = Vec::with_capacity(transcript.len() + 1);
     let mut system = if cfg.tools {
         Some(match &cfg.system_prompt {
@@ -398,13 +426,6 @@ pub fn request_body_with_project_and_tools(
     } else {
         cfg.system_prompt.clone()
     };
-    if cfg.tools && !allow_tools {
-        // Unwrap-free: the branch above always produces a prompt when tools are on.
-        if let Some(system) = system.as_mut() {
-            system.push_str("\n\n");
-            system.push_str(BUDGET_SPENT_PROMPT);
-        }
-    }
     // After the configured prompt and before the project line: a custom
     // `system_prompt` must not be able to displace the sentence explaining why
     // half the tools are missing.
@@ -471,12 +492,14 @@ pub fn request_body_with_project_and_tools(
 
     let body = ChatRequest {
         model: &cfg.model,
+        thinking: cfg.thinking.as_deref().map(|kind| Thinking { kind }),
+        reasoning_effort: cfg.reasoning_effort.as_deref(),
         stream: true,
         stream_options: cfg.stream_usage.then_some(StreamOptions {
             include_usage: true,
         }),
         messages,
-        tools: send_tools.then(|| {
+        tools: cfg.tools.then(|| {
             let mut specs = if plan {
                 tools::read_only_specs()
             } else {
@@ -490,6 +513,22 @@ pub fn request_body_with_project_and_tools(
     };
 
     serde_json::to_vec(&body).expect("serializing a chat request cannot fail")
+}
+
+fn enum_setting(
+    kdl: &BTreeMap<String, String>,
+    key: &str,
+    allowed: &[&str],
+) -> Result<Option<String>, String> {
+    let Some(value) = non_empty(kdl, key) else {
+        return Ok(None);
+    };
+    let value = value.to_ascii_lowercase();
+    if allowed.contains(&value.as_str()) {
+        Ok(Some(value))
+    } else {
+        Err(format!("{key} must be one of: {}", allowed.join(", ")))
+    }
 }
 
 /// How many characters of `transcript` go on the wire: the same messages
