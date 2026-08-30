@@ -88,6 +88,33 @@ fn kitty_support_recomputed_on_client_detach() {
 }
 
 #[test]
+fn plugins_receive_kitty_support_per_client() {
+    let size = Size { cols: 80, rows: 20 };
+    let (mut screen, capture) = create_new_screen_with_theme_capture(size);
+    new_tab(&mut screen, 1, 0);
+    screen.add_client(2).expect("TEST");
+    add_pane_to_tab(&mut screen, 0, PaneId::Plugin(77), false);
+    capture.drain_plugin_updates();
+
+    screen.update_kitty_graphics_support(1, true);
+    screen.update_kitty_graphics_support(2, false);
+
+    let capabilities: BTreeMap<ClientId, bool> = capture
+        .drain_plugin_updates()
+        .into_iter()
+        .filter_map(
+            |(plugin_id, client_id, event)| match (plugin_id, client_id, event) {
+                (Some(77), Some(client_id), Event::ModeUpdate(mode_info)) => {
+                    Some((client_id, mode_info.capabilities.kitty_graphics))
+                },
+                _ => None,
+            },
+        )
+        .collect();
+    assert_eq!(capabilities, BTreeMap::from([(1, true), (2, false)]));
+}
+
+#[test]
 fn primary_da_advertises_sixel_when_capable_client_connected() {
     let size = Size {
         cols: 121,

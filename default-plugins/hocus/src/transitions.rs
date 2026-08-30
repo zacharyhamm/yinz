@@ -460,7 +460,7 @@ impl State {
     pub(crate) fn wants_frames(&self) -> bool {
         // `wand_drawing` is set by the render that drew it, so the splash keeps its own clock
         // running and nothing else has to know the rules for when it is on screen.
-        self.is_loading() || self.is_receiving() || self.wand_drawing
+        self.is_loading() || self.is_receiving() || (self.wand_drawing && !self.hidden)
     }
 
     /// The spinner and its phrase, or `None` when nothing is being waited on.

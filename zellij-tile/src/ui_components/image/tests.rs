@@ -39,11 +39,11 @@ fn a_row_of_placeholders_names_its_row_and_every_column() {
     let row = image_row(0x0a0b0c, 1, 3);
     assert_eq!(
         row,
-        "\u{1b}[38;2;10;11;12m\
+        "\u{1b}[59;38;2;10;11;12m\
          \u{10EEEE}\u{030D}\u{0305}\
          \u{10EEEE}\u{030D}\u{030D}\
          \u{10EEEE}\u{030D}\u{030E}\
-         \u{1b}[39m"
+         \u{1b}[39;59m"
     );
 }
 
