@@ -100,6 +100,46 @@ fn hooks_fired_by(steps: Vec<ScreenInstruction>) -> Vec<Fired> {
         .collect()
 }
 
+fn hooks_fired_by_until(steps: Vec<ScreenInstruction>, expected: HookPoint) -> Vec<Fired> {
+    let size = Size { cols: 80, rows: 20 };
+    let mut mock_screen = MockScreen::new(size);
+    let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
+    let screen_thread = mock_screen.run(None, vec![]);
+    let instructions = Watched::new(vec![]);
+    let plugin_thread =
+        log_actions_in_thread!(instructions, PluginInstruction::Exit, plugin_receiver);
+    for step in steps {
+        let _ = mock_screen.to_screen.send(step);
+    }
+    instructions.wait_until(
+        "the buffered agent report to reach its adopted pane",
+        zellij_test_support::default_timeout(),
+        |instructions| {
+            instructions
+                .iter()
+                .any(|instruction| {
+                    matches!(instruction, PluginInstruction::RunHook { point, .. } if *point == expected)
+                })
+                .then_some(())
+        },
+    );
+    mock_screen.teardown(vec![plugin_thread, screen_thread]);
+    let fired = instructions
+        .lock()
+        .iter()
+        .filter_map(|instruction| match instruction {
+            PluginInstruction::RunHook {
+                point,
+                pane_id,
+                payload,
+                ..
+            } => Some((*point, *pane_id, payload.clone())),
+            _ => None,
+        })
+        .collect();
+    fired
+}
+
 /// A hook-driven agent record flips several times a second under a working
 /// agent. The pane manifest and the `SessionInfo` that embeds it must agree,
 /// without rebuilding or broadcasting unchanged tab state.
@@ -155,6 +195,65 @@ fn a_changed_agent_record_reports_pane_and_session_state() {
         })
         .expect("session subscribers are updated");
     assert_eq!(session.panes, cached.panes);
+}
+
+#[test]
+fn agent_reports_wait_for_adopted_panes_and_tabs() {
+    let fresh = report(AgentState::Waiting, Some("s1"));
+    let serialized = report(AgentState::Busy, Some("s1"));
+
+    let pane = hooks_fired_by_until(
+        vec![
+            set_agent(2, Some(fresh.clone())),
+            new_pane(2, None),
+            set_agent(2, Some(serialized.clone())),
+        ],
+        HookPoint::AgentWaiting,
+    );
+    assert_eq!(
+        points(&pane),
+        vec![HookPoint::AgentStart, HookPoint::AgentWaiting],
+        "the buffered live report must apply after the serialized pane record: {pane:?}"
+    );
+
+    let layout = TiledPaneLayout::default();
+    let tab = hooks_fired_by_until(
+        vec![
+            ScreenInstruction::NewTab(
+                None,
+                None,
+                Some(layout.clone()),
+                vec![],
+                None,
+                (Some(vec![]), Some(vec![])),
+                None,
+                false,
+                true,
+                10,
+                None,
+            ),
+            set_agent(42, Some(fresh)),
+            ScreenInstruction::ApplyLayout(
+                layout,
+                vec![],
+                vec![(42, None)],
+                vec![],
+                HashMap::new(),
+                1,
+                true,
+                10,
+                None,
+                None,
+            ),
+            set_agent(42, Some(serialized)),
+        ],
+        HookPoint::AgentWaiting,
+    );
+    assert_eq!(
+        points(&tab),
+        vec![HookPoint::AgentStart, HookPoint::AgentWaiting],
+        "the buffered live report must apply after the serialized tab record: {tab:?}"
+    );
 }
 
 fn points(fired: &[Fired]) -> Vec<HookPoint> {
