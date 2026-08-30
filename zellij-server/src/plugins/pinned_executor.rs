@@ -3,7 +3,7 @@ use crate::plugins::plugin_map::PluginMap;
 use crate::plugins::wasm_bridge::PluginCache;
 use crate::ClientId;
 use crate::ThreadSenders;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
@@ -30,15 +30,18 @@ pub struct PinnedExecutor {
 
 /// The pool's mutable bookkeeping, behind a single mutex.
 ///
-/// These three maps were once three separate mutexes, and `register_plugin` and
-/// the pool-shrink path took two of them in opposite orders — an ABBA inversion
-/// that could wedge the plugin thread and an execution thread permanently, which
-/// then blocked session shutdown on `plugin_thread.join()`. Holding them under one
-/// lock makes the ordering unrepresentable, and also closes the check-then-act
-/// window `execute_for_plugin` had between looking up a plugin's thread and using
-/// it. Spawning a thread for a growing pool happens under this lock too: the
-/// old code dropped the thread lock to spawn while still holding the other two,
-/// which was the inversion's other half.
+/// This was once three separate mutexes (the two fields below plus an inverse
+/// thread -> plugins index), and `register_plugin` and the pool-shrink path took
+/// two of them in opposite orders — an ABBA inversion that could wedge the plugin
+/// thread and an execution thread permanently, which then blocked session shutdown
+/// on `plugin_thread.join()`. Holding everything under one lock makes the ordering
+/// unrepresentable, and also closes the check-then-act window `execute_for_plugin`
+/// had between looking up a plugin's thread and using it. Spawning a thread for a
+/// growing pool happens under this lock too: the old code dropped the thread lock
+/// to spawn while still holding the other two, which was the inversion's other
+/// half. The inverse index is gone as well: it existed only so per-thread load
+/// could be read under its own lock, and keeping two maps in lock-step was a
+/// desync waiting to happen.
 struct ExecutorState {
     // Sparse: Some(thread) for a live slot, None for a reclaimed one. A vacant slot
     // is reused before the vector grows, so churning `max_threads` plugins through
@@ -46,17 +49,18 @@ struct ExecutorState {
     threads: Vec<Option<ExecutionThread>>,
     // plugin_id -> its pinned thread index.
     assignments: HashMap<u32, usize>,
-    // thread index -> the set of plugin_ids pinned to it.
-    thread_plugins: HashMap<usize, HashSet<u32>>,
 }
 
 impl ExecutorState {
-    /// How many plugins are pinned to `thread_idx`.
+    /// How many plugins are pinned to `thread_idx`. A linear pass over
+    /// `assignments`: it runs only on plugin load and unload, never on the
+    /// per-job `execute_for_plugin` path, so deriving it beats maintaining an
+    /// inverse index.
     fn load_of(&self, thread_idx: usize) -> usize {
-        self.thread_plugins
-            .get(&thread_idx)
-            .map(|s| s.len())
-            .unwrap_or(0)
+        self.assignments
+            .values()
+            .filter(|&&idx| idx == thread_idx)
+            .count()
     }
 }
 
@@ -273,7 +277,6 @@ impl PinnedExecutor {
             state: Arc::new(Mutex::new(ExecutorState {
                 threads: vec![Some(thread_0)],
                 assignments: HashMap::new(),
-                thread_plugins: HashMap::new(),
             })),
             max_threads,
             senders: senders.clone(),
@@ -473,13 +476,7 @@ impl PinnedExecutor {
                 .unwrap_or(0)
         };
 
-        // Update mappings
         state.assignments.insert(plugin_id, thread_idx);
-        state
-            .thread_plugins
-            .entry(thread_idx)
-            .or_default()
-            .insert(plugin_id);
 
         thread_idx
     }
@@ -609,11 +606,7 @@ impl PinnedExecutor {
     pub fn unregister_plugin(&self, plugin_id: u32) {
         let mut state = self.state.lock().unwrap();
 
-        if let Some(thread_idx) = state.assignments.remove(&plugin_id) {
-            if let Some(plugins) = state.thread_plugins.get_mut(&thread_idx) {
-                plugins.remove(&plugin_id);
-            }
-        }
+        state.assignments.remove(&plugin_id);
 
         // Reclaim any now-idle thread other than thread 0, leaving a `None` in its
         // slot for `register_plugin` to reuse. Indices are collected first so the
@@ -628,7 +621,6 @@ impl PinnedExecutor {
             if let Some(thread) = state.threads[idx].take() {
                 let _ = thread.sender.send(Job::Shutdown);
             }
-            state.thread_plugins.remove(&idx);
         }
     }
 
