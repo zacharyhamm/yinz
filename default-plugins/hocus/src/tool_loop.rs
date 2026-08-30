@@ -194,18 +194,31 @@ impl State {
         )
     }
 
-    pub(crate) fn confirmation_detail(&self, call: &ToolCall) -> Vec<String> {
+    pub(crate) fn confirmation_body(&self, call: &ToolCall) -> Vec<(String, bool)> {
         let Some(tool) = self.extensions.tool(&call.name) else {
-            return tools::confirmation_detail(call);
+            return tools::confirmation_body(call);
         };
-        let mut lines = vec![call.name.clone()];
+        let mut lines = Vec::new();
         if let Some(consequence) = &tool.consequence {
-            lines.push(format!("  {consequence}"));
+            lines.push((consequence.clone(), true));
         }
         lines.extend(
             tools::argument_lines(call)
                 .into_iter()
-                .map(|line| format!("  {line}")),
+                .map(|line| (line, false)),
+        );
+        lines
+    }
+
+    pub(crate) fn confirmation_detail(&self, call: &ToolCall) -> Vec<String> {
+        if self.extensions.tool(&call.name).is_none() {
+            return tools::confirmation_detail(call);
+        }
+        let mut lines = vec![call.name.clone()];
+        lines.extend(
+            self.confirmation_body(call)
+                .into_iter()
+                .map(|(line, _)| format!("  {line}")),
         );
         lines
     }

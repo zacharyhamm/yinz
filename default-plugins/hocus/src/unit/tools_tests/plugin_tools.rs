@@ -354,7 +354,7 @@ fn a_write_confirmation_shows_the_source() {
 }
 
 #[test]
-fn a_long_source_is_cut_short_in_the_confirmation() {
+fn a_long_source_is_shown_in_full_in_the_confirmation() {
     let source: Vec<String> = (0..50).map(|n| format!("-- line {n}")).collect();
     let detail = confirmation_detail(&call(
         "plugin_write",
@@ -362,8 +362,8 @@ fn a_long_source_is_cut_short_in_the_confirmation() {
     ))
     .join("\n");
     assert!(detail.contains("-- line 0"), "{detail}");
-    assert!(detail.contains("30 more lines"), "{detail}");
-    assert!(!detail.contains("-- line 49"), "{detail}");
+    assert!(detail.contains("-- line 49"), "{detail}");
+    assert!(!detail.contains("more lines"), "{detail}");
 }
 
 #[test]

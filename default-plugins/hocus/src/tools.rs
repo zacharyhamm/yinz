@@ -360,9 +360,6 @@ pub fn permission_names(permissions: &[PermissionType]) -> Vec<String> {
         .collect()
 }
 
-/// How many lines of a plugin's source a confirmation shows before cutting it short.
-const SOURCE_PREVIEW_LINES: usize = 20;
-
 /// The call's arguments as one `key: value` line each, so the thing being agreed
 /// to can be read rather than parsed.
 ///
@@ -384,21 +381,11 @@ pub fn argument_lines(call: &ToolCall) -> Vec<String> {
     fields
         .iter()
         .flat_map(|(key, value)| match value {
-            // A plugin's source is the one argument worth several lines: it is what the user is
-            // actually agreeing to, and one enormous `source: local zellij = ...` line would
-            // make the prompt worth nothing. Cut short, because a prompt taller than the pane
-            // cannot be read either.
-            Value::String(text) if key == "source" => {
+            // Code and other multiline values read as a block. `split` keeps a trailing empty
+            // row, which matters for inputs where the final newline is part of what will run.
+            Value::String(text) if key == "source" || text.contains('\n') => {
                 let mut lines = vec![format!("{key}:")];
-                lines.extend(
-                    text.lines()
-                        .take(SOURCE_PREVIEW_LINES)
-                        .map(|line| format!("  {line}")),
-                );
-                let total = text.lines().count();
-                if total > SOURCE_PREVIEW_LINES {
-                    lines.push(format!("  … {} more lines", total - SOURCE_PREVIEW_LINES));
-                }
+                lines.extend(text.split('\n').map(|line| format!("  {line}")));
                 lines
             },
             Value::String(text) => vec![format!("{key}: {text}")],

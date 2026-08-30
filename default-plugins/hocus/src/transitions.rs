@@ -365,7 +365,7 @@ impl State {
             Status::ConfirmingTool => self.pending.front().map(|call| Confirmation {
                 kind: PromptKind::Tool,
                 title: call.name.clone(),
-                detail: tools::confirmation_body(call),
+                detail: self.confirmation_body(call),
                 keys: vec![("y", "run"), ("n", "skip"), ("Esc", "hide")],
             }),
             _ => None,
