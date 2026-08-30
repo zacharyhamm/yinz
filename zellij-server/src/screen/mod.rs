@@ -3577,6 +3577,28 @@ impl Screen {
             tab.set_pane_borderless(&pane_id, borderless).non_fatal();
         }
     }
+    /// Record which machine a pane runs on. Usually this arrives once when a pane is created
+    /// and once more when it is closed, but a workflow step can respawn a pane's command on a
+    /// different remote host, so it can also arrive again mid-life with a changed - or
+    /// newly-absent - host.
+    ///
+    /// Unlike `UpdatePaneCwd`, which pty only sends on a change, there is something to compare
+    /// against here and not every arrival is one: a respawn re-reports the host the pane
+    /// already had, and a local pane's close retracts a host it never announced. Reporting
+    /// either would cost the session a whole-manifest broadcast to say nothing.
+    pub fn set_pane_host(&mut self, terminal_id: u32, host: Option<String>) -> Result<()> {
+        self.with_pane(PaneId::Terminal(terminal_id), |pane| {
+            pane.set_remote_host(host.clone())
+        });
+        let changed = match host {
+            Some(host) => self.terminal_hosts.insert(terminal_id, host.clone()) != Some(host),
+            None => self.terminal_hosts.remove(&terminal_id).is_some(),
+        };
+        if changed {
+            self.log_and_report_session_state()?;
+        }
+        Ok(())
+    }
     pub fn toggle_pane_in_group(&mut self, client_id: ClientId) -> Result<()> {
         let err_context = "Can't add pane to group";
         let active_tab = self

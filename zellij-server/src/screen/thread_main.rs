@@ -1651,21 +1651,7 @@ pub(crate) fn screen_thread_main(
                 screen.log_and_report_session_state()?;
             },
             ScreenInstruction::UpdatePaneHost(terminal_id, host) => {
-                // Usually arrives once when a pane is created and once more when it is
-                // closed - but a workflow step can respawn a pane's command on a different
-                // remote host, so this can also arrive again mid-life with a changed (or
-                // newly-absent) host.
-                for tab in screen.tabs.values_mut() {
-                    if let Some(pane) = tab.get_pane_with_id_mut(PaneId::Terminal(terminal_id)) {
-                        pane.set_remote_host(host.clone());
-                        break;
-                    }
-                }
-                match host {
-                    Some(host) => screen.terminal_hosts.insert(terminal_id, host),
-                    None => screen.terminal_hosts.remove(&terminal_id),
-                };
-                screen.log_and_report_session_state()?;
+                screen.set_pane_host(terminal_id, host)?;
             },
             ScreenInstruction::UpdatePaneCwd(terminal_id, cwd) => {
                 // Only pty says a pane moved, and it only says so on a change,

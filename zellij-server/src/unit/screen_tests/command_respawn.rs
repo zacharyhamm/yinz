@@ -226,3 +226,56 @@ fn closing_the_pane_drops_a_stashed_replacement() {
         "a stash does not outlive its pane, got: {respawns:?}"
     );
 }
+
+fn session_reports(jobs: &[BackgroundJob]) -> usize {
+    jobs.iter()
+        .filter(|job| matches!(job, BackgroundJob::ReportSessionInfo(..)))
+        .count()
+}
+
+/// Where a pane runs reaches plugins through the whole session manifest, so an `UpdatePaneHost`
+/// that changes nothing is a broadcast that says nothing. Both no-change cases are ordinary:
+/// a workflow step respawning on the host it was already on re-reports that host, and closing a
+/// local pane retracts a host it never announced.
+///
+/// Counting broadcasts is safe here because this drives `Screen` directly - one call, one
+/// decision - rather than waiting on the render scheduler to coalesce anything.
+#[test]
+fn only_a_changed_pane_host_is_broadcast() {
+    let size = Size { cols: 80, rows: 20 };
+    let (mut screen, background_jobs) = screen_with_background_jobs(size);
+    new_tab(&mut screen, 1, 0);
+    let _ = drain_background_jobs(&background_jobs);
+
+    screen
+        .set_pane_host(1, Some("build-box".to_owned()))
+        .unwrap();
+    assert_eq!(
+        session_reports(&drain_background_jobs(&background_jobs)),
+        1,
+        "learning that a pane runs elsewhere is news"
+    );
+
+    screen
+        .set_pane_host(1, Some("build-box".to_owned()))
+        .unwrap();
+    assert_eq!(
+        session_reports(&drain_background_jobs(&background_jobs)),
+        0,
+        "a respawn on the same host is not"
+    );
+
+    screen.set_pane_host(1, None).unwrap();
+    assert_eq!(
+        session_reports(&drain_background_jobs(&background_jobs)),
+        1,
+        "a respawn back onto this machine is"
+    );
+
+    screen.set_pane_host(1, None).unwrap();
+    assert_eq!(
+        session_reports(&drain_background_jobs(&background_jobs)),
+        0,
+        "and a local pane's close retracts a host it never had"
+    );
+}

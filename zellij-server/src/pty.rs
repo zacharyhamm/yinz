@@ -2717,11 +2717,7 @@ impl Pty {
                         )]))
                         .with_context(err_context)?;
                 }
-                // A workflow step can move a pane between hosts; clear the previous host
-                // first so a remote-to-local rerun does not leave the pane's reported host
-                // stale (report_terminal_host only sends when there is a new host to report).
-                self.forget_terminal_host(id);
-                self.report_terminal_host(id);
+                self.re_report_terminal_host(id);
                 Ok(())
             },
             _ => Err(anyhow!("cannot respawn plugin panes")).with_context(err_context),
@@ -2925,6 +2921,24 @@ impl Pty {
                 .senders
                 .send_to_screen(ScreenInstruction::UpdatePaneHost(terminal_id, host));
         }
+    }
+
+    /// The respawn counterpart of `report_terminal_host`. A pane's host is fixed for the life
+    /// of one command, but a workflow step can respawn the pane on a different machine — or on
+    /// none — so unlike the first report this one has to send `None` as well, or a
+    /// remote-to-local rerun leaves the pane's reported host stale. One update rather than a
+    /// `forget` followed by a `report`, so a plugin watching pane hosts never sees a spurious
+    /// host-less pane in between.
+    fn re_report_terminal_host(&mut self, terminal_id: u32) {
+        let host = self
+            .bus
+            .os_input
+            .as_ref()
+            .and_then(|os_input| os_input.remote_pane_host(terminal_id));
+        let _ = self
+            .bus
+            .senders
+            .send_to_screen(ScreenInstruction::UpdatePaneHost(terminal_id, host));
     }
 
     fn forget_terminal_host(&mut self, terminal_id: u32) {
