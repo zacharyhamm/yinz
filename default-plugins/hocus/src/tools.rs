@@ -55,12 +55,11 @@ pub fn call_needs_confirmation(call: &ToolCall) -> bool {
         // new-pane`, and does not ask. Naming a `command` up front is the model
         // choosing what runs on this machine — that is the confirmable part, and
         // leaving it unconfirmed is a prompt-injection path to local execution.
-        "new_pane" => new_pane_runs_a_command(call),
-        // A login shell on another machine runs nothing the model chose — it is
-        // `new_pane`, one machine along, and that does not ask either. Making
-        // that shell do something still goes through `send_input`, which does.
-        // Naming a command up front is the confirmable part.
-        "new_remote_pane" => !opens_a_bare_remote_shell(call),
+        // A login shell on another machine is the same shape one machine along:
+        // it runs nothing the model chose, and making it do something still goes
+        // through `send_input`, which asks. Naming a command up front is the
+        // confirmable part on either machine.
+        "new_pane" | "new_remote_pane" => names_a_command(call),
         // Scheduling is otherwise free; handing a job standing permission to use
         // tools without asking again is the confirmable part.
         "schedule" => Args::parse(&call.arguments).is_ok_and(|args| args.auto_confirm),
@@ -68,25 +67,19 @@ pub fn call_needs_confirmation(call: &ToolCall) -> bool {
     }
 }
 
-/// True only when the arguments parsed *and* named no command.
+/// True when a `new_pane`/`new_remote_pane` call names a program to run rather
+/// than opening a bare shell — the same reading the dispatchers use, through
+/// `Args::program_and_args`, so what is confirmed is what runs.
 ///
-/// The `is_ok_and` is load-bearing: defaulted `Args` have no command either, so
-/// reading a malformed call as a bare shell would let it through without a
-/// prompt — the one case `consequence`'s doc singles out as needing one most.
-fn opens_a_bare_remote_shell(call: &ToolCall) -> bool {
-    Args::parse(&call.arguments).is_ok_and(|args| args.command_words().iter().all(String::is_empty))
-}
-
-/// True when `new_pane`'s arguments name a program to run, rather than opening a
-/// bare shell.
-///
-/// The `unwrap_or(true)` is load-bearing, the mirror image of
-/// `opens_a_bare_remote_shell`'s `is_ok_and`: arguments we cannot read might name
-/// any command, so the safe reading is "this runs something" and it gets the
-/// prompt. A well-formed call with no command is the one shape that does not stop.
-fn new_pane_runs_a_command(call: &ToolCall) -> bool {
+/// The `unwrap_or(true)` is load-bearing: defaulted `Args` have no command
+/// either, so reading a malformed call as a bare shell would let it through
+/// without a prompt — the one case `consequence`'s doc singles out as needing
+/// one most. Arguments we cannot read might name any command, so the safe
+/// reading is "this runs something". A well-formed call with no command is the
+/// one shape that does not stop.
+fn names_a_command(call: &ToolCall) -> bool {
     Args::parse(&call.arguments)
-        .map(|args| args.command_words().iter().any(|word| !word.is_empty()))
+        .map(|args| args.program_and_args().is_some())
         .unwrap_or(true)
 }
 
@@ -243,22 +236,15 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
         "adopt_orphaned_pane" => "takes an orphaned pane into this session".to_owned(),
         // Only the shape that stops: a bare pane (a shell, no command) is not
         // confirmed, so it has nothing to say here. See `call_needs_confirmation`.
-        "new_pane" if new_pane_runs_a_command(call) => {
-            match args
-                .command_words()
-                .into_iter()
-                .find(|word| !word.is_empty())
-            {
-                Some(program) => format!("opens a new pane running `{program}` on this machine"),
-                // Arguments that would not parse still stop (see
-                // `new_pane_runs_a_command`); the prompt goes up without the
-                // program name rather than going quiet.
-                None => "opens a new pane running a command on this machine".to_owned(),
-            }
+        "new_pane" if names_a_command(call) => match args.program_and_args() {
+            Some((program, _)) => format!("opens a new pane running `{program}` on this machine"),
+            // Arguments that would not parse still stop (see `names_a_command`);
+            // the prompt goes up without the program name rather than going quiet.
+            None => "opens a new pane running a command on this machine".to_owned(),
         },
         // Only the shape that stops: a bare login shell is not confirmed, so it
         // has nothing to say here. See `call_needs_confirmation`.
-        "new_remote_pane" if !opens_a_bare_remote_shell(call) => {
+        "new_remote_pane" if names_a_command(call) => {
             let host = args.remote_host.as_deref().unwrap_or("another machine");
             format!("runs a command on {host} over ssh, opening a new pane connected to it")
         },
@@ -1972,6 +1958,24 @@ impl Args {
         }
     }
 
+    /// The program `new_pane`/`new_remote_pane` would run, with its args: the
+    /// first non-empty word and everything after it.
+    ///
+    /// `command:""` is a command in form only, and models also send a leading
+    /// empty word (`{"command":"","args":["htop"]}`); both are skipped here so
+    /// the confirmation prompt, its wording and the dispatcher all read the same
+    /// program — the prompt must never say `htop` and then open a bare shell, or
+    /// the reverse. Empty words *after* the program are kept; they may be
+    /// deliberate arguments.
+    pub fn program_and_args(&self) -> Option<(String, Vec<String>)> {
+        let mut words = self
+            .command_words()
+            .into_iter()
+            .skip_while(String::is_empty);
+        let program = words.next()?;
+        Some((program, words.collect()))
+    }
+
     /// What starting this agent means, in the terms `hocus-new-agent` says it in.
     ///
     /// A reading, no more: every default and every rule about what pairs with what
@@ -3411,18 +3415,15 @@ mod host {
     /// the host cannot tell from any other command pane, and the `agent_exit` hook would
     /// never fire for it.
     pub fn new_pane_with_context(args: &Args, context: BTreeMap<String, String>) -> String {
-        let words = args.command_words();
         let cwd = args.cwd.clone().map(PathBuf::from);
 
-        let opened = match words.split_first() {
-            // `command_words` yields `[""]` for `command=""`, which is a command
-            // in form only; `call_needs_confirmation` already reads it as a bare
-            // shell, and dispatching it as a command would open a held
-            // "Command not found" pane instead.
-            Some((path, rest)) if !path.is_empty() => {
+        // `program_and_args` is what `call_needs_confirmation` read, so a call
+        // that was confirmed as running a program runs exactly that program.
+        let opened = match args.program_and_args() {
+            Some((path, rest)) => {
                 let command = CommandToRun {
                     path: PathBuf::from(path),
-                    args: rest.to_vec(),
+                    args: rest,
                     cwd: cwd.clone(),
                     ..Default::default()
                 };
@@ -3436,7 +3437,7 @@ mod host {
             },
             // No command: a plain shell. `open_terminal*` wants a cwd, and the
             // focused pane's is the one the user would expect to land in.
-            _ => {
+            None => {
                 let path = cwd.unwrap_or_else(focused_cwd);
                 // A new tab comes with a shell pane already, so opening one
                 // inside it would leave the user with two. Report the tab and
@@ -3472,19 +3473,17 @@ mod host {
         let Some(remote_host) = args.remote_host.clone() else {
             return "remote_host is required".to_owned();
         };
-        let words = args.command_words();
-        let command = match words.split_first() {
-            // `command_words` yields `[""]` for `command=""`, which is a command
-            // in form only; an empty program name would reach the far machine as
-            // an exec of nothing.
-            Some((path, rest)) if !path.is_empty() => CommandToRun {
+        // The same reading `call_needs_confirmation` used; an empty program name
+        // would otherwise reach the far machine as an exec of nothing.
+        let command = match args.program_and_args() {
+            Some((path, rest)) => CommandToRun {
                 path: PathBuf::from(path),
-                args: rest.to_vec(),
+                args: rest,
                 cwd: args.cwd.clone().map(PathBuf::from),
                 remote_host: Some(remote_host),
                 remote_default_shell: false,
             },
-            _ => CommandToRun {
+            None => CommandToRun {
                 // Deliberately empty: which shell the remote user has is a fact
                 // about that machine, so the flag asks it rather than guessing.
                 path: PathBuf::new(),

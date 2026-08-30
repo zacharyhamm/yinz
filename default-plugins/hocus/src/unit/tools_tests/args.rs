@@ -92,6 +92,29 @@ fn a_missing_command_yields_no_words() {
         .is_empty());
 }
 
+/// `program_and_args` is the one reading the confirmation prompt and both pane
+/// dispatchers share: a leading empty word is skipped, an empty command is no
+/// command, and an empty word *after* the program is an argument.
+#[test]
+fn program_and_args_skips_only_a_leading_empty_word() {
+    let program = |json: &str| Args::parse(json).unwrap().program_and_args();
+    assert_eq!(
+        program(r#"{"command":"","args":["htop"]}"#),
+        Some(("htop".to_owned(), vec![]))
+    );
+    assert_eq!(
+        program(r#"{"command":["","htop","-d","5"]}"#),
+        Some(("htop".to_owned(), vec!["-d".to_owned(), "5".to_owned()]))
+    );
+    assert_eq!(
+        program(r#"{"command":["printf",""]}"#),
+        Some(("printf".to_owned(), vec![String::new()]))
+    );
+    assert_eq!(program(r#"{"command":""}"#), None);
+    assert_eq!(program(r#"{"command":["",""]}"#), None);
+    assert_eq!(program(r#"{"floating":true}"#), None);
+}
+
 #[test]
 fn multi_pane_arguments_require_complete_pane_pairs() {
     let error = Args::parse(r#"{"panes":[{"pane_id":3}]}"#).unwrap_err();
