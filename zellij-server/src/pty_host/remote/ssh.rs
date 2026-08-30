@@ -508,8 +508,45 @@ impl Reconnector for RemoteHosts {
     }
 }
 
+/// Reject a remote host that `ssh` would read as an option rather than a
+/// destination.
+///
+/// `host` reaches `ssh`'s argv in option position, and there is no portable
+/// `--` end-of-options terminator that also works for the destination, so a
+/// value like `-oProxyCommand=sh -c '…'` would run an arbitrary *local* command.
+/// The leading-`-` check is the load-bearing one; the character allow-list is
+/// defense in depth against anything that has no place in a `[user@]host[:port]`
+/// destination. Every ssh spawn in this module funnels through `bootstrap` and
+/// `start_forward`, so validating at the top of both covers the open and the
+/// reconnect paths alike.
+fn validate_ssh_host(host: &str) -> Result<()> {
+    if host.is_empty() {
+        return Err(anyhow!("refusing to ssh: the remote host is empty"));
+    }
+    if host.starts_with('-') {
+        return Err(anyhow!(
+            "refusing remote host {host:?}: a host beginning with '-' would be \
+             interpreted as an ssh option, not a destination"
+        ));
+    }
+    // Covers hostnames, ssh-config aliases, IPv4, bracketed IPv6 with an optional
+    // zone id (`%`), and a `user@` prefix — and excludes whitespace and shell
+    // metacharacters, which no real destination contains.
+    let allowed = |c: char| {
+        c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@' | ':' | '[' | ']' | '%')
+    };
+    if let Some(bad) = host.chars().find(|&c| !allowed(c)) {
+        return Err(anyhow!(
+            "refusing remote host {host:?}: it contains {bad:?}, which is not valid \
+             in a remote host"
+        ));
+    }
+    Ok(())
+}
+
 /// Ask the remote where its broker listens, starting one if needed.
 pub fn bootstrap(host: &str) -> Result<BrokerEndpoint> {
+    validate_ssh_host(host)?;
     ensure_local_socket_dir()?;
     // ssh's ControlPath is bound as a unix socket too, and overflowing
     // `sun_path` there fails deep inside ssh with a message about multiplexing
@@ -625,6 +662,7 @@ fn ssh_forward_args() -> Vec<String> {
 }
 
 fn start_forward(instance: &str, host: &str) -> Result<HostForward> {
+    validate_ssh_host(host)?;
     let endpoint = bootstrap(host)?;
 
     let dir = ensure_local_socket_dir()?;
