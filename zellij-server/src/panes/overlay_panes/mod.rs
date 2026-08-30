@@ -966,11 +966,10 @@ impl OverlayPanes {
     /// overlay that was only dragged still takes a plugin's size, and one that was only resized
     /// still takes a plugin's position.
     ///
-    /// **Unless the placement is itself the user's.** `override_user_placement` says the plugin
-    /// is relaying a gesture - a key the user pressed to move the overlay - which is as much
-    /// theirs as the drag was, and later. Both claims are *cleared*, not bypassed for this one
-    /// call: the overlay goes where the coordinates say, and the plugin's ordinary placements
-    /// move it again from then on, until the next drag or resize makes a new claim.
+    /// **Unless the position is itself the user's.** `override_user_placement` says the plugin is
+    /// relaying a gesture - a key the user pressed to move the overlay - which is as much theirs
+    /// as the drag was, and later. The position claim is cleared, not bypassed for this one call;
+    /// the independent size claim remains, because moving a pane is not resizing it.
     pub fn change_pane_coordinates(
         &mut self,
         pane_id: PaneId,
@@ -996,7 +995,6 @@ impl OverlayPanes {
         let mut new_coordinates = new_coordinates;
         if override_user_placement {
             overlay.carry.position_is_user_stated = false;
-            overlay.carry.size_is_user_stated = false;
         }
         if overlay.carry.position_is_user_stated {
             new_coordinates.x = overlay.coordinates.x;

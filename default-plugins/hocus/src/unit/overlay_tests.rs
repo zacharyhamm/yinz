@@ -1528,6 +1528,29 @@ fn ctrl_o_with_one_tiled_pane_moves_to_the_top_right() {
     );
 }
 
+#[test]
+fn ctrl_o_keeps_the_conversations_current_size() {
+    let mut state = placed_state();
+    state.on_panes(manifest(
+        0,
+        vec![
+            overlay_pane(7, 3, 27, 80, 20),
+            tiled(1, 0, 0, 200, 50, true),
+        ],
+    ));
+    state.last_placement = None;
+
+    state.on_key(ctrl_o());
+
+    let (x, y, width, height) = placed_chat(&state);
+    assert_eq!(
+        (width, height),
+        (80, 20),
+        "Ctrl-o moves the current rectangle instead of restoring the configured size"
+    );
+    assert!(x + width <= 200 && y + height <= 50);
+}
+
 /// The bug this whole cycle exists for: two tiled panes with the other one focused is the
 /// commonest layout there is, and it offers exactly one candidate - so every press after the first
 /// used to re-pick that same pane and do nothing at all.

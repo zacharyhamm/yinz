@@ -565,12 +565,35 @@ pub(crate) fn chat_placement(
     alone: bool,
     step: usize,
 ) -> Option<Rect> {
+    chat_placement_with_size(
+        config,
+        surface_rows,
+        surface_cols,
+        chat_visible,
+        anchor,
+        alone,
+        step,
+        None,
+    )
+}
+
+fn chat_placement_with_size(
+    config: &BTreeMap<String, String>,
+    surface_rows: usize,
+    surface_cols: usize,
+    chat_visible: bool,
+    anchor: Option<Rect>,
+    alone: bool,
+    step: usize,
+    size: Option<(usize, usize)>,
+) -> Option<Rect> {
     if surface_rows == 0 || surface_cols == 0 {
         return None;
     }
     let anchor = anchor.filter(|anchor| anchor.rows > 0 && anchor.cols > 0);
     let pad = pad_of(config, surface_rows, surface_cols, chat_visible);
-    let size = panel_size(config, surface_rows, surface_cols, chat_visible);
+    let size = size.unwrap_or_else(|| panel_size(config, surface_rows, surface_cols, chat_visible));
+    let size = (size.0.clamp(1, surface_cols), size.1.clamp(1, surface_rows));
     let order = corner_order(anchor, alone, surface_rows, surface_cols, pad, size);
     Some(corner_rect(
         order[step % CORNERS.len()],
@@ -686,22 +709,22 @@ impl State {
     /// Both halves are tracked, and separately: see [`State::agents_placed`] for why one flag was
     /// not enough.
     pub(crate) fn apply_overlay_geometry(&mut self) {
-        self.place(false);
+        self.place(false, None);
     }
 
     /// The placement itself. `override_user_placement` is the one thing Ctrl-o adds: the server
-    /// keeps a position the user dragged and a size they resized over anything a plugin asks
-    /// for, and a key the user pressed is theirs to override that with.
+    /// keeps a position the user dragged over anything a plugin asks for, and a key the user
+    /// pressed to move it is theirs to override. A user-stated size remains independent.
     ///
     /// **An anchored conversation is placed clear of its pane; the list is placed as if it were
     /// not.** The list's slot is a function of whether the conversation is on screen, not of
     /// where it is, so the corner arithmetic answers for it unchanged - the user moved the
     /// conversation, and the list is a separate pane they did not ask to move.
     ///
-    /// The conversation's rectangle comes from [`State::chat_rect`], which answers for the corner,
-    /// the anchor and the step of the cycle in one - so a resize re-places it where the last press
-    /// left it rather than dragging it home.
-    fn place(&mut self, override_user_placement: bool) {
+    /// The conversation's rectangle comes from [`State::chat_rect_with_size`], which answers for
+    /// the corner, the anchor and the step of the cycle in one - so a resize re-places it where
+    /// the last press left it rather than dragging it home.
+    fn place(&mut self, override_user_placement: bool, size: Option<(usize, usize)>) {
         let Some((_, agents)) = overlay_geometry(
             &self.kdl,
             self.surface_rows,
@@ -710,7 +733,7 @@ impl State {
         ) else {
             return;
         };
-        let Some(chat) = self.chat_rect(self.warp_step) else {
+        let Some(chat) = self.chat_rect_with_size(self.warp_step, size) else {
             return;
         };
         // What the next press ranks against, and what tells it whether it has moved. Set on every
@@ -739,12 +762,9 @@ impl State {
         }
     }
 
-    /// The conversation's rectangle at `step` of the cycle, against the surface as it is now.
-    ///
-    /// With no anchor and `step` 0 this is the default corner, which is why every placement can go
-    /// through it - see [`chat_placement`].
-    fn chat_rect(&self, step: usize) -> Option<Rect> {
-        chat_placement(
+    /// The conversation's rectangle at `step`, optionally retaining its current size.
+    fn chat_rect_with_size(&self, step: usize, size: Option<(usize, usize)>) -> Option<Rect> {
+        chat_placement_with_size(
             &self.kdl,
             self.surface_rows,
             self.surface_cols,
@@ -755,6 +775,7 @@ impl State {
             // tab, and `track_anchor` comes back through here with a manifest that says so.
             sole_tiled_pane(&self.tab_panes),
             step,
+            size,
         )
     }
 
@@ -763,19 +784,19 @@ impl State {
     ///
     /// The last placement comes first because it is never stale. Two presses can arrive between
     /// two manifests, and ranking the second against the *first* press's rectangle is what stops
-    /// them computing the same answer twice. A position the user **dragged** is not reflected
-    /// here, because the server keeps it and tells nobody, which costs a slightly worse choice of
-    /// next pane and never a stalled press: progress comes from the tour and the step, not from
-    /// this rectangle.
+    /// them computing the same answer twice. A position the user **dragged** is not reflected here
+    /// because the last placement wins, which costs a slightly worse choice of next pane and never
+    /// a stalled press. The manifest's size is used separately so a move cannot undo a resize.
     fn own_rect(&self) -> Rect {
         let own_id = PaneId::Plugin(self.own_plugin_id);
-        self.placed_rect
-            .or_else(|| {
-                self.tab_panes
-                    .iter()
-                    .find(|pane| pane_id_of(pane) == own_id)
-                    .map(Rect::of)
-            })
+        let reported = self
+            .tab_panes
+            .iter()
+            .find(|pane| pane_id_of(pane) == own_id)
+            .map(Rect::of);
+        let mut own = self
+            .placed_rect
+            .or(reported)
             .or_else(|| {
                 chat_placement(
                     &self.kdl,
@@ -792,7 +813,14 @@ impl State {
                 y: 0,
                 cols: 0,
                 rows: 0,
-            })
+            });
+        if let Some(reported) = reported {
+            // The last placement wins for position so two quick presses cannot read the same
+            // stale manifest, but the manifest owns size: it is how a user resize reaches us.
+            own.cols = reported.cols;
+            own.rows = reported.rows;
+        }
+        own
     }
 
     /// Ctrl-o: move the conversation somewhere else.
@@ -810,6 +838,7 @@ impl State {
     /// corners are the same rectangle and there is genuinely nowhere to go.
     pub(crate) fn reposition(&mut self) {
         let own = self.own_rect();
+        let size = Some((own.cols, own.rows));
         match pick_anchor(own, &self.tab_panes, &self.warp_visited) {
             Some(next) => {
                 self.anchor_rect = self
@@ -828,14 +857,14 @@ impl State {
         // conversation is already at, take the next one. Once round at most.
         let mut moves = false;
         for _ in 0..CORNERS.len() {
-            if self.chat_rect(self.warp_step) != Some(own) {
+            if self.chat_rect_with_size(self.warp_step, size) != Some(own) {
                 moves = true;
                 break;
             }
             self.advance_warp();
         }
         if moves {
-            self.place(true);
+            self.place(true, size);
         }
     }
 
@@ -956,10 +985,8 @@ impl State {
         }
         break_panes_to_tab_with_index(&pane_ids, tab_index, false);
         self.own_tab_index = Some(tab_index);
-        // The anchor is a pane on the tab being left. Released here rather than waited for: the
-        // placement below runs before any manifest of the new tab, and would otherwise be
-        // computed inside a pane that is not there. The cycle goes with it - the panes it toured
-        // are all on the tab we are leaving.
+        // The anchor is a pane on the tab being left. The cycle goes with it - the panes it
+        // toured are all on the tab we are leaving.
         self.anchor = None;
         self.anchor_rect = None;
         self.warp_step = 0;
@@ -970,9 +997,8 @@ impl State {
             // read the two as parted and issue a second move.
             self.agents_tab_index = Some(tab_index);
         }
-        // the destination resolves the coordinates against its own surface, but the sizes are
-        // ours to restate - nothing else knows the panes' proportions
-        self.apply_overlay_geometry();
+        // The move carries each overlay's exact coordinates and user-placement claims. Replacing
+        // them here would undo the position and size the user had on the previous tab.
     }
 
     /// Ask an agent list that already exists to announce itself - and open nothing if there is

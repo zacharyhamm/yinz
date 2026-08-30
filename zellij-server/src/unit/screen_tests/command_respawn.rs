@@ -158,6 +158,7 @@ fn a_stashed_replacement_survives_a_cross_tab_pane_move() {
         vec![],
         vec![(0, None)],
         vec![],
+        vec![],
         HashMap::new(),
         second_tab_index,
         true,
