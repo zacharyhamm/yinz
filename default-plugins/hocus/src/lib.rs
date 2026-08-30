@@ -493,6 +493,12 @@ pub struct State {
     /// What each Claude Code pane has reported about itself, over its own hooks.
     /// Read-only here for the same reason and from the same writer.
     hooks: agents::HookFeeds,
+    /// Cheap live and archived run rows. Full histories are fetched only for the selected row.
+    active_runs: BTreeMap<u32, agents::AgentRunHeader>,
+    archived_runs: Vec<agents::AgentRunHeader>,
+    archive_offset: u32,
+    archive_more: bool,
+    selected_run: Option<String>,
     /// Highest `seq` merged from hocus-agentd. A daemon reload restarts its
     /// counter, so re-subscribing resets this watermark.
     agent_seq: u64,
@@ -803,6 +809,11 @@ impl Default for State {
             activity: BTreeMap::new(),
             summaries: agents::Summaries::new(),
             hooks: agents::HookFeeds::new(),
+            active_runs: BTreeMap::new(),
+            archived_runs: Vec::new(),
+            archive_offset: 0,
+            archive_more: false,
+            selected_run: None,
             agent_seq: 0,
             mono_ms: 0,
             log_seq: 0,
@@ -1008,6 +1019,11 @@ impl ZellijPlugin for State {
                 return false;
             },
             wire::AGENT_SELECTION => return self.on_selection(&pipe_message),
+            wire::AGENT_ARCHIVE_MORE => {
+                self.load_more_agent_runs();
+                self.push_strip(false);
+                return false;
+            },
             wire::ASK => return self.on_ask(&pipe_message),
             wire::AGENT_SNAPSHOT => {},
             _ => return false,
@@ -1034,6 +1050,7 @@ impl ZellijPlugin for State {
         };
         self.agent_seq = seq;
         self.repositories = reply.repositories;
+        self.merge_run_headers(reply.runs);
 
         // Outside the panes below: a quiet reply — one from a daemon with no session
         // to report — still says where the focus went, and the strip carries it on

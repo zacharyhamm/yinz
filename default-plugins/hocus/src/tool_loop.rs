@@ -1928,9 +1928,7 @@ impl State {
 
     /// Take the agents pane's announcement of itself.
     ///
-    /// Nothing is drawn from it here any more - the summary box moved into the agents pane, which
-    /// is where the cursor that picks it lives. What is left is the one thing only this message
-    /// carries: the list's plugin id, which is what `apply_overlay_geometry` needs to place it.
+    /// The pane id still places/focuses a live agent; a run id asks for selected history.
     pub(crate) fn on_selection(&mut self, message: &PipeMessage) -> bool {
         let Some(selection) = message
             .payload
@@ -1956,7 +1954,49 @@ impl State {
         if announced {
             self.apply_overlay_geometry();
         }
+        self.selected_run = selection.run_id.or_else(|| {
+            selection
+                .pane_id
+                .and_then(|pane_id| self.active_runs.get(&pane_id))
+                .map(|run| run.id.clone())
+        });
+        if let Some(run_id) = self.selected_run.as_deref() {
+            self.send_run_detail(selection.plugin_id, run_id);
+        }
         false
+    }
+
+    pub(crate) fn merge_run_headers(&mut self, runs: Vec<agents::AgentRunHeader>) {
+        let active: Vec<u32> = runs
+            .iter()
+            .filter(|run| run.ended_at_ms.is_none())
+            .map(|run| run.pane_id)
+            .collect();
+        self.active_runs
+            .retain(|pane_id, _| active.contains(pane_id));
+        for run in runs {
+            if run.ended_at_ms.is_none() {
+                self.active_runs.insert(run.pane_id, run);
+            } else {
+                self.active_runs.remove(&run.pane_id);
+                if let Some(existing) = self
+                    .archived_runs
+                    .iter_mut()
+                    .find(|existing| existing.id == run.id)
+                {
+                    *existing = run;
+                } else {
+                    self.archived_runs.insert(0, run);
+                    self.archive_offset = self.archive_offset.saturating_add(1);
+                }
+            }
+        }
+        self.archived_runs
+            .sort_by_key(|run| std::cmp::Reverse(run.started_at_ms));
+        if let (Some(plugin_id), Some(run_id)) = (self.agents_plugin, self.selected_run.as_deref())
+        {
+            self.send_run_detail(plugin_id, run_id);
+        }
     }
 
     /// Merge an event-fed daemon snapshot.

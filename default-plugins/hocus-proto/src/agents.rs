@@ -590,7 +590,8 @@ awaiting. A permission prompt, a yes/no question, or a menu of choices is awaiti
 /// whether the agent is blocked on the user, and a second opinion would only be a
 /// disagreement to resolve — see `finish_summary_with`, which overwrites it either way.
 const TURN_SUMMARY_SYSTEM_PROMPT: &str = "A coding agent has just finished a turn. You \
-will be shown what the user asked for, if anything, and the agent's own final message. \
+will be shown what the user asked for, if anything, plus the prior run summary and key \
+events since it. \
 Reply with a single JSON object and nothing else - no prose, no markdown, no code \
 fences. The object has exactly two keys: \"summary\", one or two plain sentences \
 describing what the agent did and where the session now stands; and \"title\", at most \
@@ -623,7 +624,7 @@ pub fn turn_summary_request_body(
     if let Some(prompt) = prompt.map(str::trim).filter(|p| !p.is_empty()) {
         user.push_str(&format!("\n\n--- the user asked ---\n{prompt}"));
     }
-    user.push_str(&format!("\n\n--- the agent replied ---\n{message}"));
+    user.push_str(&format!("\n\n--- run history ---\n{message}"));
     let body = json!({
         "model": model,
         "stream": false,
@@ -756,16 +757,243 @@ pub fn registered_agent(kind: &str, cwd: Option<String>) -> AgentInfo {
 /// Pane id → what the model last said about it.
 pub type Summaries = BTreeMap<u32, Summary>;
 
+// ---------------------------------------------------------------------------
+// Hook-backed run history
+// ---------------------------------------------------------------------------
+
+/// One retained item in an agent run. Hooks are deliberately reduced to these four kinds:
+/// the raw event stream is noisy, large, and often contains tool output that has no business
+/// being persisted or drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunEntryKind {
+    Prompt,
+    Plan,
+    Step,
+    Result,
+}
+
+impl RunEntryKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            RunEntryKind::Prompt => "prompt",
+            RunEntryKind::Plan => "plan",
+            RunEntryKind::Step => "step",
+            RunEntryKind::Result => "result",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunEntry {
+    pub revision: u64,
+    pub kind: RunEntryKind,
+    pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunOutcome {
+    #[default]
+    Active,
+    Completed,
+    Closed,
+    Replaced,
+}
+
+/// The metadata and selected history for one hook session.
+///
+/// Stored as one JSON value. `ponytail:` split entries into their own entity if a measured
+/// single-run write size becomes a problem; archive size is already handled by paging rows.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentRun {
+    pub id: String,
+    pub pane_id: u32,
+    #[serde(default)]
+    pub session_id: String,
+    pub kind: String,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    pub started_at_ms: i64,
+    #[serde(default)]
+    pub ended_at_ms: Option<i64>,
+    #[serde(default)]
+    pub outcome: RunOutcome,
+    #[serde(default)]
+    pub revision: u64,
+    #[serde(default)]
+    pub summarized_revision: u64,
+    #[serde(default)]
+    pub summary: Option<Summary>,
+    #[serde(default)]
+    pub entries: Vec<RunEntry>,
+}
+
+impl AgentRun {
+    pub fn header(&self) -> AgentRunHeader {
+        AgentRunHeader {
+            id: self.id.clone(),
+            pane_id: self.pane_id,
+            session_id: self.session_id.clone(),
+            kind: self.kind.clone(),
+            cwd: self.cwd.clone(),
+            started_at_ms: self.started_at_ms,
+            ended_at_ms: self.ended_at_ms,
+            outcome: self.outcome,
+            revision: self.revision,
+            summary: self.summary.clone(),
+            title: run_title(self),
+        }
+    }
+}
+
+/// The cheap part of a run, carried in snapshots and archive pages. Full entries are fetched
+/// only for the selected row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentRunHeader {
+    pub id: String,
+    pub pane_id: u32,
+    #[serde(default)]
+    pub session_id: String,
+    pub kind: String,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    pub started_at_ms: i64,
+    #[serde(default)]
+    pub ended_at_ms: Option<i64>,
+    #[serde(default)]
+    pub outcome: RunOutcome,
+    #[serde(default)]
+    pub revision: u64,
+    #[serde(default)]
+    pub summary: Option<Summary>,
+    #[serde(default)]
+    pub title: String,
+}
+
+/// A stable run id where the agent supplies one, and a timestamped fallback for legacy hook
+/// scripts that do not. The kind is part of the id so two providers cannot collide.
+pub fn run_id(kind: &str, pane_id: u32, session_id: &str, started_at_ms: i64) -> String {
+    match session_id.trim() {
+        "" => format!("{kind}:pane:{pane_id}:{started_at_ms}"),
+        session_id => format!("{kind}:{session_id}"),
+    }
+}
+
+/// Reduce one hook event to the small history it is worth keeping.
+pub fn run_entry(event: &zellij_tile::agent::HookEvent) -> Option<(RunEntryKind, String)> {
+    let (kind, text) = match event.hook_event_name.as_str() {
+        "UserPromptSubmit" => (RunEntryKind::Prompt, event.prompt.clone()?),
+        "PreToolUse"
+            if matches!(
+                event.tool_name.as_deref(),
+                Some("ExitPlanMode" | "update_plan")
+            ) =>
+        {
+            let plan = event
+                .tool_input
+                .as_ref()
+                .and_then(|input| input.get("plan"))
+                .map(|plan| match plan {
+                    Value::String(plan) => plan.clone(),
+                    Value::Array(steps) => steps
+                        .iter()
+                        .filter_map(|step| step.get("step").and_then(Value::as_str))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    plan => plan.to_string(),
+                })
+                .filter(|plan| !plan.is_empty())
+                .unwrap_or_else(|| "Plan submitted for approval".to_owned());
+            (RunEntryKind::Plan, plan)
+        },
+        "PreToolUse"
+            if matches!(
+                event.tool_name.as_deref(),
+                Some(
+                    "Bash"
+                        | "Edit"
+                        | "Write"
+                        | "MultiEdit"
+                        | "NotebookEdit"
+                        | "exec_command"
+                        | "write_stdin"
+                        | "apply_patch"
+                )
+            ) =>
+        {
+            (RunEntryKind::Step, hook_detail(event)?)
+        },
+        "PermissionRequest" | "Elicitation" | "Notification" if waiting_detail(event).is_some() => {
+            (RunEntryKind::Step, waiting_detail(event)?)
+        },
+        "PermissionDenied" => (RunEntryKind::Step, "Permission denied".to_owned()),
+        "PostToolUseFailure" => (
+            RunEntryKind::Step,
+            format!("{} failed", event.tool_name.as_deref().unwrap_or("Tool")),
+        ),
+        "SubagentStart" | "SubagentStop" => {
+            let boundary = if event.hook_event_name == "SubagentStart" {
+                "started"
+            } else {
+                "finished"
+            };
+            let name = event.agent_id.as_deref().unwrap_or("subagent");
+            (RunEntryKind::Step, format!("Subagent {name} {boundary}"))
+        },
+        "Stop" => (RunEntryKind::Result, event.last_assistant_message.clone()?),
+        "StopFailure" => (
+            RunEntryKind::Result,
+            event
+                .last_assistant_message
+                .clone()
+                .unwrap_or_else(|| "Turn failed".to_owned()),
+        ),
+        "Interrupt" => (RunEntryKind::Result, "Interrupted by user".to_owned()),
+        _ => return None,
+    };
+    let cap = match kind {
+        RunEntryKind::Prompt => 600,
+        RunEntryKind::Plan | RunEntryKind::Result => SUMMARY_CHARS,
+        RunEntryKind::Step => WAITING_DETAIL_CHARS,
+    };
+    let text = crate::text::sanitize(&text);
+    let text: String = text.trim().chars().take(cap).collect();
+    (!text.is_empty()).then_some((kind, text))
+}
+
+/// A short archive-row label, preferring the endpoint's title and then the first prompt.
+pub fn run_title(run: &AgentRun) -> String {
+    let title = run
+        .summary
+        .as_ref()
+        .and_then(|summary| rename_title(summary))
+        .map(str::to_owned)
+        .or_else(|| {
+            run.entries
+                .iter()
+                .find(|entry| entry.kind == RunEntryKind::Prompt)
+                .map(|entry| entry.text.lines().next().unwrap_or_default().to_owned())
+        })
+        .unwrap_or_else(|| "agent run".to_owned());
+    let mut title: String = title.chars().take(SUMMARY_TITLE_CHARS).collect();
+    if title.is_empty() {
+        title = "agent run".to_owned();
+    }
+    title
+}
+
 /// The `agent_latch` and `agent_summary` rows in `shared:hocus`: what `agent_register` set by
 /// hand, and what the daemon last said about each idle pane, so a hocus reload keeps both.
 /// hocus is the only writer; see `store::agent_latch_def` and `store::agent_summary_def`.
 pub mod rows {
-    use super::{Summaries, Summary};
+    use super::{AgentRun, AgentRunHeader, Summaries, Summary};
     use std::collections::BTreeMap;
     use zellij_tile::prelude::{DataRows, DataValue, Mutation, Pred};
 
     pub const LATCH_ENTITY: &str = "agent_latch";
     pub const SUMMARY_ENTITY: &str = "agent_summary";
+    pub const RUN_ENTITY: &str = "agent_run";
 
     fn pane_id_at(rows: &DataRows, row: &[DataValue]) -> Option<u32> {
         match rows.get(row, "pane_id") {
@@ -859,6 +1087,38 @@ pub mod rows {
             mutations.push(summary_delete_mutation(gone));
         }
         mutations
+    }
+
+    pub fn run_mutation(run: &AgentRun) -> Mutation {
+        Mutation::put(RUN_ENTITY)
+            .uid(run.id.clone())
+            .set("pane_id", run.pane_id)
+            .set("session_id", run.session_id.clone())
+            .set("kind", run.kind.clone())
+            .set("active", run.ended_at_ms.is_none())
+            .set("started_at_ms", run.started_at_ms)
+            .set(
+                "payload",
+                serde_json::to_string(run).expect("AgentRun serializes"),
+            )
+            .build()
+    }
+
+    pub fn runs_from_rows(rows: &DataRows) -> Vec<AgentRun> {
+        rows.rows
+            .iter()
+            .filter_map(|row| match rows.get(row, "payload") {
+                Some(DataValue::Text(value)) => serde_json::from_str(value).ok(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn run_headers_from_rows(rows: &DataRows) -> Vec<AgentRunHeader> {
+        runs_from_rows(rows)
+            .into_iter()
+            .map(|run| run.header())
+            .collect()
     }
 }
 
@@ -992,6 +1252,60 @@ pub fn summary_box(
         .chain(
             lines
                 .iter()
+                .map(|line| format!("│ {line}{} │", " ".repeat(inner - line.width()))),
+        )
+        .chain([format!("└{}┘", "─".repeat(width - 2))])
+        .collect(),
+    )
+}
+
+/// The selected hook run as a compact framed history. The rolling summary stays pinned while
+/// `scroll` walks backward from the newest timeline entry.
+pub fn run_box(run: &AgentRun, width: usize, height: usize, scroll: usize) -> Option<Vec<String>> {
+    let inner = width.saturating_sub(4);
+    if inner < SUMMARY_BOX_MIN_COLS || height < 4 {
+        return None;
+    }
+    let room = height - 2;
+    let mut pinned = run
+        .summary
+        .as_ref()
+        .map(|summary| crate::text::wrap(&format!("summary: {}", summary.text), inner))
+        .unwrap_or_default();
+    pinned.truncate(room.min(2));
+    let history_room = room.saturating_sub(pinned.len());
+    let history: Vec<String> = run
+        .entries
+        .iter()
+        .flat_map(|entry| {
+            crate::text::wrap(&format!("{}: {}", entry.kind.label(), entry.text), inner)
+        })
+        .collect();
+    let end = history.len().saturating_sub(scroll.min(history.len()));
+    let start = end.saturating_sub(history_room);
+    let body: Vec<String> = pinned
+        .into_iter()
+        .chain(history[start..end].iter().cloned())
+        .collect();
+    if body.is_empty() {
+        return None;
+    }
+    let state = match run.outcome {
+        RunOutcome::Active => "active",
+        _ => "archived",
+    };
+    let mut label = format!(" {} · {} ", run.kind, state);
+    while label.width() > width - 3 {
+        label.pop();
+    }
+    Some(
+        [format!(
+            "┌─{label}{}┐",
+            "─".repeat(width - 3 - label.width())
+        )]
+        .into_iter()
+        .chain(
+            body.into_iter()
                 .map(|line| format!("│ {line}{} │", " ".repeat(inner - line.width()))),
         )
         .chain([format!("└{}┘", "─".repeat(width - 2))])
@@ -1212,6 +1526,15 @@ pub enum StripRow {
         #[serde(default)]
         kind: String,
     },
+    /// A completed hook session with no live pane to focus.
+    Run {
+        run_id: String,
+        text: String,
+        #[serde(default)]
+        kind: String,
+    },
+    /// The archive is unlimited, so only an explicit sentinel asks hocus for another page.
+    MoreRuns,
 }
 
 /// The agent strip as the hocus-agents pane should draw it: the rows, and the
@@ -2470,7 +2793,90 @@ mod tests {
         let body = turn_summary_request_body("m", "claude", None, None, None, "Done.");
         let body: serde_json::Value = serde_json::from_slice(&body).expect("valid JSON");
         let user = body["messages"][1]["content"].as_str().expect("a string");
-        assert_eq!(user, "Agent: claude.\n\n--- the agent replied ---\nDone.");
+        assert_eq!(user, "Agent: claude.\n\n--- run history ---\nDone.");
+    }
+
+    #[test]
+    fn run_history_keeps_only_meaningful_hook_events() {
+        let event = |name: &str| crate::wire::HookEvent {
+            hook_event_name: name.to_owned(),
+            ..Default::default()
+        };
+        assert_eq!(run_entry(&event("PostToolUse")), None);
+        assert_eq!(
+            run_entry(&event("PreToolUse")),
+            None,
+            "unnamed tools are noise"
+        );
+
+        let prompt = crate::wire::HookEvent {
+            prompt: Some("build the history".to_owned()),
+            ..event("UserPromptSubmit")
+        };
+        assert_eq!(
+            run_entry(&prompt),
+            Some((RunEntryKind::Prompt, "build the history".to_owned()))
+        );
+        let plan = crate::wire::HookEvent {
+            tool_name: Some("ExitPlanMode".to_owned()),
+            tool_input: Some(json!({"plan": "store prompt, plan, steps, result"})),
+            ..event("PreToolUse")
+        };
+        assert_eq!(
+            run_entry(&plan),
+            Some((
+                RunEntryKind::Plan,
+                "store prompt, plan, steps, result".to_owned()
+            ))
+        );
+        let result = crate::wire::HookEvent {
+            last_assistant_message: Some("Implemented and tested.".to_owned()),
+            ..event("Stop")
+        };
+        assert_eq!(
+            run_entry(&result),
+            Some((RunEntryKind::Result, "Implemented and tested.".to_owned()))
+        );
+    }
+
+    #[test]
+    fn an_agent_run_round_trips_through_the_shared_store() {
+        use crate::store::{self, Backend};
+        use zellij_tile::prelude::{FetchRequest, Pred};
+
+        let local = store::Local::shared("hocus-agentd");
+        local.define_all(&store::shared_defs()).unwrap();
+        let mut run = AgentRun {
+            id: "claude:session-1".to_owned(),
+            pane_id: 7,
+            session_id: "session-1".to_owned(),
+            kind: "claude".to_owned(),
+            cwd: Some("/work".to_owned()),
+            started_at_ms: 10,
+            ended_at_ms: None,
+            outcome: RunOutcome::Active,
+            revision: 1,
+            summarized_revision: 0,
+            summary: None,
+            entries: vec![RunEntry {
+                revision: 1,
+                kind: RunEntryKind::Prompt,
+                text: "implement history".to_owned(),
+            }],
+        };
+        local.apply(vec![rows::run_mutation(&run)]).unwrap();
+        let active = local
+            .fetch(&FetchRequest::entity(rows::RUN_ENTITY).filter(Pred::eq("active", true)))
+            .unwrap();
+        assert_eq!(rows::runs_from_rows(&active), vec![run.clone()]);
+
+        run.ended_at_ms = Some(20);
+        run.outcome = RunOutcome::Completed;
+        local.apply(vec![rows::run_mutation(&run)]).unwrap();
+        let completed = local
+            .fetch(&FetchRequest::entity(rows::RUN_ENTITY).filter(Pred::eq("active", false)))
+            .unwrap();
+        assert_eq!(rows::runs_from_rows(&completed), vec![run]);
     }
 
     /// The interruption the feed exists to make in time. Shaped like `summary_toast`, so

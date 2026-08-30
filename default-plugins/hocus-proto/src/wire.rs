@@ -74,6 +74,10 @@ pub const AGENT_STRIP_OPEN: &str = "agent_strip_open";
 /// the agent list's *plugin id*, which is how hocus finds the pane it has to place beside
 /// itself. A pane url cannot tell two instances apart, so there is no other way to learn it.
 pub const AGENT_SELECTION: &str = "agent_selection";
+/// hocus → hocus-agents: the full history of the selected run.
+pub const AGENT_RUN_DETAIL: &str = "agent_run_detail";
+/// hocus-agents → hocus: fetch the next page of completed run headers.
+pub const AGENT_ARCHIVE_MORE: &str = "agent_archive_more";
 /// CLI → store: change something.
 pub const STORE_MUTATE: &str = "store_mutate";
 /// hocus/CLI → store: read something without a subscription.
@@ -179,6 +183,9 @@ pub struct PollReply {
     /// the screen-diff heuristic beside it is not — see [`agents::HookFeed`].
     #[serde(default)]
     pub hooks: agents::HookFeeds,
+    /// Active hook sessions and the last completed one. Full archives live in the shared store.
+    #[serde(default)]
+    pub runs: Vec<agents::AgentRunHeader>,
 }
 
 /// A Claude Code hook event, as its JSON arrives - the session's own reading of one, so the
@@ -198,6 +205,8 @@ pub struct Selection {
     pub plugin_id: u32,
     #[serde(default)]
     pub pane_id: Option<u32>,
+    #[serde(default)]
+    pub run_id: Option<String>,
 }
 
 /// A change to the store. `args` stays loosely typed so the CLI can drive the

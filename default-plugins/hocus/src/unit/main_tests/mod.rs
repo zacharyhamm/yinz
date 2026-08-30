@@ -187,6 +187,8 @@ fn agent_entry_texts(state: &State) -> Vec<String> {
         .map(|row| match row {
             agents::StripRow::Project(text) | agents::StripRow::Branch(text) => text,
             agents::StripRow::Agent { text, .. } => text,
+            agents::StripRow::Run { text, .. } => text,
+            agents::StripRow::MoreRuns => "load older runs…".to_owned(),
         })
         .collect()
 }
@@ -266,6 +268,7 @@ fn worktree_snapshot(seq: u64, branch: &str) -> PipeMessage {
                 focused_plugin: None,
                 summaries: agents::Summaries::new(),
                 hooks: agents::HookFeeds::new(),
+                runs: Vec::new(),
             })
             .expect("serialize"),
         ),
@@ -576,6 +579,7 @@ fn agent_snapshot_with(seq: u64, panes: Vec<agents::AgentPane>) -> PipeMessage {
                 focused_plugin: None,
                 summaries: agents::Summaries::new(),
                 hooks: agents::HookFeeds::new(),
+                runs: Vec::new(),
             })
             .expect("serialize"),
         ),
@@ -615,6 +619,7 @@ fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
                 focused_plugin: None,
                 summaries: agents::Summaries::new(),
                 hooks: agents::HookFeeds::new(),
+                runs: Vec::new(),
             })
             .expect("serialize"),
         ),

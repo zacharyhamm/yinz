@@ -51,6 +51,9 @@ struct State {
     /// and asking hocus for the box on every keystroke would put a round trip between the cursor
     /// and what it is pointing at.
     summaries: Summaries,
+    /// Full history for the selected row, fetched on demand by hocus.
+    run: Option<agents::AgentRun>,
+    history_scroll: usize,
     /// Index into `rows`. Always on an `Agent` row when one exists.
     selected: usize,
     /// The last pane hocus reported focused, agent or not.
@@ -95,7 +98,7 @@ impl ZellijPlugin for State {
     }
 
     fn update(&mut self, event: Event) -> bool {
-        let selection = self.selection();
+        let selection = self.selection_key();
         let rendered = match event {
             Event::Key(key) => self.on_key(key),
             Event::Mouse(mouse_event) => self.on_mouse(mouse_event),
@@ -104,7 +107,8 @@ impl ZellijPlugin for State {
         // Where the cursor moved to is hocus's business, not only this pane's: it
         // draws the selected agent's summary. Compared rather than sent on every
         // key, so holding `j` at the end of the list says nothing.
-        if self.selection() != selection {
+        if self.selection_key() != selection {
+            self.history_scroll = 0;
             self.send_selection();
         }
         rendered
@@ -119,6 +123,18 @@ impl ZellijPlugin for State {
             self.send_selection();
             return false;
         }
+        if pipe_message.name == wire::AGENT_RUN_DETAIL {
+            let Some(run) = pipe_message
+                .payload
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<agents::AgentRun>(json).ok())
+            else {
+                return false;
+            };
+            let changed = self.run.as_ref() != Some(&run);
+            self.run = Some(run);
+            return changed;
+        }
         if pipe_message.name != wire::AGENT_STRIP {
             return false;
         }
@@ -131,9 +147,10 @@ impl ZellijPlugin for State {
         };
         // The same comparison, for the other thing that moves the selection: a
         // push whose focus walked onto another agent.
-        let selection = self.selection();
+        let selection = self.selection_key();
         let rendered = self.set_rows(strip);
-        if self.selection() != selection {
+        if self.selection_key() != selection {
+            self.history_scroll = 0;
             self.send_selection();
         }
         rendered
@@ -184,6 +201,25 @@ impl ZellijPlugin for State {
                         (true, true) => line.selected().color_range(2, ..),
                         (true, false) => line.selected().dim_range(..),
                         (false, _) => line.dim_range(..),
+                    }
+                },
+                StripRow::Run { text, .. } => {
+                    let line = Text::new(format!("{}   {text}", if selected { ">" } else { " " }));
+                    if selected {
+                        line.selected().color_range(4, ..)
+                    } else {
+                        line.dim_range(..)
+                    }
+                },
+                StripRow::MoreRuns => {
+                    let line = Text::new(format!(
+                        "{}   load older runs…",
+                        if selected { ">" } else { " " }
+                    ));
+                    if selected {
+                        line.selected()
+                    } else {
+                        line.dim_range(..)
                     }
                 },
             };
@@ -247,12 +283,32 @@ impl State {
             self.selected = next;
             return moved;
         }
+        if key.has_no_modifiers() {
+            match key.bare_key {
+                BareKey::PageUp => {
+                    self.history_scroll = self.history_scroll.saturating_add(3);
+                    return true;
+                },
+                BareKey::PageDown => {
+                    self.history_scroll = self.history_scroll.saturating_sub(3);
+                    return true;
+                },
+                _ => {},
+            }
+        }
         match key.bare_key {
             BareKey::Esc => {
                 hide_self();
                 false
             },
             BareKey::Enter => {
+                if matches!(self.rows.get(self.selected), Some(StripRow::MoreRuns)) {
+                    pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_ARCHIVE_MORE));
+                    return false;
+                }
+                if !matches!(self.rows.get(self.selected), Some(StripRow::Agent { .. })) {
+                    return false;
+                }
                 self.activate();
                 // Walking to an agent is the end of what this list is for, so
                 // put it away - the same gesture as Esc, and this pane only: a
@@ -321,12 +377,9 @@ impl State {
         let walked_to = focused
             .filter(|_| focused != self.focused)
             .and_then(|pane_id| position_of(&rows, pane_id));
-        let was = match self.rows.get(self.selected) {
-            Some(StripRow::Agent { pane_id, .. }) => Some(*pane_id),
-            _ => None,
-        };
+        let was = self.rows.get(self.selected).and_then(row_key);
         let selected = walked_to
-            .or_else(|| was.and_then(|pane_id| position_of(&rows, pane_id)))
+            .or_else(|| was.as_deref().and_then(|key| position_of_key(&rows, key)))
             .or_else(|| rows.iter().position(selectable))
             .unwrap_or(0);
         // Only a real pane replaces the focus: see the field's doc.
@@ -351,6 +404,14 @@ impl State {
     /// *beside* the list and had to say which pane it was about; this one is in the list, under
     /// the row it names.
     fn summary_box(&self, rows: usize, cols: usize) -> Vec<String> {
+        if let Some(run) = self
+            .run
+            .as_ref()
+            .filter(|run| self.selected_run_matches(run))
+        {
+            let width = cols.saturating_sub(2).min(agents::SUMMARY_BOX_MAX_COLS);
+            return agents::run_box(run, width, rows / 2, self.history_scroll).unwrap_or_default();
+        }
         let Some(pane_id) = self.selection() else {
             return Vec::new();
         };
@@ -380,6 +441,27 @@ impl State {
         match self.rows.get(self.selected) {
             Some(StripRow::Agent { pane_id, .. }) => Some(*pane_id),
             _ => None,
+        }
+    }
+
+    fn selected_run_id(&self) -> Option<String> {
+        match self.rows.get(self.selected) {
+            Some(StripRow::Run { run_id, .. }) => Some(run_id.clone()),
+            _ => None,
+        }
+    }
+
+    fn selection_key(&self) -> Option<String> {
+        self.rows.get(self.selected).and_then(row_key)
+    }
+
+    fn selected_run_matches(&self, run: &agents::AgentRun) -> bool {
+        match self.rows.get(self.selected) {
+            Some(StripRow::Agent { pane_id, .. }) => {
+                *pane_id == run.pane_id && run.ended_at_ms.is_none()
+            },
+            Some(StripRow::Run { run_id, .. }) => run_id == &run.id,
+            _ => false,
         }
     }
 
@@ -427,6 +509,7 @@ impl State {
         let selection = wire::Selection {
             plugin_id: get_plugin_ids().plugin_id,
             pane_id: self.selection(),
+            run_id: self.selected_run_id(),
         };
         let Ok(payload) = serde_json::to_string(&selection) else {
             return;
@@ -451,8 +534,25 @@ fn position_of(rows: &[StripRow], pane_id: u32) -> Option<usize> {
         .position(|row| matches!(row, StripRow::Agent { pane_id: id, .. } if *id == pane_id))
 }
 
+fn row_key(row: &StripRow) -> Option<String> {
+    match row {
+        StripRow::Agent { pane_id, .. } => Some(format!("pane:{pane_id}")),
+        StripRow::Run { run_id, .. } => Some(format!("run:{run_id}")),
+        StripRow::MoreRuns => Some("more".to_owned()),
+        _ => None,
+    }
+}
+
+fn position_of_key(rows: &[StripRow], key: &str) -> Option<usize> {
+    rows.iter()
+        .position(|row| row_key(row).as_deref() == Some(key))
+}
+
 fn selectable(row: &StripRow) -> bool {
-    matches!(row, StripRow::Agent { .. })
+    matches!(
+        row,
+        StripRow::Agent { .. } | StripRow::Run { .. } | StripRow::MoreRuns
+    )
 }
 
 /// The row a click on screen line `line` resolves to, if any - `None` for a
@@ -799,6 +899,55 @@ mod tests {
             state.summary_box(20, 40).is_empty(),
             "pane 7 has no summary"
         );
+    }
+
+    #[test]
+    fn an_archived_run_draws_its_summary_and_timeline() {
+        let mut state = State::default();
+        state.set_rows(unfocused(vec![
+            StripRow::Project("archive".to_owned()),
+            StripRow::Run {
+                run_id: "claude:session-1".to_owned(),
+                text: "claude · hook history".to_owned(),
+                kind: "claude".to_owned(),
+            },
+        ]));
+        state.run = Some(agents::AgentRun {
+            id: "claude:session-1".to_owned(),
+            pane_id: 3,
+            session_id: "session-1".to_owned(),
+            kind: "claude".to_owned(),
+            cwd: Some("/work".to_owned()),
+            started_at_ms: 10,
+            ended_at_ms: Some(20),
+            outcome: agents::RunOutcome::Completed,
+            revision: 2,
+            summarized_revision: 2,
+            summary: Some(agents::Summary {
+                text: "History is stored and rendered.".to_owned(),
+                title: "hook history".to_owned(),
+                awaiting: false,
+                hash: 0,
+            }),
+            entries: vec![
+                agents::RunEntry {
+                    revision: 1,
+                    kind: agents::RunEntryKind::Prompt,
+                    text: "implement history".to_owned(),
+                },
+                agents::RunEntry {
+                    revision: 2,
+                    kind: agents::RunEntryKind::Result,
+                    text: "Implemented and tested.".to_owned(),
+                },
+            ],
+        });
+
+        let rows = state.summary_box(20, 50);
+        assert!(rows[0].contains("claude · archived"), "{}", rows[0]);
+        assert!(rows.iter().any(|row| row.contains("summary: History")));
+        assert!(rows.iter().any(|row| row.contains("result: Implemented")));
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Enter)));
     }
 
     /// `render_summary` colours the `!` in a box header by *searching* the line for the
