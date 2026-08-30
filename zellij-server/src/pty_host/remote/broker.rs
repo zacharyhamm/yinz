@@ -37,6 +37,7 @@ use crate::pty_host::client::{self as pty_host_client, SpawnParams};
 use crate::pty_host::protocol::{
     check_socket_path_length, new_host_id, SpawnFailureKind, WireWinsize,
 };
+use crate::pty_host::{ensure_secure_dir, secure_socket};
 
 /// A socket shared by the several things that need to write to it: the output
 /// pump, the child-exit callback, and the control pump.
@@ -1053,23 +1054,13 @@ pub fn serve_forever() -> Result<()> {
     let socket = broker_socket_path();
     check_socket_path_length(&socket, 0)?;
     if let Some(parent) = socket.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
-        }
+        ensure_secure_dir(parent)?;
     }
     let _ = std::fs::remove_file(&socket);
     let listener = UnixListener::bind(&socket)
         .with_context(|| format!("failed to bind {}", socket.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // Owner only: this socket starts processes as us.
-        let _ = std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600));
-    }
+    // Owner only: this socket starts processes as us.
+    secure_socket(&socket, 0o600)?;
     let host_bin = std::env::current_exe().context("could not resolve our own binary")?;
     serve(listener, host_bin)
 }

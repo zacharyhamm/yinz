@@ -57,6 +57,7 @@ use super::protocol::{
     self, read_msg, write_msg, AttachRefusal, HostStatus, HostToServerMsg, ServerToHostMsg,
     SpawnFailureKind, WireTermios, WireWinsize, PROTOCOL_VERSION,
 };
+use super::{ensure_secure_dir, secure_socket};
 
 /// How much detached output to keep. Only reached when no server is attached, so
 /// this is a bound on memory for an orphaned pane, not a scrollback setting.
@@ -983,8 +984,7 @@ fn unix_now() -> u64 {
 
 fn bind_listener(host_id: &str) -> Result<UnixListener> {
     let dir = protocol::socket_dir();
-    std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
-    let _ = zellij_utils::shared::set_permissions(&dir, 0o700);
+    ensure_secure_dir(&dir)?;
     let path = protocol::socket_path(host_id);
     protocol::check_socket_path_length(&path, 0)?;
     if path.exists() {
@@ -994,7 +994,7 @@ fn bind_listener(host_id: &str) -> Result<UnixListener> {
         UnixListener::bind(&path).with_context(|| format!("failed to bind {}", path.display()))?;
     // Sticky, like the session socket: supervisors outlive everything and are
     // exactly what a runtime-dir cleaner will try to reap out from under us.
-    let _ = zellij_utils::shared::set_permissions(&path, 0o1700);
+    secure_socket(&path, 0o1700)?;
     Ok(listener)
 }
 

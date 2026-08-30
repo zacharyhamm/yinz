@@ -23,6 +23,40 @@ pub mod remote;
 
 pub use host::{run_pty_host, serve, ServeConfig};
 
+fn ensure_secure_dir(path: &std::path::Path) -> zellij_utils::errors::prelude::Result<()> {
+    use zellij_utils::errors::prelude::*;
+
+    std::fs::create_dir_all(path)
+        .with_context(|| format!("failed to create {}", path.display()))?;
+    zellij_utils::shared::set_permissions(path, 0o700)
+        .with_context(|| format!("failed to secure {}", path.display()))
+}
+
+fn secure_socket(path: &std::path::Path, mode: u32) -> zellij_utils::errors::prelude::Result<()> {
+    secure_socket_with(path, mode, zellij_utils::shared::set_permissions)
+}
+
+fn secure_socket_with(
+    path: &std::path::Path,
+    mode: u32,
+    set_permissions: impl FnOnce(&std::path::Path, u32) -> std::io::Result<()>,
+) -> zellij_utils::errors::prelude::Result<()> {
+    use zellij_utils::errors::prelude::*;
+
+    if let Err(error) = set_permissions(path, mode) {
+        std::fs::remove_file(path).with_context(|| {
+            format!(
+                "failed to remove {} after permission finalization failed",
+                path.display()
+            )
+        })?;
+        return Err(error).with_context(|| {
+            format!("failed to set permissions {mode:04o} on {}", path.display())
+        });
+    }
+    Ok(())
+}
+
 /// The argv flag that turns this binary into a supervisor.
 pub const PTY_HOST_FLAG: &str = "--pty-host";
 
@@ -55,6 +89,7 @@ mod tests {
     use super::*;
 
     use hegel::generators;
+    use std::os::unix::{fs::PermissionsExt, net::UnixListener};
 
     fn argv(args: &[&str]) -> Vec<String> {
         args.iter().map(|a| (*a).to_string()).collect()
@@ -118,5 +153,36 @@ mod tests {
             expected,
             "argv {args:?} was classified wrongly"
         );
+    }
+
+    #[test]
+    fn privileged_socket_paths_get_owner_only_permissions() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("sockets");
+        ensure_secure_dir(&dir).unwrap();
+        assert_eq!(dir.metadata().unwrap().permissions().mode() & 0o7777, 0o700);
+
+        for (name, mode) in [("supervisor", 0o1700), ("broker", 0o600)] {
+            let path = dir.join(name);
+            let _listener = UnixListener::bind(&path).unwrap();
+            secure_socket(&path, mode).unwrap();
+            assert_eq!(path.metadata().unwrap().permissions().mode() & 0o7777, mode);
+        }
+    }
+
+    #[test]
+    fn failed_socket_permission_finalization_removes_the_socket() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("socket");
+        let _listener = UnixListener::bind(&path).unwrap();
+
+        let error = secure_socket_with(&path, 0o600, |_, _| {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("failed to set permissions 0600"));
+        assert!(!path.exists());
+        assert!(std::os::unix::net::UnixStream::connect(path).is_err());
     }
 }
