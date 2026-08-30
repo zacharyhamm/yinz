@@ -2083,10 +2083,10 @@ impl State {
         // none. The snapshot below carries the same summary to whoever is subscribed, but a
         // snapshot only reaches a plugin that is running and only shows in a pane the user
         // is looking at — this is the half that finds them wherever they are.
-        // Not while the user is looking at the pane: a toast over the very screen it
-        // describes tells them what they can already see, and the summary still reaches
-        // them through the snapshot below and the pane's new name.
-        if self.focused != Some(pane_id) {
+        // A screen summary's `awaiting` is still useful in the strip, but it is a guess and
+        // does not interrupt. Hook events report real questions immediately above. Finished
+        // summaries still toast, unless the user is already looking at the pane.
+        if !summary.awaiting && self.focused != Some(pane_id) {
             let kind = self.toast_kind(pane_id);
             toast(
                 pane_id,
@@ -5721,10 +5721,10 @@ mod tests {
         assert_eq!(sent.len(), 2, "and asked once it lapsed");
     }
 
-    /// The state the toast is worth interrupting for: the agent is not finished, it is
-    /// stuck on you.
+    /// A screen summary may still mark an agent as awaiting input, but only an explicit hook
+    /// wait is reliable enough to interrupt the user.
     #[test]
-    fn a_toast_for_an_agent_waiting_on_the_user_says_so() {
+    fn a_screen_summary_waiting_on_the_user_is_stored_but_not_toasted() {
         let (mut state, _) = idle_agent(BUSY_PANE);
 
         let finished = finish(
@@ -5734,10 +5734,8 @@ mod tests {
             &context(7, 1),
         );
 
-        assert_eq!(
-            finished.toasts,
-            vec![(7, "agent waiting · 7 · claude\nShall I push?".to_owned())],
-        );
+        assert!(finished.toasts.is_empty());
+        assert!(state.summaries.get(&7).expect("stored").awaiting);
     }
 
     /// A reply whose request has been replaced, or whose pane has closed, answers a
