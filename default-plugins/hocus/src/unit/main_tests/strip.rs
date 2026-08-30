@@ -249,6 +249,40 @@ fn a_selected_agent_picks_up_its_run_when_the_first_header_arrives() {
     assert_eq!(state.selected_run.as_deref(), Some("claude:session-2"));
 }
 
+#[test]
+fn archive_offset_moves_only_for_completions_before_the_loaded_page() {
+    let completed = |id: &str, started_at_ms: i64| agents::AgentRunHeader {
+        id: id.to_owned(),
+        pane_id: 3,
+        session_id: id.to_owned(),
+        kind: "claude".to_owned(),
+        cwd: None,
+        started_at_ms,
+        ended_at_ms: Some(200),
+        outcome: agents::RunOutcome::Completed,
+        revision: 1,
+        summary: None,
+        title: "run".to_owned(),
+    };
+    let mut state = State {
+        archive_offset: 50,
+        archive_loaded_through: Some((100, "middle".to_owned())),
+        ..State::default()
+    };
+
+    state.merge_run_headers(vec![completed("older", 50)]);
+    assert_eq!(state.archive_offset, 50);
+
+    state.merge_run_headers(vec![completed("newer", 150)]);
+    assert_eq!(state.archive_offset, 51);
+
+    state.merge_run_headers(vec![completed("z-after-middle", 100)]);
+    assert_eq!(state.archive_offset, 51);
+
+    state.merge_run_headers(vec![completed("a-ahead-of-middle", 100)]);
+    assert_eq!(state.archive_offset, 52);
+}
+
 /// One `AGENT_SELECTION` from the agents pane.
 fn selection(plugin_id: u32, pane_id: Option<u32>) -> PipeMessage {
     PipeMessage {

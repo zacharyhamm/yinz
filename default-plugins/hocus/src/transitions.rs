@@ -737,14 +737,21 @@ impl State {
         let Ok(rows) = self.store().fetch(
             &FetchRequest::entity(agents::rows::RUN_ENTITY)
                 .filter(Pred::eq("active", false))
+                .filter(Pred::not_null("header"))
                 .sort_by("started_at_ms", SortDir::Desc)
+                .sort_by("uid", SortDir::Asc)
+                .select(["header"])
                 .limit(PAGE)
                 .offset(self.archive_offset),
         ) else {
             return;
         };
         let count = rows.len() as u32;
-        for header in agents::rows::run_headers_from_rows(&rows) {
+        let headers = agents::rows::run_headers_from_rows(&rows);
+        if let Some(last) = headers.last() {
+            self.archive_loaded_through = Some((last.started_at_ms, last.id.clone()));
+        }
+        for header in headers {
             if !self.archived_runs.iter().any(|run| run.id == header.id) {
                 self.archived_runs.push(header);
             }
@@ -757,6 +764,7 @@ impl State {
         let Ok(rows) = self.store().fetch(
             &FetchRequest::entity(agents::rows::RUN_ENTITY)
                 .filter(Pred::eq("uid", run_id))
+                .select(["payload"])
                 .limit(1),
         ) else {
             return;

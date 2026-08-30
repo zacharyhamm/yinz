@@ -118,7 +118,14 @@ pub fn read_pane(pane_id: u32) -> PaneSample {
 /// is deliberately not a repeating poll. The focused pane is taken here as well as
 /// there because a session nobody touches sends no `PaneUpdate` at all, and until
 /// one arrives the focus would be nothing.
-pub fn gather() -> Option<(Vec<agents::AgentPane>, Option<u32>, Option<u32>)> {
+pub struct StartupSnapshot {
+    pub session_name: String,
+    pub panes: Vec<agents::AgentPane>,
+    pub focused: Option<u32>,
+    pub focused_plugin: Option<u32>,
+}
+
+pub fn gather() -> Option<StartupSnapshot> {
     let session = current_session()?;
     let focused = focused_pane(&session.panes, &session.tabs);
     let focused_plugin = focused_plugin_pane(&session.panes, &session.tabs);
@@ -131,7 +138,12 @@ pub fn gather() -> Option<(Vec<agents::AgentPane>, Option<u32>, Option<u32>)> {
         }
         pane.cwd = pane_cwd(pane.pane_id);
     }
-    Some((panes, focused, focused_plugin))
+    Some(StartupSnapshot {
+        session_name: session.name,
+        panes,
+        focused,
+        focused_plugin,
+    })
 }
 
 /// What one folder's Git probe concluded.

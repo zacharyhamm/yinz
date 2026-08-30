@@ -915,6 +915,7 @@ mod tests {
         state.run = Some(agents::AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 3,
+            zellij_session_name: "zellij".to_owned(),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: Some("/work".to_owned()),
@@ -932,11 +933,13 @@ mod tests {
             entries: vec![
                 agents::RunEntry {
                     revision: 1,
+                    event_id: None,
                     kind: agents::RunEntryKind::Prompt,
                     text: "implement history".to_owned(),
                 },
                 agents::RunEntry {
                     revision: 2,
+                    event_id: None,
                     kind: agents::RunEntryKind::Result,
                     text: "Implemented and tested.".to_owned(),
                 },

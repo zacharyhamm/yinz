@@ -787,6 +787,8 @@ impl RunEntryKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunEntry {
     pub revision: u64,
+    #[serde(default)]
+    pub event_id: Option<String>,
     pub kind: RunEntryKind,
     pub text: String,
 }
@@ -809,6 +811,8 @@ pub enum RunOutcome {
 pub struct AgentRun {
     pub id: String,
     pub pane_id: u32,
+    #[serde(default)]
+    pub zellij_session_name: String,
     #[serde(default)]
     pub session_id: String,
     pub kind: String,
@@ -924,6 +928,9 @@ pub fn run_entry(event: &zellij_tile::agent::HookEvent) -> Option<(RunEntryKind,
         {
             (RunEntryKind::Step, hook_detail(event)?)
         },
+        "PreToolUse" if waiting_detail(event).is_some() => {
+            (RunEntryKind::Step, waiting_detail(event)?)
+        },
         "PermissionRequest" | "Elicitation" | "Notification" if waiting_detail(event).is_some() => {
             (RunEntryKind::Step, waiting_detail(event)?)
         },
@@ -962,6 +969,16 @@ pub fn run_entry(event: &zellij_tile::agent::HookEvent) -> Option<(RunEntryKind,
     (!text.is_empty()).then_some((kind, text))
 }
 
+/// The provider-level identity of a retained hook event. The event name keeps a failed tool's
+/// completion distinct from the `PreToolUse` carrying the same call id.
+pub fn run_event_id(event: &zellij_tile::agent::HookEvent) -> Option<String> {
+    event
+        .tool_use_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .map(|id| format!("{}:{id}", event.hook_event_name))
+}
+
 /// A short archive-row label, preferring the endpoint's title and then the first prompt.
 pub fn run_title(run: &AgentRun) -> String {
     let title = run
@@ -989,11 +1006,18 @@ pub fn run_title(run: &AgentRun) -> String {
 pub mod rows {
     use super::{AgentRun, AgentRunHeader, Summaries, Summary};
     use std::collections::BTreeMap;
-    use zellij_tile::prelude::{DataRows, DataValue, Mutation, Pred};
+    use zellij_tile::prelude::{DataRows, DataValue, FetchRequest, Mutation, Pred};
 
     pub const LATCH_ENTITY: &str = "agent_latch";
     pub const SUMMARY_ENTITY: &str = "agent_summary";
     pub const RUN_ENTITY: &str = "agent_run";
+
+    pub fn active_runs_request(zellij_session_name: &str) -> FetchRequest {
+        FetchRequest::entity(RUN_ENTITY)
+            .filter(Pred::eq("active", true))
+            .filter(Pred::eq("zellij_session_name", zellij_session_name))
+            .select(["payload"])
+    }
 
     fn pane_id_at(rows: &DataRows, row: &[DataValue]) -> Option<u32> {
         match rows.get(row, "pane_id") {
@@ -1094,9 +1118,14 @@ pub mod rows {
             .uid(run.id.clone())
             .set("pane_id", run.pane_id)
             .set("session_id", run.session_id.clone())
+            .set("zellij_session_name", run.zellij_session_name.clone())
             .set("kind", run.kind.clone())
             .set("active", run.ended_at_ms.is_none())
             .set("started_at_ms", run.started_at_ms)
+            .set(
+                "header",
+                serde_json::to_string(&run.header()).expect("AgentRunHeader serializes"),
+            )
             .set(
                 "payload",
                 serde_json::to_string(run).expect("AgentRun serializes"),
@@ -1115,9 +1144,12 @@ pub mod rows {
     }
 
     pub fn run_headers_from_rows(rows: &DataRows) -> Vec<AgentRunHeader> {
-        runs_from_rows(rows)
-            .into_iter()
-            .map(|run| run.header())
+        rows.rows
+            .iter()
+            .filter_map(|row| match rows.get(row, "header") {
+                Some(DataValue::Text(value)) => serde_json::from_str(value).ok(),
+                _ => None,
+            })
             .collect()
     }
 }
@@ -2830,6 +2862,23 @@ mod tests {
                 "store prompt, plan, steps, result".to_owned()
             ))
         );
+        let ask = crate::wire::HookEvent {
+            tool_name: Some("AskUserQuestion".to_owned()),
+            tool_input: Some(json!({"questions": [{"question": "Which library?"}]})),
+            ..event("PreToolUse")
+        };
+        assert_eq!(
+            run_entry(&ask),
+            Some((RunEntryKind::Step, "Which library?".to_owned()))
+        );
+        let codex_ask = crate::wire::HookEvent {
+            tool_name: Some("request_user_input".to_owned()),
+            ..event("PreToolUse")
+        };
+        assert_eq!(
+            run_entry(&codex_ask),
+            Some((RunEntryKind::Step, "a question".to_owned()))
+        );
         let result = crate::wire::HookEvent {
             last_assistant_message: Some("Implemented and tested.".to_owned()),
             ..event("Stop")
@@ -2845,6 +2894,7 @@ mod tests {
         let mut run = AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
+            zellij_session_name: "zellij".to_owned(),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
@@ -2859,6 +2909,7 @@ mod tests {
                 .enumerate()
                 .map(|(index, text)| RunEntry {
                     revision: index as u64 + 1,
+                    event_id: None,
                     kind: RunEntryKind::Step,
                     text: text.to_owned(),
                 })
@@ -2878,13 +2929,31 @@ mod tests {
     #[test]
     fn an_agent_run_round_trips_through_the_shared_store() {
         use crate::store::{self, Backend};
-        use zellij_tile::prelude::{FetchRequest, Pred};
+        use zellij_tile::prelude::{FetchRequest, Mutation, Pred};
 
         let local = store::Local::shared("hocus-agentd");
         local.define_all(&store::shared_defs()).unwrap();
+        let legacy = |uid: &str, active: bool| {
+            Mutation::put(rows::RUN_ENTITY)
+                .uid(uid)
+                .set("pane_id", 7_u32)
+                .set("session_id", uid)
+                .set("kind", "claude")
+                .set("active", active)
+                .set("started_at_ms", 1_i64)
+                .set("payload", "{}")
+                .build()
+        };
+        local
+            .apply(vec![
+                legacy("legacy-active", true),
+                legacy("legacy-archive", false),
+            ])
+            .unwrap();
         let mut run = AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
+            zellij_session_name: "zellij".to_owned(),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: Some("/work".to_owned()),
@@ -2896,23 +2965,42 @@ mod tests {
             summary: None,
             entries: vec![RunEntry {
                 revision: 1,
+                event_id: None,
                 kind: RunEntryKind::Prompt,
                 text: "implement history".to_owned(),
             }],
         };
         local.apply(vec![rows::run_mutation(&run)]).unwrap();
-        let active = local
-            .fetch(&FetchRequest::entity(rows::RUN_ENTITY).filter(Pred::eq("active", true)))
-            .unwrap();
+        let mut foreign = run.clone();
+        foreign.id = "claude:session-2".to_owned();
+        foreign.session_id = "session-2".to_owned();
+        foreign.zellij_session_name = "another-zellij".to_owned();
+        local.apply(vec![rows::run_mutation(&foreign)]).unwrap();
+        let active = local.fetch(&rows::active_runs_request("zellij")).unwrap();
         assert_eq!(rows::runs_from_rows(&active), vec![run.clone()]);
 
         run.ended_at_ms = Some(20);
         run.outcome = RunOutcome::Completed;
         local.apply(vec![rows::run_mutation(&run)]).unwrap();
         let completed = local
-            .fetch(&FetchRequest::entity(rows::RUN_ENTITY).filter(Pred::eq("active", false)))
+            .fetch(
+                &FetchRequest::entity(rows::RUN_ENTITY)
+                    .filter(Pred::eq("active", false))
+                    .filter(Pred::not_null("header"))
+                    .select(["header"]),
+            )
             .unwrap();
-        assert_eq!(rows::runs_from_rows(&completed), vec![run]);
+        assert!(!completed.columns.iter().any(|column| column == "payload"));
+        assert_eq!(rows::run_headers_from_rows(&completed), vec![run.header()]);
+
+        let detail = local
+            .fetch(
+                &FetchRequest::entity(rows::RUN_ENTITY)
+                    .filter(Pred::eq("uid", run.id.clone()))
+                    .select(["payload"]),
+            )
+            .unwrap();
+        assert_eq!(rows::runs_from_rows(&detail), vec![run]);
     }
 
     /// The interruption the feed exists to make in time. Shaped like `summary_toast`, so
