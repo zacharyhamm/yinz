@@ -168,13 +168,16 @@ fn request_body_advertises_registered_extension_tools() {
 /// `hooks` (R16): four arguments a launch genuinely needs, each already at the floor of a
 /// key and one short sentence.
 /// Raised to 28kb for the five skill-authoring tools after their schemas were kept minimal.
+/// Raised to 29kb when the pane-workflow docs sections arrived (`example_workflow`,
+/// `prelude_workflows`): two `plugin_docs` enum values, ~40 bytes, landing on a ceiling that
+/// had no headroom left.
 #[test]
-fn hocus_prompt_contract_keeps_the_tool_payload_under_28_kb() {
+fn hocus_prompt_contract_keeps_the_tool_payload_under_29_kb() {
     let mut cfg = test_config();
     cfg.tools = true;
     let body = request_body(&cfg, &[Message::user("hi")], true);
     assert!(
-        body.len() < 28_000,
+        body.len() < 29_000,
         "tool payload grew to {} bytes",
         body.len()
     );

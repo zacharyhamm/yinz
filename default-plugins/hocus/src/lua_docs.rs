@@ -14,11 +14,17 @@ const EXAMPLE_CLOCK: &str = include_str!("../../../example-plugins/clock.lua");
 const EXAMPLE_PLAYGROUND: &str = include_str!("../../../example-plugins/playground.lua");
 const EXAMPLE_AGENT_COMMIT: &str = include_str!("../../../example-plugins/agent-commit.lua");
 const EXAMPLE_DASHBOARD: &str = include_str!("../../../example-plugins/dashboard.lua");
+const EXAMPLE_WORKFLOW: &str = include_str!("../../../example-plugins/workflow.lua");
 /// The Lua half of the API, verbatim: the argument sugar and the named wrappers live here, so
-/// a model that has read it does not have to guess how a command is spelled. Served in three
+/// a model that has read it does not have to guess how a command is spelled. Served in five
 /// parts, cut at its own section markers, so that none is more than a tool call should cost.
 const PRELUDE: &str = include_str!("../../../zellij-server/src/plugins/lua/prelude.lua");
-const PRELUDE_CUTS: [&str; 3] = ["\n-- Host commands ", "\n-- Data ", "\n-- Rendering "];
+const PRELUDE_CUTS: [&str; 4] = [
+    "\n-- Host commands ",
+    "\n-- Data ",
+    "\n-- Rendering ",
+    "\n-- Pane workflows ",
+];
 
 /// Part `index` of the prelude: before the first cut, between the two, or after the second.
 fn prelude_part(index: usize) -> &'static str {
@@ -38,7 +44,7 @@ fn prelude_part(index: usize) -> &'static str {
 ///
 /// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
 /// editing the guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 23] = [
+pub const SECTIONS: [&str; 25] = [
     "index",
     "quickstart",
     "contract",
@@ -58,10 +64,12 @@ pub const SECTIONS: [&str; 23] = [
     "example_playground",
     "example_agent_commit",
     "example_dashboard",
+    "example_workflow",
     "prelude",
     "prelude_commands",
     "prelude_data",
     "prelude_ui",
+    "prelude_workflows",
 ];
 
 /// The `##` heading each guide section is cut at. Examples are not in the guide and are absent.
@@ -116,10 +124,12 @@ fn index() -> String {
             "example_playground" => "example: every shape of command in use".to_owned(),
             "example_agent_commit" => "example: an agent_exit hook".to_owned(),
             "example_dashboard" => "example: a themed dashboard - zellij.ui, a timer, a command, keys and the mouse".to_owned(),
+            "example_workflow" => "example: a multi-step command sequence in one pane (pane_workflow)".to_owned(),
             "prelude" => "the Lua side of the API itself: events, commands, files, and every named wrapper".to_owned(),
             "prelude_commands" => "its host-command wrappers and keybinding helpers".to_owned(),
             "prelude_data" => "its zellij.data part: the persistent store, with every helper".to_owned(),
-            "prelude_ui" => "the rest of it: zellij.text (widths), zellij.ui (themed text, ribbons, tables, lists)".to_owned(),
+            "prelude_ui" => "its zellij.text (widths) and zellij.ui (themed text, ribbons, tables, lists) parts".to_owned(),
+            "prelude_workflows" => "the rest of it: pane_workflow and run_command_in_pane - command sequences in one pane".to_owned(),
             other => match heading(other) {
                 Some(heading) => format!("the guide's \"{heading}\""),
                 None => continue,
@@ -142,10 +152,12 @@ pub fn section(name: &str) -> Option<String> {
         "example_playground" => Some(fenced(EXAMPLE_PLAYGROUND)),
         "example_agent_commit" => Some(fenced(EXAMPLE_AGENT_COMMIT)),
         "example_dashboard" => Some(fenced(EXAMPLE_DASHBOARD)),
+        "example_workflow" => Some(fenced(EXAMPLE_WORKFLOW)),
         "prelude" => Some(fenced(prelude_part(0))),
         "prelude_commands" => Some(fenced(prelude_part(1))),
         "prelude_data" => Some(fenced(prelude_part(2))),
         "prelude_ui" => Some(fenced(prelude_part(3))),
+        "prelude_workflows" => Some(fenced(prelude_part(4))),
         other => heading(other).and_then(guide_section),
     }
 }

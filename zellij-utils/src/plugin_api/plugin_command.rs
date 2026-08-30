@@ -156,7 +156,7 @@ pub use super::generated_api::api::{
         RenameLayoutResponse as ProtobufRenameLayoutResponse, RenameTabWithIdPayload,
         ReplacePaneWithExistingPanePayload, RequestPluginPermissionPayload,
         RerunCommandPanePayload, ResizePaneIdWithDirectionPayload, ResizePayload,
-        RevealPaneWithIdPayload, RunActionPayload, RunCommandPayload,
+        RevealPaneWithIdPayload, RunActionPayload, RunCommandInPanePayload, RunCommandPayload,
         RunningCommand as ProtobufRunningCommand, SaveLayoutPayload,
         SaveLayoutResponse as ProtobufSaveLayoutResponse, SaveSessionPayload,
         SaveSessionResponse as ProtobufSaveSessionResponse, ScrollDownInPaneIdPayload,
@@ -1867,6 +1867,27 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     PluginCommand::RerunCommandPane(rerun_command_pane_payload.terminal_pane_id),
                 ),
                 _ => Err("Mismatched payload for RerunCommandPane"),
+            },
+            Some(CommandName::RunCommandInPane) => match protobuf_plugin_command.payload {
+                Some(Payload::RunCommandInPanePayload(payload)) => {
+                    match (payload.pane_id, payload.command_to_run) {
+                        (Some(pane_id), Some(command_to_run)) => {
+                            let context: BTreeMap<String, String> = payload
+                                .context
+                                .into_iter()
+                                .map(|e| (e.name, e.value))
+                                .collect();
+                            Ok(PluginCommand::RunCommandInPane {
+                                pane_id: pane_id.try_into()?,
+                                command: command_to_run.try_into()?,
+                                context,
+                                keep_scrollback: payload.keep_scrollback,
+                            })
+                        },
+                        _ => Err("Malformed run_command_in_pane payload"),
+                    }
+                },
+                _ => Err("Mismatched payload for RunCommandInPane"),
             },
             Some(CommandName::ResizePaneIdWithDirection) => match protobuf_plugin_command.payload {
                 Some(Payload::ResizePaneIdWithDirectionPayload(resize_with_direction_payload)) => {
@@ -4165,6 +4186,26 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     terminal_pane_id,
                 })),
             }),
+            PluginCommand::RunCommandInPane {
+                pane_id,
+                command,
+                context,
+                keep_scrollback,
+            } => {
+                let context: Vec<_> = context
+                    .into_iter()
+                    .map(|(name, value)| ContextItem { name, value })
+                    .collect();
+                Ok(ProtobufPluginCommand {
+                    name: CommandName::RunCommandInPane as i32,
+                    payload: Some(Payload::RunCommandInPanePayload(RunCommandInPanePayload {
+                        pane_id: Some(pane_id.try_into()?),
+                        command_to_run: Some(command.try_into()?),
+                        context,
+                        keep_scrollback,
+                    })),
+                })
+            },
             PluginCommand::ResizePaneIdWithDirection(resize, pane_id) => {
                 Ok(ProtobufPluginCommand {
                     name: CommandName::ResizePaneIdWithDirection as i32,
@@ -7119,6 +7160,7 @@ mod tests {
                 | PluginCommand::ShowPaneWithId(..)
                 | PluginCommand::OpenCommandPaneBackground(..)
                 | PluginCommand::RerunCommandPane(_)
+                | PluginCommand::RunCommandInPane { .. }
                 | PluginCommand::EditScrollbackForPaneWithId(_)
                 | PluginCommand::GetPaneScrollback { .. }
                 | PluginCommand::WriteToPaneId(..)

@@ -1360,20 +1360,34 @@ impl Pane for TerminalPane {
     fn serialize(&self, scrollback_lines_to_serialize: Option<usize>) -> Option<String> {
         self.grid.serialize(scrollback_lines_to_serialize)
     }
-    fn rerun(&mut self) -> Option<RunCommand> {
-        // if this is a command pane that has exited or is waiting to be rerun, will return its
-        // RunCommand, otherwise it is safe to assume this is not the right sort of pane or that it
-        // is not in the right sort of state
+    fn respawn(
+        &mut self,
+        replacement: Option<RunCommand>,
+        keep_scrollback: bool,
+    ) -> Option<RunCommand> {
+        // if this is a command pane that has exited or is waiting to be rerun, will return the
+        // command to spawn - its own, or the replacement - otherwise it is safe to assume this
+        // is not the right sort of pane or that it is not in the right sort of state
         self.is_held.take().map(|(_, _, run_command)| {
             self.is_held = None;
             self.suspended = false;
             if let Some(agent) = self.agent.as_mut() {
                 agent.state = AgentState::Busy;
             }
-            self.grid.reset_terminal_state();
+            if keep_scrollback {
+                self.grid.reset_terminal_state_preserving_scrollback();
+            } else {
+                self.grid.reset_terminal_state();
+            }
             self.set_should_render(true);
             self.remove_banner();
-            run_command.clone()
+            match replacement {
+                Some(replacement) => {
+                    self.invoked_with = Some(Run::Command(replacement.clone()));
+                    replacement
+                },
+                None => run_command.clone(),
+            }
         })
     }
     fn update_theme(&mut self, theme: Styling) {

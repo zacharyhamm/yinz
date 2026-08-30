@@ -4134,6 +4134,11 @@ pub(crate) fn screen_thread_main(
                 screen.log_and_report_session_state()?;
                 screen.render(None)?;
             },
+            ScreenInstruction::RunCommandInPane(terminal_pane_id, run_command, keep_scrollback) => {
+                screen.run_command_in_pane_with_id(terminal_pane_id, run_command, keep_scrollback);
+                screen.log_and_report_session_state()?;
+                screen.render(None)?;
+            },
             ScreenInstruction::ResizePaneWithId(resize, pane_id) => {
                 screen.resize_pane_with_id(resize, pane_id)?;
             },

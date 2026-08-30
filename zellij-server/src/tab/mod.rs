@@ -327,6 +327,10 @@ pub(crate) struct Tab {
     terminal_emulator_colors: Rc<RefCell<Palette>>,
     terminal_emulator_color_codes: Rc<RefCell<HashMap<usize, String>>>,
     pids_waiting_resize: HashSet<u32>, // u32 is the terminal_id
+    // Replacement commands for panes whose current command is still running: a
+    // `RunCommandInPane` that raced the pane's own exit waits here and is started by
+    // `hold_pane` (last write wins). bool is keep_scrollback.
+    pending_command_respawns: HashMap<PaneId, (RunCommand, bool)>,
     cursor_positions_and_shape: HashMap<ClientId, (usize, usize, String)>, // (x_position,
     // y_position,
     // cursor_shape_csi)
@@ -891,8 +895,18 @@ pub trait Pane {
         None
     }
     fn rerun(&mut self) -> Option<RunCommand> {
-        None
+        self.respawn(None, false)
     } // only relevant to terminal panes
+    /// Restart a held command pane, either with its own command (`None`) or with a
+    /// `replacement`. Returns the command to spawn, or `None` when the pane is not a held
+    /// command pane. Only relevant to terminal panes.
+    fn respawn(
+        &mut self,
+        _replacement: Option<RunCommand>,
+        _keep_scrollback: bool,
+    ) -> Option<RunCommand> {
+        None
+    }
     fn update_theme(&mut self, _theme: Styling) {}
     fn set_selection_options(&mut self, _osc133_command_selection: bool, _word_separators: &str) {}
     fn update_arrow_fonts(&mut self, _should_support_arrow_fonts: bool) {}
@@ -1224,6 +1238,7 @@ impl Tab {
             terminal_emulator_colors,
             terminal_emulator_color_codes,
             pids_waiting_resize: HashSet::new(),
+            pending_command_respawns: HashMap::new(),
             cursor_positions_and_shape: HashMap::new(),
             is_pending: true, // will be switched to false once the layout is applied
             pending_instructions: vec![],
@@ -6524,6 +6539,7 @@ impl Tab {
         ignore_suppressed_panes: bool,
         exit_status: Option<i32>,
     ) {
+        self.pending_command_respawns.remove(&id);
         let id_stands_in_for_a_pane = self.stands_in_for_a_pane(id).is_some();
         if !ignore_suppressed_panes
             && !id_stands_in_for_a_pane
@@ -6747,6 +6763,13 @@ impl Tab {
                 .hold_pane(id, exit_status, is_first_run, run_command);
         } else if let Some(pane) = self.suppressed_panes.get_mut(&id) {
             pane.pane.hold(exit_status, is_first_run, run_command);
+        }
+        // A replacement command that arrived while this one was still running starts now that
+        // the pane is held.
+        if let (PaneId::Terminal(terminal_pane_id), Some((run_command, keep_scrollback))) =
+            (id, self.pending_command_respawns.remove(&id))
+        {
+            self.run_command_in_pane_with_id(terminal_pane_id, run_command, keep_scrollback);
         }
     }
     /// Mark a pane's root process stopped or running.
@@ -8624,6 +8647,48 @@ impl Tab {
             None => {
                 log::error!(
                     "Failed to find terminal pane with id {} to rerun in tab",
+                    terminal_pane_id
+                );
+            },
+        }
+    }
+    /// Run a *different* command in an existing command pane, reusing its pane id. When the
+    /// pane's current command is still running — which includes the window between the
+    /// command's exit event reaching its originating plugin and the screen processing the
+    /// pane's hold — the replacement is stashed and started by `hold_pane` (last write wins).
+    pub fn run_command_in_pane_with_id(
+        &mut self,
+        terminal_pane_id: u32,
+        run_command: RunCommand,
+        keep_scrollback: bool,
+    ) {
+        let pane_id = PaneId::Terminal(terminal_pane_id);
+        match self
+            .floating_panes
+            .get_mut(&pane_id)
+            .or_else(|| self.overlay_panes.get_mut(&pane_id))
+            .or_else(|| self.tiled_panes.get_pane_mut(pane_id))
+            .or_else(|| self.suppressed_panes.get_mut(&pane_id).map(|p| &mut p.pane))
+        {
+            Some(pane) => {
+                if let Some(command_to_run) =
+                    pane.respawn(Some(run_command.clone()), keep_scrollback)
+                {
+                    self.pending_command_respawns.remove(&pane_id);
+                    self.pids_waiting_resize.insert(terminal_pane_id);
+                    let _ = self.senders.send_to_pty(PtyInstruction::ReRunCommandInPane(
+                        pane_id,
+                        command_to_run,
+                        None,
+                    ));
+                } else {
+                    self.pending_command_respawns
+                        .insert(pane_id, (run_command, keep_scrollback));
+                }
+            },
+            None => {
+                log::error!(
+                    "Failed to find terminal pane with id {} to run a command in",
                     terminal_pane_id
                 );
             },

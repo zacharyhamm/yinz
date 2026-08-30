@@ -1387,6 +1387,25 @@ impl Pty {
         let quit_cb = Box::new({
             let senders = self.bus.senders.clone();
             move |pane_id, exit_status, command| {
+                // The screen learns of the exit before the originating plugin does: the screen
+                // queue is one FIFO, so anything the plugin sends in reaction to the event - a
+                // `RunCommandInPane` for the next step of a sequence - lands after the pane's
+                // hold.
+                if hold_on_close {
+                    let _ = senders.send_to_screen(ScreenInstruction::HoldPane(
+                        pane_id,
+                        exit_status,
+                        command,
+                    ));
+                } else {
+                    let _ = senders.send_to_screen(ScreenInstruction::ClosePane(
+                        pane_id,
+                        None,
+                        None,
+                        exit_status,
+                    ));
+                }
+
                 // if this command originated in a plugin, we send the plugin an event letting it
                 // know the command exited and some other useful information
                 if let PaneId::Terminal(pane_id) = pane_id {
@@ -1414,21 +1433,6 @@ impl Pty {
                             update_event,
                         )]));
                     }
-                }
-
-                if hold_on_close {
-                    let _ = senders.send_to_screen(ScreenInstruction::HoldPane(
-                        pane_id,
-                        exit_status,
-                        command,
-                    ));
-                } else {
-                    let _ = senders.send_to_screen(ScreenInstruction::ClosePane(
-                        pane_id,
-                        None,
-                        None,
-                        exit_status,
-                    ));
                 }
             }
         });
@@ -2569,8 +2573,18 @@ impl Pty {
 
         match pane_id {
             PaneId::Terminal(id) => {
-                if let Some(originating_plugins) = self.originating_plugins.get(&id) {
-                    run_command.originating_plugin = Some(originating_plugins.clone());
+                match run_command.originating_plugin.as_ref() {
+                    // A per-step context set by the caller wins over the pane's original one,
+                    // and becomes the answer for later reruns of this pane too.
+                    Some(originating_plugin) => {
+                        self.originating_plugins
+                            .insert(id, originating_plugin.clone());
+                    },
+                    None => {
+                        if let Some(originating_plugins) = self.originating_plugins.get(&id) {
+                            run_command.originating_plugin = Some(originating_plugins.clone());
+                        }
+                    },
                 }
                 let _ = self.task_handles.remove(&id); // if all is well, this shouldn't be here
                 let _ = self.id_to_child_pid.remove(&id); // if all is wlel, this shouldn't be here
@@ -2580,20 +2594,10 @@ impl Pty {
                 let quit_cb = Box::new({
                     let senders = self.bus.senders.clone();
                     move |pane_id, exit_status, command| {
-                        if let PaneId::Terminal(pane_id) = pane_id {
-                            if let Some(originating_plugin) = originating_plugin.as_ref() {
-                                let update_event = Event::CommandPaneExited(
-                                    pane_id,
-                                    exit_status,
-                                    originating_plugin.context.clone(),
-                                );
-                                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                                    Some(originating_plugin.plugin_id),
-                                    Some(originating_plugin.client_id),
-                                    update_event,
-                                )]));
-                            }
-                        }
+                        // The screen learns of the exit before the originating plugin does: the
+                        // screen queue is one FIFO, so anything the plugin sends in reaction to
+                        // the event - a `RunCommandInPane` for the next step of a sequence -
+                        // lands after the pane's hold.
                         if hold_on_close {
                             let _ = senders.send_to_screen(ScreenInstruction::HoldPane(
                                 pane_id,
@@ -2607,6 +2611,20 @@ impl Pty {
                                 None,
                                 exit_status,
                             ));
+                        }
+                        if let PaneId::Terminal(pane_id) = pane_id {
+                            if let Some(originating_plugin) = originating_plugin.as_ref() {
+                                let update_event = Event::CommandPaneExited(
+                                    pane_id,
+                                    exit_status,
+                                    originating_plugin.context.clone(),
+                                );
+                                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
+                                    Some(originating_plugin.plugin_id),
+                                    Some(originating_plugin.client_id),
+                                    update_event,
+                                )]));
+                            }
                         }
                     }
                 });

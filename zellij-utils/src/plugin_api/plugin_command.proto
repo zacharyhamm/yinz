@@ -252,6 +252,7 @@ enum CommandName {
   SetPaneAgent = 273;
   ReloadPluginByUrl = 274;
   ReadPluginLog = 275;
+  RunCommandInPane = 276;
 }
 
 message PluginCommand {
@@ -451,6 +452,7 @@ message PluginCommand {
     SetPaneAgentPayload set_pane_agent_payload = 214;
     string reload_plugin_by_url_payload = 215;
     ReadPluginLogPayload read_plugin_log_payload = 216;
+    RunCommandInPanePayload run_command_in_pane_payload = 217;
   }
 }
 
@@ -1065,6 +1067,13 @@ message ReconfigurePayload {
 
 message RerunCommandPanePayload {
   uint32 terminal_pane_id = 1;
+}
+
+message RunCommandInPanePayload {
+  PaneId pane_id = 1;
+  command.Command command_to_run = 2;
+  repeated ContextItem context = 3;
+  bool keep_scrollback = 4;
 }
 
 message HidePaneWithIdPayload {

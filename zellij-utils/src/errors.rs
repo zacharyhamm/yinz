@@ -413,6 +413,7 @@ pub enum ScreenContext {
     GetCurrentTabInfo,
     Reconfigure,
     RerunCommandPane,
+    RunCommandInPane,
     ResizePaneWithId,
     EditScrollbackForPaneWithId,
     WriteToPaneId,

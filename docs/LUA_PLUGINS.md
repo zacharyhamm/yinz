@@ -325,6 +325,53 @@ zellij.set_pane_agent { pane_id = zellij.terminal_pane(3) }   -- no agent here a
 It needs `change_application_state`. A pane with a record fires `agent_exit` when its command
 exits, whoever wrote the record.
 
+### Pane workflows
+
+A multi-step job - list a remote folder, read a file, copy it - used to mean one pane per step.
+`zellij.pane_workflow` runs the whole sequence in **one pane**: when a step's command exits, the
+next replaces it in the same pane, and each finished step's output scrolls into the pane's
+history so the transcript accumulates.
+
+```lua
+local wf = zellij.pane_workflow {
+  name = "sync-skills",          -- pane title
+  floating = true,               -- or a FloatingPaneCoordinates table; default tiled
+  steps = {
+    { path = "ssh", args = { "host", "ls ~/.hocus/skills" }, timeout = 30 },
+    { path = "scp", args = { "host:~/.hocus/skills/x", "/tmp/x" } },
+  },
+  on_step = function(n, step, exit_code) end,
+  on_done = function(result) end,
+  -- result = { status = "success"|"failed"|"cancelled"|"pane_closed",
+  --            exit_codes = { 0, false, ... }, pane_id = 7, failed_step = 2|nil }
+}
+wf.pane_id      -- the terminal pane id, known immediately
+wf:push(step)   -- append a step while running (works from inside on_step)
+wf:cancel()     -- SIGINT, then SIGKILL; on_done says "cancelled"
+```
+
+A step is `{ path, args, cwd, remote_host, remote_default_shell, timeout, stdin, name }` - the
+`CommandToRun` fields plus three of the workflow's own. A step's result is its child's real exit
+status; `stop_on_failure` (default true) ends the workflow on the first non-zero exit. `timeout =
+seconds` interrupts a stuck step; leave it off for interactive ones - every step is a real pty,
+so the user can focus the pane and type. `stdin = "..."` is written to the step's child once it
+starts, which is where a secret goes: **never put a secret in `args`** - argv is visible in the
+pane manifest and in serialized sessions. `cwd = "inherit"` uses the pane's last reported
+working directory. Other options: `close_on_success`, `on_cancel = "close"`, `keep_scrollback =
+false` to wipe between steps, `kill_grace` (seconds between SIGINT and SIGKILL, default 5).
+
+It needs `run_commands`; `change_application_state` too if any step has a `timeout` or `cancel`
+is used, `write_to_stdin` for `stdin`, and `read_application_state` for `cwd = "inherit"`.
+Between steps the pane is briefly held, so a user pressing ENTER on it re-runs the finished
+step; the workflow's next step then queues behind that re-run. The workflow is plugin state: it
+does not survive a plugin reload or session resurrection.
+
+Underneath it is one command, usable on its own: `zellij.run_command_in_pane { pane_id, command,
+context, keep_scrollback }` runs a *different* command in an existing (held) command pane,
+keeping the pane's id. The `context` round-trips on the resulting `command_pane_exited`, and a
+replacement sent while the pane's command is still running starts when it exits (last write
+wins). `example-plugins/workflow.lua` (`section=example_workflow`) is the worked example.
+
 ### Permissions
 
 Privileged commands need permission, which the user is prompted for once:
@@ -346,12 +393,13 @@ local ok, err = pcall(function() zellij.copy_to_clipboard("hi") end)
 -- err: 'copy_to_clipboard' needs the 'WriteToClipboard' permission, ...
 ```
 
-There are four worked examples in `example-plugins/`, all of them reference sources to read
+There are five worked examples in `example-plugins/`, all of them reference sources to read
 rather than a place to keep a plugin of your own - hocus serves each as a `plugin_docs` section.
 `clock.lua` (`section=example_clock`) is the small one, `playground.lua`
 (`section=example_playground`) is a keymap where each key calls a different shape of command and
 shows what came back, `dashboard.lua` (`section=example_dashboard`) is the one to read for how a
-plugin draws, and `agent-commit.lua` (`section=example_agent_commit`) is an `agent_exit` hook.
+plugin draws, `agent-commit.lua` (`section=example_agent_commit`) is an `agent_exit` hook, and
+`workflow.lua` (`section=example_workflow`) runs a multi-step command sequence in one pane.
 
 A plugin of your own goes in the plugin folder, written there with `plugin_write`. To run one of
 these from a checkout instead:

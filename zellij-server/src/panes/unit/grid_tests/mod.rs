@@ -755,6 +755,7 @@ fn kitty_marker_with_image_on_first_row(
 }
 
 mod app_replay;
+mod command_respawn;
 mod highlights;
 mod host_capabilities;
 mod kitty_animation;
