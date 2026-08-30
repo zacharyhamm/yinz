@@ -343,9 +343,25 @@ impl Screen {
         result
     }
 
-    pub(super) fn log_and_report_session_state(&mut self) -> Result<()> {
-        let err_context = || "Failed to log and report session state".to_string();
+    /// The pane half of `log_and_report_session_state`, without rebuilding tab state.
+    ///
+    /// An agent record lives on a pane, so a changed record does not need a
+    /// `TabUpdate`. It does need to update `SessionInfo`, which embeds the same
+    /// pane manifest and is read by the session list and `SessionUpdate`
+    /// subscribers.
+    pub(super) fn report_pane_state(&mut self) -> Result<()> {
+        self.update_active_pane_ids();
+        let pane_manifest = self.generate_and_report_pane_state()?;
+        let mut session_info = self
+            .peer_sessions_cache
+            .get(&self.session_name)
+            .cloned()
+            .context("current session missing from peer sessions cache")?;
+        session_info.panes = pane_manifest;
+        self.report_session_info(session_info)
+    }
 
+    pub(super) fn log_and_report_session_state(&mut self) -> Result<()> {
         self.update_active_pane_ids();
         // generate own session info
         let pane_manifest = self.generate_and_report_pane_state()?;
@@ -402,6 +418,12 @@ impl Screen {
                 .collect(),
             creation_time,
         };
+        self.report_session_info(session_info)
+    }
+
+    fn report_session_info(&mut self, session_info: SessionInfo) -> Result<()> {
+        let err_context = || "Failed to report session info".to_string();
+
         self.bus
             .senders
             .send_to_background_jobs(BackgroundJob::ReportSessionInfo(
