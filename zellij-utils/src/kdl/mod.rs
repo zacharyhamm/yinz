@@ -1413,19 +1413,23 @@ impl TryFrom<(&str, &KdlDocument)> for PaletteColor {
             ))?;
         let entry_count = entry_count!(color);
         let is_rgb = || entry_count == 3;
-        let is_three_digit_hex = || {
-            match kdl_first_entry_as_string!(color) {
-                // 4 including the '#' character
-                Some(s) => entry_count == 1 && s.starts_with('#') && s.len() == 4,
-                None => false,
-            }
+        // Require the body to be ASCII hex digits of the exact count, not just a
+        // byte length: `#é1` is 4 bytes but two chars, and gating on `s.len() == 4`
+        // then slicing at fixed byte offsets below would split the `é` mid-char and
+        // panic. Validating hex here sends a malformed color to the `Err` arm the
+        // parse already models instead.
+        let is_hex_body = |s: &str, digits: usize| {
+            s.strip_prefix('#').is_some_and(|body| {
+                body.len() == digits && body.bytes().all(|b| b.is_ascii_hexdigit())
+            })
         };
-        let is_six_digit_hex = || {
-            match kdl_first_entry_as_string!(color) {
-                // 7 including the '#' character
-                Some(s) => entry_count == 1 && s.starts_with('#') && s.len() == 7,
-                None => false,
-            }
+        let is_three_digit_hex = || match kdl_first_entry_as_string!(color) {
+            Some(s) => entry_count == 1 && is_hex_body(s, 3),
+            None => false,
+        };
+        let is_six_digit_hex = || match kdl_first_entry_as_string!(color) {
+            Some(s) => entry_count == 1 && is_hex_body(s, 6),
+            None => false,
         };
         let is_eight_bit = || kdl_first_entry_as_i64!(color).is_some() && entry_count == 1;
         if is_rgb() {

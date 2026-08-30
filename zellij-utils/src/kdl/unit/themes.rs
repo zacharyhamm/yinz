@@ -1,5 +1,39 @@
 use super::*;
 
+/// A `#…` color whose body is not clean ASCII hex — a multi-byte char, or the
+/// wrong number of digits — must reach the `ConfigError` the parser already
+/// models, never a panic. The length gate used to be on bytes while the parse
+/// sliced at fixed byte offsets, so `#é1` (4 bytes, 2 chars) split the `é`
+/// mid-char and panicked. This path is reachable from a plugin `reconfigure()`
+/// and from `zellij action`, where a panic takes the whole server down.
+#[test]
+fn a_malformed_hex_color_is_a_config_error_not_a_panic() {
+    for bad in ["#é1", "#abcé1", "#12", "#1234567", "#ggg", "#12g", "#"] {
+        let doc: KdlDocument = format!(r#"fg "{bad}""#).parse().unwrap();
+        let result = PaletteColor::try_from(("fg", &doc));
+        assert!(
+            result.is_err(),
+            "expected {bad:?} to be rejected as a config error, got {result:?}"
+        );
+    }
+}
+
+#[test]
+fn valid_hex_colors_still_parse_to_rgb() {
+    let cases = [
+        ("#fff", (0xff, 0xff, 0xff)),
+        ("#000", (0x00, 0x00, 0x00)),
+        ("#1a2", (0x11, 0xaa, 0x22)),
+        ("#ffffff", (0xff, 0xff, 0xff)),
+        ("#1a2B3c", (0x1a, 0x2b, 0x3c)),
+    ];
+    for (input, (r, g, b)) in cases {
+        let doc: KdlDocument = format!(r#"fg "{input}""#).parse().unwrap();
+        let color = PaletteColor::try_from(("fg", &doc)).unwrap();
+        assert_eq!(color, PaletteColor::Rgb((r, g, b)), "for {input}");
+    }
+}
+
 #[test]
 fn themes_to_string() {
     let fake_config = r#"
