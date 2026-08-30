@@ -5,7 +5,7 @@ use std::{iter, str::from_utf8};
 use crate::data::{Palette, PaletteColor, PaletteSource, ThemeHue};
 use crate::envs::get_session_name;
 use crate::errors::prelude::*;
-use colorsys::{Ansi256, Rgb};
+use colorsys::Ansi256;
 use strip_ansi_escapes::strip;
 use unicode_width::UnicodeWidthStr;
 
@@ -99,10 +99,28 @@ pub mod colors {
     pub const BROWN: u8 = 215;
 }
 
-pub fn _hex_to_rgb(hex: &str) -> (u8, u8, u8) {
-    Rgb::from_hex_str(hex)
-        .expect("The passed argument must be a valid hex color")
-        .into()
+/// Parse a `#RGB` or `#RRGGBB` color (leading `#` optional) into its channels.
+///
+/// `None` for anything that is not exactly 3 or 6 ASCII hex digits. Gating on
+/// `is_ascii_hexdigit` before slicing is what makes the fixed byte offsets safe:
+/// every accepted byte is a single-byte char, so a body like `é1` (3 bytes, 2
+/// chars) is refused instead of being split mid-char. Both the KDL theme parser
+/// and the serde `HexColor` visitor go through here so the rule lives once.
+pub fn parse_hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
+    let body = s.strip_prefix('#').unwrap_or(s);
+    if !body.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let channel = |range: std::ops::Range<usize>| u8::from_str_radix(&body[range], 16).ok();
+    match body.len() {
+        3 => Some((
+            channel(0..1)? * 0x11,
+            channel(1..2)? * 0x11,
+            channel(2..3)? * 0x11,
+        )),
+        6 => Some((channel(0..2)?, channel(2..4)?, channel(4..6)?)),
+        _ => None,
+    }
 }
 
 pub fn eightbit_to_rgb(c: u8) -> (u8, u8, u8) {

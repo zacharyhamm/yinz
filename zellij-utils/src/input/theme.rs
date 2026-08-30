@@ -102,32 +102,9 @@ impl<'de> Visitor<'de> for HexColorVisitor {
     where
         E: Error,
     {
-        if let Some(stripped) = s.strip_prefix('#') {
-            return self.visit_str(stripped);
-        }
-
-        // Require ASCII hex digits, not just a byte length: a body like `é1` is 3
-        // bytes but not hex, and slicing it at fixed byte offsets would split the
-        // multi-byte char and panic. Gating on `is_ascii_hexdigit` guarantees every
-        // byte is a single-byte char, so the slices below are on char boundaries.
-        let is_hex = s.bytes().all(|b| b.is_ascii_hexdigit());
-        if s.len() == 3 && is_hex {
-            Ok(HexColor(
-                u8::from_str_radix(&s[0..1], 16).map_err(E::custom)? * 0x11,
-                u8::from_str_radix(&s[1..2], 16).map_err(E::custom)? * 0x11,
-                u8::from_str_radix(&s[2..3], 16).map_err(E::custom)? * 0x11,
-            ))
-        } else if s.len() == 6 && is_hex {
-            Ok(HexColor(
-                u8::from_str_radix(&s[0..2], 16).map_err(E::custom)?,
-                u8::from_str_radix(&s[2..4], 16).map_err(E::custom)?,
-                u8::from_str_radix(&s[4..6], 16).map_err(E::custom)?,
-            ))
-        } else {
-            Err(Error::custom(
-                "Hex color must be of form \"#RGB\" or \"#RRGGBB\"",
-            ))
-        }
+        crate::shared::parse_hex_rgb(s)
+            .map(|(r, g, b)| HexColor(r, g, b))
+            .ok_or_else(|| Error::custom("Hex color must be of form \"#RGB\" or \"#RRGGBB\""))
     }
 }
 
