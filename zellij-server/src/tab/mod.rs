@@ -2380,6 +2380,14 @@ impl Tab {
             .copied()
             .unwrap_or(false);
         if resize_help_visible {
+            // A modal is sized by the plugin that asked the question, so nothing here may offer to
+            // resize it. This surface never knew about overlays - `selectable_pane_count` below
+            // counts only the other two collections - so the focused pane has to be asked directly.
+            if focused_pane_id.is_some_and(|pane_id| {
+                self.pane_is_overlay(pane_id) && !self.overlay_panes.is_resizable(&pane_id)
+            }) {
+                return BTreeMap::new();
+            }
             let selectable_pane_count = self.get_selectable_tiled_panes().count()
                 + self.get_selectable_floating_panes().count();
             if selectable_pane_count > 1 && !self.is_fullscreen_active() {

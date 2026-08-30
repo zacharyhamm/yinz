@@ -2676,6 +2676,55 @@ fn resize_hint_text_tracks_mouse_scroll_resize_updates() {
         .all(|hint| hint.text.contains("MouseScroll")));
 }
 
+/// A modal is not resizable (`OverlayPanes::is_resizable`), so nothing may offer to resize it -
+/// this surface counted only tiled and floating panes and had never been asked about overlays, so
+/// a focused modal was told about a gesture both ctrl+scroll and ctrl+drag refuse.
+#[test]
+fn a_focused_modal_is_not_told_how_to_resize_itself() {
+    let size = Size {
+        cols: 120,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    tab.vertical_split(PaneId::Terminal(2), None, client_id, None, None)
+        .unwrap();
+    tab.mouse_help_text_visible.insert(client_id, true);
+    assert!(
+        !tab.resolve_hint_text(client_id).is_empty(),
+        "pre-condition: an ordinary focused pane does get the resize hint"
+    );
+
+    let modal = PaneId::Terminal(3);
+    tab.new_pane(
+        modal,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Overlay(OverlayPlacement::modal(Some(FloatingPaneCoordinates {
+            x: Some(PercentOrFixed::Fixed(10)),
+            y: Some(PercentOrFixed::Fixed(2)),
+            width: Some(PercentOrFixed::Fixed(20)),
+            height: Some(PercentOrFixed::Fixed(8)),
+            ..Default::default()
+        }))),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        tab.get_active_pane_id(client_id),
+        Some(modal),
+        "pre-condition: the modal has the keyboard"
+    );
+
+    assert!(
+        tab.resolve_hint_text(client_id).is_empty(),
+        "a modal is sized by its plugin, so it says nothing about resizing"
+    );
+}
+
 /// A suspended pane's hint has to win over the resize help: the pane is stuck,
 /// and telling the user how to resize it instead of how to wake it is the one
 /// thing the hint must never do.
