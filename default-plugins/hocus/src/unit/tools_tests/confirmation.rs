@@ -330,6 +330,17 @@ fn arguments_are_one_readable_line_each_rather_than_json() {
 }
 
 #[test]
+fn multiline_arguments_show_every_line_as_a_block() {
+    assert_eq!(
+        argument_lines(&call(
+            "send_input",
+            r#"{"pane_id":3,"text":"git push\nwhen done\n"}"#,
+        )),
+        vec!["pane_id: 3", "text:", "  git push", "  when done", "  "]
+    );
+}
+
+#[test]
 fn an_empty_argument_object_contributes_no_lines() {
     assert!(argument_lines(&call("clear_pane", "{}")).is_empty());
     assert!(argument_lines(&call("clear_pane", "")).is_empty());

@@ -194,25 +194,35 @@ impl State {
         )
     }
 
-    pub(crate) fn confirmation_detail(&self, call: &ToolCall) -> Vec<String> {
+    pub(crate) fn confirmation_body(&self, call: &ToolCall) -> Vec<(String, bool)> {
         let Some(tool) = self.extensions.tool(&call.name) else {
-            return tools::confirmation_detail(call);
+            return tools::confirmation_body(call);
         };
-        let mut lines = vec![call.name.clone()];
+        let mut lines = Vec::new();
         if let Some(consequence) = &tool.consequence {
-            lines.push(format!("  {consequence}"));
+            lines.push((consequence.clone(), true));
         }
         lines.extend(
             tools::argument_lines(call)
                 .into_iter()
-                .map(|line| format!("  {line}")),
+                .map(|line| (line, false)),
         );
         lines
     }
 
-    fn confirmation_toast(&self, call: &ToolCall) -> String {
-        let mut lines = vec![tools::TOAST_HEADLINE.to_owned()];
-        lines.extend(self.confirmation_detail(call));
+    pub(crate) fn confirmation_toast(&self, call: &ToolCall) -> String {
+        let Some(tool) = self.extensions.tool(&call.name) else {
+            return tools::confirmation_toast(call);
+        };
+        let mut lines = vec![tools::TOAST_HEADLINE.to_owned(), call.name.clone()];
+        if let Some(consequence) = &tool.consequence {
+            lines.push(format!("  {consequence}"));
+        }
+        lines.extend(
+            tools::toast_argument_lines(call)
+                .into_iter()
+                .map(|line| format!("  {line}")),
+        );
         lines.join("\n")
     }
 

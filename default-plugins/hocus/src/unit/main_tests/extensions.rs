@@ -137,13 +137,32 @@ fn extension_safety_drives_planning_and_confirmation() {
     assert!(!automatic.tool_is_read_only("weather_forecast"));
     assert!(!automatic.call_needs_confirmation(&call("1", "weather_forecast", "{}")));
 
-    let confirming = extension_state("confirm", Some("contacts the weather service"));
-    let call = call("1", "weather_forecast", "{}");
+    let mut confirming = extension_state("confirm", Some("contacts the weather service"));
+    let call = call("1", "weather_forecast", r#"{"city":"Chicago"}"#);
     assert!(confirming.call_needs_confirmation(&call));
-    assert!(confirming
-        .confirmation_detail(&call)
-        .iter()
-        .any(|line| line.contains("contacts the weather service")));
+    confirming.pending.push_back(call);
+    confirming.status = Status::ConfirmingTool;
+    assert_eq!(
+        confirming.confirmation_prompt().unwrap().detail,
+        vec![
+            ("contacts the weather service".to_owned(), true),
+            ("city: Chicago".to_owned(), false),
+        ]
+    );
+}
+
+#[test]
+fn extension_confirmation_toasts_bound_source_arguments() {
+    let state = extension_state("confirm", Some("writes the forecast extension"));
+    let source: Vec<String> = (0..50).map(|n| format!("-- line {n}")).collect();
+    let toast = state.confirmation_toast(&call(
+        "1",
+        "weather_forecast",
+        &serde_json::json!({ "source": source.join("\n") }).to_string(),
+    ));
+    assert!(toast.contains("writes the forecast extension"), "{toast}");
+    assert!(toast.contains("30 more lines"), "{toast}");
+    assert!(!toast.contains("-- line 49"), "{toast}");
 }
 
 #[test]
