@@ -70,11 +70,6 @@ pub(crate) fn delete_all_sessions(yes: bool, force: bool) {
     use std::collections::BTreeMap;
     use zellij_server::background_jobs::scan_session_list_default_dirs;
 
-    let active_sessions: Vec<String> = get_sessions()
-        .unwrap_or_default()
-        .iter()
-        .map(|s| s.0.clone())
-        .collect();
     let (_live_sessions, resurrectable_map) =
         scan_session_list_default_dirs("", &[], &BTreeMap::new());
     let mut resurrectable_sessions: Vec<(String, Duration)> =
@@ -86,13 +81,12 @@ pub(crate) fn delete_all_sessions(yes: bool, force: bool) {
             }
         }
     }
-    let dead_sessions: Vec<_> = if force {
-        resurrectable_sessions
-    } else {
-        resurrectable_sessions
-            .into_iter()
-            .filter(|(name, _)| !active_sessions.contains(name))
-            .collect()
+    let dead_sessions = match sessions_to_delete(force, resurrectable_sessions, get_sessions) {
+        Ok(dead_sessions) => dead_sessions,
+        Err(kind) => {
+            eprintln!("{}", session_listing_error_message(kind));
+            process::exit(1);
+        },
     };
     if !yes {
         println!("WARNING: this action will delete all resurrectable sessions.");
@@ -109,6 +103,24 @@ pub(crate) fn delete_all_sessions(yes: bool, force: bool) {
         delete_session_impl(&session.0, force);
     }
     process::exit(0);
+}
+
+fn sessions_to_delete(
+    force: bool,
+    resurrectable_sessions: Vec<(String, Duration)>,
+    get_active_sessions: impl FnOnce() -> Result<Vec<(String, Duration)>, std::io::ErrorKind>,
+) -> Result<Vec<(String, Duration)>, std::io::ErrorKind> {
+    if force {
+        return Ok(resurrectable_sessions);
+    }
+    let active_sessions: Vec<String> = get_active_sessions()?
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    Ok(resurrectable_sessions
+        .into_iter()
+        .filter(|(name, _)| !active_sessions.contains(name))
+        .collect())
 }
 
 pub(crate) fn kill_session(target_session: &Option<String>) {
@@ -1126,5 +1138,48 @@ fn format_duration(duration_us: i64) -> String {
         format!("{:.1}m", secs / 60.0)
     } else {
         format!("{:.1}h", secs / 3600.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sessions_to_delete;
+    use std::{cell::Cell, io, time::Duration};
+
+    fn session(name: &str) -> (String, Duration) {
+        (name.to_owned(), Duration::default())
+    }
+
+    #[test]
+    fn session_deletion_fails_when_live_session_discovery_fails() {
+        let result = sessions_to_delete(false, vec![session("dead")], || {
+            Err(io::ErrorKind::PermissionDenied)
+        });
+
+        assert_eq!(result.unwrap_err(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn session_deletion_excludes_live_sessions() {
+        let sessions = sessions_to_delete(false, vec![session("live"), session("dead")], || {
+            Ok(vec![session("live")])
+        })
+        .unwrap();
+
+        assert_eq!(sessions, vec![session("dead")]);
+    }
+
+    #[test]
+    fn forced_session_deletion_skips_live_session_discovery() {
+        let discovery_called = Cell::new(false);
+        let eligible = vec![session("live"), session("dead")];
+        let sessions = sessions_to_delete(true, eligible.clone(), || {
+            discovery_called.set(true);
+            Ok(vec![session("live")])
+        })
+        .unwrap();
+
+        assert_eq!(sessions, eligible);
+        assert!(!discovery_called.get());
     }
 }
