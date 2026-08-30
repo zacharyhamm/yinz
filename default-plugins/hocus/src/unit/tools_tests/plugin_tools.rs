@@ -367,6 +367,18 @@ fn a_long_source_is_shown_in_full_in_the_confirmation() {
 }
 
 #[test]
+fn a_long_source_is_cut_short_in_the_toast() {
+    let source: Vec<String> = (0..50).map(|n| format!("-- line {n}")).collect();
+    let toast = confirmation_toast(&call(
+        "plugin_write",
+        &serde_json::json!({ "name": "keys", "source": source.join("\n") }).to_string(),
+    ));
+    assert!(toast.contains("-- line 0"), "{toast}");
+    assert!(toast.contains("30 more lines"), "{toast}");
+    assert!(!toast.contains("-- line 49"), "{toast}");
+}
+
+#[test]
 fn the_permissions_a_source_asks_for_are_read_off_it() {
     let source = r#"
         local zellij = require("zellij")
