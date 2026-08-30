@@ -511,20 +511,24 @@ impl Reconnector for RemoteHosts {
 /// Reject a remote host that `ssh` would read as an option rather than a
 /// destination.
 ///
-/// `host` reaches `ssh`'s argv in option position, and there is no portable
-/// `--` end-of-options terminator that also works for the destination, so a
-/// value like `-oProxyCommand=sh -c '…'` would run an arbitrary *local* command.
-/// The leading-`-` check is the load-bearing one: ssh's option parsing only
-/// reads a *leading* `-` as an option, so nothing later in the string can turn
-/// a destination into one. Whitespace and control characters are refused as
-/// defense in depth. Everything else is left to ssh itself, because a
-/// destination can be `[user@]host`, an ssh_config alias (which may contain
-/// `/`, `+`, `~`, …), or an `ssh://user@host:port` URI — the only inline form
-/// that carries a port, since this module never splits `host:port` into `-p`.
-/// The host is passed as one argv element, never through a shell, so shell
-/// metacharacters are inert. Every ssh spawn in this module funnels through
-/// `bootstrap` and `start_forward`, so validating at the top of both covers the
-/// open and the reconnect paths alike.
+/// A value like `-oProxyCommand=sh -c '…'` in destination position would run an
+/// arbitrary *local* command. Two controls stop it. The structural one is that
+/// both spawn sites put `--` immediately before the host: OpenSSH (which this
+/// module already requires, for ControlMaster/ControlPath) accepts
+/// `ssh [opts] -- [user@]host|ssh://… [cmd]` and then refuses `-o…` as a
+/// hostname. This check is the second: it rejects the option lookalike up front
+/// with an error that names the reason, rather than ssh's "hostname contains
+/// invalid characters", and covers any future spawn site that forgets the `--`.
+/// ssh's option parsing only reads a *leading* `-` as an option, so nothing
+/// later in the string can turn a destination into one. Whitespace and control
+/// characters are refused as defense in depth. Everything else is left to ssh
+/// itself, because a destination can be `[user@]host`, an ssh_config alias
+/// (which may contain `/`, `+`, `~`, …), or an `ssh://user@host:port` URI — the
+/// only inline form that carries a port, since this module never splits
+/// `host:port` into `-p`. The host is passed as one argv element, never through
+/// a shell, so shell metacharacters are inert. Every ssh spawn in this module
+/// goes through `bootstrap` — `start_forward` calls it first — so validating
+/// there covers the open and the reconnect paths alike.
 fn validate_ssh_host(host: &str) -> Result<()> {
     if host.is_empty() {
         return Err(anyhow!("refusing to ssh: the remote host is empty"));
@@ -554,6 +558,8 @@ pub fn bootstrap(host: &str) -> Result<BrokerEndpoint> {
     check_socket_path_length(&control_path(host), SSH_CONTROL_PATH_RENAME_MARGIN)?;
     let mut child = Command::new("ssh")
         .args(ssh_common_args(host))
+        // End of options: see `validate_ssh_host`.
+        .arg("--")
         .arg(host)
         .arg("zellij")
         .arg("--pty-broker")
@@ -662,7 +668,7 @@ fn ssh_forward_args() -> Vec<String> {
 }
 
 fn start_forward(instance: &str, host: &str) -> Result<HostForward> {
-    validate_ssh_host(host)?;
+    // `bootstrap` validates the host before anything is spawned.
     let endpoint = bootstrap(host)?;
 
     let dir = ensure_local_socket_dir()?;
@@ -680,6 +686,8 @@ fn start_forward(instance: &str, host: &str) -> Result<HostForward> {
         .arg("-T")
         .arg("-L")
         .arg(format!("{}:{}", local_socket.display(), endpoint.socket))
+        // End of options: see `validate_ssh_host`.
+        .arg("--")
         .arg(host)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
