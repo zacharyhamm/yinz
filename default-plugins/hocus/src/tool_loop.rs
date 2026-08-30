@@ -1954,6 +1954,7 @@ impl State {
         if announced {
             self.apply_overlay_geometry();
         }
+        self.selected_agent = selection.pane_id;
         self.selected_run = selection.run_id.or_else(|| {
             selection
                 .pane_id
@@ -1993,6 +1994,12 @@ impl State {
         }
         self.archived_runs
             .sort_by_key(|run| std::cmp::Reverse(run.started_at_ms));
+        if let Some(run) = self
+            .selected_agent
+            .and_then(|pane_id| self.active_runs.get(&pane_id))
+        {
+            self.selected_run = Some(run.id.clone());
+        }
         if let (Some(plugin_id), Some(run_id)) = (self.agents_plugin, self.selected_run.as_deref())
         {
             self.send_run_detail(plugin_id, run_id);

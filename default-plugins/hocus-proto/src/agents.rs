@@ -1281,7 +1281,8 @@ pub fn run_box(run: &AgentRun, width: usize, height: usize, scroll: usize) -> Op
             crate::text::wrap(&format!("{}: {}", entry.kind.label(), entry.text), inner)
         })
         .collect();
-    let end = history.len().saturating_sub(scroll.min(history.len()));
+    let max_scroll = history.len().saturating_sub(history_room);
+    let end = history.len().saturating_sub(scroll.min(max_scroll));
     let start = end.saturating_sub(history_room);
     let body: Vec<String> = pinned
         .into_iter()
@@ -2837,6 +2838,41 @@ mod tests {
             run_entry(&result),
             Some((RunEntryKind::Result, "Implemented and tested.".to_owned()))
         );
+    }
+
+    #[test]
+    fn run_history_scrolling_stops_at_the_oldest_visible_page() {
+        let mut run = AgentRun {
+            id: "claude:session-1".to_owned(),
+            pane_id: 7,
+            session_id: "session-1".to_owned(),
+            kind: "claude".to_owned(),
+            cwd: None,
+            started_at_ms: 10,
+            ended_at_ms: None,
+            outcome: RunOutcome::Active,
+            revision: 6,
+            summarized_revision: 0,
+            summary: None,
+            entries: ["oldest", "second", "third", "fourth", "fifth", "newest"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, text)| RunEntry {
+                    revision: index as u64 + 1,
+                    kind: RunEntryKind::Step,
+                    text: text.to_owned(),
+                })
+                .collect(),
+        };
+
+        let page = run_box(&run, 40, 6, usize::MAX).expect("the oldest full page");
+        assert!(page.iter().any(|line| line.contains("oldest")));
+        assert!(page.iter().any(|line| line.contains("fourth")));
+        assert!(!page.iter().any(|line| line.contains("fifth")));
+
+        run.entries.truncate(1);
+        let short = run_box(&run, 40, 6, usize::MAX).expect("a short run remains visible");
+        assert!(short.iter().any(|line| line.contains("oldest")));
     }
 
     #[test]

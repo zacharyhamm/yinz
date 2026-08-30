@@ -498,6 +498,7 @@ pub struct State {
     archived_runs: Vec<agents::AgentRunHeader>,
     archive_offset: u32,
     archive_more: bool,
+    selected_agent: Option<u32>,
     selected_run: Option<String>,
     /// Highest `seq` merged from hocus-agentd. A daemon reload restarts its
     /// counter, so re-subscribing resets this watermark.
@@ -813,6 +814,7 @@ impl Default for State {
             archived_runs: Vec::new(),
             archive_offset: 0,
             archive_more: false,
+            selected_agent: None,
             selected_run: None,
             agent_seq: 0,
             mono_ms: 0,
