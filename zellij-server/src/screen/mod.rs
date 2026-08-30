@@ -2988,7 +2988,7 @@ impl Screen {
             }
             if let Some(hold_for_command) = hold_for_command {
                 let is_first_run = true;
-                tab.hold_pane(new_pane_id, None, is_first_run, hold_for_command)
+                let _ = tab.hold_pane(new_pane_id, None, is_first_run, hold_for_command);
             }
         };
         match client_id_tab_index_or_pane_id {
@@ -3055,11 +3055,15 @@ impl Screen {
             );
             return;
         };
-        let Some(extracted_pane_from_other_tab) = self
+        let Some((extracted_pane_from_other_tab, carried_respawn)) = self
             .tabs
             .iter_mut()
             .find(|(_, t)| t.position == tab_index_of_existing_pane)
-            .and_then(|(_, t)| t.extract_pane(pane_id_of_existing_pane, true))
+            .and_then(|(_, t)| {
+                let carried_respawn = t.take_pending_respawn(pane_id_of_existing_pane);
+                t.extract_pane(pane_id_of_existing_pane, true)
+                    .map(|pane| (pane, carried_respawn))
+            })
         else {
             log::error!("Failed to find pane");
             return;
@@ -3081,6 +3085,10 @@ impl Screen {
                     extracted_pane_from_other_tab,
                     None,
                 );
+            }
+            if let Some(entry) = carried_respawn {
+                tab.1
+                    .restore_pending_respawn(pane_id_of_existing_pane, entry);
             }
         }
         let _ = self.log_and_report_session_state();
@@ -3487,6 +3495,7 @@ impl Screen {
         }
 
         let mut panes_to_stack = vec![];
+        let mut pending_respawns_to_restore: Vec<(PaneId, (RunCommand, bool))> = vec![];
         let target_tab_has_room_for_stack = self
             .tabs
             .get_mut(&root_tab_id)
@@ -3505,12 +3514,20 @@ impl Screen {
             }
             for pane_id in &pane_ids_to_stack {
                 if tab.has_pane_with_pid(&pane_id) {
+                    let carried_respawn = tab.take_pending_respawn(*pane_id);
                     match tab.extract_pane(*pane_id, false) {
                         Some(pane) => {
                             panes_to_stack.push(pane);
+                            if let Some(entry) = carried_respawn {
+                                pending_respawns_to_restore.push((*pane_id, entry));
+                            }
                         },
                         None => {
                             log::error!("Failed to extract pane: {:?}", pane_id);
+                            if let Some(entry) = carried_respawn {
+                                // extraction failed after all - put it back where it came from
+                                tab.restore_pending_respawn(*pane_id, entry);
+                            }
                         },
                     }
                 }
@@ -3519,6 +3536,11 @@ impl Screen {
         self.tabs
             .get_mut(&root_tab_id)
             .map(|t| t.stack_panes(root_pane_id, panes_to_stack));
+        if let Some(dest) = self.tabs.get_mut(&root_tab_id) {
+            for (pane_id, entry) in pending_respawns_to_restore {
+                dest.restore_pending_respawn(pane_id, entry);
+            }
+        }
         last_pane_id.copied()
     }
     /// Move or resize overlays where they already are, in the overlay collection.
@@ -4400,9 +4422,11 @@ fn replay_pending_plugin_events(
                 let is_first_run = false;
                 let mut found = false;
                 let mut pane_is_agent = false;
+                let mut queued_respawn = None;
                 for tab in screen.tabs.values_mut() {
                     if tab.get_all_pane_ids().contains(&pane_id) {
-                        tab.hold_pane(pane_id, exit_status, is_first_run, run_command.clone());
+                        queued_respawn =
+                            tab.hold_pane(pane_id, exit_status, is_first_run, run_command.clone());
                         found = true;
                         pane_is_agent = tab.pane_is_agent(pane_id);
                         break;
@@ -4411,6 +4435,13 @@ fn replay_pending_plugin_events(
                 if found {
                     screen.fire_pane_exit_hook(pane_id, exit_status, &run_command, true);
                     screen.fire_agent_exit_hook(pane_id, exit_status, &run_command, pane_is_agent);
+                    if let Some((terminal_pane_id, run_command, keep_scrollback)) = queued_respawn {
+                        screen.run_command_in_pane_with_id(
+                            terminal_pane_id,
+                            run_command,
+                            keep_scrollback,
+                        );
+                    }
                 }
                 if !found {
                     log::error!(

@@ -125,6 +125,94 @@ fn a_second_replacement_wins_over_a_stashed_one() {
 }
 
 #[test]
+fn a_stashed_replacement_survives_a_cross_tab_pane_move() {
+    // The pane is moved to another tab while its replacement is still stashed (the
+    // pane's own command has not exited yet) - the stash must travel with the pane, or
+    // the replacement is silently lost in the tab it left.
+    let size = Size { cols: 80, rows: 20 };
+    let mut mock_screen = MockScreen::new(size);
+    let pty_receiver = mock_screen.pty_receiver.take().unwrap();
+    let screen_thread = mock_screen.run(None, vec![]);
+    let client_id = mock_screen.main_client_id;
+
+    // pane 2 is created in tab 0
+    let _ = mock_screen.to_screen.send(new_pane(2));
+    // A second tab, applied against its own stable id (unlike `MockScreen::new_tab`,
+    // which always applies to tab 0) so it is not left `is_pending` forever.
+    let second_tab_index = 1;
+    let _ = mock_screen.to_screen.send(ScreenInstruction::NewTab(
+        None,
+        None,
+        Some(TiledPaneLayout::default()),
+        vec![],
+        None,
+        (Some(vec![]), Some(vec![])),
+        None,
+        false,
+        true,
+        client_id,
+        None,
+    ));
+    let _ = mock_screen.to_screen.send(ScreenInstruction::ApplyLayout(
+        TiledPaneLayout::default(),
+        vec![],
+        vec![(0, None)],
+        vec![],
+        HashMap::new(),
+        second_tab_index,
+        true,
+        client_id,
+        None,
+        None,
+    ));
+    // explicitly re-focus pane 2 (in tab 0) rather than relying on whichever pane
+    // creation last happened to leave focused
+    let _ = mock_screen
+        .to_screen
+        .send(ScreenInstruction::FocusPaneWithId(
+            PaneId::Terminal(2),
+            false,
+            false,
+            client_id,
+            None,
+        ));
+    // pane 2's command is still running - this stashes into tab 0's
+    // pending_command_respawns rather than respawning immediately
+    let _ = mock_screen
+        .to_screen
+        .send(ScreenInstruction::RunCommandInPane(
+            2,
+            step_command("step2", "2"),
+            true,
+        ));
+    // move the active pane (2) from tab 0 into tab 1
+    let _ = mock_screen
+        .to_screen
+        .send(ScreenInstruction::BreakPaneRight(client_id, None));
+    // now the exit for pane 2's original command lands - wherever the pane now lives
+    let _ = mock_screen
+        .to_screen
+        .send(hold(2, step_command("step1", "1")));
+
+    mock_screen.teardown(vec![screen_thread]);
+    let respawns: Vec<RunCommand> = pty_receiver
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PtyInstruction::ReRunCommandInPane(_, run_command, _) => Some(run_command),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        respawns
+            .iter()
+            .map(|command| command.command.clone())
+            .collect::<Vec<_>>(),
+        vec![PathBuf::from("step2")],
+        "the stashed replacement follows the pane into the tab it was moved to"
+    );
+}
+
+#[test]
 fn closing_the_pane_drops_a_stashed_replacement() {
     let respawns = respawns_sent_to_pty(vec![
         new_pane(2),
