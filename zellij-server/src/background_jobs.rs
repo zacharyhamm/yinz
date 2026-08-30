@@ -7,10 +7,10 @@ use std::str::FromStr;
 use zellij_utils::data::{Event, HttpVerb, LayoutInfo, SessionInfo};
 use zellij_utils::errors::{prelude::*, BackgroundJobContext, ContextType};
 use zellij_utils::input::layout::RunPlugin;
+use zellij_utils::ipc::MAX_IPC_FRAME_LEN;
 
 use futures_lite::io::AsyncReadExt;
 use isahc::prelude::*;
-use isahc::AsyncReadResponseExt;
 use isahc::{config::RedirectPolicy, HttpClient, Request};
 
 use std::collections::{BTreeMap, HashMap};
@@ -209,13 +209,16 @@ static SESSION_METADATA_WRITE_INTERVAL_MS: u64 = 1000;
 static UPDATE_AND_REPORT_CWDS_INTERVAL_MS: u64 = 1000;
 static DEFAULT_SERIALIZATION_INTERVAL: u64 = 60000;
 static REPAINT_DELAY_MS: u64 = 10;
-/// no web request gets a total cap - a long generation or a large download is legitimate - but a
-/// connection that stops producing bytes for this long is reaped
+/// Successful streamed responses have no total cap - a long generation or a large download is
+/// legitimate - but a connection that stops producing bytes for this long is reaped. Responses
+/// buffered in host memory use `MAX_BUFFERED_WEB_RESPONSE_BYTES` instead.
 static WEB_REQUEST_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 /// the idle timeout above is a transfer-rate guard and does not cover connection setup, so a
 /// blackholed host needs its own bound
 static WEB_REQUEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const WEB_REQUEST_STREAM_CHUNK_SIZE: usize = 8192;
+const MAX_WEB_REQUEST_REDIRECTS: usize = 10;
+const MAX_BUFFERED_WEB_RESPONSE_BYTES: usize = MAX_IPC_FRAME_LEN;
 /// How long a streamed byte may wait to be joined by the ones behind it.
 ///
 /// A token stream comes off the socket in ~50 small reads a second. Forwarding each as its own
@@ -280,7 +283,9 @@ pub(crate) fn background_jobs_main(
     let http_client = HttpClient::builder()
         .connect_timeout(WEB_REQUEST_CONNECT_TIMEOUT)
         // the idle timeout is per-request, in send_web_request
-        .redirect_policy(RedirectPolicy::Follow)
+        // Redirects are followed by send_web_request so every target can be checked before curl
+        // sees it.
+        .redirect_policy(RedirectPolicy::None)
         .build()
         .ok();
     // We needn't do anything with the runtime, but it should exist at this point.
@@ -919,37 +924,88 @@ pub(crate) fn background_jobs_main(
     }
 }
 
-/// Build and send a web request. Buffered and streamed requests are sent identically - see
-/// `WEB_REQUEST_IDLE_TIMEOUT` for why neither gets a total cap.
+fn web_url(url: &str) -> Result<url::Url> {
+    let url = url::Url::parse(url).with_context(|| format!("invalid web request URL: {url}"))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err(anyhow!(
+            "web requests only support http and https URLs: {url}"
+        ));
+    }
+    Ok(url)
+}
+
+fn scrub_redirect_headers(headers: &mut BTreeMap<String, String>) {
+    headers.retain(|name, _| {
+        !matches!(
+            name.to_ascii_lowercase().as_str(),
+            "authorization" | "cookie" | "cookie2" | "proxy-authorization" | "www-authenticate"
+        )
+    });
+}
+
+/// Build and send a web request, validating every redirect before curl sees it.
 async fn send_web_request(
     url: String,
-    verb: HttpVerb,
-    headers: BTreeMap<String, String>,
-    body: Vec<u8>,
+    mut verb: HttpVerb,
+    mut headers: BTreeMap<String, String>,
+    mut body: Vec<u8>,
     http_client: HttpClient,
     proxy: Option<String>,
-) -> Result<isahc::Response<isahc::AsyncBody>, isahc::Error> {
-    let mut request = match verb {
-        HttpVerb::Get => Request::get(url),
-        HttpVerb::Post => Request::post(url),
-        HttpVerb::Put => Request::put(url),
-        HttpVerb::Delete => Request::delete(url),
-    };
-    for (header, value) in headers {
-        request = request.header(header.as_str(), value);
-    }
-    if let Some(proxy) = proxy {
-        match proxy.parse::<isahc::http::Uri>() {
-            Ok(uri) => request = request.proxy(Some(uri)),
-            Err(e) => log::error!("Ignoring invalid web request proxy {:?}: {}", proxy, e),
+) -> Result<isahc::Response<isahc::AsyncBody>> {
+    let mut url = web_url(&url)?;
+    for redirects_followed in 0..=MAX_WEB_REQUEST_REDIRECTS {
+        let mut request = match verb {
+            HttpVerb::Get => Request::get(url.as_str()),
+            HttpVerb::Post => Request::post(url.as_str()),
+            HttpVerb::Put => Request::put(url.as_str()),
+            HttpVerb::Delete => Request::delete(url.as_str()),
+        };
+        for (header, value) in &headers {
+            request = request.header(header.as_str(), value);
         }
+        if let Some(proxy) = &proxy {
+            match proxy.parse::<isahc::http::Uri>() {
+                Ok(uri) => request = request.proxy(Some(uri)),
+                Err(e) => log::error!("Ignoring invalid web request proxy {:?}: {}", proxy, e),
+            }
+        }
+        request = request.low_speed_timeout(1, WEB_REQUEST_IDLE_TIMEOUT);
+        let response = if body.is_empty() {
+            http_client.send_async(request.body(())?).await?
+        } else {
+            http_client.send_async(request.body(body.clone())?).await?
+        };
+
+        let location = if response.status().is_redirection() {
+            response
+                .headers()
+                .get(isahc::http::header::LOCATION)
+                .and_then(|location| location.to_str().ok())
+                .and_then(|location| url.join(location).ok())
+        } else {
+            None
+        };
+        let Some(next_url) = location else {
+            return Ok(response);
+        };
+        if redirects_followed == MAX_WEB_REQUEST_REDIRECTS {
+            return Err(anyhow!(
+                "web request exceeded {MAX_WEB_REQUEST_REDIRECTS} redirects"
+            ));
+        }
+        let next_url = web_url(next_url.as_str())?;
+
+        if url.origin() != next_url.origin() {
+            scrub_redirect_headers(&mut headers);
+        }
+        let status = response.status().as_u16();
+        if status == 303 || (matches!(status, 301 | 302) && verb == HttpVerb::Post) {
+            verb = HttpVerb::Get;
+            body.clear();
+        }
+        url = next_url;
     }
-    request = request.low_speed_timeout(1, WEB_REQUEST_IDLE_TIMEOUT);
-    if !body.is_empty() {
-        http_client.send_async(request.body(body)?).await
-    } else {
-        http_client.send_async(request.body(())?).await
-    }
+    unreachable!()
 }
 
 fn response_headers(response: &isahc::Response<isahc::AsyncBody>) -> BTreeMap<String, String> {
@@ -973,12 +1029,28 @@ async fn buffered_web_request(
     body: Vec<u8>,
     http_client: HttpClient,
     proxy: Option<String>,
-) -> Result<(u16, BTreeMap<String, String>, Vec<u8>), isahc::Error> {
+) -> Result<(u16, BTreeMap<String, String>, Vec<u8>)> {
     let mut res = send_web_request(url, verb, headers, body, http_client, proxy).await?;
     let status_code = res.status().as_u16();
     let headers = response_headers(&res);
-    let body = res.bytes().await?;
+    let body = read_bounded_web_body(res.body_mut(), MAX_BUFFERED_WEB_RESPONSE_BYTES).await?;
     Ok((status_code, headers, body))
+}
+
+async fn read_bounded_web_body<R>(body: &mut R, limit: usize) -> Result<Vec<u8>>
+where
+    R: futures_lite::io::AsyncRead + Unpin,
+{
+    let mut bytes = vec![];
+    body.take(limit.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)
+        .await?;
+    if bytes.len() > limit {
+        return Err(anyhow!(
+            "web response exceeded the {limit}-byte buffered-body limit"
+        ));
+    }
+    Ok(bytes)
 }
 
 /// Sends the leading `WebRequestResult` and then coalesced `WebRequestStreamChunk`s from the
@@ -1048,13 +1120,14 @@ async fn streamed_web_request(
     let headers = response_headers(&res);
     if !(200..300).contains(&status) {
         // an error response is not a stream - buffer it whole so the plugin gets the body
-        let (body, error) = match res.bytes().await {
-            Ok(body) => (body, None),
-            Err(e) => {
-                let error = e.to_string();
-                (error.clone().into_bytes(), Some(error))
-            },
-        };
+        let (body, error) =
+            match read_bounded_web_body(res.body_mut(), MAX_BUFFERED_WEB_RESPONSE_BYTES).await {
+                Ok(body) => (body, None),
+                Err(e) => {
+                    let error = e.to_string();
+                    (error.clone().into_bytes(), Some(error))
+                },
+            };
         send_event(Event::WebRequestResult(status, headers, body, context));
         return finished(error);
     }
@@ -1615,6 +1688,147 @@ mod web_request_stream_tests {
             let _ = socket.flush().await;
         });
         url
+    }
+
+    async fn serve_redirect(location: String) -> (String, tokio::sync::oneshot::Receiver<Vec<u8>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let (request_tx, request_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                match socket.read(&mut byte).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => request.push(byte[0]),
+                }
+            }
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            socket.flush().await.unwrap();
+            drop(socket);
+
+            let (mut socket, _) = listener.accept().await.unwrap();
+            request.clear();
+            while !request.ends_with(b"\r\n\r\n") {
+                match socket.read(&mut byte).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => request.push(byte[0]),
+                }
+            }
+            let _ = request_tx.send(request);
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nredirected")
+                .await
+                .unwrap();
+        });
+        (url, request_rx)
+    }
+
+    #[test]
+    fn web_requests_accept_only_http_and_https_urls() {
+        assert!(web_url("https://example.com/path").is_ok());
+        assert!(web_url("http://example.com/path").is_ok());
+        assert!(web_url("file://localhost/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn cross_origin_redirects_drop_sensitive_headers() {
+        let mut headers = BTreeMap::from([
+            ("Authorization".to_owned(), "secret".to_owned()),
+            ("Cookie".to_owned(), "secret".to_owned()),
+            ("X-Request-Id".to_owned(), "safe".to_owned()),
+        ]);
+
+        scrub_redirect_headers(&mut headers);
+
+        assert_eq!(
+            headers,
+            BTreeMap::from([("X-Request-Id".to_owned(), "safe".to_owned())])
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_http_redirect_to_a_file_url_is_rejected() {
+        let (url, _) = serve_redirect("file://localhost/etc/passwd".to_owned()).await;
+        let error = buffered_web_request(
+            url,
+            HttpVerb::Get,
+            BTreeMap::new(),
+            vec![],
+            HttpClient::new().unwrap(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("web requests only support http and https"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_safe_http_redirect_is_followed() {
+        let (url, redirected_request) = serve_redirect("/final".to_owned()).await;
+        let (status, _, body) = buffered_web_request(
+            url,
+            HttpVerb::Get,
+            BTreeMap::new(),
+            vec![],
+            HttpClient::new().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(status, 200);
+        assert_eq!(body, b"redirected");
+        assert!(redirected_request
+            .await
+            .unwrap()
+            .starts_with(b"GET /final "));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_302_redirect_only_rewrites_post_to_get() {
+        for (verb, expected_method) in [(HttpVerb::Post, b"GET"), (HttpVerb::Put, b"PUT")] {
+            let (url, redirected_request) = serve_redirect("/final".to_owned()).await;
+            buffered_web_request(
+                url,
+                verb,
+                BTreeMap::new(),
+                vec![],
+                HttpClient::new().unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+
+            assert!(redirected_request
+                .await
+                .unwrap()
+                .starts_with(expected_method));
+        }
+    }
+
+    #[tokio::test]
+    async fn buffered_web_bodies_stop_at_the_limit() {
+        let (mut reader, sender, _reader_is_waiting) = ControlledReader::new();
+        sender.send(b"five!".to_vec()).unwrap();
+        drop(sender);
+
+        let error = read_bounded_web_body(&mut reader, 4).await.unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("exceeded the 4-byte buffered-body limit"));
     }
 
     /// Frames arriving back-to-back are joined into one event rather than one apiece. Every one

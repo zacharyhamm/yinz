@@ -584,8 +584,10 @@ impl<'a> PluginLoader<'a> {
             dir.try_exists().ok().unwrap_or(false)
         });
 
+        // Session environment variables are exposed only through the permission-gated
+        // GetSessionEnvironmentVariables host command. Inheriting them into WASI would let a
+        // plugin bypass that permission through std::env.
         let mut builder = WasiCtxBuilder::new();
-        builder.inherit_env()?;
 
         // Mount directories using the builder
         for (guest_path, host_path) in dirs {
@@ -619,8 +621,10 @@ impl<'a> PluginLoader<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::plugin_cache_key;
+    use super::{plugin_cache_key, PluginLoader};
+    use std::collections::VecDeque;
     use std::path::Path;
+    use std::sync::{Arc, Mutex};
     use zellij_utils::data::PluginTag;
     use zellij_utils::input::layout::{RunPlugin, RunPluginLocation};
     use zellij_utils::input::plugins::PluginConfig;
@@ -646,5 +650,25 @@ mod tests {
             plugin_cache_key(&external, Some(Path::new("one"))),
             plugin_cache_key(&external, Some(Path::new("two")))
         );
+    }
+
+    #[test]
+    fn wasi_context_does_not_inherit_the_server_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugin_url = "fixture-plugin".to_owned();
+        let ctx = PluginLoader::create_wasi_ctx(
+            &dir.path().to_path_buf(),
+            &dir.path().to_path_buf(),
+            &dir.path().to_path_buf(),
+            &dir.path().to_path_buf(),
+            None,
+            &plugin_url,
+            1,
+            Arc::new(Mutex::new(VecDeque::new())),
+            Arc::new(Mutex::new(VecDeque::new())),
+        )
+        .unwrap();
+
+        assert_eq!(ctx.env.number_elements(), 0);
     }
 }
