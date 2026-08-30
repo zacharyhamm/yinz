@@ -349,9 +349,10 @@ mod attaching {
     #[test]
     fn only_one_resume_can_claim_a_detached_pane() {
         let (session, _control, _master) = test_session();
-        assert!(session.try_begin_attach().is_some());
-        assert!(
-            session.try_begin_attach().is_none(),
+        assert!(session.try_begin_attach().is_ok());
+        assert_eq!(
+            session.try_begin_attach(),
+            Err(ResumeRefusal::AlreadyAttached),
             "a second resume claimed a pane that was already being caught up"
         );
     }
@@ -361,13 +362,17 @@ mod attaching {
         let (resumed, _control, _master) = test_session();
         let generation = resumed.attach(wire());
         resumed.detach_if(generation);
-        assert!(resumed.try_begin_attach().is_some());
+        assert!(resumed.try_begin_attach().is_ok());
         assert!(!resumed.try_claim_expired_orphan(Duration::ZERO));
 
         let (reaped, _control, _master) = test_session();
         let generation = reaped.attach(wire());
         reaped.detach_if(generation);
         assert!(reaped.try_claim_expired_orphan(Duration::ZERO));
-        assert!(reaped.try_begin_attach().is_none());
+        assert_eq!(
+            reaped.try_begin_attach(),
+            Err(ResumeRefusal::Unknown),
+            "a reaper-claimed pane must not look transiently attached"
+        );
     }
 }
