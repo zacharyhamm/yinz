@@ -192,6 +192,14 @@ fn hidden_tab_bars_do_not_keep_their_old_click_targets() {
         .unwrap();
 
     ui::render(&mut state, ui::MIN_ROWS - 1, 40);
+    assert_ne!(
+        state.chat_tab_width, 0,
+        "a pane one row short of the whole layout still draws its bar"
+    );
+
+    // Three rows: the title bar is the third thing a short pane gives up, and a
+    // bar nobody can see must not go on taking the clicks it would have taken.
+    ui::render(&mut state, 3, 40);
     assert_eq!(state.chat_tab_width, 0);
     assert!(!state.on_mouse(Mouse::LeftClick(0, first.x + 1)));
 
