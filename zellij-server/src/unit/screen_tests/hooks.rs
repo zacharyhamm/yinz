@@ -199,8 +199,8 @@ fn a_changed_agent_record_reports_pane_and_session_state() {
 
 #[test]
 fn agent_reports_wait_for_adopted_panes_and_tabs() {
-    let fresh = report(AgentState::Waiting, Some("s1"));
-    let serialized = report(AgentState::Busy, Some("s1"));
+    let fresh = report(AgentState::Waiting, Some("fresh"));
+    let serialized = report(AgentState::Busy, Some("serialized"));
 
     let pane = hooks_fired_by_until(
         vec![
@@ -212,7 +212,11 @@ fn agent_reports_wait_for_adopted_panes_and_tabs() {
     );
     assert_eq!(
         points(&pane),
-        vec![HookPoint::AgentStart, HookPoint::AgentWaiting],
+        vec![
+            HookPoint::AgentStart,
+            HookPoint::AgentStart,
+            HookPoint::AgentWaiting,
+        ],
         "the buffered live report must apply after the serialized pane record: {pane:?}"
     );
 
@@ -238,6 +242,7 @@ fn agent_reports_wait_for_adopted_panes_and_tabs() {
                 vec![],
                 vec![(42, None)],
                 vec![],
+                vec![(42, serialized)],
                 HashMap::new(),
                 1,
                 true,
@@ -245,14 +250,34 @@ fn agent_reports_wait_for_adopted_panes_and_tabs() {
                 None,
                 None,
             ),
-            set_agent(42, Some(serialized)),
         ],
         HookPoint::AgentWaiting,
     );
     assert_eq!(
         points(&tab),
-        vec![HookPoint::AgentStart, HookPoint::AgentWaiting],
+        vec![
+            HookPoint::AgentStart,
+            HookPoint::AgentStart,
+            HookPoint::AgentWaiting,
+        ],
         "the buffered live report must apply after the serialized tab record: {tab:?}"
+    );
+}
+
+#[test]
+fn pending_agent_reports_keep_only_the_latest_for_each_pane() {
+    let fired = hooks_fired_by_until(
+        vec![
+            set_agent(2, Some(report(AgentState::Busy, Some("stale")))),
+            set_agent(2, Some(report(AgentState::Waiting, Some("fresh")))),
+            new_pane(2, None),
+        ],
+        HookPoint::AgentWaiting,
+    );
+    assert_eq!(
+        points(&fired),
+        vec![HookPoint::AgentStart, HookPoint::AgentWaiting],
+        "only the latest report for a missing pane should be replayed: {fired:?}"
     );
 }
 

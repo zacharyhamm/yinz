@@ -233,6 +233,7 @@ pub enum ScreenInstruction {
         Vec<FloatingPaneLayout>,
         Vec<(u32, HoldForCommand)>, // new pane pids
         Vec<(u32, HoldForCommand)>, // new floating pane pids
+        Vec<(u32, AgentInfo)>,      // transferred agent records for adopted terminals
         HashMap<RunPluginOrAlias, Vec<u32>>,
         usize, // tab_id - stable identifier from NewTab instruction
         bool,  // should change focus to new tab

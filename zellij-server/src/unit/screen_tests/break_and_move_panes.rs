@@ -75,6 +75,7 @@ pub fn screen_can_break_pane_to_a_new_tab() {
         vec![], // floating_panes_layout
         Default::default(),
         vec![], // floating panes ids
+        vec![], // adopted agents
         Default::default(),
         1,
         true,
@@ -181,6 +182,7 @@ pub fn screen_can_break_floating_pane_to_a_new_tab() {
         floating_panes_layout,
         vec![], // tiled pane ids
         vec![], // floating pane ids
+        vec![], // adopted agents
         Default::default(),
         1,
         true,
@@ -271,6 +273,7 @@ pub fn screen_can_break_multiple_stacked_panes_to_a_new_tab() {
         vec![],
         Default::default(),
         vec![],
+        vec![],
         Default::default(),
         1,
         true,
@@ -352,6 +355,7 @@ pub fn screen_can_break_plugin_pane_to_a_new_tab() {
         vec![], // floating_panes_layout
         Default::default(),
         vec![], // floating panes ids
+        vec![], // adopted agents
         Default::default(),
         1,
         true,
@@ -432,6 +436,7 @@ pub fn screen_can_break_floating_plugin_pane_to_a_new_tab() {
         floating_panes_layout,
         vec![], // tiled pane ids
         vec![], // floating pane ids
+        vec![], // adopted agents
         Default::default(),
         1,
         true,
@@ -500,6 +505,7 @@ pub fn screen_can_move_pane_to_a_new_tab_right() {
         Default::default(),
         vec![], // tiled pane ids
         vec![], // floating pane ids
+        vec![], // adopted agents
         Default::default(),
         1,
         true,
@@ -564,6 +570,7 @@ pub fn screen_can_move_pane_to_a_new_tab_left() {
         Default::default(),
         vec![], // tiled pane ids
         vec![], // floating pane ids
+        vec![], // adopted agents
         Default::default(),
         1,
         true,
