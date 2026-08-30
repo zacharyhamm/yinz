@@ -166,12 +166,12 @@ pub fn plan_mutate(
             };
             let (root, name) = todo_root(&view.projects, args)?;
             let parent_id = args.get("parent_id").and_then(Value::as_u64);
-            let mutations = todos::plan_add(&view.list(), &root, text, parent_id)?;
+            let (mutations, text) = todos::plan_add(&view.list(), &root, text, parent_id)?;
             Ok((
                 mutations,
                 Reply::AddedTodo {
                     project: name,
-                    text: text.to_owned(),
+                    text,
                 },
             ))
         },
@@ -389,12 +389,15 @@ mod tests {
         let out = run_mutate(
             &backend,
             "todo_add",
-            &json!({ "project": "work", "text": "ship it" }),
+            &json!({ "project": "work", "text": " **ship it**\n\t- 日本語\u{1b} " }),
         )
         .expect("added");
         assert_eq!(field(&out, "project"), "work");
-        assert_eq!(field(&out, "text"), "ship it");
+        assert_eq!(field(&out, "text"), "**ship it**\n    - 日本語");
         assert!(field(&out, "id").as_u64().is_some_and(|id| id > 0));
+        let listed =
+            run_query(&backend, "todo_list", &json!({ "project": "work" })).expect("listed");
+        assert_eq!(field(&listed, "items")[0]["text"], field(&out, "text"));
     }
 
     #[test]

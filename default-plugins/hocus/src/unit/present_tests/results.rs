@@ -56,22 +56,20 @@ fn a_spawn_that_only_switched_branch_names_the_branch_alone() {
 
 #[test]
 fn crossing_off_a_todo_names_what_else_it_moved() {
-    let raw = r#"{"project":"h","id":2,"text":"child","done":true,
+    let raw = r#"{"project":"h","id":2,"text":"**child**\n\n- detail","done":true,
         "cascaded":[3,4],"reopened":[]}"#;
     let shown = present(&call("todo_done", "{}"), raw).expect("presented");
-    assert!(
-        shown.starts_with("Crossed off `2` child in h.\n"),
-        "{shown}"
-    );
+    assert!(shown.starts_with("Crossed off `2` in h.\n"), "{shown}");
     assert!(shown.contains("also crossed off: 3, 4"), "{shown}");
     assert!(!shown.contains("also reopened"), "{shown}");
+    assert!(shown.ends_with("\n**child**\n\n- detail\n"), "{shown}");
 }
 
 #[test]
 fn undoing_a_todo_says_reopened_rather_than_crossed_off() {
     let raw = r#"{"project":"h","id":2,"text":"t","done":false}"#;
     let shown = present(&call("todo_done", "{}"), raw).expect("presented");
-    assert!(shown.starts_with("Reopened `2` t in h."), "{shown}");
+    assert_eq!(shown, "Reopened `2` in h.\n\nt\n");
 }
 
 // -- slack and files ----------------------------------------------------

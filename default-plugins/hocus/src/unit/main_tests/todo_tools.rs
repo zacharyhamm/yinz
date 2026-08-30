@@ -25,6 +25,20 @@ fn a_todo_item_lands_under_the_active_project_root() {
 }
 
 #[test]
+fn a_todo_add_returns_and_stores_clean_markdown() {
+    let mut state = state_with_project();
+    let added = todo(
+        &mut state,
+        "todo_add",
+        r#"{"text":" **ship it**\n\t- 日本語\u001b "}"#,
+    );
+
+    let expected = "**ship it**\n    - 日本語";
+    assert_eq!(added["text"], expected);
+    assert_eq!(stored_list(&state, "/work/hocus").items[0].text, expected);
+}
+
+#[test]
 fn a_todo_tool_rejects_a_project_name_it_does_not_know() {
     let mut state = state_with_project();
     assert_eq!(
@@ -70,13 +84,13 @@ fn a_todo_edit_changes_its_text() {
     let edited = todo(
         &mut state,
         "todo_edit",
-        r#"{"id":1,"text":"ship the parser faster"}"#,
+        r#"{"id":1,"text":"**ship it**\n\n- faster\u001b"}"#,
     );
     assert_eq!(edited["id"], 1);
-    assert_eq!(edited["text"], "ship the parser faster");
+    assert_eq!(edited["text"], "**ship it**\n\n- faster");
     assert_eq!(
         stored_list(&state, "/work/hocus").items[0].text,
-        "ship the parser faster"
+        "**ship it**\n\n- faster"
     );
 }
 

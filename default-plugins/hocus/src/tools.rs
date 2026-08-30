@@ -1095,7 +1095,7 @@ pub fn specs() -> Value {
         // `/todo_add {"text": "fix the bug"}`.
         tool(
             "todo_add",
-            "Add a persistent project todo, optionally under a parent.",
+            "Add a persistent Markdown todo, optionally under a parent.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1145,7 +1145,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "todo_edit",
-            "Change a todo item's text.",
+            "Change a todo item's Markdown.",
             json!({
                 "type": "object",
                 "properties": {
