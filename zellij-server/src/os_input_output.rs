@@ -1119,6 +1119,7 @@ impl ServerOsApi for ServerOsInputOutput {
             return Ok((async_reader, None));
         }
 
+        self.pty_backend.clear_terminal_id(terminal_id);
         let (async_reader, child_fd) =
             self.pty_backend
                 .spawn_terminal(run_command, None, quit_cb, terminal_id)?;

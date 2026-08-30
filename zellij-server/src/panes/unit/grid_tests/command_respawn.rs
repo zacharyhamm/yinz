@@ -32,6 +32,17 @@ fn a_preserving_reset_appends_to_history_already_there() {
     );
 }
 
+#[test]
+fn a_preserving_reset_merges_wrapped_rows_into_one_scrollback_line() {
+    let logical_line = "x".repeat(100);
+    let mut grid = create_grid_with_content(&logical_line);
+
+    grid.reset_terminal_state_preserving_scrollback();
+
+    assert_eq!(scrollback_texts(&grid), vec![logical_line]);
+    assert_eq!(grid.lines_above.len(), 1);
+}
+
 /// 30 lines into a 20-row grid: `lines_above` is populated and the viewport is full, so the
 /// pane can be scrolled back the way a user reading a finished step's output would.
 fn grid_with_thirty_lines() -> Grid {

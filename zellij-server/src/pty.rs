@@ -2675,16 +2675,24 @@ impl Pty {
                         }
                     }
                 });
+                let previous_host = self.host_of_pane(&PaneId::Terminal(id));
                 let requested_cwd = run_command.cwd.clone();
-                let (reader, child_pid): (Box<dyn AsyncReader>, Option<u32>) = self
+                let rerun = self
                     .bus
                     .os_input
                     .as_mut()
                     .context("no OS I/O interface found")
                     .and_then(|os_input| {
                         os_input.re_run_command_in_terminal(id, run_command, quit_cb)
-                    })
-                    .with_context(err_context)?;
+                    });
+                if previous_host != self.host_of_pane(&PaneId::Terminal(id)) {
+                    self.forget_terminal_cwd(id);
+                }
+                // Report the backend's post-attempt state before an error becomes the synthetic
+                // exit that lets an originating workflow advance.
+                self.re_report_terminal_host(id);
+                let (reader, child_pid): (Box<dyn AsyncReader>, Option<u32>) =
+                    rerun.with_context(err_context)?;
                 let activity_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let terminal_bytes = async_runtime().spawn({
                     let err_context =
@@ -2717,7 +2725,6 @@ impl Pty {
                         )]))
                         .with_context(err_context)?;
                 }
-                self.re_report_terminal_host(id);
                 Ok(())
             },
             _ => Err(anyhow!("cannot respawn plugin panes")).with_context(err_context),

@@ -173,6 +173,75 @@ fn spawn_and_read_output() {
 
 #[cfg(unix)]
 #[test]
+fn a_local_rerun_terminates_the_previous_remote_transport() {
+    use crate::pty_host::remote::{
+        protocol::{read_frame, ServerToBrokerMsg},
+        RemoteConn,
+    };
+    use std::os::unix::net::UnixStream;
+
+    let server = make_server();
+    let (write_socket, mut broker_peer) = UnixStream::pair().unwrap();
+    let (frame_tx, frame_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = frame_tx.send(read_frame(&mut broker_peer));
+    });
+    let (read_socket, _reader_peer) = UnixStream::pair().unwrap();
+    let remote_command = RunCommand {
+        command: PathBuf::from("remote-step"),
+        remote_host: Some("build-box".to_owned()),
+        ..Default::default()
+    };
+    let connection = Arc::new(
+        RemoteConn::new(
+            write_socket,
+            "build-box".to_owned(),
+            "token".to_owned(),
+            remote_command.clone(),
+            None,
+        )
+        .unwrap(),
+    );
+    let _remote_reader = server
+        .pty_backend
+        .register_remote_terminal(
+            7,
+            connection,
+            read_socket,
+            Box::new(|_, _, _| {}),
+            remote_command,
+        )
+        .unwrap();
+
+    let (_local_reader, child_pid) = server
+        .re_run_command_in_terminal(
+            7,
+            RunCommand {
+                command: PathBuf::from("sleep"),
+                args: vec!["60".to_owned()],
+                ..Default::default()
+            },
+            Box::new(|_, _, _| {}),
+        )
+        .unwrap();
+
+    let frame = frame_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the old broker did not receive a termination frame")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        frame.decode_control::<ServerToBrokerMsg>().unwrap(),
+        ServerToBrokerMsg::Terminate
+    );
+    if let Some(child_pid) = child_pid {
+        server.force_kill(child_pid).unwrap();
+    }
+    server.clear_terminal_id(7).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn tcgetpgrp_returns_foreground_group() {
     use crate::panes::PaneId;
     use zellij_utils::input::command::TerminalAction;

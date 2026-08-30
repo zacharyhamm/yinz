@@ -784,6 +784,22 @@ pub fn display_title_is_bare_hostname_when_no_explicit_title_is_set() {
 }
 
 #[test]
+pub fn changing_the_remote_host_marks_the_pane_for_render() {
+    let mut terminal_pane = make_terminal_pane_for_bell();
+    terminal_pane.set_should_render(false);
+
+    terminal_pane.set_remote_host(Some("myhost".to_owned()));
+    assert!(terminal_pane.should_render());
+
+    terminal_pane.set_should_render(false);
+    terminal_pane.set_remote_host(Some("myhost".to_owned()));
+    assert!(
+        !terminal_pane.should_render(),
+        "an unchanged host is not news"
+    );
+}
+
+#[test]
 pub fn display_title_prefixes_an_osc_title_with_the_hostname() {
     let mut terminal_pane = make_terminal_pane_for_bell();
     terminal_pane.set_remote_host(Some("myhost".to_owned()));

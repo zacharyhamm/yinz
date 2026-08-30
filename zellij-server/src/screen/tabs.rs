@@ -8,8 +8,9 @@ use crate::pty::PtyInstruction;
 use crate::route::NotificationEnd;
 use crate::tab::{AcceptedPane, ExtractedPanePlacement, Pane, SuppressedPanes, Tab};
 use crate::{ClientId, ServerInstruction};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use zellij_utils::data::{Direction, Event, ModeInfo};
+use zellij_utils::input::command::RunCommand;
 
 impl Screen {
     pub(super) fn get_new_tab_id(&self) -> usize {
@@ -179,6 +180,7 @@ impl Screen {
     fn move_suppressed_panes_from_closed_tab(
         &mut self,
         suppressed_panes: SuppressedPanes,
+        pending_respawns: HashMap<PaneId, (RunCommand, bool)>,
     ) -> Result<()> {
         // TODO: this is not entirely accurate, these also sometimes contain a pane who's
         // scrollback is being edited - in this case we need to close it or to move it to the
@@ -190,10 +192,14 @@ impl Screen {
             .next()
             .context("screen contains no tabs")
             .with_context(err_context)?;
-        self.tabs
+        let destination = self
+            .tabs
             .get_mut(&first_tab_index)
-            .with_context(err_context)?
-            .add_suppressed_panes(suppressed_panes);
+            .with_context(err_context)?;
+        destination.add_suppressed_panes(suppressed_panes);
+        for (pane_id, entry) in pending_respawns {
+            destination.restore_pending_respawn(pane_id, entry);
+        }
         Ok(())
     }
 
@@ -226,6 +232,7 @@ impl Screen {
     fn move_overlay_panes_from_closed_tab(
         &mut self,
         overlay_panes: Vec<(ExtractedPanePlacement, Box<dyn Pane>)>,
+        mut pending_respawns: HashMap<PaneId, (RunCommand, bool)>,
         client: Option<ClientId>,
     ) {
         if overlay_panes.is_empty() {
@@ -250,7 +257,11 @@ impl Screen {
                         // has nothing to run out of and this arm is the only one it can reach for
                         // one - `NoRoom` and `LostInAdd` are here for the contract, not because
                         // they are expected
-                        AcceptedPane::Accepted => {},
+                        AcceptedPane::Accepted => {
+                            if let Some(entry) = pending_respawns.remove(&pane_id) {
+                                destination.restore_pending_respawn(pane_id, entry);
+                            }
+                        },
                         AcceptedPane::NoRoom(..) | AcceptedPane::LostInAdd => {
                             log::error!("Tab {destination_tab_id:?} would not take overlay {pane_id:?}; closing it");
                             homeless.push(pane_id);
@@ -575,6 +586,14 @@ impl Screen {
         // tab they are in, and in the future we should probably make them global to screen rather
         // than to each tab) and move them to another tab if there is one
         let suppressed_panes = tab_to_close.extract_suppressed_panes();
+        let suppressed_respawns = suppressed_panes
+            .keys()
+            .filter_map(|pane_id| {
+                tab_to_close
+                    .take_pending_respawn(*pane_id)
+                    .map(|entry| (*pane_id, entry))
+            })
+            .collect();
         for suppressed_pane_id in suppressed_panes.keys() {
             pane_ids.retain(|p| p != suppressed_pane_id);
         }
@@ -592,6 +611,15 @@ impl Screen {
             true => vec![],
             false => tab_to_close.extract_overlay_panes(),
         };
+        let overlay_respawns = overlay_panes
+            .iter()
+            .filter_map(|(_, pane)| {
+                let pane_id = pane.pid();
+                tab_to_close
+                    .take_pending_respawn(pane_id)
+                    .map(|entry| (pane_id, entry))
+            })
+            .collect();
         for (_, overlay_pane) in &overlay_panes {
             let overlay_pane_id = overlay_pane.pid();
             pane_ids.retain(|p| p != &overlay_pane_id);
@@ -642,12 +670,16 @@ impl Screen {
                 .min();
             self.move_clients_from_closed_tab(client_mode_infos_in_closed_tab)
                 .with_context(err_context)?;
-            self.move_suppressed_panes_from_closed_tab(suppressed_panes)
+            self.move_suppressed_panes_from_closed_tab(suppressed_panes, suppressed_respawns)
                 .with_context(err_context)?;
             // After the clients, which is what wrote `overlay_client`'s destination into
             // `active_tab_ids`, and before the resize and the state report below, so the tab they
             // land in is measured and announced with them already in it.
-            self.move_overlay_panes_from_closed_tab(overlay_panes, overlay_client);
+            self.move_overlay_panes_from_closed_tab(
+                overlay_panes,
+                overlay_respawns,
+                overlay_client,
+            );
             let visible_tab_indices: HashSet<usize> =
                 self.active_tab_ids.values().copied().collect();
             for t in self.tabs.values_mut() {
