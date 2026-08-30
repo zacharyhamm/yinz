@@ -3086,9 +3086,11 @@ impl Grid {
     }
     /// `reset_terminal_state`, except what is on screen is scrolled into `lines_above` and the
     /// scrollback survives, so a command respawned in this pane appends to the transcript
-    /// instead of erasing it. Alternate-screen contents are still discarded: the primary
-    /// screen they were hiding is what gets preserved. Images anchored in the preserved lines
-    /// are dropped with the rest of the graphics state; the text remains.
+    /// instead of erasing it. A pane the user scrolled back through keeps the rows below its
+    /// viewport too: the scroll position is normalized first. Alternate-screen contents are
+    /// still discarded: the primary screen they were hiding is what gets preserved. Images
+    /// anchored in the preserved lines are dropped with the rest of the graphics state; the
+    /// text remains.
     pub fn reset_terminal_state_preserving_scrollback(&mut self) {
         if let Some(mut alternate_screen_state) = self.alternate_screen_state.take() {
             if let Some(image_ids_to_reap) = self.sixel_grid.clear() {
@@ -3104,6 +3106,12 @@ impl Grid {
                 &mut self.supports_kitty_keyboard_protocol,
             );
         }
+        // A scrolled-up pane keeps the rows newer than what is on screen in `lines_below`, which
+        // the reset below would drop. Scroll back down first, so the whole transcript is in
+        // `lines_above` + `viewport` by the time we take them. This has to happen after the
+        // alternate screen was swapped back out: `lines_below` belongs to the primary screen
+        // either way, because entering the alternate screen does not clear it.
+        self.reset_viewport();
         let mut preserved_lines = std::mem::take(&mut self.lines_above);
         let mut screen_rows = std::mem::take(&mut self.viewport);
         // Trailing untouched rows are screen padding, not output.
