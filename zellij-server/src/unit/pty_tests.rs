@@ -53,6 +53,7 @@ struct MockOsApi {
     /// Every command handed to `re_run_command_in_terminal`, so a test can see what a respawn
     /// actually asked the OS to run - the `originating_plugin` it carried included.
     rerun_commands: Arc<Mutex<Vec<RunCommand>>>,
+    rerun_failures: Arc<Mutex<std::collections::HashSet<u32>>>,
 }
 
 impl MockOsApi {
@@ -73,10 +74,14 @@ impl MockOsApi {
             release_budgets: Arc::new(Mutex::new(Vec::new())),
             release_delay: Arc::new(Mutex::new(std::time::Duration::ZERO)),
             rerun_commands: Arc::new(Mutex::new(Vec::new())),
+            rerun_failures: Arc::new(Mutex::new(std::collections::HashSet::new())),
         }
     }
     fn rerun_commands(&self) -> Vec<RunCommand> {
         self.rerun_commands.lock().unwrap().clone()
+    }
+    fn fail_rerun_of(&self, terminal_id: u32) {
+        self.rerun_failures.lock().unwrap().insert(terminal_id);
     }
     fn refuse_to_warp(&self, terminal_id: u32, why: &str) {
         self.warp_refusals
@@ -273,11 +278,27 @@ impl ServerOsApi for MockOsApi {
     }
     fn re_run_command_in_terminal(
         &self,
-        _: u32,
+        terminal_id: u32,
         run_command: RunCommand,
         _: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> anyhow::Result<(Box<dyn AsyncReader>, Option<u32>)> {
+        let next_host = run_command.remote_host.clone();
         self.rerun_commands.lock().unwrap().push(run_command);
+        if self.rerun_failures.lock().unwrap().contains(&terminal_id) {
+            self.remote_panes.lock().unwrap().remove(&terminal_id);
+            self.remote_hosts.lock().unwrap().remove(&terminal_id);
+            return Err(anyhow::anyhow!("replacement failed"));
+        }
+        match next_host {
+            Some(host) => {
+                self.remote_panes.lock().unwrap().insert(terminal_id);
+                self.remote_hosts.lock().unwrap().insert(terminal_id, host);
+            },
+            None => {
+                self.remote_panes.lock().unwrap().remove(&terminal_id);
+                self.remote_hosts.lock().unwrap().remove(&terminal_id);
+            },
+        }
         Ok((Box::new(crate::os_input_output::NullAsyncReader), None))
     }
     fn clear_terminal_id(&self, _: u32) -> anyhow::Result<()> {
@@ -1194,6 +1215,89 @@ fn a_respawn_on_the_same_host_reports_it_once_and_never_blips() {
         vec![(7, Some("build-box".to_owned()))],
         "one update naming the host, with no host-less one before it"
     );
+}
+
+#[test]
+fn a_respawn_onto_another_host_clears_the_old_hosts_cwd() {
+    let mock = MockOsApi::new();
+    mock.set_remote_host(7, "old-box");
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
+    pty.terminal_cwds
+        .insert(7, PathBuf::from("/srv/on-old-box"));
+
+    pty.rerun_command_in_pane(
+        PaneId::Terminal(7),
+        RunCommand {
+            command: PathBuf::from("step2"),
+            hold_on_close: true,
+            remote_host: Some("new-box".to_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert!(pty.terminal_cwds.is_empty());
+    assert_eq!(collect_pane_cwd_instructions(&screen_rx), vec![(7, None)]);
+}
+
+#[test]
+fn a_same_host_respawn_keeps_its_cwd_until_the_host_reports_again() {
+    let mock = MockOsApi::new();
+    mock.set_remote_host(7, "build-box");
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
+    pty.terminal_cwds
+        .insert(7, PathBuf::from("/srv/on-build-box"));
+
+    pty.rerun_command_in_pane(
+        PaneId::Terminal(7),
+        RunCommand {
+            command: PathBuf::from("step2"),
+            hold_on_close: true,
+            remote_host: Some("build-box".to_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        pty.terminal_cwds.get(&7),
+        Some(&PathBuf::from("/srv/on-build-box"))
+    );
+    assert!(collect_pane_cwd_instructions(&screen_rx).is_empty());
+}
+
+#[test]
+fn a_failed_host_change_retracts_the_old_host_and_cwd() {
+    let mock = MockOsApi::new();
+    mock.set_remote_host(7, "old-box");
+    mock.fail_rerun_of(7);
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
+    pty.terminal_cwds
+        .insert(7, PathBuf::from("/srv/on-old-box"));
+
+    let result = pty.rerun_command_in_pane(
+        PaneId::Terminal(7),
+        RunCommand {
+            command: PathBuf::from("step2"),
+            hold_on_close: true,
+            remote_host: Some("new-box".to_owned()),
+            ..Default::default()
+        },
+    );
+
+    assert!(result.is_err());
+    assert!(pty.terminal_cwds.is_empty());
+    let mut cwd_updates = Vec::new();
+    let mut host_updates = Vec::new();
+    for (instruction, _) in screen_rx.try_iter() {
+        match instruction {
+            ScreenInstruction::UpdatePaneCwd(id, cwd) => cwd_updates.push((id, cwd)),
+            ScreenInstruction::UpdatePaneHost(id, host) => host_updates.push((id, host)),
+            _ => {},
+        }
+    }
+    assert_eq!(cwd_updates, vec![(7, None)]);
+    assert_eq!(host_updates, vec![(7, None)]);
 }
 
 /// A cwd is a path on one machine. Handing a local pane's cwd to a pane that

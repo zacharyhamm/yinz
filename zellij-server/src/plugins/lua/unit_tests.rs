@@ -3186,7 +3186,8 @@ fn workflow_plugin(options: &str) -> super::LuaPlugin {
           return {{ Terminal = 7 }}
         end
         zellij.run_command_in_pane = function(args)
-          log("run:" .. args.command.path .. ":" .. tostring(args.keep_scrollback))
+          local cwd = args.command.cwd and ":" .. args.command.cwd or ""
+          log("run:" .. args.command.path .. ":" .. tostring(args.keep_scrollback) .. cwd)
         end
         zellij.send_sigint_to_pane_id = function() log("sigint") end
         zellij.send_sigkill_to_pane_id = function() log("sigkill") end
@@ -3281,19 +3282,119 @@ fn cancelling_interrupts_the_running_step_and_reports_cancelled() {
 }
 
 #[test]
+fn a_workflow_inherits_cwd_only_on_the_same_host() {
+    use zellij_utils::data::{PaneInfo, PaneManifest};
+
+    let mut plugin = workflow_plugin(
+        r#"steps = {
+          { path = "local" },
+          { path = "remote-a", remote_host = "build-box", cwd = "inherit" },
+          { path = "remote-b", remote_host = "build-box", cwd = "inherit" },
+          { path = "other-host", remote_host = "deploy-box", cwd = "inherit" },
+        },"#,
+    );
+    let pane_update = |cwd: &str, host: Option<&str>| {
+        let mut manifest = PaneManifest::default();
+        manifest.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                cwd: Some(cwd.to_owned()),
+                host: host.map(str::to_owned),
+                ..Default::default()
+            }],
+        );
+        Event::PaneUpdate(manifest)
+    };
+
+    plugin.update(&pane_update("/local/work", None)).unwrap();
+    plugin.update(&step_exited("1", Some(0))).unwrap();
+    plugin
+        .update(&pane_update("/remote/work", Some("build-box")))
+        .unwrap();
+    plugin.update(&step_exited("2", Some(0))).unwrap();
+    plugin.update(&step_exited("3", Some(0))).unwrap();
+
+    assert_eq!(
+        logged(&mut plugin),
+        "open:local step1=0 run:remote-a:true step2=0 \
+         run:remote-b:true:/remote/work step3=0 run:other-host:true",
+    );
+}
+
+#[test]
+fn denied_cancellation_does_not_advance_or_finish_the_workflow() {
+    let mut plugin = load(
+        r#"
+        local zellij = require("zellij")
+        local M = { done = false }
+        zellij.open_command_pane = function() return { Terminal = 7 } end
+        function M.load()
+          M.wf = zellij.pane_workflow {
+            steps = { { path = "a" } },
+            on_done = function() M.done = true end,
+          }
+        end
+        function M.update(event)
+          if event.name == "key" then M.wf:cancel() end
+          return false
+        end
+        function M.render() return M.wf.status .. ":" .. tostring(M.done) end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+
+    let error = plugin
+        .update(&Event::Key(KeyWithModifier::new(BareKey::Char('c'))))
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("ChangeApplicationState"),
+        "got: {error:#}"
+    );
+    assert_eq!(plugin.render(1, 20).unwrap(), b"running:false");
+}
+
+#[test]
 fn a_step_timeout_escalates_from_sigint_to_sigkill() {
     let mut plugin = workflow_plugin(
         r#"steps = { { path = "a", timeout = 0 }, { path = "b" } }, kill_grace = 0,"#,
     );
+    plugin
+        .update(&Event::CommandPaneOpened(7, workflow_context("1")))
+        .unwrap();
     plugin.update(&Event::Timer(1.0)).unwrap();
     plugin.update(&Event::Timer(1.0)).unwrap();
     assert_eq!(logged(&mut plugin), "open:a sigint sigkill");
-    // The kill lands and the exit event arrives: a timed-out step is a failed step.
-    plugin.update(&step_exited("1", None)).unwrap();
+    // Even a child that handles the signal and exits zero still timed out.
+    plugin.update(&step_exited("1", Some(0))).unwrap();
     assert_eq!(
         logged(&mut plugin),
-        "open:a sigint sigkill step1=nil done:failed"
+        "open:a sigint sigkill step1=0 done:failed"
     );
+}
+
+#[test]
+fn a_queued_steps_timeout_starts_only_when_that_step_does() {
+    let mut plugin = workflow_plugin(
+        r#"steps = { { path = "a" }, { path = "b", timeout = 0 } }, kill_grace = 0,"#,
+    );
+    plugin.update(&step_exited("1", Some(0))).unwrap();
+
+    // A manual rerun of step 1 is ahead of step 2 in the pane. Neither that stale start nor a
+    // timer event may interrupt it on step 2's behalf.
+    plugin
+        .update(&Event::CommandPaneReRun(7, workflow_context("1")))
+        .unwrap();
+    plugin.update(&Event::Timer(1.0)).unwrap();
+    assert_eq!(logged(&mut plugin), "open:a step1=0 run:b:true");
+
+    plugin
+        .update(&Event::CommandPaneReRun(7, workflow_context("2")))
+        .unwrap();
+    plugin.update(&Event::Timer(1.0)).unwrap();
+    assert_eq!(logged(&mut plugin), "open:a step1=0 run:b:true sigint");
 }
 
 #[test]
@@ -3341,6 +3442,35 @@ fn close_on_success_closes_the_pane_after_a_clean_run() {
 }
 
 #[test]
+fn close_on_success_surfaces_a_missing_change_state_permission() {
+    let mut plugin = load(
+        r#"
+        local zellij = require("zellij")
+        local M = { done = false }
+        zellij.open_command_pane = function() return { Terminal = 7 } end
+        function M.load()
+          M.wf = zellij.pane_workflow {
+            steps = { { path = "a" } },
+            close_on_success = true,
+            on_done = function() M.done = true end,
+          }
+        end
+        function M.render() return tostring(M.done) end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+
+    let error = plugin.update(&step_exited("1", Some(0))).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("ChangeApplicationState"),
+        "got: {error:#}"
+    );
+    assert_eq!(plugin.render(1, 5).unwrap(), b"false");
+}
+
+#[test]
 fn a_steps_stdin_is_written_when_the_step_starts() {
     let mut plugin =
         workflow_plugin(r#"steps = { { path = "a", stdin = "secret" }, { path = "b" } },"#);
@@ -3365,6 +3495,53 @@ fn run_command_in_pane_takes_a_numeric_pane_id() {
              context = { step = "2" },
              keep_scrollback = true,
            }"#,
+    );
+}
+
+#[test]
+fn a_remote_replacement_does_not_inherit_the_plugins_cwd() {
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = {}
+        function M.load()
+          zellij.run_command_in_pane {
+            pane_id = 3,
+            command = { path = "remote", remote_host = "build-box" },
+          }
+          zellij.run_command_in_pane {
+            pane_id = 3,
+            command = { path = "local" },
+          }
+          zellij.run_command_in_pane {
+            pane_id = 3,
+            command = { path = "remote-explicit", cwd = "/srv/work", remote_host = "build-box" },
+          }
+        end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.env_mut().plugin_cwd = PathBuf::from("/plugin/cwd");
+    let (screen_tx, screen_rx) = zellij_utils::channels::unbounded();
+    plugin.env_mut().senders.to_screen =
+        Some(zellij_utils::channels::SenderWithContext::new(screen_tx));
+    plugin.load(&BTreeMap::new()).unwrap();
+
+    let cwds: Vec<Option<PathBuf>> = screen_rx
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            crate::screen::ScreenInstruction::RunCommandInPane(_, command, _) => Some(command.cwd),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        cwds,
+        vec![
+            None,
+            Some(PathBuf::from("/plugin/cwd")),
+            Some(PathBuf::from("/srv/work")),
+        ]
     );
 }
 

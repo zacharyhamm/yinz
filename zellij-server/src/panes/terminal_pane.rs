@@ -1274,7 +1274,10 @@ impl Pane for TerminalPane {
         }
     }
     fn set_remote_host(&mut self, host: Option<String>) {
-        self.remote_host = host;
+        if self.remote_host != host {
+            self.remote_host = host;
+            self.set_should_render(true);
+        }
     }
     fn agent_info(&self) -> Option<&AgentInfo> {
         self.agent.as_ref()

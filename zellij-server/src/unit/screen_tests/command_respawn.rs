@@ -213,6 +213,62 @@ fn a_stashed_replacement_survives_a_cross_tab_pane_move() {
 }
 
 #[test]
+fn a_suppressed_pane_replacement_survives_its_tab_closing() {
+    let mut screen = screen_with_a_pane_replaced_in_place();
+    screen
+        .tabs
+        .get_mut(&0)
+        .unwrap()
+        .restore_pending_respawn(PaneId::Terminal(1), (step_command("step2", "2"), true));
+
+    screen.close_tab_by_id(0).unwrap();
+    let (_, replacement, keep_scrollback) = screen
+        .tabs
+        .get_mut(&1)
+        .unwrap()
+        .hold_pane(
+            PaneId::Terminal(1),
+            Some(0),
+            false,
+            step_command("step1", "1"),
+        )
+        .expect("the replacement should follow the suppressed pane");
+
+    assert_eq!(replacement.command, PathBuf::from("step2"));
+    assert!(keep_scrollback);
+}
+
+#[test]
+fn an_overlay_pane_replacement_survives_its_tab_closing() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    open_floating_pane(&mut screen, 0, 7, "overlay", true);
+    screen
+        .tabs
+        .get_mut(&0)
+        .unwrap()
+        .restore_pending_respawn(PaneId::Terminal(7), (step_command("step2", "2"), true));
+
+    screen.close_tab_by_id(0).unwrap();
+    let (_, replacement, keep_scrollback) = screen
+        .tabs
+        .get_mut(&1)
+        .unwrap()
+        .hold_pane(
+            PaneId::Terminal(7),
+            Some(0),
+            false,
+            step_command("step1", "1"),
+        )
+        .expect("the replacement should follow the overlay pane");
+
+    assert_eq!(replacement.command, PathBuf::from("step2"));
+    assert!(keep_scrollback);
+}
+
+#[test]
 fn closing_the_pane_drops_a_stashed_replacement() {
     let respawns = respawns_sent_to_pty(vec![
         new_pane(2),
@@ -250,19 +306,29 @@ fn only_a_changed_pane_host_is_broadcast() {
     screen
         .set_pane_host(1, Some("build-box".to_owned()))
         .unwrap();
+    let jobs = drain_background_jobs(&background_jobs);
     assert_eq!(
-        session_reports(&drain_background_jobs(&background_jobs)),
+        session_reports(&jobs),
         1,
         "learning that a pane runs elsewhere is news"
+    );
+    assert!(
+        jobs.contains(&BackgroundJob::RenderToClients),
+        "a changed host repaints its pane title: {jobs:?}"
     );
 
     screen
         .set_pane_host(1, Some("build-box".to_owned()))
         .unwrap();
+    let jobs = drain_background_jobs(&background_jobs);
     assert_eq!(
-        session_reports(&drain_background_jobs(&background_jobs)),
+        session_reports(&jobs),
         0,
         "a respawn on the same host is not"
+    );
+    assert!(
+        !jobs.contains(&BackgroundJob::RenderToClients),
+        "an unchanged host needs no repaint: {jobs:?}"
     );
 
     screen.set_pane_host(1, None).unwrap();

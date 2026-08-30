@@ -3080,7 +3080,12 @@ fn run_command_in_pane(
     let cwd = command_to_run
         .cwd
         .map(|cwd| translate_plugin_path(env, cwd))
-        .or_else(|| Some(env.plugin_cwd.clone()));
+        .or_else(|| {
+            command_to_run
+                .remote_host
+                .is_none()
+                .then(|| env.plugin_cwd.clone())
+        });
     let run_command = RunCommand {
         command: command_to_run.path,
         args: command_to_run.args,

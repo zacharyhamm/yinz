@@ -3119,14 +3119,15 @@ impl Grid {
             screen_rows.pop_back();
         }
         self.reset_terminal_state();
-        for row in screen_rows {
-            bounded_push(
-                &mut preserved_lines,
-                &mut self.sixel_grid,
-                &mut self.kitty_grid,
-                row,
-            );
-        }
+        let screen_row_count = screen_rows.len();
+        transfer_rows_from_viewport_to_lines_above(
+            &mut screen_rows,
+            &mut preserved_lines,
+            &mut self.sixel_grid,
+            &mut self.kitty_grid,
+            screen_row_count,
+            self.width,
+        );
         self.lines_above = preserved_lines;
         self.scrollback_buffer_lines = self.recalculate_scrollback_buffer_count();
     }

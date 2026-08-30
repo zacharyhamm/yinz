@@ -3595,6 +3595,7 @@ impl Screen {
             None => self.terminal_hosts.remove(&terminal_id).is_some(),
         };
         if changed {
+            self.render(None)?;
             self.log_and_report_session_state()?;
         }
         Ok(())

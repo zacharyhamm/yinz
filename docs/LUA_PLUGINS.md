@@ -357,13 +357,14 @@ seconds` interrupts a stuck step; leave it off for interactive ones - every step
 so the user can focus the pane and type. `stdin = "..."` is written to the step's child once it
 starts, which is where a secret goes: **never put a secret in `args`** - argv is visible in the
 pane manifest and in serialized sessions. `cwd = "inherit"` uses the pane's last reported
-working directory. Other options: `close_on_success`, `on_cancel = "close"`, `keep_scrollback =
+working directory only when the next step runs on the same host. Other options:
+`close_on_success`, `on_cancel = "close"`, `keep_scrollback =
 false` to wipe between steps, `kill_grace` (seconds between SIGINT and SIGKILL, default 5).
 
 It needs `run_commands` to start a step and `read_application_state` to hear that one finished:
 `command_pane_exited` is gated on the latter, so a workflow without it runs its first step and
-then waits forever. `change_application_state` too if any step has a `timeout` or `cancel` is
-used, and `write_to_stdin` for `stdin`.
+then waits forever. `change_application_state` too if any step has a `timeout`, `cancel` is used,
+or `close_on_success` / `on_cancel = "close"` is set, and `write_to_stdin` for `stdin`.
 Between steps the pane is briefly held, so a user pressing ENTER on it re-runs the finished
 step; the workflow's next step then queues behind that re-run. The workflow is plugin state: it
 does not survive a plugin reload or session resurrection.
