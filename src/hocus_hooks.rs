@@ -17,6 +17,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Map, Value};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use zellij_utils::cli::{Hocus, HocusHookAgent, HocusHooks};
@@ -51,37 +52,80 @@ pub(crate) fn hocus(command: Hocus) -> Result<()> {
             dry_run,
         } => {
             let zellij = std::env::current_exe().context("cannot find this zellij binary")?;
-            for agent in selected_agents(agent, project || project_dir.is_some())? {
-                install(
-                    &Files::resolve(agent, project, project_dir.clone())?,
-                    &zellij,
-                    dry_run,
-                )?;
-            }
-            Ok(())
+            for_each_agent(
+                selected_agents(agent, project || project_dir.is_some())?,
+                |agent| {
+                    install(
+                        &Files::resolve(agent, project, project_dir.clone())?,
+                        &zellij,
+                        dry_run,
+                    )
+                },
+            )
         },
         HocusHooks::Uninstall {
             agent,
             project,
             project_dir,
-        } => {
-            for agent in selected_agents(agent, project || project_dir.is_some())? {
-                uninstall(&Files::resolve(agent, project, project_dir.clone())?)?;
-            }
-            Ok(())
-        },
+        } => for_each_agent(
+            selected_agents(agent, project || project_dir.is_some())?,
+            |agent| uninstall(&Files::resolve(agent, project, project_dir.clone())?),
+        ),
         HocusHooks::Status { agent } => {
-            for agent in selected_agents(agent, false)? {
+            let mut first = true;
+            let reported = for_each_agent(selected_agents(agent, false)?, |agent| {
+                // Two reports run together otherwise, and the second agent's heading reads
+                // as another line of the first one's.
+                if !std::mem::take(&mut first) {
+                    println!();
+                }
                 let files = if agent == HocusHookAgent::Claude {
                     Files::resolve(agent, true, None)
                         .or_else(|_| Files::resolve(agent, false, None))?
                 } else {
                     Files::resolve(agent, false, None)?
                 };
-                status(&files)?;
-            }
-            Ok(())
+                status(&files)
+            });
+            // A fact about this shell rather than about either agent: said once, and said
+            // even when a settings file could not be read.
+            pane_line();
+            reported
         },
+    }
+}
+
+/// Run a command once for each selected agent, keeping one agent's failure to itself.
+///
+/// The two are wired independently - an unparseable `~/.claude/settings.json` has nothing to
+/// say about Codex - and the default form of each of these commands does both. Stopping at the
+/// first error would leave the second agent untouched and unmentioned, which is the one thing a
+/// command that promises "both" must not do. Every failure is named where it happened, and the
+/// run still ends non-zero, so a setup script still notices.
+fn for_each_agent(
+    agents: Vec<HocusHookAgent>,
+    mut run: impl FnMut(HocusHookAgent) -> Result<()>,
+) -> Result<()> {
+    let mut failed = Vec::new();
+    for agent in agents {
+        if let Err(error) = run(agent) {
+            eprintln!("{}: {error:#}", agent_name(agent));
+            failed.push(agent_name(agent));
+        }
+    }
+    if failed.is_empty() {
+        return Ok(());
+    }
+    // Not the errors over again: `main` prints whatever comes back, and they are just above.
+    Err(anyhow!("{} failed - see above", failed.join(" and ")))
+}
+
+/// The agent's own name for itself, before there is a [`Files`] to ask.
+fn agent_name(agent: HocusHookAgent) -> &'static str {
+    match agent {
+        HocusHookAgent::Claude => "Claude Code",
+        HocusHookAgent::Codex => "Codex",
+        HocusHookAgent::All => unreachable!("all is expanded before an agent is named"),
     }
 }
 
@@ -289,20 +333,28 @@ pub(crate) fn installed_events(settings: &Value) -> Vec<String> {
         .collect()
 }
 
+/// A variable that is set to nothing is one that is not set.
+///
+/// `export CODEX_HOME="$SOMETHING_UNSET"` leaves `Some("")` behind, and an empty root turns
+/// every path built on it into a relative one - which is to say, into whichever folder the
+/// person happened to be standing in when they ran `install`.
+fn non_empty(value: Option<OsString>) -> Option<PathBuf> {
+    value.filter(|value| !value.is_empty()).map(PathBuf::from)
+}
+
 fn home() -> Result<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
+    non_empty(std::env::var_os("HOME"))
         .ok_or_else(|| anyhow!("HOME is not set, so there is no agent config to install into"))
 }
 
 fn agent_root(
     agent: HocusHookAgent,
-    codex_home: Option<PathBuf>,
+    codex_home: Option<OsString>,
     home: impl FnOnce() -> Result<PathBuf>,
 ) -> Result<PathBuf> {
     Ok(match agent {
         HocusHookAgent::Claude => home()?.join(".claude"),
-        HocusHookAgent::Codex => match codex_home {
+        HocusHookAgent::Codex => match non_empty(codex_home) {
             Some(root) => root,
             None => home()?.join(".codex"),
         },
@@ -345,11 +397,7 @@ impl Files {
             },
             None => None,
         };
-        let root = agent_root(
-            agent,
-            std::env::var_os("CODEX_HOME").map(PathBuf::from),
-            home,
-        )?;
+        let root = agent_root(agent, std::env::var_os("CODEX_HOME"), home)?;
         let user_settings = match agent {
             HocusHookAgent::Claude => root.join("settings.json"),
             HocusHookAgent::Codex => root.join("hooks.json"),
@@ -397,11 +445,7 @@ impl Files {
     }
 
     fn name(&self) -> &'static str {
-        match self.agent {
-            HocusHookAgent::Claude => "Claude Code",
-            HocusHookAgent::Codex => "Codex",
-            HocusHookAgent::All => unreachable!("all is expanded before resolving files"),
-        }
+        agent_name(self.agent)
     }
 
     fn timeout(&self) -> u64 {
@@ -655,7 +699,14 @@ fn status(files: &Files) -> Result<()> {
     if files.agent == HocusHookAgent::Codex && wired_anywhere > 0 {
         println!("trust:   review the installed hooks with `/hooks` inside Codex");
     }
+    Ok(())
+}
 
+/// Whether an agent started in this shell would reach a pane at all.
+///
+/// Outside [`status`] because it is about the shell rather than about an agent: a report
+/// covering both of them would otherwise say it twice.
+fn pane_line() {
     match std::env::var("ZELLIJ_PANE_ID") {
         Ok(pane_id) => println!("pane:    this shell is zellij pane {pane_id}"),
         Err(_) => println!(
@@ -663,7 +714,6 @@ fn status(files: &Files) -> Result<()> {
              would report nothing"
         ),
     }
-    Ok(())
 }
 
 #[cfg(all(test, unix))]
@@ -870,13 +920,64 @@ mod tests {
 
     #[test]
     fn a_custom_codex_home_does_not_require_home() {
-        let codex_home = PathBuf::from("/custom/codex");
         assert_eq!(
-            agent_root(HocusHookAgent::Codex, Some(codex_home.clone()), || {
-                Err(anyhow!("HOME is unavailable"))
-            })
+            agent_root(
+                HocusHookAgent::Codex,
+                Some(OsString::from("/custom/codex")),
+                || Err(anyhow!("HOME is unavailable"))
+            )
             .unwrap(),
-            codex_home
+            PathBuf::from("/custom/codex")
+        );
+    }
+
+    /// `export CODEX_HOME="$UNSET"` used to resolve to `""`, and an install into `""` writes
+    /// `hooks.json` and `hocus/` into whichever folder the person was standing in - and says it
+    /// worked. An empty variable is an unset one.
+    #[test]
+    fn an_empty_codex_home_falls_back_to_home_rather_than_to_the_current_folder() {
+        assert_eq!(
+            agent_root(HocusHookAgent::Codex, Some(OsString::new()), || Ok(
+                PathBuf::from("/home/me")
+            ))
+            .unwrap(),
+            PathBuf::from("/home/me/.codex")
+        );
+        assert!(
+            agent_root(HocusHookAgent::Codex, Some(OsString::new()), || Err(
+                anyhow!("HOME is unavailable")
+            ))
+            .is_err()
+        );
+    }
+
+    /// The default form of every one of these commands does both agents, so a broken
+    /// `~/.claude/settings.json` - Claude goes first - must not leave Codex unwired and
+    /// unmentioned. It still ends in an error, because something really did fail.
+    #[test]
+    fn one_agents_failure_does_not_stop_the_other() {
+        let mut ran = Vec::new();
+        let result = for_each_agent(
+            vec![HocusHookAgent::Claude, HocusHookAgent::Codex],
+            |agent| {
+                ran.push(agent);
+                match agent {
+                    HocusHookAgent::Claude => Err(anyhow!("settings.json is not valid JSON")),
+                    _ => Ok(()),
+                }
+            },
+        );
+        assert_eq!(ran, vec![HocusHookAgent::Claude, HocusHookAgent::Codex]);
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Claude Code failed - see above"
+        );
+
+        assert!(
+            for_each_agent(vec![HocusHookAgent::Claude, HocusHookAgent::Codex], |_| Ok(
+                ()
+            ))
+            .is_ok()
         );
     }
 
