@@ -1413,23 +1413,12 @@ impl TryFrom<(&str, &KdlDocument)> for PaletteColor {
             ))?;
         let entry_count = entry_count!(color);
         let is_rgb = || entry_count == 3;
-        // Require the body to be ASCII hex digits of the exact count, not just a
-        // byte length: `#é1` is 4 bytes but two chars, and gating on `s.len() == 4`
-        // then slicing at fixed byte offsets below would split the `é` mid-char and
-        // panic. Validating hex here sends a malformed color to the `Err` arm the
-        // parse already models instead.
-        let is_hex_body = |s: &str, digits: usize| {
-            s.strip_prefix('#').is_some_and(|body| {
-                body.len() == digits && body.bytes().all(|b| b.is_ascii_hexdigit())
-            })
-        };
-        let is_three_digit_hex = || match kdl_first_entry_as_string!(color) {
-            Some(s) => entry_count == 1 && is_hex_body(s, 3),
-            None => false,
-        };
-        let is_six_digit_hex = || match kdl_first_entry_as_string!(color) {
-            Some(s) => entry_count == 1 && is_hex_body(s, 6),
-            None => false,
+        // `#fff` or `#ffffff`. A malformed body (`#é1`, `#12`, `#ggg`) is `None` and
+        // falls through to the `Err` arm the parse already models rather than
+        // panicking on a mid-char slice — see `parse_hex_rgb`.
+        let hex_rgb = || match kdl_first_entry_as_string!(color) {
+            Some(s) if entry_count == 1 && s.starts_with('#') => crate::shared::parse_hex_rgb(s),
+            _ => None,
         };
         let is_eight_bit = || kdl_first_entry_as_i64!(color).is_some() && entry_count == 1;
         if is_rgb() {
@@ -1450,58 +1439,8 @@ impl TryFrom<(&str, &KdlDocument)> for PaletteColor {
                 color.span().len(),
             ))? as u8;
             Ok(PaletteColor::Rgb((r, g, b)))
-        } else if is_three_digit_hex() {
-            // eg. #fff (hex, will be converted to rgb)
-            let mut s = String::from(kdl_first_entry_as_string!(color).unwrap());
-            s.remove(0);
-            let r = u8::from_str_radix(&s[0..1], 16).map_err(|_| {
-                ConfigError::new_kdl_error(
-                    "Failed to parse hex color".into(),
-                    color.span().offset(),
-                    color.span().len(),
-                )
-            })? * 0x11;
-            let g = u8::from_str_radix(&s[1..2], 16).map_err(|_| {
-                ConfigError::new_kdl_error(
-                    "Failed to parse hex color".into(),
-                    color.span().offset(),
-                    color.span().len(),
-                )
-            })? * 0x11;
-            let b = u8::from_str_radix(&s[2..3], 16).map_err(|_| {
-                ConfigError::new_kdl_error(
-                    "Failed to parse hex color".into(),
-                    color.span().offset(),
-                    color.span().len(),
-                )
-            })? * 0x11;
-            Ok(PaletteColor::Rgb((r, g, b)))
-        } else if is_six_digit_hex() {
-            // eg. #ffffff (hex, will be converted to rgb)
-            let mut s = String::from(kdl_first_entry_as_string!(color).unwrap());
-            s.remove(0);
-            let r = u8::from_str_radix(&s[0..2], 16).map_err(|_| {
-                ConfigError::new_kdl_error(
-                    "Failed to parse hex color".into(),
-                    color.span().offset(),
-                    color.span().len(),
-                )
-            })?;
-            let g = u8::from_str_radix(&s[2..4], 16).map_err(|_| {
-                ConfigError::new_kdl_error(
-                    "Failed to parse hex color".into(),
-                    color.span().offset(),
-                    color.span().len(),
-                )
-            })?;
-            let b = u8::from_str_radix(&s[4..6], 16).map_err(|_| {
-                ConfigError::new_kdl_error(
-                    "Failed to parse hex color".into(),
-                    color.span().offset(),
-                    color.span().len(),
-                )
-            })?;
-            Ok(PaletteColor::Rgb((r, g, b)))
+        } else if let Some(rgb) = hex_rgb() {
+            Ok(PaletteColor::Rgb(rgb))
         } else if is_eight_bit() {
             let n = kdl_first_entry_as_i64!(color).ok_or(ConfigError::new_kdl_error(
                 "Failed to parse color".into(),
