@@ -221,6 +221,10 @@ The `!` in a sidebar was only ever half the answer; the sidebar is very often no
 being looked at. On the edge into a wait the daemon toasts, over whatever pane the user
 is actually in, and the toast focuses the waiting pane when clicked:
 
+A screen-only agent can still have its quiet pane summarised as awaiting input, and that
+guess still drives its `!` marker and `awaiting_confirmation`. It does not raise a toast:
+only an explicit hook event is reliable enough to interrupt the user over a wait.
+
 ```
 agent waiting · 7 · claude◆
 Which library should we use for date formatting?
