@@ -147,6 +147,28 @@ fn a_plan_prompt_queues_behind_an_arriving_reply() {
     );
 }
 
+/// A two-call batch parked on the first one's y/n, as `pump_tools` leaves it.
+fn confirming_state_with_a_batch() -> State {
+    let calls: Vec<ToolCall> = [("call_1", "clear_pane", 1), ("call_2", "close_pane", 2)]
+        .into_iter()
+        .map(|(id, name, pane)| ToolCall {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            arguments: format!(r#"{{"pane_id":{pane},"is_plugin":false}}"#),
+        })
+        .collect();
+    let mut state = State {
+        stream: None,
+        reply_at: None,
+        status: Status::ConfirmingTool,
+        owes_reply: true,
+        ..ready_state()
+    };
+    state.messages.push(Message::tool_calls(calls.clone()));
+    state.pending.extend(calls);
+    state
+}
+
 /// Turning the mode on while a destructive call waits on a y/n would otherwise
 /// leave that call armed inside the mode that exists to disarm it.
 #[test]
@@ -169,29 +191,12 @@ fn switching_to_planning_declines_a_pending_call() {
     assert_eq!(answered[0].content, "declined by the user");
 }
 
-/// Declining the pending call empties the queue, and an emptied queue starts the
-/// model's follow-up request. That request must already be a planning one — the
-/// mode has to be set before the call is answered, not after.
+/// Declining answers the whole batch and stops, and the request that follows
+/// is the `/plan` prompt itself. That request must already be a planning one —
+/// the mode has to be set before the prompt is sent, not after.
 #[test]
-fn the_follow_up_after_that_decline_is_already_a_planning_request() {
-    // A two-call batch parked on the first one's y/n, as `pump_tools` leaves it.
-    let calls: Vec<ToolCall> = [("call_1", "clear_pane", 1), ("call_2", "close_pane", 2)]
-        .into_iter()
-        .map(|(id, name, pane)| ToolCall {
-            id: id.to_owned(),
-            name: name.to_owned(),
-            arguments: format!(r#"{{"pane_id":{pane},"is_plugin":false}}"#),
-        })
-        .collect();
-    let mut state = State {
-        stream: None,
-        reply_at: None,
-        status: Status::ConfirmingTool,
-        owes_reply: true,
-        ..ready_state()
-    };
-    state.messages.push(Message::tool_calls(calls.clone()));
-    state.pending.extend(calls);
+fn switching_to_planning_answers_the_whole_batch_and_sends_the_plan_prompt() {
+    let mut state = confirming_state_with_a_batch();
 
     state
         .input
@@ -202,11 +207,48 @@ fn the_follow_up_after_that_decline_is_already_a_planning_request() {
     let results = tool_results(&state);
     assert_eq!(results.len(), 2, "every call the model made was answered");
     assert!(
-        results[1]
-            .content
-            .starts_with("refused: planning mode is on"),
-        "the rest of the batch met the gate rather than running: {}",
+        results[1].content.contains("planning mode"),
+        "the rest of the batch was withheld, not declined: {}",
         results[1].content,
+    );
+    assert!(state.is_receiving(), "the planning prompt went out");
+    let last_user = state
+        .messages
+        .iter()
+        .rfind(|message| message.role == Role::User)
+        .unwrap();
+    assert_eq!(last_user.content, "work out an approach");
+}
+
+/// `/plan <prompt>` is a mode switch and a question in one, and the question is
+/// the prompt that was typed with it. A question queued earlier does not get to
+/// jump in front of it and become the planning turn — it waits its turn behind,
+/// as it would have anywhere else.
+#[test]
+fn a_question_queued_earlier_does_not_become_the_planning_request() {
+    let mut state = confirming_state_with_a_batch();
+    state.input.set_text("an earlier question".to_owned());
+    state.submit();
+    assert_eq!(state.asks.len(), 1, "queued behind the pending call");
+
+    state
+        .input
+        .set_text("/plan work out an approach".to_owned());
+    state.submit();
+
+    let last_user = state
+        .messages
+        .iter()
+        .rfind(|message| message.role == Role::User)
+        .unwrap();
+    assert_eq!(
+        last_user.content, "work out an approach",
+        "the prompt typed with /plan is the planning request",
+    );
+    assert_eq!(
+        state.asks.iter().map(Ask::shown).collect::<Vec<_>>(),
+        vec!["an earlier question"],
+        "and the earlier question is still queued, not sent and not dropped",
     );
 }
 
@@ -508,6 +550,8 @@ fn n_keeps_planning() {
     assert!(state.is_planning(), "still planning");
     assert!(!state.awaiting_plan());
     assert_eq!(state.messages.last().unwrap().role, Role::Notice);
+    assert!(!state.is_receiving(), "no request went out");
+    assert!(matches!(state.status, Status::Idle));
 }
 
 /// Typing at a plan is how you correct one, so the question stops being asked

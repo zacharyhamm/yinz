@@ -115,6 +115,114 @@ fn declining_records_a_result_rather_than_dropping_the_call() {
     assert_eq!(results[0].tool_call_id.as_deref(), Some("call_1"));
     assert!(results[0].content.contains("declined"));
     assert!(state.pending.is_empty());
+    assert!(!state.is_receiving(), "and no follow-up request went out");
+    assert!(matches!(state.status, Status::Idle));
+    assert!(
+        !state.owes_reply,
+        "the model is not owed a reply until the user speaks"
+    );
+}
+
+/// `n` takes the turn back. The declined result is recorded, but it is not
+/// handed to the model to try something else with: the next request is the
+/// user's next message, and the result rides along in front of it.
+#[test]
+fn declining_halts_until_the_user_speaks() {
+    let mut state = ready_state();
+    let frame = tool_call_frame("call_1", "clear_pane", r#"{"pane_id":1,"is_plugin":false}"#);
+    state.on_chunk("hocus-1", &frame, false, None);
+    state.on_chunk("hocus-1", b"", true, None);
+    state.decline_tool();
+
+    assert!(!state.is_receiving(), "nothing was sent on the decline");
+    assert!(
+        state.messages.last().unwrap().role == Role::Notice,
+        "the pane says it is waiting"
+    );
+
+    state.input.set_text("do something else instead".to_owned());
+    state.submit();
+
+    assert!(state.is_receiving(), "the user's message is what goes out");
+    let result_at = tool_result_index(&state);
+    let user_at = state
+        .messages
+        .iter()
+        .rposition(|message| message.role == Role::User)
+        .unwrap();
+    assert!(
+        result_at < user_at,
+        "the declined result precedes the new message"
+    );
+    assert_eq!(state.messages[user_at].content, "do something else instead");
+}
+
+/// A user who said no to one call has not agreed to the ones queued behind it.
+/// They are answered — the transcript needs a result per call — but not run.
+#[test]
+fn declining_one_call_answers_the_rest_of_the_batch_without_running_it() {
+    let calls: Vec<ToolCall> = [("call_1", "clear_pane", 1), ("call_2", "close_pane", 2)]
+        .into_iter()
+        .map(|(id, name, pane)| ToolCall {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            arguments: format!(r#"{{"pane_id":{pane},"is_plugin":false}}"#),
+        })
+        .collect();
+    let mut state = State {
+        stream: None,
+        reply_at: None,
+        status: Status::ConfirmingTool,
+        owes_reply: true,
+        ..ready_state()
+    };
+    state.messages.push(Message::tool_calls(calls.clone()));
+    state.pending.extend(calls);
+
+    state.decline_tool();
+
+    let results = tool_results(&state);
+    assert_eq!(results.len(), 2, "every call the model made was answered");
+    assert_eq!(results[0].content, "declined by the user");
+    assert!(
+        results[1].content.starts_with("not run"),
+        "the second call was answered rather than run: {}",
+        results[1].content
+    );
+    assert!(state.pending.is_empty());
+    assert!(matches!(state.status, Status::Idle));
+    assert!(!state.is_receiving(), "no follow-up request");
+}
+
+/// Something typed while the prompt was up is the user's next message already,
+/// so the decline is what sends it — it does not wait on a timer.
+#[test]
+fn a_question_queued_behind_the_prompt_goes_out_on_the_decline() {
+    let mut state = ready_state();
+    let frame = tool_call_frame("call_1", "clear_pane", r#"{"pane_id":1,"is_plugin":false}"#);
+    state.on_chunk("hocus-1", &frame, false, None);
+    state.on_chunk("hocus-1", b"", true, None);
+    state.input.set_text("actually, leave that pane".to_owned());
+    state.submit();
+    assert_eq!(state.asks.len(), 1, "typed at the prompt, so queued");
+
+    state.decline_tool();
+
+    assert!(state.asks.is_empty(), "the queued question was taken");
+    assert!(state.is_receiving(), "and it is the request in flight");
+    let last_user = state
+        .messages
+        .iter()
+        .rfind(|message| message.role == Role::User)
+        .unwrap();
+    assert_eq!(last_user.content, "actually, leave that pane");
+    assert!(
+        !state
+            .messages
+            .iter()
+            .any(|message| message.content.starts_with("declined — waiting")),
+        "and hocus does not claim to be waiting while that question is in flight",
+    );
 }
 
 #[test]
