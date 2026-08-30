@@ -3587,56 +3587,76 @@ fn a_dragged_overlay_stays_where_it_was_dropped_across_a_resize() {
     );
 }
 
-/// Where an overlay was dropped is *in-memory* state on the wrapper `extract_pane` throws away,
-/// so it has to be carried across a tab move by hand - exactly as suppression is, and now in the
-/// same `OverlayCarry`.
+/// Where an overlay was dropped and how large the user made it are *in-memory* state on the
+/// wrapper `extract_pane` throws away, so both have to be carried across a tab move by hand -
+/// exactly as suppression is, and now in the same `OverlayCarry`.
 ///
 /// Without that, the position survives the move (it is in the coordinates, which do travel) and is
-/// then overwritten by the plugin's very next placement, because the destination no longer knows
-/// the user had a say. hocus's overlay column re-places itself on every `TabUpdate` and moves
-/// itself between tabs, so for it every tab switch undid the drag.
+/// then overwritten by the plugin's next placement, because the destination no longer knows the
+/// user had a say.
 #[test]
-fn a_dragged_overlay_stays_where_it_was_dropped_across_a_tab_move() {
+fn a_moved_and_resized_overlay_keeps_its_geometry_across_a_tab_move() {
     let size = Size { cols: 80, rows: 20 };
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, 0);
     new_tab(&mut screen, 2, 1);
     screen.switch_active_tab(0, None, true, 1).expect("TEST");
     let opened_with = overlay_coordinates();
-    open_overlay_with(&mut screen, 3, opened_with.clone());
+    open_overlay_with(&mut screen, 3, opened_with);
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .resize(
+            1,
+            ResizeStrategy::new(Resize::Increase, Some(Direction::Right)),
+        )
+        .expect("TEST");
     drag_overlay_by(&mut screen, 3, 20, 4);
-    let dropped_at = floating_geom(&screen, 3);
+    let before = floating_geom(&screen, 3);
 
     screen
         .break_multiple_panes_to_tab_with_id(vec![PaneId::Terminal(3)], 1, false, 1)
         .expect("TEST");
-    // the plugin restating its placement on the far side, which is what `follow_tab` does the
-    // instant the move lands
-    screen.change_overlay_coordinates(vec![(PaneId::Terminal(3), opened_with)], false);
 
     let after = screen.tabs[&1]
         .get_pane_with_id(PaneId::Terminal(3))
         .expect("TEST")
         .position_and_size();
     assert_eq!(
-        (after.x, after.y),
-        (dropped_at.x, dropped_at.y),
-        "the overlay arrives where the user dropped it, and the plugin's restated placement takes \
-         only its size"
+        (
+            after.x,
+            after.y,
+            after.cols.as_usize(),
+            after.rows.as_usize(),
+        ),
+        (
+            before.x,
+            before.y,
+            before.cols.as_usize(),
+            before.rows.as_usize(),
+        ),
+        "the move carries the exact position and size without a plugin restatement"
     );
 }
 
-/// The one placement that does outrank a drag: the plugin relaying a key the user pressed. The
-/// overlay goes where the key said, and the size comes along - both claims are the user's to
-/// release as well as to make.
+/// A plugin relaying a move key outranks a drag, but not the independent size the user chose.
 #[test]
-fn a_dragged_overlay_is_re_placed_when_the_plugin_says_the_user_asked() {
+fn a_dragged_and_resized_overlay_is_moved_without_being_resized() {
     let size = Size { cols: 80, rows: 20 };
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, 0);
     open_overlay_with(&mut screen, 3, overlay_coordinates());
     drag_overlay_by(&mut screen, 3, 20, 4);
     let dropped_at = floating_geom(&screen, 3);
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .resize(
+            1,
+            ResizeStrategy::new(Resize::Increase, Some(Direction::Right)),
+        )
+        .expect("TEST");
+    let resized_to = floating_geom(&screen, 3);
 
     let asked_for = FloatingPaneCoordinates::new(
         Some("10".to_owned()),
@@ -3652,14 +3672,14 @@ fn a_dragged_overlay_is_re_placed_when_the_plugin_says_the_user_asked() {
     let after = floating_geom(&screen, 3);
     assert_ne!((after.x, after.y), (dropped_at.x, dropped_at.y));
     assert_eq!(
-        (
-            after.x,
-            after.y,
-            after.cols.as_usize(),
-            after.rows.as_usize()
-        ),
-        (10, 2, 30, 8),
-        "exactly the placement the key asked for"
+        (after.x, after.y),
+        (10, 2),
+        "exactly the position the key asked for"
+    );
+    assert_eq!(
+        (after.cols.as_usize(), after.rows.as_usize()),
+        (resized_to.cols.as_usize(), resized_to.rows.as_usize()),
+        "and exactly the size it had before the move"
     );
 }
 

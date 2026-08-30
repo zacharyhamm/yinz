@@ -1019,9 +1019,9 @@ fn a_placement_the_user_asked_for_reclaims_a_dragged_position() {
     assert_eq!(xy(&panes, 1), (10, 5), "the position the key asked for");
 }
 
-/// The size twin: a resize the user made is reclaimed by the same flag.
+/// Moving an overlay is not resizing it: the independent size claim remains the user's.
 #[test]
-fn a_placement_the_user_asked_for_reclaims_a_resized_size() {
+fn a_placement_the_user_asked_for_keeps_a_resized_size() {
     let mut panes = overlay_panes(80, 20);
     add(
         &mut panes,
@@ -1043,8 +1043,12 @@ fn a_placement_the_user_asked_for_reclaims_a_resized_size() {
         )
         .unwrap();
 
-    assert_ne!(size(&panes, 1), resized_to, "the resize no longer wins");
-    assert_eq!(size(&panes, 1), (40, 10), "the size the key asked for");
+    assert_eq!(xy(&panes, 1), (10, 5), "the position the key asked for");
+    assert_eq!(
+        size(&panes, 1),
+        resized_to,
+        "the earlier resize remains independent of the move"
+    );
 }
 
 /// Cleared, not bypassed once: after the key has moved the overlay, the plugin's ordinary
