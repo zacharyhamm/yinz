@@ -10,6 +10,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use zellij_tile::prelude::*;
 
 use crate::api::ConfigError;
+use crate::wand;
 use crate::{
     history, Confirmation, Picker, PickerKind, Plan, PromptKind, Role, RowKind, State, Status,
 };
@@ -380,6 +381,74 @@ fn frame(title: &str, footer: &[Run], inner: Vec<VLine>, cols: usize) -> Vec<VLi
     ));
     lines.push(line_from_runs(&bottom, Role::Assistant));
     lines
+}
+
+// ---------------------------------------------------------------------------
+// The empty-chat wand
+// ---------------------------------------------------------------------------
+
+/// Which of the wand's two forms fits, if either.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Wand {
+    /// The real thing, over the kitty graphics protocol.
+    Image,
+    /// Its text stand-in: what a terminal without the protocol gets, and what a pane too short
+    /// for the picture gets whether or not the protocol is there.
+    Text,
+}
+
+/// The largest form that fits, or `None` when even the text one does not. A pane too small for
+/// either is left exactly as bare as it used to be.
+fn wand_form(state: &State, height: usize, cols: usize) -> Option<Wand> {
+    if state.kitty_graphics && cols >= wand::MIN_COLS && height >= wand::MIN_ROWS {
+        Some(Wand::Image)
+    } else if height >= wand::fallback_lines(0).len() + 2 && cols >= 16 {
+        Some(Wand::Text)
+    } else {
+        None
+    }
+}
+
+/// How many rows the wand takes above the prompt, including the blank line under it.
+fn wand_height(state: &State, height: usize, cols: usize) -> usize {
+    match wand_form(state, height, cols) {
+        Some(Wand::Image) => wand::WAND_ROWS + 1,
+        Some(Wand::Text) => wand::fallback_lines(0).len() + 1,
+        None => 0,
+    }
+}
+
+/// Draw the wand, centred, in whichever form fits.
+///
+/// Sets `wand_drawing`, which is what `wants_frames` reads to keep the animation going. It cannot
+/// arm the timer itself: a host call writes to the plugin's stdout and then has the host read
+/// that stdout back as its argument, so making one after the frame has started printing hands the
+/// host the frame instead. Arming happens in `load` and at the end of `update`.
+fn render_wand(state: &mut State, y: usize, height: usize, cols: usize) {
+    let form = wand_form(state, height, cols);
+    state.wand_drawing = form.is_some();
+    let Some(form) = form else {
+        return;
+    };
+    let frame = state.wand_frame;
+    if form == Wand::Image {
+        // The pixels ride on this client's first frame and are referred to by placeholder cells
+        // from then on, which is what makes redrawing at ten frames a second affordable.
+        let transmit = state.wand_transmitted.insert(state.client);
+        let x = cols.saturating_sub(wand::WAND_COLS) / 2;
+        print!("{}", wand::frame_bytes(frame, x, y, transmit));
+        return;
+    }
+    for (row, line) in wand::fallback_lines(frame).into_iter().enumerate() {
+        let indent = cols.saturating_sub(12) / 2;
+        print_text_with_coordinates(
+            Text::new(format!("{}{}", " ".repeat(indent), line)).dim_range(..),
+            0,
+            y + row,
+            Some(cols),
+            None,
+        );
+    }
 }
 
 /// The transcript as it is drawn: every message wrapped into display lines, and
@@ -1388,10 +1457,11 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
     let total = body.len() + tail.len();
 
     if total == 0 {
+        render_wand(state, y, height, cols);
         print_text_with_coordinates(
             Text::new("Ask something.").dim_range(..),
             0,
-            y,
+            y + wand_height(state, height, cols),
             Some(cols),
             None,
         );
@@ -1420,6 +1490,11 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
     // a client actually ended up, and the key handler has to start from there.
     state.set_scroll_offset(offset);
     state.set_max_scroll_offset(max_offset);
+    // The chat has something in it, so the splash is gone: stop its clock, and forget that the
+    // frames were ever sent. The images were only kept alive by the placeholder cells that
+    // referred to them, so a chat that empties again has to transmit them afresh.
+    state.wand_drawing = false;
+    state.wand_transmitted.clear();
 
     // The badge prints over the top row, and while frozen that row is the first
     // line of the reply — the one line the anchor exists to keep on screen.
@@ -2637,6 +2712,103 @@ mod tests {
         assert!(tops[0].trim_end().ends_with("count"), "{:?}", tops[0]);
         assert_eq!(tops.last().unwrap(), "line 1");
         assert!(tops.iter().rev().take(12).all(|top| top == "line 1"));
+    }
+
+    // -- the empty-chat wand -------------------------------------------------
+
+    /// Big enough for the image and a prompt line under it.
+    const WAND_HEIGHT: usize = wand::MIN_ROWS + 2;
+    const WAND_COLS: usize = wand::MIN_COLS + 6;
+
+    fn empty_state(kitty_graphics: bool) -> State {
+        State {
+            kitty_graphics,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_empty_chat_draws_the_wand_and_keeps_its_own_clock_running() {
+        let mut state = empty_state(true);
+        render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
+        assert!(
+            state.wand_drawing,
+            "the splash has to ask for the next frame"
+        );
+        // The pixels went over once, for this client. Every later frame is placeholder cells.
+        assert!(state.wand_transmitted.contains(&state.client));
+        assert_eq!(
+            wand_height(&state, WAND_HEIGHT, WAND_COLS),
+            wand::WAND_ROWS + 1
+        );
+    }
+
+    #[test]
+    fn the_frames_are_transmitted_once_per_client_not_once_per_render() {
+        let mut state = empty_state(true);
+        render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
+        let after_first = state.wand_transmitted.clone();
+        render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
+        assert_eq!(state.wand_transmitted, after_first);
+    }
+
+    #[test]
+    fn a_terminal_without_kitty_graphics_gets_the_text_wand_instead() {
+        let mut state = empty_state(false);
+        render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
+        assert!(state.wand_drawing);
+        // Nothing was transmitted, because nothing could have been displayed.
+        assert!(state.wand_transmitted.is_empty());
+        assert_eq!(
+            wand_height(&state, WAND_HEIGHT, WAND_COLS),
+            wand::fallback_lines(0).len() + 1
+        );
+    }
+
+    #[test]
+    fn a_pane_too_short_for_the_image_falls_back_to_the_text_wand() {
+        let mut state = empty_state(true);
+        let short = wand::MIN_ROWS - 1;
+        render_transcript(&mut state, 0, short, WAND_COLS);
+        assert_eq!(wand_form(&state, short, WAND_COLS), Some(Wand::Text));
+        assert!(state.wand_drawing);
+        // Nothing was transmitted: the image was never going to be drawn.
+        assert!(state.wand_transmitted.is_empty());
+    }
+
+    #[test]
+    fn a_pane_too_small_for_either_wand_is_as_bare_as_it_ever_was() {
+        let mut state = empty_state(true);
+        render_transcript(&mut state, 0, 3, WAND_COLS);
+        assert_eq!(wand_form(&state, 3, WAND_COLS), None);
+        assert!(!state.wand_drawing, "nothing drawn, so nothing to animate");
+        assert!(state.wand_transmitted.is_empty());
+    }
+
+    #[test]
+    fn the_first_message_stops_the_wand_and_forgets_that_it_was_sent() {
+        let mut state = empty_state(true);
+        render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
+        assert!(state.wand_drawing);
+        // The images were kept alive only by the placeholder cells; once those stop being drawn
+        // the next splash has to transmit them again.
+        state.messages.push(Message::user("hello"));
+        render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
+        assert!(!state.wand_drawing);
+        assert!(state.wand_transmitted.is_empty());
+    }
+
+    #[test]
+    fn the_text_wand_actually_animates() {
+        let frames: std::collections::BTreeSet<Vec<String>> =
+            (0..12).map(wand::fallback_lines).collect();
+        assert!(frames.len() > 1, "every frame drew the same thing");
+        // Every frame is the same shape, so the block does not jump about as it twinkles.
+        let widths: std::collections::BTreeSet<usize> = frames
+            .iter()
+            .flat_map(|frame| frame.iter().map(|line| line.chars().count()))
+            .collect();
+        assert_eq!(widths.len(), 1, "{widths:?}");
     }
 
     // -- rendering the window -----------------------------------------------

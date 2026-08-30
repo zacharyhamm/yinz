@@ -3307,11 +3307,19 @@ impl fmt::Display for PluginTag {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct PluginCapabilities {
     pub arrow_fonts: bool,
+    /// Whether the host terminal can display kitty graphics, so a plugin knows whether drawing an
+    /// image is worth doing or whether it should fall back to text. Unlike `arrow_fonts` this is
+    /// not known at startup: it is learned from the client's probe reply and pushed out in a later
+    /// `ModeUpdate`, so it starts `false` and turns on.
+    pub kitty_graphics: bool,
 }
 
 impl Default for PluginCapabilities {
     fn default() -> PluginCapabilities {
-        PluginCapabilities { arrow_fonts: true }
+        PluginCapabilities {
+            arrow_fonts: true,
+            kitty_graphics: false,
+        }
     }
 }
 

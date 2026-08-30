@@ -23,6 +23,7 @@ mod tools;
 mod transitions;
 pub use transitions::{Confirmation, PromptKind};
 pub mod ui;
+mod wand;
 mod worker;
 
 pub use message::{
@@ -349,6 +350,22 @@ pub struct State {
     /// Whether a timer is outstanding. The guard against arming a second chain,
     /// which would double the frame rate and never converge back to one.
     timer_armed: bool,
+    /// Which wand frame the empty-chat splash is on. Advanced by the same timer as `tick`; the
+    /// kitty protocol stores animation frames but never advances one on its own.
+    pub(crate) wand_frame: usize,
+    /// Clients whose pane already holds the wand's pixels. A plugin pane keeps one grid per
+    /// attached client, so the frames have to be transmitted into each of them - and cleared here
+    /// when the splash stops being drawn, since the images are only kept alive by the placeholder
+    /// cells that reference them.
+    pub(crate) wand_transmitted: BTreeSet<ClientId>,
+    /// Whether the last render actually drew the wand. What keeps the timer chain running while
+    /// the splash is up - and stops it the moment the chat has a message in it, the pane is set
+    /// aside, or the pane is too small for the picture.
+    pub(crate) wand_drawing: bool,
+    /// Whether the host terminal can display kitty graphics, as last reported in a `ModeUpdate`.
+    /// Starts false: the answer comes from a probe the client sends at startup, so it arrives
+    /// after hocus has already drawn its first frame.
+    pub(crate) kitty_graphics: bool,
     tool_calls: ToolCallAccumulator,
     /// Calls the model asked for that have not been answered yet. The head is
     /// the one being confirmed or executed.
@@ -764,6 +781,10 @@ impl Default for State {
             sse: SseParser::default(),
             tick: 0,
             timer_armed: false,
+            wand_frame: 0,
+            wand_drawing: false,
+            wand_transmitted: BTreeSet::new(),
+            kitty_graphics: false,
             tool_calls: ToolCallAccumulator::default(),
             pending: VecDeque::new(),
             spotlight: None,
@@ -898,9 +919,15 @@ impl ZellijPlugin for State {
             // off screen and fires on every tab switch: reading that as "I was hidden" would fight
             // the reveal below.
             EventType::PaneUpdate,
+            // Only for `capabilities.kitty_graphics`, which decides whether the empty-chat splash
+            // is an image or its text stand-in.
+            EventType::ModeUpdate,
         ]);
         set_selectable(true);
         set_self_mouse_selection_support(true);
+        // One tick, so the empty-chat wand has something to start from: `wants_frames` cannot say
+        // yes until a render has happened, and by then it is too late to arm from there.
+        self.arm_timer(FRAME_SECONDS);
 
         // Nothing permission-gated may be called here. The host drops a denied
         // command and writes nothing back, so a value-returning call such as
@@ -964,6 +991,12 @@ impl ZellijPlugin for State {
         // a cancel, an error and an aborted tool run are all covered without any
         // of them having to remember to.
         self.autosave();
+        // The empty-chat wand is the one animation nothing else arms a timer for, and `render`
+        // cannot arm one itself - a host call there would be handed the half-printed frame as its
+        // argument. So it is done here, where nothing has been printed yet.
+        if self.wants_frames() {
+            self.arm_timer(FRAME_SECONDS);
+        }
         render
     }
 
@@ -1171,6 +1204,19 @@ impl State {
                 self.on_projects_changed(watch_id, &rows)
             },
             Event::TabUpdate(tabs) => self.on_tabs(tabs),
+            // Subscribed to for one bit: whether the host terminal can show an image. It arrives
+            // from a probe the client sends at startup, so it lands after the first render and
+            // flips the empty-chat splash over from text to the real wand.
+            Event::ModeUpdate(mode_info) => {
+                let supported = mode_info.capabilities.kitty_graphics;
+                let changed = self.kitty_graphics != supported;
+                self.kitty_graphics = supported;
+                // The pixels in a pane belong to the old answer; make the next draw resend them.
+                if changed {
+                    self.wand_transmitted.clear();
+                }
+                changed
+            },
             Event::PaneUpdate(manifest) => self.on_panes(manifest),
             Event::SessionUpdate(sessions, _) => self.on_sessions(sessions),
             Event::BeforeClose => {

@@ -74,6 +74,46 @@ impl Screen {
             for tab in self.tabs.values_mut() {
                 tab.update_kitty_host_support(aggregate);
             }
+            self.push_kitty_capability_to_plugins(aggregate.host_supports_graphics());
+        }
+    }
+
+    /// Plugins learn whether an image is worth drawing from `ModeInfo`, which - unlike the pane
+    /// side above - is per client and cached in three places. The capability is not known when
+    /// `ModeInfo` is built (`thread_main.rs`, from config, before anyone attaches); it arrives with
+    /// the client's probe reply, so it has to be written back into each copy and re-fanned out.
+    /// Same shape as the host-theme swap in `Screen::apply_host_terminal_theme_mode`.
+    fn push_kitty_capability_to_plugins(&mut self, supported: bool) {
+        if self.default_mode_info.capabilities.kitty_graphics == supported
+            && self
+                .mode_info
+                .values()
+                .all(|mode_info| mode_info.capabilities.kitty_graphics == supported)
+        {
+            return;
+        }
+        self.default_mode_info.capabilities.kitty_graphics = supported;
+        // `active_tab_ids` is the canonical "who is connected"; `mode_info` skips any client that
+        // has never changed mode by hand.
+        let client_ids: Vec<ClientId> = self.active_tab_ids.keys().copied().collect();
+        let default_for_new = self.default_mode_info.clone();
+        for client_id in client_ids {
+            let mode_info = self
+                .mode_info
+                .entry(client_id)
+                .or_insert_with(|| default_for_new.clone());
+            mode_info.capabilities.kitty_graphics = supported;
+            let mode_info = mode_info.clone();
+            // `update_input_modes` fans out `ModeUpdate` from the tabs' per-client map, not from
+            // Screen's, so without this step plugins would keep being told the old answer.
+            for tab in self.tabs.values_mut() {
+                tab.change_mode_info(mode_info.clone(), client_id);
+            }
+        }
+        for tab in self.tabs.values_mut() {
+            tab.update_input_modes()
+                .context("failed to push kitty graphics support to plugins")
+                .non_fatal();
         }
     }
 

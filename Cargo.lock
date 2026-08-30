@@ -4611,6 +4611,7 @@ dependencies = [
  "wasmi_core",
  "wasmi_wasi",
  "zellij-test-support",
+ "zellij-tile",
  "zellij-utils",
 ]
 
@@ -4622,6 +4623,7 @@ version = "0.45.0"
 name = "zellij-tile"
 version = "0.45.0"
 dependencies = [
+ "base64",
  "fuzzy-matcher",
  "hegeltest",
  "prost",

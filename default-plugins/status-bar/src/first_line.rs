@@ -806,6 +806,8 @@ mod tests {
             keybinds,
             capabilities: PluginCapabilities {
                 arrow_fonts: tc.draw(generators::booleans()),
+                // The status bar draws no images, so this never changes what it renders.
+                kitty_graphics: false,
             },
             ..ModeInfo::default()
         }
