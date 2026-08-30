@@ -32,6 +32,45 @@ fn a_preserving_reset_appends_to_history_already_there() {
     );
 }
 
+/// 30 lines into a 20-row grid: `lines_above` is populated and the viewport is full, so the
+/// pane can be scrolled back the way a user reading a finished step's output would.
+fn grid_with_thirty_lines() -> Grid {
+    let content: String = (1..=30).map(|i| format!("line {i}\r\n")).collect();
+    create_grid_with_content(&content)
+}
+
+#[test]
+fn a_preserving_reset_keeps_the_rows_below_a_scrolled_up_viewport() {
+    let mut grid = grid_with_thirty_lines();
+    grid.move_viewport_up(5);
+    grid.reset_terminal_state_preserving_scrollback();
+    let expected: Vec<String> = (1..=30).map(|i| format!("line {i}")).collect();
+    assert_eq!(
+        scrollback_texts(&grid),
+        expected,
+        "the whole transcript survives, not just what the scrolled-up viewport showed"
+    );
+    assert!(
+        grid.lines_below.is_empty() && !grid.is_scrolled,
+        "and the pane is back at the bottom for the next command"
+    );
+}
+
+#[test]
+fn a_scrolled_pane_still_appends_the_next_step_below_the_last_one() {
+    let mut grid = grid_with_thirty_lines();
+    grid.move_viewport_up(5);
+    grid.reset_terminal_state_preserving_scrollback();
+    feed_bytes(&mut grid, b"step two");
+    grid.reset_terminal_state_preserving_scrollback();
+    let scrollback = scrollback_texts(&grid);
+    assert_eq!(
+        &scrollback[scrollback.len() - 2..],
+        ["line 30", "step two"],
+        "the next step lands below the previous one's last line, not inside it"
+    );
+}
+
 #[test]
 fn a_preserving_reset_keeps_the_primary_screen_not_the_alternate() {
     // A step that died inside vim: the alternate screen is live, hiding the primary screen.
