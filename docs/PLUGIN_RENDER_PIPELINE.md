@@ -130,7 +130,8 @@ until pending plugins have rendered, with a 100 ms timeout.
 
 4. **A priority lane for input.** *Done, in the executor rather than on the plugin thread's
    bus.* Every executor job now carries a tag — its plugin, a label for the stats log, and
-   whether the batch holds a `Key`/`Mouse`/`PastedText` (`pinned_executor.rs`, `JobTag`;
+   whether the batch holds a `Key`/`InterceptedKeyPress`/`Mouse`/`PastedText`
+   (`pinned_executor.rs`, `JobTag`;
    `update_plugins` sets it via `summarize_batch_for_stats`). Each worker keeps its queue
    locally and picks the next job with `pick_next_job`: per-plugin order is absolute (the
    `batching.rs` invariants), but a plugin with an input job waiting anywhere in its queue goes

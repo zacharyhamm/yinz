@@ -2839,8 +2839,8 @@ fn handle_plugin_successful_loading(
 
 /// A short label for the executor's stats log — the batch's event kinds with
 /// counts, e.g. "Key" or "PaneUpdate×2,TabUpdate" — and whether any event in it
-/// is user input (a key, a mouse action, a paste), which is what marks the job
-/// urgent for the executor's accounting.
+/// is user input (a focused or intercepted key, a mouse action, a paste), which
+/// is what marks the job urgent for the executor's accounting.
 fn summarize_batch_for_stats(events: &[(ClientId, Event)]) -> (String, bool) {
     let mut counts: Vec<(EventType, usize)> = Vec::new();
     let mut has_input = false;
@@ -2848,7 +2848,10 @@ fn summarize_batch_for_stats(events: &[(ClientId, Event)]) -> (String, bool) {
         let event_type = EventType::from(event);
         has_input |= matches!(
             event_type,
-            EventType::Key | EventType::Mouse | EventType::PastedText
+            EventType::Key
+                | EventType::Mouse
+                | EventType::PastedText
+                | EventType::InterceptedKeyPress
         );
         match counts.iter_mut().find(|(kind, _)| *kind == event_type) {
             Some((_, count)) => *count += 1,
@@ -3221,6 +3224,7 @@ fn instances_of<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zellij_utils::data::{BareKey, KeyWithModifier};
 
     fn plugin_config(configuration: &[(&str, &str)]) -> PluginConfig {
         let configuration = configuration
@@ -3243,6 +3247,19 @@ mod tests {
         assert!(plugin_config(&[("shared", "true")]).is_shared());
         assert!(!plugin_config(&[("shared", "false")]).is_shared());
         assert!(!plugin_config(&[("shared", "yes please")]).is_shared());
+    }
+
+    #[test]
+    fn intercepted_keypress_batches_are_input_jobs() {
+        let events = vec![(
+            1,
+            Event::InterceptedKeyPress(KeyWithModifier::new(BareKey::Char('x'))),
+        )];
+
+        assert_eq!(
+            summarize_batch_for_stats(&events),
+            ("InterceptedKeyPress".to_owned(), true)
+        );
     }
 
     /// The two halves of hocus address each other by url, and the launch behind that url has to
