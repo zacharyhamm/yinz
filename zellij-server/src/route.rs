@@ -129,7 +129,6 @@ pub fn wait_for_action_completion(
 //
 // Note: Cloning this struct DOES NOT clone that internal receiver, it only implements Clone so
 // that it can be included in various other larger structs - DO NOT RELY ON CLONING IT!
-#[derive(Debug)]
 pub struct NotificationEnd {
     channel: Option<oneshot::Sender<ActionCompletionResult>>,
     exit_status: Option<i32>,
@@ -138,6 +137,27 @@ pub struct NotificationEnd {
     affected_tab_id: Option<usize>,   // optional payload of the tab id affected by this action
     error_message: Option<String>,
     stdout_message: Option<String>,
+    /// Handles answered together with this one, with its payload: see `join`.
+    followers: Vec<NotificationEnd>,
+}
+
+// Hand-written so that `followers`, empty on every handle that was not `join`ed, does not show
+// up in the many snapshots that hold a `NotificationEnd`.
+impl std::fmt::Debug for NotificationEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("NotificationEnd");
+        s.field("channel", &self.channel)
+            .field("exit_status", &self.exit_status)
+            .field("unblock_condition", &self.unblock_condition)
+            .field("affected_pane_id", &self.affected_pane_id)
+            .field("affected_tab_id", &self.affected_tab_id)
+            .field("error_message", &self.error_message)
+            .field("stdout_message", &self.stdout_message);
+        if !self.followers.is_empty() {
+            s.field("followers", &self.followers);
+        }
+        s.finish()
+    }
 }
 
 impl Clone for NotificationEnd {
@@ -151,6 +171,7 @@ impl Clone for NotificationEnd {
             affected_tab_id: self.affected_tab_id,
             error_message: self.error_message.clone(),
             stdout_message: self.stdout_message.clone(),
+            followers: vec![],
         }
     }
 }
@@ -165,6 +186,7 @@ impl NotificationEnd {
             affected_tab_id: None,
             error_message: None,
             stdout_message: None,
+            followers: vec![],
         }
     }
 
@@ -180,6 +202,7 @@ impl NotificationEnd {
             affected_tab_id: None,
             error_message: None,
             stdout_message: None,
+            followers: vec![],
         }
     }
 
@@ -206,10 +229,31 @@ impl NotificationEnd {
     pub fn unblock_condition(&self) -> Option<UnblockCondition> {
         self.unblock_condition
     }
+
+    /// One handle standing for several waiters. When several requests were satisfied by running
+    /// one of them (a run of identical plugin reloads collapsed into one), the survivor's handle
+    /// is passed along the same path as before and the others ride inside it: they are answered
+    /// when it is, with whatever it was told - the pane id an `AddPlugin` set on it, not the
+    /// empty result a dropped handle reports. With no `primary`, the first of `others` stands in
+    /// for it; with nothing at all, `None`.
+    pub fn join(primary: Option<NotificationEnd>, others: Vec<NotificationEnd>) -> Option<Self> {
+        let mut others = others.into_iter();
+        let mut primary = primary.or_else(|| others.next())?;
+        primary.followers.extend(others);
+        Some(primary)
+    }
 }
 
 impl Drop for NotificationEnd {
     fn drop(&mut self) {
+        // Followers are fields, dropped after this body: each sends the copy it is given here.
+        for follower in self.followers.iter_mut() {
+            follower.exit_status = self.exit_status;
+            follower.affected_pane_id = self.affected_pane_id;
+            follower.affected_tab_id = self.affected_tab_id;
+            follower.error_message = self.error_message.clone();
+            follower.stdout_message = self.stdout_message.clone();
+        }
         if let Some(tx) = self.channel.take() {
             let result = ActionCompletionResult {
                 exit_status: self.exit_status,

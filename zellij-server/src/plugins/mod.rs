@@ -421,17 +421,20 @@ pub(crate) fn plugin_thread_main(
             Some(next) => next,
             None => bus.recv().expect("failed to receive event on channel"),
         };
-        // The completion handles of reloads collapsed into this one. Held until the end of the
-        // iteration: dropping one is what answers the CLI waiting on it, and it must not be
-        // answered before the reload it was folded into has run.
-        let mut _collapsed_reload_completions: Vec<NotificationEnd> = vec![];
+        // The completion handles of reloads collapsed into this one. Dropping one is what
+        // answers the CLI waiting on it, so the `Reload` arm joins them onto its own handle
+        // (`NotificationEnd::join`): every path answers them together with the survivor and with
+        // its payload - in particular the pane id, when the plugin turns out not to be running
+        // and the reload becomes an `AddPlugin`. A `ReloadPluginByUrl` carries no handle, so
+        // the vec is empty for it and there is nothing to join.
+        let mut collapsed_reload_completions: Vec<NotificationEnd> = vec![];
         let event = match event {
             PluginInstruction::Update(updates) => {
                 PluginInstruction::Update(drain_updates(&bus, updates, &mut queued))
             },
             reload @ (PluginInstruction::Reload(..) | PluginInstruction::ReloadPluginByUrl(..)) => {
                 let (reload, completions) = drain_reloads(&bus, reload, &mut queued);
-                _collapsed_reload_completions = completions;
+                collapsed_reload_completions = completions;
                 reload
             },
             other => other,
@@ -556,6 +559,10 @@ pub(crate) fn plugin_thread_main(
                 size,
                 completion_tx,
             ) => {
+                let completion_tx = NotificationEnd::join(
+                    completion_tx,
+                    std::mem::take(&mut collapsed_reload_completions),
+                );
                 run_plugin_or_alias.populate_run_plugin_if_needed(&plugin_aliases);
                 match run_plugin_or_alias.get_run_plugin() {
                     Some(run_plugin) => {

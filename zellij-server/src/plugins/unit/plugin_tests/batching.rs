@@ -747,6 +747,133 @@ pub fn collapsed_reloads_hand_their_completion_handles_to_the_caller() {
     );
 }
 
+/// `NotificationEnd::join` is how collapsed reloads ride along with the survivor: they are
+/// answered when it is, with whatever it was told - here the pane id an `AddPlugin` sets.
+#[test]
+pub fn joined_completions_are_answered_together_with_the_primarys_payload() {
+    use crate::route::NotificationEnd;
+    let (tx_a, mut rx_a) = tokio::sync::oneshot::channel();
+    let (tx_b, mut rx_b) = tokio::sync::oneshot::channel();
+    let (tx_c, mut rx_c) = tokio::sync::oneshot::channel();
+
+    let mut joined = NotificationEnd::join(
+        Some(NotificationEnd::new(tx_a)),
+        vec![NotificationEnd::new(tx_b), NotificationEnd::new(tx_c)],
+    )
+    .expect("a primary always yields a handle");
+    joined.set_affected_pane_id(PaneId::Plugin(7));
+    assert!(
+        rx_a.try_recv().is_err() && rx_b.try_recv().is_err() && rx_c.try_recv().is_err(),
+        "nobody is answered while the joined handle is held"
+    );
+
+    drop(joined);
+    for rx in [&mut rx_a, &mut rx_b, &mut rx_c] {
+        let result = rx
+            .try_recv()
+            .expect("answered when the joined handle drops");
+        assert_eq!(result.affected_pane_id, Some(PaneId::Plugin(7)));
+    }
+
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    let promoted = NotificationEnd::join(None, vec![NotificationEnd::new(tx)])
+        .expect("with no primary the first follower stands in");
+    assert!(rx.try_recv().is_err());
+    drop(promoted);
+    assert!(rx.try_recv().is_ok());
+
+    assert!(NotificationEnd::join(None, vec![]).is_none());
+}
+
+/// Two identical reloads of a plugin that is not running: the survivor becomes an `AddPlugin`
+/// carrying its completion, and the collapsed one's must go the same way rather than being
+/// dropped at the end of the plugin thread's turn - which answered its CLI before the pane
+/// existed and with no pane id.
+#[test]
+#[serial(plugin_tests)]
+pub fn collapsed_reloads_of_an_unloaded_plugin_are_answered_by_the_add_plugin() {
+    use crate::route::NotificationEnd;
+    use zellij_utils::input::layout::{PluginUserConfiguration, RunPlugin, RunPluginLocation};
+
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread(Some(plugin_host_folder), None);
+
+    let run_plugin = || {
+        RunPluginOrAlias::RunPlugin(RunPlugin {
+            _allow_exec_host_cmd: false,
+            location: RunPluginLocation::File(PathBuf::from(&*LUA_PLUGIN_FIXTURE)),
+            configuration: PluginUserConfiguration::new(BTreeMap::new()),
+            ..Default::default()
+        })
+    };
+    let (tx_first, mut rx_first) = tokio::sync::oneshot::channel();
+    let (tx_second, mut rx_second) = tokio::sync::oneshot::channel();
+    // The client the plugin loads for. Handling it also keeps the thread busy while both reloads
+    // land on the bus behind it, so the second is there to collapse when the first is taken.
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(1));
+    for tx in [tx_first, tx_second] {
+        let _ = plugin_thread_sender.send(PluginInstruction::Reload(
+            Some(false),
+            None,
+            run_plugin(),
+            1,
+            Size { rows: 20, cols: 80 },
+            Some(NotificationEnd::new(tx)),
+        ));
+    }
+
+    let deadline = std::time::Instant::now() + zellij_test_support::default_timeout();
+    let mut add_plugins = vec![];
+    while std::time::Instant::now() < deadline {
+        let Ok((instruction, _)) =
+            screen_receiver.recv_timeout(std::time::Duration::from_millis(200))
+        else {
+            continue;
+        };
+        if let ScreenInstruction::AddPlugin(..) = instruction {
+            add_plugins.push(instruction);
+            if add_plugins.len() == 1 {
+                // Give a second `AddPlugin` - a reload that did not collapse - time to show.
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                while let Ok((instruction, _)) = screen_receiver.try_recv() {
+                    if let ScreenInstruction::AddPlugin(..) = instruction {
+                        add_plugins.push(instruction);
+                    }
+                }
+                break;
+            }
+        }
+    }
+    assert_eq!(
+        add_plugins.len(),
+        1,
+        "one reload of a plugin that is not running starts it once"
+    );
+    assert!(
+        rx_first.try_recv().is_err() && rx_second.try_recv().is_err(),
+        "neither CLI is answered while the screen still holds the AddPlugin"
+    );
+
+    // What the screen does once the pane exists.
+    let ScreenInstruction::AddPlugin(_, _, _, _, _, _, plugin_id, _, _, _, _, _, _, completion, _) =
+        add_plugins.pop().unwrap()
+    else {
+        unreachable!()
+    };
+    let mut completion = completion.expect("the survivor carries its completion");
+    completion.set_affected_pane_id(PaneId::Plugin(plugin_id));
+    drop(completion);
+    for rx in [&mut rx_first, &mut rx_second] {
+        let result = rx
+            .try_recv()
+            .expect("both CLIs are answered by the AddPlugin");
+        assert_eq!(result.affected_pane_id, Some(PaneId::Plugin(plugin_id)));
+    }
+    teardown();
+}
+
 #[test]
 pub fn coalescing_hovers_keeps_the_newest_per_client_and_nothing_else_moves() {
     let hover =

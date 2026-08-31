@@ -3677,6 +3677,11 @@ fn a_cancelled_plugin_stops_inside_a_pcall_loop() {
     for body in [
         "while true do pcall(function() while true do end end) end",
         "while true do xpcall(function() while true do end end, function(e) return e end) end",
+        // A handler that replaces the message would hide the marker from a result check: the
+        // prelude notes the cancel in the handler itself, before anything can rewrite it.
+        "while true do xpcall(function() while true do end end, function(_) return 'failed' end) end",
+        "while true do xpcall(function() while true do end end, function() end) end",
+        "while true do xpcall(function() while true do end end, function() error('again') end) end",
         "while true do coroutine.resume(coroutine.create(function() while true do end end)) end",
     ] {
         let error = cancel_mid_update(body);
@@ -3698,6 +3703,10 @@ fn pcall_still_reports_ordinary_errors_as_values() {
           assert(not ok and string.find(err, "boom"), "pcall changed: " .. tostring(err))
           local ok, err = xpcall(error, function(e) return "handled " .. e end, "boom")
           assert(not ok and err == "handled boom", "xpcall changed: " .. tostring(err))
+          local ok, sum = xpcall(function(a, b) return a + b end, print, 2, 3)
+          assert(ok and sum == 5, "xpcall dropped its extra arguments: " .. tostring(sum))
+          local ok, err = pcall(xpcall, error, "not a handler")
+          assert(not ok and string.find(tostring(err), "bad argument"), "xpcall arg check changed: " .. tostring(err))
           local ok, err = coroutine.resume(coroutine.create(function() error("boom") end))
           assert(not ok and string.find(err, "boom"), "resume changed: " .. tostring(err))
           local ok, a, b = pcall(function() return 1, 2 end)
