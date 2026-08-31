@@ -11,7 +11,10 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 use wasmi::{Engine, Instance, Linker, Module, Store};
 use wasmi_wasi::sync::WasiCtxBuilder;
@@ -67,6 +70,26 @@ fn plugin_cache_key(
     (plugin_config.path.clone(), builtin_plugins_dir)
 }
 
+/// Stop the guest at its next crossing of the host boundary once `PluginEnv::cancel` is set.
+///
+/// This is what lets an unload or a shutdown get past an instance that is looping inside
+/// `update()`: the executor thread it is pinned to is the only thing that can run its cleanup,
+/// and that thread is inside the guest. wasmi has no epoch interruption, so the hook fires on
+/// each call into or out of wasm — every host command, every WASI read and write — which is
+/// where such a loop spends its time. A loop that never calls the host is not caught; that
+/// would take fuel metering, which this deliberately does not turn on.
+fn install_cancel_hook(store: &mut Store<PluginEnv>) {
+    store.call_hook(|plugin_env: &mut PluginEnv, _call| {
+        if plugin_env.cancel.load(Ordering::Relaxed) {
+            Err(wasmi::Error::new(
+                crate::plugins::plugin_map::CANCELLED_BY_HOST,
+            ))
+        } else {
+            Ok(())
+        }
+    });
+}
+
 pub struct PluginLoader<'a> {
     skip_cache: bool,
     plugin_id: PluginId,
@@ -89,6 +112,7 @@ pub struct PluginLoader<'a> {
     plugin_data_store: Arc<PluginDataStore>,
     queues: Arc<Mutex<Queues>>,
     size: Size,
+    cancel: Arc<AtomicBool>,
     loading_indication: LoadingIndication,
     senders: ThreadSenders,
     engine: Engine,
@@ -135,6 +159,7 @@ impl<'a> PluginLoader<'a> {
             plugin_data_store: loading_context.plugin_data_store,
             queues: loading_context.queues,
             size: loading_context.size,
+            cancel: loading_context.cancel,
 
             skip_cache,
             senders,
@@ -327,6 +352,7 @@ impl<'a> PluginLoader<'a> {
         PluginEnv {
             response_sink: ResponseSink::WasiStdin,
             plugin_id: self.plugin_id,
+            cancel: self.cancel.clone(),
             client_id: self.client_id,
             owner_client_id: self.client_id,
             plugin: self.plugin_config.clone(), // TODO: change field name in PluginEnv to plugin_config
@@ -390,6 +416,7 @@ impl<'a> PluginLoader<'a> {
         let plugin_env =
             self.create_plugin_env(Some(wasi_ctx), stdin_pipe.clone(), stdout_pipe.clone());
         let mut store = Store::new(&self.engine, plugin_env);
+        install_cancel_hook(&mut store);
 
         // See `plugin_limits` for what a plugin is allowed to allocate
         store.limiter(|plugin_env| &mut plugin_env.store_limits);
@@ -491,6 +518,7 @@ impl<'a> PluginLoader<'a> {
         let plugin_env = PluginEnv {
             response_sink: ResponseSink::WasiStdin,
             plugin_id: self.plugin_id,
+            cancel: self.cancel.clone(),
             client_id: self.client_id,
             owner_client_id: self.client_id,
             plugin: plugin_config,
@@ -523,6 +551,7 @@ impl<'a> PluginLoader<'a> {
             store_limits: PluginResourceLimits::new(self.plugin_id),
         };
         let mut store = Store::new(&self.engine, plugin_env);
+        install_cancel_hook(&mut store);
 
         // See `plugin_limits` for what a plugin is allowed to allocate
         store.limiter(|plugin_env| &mut plugin_env.store_limits);

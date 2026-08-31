@@ -425,6 +425,9 @@ pub(crate) fn plugin_thread_main(
             PluginInstruction::Update(updates) => {
                 PluginInstruction::Update(drain_updates(&bus, updates, &mut queued))
             },
+            reload @ (PluginInstruction::Reload(..) | PluginInstruction::ReloadPluginByUrl(..)) => {
+                drain_reloads(&bus, reload, &mut queued)
+            },
             other => other,
         };
         err_ctx.add_call(ContextType::Plugin((&event).into()));
@@ -2053,6 +2056,59 @@ fn drain_updates(
         }
     }
     coalesce_hovers(updates)
+}
+
+/// Collapse the reloads of the same plugin waiting behind `first` into it, the way
+/// `drain_updates` merges `Update`s: adjacent only, same variant only, and the first message of
+/// another kind stops the drain and is left in `queued`.
+///
+/// A reload is a full unload and load, on the plugin thread and under the global plugin map
+/// lock, so it is the most expensive instruction there is — and a plugin can ask for one with a
+/// single host call. One that asks in a loop (hocus once did, thousands of times a second) fills
+/// this bus with reloads faster than one can run, and every other plugin's events wait behind
+/// them: the whole plugin subsystem reads as frozen. `pending_plugin_reloads` already folds
+/// reloads that arrive *while* one is in flight into a single follow-up; this closes the gap
+/// before that, where they queue up unseen. The extras' completion handles are dropped, which is
+/// what completes them for the CLI that may be waiting.
+fn drain_reloads(
+    bus: &Bus<PluginInstruction>,
+    first: PluginInstruction,
+    queued: &mut Option<(PluginInstruction, ErrorContext)>,
+) -> PluginInstruction {
+    let Some(target) = reload_target(&first) else {
+        return first;
+    };
+    let mut collapsed = 0;
+    while collapsed < MAX_UPDATE_DRAIN {
+        match bus.try_recv() {
+            Some((next, ctx)) => {
+                let same_kind = std::mem::discriminant(&next) == std::mem::discriminant(&first);
+                if same_kind && reload_target(&next) == Some(target) {
+                    collapsed += 1;
+                } else {
+                    *queued = Some((next, ctx));
+                    break;
+                }
+            },
+            None => break,
+        }
+    }
+    if collapsed > 0 {
+        log::warn!(
+            "collapsed {collapsed} queued reload(s) of {} into one",
+            target.location_string()
+        );
+    }
+    first
+}
+
+/// The plugin a reload instruction names, or `None` for any other instruction.
+fn reload_target(instruction: &PluginInstruction) -> Option<&RunPluginOrAlias> {
+    match instruction {
+        PluginInstruction::Reload(_, _, run_plugin, _, _, _)
+        | PluginInstruction::ReloadPluginByUrl(run_plugin) => Some(run_plugin),
+        _ => None,
+    }
 }
 
 /// A hover is a position sample, so only the newest one per (plugin, client) means anything:

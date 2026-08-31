@@ -20,7 +20,11 @@ use notify_debouncer_full::{notify::RecommendedWatcher, Debouncer, RecommendedCa
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, MutexGuard, TryLockError,
+    },
+    time::{Duration, Instant},
 };
 use tokio::sync::mpsc::Sender;
 use url::Url;
@@ -109,6 +113,7 @@ pub struct LoadingContext {
     pub plugin_data_store: Arc<PluginDataStore>,
     pub queues: Arc<Mutex<Queues>>,
     pub size: Size,
+    pub cancel: Arc<AtomicBool>,
 }
 
 impl LoadingContext {
@@ -163,6 +168,13 @@ impl LoadingContext {
             plugin_data_store: wasm_bridge.plugin_data_store.clone(),
             queues: wasm_bridge.queues.clone(),
             size,
+            // Made by the load or reload this context is for; a context built for a plugin
+            // nothing registered (an `add_client` for one mid-unload) gets a token nobody sets.
+            cancel: wasm_bridge
+                .cancel_tokens
+                .get(&plugin_id)
+                .cloned()
+                .unwrap_or_default(),
         }
     }
     pub fn update_plugin_path(&mut self, new_path: PathBuf) {
@@ -205,6 +217,11 @@ pub struct WasmBridge {
     /// move either check outside that lock.
     unloaded_while_loading: Arc<Mutex<HashSet<PluginId>>>,
     pending_plugin_reloads: HashSet<RunPlugin>,
+    /// One cancel token per plugin, shared with every instance's `PluginEnv::cancel`. Kept here
+    /// so that `unload_plugin` can set it **without taking the plugin's lock** — an instance
+    /// looping inside `update()` holds that lock on its executor thread, and the plugin thread
+    /// waiting for it there is exactly how a runaway plugin once wedged session shutdown.
+    cancel_tokens: HashMap<PluginId, Arc<AtomicBool>>,
     /// Named work queues. Jobs are ordinary plugins once running; this is what decides when
     /// they start and who is told when they end. Shared with every `PluginEnv`, which enqueues
     /// and reads status directly - see the note on `PluginEnv::queues`. Never hold this lock
@@ -298,6 +315,7 @@ impl WasmBridge {
             loading_plugins: HashSet::new(),
             unloaded_while_loading: Default::default(),
             pending_plugin_reloads: HashSet::new(),
+            cancel_tokens: HashMap::new(),
             queues: Default::default(),
             zellij_cwd,
             session_env_vars,
@@ -390,6 +408,7 @@ impl WasmBridge {
                 self.cached_resizes_for_pending_plugins
                     .insert(plugin_id, (size.rows, size.cols));
                 self.loading_plugins.insert((plugin_id, run.clone()));
+                self.cancel_token(plugin_id);
 
                 // Clone for threaded contexts
                 let plugin_executor = self.plugin_executor.clone();
@@ -573,7 +592,36 @@ impl WasmBridge {
         Ok((plugin_id, client_id))
     }
     pub fn unload_plugin(&mut self, pid: PluginId) -> Result<()> {
+        self.unload_plugin_with_deadline(pid, None)
+    }
+
+    /// The token every instance of `plugin_id` checks; made on first use, so a load and the
+    /// `LoadingContext` built for it share one. Removed by `unload_plugin`.
+    fn cancel_token(&mut self, plugin_id: PluginId) -> Arc<AtomicBool> {
+        self.cancel_tokens.entry(plugin_id).or_default().clone()
+    }
+
+    /// `unload_plugin`, with a bound on how long to wait for `plugin_map` when one is given.
+    ///
+    /// The loader holds that lock across the guest's `load()`, so at shutdown a plugin looping
+    /// there without ever calling the host (which is what the cancel token needs) would hold the
+    /// plugin thread forever. With a deadline the unload is skipped instead: the process is
+    /// exiting, and what is lost is that plugin's `BeforeClose`.
+    fn unload_plugin_with_deadline(
+        &mut self,
+        pid: PluginId,
+        plugin_map_deadline: Option<Duration>,
+    ) -> Result<()> {
         info!("Bye from plugin {}", pid);
+        // The plugin's cancel token. Not set here: a plugin that is unloaded because it asked
+        // to close itself is usually still inside the `update()` that asked, with more to do
+        // (quit-confirmation closes itself and *then* sends `Quit`), and a token set now would
+        // trap it between the two. At shutdown it is set already, by `cleanup`; otherwise the
+        // watchdog armed below sets it only if the unload's cleanup job has not started within
+        // `UNLOAD_GRACE` — which on the plugin's own pinned thread means the guest never came
+        // back from what it was doing.
+        let cancel = self.cancel_tokens.remove(&pid);
+        let shutting_down = plugin_map_deadline.is_some();
         let _ = self.senders.send_to_server(ServerInstruction::RebindKeys {
             client_id: 0,
             keys_to_rebind: vec![],
@@ -587,7 +635,14 @@ impl WasmBridge {
         // nothing to remove; it is marked instead, under the same lock, so the loader gives up
         // when its turn comes - see `unloaded_while_loading`.
         let plugins_to_cleanup: Vec<_> = {
-            let mut plugin_map = self.plugin_map.lock().unwrap();
+            let Some(mut plugin_map) = lock_with_deadline(&self.plugin_map, plugin_map_deadline)
+            else {
+                log::error!(
+                    "plugin {pid} could not be unloaded: its runtime is busy and the session is \
+                     shutting down"
+                );
+                return Ok(());
+            };
             let removed: Vec<_> = plugin_map.remove_plugins(pid).into_iter().collect();
             let still_loading = self.loading_plugins.iter().any(|(p_id, _)| *p_id == pid);
             if removed.is_empty() && still_loading {
@@ -605,15 +660,22 @@ impl WasmBridge {
         // submitted for an unregistered plugin is dropped — see
         // `PinnedExecutor::execute_plugin_unload`.
         let last_cleanup = plugins_to_cleanup.len().saturating_sub(1);
+        let cleanup_started = Arc::new(AtomicBool::new(false));
+        if let (Some(cancel), false, false) =
+            (&cancel, shutting_down, plugins_to_cleanup.is_empty())
+        {
+            arm_unload_watchdog(pid, cancel.clone(), cleanup_started.clone());
+        }
         for (index, ((plugin_id, client_id), (running_plugin, subscriptions, workers))) in
             plugins_to_cleanup.into_iter().enumerate()
         {
-            // Clear key intercepts if needed (on main thread is OK)
-            if running_plugin.lock().unwrap().intercepting_key_presses() {
-                let _ = self
-                    .senders
-                    .send_to_screen(ScreenInstruction::ClearKeyPressesIntercepts(client_id));
-            }
+            let cleanup_started = cleanup_started.clone();
+            // Unconditionally, rather than asking the plugin whether it intercepts: asking
+            // takes its lock, and an instance still running on its executor thread holds that
+            // lock for as long as it runs. An idle clear costs the screen nothing.
+            let _ = self
+                .senders
+                .send_to_screen(ScreenInstruction::ClearKeyPressesIntercepts(client_id));
             // Clear any regex highlights this plugin registered across all panes
             let _ = self
                 .senders
@@ -633,12 +695,17 @@ impl WasmBridge {
                                 _connected_clients: Arc<Mutex<Vec<ClientId>>>,
                                 _plugin_cache: PluginCache,
                                 _engine: Engine| {
+                // Running at all is what the unload watchdog waits to see.
+                cleanup_started.store(true, Ordering::Relaxed);
                 let subscriptions_guard = subscriptions.lock().unwrap();
                 let needs_before_close = subscriptions_guard.contains(&EventType::BeforeClose);
                 drop(subscriptions_guard); // Release lock before calling plugin
 
                 if needs_before_close {
                     let mut rp = running_plugin.lock().unwrap();
+                    // Holding the lock means the guest is not running: if the token was set, it
+                    // has done its work, and `BeforeClose` gets a normal call.
+                    rp.env().cancel.store(false, Ordering::Relaxed);
                     match apply_before_close_event_to_plugin(
                         plugin_id,
                         client_id,
@@ -690,10 +757,12 @@ impl WasmBridge {
                 .send_to_server(ServerInstruction::UnblockCliPipeInput(pipe_name))
                 .context("failed to unblock input pipe");
         }
-        let plugin_list = self.plugin_map.lock().unwrap().list_plugins();
-        let _ = self
-            .senders
-            .send_to_background_jobs(BackgroundJob::ReportPluginList(plugin_list));
+        if let Some(plugin_map) = lock_with_deadline(&self.plugin_map, plugin_map_deadline) {
+            let plugin_list = plugin_map.list_plugins();
+            let _ = self
+                .senders
+                .send_to_background_jobs(BackgroundJob::ReportPluginList(plugin_list));
+        }
 
         // The one place a queue slot is released. Every way a job can end - it reported, it was
         // cancelled, it closed itself, its pane was closed, it crashed - comes through here.
@@ -947,6 +1016,9 @@ impl WasmBridge {
         let mut loading_indication = LoadingIndication::new(run_plugin.location.to_string());
         self.start_plugin_loading_indication(&[plugin_id], &loading_indication);
         self.loading_plugins.insert((plugin_id, run_plugin.clone()));
+        // Kept, not replaced: a reload does not cancel the instance it replaces, whose
+        // `BeforeClose` runs below on the same thread, after whatever it is doing now.
+        self.cancel_token(plugin_id);
 
         let plugin_executor = self.plugin_executor.clone();
 
@@ -2015,18 +2087,33 @@ impl WasmBridge {
         // Before any unload: the unload hook pumps queues, and nothing may start now.
         self.queues.lock().unwrap().shut_down();
 
+        // Stop every guest first, so an instance looping in `update()` or `load()` releases
+        // its lock and its executor thread before the unloads below need either.
+        for cancel in self.cancel_tokens.values() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+
         // A plugin whose loader has not run yet is not in the plugin map, so the loop below
         // would miss it and its loader would instantiate it after this thread is gone. Unload
         // it first: that is what records the cancellation the loader checks for.
         let still_loading: Vec<PluginId> =
             self.loading_plugins.iter().map(|(pid, _)| *pid).collect();
         for plugin_id in still_loading {
-            drop(self.unload_plugin(plugin_id));
+            drop(self.unload_plugin_with_deadline(plugin_id, Some(SHUTDOWN_LOCK_TIMEOUT)));
         }
 
-        let plugin_ids = self.plugin_map.lock().unwrap().plugin_ids();
+        let plugin_ids = match lock_with_deadline(&self.plugin_map, Some(SHUTDOWN_LOCK_TIMEOUT)) {
+            Some(plugin_map) => plugin_map.plugin_ids(),
+            None => {
+                log::error!(
+                    "plugins could not be unloaded at shutdown: a plugin's loader is still \
+                     running and did not stop"
+                );
+                vec![]
+            },
+        };
         for plugin_id in &plugin_ids {
-            drop(self.unload_plugin(*plugin_id));
+            drop(self.unload_plugin_with_deadline(*plugin_id, Some(SHUTDOWN_LOCK_TIMEOUT)));
         }
         if let Some(watcher) = self.watcher.take() {
             watcher.stop_nonblocking();
@@ -3173,6 +3260,55 @@ pub fn apply_events_to_plugin(
         },
     }
     failure.map_or(Ok(()), Err)
+}
+
+/// How long an unload gives the plugin's current entrypoint call to return before the plugin is
+/// cancelled. Its cleanup job is queued on its own pinned thread, behind that call; a call that
+/// has not returned in this long is not coming back on its own.
+const UNLOAD_GRACE: Duration = Duration::from_secs(3);
+
+/// Set `cancel` after `UNLOAD_GRACE` unless the unload's cleanup job has started by then.
+fn arm_unload_watchdog(
+    plugin_id: PluginId,
+    cancel: Arc<AtomicBool>,
+    cleanup_started: Arc<AtomicBool>,
+) {
+    crate::global_async_runtime::get_tokio_runtime().spawn(async move {
+        tokio::time::sleep(UNLOAD_GRACE).await;
+        if !cleanup_started.load(Ordering::Relaxed) {
+            log::warn!(
+                "plugin {plugin_id} has not returned from its entrypoint {UNLOAD_GRACE:?} after \
+                 its unload; cancelling it"
+            );
+            cancel.store(true, Ordering::Relaxed);
+        }
+    });
+}
+
+/// How long shutdown waits for `plugin_map` before giving a plugin up. Long enough for a
+/// cancelled guest to reach its next host call; short enough that a guest that never will does
+/// not hold the session's exit.
+const SHUTDOWN_LOCK_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// `mutex.lock()`, or with a deadline a `try_lock` loop that gives up as `None` once it passes.
+fn lock_with_deadline<T>(
+    mutex: &Mutex<T>,
+    deadline: Option<Duration>,
+) -> Option<MutexGuard<'_, T>> {
+    let Some(deadline) = deadline else {
+        return Some(mutex.lock().unwrap());
+    };
+    let started = Instant::now();
+    loop {
+        match mutex.try_lock() {
+            Ok(guard) => return Some(guard),
+            Err(TryLockError::Poisoned(poisoned)) => return Some(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) if started.elapsed() < deadline => {
+                std::thread::sleep(Duration::from_millis(5));
+            },
+            Err(TryLockError::WouldBlock) => return None,
+        }
+    }
 }
 
 pub fn handle_plugin_crash(plugin_id: PluginId, message: String, senders: ThreadSenders) {

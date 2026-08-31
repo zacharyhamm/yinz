@@ -21,6 +21,7 @@ fn test_env() -> PluginEnv {
     PluginEnv {
         response_sink: ResponseSink::WasiStdin,
         plugin_id: 1,
+        cancel: Default::default(),
         client_id: 1,
         owner_client_id: 1,
         plugin: PluginConfig {
@@ -3601,4 +3602,35 @@ fn the_workflow_example_loads_and_runs_on_r() {
         error.contains("pane_workflow") || result.is_ok(),
         "pressing r must reach pane_workflow, got: {error}"
     );
+}
+
+/// The cancel token stops a loop that never calls the host: the instruction-count hook sees the
+/// flag and raises, and the entrypoint comes back as an error naming the cause.
+#[test]
+fn a_cancelled_plugin_stops_mid_loop() {
+    let source = r#"
+        local M = {}
+        function M.update(event)
+          while true do end
+        end
+        return M
+    "#;
+    let env = test_env();
+    let cancel = env.cancel.clone();
+    let mut plugin = load_lua_plugin(source, "test.lua", env).unwrap();
+    // Set from another thread while `update` is inside its loop. If the flag lands before the
+    // loop starts the hook fires on the loop's first instructions instead, so the order does
+    // not matter for the outcome - the delay only makes the interesting case the usual one.
+    let setter = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    let error = plugin
+        .update(&Event::InputReceived)
+        .expect_err("the loop was stopped");
+    assert!(
+        format!("{error:?}").contains(crate::plugins::plugin_map::CANCELLED_BY_HOST),
+        "{error:?}"
+    );
+    setter.join().unwrap();
 }

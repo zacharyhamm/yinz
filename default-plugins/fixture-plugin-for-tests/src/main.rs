@@ -119,6 +119,15 @@ impl ZellijPlugin for State {
     }
 
     fn update(&mut self, event: Event) -> bool {
+        if matches!(event, Event::Key(_))
+            && self.configuration.get("runaway").map(|v| v == "true") == Some(true)
+        {
+            // A guest that never returns. Every iteration crosses the host boundary, which is
+            // where the host's cancel token stops it — see the `runaway` plugin-thread tests.
+            loop {
+                get_plugin_ids();
+            }
+        }
         match &event {
             Event::Key(key) => match key.bare_key {
                 BareKey::Char('a') if key.has_no_modifiers() => {

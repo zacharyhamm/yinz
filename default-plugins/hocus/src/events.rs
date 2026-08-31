@@ -1572,7 +1572,12 @@ impl State {
     ///
     /// `start_or_reload_plugin` returns nothing, so this cannot answer yet: it asks, records
     /// what it asked for, and leaves the head pending for `poll_plugin_load` to answer once the
-    /// pane has had time to show what happened. The path is re-resolved rather than carried:
+    /// pane has had time to show what happened. That makes it a *deferral* in `run_head`'s
+    /// terms, so it returns `false`: the head is still at the front of the queue, and a `true`
+    /// here sends `pump_tools` straight back into it - which once asked the host for the same
+    /// reload thousands of times a second without ever leaving `update()`. The one `true` is
+    /// the refusal, which answers the head and lets the pump advance.
+    /// The path is re-resolved rather than carried:
     /// `resolve_plugin_file` is pure and was already given the same folder and name, so it
     /// cannot answer differently here, and a reload must be built from an absolute path -
     /// `RunPluginLocation::parse` joins a relative `file:` path onto the cwd, which
@@ -1585,8 +1590,8 @@ impl State {
             tools::resolve_plugin_file(&self.user_plugin_dir, args.name.as_deref()).ok()
         });
         let Some(target) = target else {
+            // Answered, not pumped: the caller is `pump_tools` itself, which advances on `true`.
             self.finish_head("the plugin could not be resolved to a file");
-            self.pump_tools();
             return true;
         };
         let extension =
@@ -1610,7 +1615,7 @@ impl State {
         });
         self.status = Status::AwaitingPluginLoad;
         self.arm_timer(FRAME_SECONDS);
-        true
+        false
     }
 
     fn project_tool_result(

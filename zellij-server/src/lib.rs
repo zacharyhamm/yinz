@@ -57,6 +57,13 @@ const CLIENT_WRITER_FLUSH_TIMEOUT: Duration = Duration::from_millis(500);
 /// up. Must exceed the client's own `CONNECT_TO_SERVER_TIMEOUT` (30s) with
 /// margin, so the server never leaves before a slow client finishes connecting.
 const FIRST_CLIENT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long session shutdown waits for the plugin thread. It exits once every plugin is
+/// unloaded, and a plugin that is looping is cancelled first (`PluginEnv::cancel`) — but a
+/// guest that never calls the host cannot be, and joining it without a bound once held a dead
+/// session's process open indefinitely, with every hook client that connected piling up
+/// behind the join. Past this the thread is abandoned and the exit goes on.
+const PLUGIN_THREAD_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
 use zellij_utils::envs;
 use zellij_utils::pane_size::Size;
 
@@ -592,7 +599,7 @@ impl Drop for SessionMetaData {
             let _ = pty_thread.join();
         }
         if let Some(plugin_thread) = self.plugin_thread.take() {
-            let _ = plugin_thread.join();
+            join_with_timeout(plugin_thread, PLUGIN_THREAD_EXIT_TIMEOUT, "plugin");
         }
         if let Some(pty_writer_thread) = self.pty_writer_thread.take() {
             let _ = pty_writer_thread.join();
@@ -607,6 +614,23 @@ impl Drop for SessionMetaData {
             let _ = recorder_thread.join();
         }
     }
+}
+
+/// Join `handle`, giving up after `timeout` with an error in the log rather than waiting on a
+/// thread that may never finish. See `PLUGIN_THREAD_EXIT_TIMEOUT`.
+fn join_with_timeout(handle: thread::JoinHandle<()>, timeout: Duration, name: &str) {
+    let started = std::time::Instant::now();
+    while !handle.is_finished() {
+        if started.elapsed() >= timeout {
+            log::error!(
+                "the {name} thread did not exit within {timeout:?} of being told to; leaving it \
+                 behind"
+            );
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let _ = handle.join();
 }
 
 /// Remove a client from session state and synthesize empty
@@ -2061,6 +2085,12 @@ pub fn start_server_impl(
 
     log::info!("Server exiting: {exit_reason}");
 
+    // Before the joins below, so that a client connecting from now on — a hook's
+    // `zellij action agent-report`, a session probe — is refused at the socket rather than
+    // accepted by the listener and parked on `session_state` until the joins finish, which
+    // is where a shutdown that waits on a stuck plugin thread spends its time.
+    drop(std::fs::remove_file(&socket_path));
+
     // Drop cached session data before exit. This joins the pty thread, which
     // drops `Pty` and closes every pane — which is what terminates each pane's
     // supervisor, via `clear_terminal_id`.
@@ -2081,8 +2111,6 @@ pub fn start_server_impl(
     // process can exit before the bytes are written and a client that was told
     // why the session ended sees a bare hangup instead.
     os_input.flush_client_writers(CLIENT_WRITER_FLUSH_TIMEOUT);
-
-    drop(std::fs::remove_file(&socket_path));
 }
 
 fn init_session(

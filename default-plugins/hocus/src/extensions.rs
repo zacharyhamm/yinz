@@ -292,8 +292,30 @@ pub fn load(path: &str, namespace: &str) {
     );
 }
 
+/// Off wasm a load or reload is only counted, so a test can see it was asked exactly once;
+/// see `tools::test_seams`.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn load(_path: &str, _namespace: &str) {}
+pub mod test_seams {
+    use std::cell::Cell;
+
+    thread_local! {
+        pub static EXTENSION_LOAD_CALLS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub fn count_load() {
+        let calls = EXTENSION_LOAD_CALLS.get() + 1;
+        EXTENSION_LOAD_CALLS.set(calls);
+        assert!(
+            calls <= crate::tools::test_seams::MAX_RELOAD_CALLS,
+            "an extension was (re)loaded {calls} times: pump_tools is re-running a deferred head"
+        );
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn load(_path: &str, _namespace: &str) {
+    test_seams::count_load();
+}
 
 #[cfg(target_arch = "wasm32")]
 pub fn reload(owner: u32) {
@@ -301,7 +323,9 @@ pub fn reload(owner: u32) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn reload(_owner: u32) {}
+pub fn reload(_owner: u32) {
+    test_seams::count_load();
+}
 
 #[cfg(target_arch = "wasm32")]
 pub fn call(owner: u32, payload: String) {

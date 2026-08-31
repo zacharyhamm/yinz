@@ -863,9 +863,10 @@ impl State {
     /// the host's compiler, `plugin_log` from the host's read of its own log, and the four that
     /// touch the plugin folder through the host's `fs_*` commands against the `/plugins` root,
     /// which answer synchronously.
-    /// A cleared `plugin_reload` is the one that changes state rather than answering: the load
-    /// is fire-and-forget, so the head stays pending until the pane has had time to show what
-    /// happened.
+    /// A cleared `plugin_reload` is the one that defers rather than answering: the load is
+    /// fire-and-forget, so the head stays pending until the pane has had time to show what
+    /// happened, and this returns `false` so `pump_tools` stops there instead of running the
+    /// same head again.
     ///
     /// Everything refusable without touching anything is refused first: no plugin folder, a bad
     /// name, an empty source.

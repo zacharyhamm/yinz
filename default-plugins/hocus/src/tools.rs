@@ -3921,8 +3921,39 @@ pub fn new_pane_with_context(_args: &Args, _context: BTreeMap<String, String>) -
     "tools are unavailable outside zellij".to_owned()
 }
 
+/// Test seams for the reload path, which off wasm has no host to talk to. `PLUGIN_FS_EXISTS`
+/// is what `plugin_fs_exists` answers (`None` keeps the "unreachable" error every other file
+/// tool gives); `RELOAD_CALLS` counts what `reload_plugin` was asked. Per thread, so tests
+/// running in parallel do not see each other's.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn reload_plugin(_path: &str) {}
+pub mod test_seams {
+    use std::cell::Cell;
+
+    thread_local! {
+        pub static PLUGIN_FS_EXISTS: Cell<Option<bool>> = const { Cell::new(None) };
+        pub static RELOAD_CALLS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// One `plugin_reload` is one ask. Past this many the tool loop is re-running a head it
+    /// should have left pending, and that is the bug a test exists to catch - as a failure,
+    /// not as a hang.
+    pub const MAX_RELOAD_CALLS: usize = 8;
+
+    pub fn reset() {
+        PLUGIN_FS_EXISTS.set(None);
+        RELOAD_CALLS.set(0);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn reload_plugin(_path: &str) {
+    let calls = test_seams::RELOAD_CALLS.get() + 1;
+    test_seams::RELOAD_CALLS.set(calls);
+    assert!(
+        calls <= test_seams::MAX_RELOAD_CALLS,
+        "reload_plugin called {calls} times: pump_tools is re-running a deferred head"
+    );
+}
 
 /// Off wasm there is no session to hold the record; the tests read `manual_kinds`.
 #[cfg(not(target_arch = "wasm32"))]
@@ -3951,7 +3982,9 @@ pub fn plugin_fs_list(_root: &str) -> Result<Vec<zellij_tile::prelude::FsEntry>,
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn plugin_fs_exists(_path: &str) -> Result<bool, String> {
-    Err(PLUGIN_FOLDER_UNREACHABLE.to_owned())
+    test_seams::PLUGIN_FS_EXISTS
+        .get()
+        .ok_or_else(|| PLUGIN_FOLDER_UNREACHABLE.to_owned())
 }
 
 #[cfg(not(target_arch = "wasm32"))]

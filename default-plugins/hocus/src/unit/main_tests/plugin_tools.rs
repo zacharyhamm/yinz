@@ -171,9 +171,105 @@ fn cleared_reload(state: &mut State, arguments: &str) {
     }]
     .into();
     assert!(
-        state.start_plugin_load(),
-        "a reload changes state rather than answering"
+        !state.start_plugin_load(),
+        "a reload defers: the pump must stop here"
     );
+}
+
+/// The bug this guards against: `start_plugin_load` once returned `true` with the head still
+/// pending, and `pump_tools` - a loop over the head - ran it again, and again, asking the host
+/// for the same reload thousands of times a second without ever returning from `update()`.
+/// Every plugin in the session froze behind it. So the pump itself is driven here, not
+/// `run_head`, and the host stub counts (and past a handful, panics).
+#[test]
+fn a_cleared_reload_asks_the_host_once_and_stops_the_pump() {
+    crate::tools::test_seams::reset();
+    crate::tools::test_seams::PLUGIN_FS_EXISTS.set(Some(true));
+    let mut state = plugin_state();
+    state.pending = vec![ToolCall {
+        id: "mine".into(),
+        name: "plugin_reload".into(),
+        arguments: r#"{"name":"keys"}"#.into(),
+    }]
+    .into();
+    state.pump_tools();
+    assert_eq!(
+        crate::tools::test_seams::RELOAD_CALLS.get(),
+        1,
+        "one reload per call"
+    );
+    assert!(matches!(state.status, Status::AwaitingPluginLoad));
+    assert_eq!(state.pending.len(), 1, "the head must stay pending");
+    assert!(tool_results(&state).is_empty(), "answered before looking");
+    assert_eq!(
+        state
+            .plugin_load
+            .as_ref()
+            .map(|watch| watch.target.as_str()),
+        Some("/home/someone/.config/zellij/plugins/keys.lua")
+    );
+    crate::tools::test_seams::reset();
+}
+
+/// The same through `y` on a confirmation, which runs the head and then pumps: the pump must
+/// find the head deferred and stop, not run it a second time.
+#[test]
+fn a_confirmed_reload_does_not_rerun_the_head() {
+    crate::tools::test_seams::reset();
+    crate::tools::test_seams::PLUGIN_FS_EXISTS.set(Some(true));
+    let mut state = plugin_state();
+    state.pending = vec![ToolCall {
+        id: "mine".into(),
+        name: "plugin_reload".into(),
+        arguments: r#"{"name":"keys"}"#.into(),
+    }]
+    .into();
+    state.status = Status::ConfirmingTool;
+    assert!(state.confirm_tool());
+    assert_eq!(
+        crate::tools::test_seams::RELOAD_CALLS.get(),
+        1,
+        "one reload per call"
+    );
+    assert!(matches!(state.status, Status::AwaitingPluginLoad));
+    assert_eq!(state.pending.len(), 1, "the head must stay pending");
+    assert!(tool_results(&state).is_empty());
+    crate::tools::test_seams::reset();
+}
+
+/// A hocus extension takes the other branch - a headless load or reload - and defers the same
+/// way, so the pump must stop for it too.
+#[test]
+fn a_cleared_extension_reload_asks_the_host_once_and_stops_the_pump() {
+    crate::tools::test_seams::reset();
+    crate::extensions::test_seams::EXTENSION_LOAD_CALLS.set(0);
+    crate::tools::test_seams::PLUGIN_FS_EXISTS.set(Some(true));
+    let mut state = plugin_state();
+    state.pending = vec![ToolCall {
+        id: "mine".into(),
+        name: "plugin_reload".into(),
+        arguments: r#"{"name":"hocus/keys"}"#.into(),
+    }]
+    .into();
+    state.pump_tools();
+    assert_eq!(
+        crate::extensions::test_seams::EXTENSION_LOAD_CALLS.get(),
+        1,
+        "one load per call"
+    );
+    assert_eq!(
+        crate::tools::test_seams::RELOAD_CALLS.get(),
+        0,
+        "not a pane plugin"
+    );
+    assert!(matches!(state.status, Status::AwaitingPluginLoad));
+    assert_eq!(state.pending.len(), 1, "the head must stay pending");
+    assert!(state
+        .plugin_load
+        .as_ref()
+        .is_some_and(|watch| watch.extension));
+    crate::tools::test_seams::reset();
+    crate::extensions::test_seams::EXTENSION_LOAD_CALLS.set(0);
 }
 
 /// The plugin is started once the host says the file is there, and not before. A reload is
