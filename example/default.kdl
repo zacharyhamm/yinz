@@ -363,6 +363,14 @@ plugins {
         // more direct tool runs; both keys are omitted from API requests unless set.
         // thinking "disabled"
         // reasoning_effort "low"
+        //
+        // Which wire protocol the endpoint speaks. "chat" (the default) is
+        // /v1/chat/completions, which every OpenAI-compatible provider implements;
+        // "responses" is OpenAI's /v1/responses, the only endpoint that takes
+        // reasoning_effort and a tool set in the same request. On chat/completions
+        // OpenAI's reasoning models reject that pair with a 400, so set this to use
+        // hocus's tools and reasoning together. Both come off the same base_url.
+        // api "responses"
     }
     // The agent list, bound to Ctrl e a above — its own overlay pane, beside the
     // conversation or in its place. Sized by hocus's `width` and `height`, above.

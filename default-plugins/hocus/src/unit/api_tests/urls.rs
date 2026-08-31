@@ -87,3 +87,33 @@ fn model_ids_of_an_unparseable_body_is_empty() {
     assert!(model_ids(b"<html>404</html>").is_empty());
     assert!(model_ids(b"{}").is_empty());
 }
+
+#[test]
+fn responses_url_handles_the_same_base_shapes() {
+    for base in [
+        "https://api.openai.com/v1",
+        "https://api.openai.com/v1/",
+        "https://api.openai.com/v1/chat/completions",
+        "https://api.openai.com/v1/responses",
+    ] {
+        assert_eq!(
+            responses_url(base),
+            "https://api.openai.com/v1/responses",
+            "{base}"
+        );
+    }
+    assert_eq!(
+        responses_url("http://localhost:11434"),
+        "http://localhost:11434/v1/responses"
+    );
+}
+
+/// The model picker reads `/v1/models` off the same `base_url`, so it has to
+/// survive a base written as either endpoint.
+#[test]
+fn models_url_strips_a_responses_suffix() {
+    assert_eq!(
+        models_url("https://api.openai.com/v1/responses"),
+        "https://api.openai.com/v1/models"
+    );
+}

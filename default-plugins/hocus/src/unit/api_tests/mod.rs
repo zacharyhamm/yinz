@@ -14,6 +14,9 @@ fn test_config() -> Config {
         model: "gpt-4o-mini".into(),
         base_url: DEFAULT_BASE_URL.into(),
         api_key_env: DEFAULT_API_KEY_ENV.into(),
+        // Chat in the shared fixture, so every test that predates the second
+        // transport goes on asserting the chat shape. `responses` builds its own.
+        api: Api::Chat,
         search_url: DEFAULT_SEARCH_URL.into(),
         search_proxy: None,
         dobbs: DEFAULT_DOBBS.into(),
@@ -87,6 +90,7 @@ fn accumulate(chunks: &[&[u8]]) -> Vec<ToolCall> {
 mod config;
 mod errors;
 mod request_body;
+mod responses;
 mod search;
 mod streaming;
 mod tool_calls;

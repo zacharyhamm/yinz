@@ -339,6 +339,15 @@ plugins {
     //                  does. Useful when the agent only reaches the network via a
     //                  sidecar, e.g. tailscale. Unset sends `web_search` direct.
     //
+    //   api             which wire protocol the endpoint speaks. "chat" (the default)
+    //                   is `/v1/chat/completions`, which every OpenAI-compatible
+    //                   provider implements. "responses" is OpenAI's `/v1/responses`,
+    //                   which is the only endpoint that accepts `reasoning_effort` and
+    //                   a tool set in the same request - on chat/completions OpenAI's
+    //                   reasoning models reject the pair with a 400, so set this to
+    //                   use hocus's tools and reasoning together. Both are derived
+    //                   from the same `base_url`.
+    //
     //   reasoning_echo  "false" stops hocus handing a thinking model its own
     //                   `reasoning_content` back on the tool-calling turns of the
     //                   transcript. On otherwise, because DeepSeek's thinking mode
