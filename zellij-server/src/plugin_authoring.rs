@@ -20,7 +20,8 @@ pub struct Written {
 ///
 /// An overwrite keeps the version it replaced as `<name>.bak.lua`, which is the same thing
 /// hocus's `plugin_write` does: a rewrite that dropped a feature is then one read away from
-/// the file it dropped it from, whichever surface did the rewriting.
+/// the file it dropped it from, whichever surface did the rewriting. A backup that cannot be
+/// kept refuses the write rather than proceeding without one - see [`keep_backup`].
 pub fn write(
     dir: &Path,
     name: &str,
@@ -59,20 +60,52 @@ pub fn write(
     }
     std::fs::create_dir_all(parent)
         .map_err(|e| anyhow::anyhow!("failed to create {}: {e}", parent.display()))?;
-    // Best effort, and before the write rather than after it: a backup that cannot be made is
-    // not a reason to refuse a write, but a write that happened without one would be.
-    let replaced = path
-        .is_file()
-        .then(|| {
-            let backup = zellij_utils::plugin_authoring::backup_name(name);
-            let backup = zellij_utils::plugin_authoring::resolve_plugin_file(dir, &backup).ok()?;
-            (!backup.is_symlink() && std::fs::copy(&path, &backup).is_ok()).then_some(backup)
-        })
-        .flatten();
     let contents = format!("{}\n", source.trim_end_matches('\n'));
+    // Before the write, and a refusal when it cannot be made: the write is the only thing that
+    // destroys the old version, so a backup that silently did not happen would be worse than no
+    // backup at all - the file it was meant to hold would already be gone.
+    let replaced = match path.is_file() {
+        true => keep_backup(dir, name, &path, &contents)?,
+        false => None,
+    };
     std::fs::write(&path, contents)
         .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))?;
     Ok(Written { path, replaced })
+}
+
+/// Copy `path` to its `.bak` sibling before it is replaced, answering with where it went.
+///
+/// `None` when there is nothing worth keeping: the file already holds exactly what is about to
+/// be written, and copying it would overwrite the backup of the last version that actually
+/// differed. Anything else that stops the copy - a `.bak` that is a symlink, an unwritable
+/// folder - is an error rather than a shrug, because the caller is about to overwrite the only
+/// copy of the file.
+fn keep_backup(
+    dir: &Path,
+    name: &str,
+    path: &Path,
+    contents: &str,
+) -> anyhow::Result<Option<PathBuf>> {
+    if std::fs::read_to_string(path).is_ok_and(|previous| previous == contents) {
+        return Ok(None);
+    }
+    let backup = zellij_utils::plugin_authoring::backup_name(name);
+    let backup = zellij_utils::plugin_authoring::resolve_plugin_file(dir, &backup)
+        .map_err(|e| anyhow::anyhow!("failed to name a backup of {}: {e}", path.display()))?;
+    if backup.is_symlink() {
+        anyhow::bail!(
+            "{} is a symlink; refusing to keep a backup through it",
+            backup.display()
+        );
+    }
+    std::fs::copy(path, &backup).map_err(|e| {
+        anyhow::anyhow!(
+            "failed to keep a backup of {} as {}: {e}",
+            path.display(),
+            backup.display()
+        )
+    })?;
+    Ok(Some(backup))
 }
 
 /// The last `lines` lines of `log_file` about the plugin at `path`: the runtime tags a
@@ -135,6 +168,15 @@ mod tests {
             std::fs::read_to_string(plugins.join("keys.bak.lua")).unwrap(),
             "return {}\n"
         );
+        // A rewrite that changes nothing must not overwrite the backup: what that would throw
+        // away is the last version that actually differed.
+        let identical = write(&plugins, "keys", "return { x = 1 }\n\n", true, true).unwrap();
+        assert!(identical.replaced.is_none(), "nothing was replaced");
+        assert_eq!(
+            std::fs::read_to_string(plugins.join("keys.bak.lua")).unwrap(),
+            "return {}\n",
+            "the backup still holds the version before this one"
+        );
         let refused = write(&plugins, "broken", "return {", false, true).unwrap_err();
         assert!(
             refused.to_string().contains("does not compile"),
@@ -150,6 +192,23 @@ mod tests {
             std::os::unix::fs::symlink(dir.path(), plugins.join("linked")).unwrap();
             let refused = write(&plugins, "linked/x", "return {}", false, true).unwrap_err();
             assert!(refused.to_string().contains("symlink"), "{refused}");
+            // A backup that cannot be kept refuses the write: the alternative is destroying the
+            // only copy of the file and saying nothing about it.
+            write(&plugins, "linked-bak", "return { first = 1 }", false, true).unwrap();
+            std::os::unix::fs::symlink(
+                dir.path().join("elsewhere.lua"),
+                plugins.join("linked-bak.bak.lua"),
+            )
+            .unwrap();
+            let refused =
+                write(&plugins, "linked-bak", "return { second = 2 }", true, true).unwrap_err();
+            assert!(refused.to_string().contains("backup"), "{refused}");
+            assert_eq!(
+                std::fs::read_to_string(plugins.join("linked-bak.lua")).unwrap(),
+                "return { first = 1 }\n",
+                "the file it could not back up is still there"
+            );
+            assert!(!dir.path().join("elsewhere.lua").exists());
         }
     }
 

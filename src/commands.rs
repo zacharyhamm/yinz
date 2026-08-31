@@ -1006,11 +1006,15 @@ pub(crate) fn plugins(command: zellij_utils::cli::Plugins, opts: &CliArgs) -> an
             Ok(())
         },
         PluginsCli::Check { name, file } => {
-            let (chunk, source) = match (name, file) {
+            // Two names, and they are not the same one: `chunk` is what the compiler quotes in
+            // an error, and the lint's is the plugin name - `hocus/todo`, not `todo.lua` -
+            // because one of its rules turns on where in the folder the file lands.
+            let (chunk, lint_name, source) = match (name, file) {
                 (_, Some(file)) => (
                     file.file_name()
                         .map(|f| f.to_string_lossy().to_string())
                         .unwrap_or_else(|| file.display().to_string()),
+                    plugin_name_of(&plugin_dir, &file),
                     read_source(Some(&file))?,
                 ),
                 (Some(name), None) => {
@@ -1021,6 +1025,7 @@ pub(crate) fn plugins(command: zellij_utils::cli::Plugins, opts: &CliArgs) -> an
                         path.file_name()
                             .map(|f| f.to_string_lossy().to_string())
                             .unwrap_or_default(),
+                        name,
                         std::fs::read_to_string(&path).map_err(|e| {
                             anyhow::anyhow!("failed to read {}: {e}", path.display())
                         })?,
@@ -1030,7 +1035,7 @@ pub(crate) fn plugins(command: zellij_utils::cli::Plugins, opts: &CliArgs) -> an
             };
             zellij_server::check_lua_plugin(&source, &chunk).map_err(|e| anyhow::anyhow!(e))?;
             println!("{chunk} compiles");
-            print_plugin_lint(&chunk, &source);
+            print_plugin_lint(&lint_name, &source);
             Ok(())
         },
         PluginsCli::Reload { name } => {
@@ -1059,6 +1064,36 @@ pub(crate) fn plugins(command: zellij_utils::cli::Plugins, opts: &CliArgs) -> an
             );
             Ok(())
         },
+    }
+}
+
+/// The plugin name a file would be written under, for a file given by path: its place in the
+/// plugin folder when it is in one (`hocus/todo`), and its bare stem when it is not.
+///
+/// A `--file` check is usually of a file that is not in the folder yet, so the fallback is the
+/// common case rather than the odd one; what it must not do is answer `todo.lua` for a file
+/// sitting in `<plugin dir>/hocus/`, which is what makes the extension rule invisible.
+fn plugin_name_of(plugin_dir: &std::path::Path, file: &std::path::Path) -> String {
+    let stem = |path: &std::path::Path| {
+        path.file_stem()
+            .map(|stem| stem.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.display().to_string())
+    };
+    let Some(relative) = file.canonicalize().ok().and_then(|file| {
+        Some(
+            file.strip_prefix(plugin_dir.canonicalize().ok()?)
+                .ok()?
+                .to_owned(),
+        )
+    }) else {
+        return stem(file);
+    };
+    match relative
+        .parent()
+        .map(|parent| parent.to_string_lossy().to_string())
+    {
+        Some(folder) if !folder.is_empty() => format!("{folder}/{}", stem(&relative)),
+        _ => stem(&relative),
     }
 }
 

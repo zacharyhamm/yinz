@@ -322,20 +322,40 @@ fn a_listing_is_names_one_folder_deep() {
 /// model does not go looking for a prompt that will never come.
 #[test]
 fn a_write_report_names_the_next_step_and_what_it_granted() {
-    let plain = write_report("probe", &[], None);
+    let plain = write_report("probe", &[], &Kept::Nothing);
     assert!(plain.contains("plugin_reload"), "{plain}");
     assert!(!plain.contains("granted"), "{plain}");
-    let granted = write_report("probe.lua", &[PermissionType::ReadFiles], None);
+    assert!(!plain.contains("backup"), "{plain}");
+    let granted = write_report("probe.lua", &[PermissionType::ReadFiles], &Kept::Nothing);
     assert!(granted.contains("wrote probe.lua"), "{granted}");
     assert!(granted.contains("granted it read_files"), "{granted}");
     assert!(exists_report("probe").contains("overwrite=true"));
     // A rewrite that lost something is recoverable, and only a report that names the copy
     // makes that true for the model rather than only for the disk.
-    let replaced = write_report("probe", &[], Some(&backup_name("probe")));
+    let replaced = write_report("probe", &[], &Kept::At(backup_name("probe")));
     assert!(replaced.contains("probe.bak"), "{replaced}");
-    let edited = edit_report("probe", &[], Some(&backup_name("probe")));
+    let edited = edit_report("probe", &[], &Kept::At(backup_name("probe")));
     assert!(edited.contains("edited probe.lua"), "{edited}");
     assert!(edited.contains("probe.bak"), "{edited}");
+    // And a backup that could not be written is said out loud: everything else in this report
+    // tells the model the old version is one read away.
+    let unkept = edit_report("probe", &[], &Kept::Failed);
+    assert!(unkept.contains("no backup to read"), "{unkept}");
+}
+
+/// The backup is one version deep, and the version worth having is the last one that differed:
+/// a rewrite of the file with what it already says must leave the copy alone.
+#[test]
+fn a_write_that_changes_nothing_keeps_nothing() {
+    let same = "return {}\n";
+    assert_eq!(keep_replaced("probe", Some(same), same), Kept::Nothing);
+    assert_eq!(keep_replaced("probe", None, same), Kept::Nothing);
+    assert_eq!(keep_replaced("probe", Some("   "), same), Kept::Nothing);
+    // Off wasm there is no plugin folder to write into, which is the failure this reports.
+    assert_eq!(
+        keep_replaced("probe", Some("return { old = true }\n"), same),
+        Kept::Failed
+    );
 }
 
 /// An edit is the alternative to re-sending a file from memory, so it has to be exact: the two
@@ -472,6 +492,67 @@ fn a_write_confirmation_names_the_permissions_it_grants() {
     );
     let without = consequence(&call("plugin_write", r#"{"name":"keys","source":"x"}"#)).unwrap();
     assert!(!without.contains("grants"), "{without}");
+}
+
+/// An edit's permissions are the ones in the text being inserted, and only those: that is the
+/// clause the user is shown, so it has to be the set `tool_loop` grants. Reading them off the
+/// edited file would grant permissions that were never in the sentence anyone agreed to.
+#[test]
+fn an_edit_confirmation_names_the_permissions_in_the_text_it_inserts() {
+    let edit = call(
+        "plugin_edit",
+        r#"{"name":"keys","old_string":"-- todo","new_string":"zellij.request_permission { \"read_files\" }"}"#,
+    );
+    let sentence = consequence(&edit).unwrap();
+    assert!(sentence.contains("changes keys.lua"), "{sentence}");
+    assert!(
+        sentence.ends_with("and grants it: read_files"),
+        "{sentence}"
+    );
+    let args = Args::parse(&edit.arguments).unwrap();
+    assert_eq!(
+        requested_permissions(args.new_string.as_deref().unwrap_or("")),
+        vec![PermissionType::ReadFiles],
+        "the grant in `tool_loop` reads the same text this sentence does"
+    );
+    // The rest of the file is not part of the sentence, so it is not part of the grant.
+    let elsewhere = "zellij.request_permission { \"write_files\" }\n-- todo\n";
+    assert!(
+        !requested_permissions(
+            &apply_edit(
+                elsewhere,
+                "-- todo",
+                args.new_string.as_deref().unwrap_or(""),
+                false
+            )
+            .unwrap()
+        )
+        .is_empty(),
+        "the edited file asks for more than the edit did, which is the point"
+    );
+}
+
+/// A toast is a glance. `source` was capped for that reason and an edit's two code arguments
+/// are no different - together they can be longer than the file.
+#[test]
+fn a_long_edit_is_cut_short_in_the_toast() {
+    let new_string: Vec<String> = (0..50).map(|n| format!("-- line {n}")).collect();
+    let edit = call(
+        "plugin_edit",
+        &serde_json::json!({
+            "name": "keys",
+            "old_string": "-- todo",
+            "new_string": new_string.join("\n"),
+        })
+        .to_string(),
+    );
+    let toast = confirmation_toast(&edit);
+    assert!(toast.contains("-- line 0"), "{toast}");
+    assert!(toast.contains("30 more lines"), "{toast}");
+    assert!(!toast.contains("-- line 49"), "{toast}");
+    // The confirmation itself still shows all of it: that is what is being agreed to.
+    let detail = confirmation_detail(&edit).join("\n");
+    assert!(detail.contains("-- line 49"), "{detail}");
 }
 
 #[test]

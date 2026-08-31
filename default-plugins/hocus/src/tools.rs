@@ -365,7 +365,9 @@ pub fn with_lint(report: String, name: &str, source: &str) -> String {
     )
 }
 
-/// How many lines of source a toast keeps before summarizing the rest.
+/// How many lines of any multiline argument a toast keeps before summarizing the rest. A
+/// `plugin_edit`'s `old_string` and `new_string` are code just as much as a `source` is, and a
+/// toast is a glance rather than a document.
 const SOURCE_PREVIEW_LINES: usize = 20;
 
 /// The call's arguments as one `key: value` line each, so the thing being agreed
@@ -397,11 +399,7 @@ fn argument_lines_with_source_limit(call: &ToolCall, source_limit: Option<usize>
                 lines.extend(
                     text_lines
                         .by_ref()
-                        .take(
-                            source_limit
-                                .filter(|_| key == "source")
-                                .unwrap_or(usize::MAX),
-                        )
+                        .take(source_limit.unwrap_or(usize::MAX))
                         .map(|line| format!("  {line}")),
                 );
                 let hidden = text_lines.count();
@@ -2551,36 +2549,61 @@ pub fn backup_name(name: &str) -> String {
     plugin_authoring::backup_name(name)
 }
 
+/// What became of the version a write replaced.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Kept {
+    /// It is in the backup, under the name it reads back as (`plugin_read name=keys.bak`).
+    At(String),
+    /// There was nothing to keep: a new file, or a rewrite of what was already there.
+    Nothing,
+    /// There was a version to keep and it could not be kept.
+    Failed,
+}
+
 /// What a write or an edit says about the copy it kept of the file it replaced.
-fn kept_sentence(backup: Option<&str>) -> String {
-    match backup {
-        Some(backup) => format!(
+fn kept_sentence(kept: &Kept) -> String {
+    match kept {
+        Kept::At(backup) => format!(
             " (the version it replaced is in {backup}, read it with \
              plugin_read if this rewrite lost something)"
         ),
-        None => String::new(),
+        Kept::Nothing => String::new(),
+        // Said rather than swallowed: the model is being told the old version is one read away
+        // everywhere else, and acting on that when it is not there is the trap.
+        Kept::Failed => {
+            " (the version it replaced could not be kept, so there is no backup to read)".to_owned()
+        },
     }
 }
 
-/// Keep `replaced` - the source about to be overwritten - as the plugin's backup, answering
-/// with the name it reads back under (`plugin_read name=keys.bak`).
+/// Keep `replaced` - the source that was there before this write - as the plugin's backup.
 ///
-/// Best effort: a backup that cannot be written is not worth failing a write the user has
-/// already approved over, so the report simply says nothing about one. One version deep, since
-/// what a rewrite that dropped a feature needs is the file as it was one edit ago.
-pub fn keep_replaced(name: &str, replaced: Option<&str>) -> Option<String> {
-    let replaced = replaced?;
-    if replaced.trim().is_empty() {
-        return None;
+/// Best effort by necessity: hocus writes through the host and only then makes its copy, so a
+/// backup that cannot be written cannot un-write the file the user already approved. What it
+/// can do is say so, which is what [`Kept::Failed`] is for. One version deep, since what a
+/// rewrite that dropped a feature needs is the file as it was one edit ago.
+///
+/// A write that changed nothing keeps nothing: copying the file over its own backup would throw
+/// away the last version that actually differed, which is the one worth having.
+pub fn keep_replaced(name: &str, replaced: Option<&str>, written: &str) -> Kept {
+    let Some(replaced) = replaced else {
+        return Kept::Nothing;
+    };
+    if replaced.trim().is_empty() || replaced == written {
+        return Kept::Nothing;
     }
     let backup = backup_name(name);
-    let path = plugin_fs_path(Some(&backup)).ok()?;
-    plugin_fs_write(&path, replaced, true).ok()?;
-    Some(backup)
+    let Ok(path) = plugin_fs_path(Some(&backup)) else {
+        return Kept::Failed;
+    };
+    match plugin_fs_write(&path, replaced, true) {
+        Ok(true) => Kept::At(backup),
+        _ => Kept::Failed,
+    }
 }
 
 /// What a `plugin_write` answers once the file is there, and its permissions granted.
-pub fn write_report(name: &str, granted: &[PermissionType], backup: Option<&str>) -> String {
+pub fn write_report(name: &str, granted: &[PermissionType], backup: &Kept) -> String {
     let name = name.trim().trim_end_matches(".lua");
     let kept = kept_sentence(backup);
     if granted.is_empty() {
@@ -2593,7 +2616,7 @@ pub fn write_report(name: &str, granted: &[PermissionType], backup: Option<&str>
 }
 
 /// What a `plugin_edit` answers once the file has changed.
-pub fn edit_report(name: &str, granted: &[PermissionType], backup: Option<&str>) -> String {
+pub fn edit_report(name: &str, granted: &[PermissionType], backup: &Kept) -> String {
     let name = name.trim().trim_end_matches(".lua");
     let kept = kept_sentence(backup);
     if granted.is_empty() {

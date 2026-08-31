@@ -404,6 +404,13 @@ pub struct PluginEnv {
     pub cancel_tripped: Arc<AtomicBool>,
     pub plugin: PluginConfig,
     pub permissions: Arc<Mutex<Option<HashSet<PermissionType>>>>,
+    /// Whether this plugin has asked for permissions at all, set by `request_permission`.
+    ///
+    /// `permissions` alone cannot say: it is `None` both for a plugin whose request is still in
+    /// flight and for one that never made a request, and those two have opposite fixes - wait
+    /// for the answer, or ask in the first place. Shared by every instance of the plugin, like
+    /// `permissions` itself.
+    pub permissions_requested: Arc<AtomicBool>,
     pub senders: ThreadSenders,
     /// The WASI context backing a wasm plugin's filesystem and stdio. `None` for runtimes that
     /// have no WASI layer at all, such as Lua.
