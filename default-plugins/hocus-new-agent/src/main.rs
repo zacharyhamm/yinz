@@ -574,12 +574,21 @@ fn duplicate_command(
     manual_kinds: &BTreeMap<u32, String>,
 ) -> Option<CommandToRun> {
     let (kind, _) = agents::classify(pane, manual_kinds)?;
+    let (remote_host, firecracker_vm) = match pane
+        .host
+        .as_deref()
+        .and_then(|host| host.strip_prefix("firecracker:"))
+    {
+        Some(name) => (None, Some(name.to_owned())),
+        None => (pane.host.clone(), None),
+    };
     Some(CommandToRun {
         path: launch::binary_for(kind).into(),
         // `/host` is translated to the plugin's launch-time caller CWD, without
         // reinterpreting a real `/tmp`, `/host`, `/data` or `/cache` path.
         cwd: Some("/host".into()),
-        remote_host: pane.host.clone(),
+        remote_host,
+        firecracker_vm,
         ..Default::default()
     })
 }
@@ -1200,6 +1209,14 @@ mod tests {
         assert!(command.args.is_empty());
         assert_eq!(command.cwd, Some("/host".into()));
         assert_eq!(command.remote_host.as_deref(), Some("builder"));
+
+        let firecracker_pane = AgentPane {
+            host: Some("firecracker:review".to_owned()),
+            ..pane.clone()
+        };
+        let command = duplicate_command(&firecracker_pane, &BTreeMap::new()).unwrap();
+        assert_eq!(command.remote_host, None);
+        assert_eq!(command.firecracker_vm.as_deref(), Some("review"));
 
         let ordinary_pane = AgentPane {
             command: Some("bash".to_owned()),

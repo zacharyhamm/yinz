@@ -5,6 +5,37 @@ fn make_server() -> ServerOsInputOutput {
     get_server_os_input().expect("failed to create server os input")
 }
 
+#[test]
+fn firecracker_resolution_keeps_an_unresolved_command_for_reruns() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("provider");
+    fs::write(
+        &path,
+        "#!/bin/sh\nprintf '{\"version\":1,\"ssh_host\":\"build-box\",\"cwd\":\"/workspace\"}'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let server = make_server();
+    *server.firecracker.lock().unwrap() = Some((
+        crate::firecracker::Provider::new(path, Duration::from_secs(1)).unwrap(),
+        "work".to_owned(),
+    ));
+    let requested = RunCommand {
+        command: PathBuf::from("claude"),
+        firecracker_vm: Some("review".to_owned()),
+        ..Default::default()
+    };
+
+    let (resolved, rerun) = server.resolve_firecracker(requested.clone()).unwrap();
+    assert_eq!(resolved.remote_host.as_deref(), Some("build-box"));
+    assert_eq!(resolved.cwd, Some(PathBuf::from("/workspace")));
+    assert_eq!(rerun, requested);
+    assert!(server.resolve_firecracker(rerun).is_ok());
+}
+
 #[allow(dead_code)]
 fn long_running_cmd() -> Command {
     let mut cmd = Command::new("sleep");
