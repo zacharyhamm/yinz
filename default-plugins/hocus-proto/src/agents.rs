@@ -772,7 +772,7 @@ pub enum RunEntryKind {
     Question,
     /// Kept only so histories written before questions had their own kind still deserialize.
     Step,
-    /// Kept only so histories written before results were dropped still deserialize.
+    /// Hidden from the timeline but retained as input until a summary accepts this revision.
     Result,
 }
 
@@ -923,6 +923,14 @@ pub fn run_entry(event: &zellij_tile::agent::HookEvent) -> Option<(RunEntryKind,
         {
             (RunEntryKind::Question, waiting_detail(event)?)
         },
+        "Stop" => (RunEntryKind::Result, event.last_assistant_message.clone()?),
+        "StopFailure" => (
+            RunEntryKind::Result,
+            event
+                .last_assistant_message
+                .clone()
+                .unwrap_or_else(|| "Turn failed".to_owned()),
+        ),
         _ => return None,
     };
     let cap = match kind {
@@ -2856,7 +2864,14 @@ mod tests {
             last_assistant_message: Some("Implemented and tested.".to_owned()),
             ..event("Stop")
         };
-        assert_eq!(run_entry(&result), None);
+        assert_eq!(
+            run_entry(&result),
+            Some((RunEntryKind::Result, "Implemented and tested.".to_owned()))
+        );
+        assert_eq!(
+            run_entry(&event("StopFailure")),
+            Some((RunEntryKind::Result, "Turn failed".to_owned()))
+        );
         assert_eq!(
             run_entry(&crate::wire::HookEvent {
                 tool_name: Some("Bash".to_owned()),
