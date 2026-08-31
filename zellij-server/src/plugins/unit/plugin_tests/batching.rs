@@ -8,7 +8,7 @@
 //! plugin that logs each one and renders the log.
 
 use super::*;
-use crate::plugins::{coalesce_hovers, drain_updates};
+use crate::plugins::{coalesce_hovers, drain_reloads, drain_updates};
 use crate::ClientId;
 use zellij_test_support::Watched;
 use zellij_utils::data::{BareKey, KeyWithModifier, Mouse, PermissionStatus};
@@ -596,6 +596,77 @@ pub fn drain_stops_at_its_cap() {
     assert_eq!(merged.len(), 256, "one pass merges at most the cap");
     assert!(queued.is_none());
     assert!(bus.try_recv().is_some(), "the rest waits for the next pass");
+}
+
+fn reload_of(url: &str) -> PluginInstruction {
+    PluginInstruction::Reload(
+        Some(false),
+        None,
+        RunPluginOrAlias::from_url(url, &None, None, None).unwrap(),
+        1,
+        Size::default(),
+        None,
+    )
+}
+
+fn reload_by_url_of(url: &str) -> PluginInstruction {
+    PluginInstruction::ReloadPluginByUrl(
+        RunPluginOrAlias::from_url(url, &None, None, None).unwrap(),
+    )
+}
+
+/// A plugin asking for the same reload in a loop once filled this bus faster than the reloads
+/// could run; the run behind the first one collapses into it.
+#[test]
+pub fn adjacent_reloads_of_one_plugin_collapse_to_one() {
+    let bus = bus_with(vec![
+        reload_of("file:/plugins/keys.lua"),
+        reload_of("file:/plugins/keys.lua"),
+        update_of(&[scroll_up(1)]),
+        reload_of("file:/plugins/keys.lua"),
+    ]);
+    let mut queued = None;
+
+    let taken = drain_reloads(&bus, reload_of("file:/plugins/keys.lua"), &mut queued);
+
+    assert!(matches!(taken, PluginInstruction::Reload(..)));
+    assert!(
+        matches!(queued, Some((PluginInstruction::Update(_), _))),
+        "the first other kind stops the drain and is set aside, in order"
+    );
+    let (left_behind, _) = bus.try_recv().expect("the reload behind the update stays");
+    assert!(matches!(left_behind, PluginInstruction::Reload(..)));
+    assert!(bus.try_recv().is_none());
+}
+
+/// Only the *same* plugin's reloads merge, and only the same kind of reload: a reload of
+/// another plugin, or a by-url reload of this one, is a different instruction and stops the
+/// drain rather than disappearing into the first.
+#[test]
+pub fn a_reload_of_another_plugin_or_kind_stops_the_drain() {
+    let bus = bus_with(vec![
+        reload_of("file:/plugins/other.lua"),
+        reload_of("file:/plugins/keys.lua"),
+    ]);
+    let mut queued = None;
+    drain_reloads(&bus, reload_of("file:/plugins/keys.lua"), &mut queued);
+    assert!(
+        matches!(&queued, Some((PluginInstruction::Reload(_, _, run, _, _, _), _))
+            if run.location_string().ends_with("other.lua")),
+        "got {queued:?}"
+    );
+    assert!(
+        bus.try_recv().is_some(),
+        "nothing past the stop was touched"
+    );
+
+    let bus = bus_with(vec![reload_by_url_of("file:/plugins/keys.lua")]);
+    let mut queued = None;
+    drain_reloads(&bus, reload_of("file:/plugins/keys.lua"), &mut queued);
+    assert!(
+        matches!(queued, Some((PluginInstruction::ReloadPluginByUrl(_), _))),
+        "a by-url reload is not the same instruction as a pane reload"
+    );
 }
 
 #[test]

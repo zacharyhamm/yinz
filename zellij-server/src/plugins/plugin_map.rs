@@ -8,7 +8,7 @@ use std::io::Write;
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{atomic::AtomicBool, Arc, Mutex},
 };
 use wasmi::{Instance, Store};
 use wasmi_wasi::WasiCtx;
@@ -385,8 +385,17 @@ impl ResponseSink {
     }
 }
 
+/// The message a guest is stopped with when its cancel token is set.
+pub const CANCELLED_BY_HOST: &str = "plugin cancelled by the host";
+
 pub struct PluginEnv {
     pub plugin_id: PluginId,
+    /// Set by the host to stop this instance: an unload, or session shutdown. Wasm checks it at
+    /// every crossing of the host boundary (`Store::call_hook`), Lua every few thousand VM
+    /// instructions, and either traps the running entrypoint with `CANCELLED_BY_HOST`. Shared by
+    /// every instance of the plugin (one per client); see `WasmBridge::cancel_tokens` for why
+    /// the host keeps its own handle rather than reaching in here.
+    pub cancel: Arc<AtomicBool>,
     pub plugin: PluginConfig,
     pub permissions: Arc<Mutex<Option<HashSet<PermissionType>>>>,
     pub senders: ThreadSenders,
@@ -702,9 +711,6 @@ impl RunningPlugin {
     }
     pub fn update_user_plugin_dir(&mut self, user_plugin_dir: Option<PathBuf>) {
         self.env_mut().user_plugin_dir = user_plugin_dir;
-    }
-    pub fn intercepting_key_presses(&self) -> bool {
-        self.env().intercepting_key_presses
     }
 }
 

@@ -64,9 +64,31 @@ pub fn check_lua_plugin(source: &str, chunk_name: &str) -> std::result::Result<(
         .map_err(|e| e.to_string())
 }
 
+/// How many VM instructions run between looks at the plugin's cancel token. Low enough that a
+/// loop is stopped within milliseconds, high enough that the hook is not what a render costs.
+const CANCEL_CHECK_EVERY_N_INSTRUCTIONS: u32 = 10_000;
+
 pub fn load_lua_plugin(source: &str, chunk_name: &str, env: PluginEnv) -> Result<LuaPlugin> {
     let lua = Lua::new_with(plugin_stdlib(), mlua::LuaOptions::default())
         .map_err(|e| anyhow!("failed to create a Lua interpreter: {}", e))?;
+
+    // The Lua half of `PluginEnv::cancel`: an instruction-count hook, so a loop that never calls
+    // the host is stopped too. The hook owns its own handle on the flag because `PluginEnv` is
+    // borrowed by `Lua::scope` for the length of every entrypoint call.
+    let cancel = env.cancel.clone();
+    lua.set_hook(
+        mlua::HookTriggers::new().every_nth_instruction(CANCEL_CHECK_EVERY_N_INSTRUCTIONS),
+        move |_lua, _debug| {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                Err(mlua::Error::runtime(
+                    crate::plugins::plugin_map::CANCELLED_BY_HOST,
+                ))
+            } else {
+                Ok(mlua::VmState::Continue)
+            }
+        },
+    )
+    .map_err(|e| anyhow!("failed to install the cancel hook: {}", e))?;
 
     let globals = lua.globals();
     for global in DISALLOWED_GLOBALS {
