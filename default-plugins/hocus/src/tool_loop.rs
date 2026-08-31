@@ -97,6 +97,18 @@ impl State {
             if !self.run_head(&call) {
                 return;
             }
+            // `true` means the head was answered and popped. One that was not - a handler
+            // that deferred but said otherwise - would send this loop straight back into it,
+            // and `start_plugin_load` once did exactly that: the same reload was asked of the
+            // host thousands of times a second without `update()` ever returning, and every
+            // plugin in the session froze behind it. So the contract is checked here, once
+            // per iteration, and a breach is answered as a refusal rather than looped on.
+            if self.pending.front().is_some_and(|head| head.id == call.id) {
+                self.finish_head(format!(
+                    "refused: `{}` neither answered nor deferred; this is a bug in hocus",
+                    call.name
+                ));
+            }
         }
 
         // Only the user's own calls were in the queue: nothing to send.
@@ -228,6 +240,10 @@ impl State {
 
     fn start_extension_tool(&mut self, call: &ToolCall) -> bool {
         let Some(tool) = self.extensions.tool(&call.name).cloned() else {
+            // `run_head` only gets here after the same lookup succeeded, so this is not
+            // reached; it answers the head anyway, because a `true` that leaves the head in
+            // place is the shape of the bug `pump_tools` guards against.
+            self.finish_head(format!("refused: `{}` is not a tool", call.name));
             return true;
         };
         let arguments: serde_json::Map<String, serde_json::Value> =
