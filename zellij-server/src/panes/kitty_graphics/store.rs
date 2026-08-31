@@ -114,22 +114,38 @@ impl KittyImageStore {
         uid
     }
     pub fn store_image(&mut self, image: DecodedImage) -> Result<InternalImageId, KittyError> {
+        self.store_image_replacing(image, None)
+    }
+    pub fn replace_image(
+        &mut self,
+        old_id: InternalImageId,
+        image: DecodedImage,
+    ) -> Result<InternalImageId, KittyError> {
+        self.store_image_replacing(image, Some(old_id))
+    }
+    fn store_image_replacing(
+        &mut self,
+        image: DecodedImage,
+        old_id: Option<InternalImageId>,
+    ) -> Result<InternalImageId, KittyError> {
         let (rgba, width, height) = Self::normalize_to_rgba(image);
         let size = rgba.len();
-        if size > self.quota_bytes {
+        // A replacement may reclaim the old pixels, frames and scaled variants. Its base64 cache
+        // is deliberately not credited: make_room may discard caches before deciding whether the
+        // replacement fits.
+        let replaced_bytes = old_id
+            .and_then(|old_id| self.images.get(&old_id))
+            .map(Self::stored_image_data_bytes)
+            .unwrap_or(0);
+        if !self.make_room(size.saturating_sub(replaced_bytes), old_id) {
             // No amount of eviction can make room for this one, so the client is being told about
             // storage pressure rather than about a malformed command: ENOSPC says "retry smaller"
             // where EINVAL would say "fix your control data".
-            return Err(KittyError {
-                code: KittyErrorCode::Enospc,
-                message: "image exceeds storage quota".to_owned(),
-                image_id: None,
-                image_number: None,
-                placement_id: None,
-                quiet: 0,
-            });
+            return Err(Self::quota_error("image exceeds storage quota"));
         }
-        self.evict_to_fit(size, None);
+        if let Some(old_id) = old_id {
+            self.remove_entry(old_id);
+        }
         let id = self.next_image_id;
         self.next_image_id += 1;
         let lru_stamp = self.bump_lru();
@@ -199,41 +215,57 @@ impl KittyImageStore {
         id: InternalImageId,
         variant: Option<(u16, u16)>,
     ) -> Option<String> {
-        let stored = self.images.get_mut(&id)?;
-        if let Some(cached) = stored.base64_cache.get(&variant) {
-            return Some(cached.clone());
-        }
-        let bytes = match variant {
-            Some(cells) => stored.image.scaled_variants.get(&cells)?,
-            None => stored.image.displayed_rgba(),
+        let encoded = {
+            let stored = self.images.get(&id)?;
+            if let Some(cached) = stored.base64_cache.get(&variant) {
+                return Some(cached.clone());
+            }
+            let bytes = match variant {
+                Some(cells) => stored.image.scaled_variants.get(&cells)?,
+                None => stored.image.displayed_rgba(),
+            };
+            BASE64_ENCODER.encode(bytes)
         };
-        let encoded = BASE64_ENCODER.encode(bytes);
-        stored.base64_cache.insert(variant, encoded.clone());
-        Some(encoded)
-    }
-    pub fn add_scaled_variant(&mut self, id: InternalImageId, cells: (u16, u16), bytes: Vec<u8>) {
-        let lru_stamp = self.bump_lru();
-        let inserted = match self.images.get_mut(&id) {
-            Some(stored) => {
-                let new_len = bytes.len();
-                let old_len = stored
-                    .image
-                    .scaled_variants
-                    .insert(cells, bytes)
-                    .map(|old| old.len())
-                    .unwrap_or(0);
-                stored.base64_cache.remove(&Some(cells));
-                stored.lru_stamp = lru_stamp;
-                Some((old_len, new_len))
-            },
-            None => None,
-        };
-        if let Some((old_len, new_len)) = inserted {
-            self.total_bytes = self.total_bytes - old_len + new_len;
-            if self.total_bytes > self.quota_bytes {
-                self.evict_to_fit(0, Some(id));
+        // This cache is an optimization, not image data. Do not evict or reject anything merely
+        // to retain a second representation of pixels that can be encoded again later.
+        if self.has_room(encoded.len()) {
+            if let Some(stored) = self.images.get_mut(&id) {
+                stored.base64_cache.insert(variant, encoded.clone());
+                self.total_bytes += encoded.len();
             }
         }
+        Some(encoded)
+    }
+    /// Cache the raster for a scaled placement. Returns `false` without replacing the previous
+    /// raster when the new one cannot fit.
+    pub fn add_scaled_variant(
+        &mut self,
+        id: InternalImageId,
+        cells: (u16, u16),
+        bytes: Vec<u8>,
+    ) -> bool {
+        let old_len = match self.images.get(&id) {
+            Some(stored) => stored
+                .image
+                .scaled_variants
+                .get(&cells)
+                .map(Vec::len)
+                .unwrap_or(0),
+            None => return false,
+        };
+        self.remove_base64_cache(id, Some(cells));
+        if !self.make_room(bytes.len().saturating_sub(old_len), Some(id)) {
+            return false;
+        }
+        let lru_stamp = self.bump_lru();
+        let new_len = bytes.len();
+        let Some(stored) = self.images.get_mut(&id) else {
+            return false;
+        };
+        stored.image.scaled_variants.insert(cells, bytes);
+        stored.lru_stamp = lru_stamp;
+        self.total_bytes = self.total_bytes - old_len + new_len;
+        true
     }
     /// Add `rgba` as a new frame, or replace the pixels of frame `edit` if one is named.
     ///
@@ -245,9 +277,34 @@ impl KittyImageStore {
         edit: Option<u32>,
         rgba: Vec<u8>,
         gap_ms: i32,
-    ) -> Option<u32> {
-        let stored = self.images.get_mut(&id)?;
-        let before = stored.image.rgba.len() + stored.image.frame_bytes();
+    ) -> Result<Option<u32>, KittyError> {
+        let old_len = {
+            let stored = match self.images.get(&id) {
+                Some(stored) => stored,
+                None => return Ok(None),
+            };
+            match edit {
+                Some(1) => stored.image.rgba.len(),
+                Some(n) => match n
+                    .checked_sub(2)
+                    .and_then(|index| stored.image.frames.get(index as usize))
+                {
+                    Some(frame) => frame.rgba.len(),
+                    None => return Ok(None),
+                },
+                None => 0,
+            }
+        };
+        // Frame writes invalidate the encoded displayed raster. Dropping a cache on a refused
+        // write changes only future encoding work, not protocol-visible image state.
+        self.remove_all_base64_caches(id);
+        if !self.make_room(rgba.len().saturating_sub(old_len), Some(id)) {
+            return Err(Self::quota_error("animation frame exceeds storage quota"));
+        }
+        let new_len = rgba.len();
+        let Some(stored) = self.images.get_mut(&id) else {
+            return Ok(None);
+        };
         let frame_number = match edit {
             Some(1) => {
                 // Editing frame 1 rewrites the root image itself.
@@ -256,7 +313,9 @@ impl KittyImageStore {
                 1
             },
             Some(n) => {
-                let frame = stored.image.frames.get_mut(n as usize - 2)?;
+                let Some(frame) = stored.image.frames.get_mut(n as usize - 2) else {
+                    return Ok(None);
+                };
                 frame.rgba = rgba;
                 frame.gap_ms = gap_ms;
                 n
@@ -266,14 +325,12 @@ impl KittyImageStore {
                 stored.image.frames.len() as u32 + 1
             },
         };
-        let after = stored.image.rgba.len() + stored.image.frame_bytes();
-        stored.base64_cache.clear();
-        self.total_bytes = self.total_bytes + after - before;
+        self.total_bytes = self.total_bytes - old_len + new_len;
         let lru_stamp = self.bump_lru();
         if let Some(stored) = self.images.get_mut(&id) {
             stored.lru_stamp = lru_stamp;
         }
-        Some(frame_number)
+        Ok(Some(frame_number))
     }
     /// Set which frame is displayed. Changing it invalidates every cached raster derived from the
     /// old one — the scaled variants the render path reads and their base64 encodings.
@@ -282,7 +339,13 @@ impl KittyImageStore {
         stored.image.frame_rgba(frame_number)?;
         if stored.image.current_frame != frame_number as usize {
             stored.image.current_frame = frame_number as usize;
-            let freed: usize = stored.image.scaled_variants.values().map(Vec::len).sum();
+            let freed: usize = stored
+                .image
+                .scaled_variants
+                .values()
+                .map(Vec::len)
+                .sum::<usize>()
+                + stored.base64_cache.values().map(String::len).sum::<usize>();
             stored.image.scaled_variants.clear();
             stored.base64_cache.clear();
             self.total_bytes -= freed;
@@ -326,29 +389,31 @@ impl KittyImageStore {
     /// Delete frame `frame_number`, or every frame when none is named. The root image is never
     /// removed this way — spec, `d=f`: it deletes "the animation frames" and leaves the image.
     pub fn remove_frames(&mut self, id: InternalImageId, frame_number: Option<u32>) -> Option<()> {
-        let stored = self.images.get_mut(&id)?;
-        let before = stored.image.frame_bytes();
-        match frame_number {
-            // Frame 1 is the root image, which `d=f` may not take away.
-            Some(0) | Some(1) => return None,
-            Some(n) => {
-                let index = n as usize - 2;
-                if index >= stored.image.frames.len() {
-                    return None;
-                }
-                stored.image.frames.remove(index);
-            },
-            None => stored.image.frames.clear(),
-        }
-        // The frames after a removed one shift down, so a current frame past the end has to come
-        // back to something that exists.
-        if stored.image.current_frame > stored.image.frame_count() as usize {
-            stored.image.current_frame = 1;
-            stored.image.scaled_variants.clear();
-        }
-        stored.base64_cache.clear();
-        let after = stored.image.frame_bytes();
-        self.total_bytes = self.total_bytes + after - before;
+        let (before, after) = {
+            let stored = self.images.get_mut(&id)?;
+            let before = Self::stored_image_bytes(stored);
+            match frame_number {
+                // Frame 1 is the root image, which `d=f` may not take away.
+                Some(0) | Some(1) => return None,
+                Some(n) => {
+                    let index = n as usize - 2;
+                    if index >= stored.image.frames.len() {
+                        return None;
+                    }
+                    stored.image.frames.remove(index);
+                },
+                None => stored.image.frames.clear(),
+            }
+            // The frames after a removed one shift down, so a current frame past the end has to
+            // come back to something that exists.
+            if stored.image.current_frame > stored.image.frame_count() as usize {
+                stored.image.current_frame = 1;
+                stored.image.scaled_variants.clear();
+            }
+            stored.base64_cache.clear();
+            (before, Self::stored_image_bytes(stored))
+        };
+        self.total_bytes = self.total_bytes - before + after;
         Some(())
     }
     /// Remove the image outright, whatever its refcount. `d=F` frees the data even while it is on
@@ -369,7 +434,20 @@ impl KittyImageStore {
         self.next_lru_stamp += 1;
         self.next_lru_stamp
     }
-    fn stored_image_bytes(stored: &StoredImage) -> usize {
+    fn quota_error(message: &str) -> KittyError {
+        KittyError {
+            code: KittyErrorCode::Enospc,
+            message: message.to_owned(),
+            image_id: None,
+            image_number: None,
+            placement_id: None,
+            quiet: 0,
+        }
+    }
+    fn base64_cache_bytes(stored: &StoredImage) -> usize {
+        stored.base64_cache.values().map(String::len).sum()
+    }
+    fn stored_image_data_bytes(stored: &StoredImage) -> usize {
         stored.image.rgba.len()
             + stored
                 .image
@@ -379,13 +457,73 @@ impl KittyImageStore {
                 .sum::<usize>()
             + stored.image.frame_bytes()
     }
+    fn stored_image_bytes(stored: &StoredImage) -> usize {
+        Self::stored_image_data_bytes(stored) + Self::base64_cache_bytes(stored)
+    }
     fn remove_entry(&mut self, id: InternalImageId) {
         if let Some(stored) = self.images.remove(&id) {
             self.total_bytes -= Self::stored_image_bytes(&stored);
         }
     }
-    fn evict_to_fit(&mut self, incoming_bytes: usize, protected: Option<InternalImageId>) {
-        while self.total_bytes + incoming_bytes > self.quota_bytes {
+    fn has_room(&self, incoming_bytes: usize) -> bool {
+        incoming_bytes <= self.quota_bytes.saturating_sub(self.total_bytes)
+    }
+    fn remove_base64_cache(&mut self, id: InternalImageId, variant: Option<(u16, u16)>) {
+        let removed = self
+            .images
+            .get_mut(&id)
+            .and_then(|stored| stored.base64_cache.remove(&variant))
+            .map(|encoded| encoded.len())
+            .unwrap_or(0);
+        self.total_bytes -= removed;
+    }
+    fn remove_all_base64_caches(&mut self, id: InternalImageId) {
+        let removed = match self.images.get_mut(&id) {
+            Some(stored) => {
+                let removed = Self::base64_cache_bytes(stored);
+                stored.base64_cache.clear();
+                removed
+            },
+            None => 0,
+        };
+        self.total_bytes -= removed;
+    }
+    fn remove_every_base64_cache(&mut self) {
+        let removed: usize = self
+            .images
+            .values_mut()
+            .map(|stored| {
+                let removed = Self::base64_cache_bytes(stored);
+                stored.base64_cache.clear();
+                removed
+            })
+            .sum();
+        self.total_bytes -= removed;
+    }
+    /// Make room without ever evicting a displayed image. Base64 encodings are disposable, while
+    /// image entries are removed only after a preflight proves that the request can succeed.
+    fn make_room(&mut self, incoming_bytes: usize, protected: Option<InternalImageId>) -> bool {
+        if incoming_bytes > self.quota_bytes {
+            return false;
+        }
+        if self.has_room(incoming_bytes) {
+            return true;
+        }
+        self.remove_every_base64_cache();
+        if self.has_room(incoming_bytes) {
+            return true;
+        }
+        let reclaimable: usize = self
+            .images
+            .iter()
+            .filter(|(id, stored)| stored.refcount == 0 && Some(**id) != protected)
+            .map(|(_, stored)| Self::stored_image_bytes(stored))
+            .sum();
+        let bytes_needed = incoming_bytes - self.quota_bytes.saturating_sub(self.total_bytes);
+        if reclaimable < bytes_needed {
+            return false;
+        }
+        while !self.has_room(incoming_bytes) {
             let candidate = self
                 .images
                 .iter()
@@ -394,9 +532,10 @@ impl KittyImageStore {
                 .map(|(id, _)| *id);
             match candidate {
                 Some(id) => self.remove_entry(id),
-                None => break,
+                None => return false,
             }
         }
+        true
     }
     /// Turn a decoded payload into the RGBA every raster in the store is held as. Shared by image
     /// transmission and by animation frame loading, which decode identically.

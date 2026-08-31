@@ -19,9 +19,9 @@ enum KittyKeysParsingState {
 pub enum KittyParseOutcome {
     /// Complete sequence parsed; parser resets to Ground.
     Complete(KeyWithModifier),
-    /// Bytes are a valid prefix; parser keeps state. Caller should let
-    /// termwiz also see them this round and call `feed()` again on the
-    /// next chunk.
+    /// Bytes are a valid prefix; parser keeps state. The caller retains
+    /// ownership until a later call completes the sequence or it replays the
+    /// whole prefix through its fallback parser.
     Incomplete,
     /// Bytes are not a Kitty sequence; parser resets to Ground.
     NoMatch,

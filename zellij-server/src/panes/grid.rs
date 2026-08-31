@@ -51,6 +51,7 @@ const BASE64_DECODER: GeneralPurpose = GeneralPurpose::new(
 
 const MAX_TRACKED_NOTIFICATION_IDS: usize = 256;
 const MAX_NOTIFICATION_ASSEMBLY_BYTES: usize = 4096;
+const MAX_DCS_PAYLOAD_BYTES: usize = 1024 * 1024;
 
 /// A desktop notification an application asked for, in the protocol it used.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,6 +158,14 @@ fn append_bounded(destination: &mut String, payload: &str) {
         truncate_at -= 1;
     }
     destination.push_str(&payload[..truncate_at]);
+}
+
+fn append_dcs_payload(payload: &mut Option<Vec<u8>>, byte: u8) {
+    match payload {
+        Some(bytes) if bytes.len() < MAX_DCS_PAYLOAD_BYTES => bytes.push(byte),
+        Some(_) => *payload = None,
+        None => {},
+    }
 }
 
 /// What one pane's application said about its OSC 99 notifications: whether each id asked for
@@ -4926,12 +4935,12 @@ impl Perform for Grid {
             // we explicitly set this to false here because in the context of Sixel, we only render the
             // image when it's done, i.e. in the unhook method
             self.should_render = false;
-        } else if let Some(ui_component_bytes) = self.ui_component_bytes.as_mut() {
-            ui_component_bytes.push(byte);
-        } else if let Some(nested_frame_bytes) = self.nested_frame_bytes.as_mut() {
-            nested_frame_bytes.push(byte);
-        } else if let Some(xtgettcap_bytes) = self.xtgettcap_bytes.as_mut() {
-            xtgettcap_bytes.push(byte);
+        } else if self.ui_component_bytes.is_some() {
+            append_dcs_payload(&mut self.ui_component_bytes, byte);
+        } else if self.nested_frame_bytes.is_some() {
+            append_dcs_payload(&mut self.nested_frame_bytes, byte);
+        } else if self.xtgettcap_bytes.is_some() {
+            append_dcs_payload(&mut self.xtgettcap_bytes, byte);
         }
     }
 

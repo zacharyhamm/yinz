@@ -558,6 +558,40 @@ fn kitty_c_r_scaling_produces_exact_cell_rect_and_variant() {
 }
 
 #[test]
+fn kitty_cell_resize_keeps_the_last_scaled_raster_when_regeneration_cannot_fit() {
+    let quota = 10 * 10 * 4 + 20 * 40 * 4;
+    let (mut grid, kitty_image_store) =
+        new_kitty_grid_with_store(20, 40, KittyImageStore::with_quota(quota));
+    let mut vte_parser = vte::Parser::new();
+    let mut interceptor = KittyApcInterceptor::new();
+    feed_kitty_bytes(
+        &mut grid,
+        &mut vte_parser,
+        &mut interceptor,
+        &kitty_apc("a=T,f=24,s=10,v=10,c=2,r=2,i=1", &rgb_raster(10, 10)),
+    );
+    let original_rect = grid.kitty_placements()[0].display_rect;
+    let internal_id = grid.kitty_placements()[0].internal_id;
+
+    *grid.character_cell_size.borrow_mut() = Some(SizeInPixels {
+        width: 20,
+        height: 40,
+    });
+    grid.change_size(20, 40);
+
+    assert_eq!(grid.kitty_placements()[0].display_rect, original_rect);
+    assert_eq!(
+        kitty_image_store
+            .borrow()
+            .scaled_variant(internal_id, (2, 2))
+            .unwrap()
+            .len(),
+        20 * 40 * 4
+    );
+    assert_eq!(kitty_image_store.borrow().total_bytes(), quota);
+}
+
+#[test]
 fn kitty_aspect_fit_single_axis() {
     let (mut grid, _kitty_image_store) = new_kitty_grid(20, 40);
     let mut vte_parser = vte::Parser::new();

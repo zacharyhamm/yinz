@@ -453,6 +453,53 @@ fn an_image_with_no_placements_is_evicted_before_one_being_displayed() {
     );
 }
 
+#[test]
+fn a_full_store_of_displayed_images_refuses_new_data_without_displacing_them() {
+    // The spec makes images without placements the preferred victims. When there are none, this
+    // terminal keeps visible content stable and reports storage pressure to the sender.
+    let bytes_per_image = 10 * 20 * 4;
+    let mut session = KittySession::with_quota(10, 20, bytes_per_image * 2 + 1);
+    session.ok("a=T,f=32,s=10,v=20,i=1,C=1", &rgba_raster(10, 20));
+    session.ok("a=T,f=32,s=10,v=20,i=2,C=1", &rgba_raster(10, 20));
+
+    let reply = session.err("a=t,f=32,s=10,v=20,i=3", &rgba_raster(10, 20));
+    assert_eq!(reply.code, "ENOSPC");
+    assert_eq!(session.image_count(), 2);
+    assert_eq!(session.placement_count(), 2);
+    assert!(session.can_still_display_by_placing_it(1));
+    assert!(session.can_still_display_by_placing_it(2));
+}
+
+#[test]
+fn a_failed_same_id_replacement_keeps_the_old_image_and_its_placements() {
+    let bytes_per_image = 10 * 10 * 4;
+    let mut session = KittySession::with_quota(10, 20, bytes_per_image * 2);
+    session.ok("a=T,f=32,s=10,v=10,i=1,C=1", &rgba_raster(10, 10));
+    session.ok("a=T,f=32,s=10,v=10,i=2,C=1", &rgba_raster(10, 10));
+
+    // The replacement fits in an empty store, but cannot coexist with image 2 after image 1's
+    // bytes are credited. Refusal must happen before retransmission's destructive cleanup.
+    let reply = session.err("a=t,f=32,s=10,v=15,i=1", &rgba_raster(10, 15));
+    assert_eq!(reply.code, "ENOSPC");
+    assert_eq!(session.image_count(), 2);
+    assert_eq!(session.placement_count(), 2);
+    assert_eq!(session.store.borrow().total_bytes(), bytes_per_image * 2);
+    assert!(session.can_still_display_by_placing_it(1));
+    assert!(session.can_still_display_by_placing_it(2));
+}
+
+#[test]
+fn a_scaled_placement_that_cannot_fit_is_refused_without_losing_the_image() {
+    let mut session = KittySession::with_quota(10, 20, 500);
+    session.ok("a=t,f=32,s=10,v=10,i=1", &rgba_raster(10, 10));
+
+    let reply = session.err("a=p,i=1,c=2,r=2,C=1", &[]);
+    assert_eq!(reply.code, "ENOSPC");
+    assert_eq!(session.placement_count(), 0);
+    assert_eq!(session.store.borrow().total_bytes(), 400);
+    assert!(session.can_still_display_by_placing_it(1));
+}
+
 // ---- refused commands degrade predictably ----
 //
 // A client asking for something this terminal will not do must get a well-formed refusal and be

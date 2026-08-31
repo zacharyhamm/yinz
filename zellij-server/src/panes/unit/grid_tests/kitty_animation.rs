@@ -59,6 +59,23 @@ fn anim_the_first_added_frame_is_reported_as_frame_two() {
 }
 
 #[test]
+fn anim_a_frame_that_cannot_fit_is_refused_without_changing_the_image() {
+    let frame_bytes = 4 * 3 * 4;
+    let mut session = KittySession::with_quota(10, 20, frame_bytes * 2 - 1);
+    session.ok("a=t,f=24,s=4,v=3,i=1", &frame());
+
+    let reply = session.err("a=f,f=24,s=4,v=3,i=1", &frame());
+    assert_eq!(reply.code, "ENOSPC");
+    assert_eq!(reply.image_id, Some(1));
+    assert_eq!(session.store.borrow().total_bytes(), frame_bytes);
+    assert_eq!(
+        session.err("a=a,c=2,i=1", &[]).code,
+        "ENOENT",
+        "the refused frame must not become selectable"
+    );
+}
+
+#[test]
 fn anim_each_new_frame_gets_the_next_number() {
     let mut session = session_with_a_root_image();
     assert_eq!(
