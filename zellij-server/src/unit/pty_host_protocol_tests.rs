@@ -16,6 +16,7 @@ fn sample_run_command() -> RunCommand {
         originating_plugin: None,
         use_terminal_title: true,
         remote_host: None,
+        firecracker_vm: None,
         remote_default_shell: false,
     }
 }
@@ -203,6 +204,7 @@ fn run_commands(tc: &hegel::TestCase) -> RunCommand {
         originating_plugin: None,
         use_terminal_title: tc.draw(generators::booleans()),
         remote_host: None,
+        firecracker_vm: None,
         remote_default_shell: false,
     }
 }
@@ -675,6 +677,7 @@ fn a_full_ring_fits_in_one_frame() {
             originating_plugin: None,
             use_terminal_title: false,
             remote_host: None,
+            firecracker_vm: None,
             remote_default_shell: false,
         },
         status: HostStatus {

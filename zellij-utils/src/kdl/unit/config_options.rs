@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn firecracker_provider_options_round_trip() {
+    let document: KdlDocument = r#"
+        firecracker_provider "/opt/bin/zellij-firecracker"
+        firecracker_provider_timeout_secs 90
+    "#
+    .parse()
+    .unwrap();
+    let options = Options::from_kdl(&document).unwrap();
+    assert_eq!(
+        options.firecracker_provider,
+        Some(PathBuf::from("/opt/bin/zellij-firecracker"))
+    );
+    assert_eq!(options.firecracker_provider_timeout_secs, Some(90));
+
+    let mut serialized = KdlDocument::new();
+    serialized
+        .nodes_mut()
+        .append(&mut Options::to_kdl(&options, false));
+    assert_eq!(Options::from_kdl(&serialized).unwrap(), options);
+
+    let invalid: KdlDocument = "firecracker_provider_timeout_secs 0".parse().unwrap();
+    assert!(Options::from_kdl(&invalid).is_err());
+    let relative: KdlDocument = "firecracker_provider \"bin/provider\"".parse().unwrap();
+    assert!(Options::from_kdl(&relative).is_err());
+}
+
+#[test]
 fn config_options_to_string() {
     let fake_config = r##"
         simplified_ui true

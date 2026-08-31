@@ -1285,6 +1285,7 @@ impl Action {
                 direction,
                 command,
                 remote_host,
+                firecracker,
                 plugin,
                 cwd,
                 floating,
@@ -1314,6 +1315,9 @@ impl Action {
                 modal,
                 tab_id,
             } => {
+                if let Some(name) = firecracker.as_deref() {
+                    super::command::validate_firecracker_vm_name(name)?;
+                }
                 let pane_id_to_replace = match pane_id {
                     Some(pane_id_str) => match PaneId::from_str(&pane_id_str) {
                         Ok(parsed_pane_id) => Some(parsed_pane_id),
@@ -1335,7 +1339,7 @@ impl Action {
                 // default for it nor a sensible base to resolve a relative path
                 // against. Left exactly as given: `None` then means "wherever
                 // that machine logs you in", which is what ssh does.
-                let command_cwd = if remote_host.is_some() {
+                let command_cwd = if remote_host.is_some() || firecracker.is_some() {
                     cwd.clone()
                 } else {
                     cwd.clone()
@@ -1358,9 +1362,10 @@ impl Action {
                         hold_on_close: !close_on_exit,
                         hold_on_start: start_suspended,
                         remote_host: remote_host.clone(),
+                        firecracker_vm: firecracker.clone(),
                         ..Default::default()
                     })
-                } else if remote_host.is_some() {
+                } else if remote_host.is_some() || firecracker.is_some() {
                     // No command and a host: that machine's login shell. Not
                     // held on close — `ssh host` ends when you log out, and so
                     // does a local default-shell pane; holding it would leave a
@@ -1373,6 +1378,7 @@ impl Action {
                         hold_on_close: false,
                         hold_on_start: false,
                         remote_host: remote_host.clone(),
+                        firecracker_vm: firecracker.clone(),
                         remote_default_shell: true,
                         ..Default::default()
                     })
@@ -3521,6 +3527,7 @@ mod tests {
     fn remote_new_pane(command: Vec<String>, cwd: Option<PathBuf>) -> CliAction {
         CliAction::NewPane {
             remote_host: Some("build-box".to_owned()),
+            firecracker: None,
             direction: None,
             command,
             plugin: None,
@@ -3552,6 +3559,20 @@ mod tests {
             borderless: None,
             tab_id: None,
         }
+    }
+
+    fn firecracker_new_pane(command: Vec<String>, cwd: Option<PathBuf>) -> CliAction {
+        let mut action = remote_new_pane(command, cwd);
+        if let CliAction::NewPane {
+            remote_host,
+            firecracker,
+            ..
+        } = &mut action
+        {
+            *remote_host = None;
+            *firecracker = Some("review.vm-1".to_owned());
+        }
+        action
     }
 
     fn tiled_run_command(cli_action: CliAction) -> RunCommandAction {
@@ -3605,6 +3626,33 @@ mod tests {
         assert_eq!(with_command.command, PathBuf::from("htop"));
     }
 
+    #[test]
+    fn a_firecracker_pane_preserves_its_vm_name_command_and_guest_cwd() {
+        let shell = tiled_run_command(firecracker_new_pane(vec![], None));
+        assert!(shell.remote_default_shell);
+        assert_eq!(shell.firecracker_vm.as_deref(), Some("review.vm-1"));
+        assert_eq!(shell.remote_host, None);
+
+        let command = tiled_run_command(firecracker_new_pane(
+            vec!["pwd".to_owned()],
+            Some(PathBuf::from("workspace/repo")),
+        ));
+        assert_eq!(command.command, PathBuf::from("pwd"));
+        assert_eq!(command.cwd, Some(PathBuf::from("workspace/repo")));
+        assert_eq!(command.firecracker_vm.as_deref(), Some("review.vm-1"));
+    }
+
+    #[test]
+    fn an_invalid_firecracker_vm_name_is_rejected() {
+        let mut action = firecracker_new_pane(vec![], None);
+        if let CliAction::NewPane { firecracker, .. } = &mut action {
+            *firecracker = Some("bad/name".to_owned());
+        }
+        let error =
+            Action::actions_from_cli(action, Box::new(|| PathBuf::from("/tmp")), None).unwrap_err();
+        assert!(error.contains("letters, digits"));
+    }
+
     /// Without a host, no command still means no command — the local pane keeps
     /// getting its shell from the server, not from an empty `RunCommandAction`.
     #[test]
@@ -3628,6 +3676,7 @@ mod tests {
     fn test_new_pane_tiled_with_tab_id() {
         let cli_action = CliAction::NewPane {
             remote_host: None,
+            firecracker: None,
             direction: Some(Direction::Right),
             command: vec![],
             plugin: None,
@@ -3675,6 +3724,7 @@ mod tests {
     fn test_new_pane_tiled_without_tab_id() {
         let cli_action = CliAction::NewPane {
             remote_host: None,
+            firecracker: None,
             direction: None,
             command: vec![],
             plugin: None,
@@ -3722,6 +3772,7 @@ mod tests {
     fn test_new_in_place_pane_with_pane_id_to_replace() {
         let cli_action = CliAction::NewPane {
             remote_host: None,
+            firecracker: None,
             direction: None,
             command: vec![],
             plugin: None,
@@ -3771,6 +3822,7 @@ mod tests {
     fn test_new_in_place_pane_with_malformed_pane_id() {
         let cli_action = CliAction::NewPane {
             remote_host: None,
+            firecracker: None,
             direction: None,
             command: vec![],
             plugin: None,
@@ -3811,6 +3863,7 @@ mod tests {
     fn test_new_pane_floating_with_tab_id() {
         let cli_action = CliAction::NewPane {
             remote_host: None,
+            firecracker: None,
             direction: None,
             command: vec![],
             plugin: None,
@@ -3858,6 +3911,7 @@ mod tests {
     fn test_new_pane_stacked_with_tab_id() {
         let cli_action = CliAction::NewPane {
             remote_host: None,
+            firecracker: None,
             direction: None,
             command: vec!["ls".into()],
             plugin: None,
@@ -4220,6 +4274,7 @@ mod tests {
         let build = |success: bool, failure: bool, any: bool, direct: Option<UnblockCondition>| {
             let cli_action = CliAction::NewPane {
                 remote_host: None,
+                firecracker: None,
                 direction: None,
                 command: vec!["ls".into()],
                 plugin: None,
@@ -4284,6 +4339,7 @@ mod tests {
     fn test_new_pane_blocking_with_tab_id() {
         let cli_action = CliAction::NewPane {
             remote_host: None,
+            firecracker: None,
             direction: None,
             command: vec!["ls".into()],
             plugin: None,
@@ -4399,6 +4455,7 @@ mod tests {
     fn test_new_pane_plugin_tiled_with_tab_id() {
         let cli_action = CliAction::NewPane {
             remote_host: None,
+            firecracker: None,
             direction: None,
             command: vec![],
             plugin: Some("zellij:strider".into()),
@@ -4446,6 +4503,7 @@ mod tests {
     fn test_new_pane_plugin_floating_with_tab_id() {
         let cli_action = CliAction::NewPane {
             remote_host: None,
+            firecracker: None,
             direction: None,
             command: vec![],
             plugin: Some("zellij:strider".into()),

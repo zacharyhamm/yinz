@@ -848,6 +848,8 @@ pub struct RunCommandAction {
     pub hold_on_close: bool,
     #[prost(bool, tag="7")]
     pub hold_on_start: bool,
+    #[prost(string, optional, tag="9")]
+    pub firecracker_vm: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

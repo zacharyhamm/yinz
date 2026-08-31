@@ -8,6 +8,7 @@ mod os_input_output_unix;
 #[cfg(target_os = "windows")]
 compile_error!("Zellij does not support Windows");
 
+pub mod firecracker;
 pub mod host_query;
 pub mod os_input_output;
 pub mod output;
@@ -2209,6 +2210,10 @@ pub fn start_server_impl(
     }
 
     log::info!("Server exiting: {exit_reason}");
+    let normal_shutdown = matches!(
+        exit_reason,
+        "the last client exited" | "KillSession" | "the last pane closed"
+    );
 
     // Before the joins below, so that a client connecting from now on — a hook's
     // `zellij action agent-report`, a session probe — is refused at the socket rather than
@@ -2234,6 +2239,9 @@ pub fn start_server_impl(
     // Belt and braces. A supervisor that outlived the sweep above would be a
     // leaked user process holding a live shell, invisible until `pty-host list`.
     os_input.shutdown_pty_hosts();
+    if normal_shutdown {
+        os_input.stop_firecracker_session().non_fatal();
+    }
 
     // Every break above sends the clients an `Exit` first, but sending only
     // queues it — the writer threads are detached, so without this wait the
@@ -2339,6 +2347,13 @@ fn init_session(
             .detachable_panes
             .unwrap_or(pty_host::DEFAULT_DETACHABLE_PANES),
     );
+    os_input
+        .set_firecracker_provider(
+            config.options.firecracker_provider.clone(),
+            config.options.firecracker_provider_timeout_secs,
+            envs::get_session_name().unwrap_or_else(|_| "default".to_owned()),
+        )
+        .non_fatal();
 
     let default_shell = config_options.default_shell.clone().map(|command| {
         TerminalAction::RunCommand(RunCommand {

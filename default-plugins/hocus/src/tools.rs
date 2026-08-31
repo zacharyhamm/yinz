@@ -1446,7 +1446,11 @@ pub fn specs() -> Value {
                     },
                     "hooks": {
                         "type": "boolean",
-                        "description": "claude reports its state via hooks; default true.",
+                        "description": "claude reports its state via hooks; default true locally and unavailable in Firecracker VMs.",
+                    },
+                    "firecracker": {
+                        "type": "string",
+                        "description": "Session-scoped Firecracker VM name. Host branch/worktree setup and hooks are unavailable.",
                     },
                 },
             }),
@@ -2036,6 +2040,7 @@ pub struct Args {
     pub replace_all: bool,
     pub cwd: Option<String>,
     pub remote_host: Option<String>,
+    pub firecracker: Option<String>,
     pub command: Option<Value>,
     pub args: Vec<String>,
     pub floating: bool,
@@ -2294,6 +2299,7 @@ impl Args {
             permission_mode: self.permission_mode.clone(),
             resume: self.resume.clone(),
             hooks: self.hooks,
+            firecracker: self.firecracker.clone(),
         }
     }
 
@@ -3776,6 +3782,7 @@ mod host {
                     path: PathBuf::from(path),
                     args: rest,
                     cwd: cwd.clone(),
+                    firecracker_vm: args.firecracker.clone(),
                     ..Default::default()
                 };
                 if args.in_new_tab {
@@ -3832,6 +3839,7 @@ mod host {
                 args: rest,
                 cwd: args.cwd.clone().map(PathBuf::from),
                 remote_host: Some(remote_host),
+                firecracker_vm: None,
                 remote_default_shell: false,
             },
             None => CommandToRun {
@@ -3841,6 +3849,7 @@ mod host {
                 args: vec![],
                 cwd: args.cwd.clone().map(PathBuf::from),
                 remote_host: Some(remote_host),
+                firecracker_vm: None,
                 remote_default_shell: true,
             },
         };

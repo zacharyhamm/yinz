@@ -184,7 +184,7 @@ impl RemoteReader {
                 format!(
                     "lost the connection to {} while its pane was still running, and this pane \
                      has no way to reconnect",
-                    self.conn.host()
+                    self.conn.display_host()
                 ),
             ));
         }
@@ -215,7 +215,7 @@ impl RemoteReader {
                 Err(e) => {
                     log::warn!(
                         "reconnect to {} failed (attempt {attempt}/{attempts}): {e:#}",
-                        self.conn.host()
+                        self.conn.display_host()
                     );
                     delay = (delay * 2).min(RECONNECT_MAX_DELAY);
                 },
@@ -228,7 +228,7 @@ impl RemoteReader {
             io::ErrorKind::ConnectionReset,
             format!(
                 "gave up reconnecting to {} after {attempts} attempts",
-                self.conn.host()
+                self.conn.display_host()
             ),
         ))
     }
@@ -241,7 +241,7 @@ impl RemoteReader {
     fn announce_disconnected(&mut self) {
         let notice = format!(
             "\r\n\x1b[33m── disconnected from {} — reconnecting ──\x1b[0m\r\n",
-            self.conn.host()
+            self.conn.display_host()
         );
         self.inject(notice.as_bytes());
     }

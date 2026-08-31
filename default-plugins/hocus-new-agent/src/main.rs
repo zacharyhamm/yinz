@@ -20,6 +20,7 @@ const PROJECT: &str = "project";
 const AGENT: &str = "agent";
 const MODEL: &str = "model";
 const PROMPT: &str = "prompt";
+const FIRECRACKER: &str = "firecracker";
 const CREATE_BRANCH: &str = "create_branch";
 const BASE: &str = "base";
 const BRANCH: &str = "branch";
@@ -100,6 +101,7 @@ impl Default for State {
             // takes, so asking hocus for an agent and filling this in are the
             // same request said two ways.
             .field(PROMPT, "Prompt (optional)", TextInput::empty())
+            .field(FIRECRACKER, "Firecracker VM (optional)", TextInput::empty())
             .checkbox(
                 CREATE_BRANCH,
                 "Create and switch branch",
@@ -611,6 +613,10 @@ impl State {
         if id == CREATE_BRANCH && !self.dialog.form().checked(CREATE_BRANCH) {
             self.set_checked(WORKTREE, false);
         }
+        if id == FIRECRACKER && !self.dialog.form().text(FIRECRACKER).trim().is_empty() {
+            self.set_checked(CREATE_BRANCH, false);
+            self.set_checked(WORKTREE, false);
+        }
         if id == WORKTREE && self.dialog.form().checked(WORKTREE) {
             self.set_checked(CREATE_BRANCH, true);
         }
@@ -700,6 +706,7 @@ fn spec(form: &Form) -> launch::Spec {
         args: Vec::new(),
         model: Some(form.text(MODEL).to_owned()),
         prompt: Some(form.text(PROMPT).to_owned()),
+        firecracker: Some(form.text(FIRECRACKER).to_owned()),
         // No branch is how `launch` is told to leave the repository alone, which is
         // exactly what an unchecked box means.
         branch: form
@@ -779,8 +786,8 @@ mod tests {
     #[test]
     fn the_modal_is_tall_enough_for_the_whole_dialog() {
         let state = State::default();
-        assert_eq!(modal_height(&state.dialog), "17");
-        assert_eq!(state.dialog.height() + FRAME_ROWS, 17);
+        assert_eq!(modal_height(&state.dialog), "18");
+        assert_eq!(state.dialog.height() + FRAME_ROWS, 18);
     }
 
     #[test]
@@ -801,6 +808,18 @@ mod tests {
             matches!(checkout, GitCheckout::NewWorktree { branch, base, path }
             if branch == "topic" && base == "main" && path == *".worktrees/topic")
         );
+    }
+
+    #[test]
+    fn choosing_a_firecracker_vm_disables_host_git_setup() {
+        let mut state = State::default();
+        state.set_text(FIRECRACKER, "review");
+        state.changed(FIRECRACKER);
+        assert!(!state.dialog.form().checked(CREATE_BRANCH));
+        assert!(!state.dialog.form().checked(WORKTREE));
+        let (command, checkout) = request(state.dialog.form()).unwrap();
+        assert_eq!(command.firecracker_vm.as_deref(), Some("review"));
+        assert_eq!(checkout, GitCheckout::Current);
     }
 
     /// The point of the shared module: the modal's form and hocus's `agent_spawn`

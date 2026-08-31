@@ -476,6 +476,12 @@ context_menu {
 //   - false
 // 
 // detachable_panes true
+
+// Firecracker VM provider executable
+// firecracker_provider "/absolute/path/to/provider"
+
+// Firecracker provider request timeout
+// firecracker_provider_timeout_secs 60
  
 // Toggle enabling the mouse mode.
 // On certain configurations, or terminals this could

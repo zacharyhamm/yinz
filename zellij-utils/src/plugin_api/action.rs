@@ -2244,6 +2244,7 @@ impl TryFrom<ProtobufRunCommandAction> for RunCommandAction {
             .and_then(|d| d.try_into().ok());
         let hold_on_close = protobuf_run_command_action.hold_on_close;
         let hold_on_start = protobuf_run_command_action.hold_on_start;
+        let firecracker_vm = protobuf_run_command_action.firecracker_vm;
         Ok(RunCommandAction {
             command,
             args,
@@ -2251,6 +2252,7 @@ impl TryFrom<ProtobufRunCommandAction> for RunCommandAction {
             direction,
             hold_on_close,
             hold_on_start,
+            firecracker_vm,
             ..Default::default()
         })
     }
@@ -2268,6 +2270,7 @@ impl TryFrom<RunCommandAction> for ProtobufRunCommandAction {
         });
         let hold_on_close = run_command_action.hold_on_close;
         let hold_on_start = run_command_action.hold_on_start;
+        let firecracker_vm = run_command_action.firecracker_vm;
         Ok(ProtobufRunCommandAction {
             command,
             args,
@@ -2276,6 +2279,7 @@ impl TryFrom<RunCommandAction> for ProtobufRunCommandAction {
             hold_on_close,
             hold_on_start,
             pane_name: None,
+            firecracker_vm,
         })
     }
 }

@@ -412,7 +412,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                                 // The host, until the remote shell sets a title
                                 // of its own — which it will, exactly as a local
                                 // shell does.
-                                run_command.remote_host.clone()
+                                run_command.display_host()
                             } else if run_command.use_terminal_title {
                                 None
                             } else {
@@ -436,6 +436,10 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     )),
                     _ => None,
                 };
+                let show_spawn_error = hold_on_close
+                    || run_command
+                        .as_ref()
+                        .is_some_and(|command| command.firecracker_vm.is_some());
                 match pty
                     .spawn_terminal(terminal_action, client_or_tab_index)
                     .with_context(err_context)
@@ -498,7 +502,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     },
                     Err(err) => match pane_start_failure(&err) {
                         Some((terminal_id, message)) => {
-                            if hold_on_close {
+                            if show_spawn_error {
                                 let hold_for_command = None; // we do not hold an "error" pane
                                 let instruction = new_terminal_screen_instruction(
                                     PaneId::Terminal(terminal_id),
@@ -575,7 +579,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                             // See the sibling site above: the host stands in
                             // until the remote shell titles the pane itself.
                             Some(
-                                name.or_else(|| run_command.remote_host.clone())
+                                name.or_else(|| run_command.display_host())
                                     .unwrap_or_else(|| run_command.to_string()),
                             )
                         } else if run_command.use_terminal_title {
@@ -597,6 +601,10 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     )),
                     _ => None,
                 };
+                let show_spawn_error = hold_on_close
+                    || run_command
+                        .as_ref()
+                        .is_some_and(|command| command.firecracker_vm.is_some());
                 match pty
                     .spawn_terminal(terminal_action, client_id_tab_index_or_pane_id)
                     .with_context(err_context)
@@ -618,7 +626,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     },
                     Err(err) => match pane_start_failure(&err) {
                         Some((terminal_id, message)) => {
-                            if hold_on_close {
+                            if show_spawn_error {
                                 let hold_for_command = None; // we do not hold an "error" pane
                                 pty.bus
                                     .senders
@@ -1304,10 +1312,10 @@ impl Pty {
     /// cwd it lands in the remote home directory, which is where ssh puts you.
     fn cwd_may_be_inherited(&self, terminal_action: &TerminalAction, source: &PaneId) -> bool {
         let target_host = match terminal_action {
-            TerminalAction::RunCommand(run_command) => run_command.remote_host.as_deref(),
+            TerminalAction::RunCommand(run_command) => run_command.display_host(),
             TerminalAction::OpenFile(_) => None,
         };
-        target_host == self.host_of_pane(source).as_deref()
+        target_host.as_deref() == self.host_of_pane(source).as_deref()
     }
     fn fill_cwd(&self, terminal_action: &mut TerminalAction, client_id: ClientId) {
         if let Some(active_pane) = self.active_panes.get(&client_id) {
@@ -2089,7 +2097,10 @@ impl Pty {
                 });
                 // The default shell's cwd is a path on *this* machine; a command
                 // that runs elsewhere must not inherit it.
-                if command.cwd.is_none() && command.remote_host.is_none() {
+                if command.cwd.is_none()
+                    && command.remote_host.is_none()
+                    && command.firecracker_vm.is_none()
+                {
                     if let TerminalAction::RunCommand(cmd) = default_shell {
                         command.cwd = cmd.cwd;
                     }

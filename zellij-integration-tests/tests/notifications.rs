@@ -213,6 +213,7 @@ fn notification_paints_over_a_floating_pane() {
         direction: None,
         command: vec![],
         remote_host: None,
+        firecracker: None,
         plugin: None,
         cwd: None,
         floating: true,

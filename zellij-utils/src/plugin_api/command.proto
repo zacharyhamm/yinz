@@ -8,4 +8,5 @@ message Command {
   optional string cwd = 3;
   optional string remote_host = 4;
   bool remote_default_shell = 5;
+  optional string firecracker_vm = 6;
 }

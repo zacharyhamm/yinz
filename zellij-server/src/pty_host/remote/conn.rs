@@ -178,6 +178,10 @@ impl RemoteConn {
         &self.host
     }
 
+    pub fn display_host(&self) -> String {
+        self.cmd.display_host().unwrap_or_else(|| self.host.clone())
+    }
+
     /// What the pane runs. See the field.
     pub fn cmd(&self) -> &RunCommand {
         &self.cmd
@@ -197,7 +201,7 @@ impl RemoteConn {
         if out.broken {
             return Err(anyhow!(
                 "the connection to {} was lost, so this pane cannot be written to",
-                self.host
+                self.display_host()
             ));
         }
         // Drain first: a queue that fully flushed last tick should not report
@@ -231,7 +235,10 @@ impl RemoteConn {
             .to_anyhow()
             .context("failed to lock a remote pane's outbound queue")?;
         if out.broken {
-            return Err(anyhow!("the connection to {} was lost", self.host));
+            return Err(anyhow!(
+                "the connection to {} was lost",
+                self.display_host()
+            ));
         }
         let mut framed: Vec<u8> = Vec::new();
         protocol::write_control(&mut framed, msg)
@@ -401,7 +408,7 @@ impl RemoteConn {
         if out.broken {
             return Err(anyhow!(
                 "the connection to {} was lost, so this pane cannot be handed over",
-                self.host
+                self.display_host()
             ));
         }
         // Refused up front rather than discovered a line later: std will not
@@ -411,7 +418,7 @@ impl RemoteConn {
         if timeout.is_zero() {
             return Err(anyhow!(
                 "no time was left to ask {} to release this pane",
-                self.host
+                self.display_host()
             ));
         }
         // Blocking for the rest of this call. The queues are drained by whoever
@@ -432,24 +439,29 @@ impl RemoteConn {
         let mut framed: Vec<u8> = Vec::new();
         protocol::write_control(&mut framed, &ServerToBrokerMsg::Release)
             .context("failed to frame a release for a remote pane")?;
-        out.socket
-            .write_all(&framed)
-            .with_context(|| format!("failed to ask {} to release this pane", self.host))?;
+        out.socket.write_all(&framed).with_context(|| {
+            format!("failed to ask {} to release this pane", self.display_host())
+        })?;
 
         let deadline = Instant::now() + timeout;
         loop {
             if Instant::now() >= deadline {
                 return Err(anyhow!(
                     "{} did not confirm the pane was released within {timeout:?}",
-                    self.host
+                    self.display_host()
                 ));
             }
             let frame = protocol::read_frame(&mut out.socket)
-                .with_context(|| format!("failed to read {}'s reply to a release", self.host))?
+                .with_context(|| {
+                    format!(
+                        "failed to read {}'s reply to a release",
+                        self.display_host()
+                    )
+                })?
                 .ok_or_else(|| {
                     anyhow!(
                         "{} closed the connection without confirming the release",
-                        self.host
+                        self.display_host()
                     )
                 })?;
             let Frame::Control(_) = frame else {
@@ -465,7 +477,7 @@ impl RemoteConn {
                 Ok(BrokerToServerMsg::ChildExited { status }) => {
                     return Err(anyhow!(
                         "the pane's process on {} exited ({status:?}) as it was being handed over",
-                        self.host
+                        self.display_host()
                     ));
                 },
                 // Status and git reports keep arriving until the broker reads

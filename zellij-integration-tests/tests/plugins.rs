@@ -65,6 +65,7 @@ fn a_relatively_named_lua_plugin_is_launched_from_the_user_plugin_dir() {
         direction: None,
         command: vec![],
         remote_host: None,
+        firecracker: None,
         plugin: Some("file:probe.lua".to_string()),
         cwd: None,
         floating: false,

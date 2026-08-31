@@ -700,6 +700,7 @@ anywhere else.
 |---|---|---|
 | `name` | text | required; also the uid |
 | `root` | text | required, indexed; the folder. Not unique - resolve a cwd by *longest matching root* |
+| `firecracker_image` | text | the default Firecracker image for agents in this project |
 | `remote` | text | |
 | `worktree_status` | text | snake case, as serde spells it |
 | `common_dir` | text | the main checkout, for a worktree |

@@ -31,7 +31,7 @@ use miette::NamedSource;
 
 use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -2848,6 +2848,32 @@ impl Options {
         let detachable_panes =
             kdl_property_first_arg_as_bool_or_error!(kdl_options, "detachable_panes")
                 .map(|(v, _)| v);
+        let firecracker_provider =
+            match kdl_property_first_arg_as_string_or_error!(kdl_options, "firecracker_provider") {
+                Some((value, _)) if Path::new(value).is_absolute() => Some(PathBuf::from(value)),
+                Some((value, entry)) => {
+                    return Err(kdl_parsing_error!(
+                        format!("firecracker_provider must be an absolute path, got {value:?}"),
+                        entry
+                    ))
+                },
+                None => None,
+            };
+        let firecracker_provider_timeout_secs = match kdl_property_first_arg_as_i64_or_error!(
+            kdl_options,
+            "firecracker_provider_timeout_secs"
+        ) {
+            Some((value, _)) if value > 0 => Some(value as u64),
+            Some((value, entry)) => {
+                return Err(kdl_parsing_error!(
+                    format!(
+                        "firecracker_provider_timeout_secs must be greater than zero, got {value}"
+                    ),
+                    entry
+                ))
+            },
+            None => None,
+        };
         let scroll_buffer_size =
             kdl_property_first_arg_as_i64_or_error!(kdl_options, "scroll_buffer_size")
                 .map(|(scroll_buffer_size, _entry)| scroll_buffer_size as usize);
@@ -3000,6 +3026,8 @@ impl Options {
             user_plugin_dir,
             mouse_mode,
             detachable_panes,
+            firecracker_provider,
+            firecracker_provider_timeout_secs,
             pane_frames,
             pane_frame_style,
             notification_position,
@@ -3472,6 +3500,38 @@ impl Options {
             Some(node)
         } else {
             None
+        }
+    }
+    fn firecracker_provider_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
+        let create_node = |value: &str| {
+            let mut node = KdlNode::new("firecracker_provider");
+            node.push(value.to_owned());
+            node
+        };
+        match &self.firecracker_provider {
+            Some(path) => Some(create_node(&path.display().to_string())),
+            None if add_comments => {
+                let mut node = create_node("/absolute/path/to/provider");
+                node.set_leading("\n// Firecracker VM provider executable\n// ".to_owned());
+                Some(node)
+            },
+            None => None,
+        }
+    }
+    fn firecracker_provider_timeout_secs_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
+        let create_node = |value: u64| {
+            let mut node = KdlNode::new("firecracker_provider_timeout_secs");
+            node.push(value as i64);
+            node
+        };
+        match self.firecracker_provider_timeout_secs {
+            Some(timeout) => Some(create_node(timeout)),
+            None if add_comments => {
+                let mut node = create_node(60);
+                node.set_leading("\n// Firecracker provider request timeout\n// ".to_owned());
+                Some(node)
+            },
+            None => None,
         }
     }
     fn mouse_mode_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
@@ -4754,6 +4814,12 @@ impl Options {
         }
         if let Some(detachable_panes) = self.detachable_panes_to_kdl(add_comments) {
             nodes.push(detachable_panes);
+        }
+        if let Some(provider) = self.firecracker_provider_to_kdl(add_comments) {
+            nodes.push(provider);
+        }
+        if let Some(timeout) = self.firecracker_provider_timeout_secs_to_kdl(add_comments) {
+            nodes.push(timeout);
         }
         if let Some(mouse_mode) = self.mouse_mode_to_kdl(add_comments) {
             nodes.push(mouse_mode);
