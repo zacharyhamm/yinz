@@ -942,6 +942,10 @@ pub fn start_server_impl(
     // nothing in the log at all, and "the session died" is indistinguishable
     // from "the session was closed" after the fact.
     let exit_reason: &str;
+    // Whether the socket file was already unlinked by a `break` path below. It must not be
+    // unlinked twice: between the two would be the thread joins, long enough for a new server
+    // to bind the same path, and the second unlink would then delete *its* socket.
+    let mut socket_removed = false;
     // Until a first client has initialised the session, the wait is bounded by
     // this one deadline. The client that spawned this server gives up on it
     // after `CONNECT_TO_SERVER_TIMEOUT` (30s) and exits with no way to kill
@@ -1449,6 +1453,7 @@ pub fn start_server_impl(
                         // hook's `zellij action agent-report`, a probe — must
                         // be refused, not parked behind them.
                         drop(std::fs::remove_file(&socket_path));
+                        socket_removed = true;
                         let session_metadata = session_data.write().unwrap().take();
                         drop(session_metadata);
                         let client_ids_to_cleanup: Vec<ClientId> = session_state
@@ -2096,8 +2101,12 @@ pub fn start_server_impl(
     // Before the joins below, so that a client connecting from now on — a hook's
     // `zellij action agent-report`, a session probe — is refused at the socket rather than
     // accepted by the listener and parked on `session_state` until the joins finish, which
-    // is where a shutdown that waits on a stuck plugin thread spends its time.
-    drop(std::fs::remove_file(&socket_path));
+    // is where a shutdown that waits on a stuck plugin thread spends its time. Once only: a
+    // path that already unlinked it has joined its threads since, and a new server may own
+    // the path by now.
+    if !socket_removed {
+        drop(std::fs::remove_file(&socket_path));
+    }
 
     // Drop cached session data before exit. This joins the pty thread, which
     // drops `Pty` and closes every pane — which is what terminates each pane's

@@ -396,6 +396,12 @@ pub struct PluginEnv {
     /// every instance of the plugin (one per client); see `WasmBridge::cancel_tokens` for why
     /// the host keeps its own handle rather than reaching in here.
     pub cancel: Arc<AtomicBool>,
+    /// Set by whichever hook actually stopped this instance with `CANCELLED_BY_HOST`. Unlike
+    /// `cancel`, which is shared and is set for idle instances too, this says the guest was
+    /// interrupted mid-call — after which a wasm instance is not safe to call again (a trap does
+    /// not unwind guest frames, so `zellij-tile`'s state cell stays borrowed and the next export
+    /// panics), and a Lua one would only run away again. Per instance, unlike `cancel`.
+    pub cancel_tripped: Arc<AtomicBool>,
     pub plugin: PluginConfig,
     pub permissions: Arc<Mutex<Option<HashSet<PermissionType>>>>,
     pub senders: ThreadSenders,

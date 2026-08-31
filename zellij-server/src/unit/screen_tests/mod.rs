@@ -2083,6 +2083,7 @@ mod floating_panes;
 mod hooks;
 mod host_focus;
 mod host_query;
+mod key_intercepts;
 mod mouse;
 mod nested_sessions;
 mod notification_animation;
