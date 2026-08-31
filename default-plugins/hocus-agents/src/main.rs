@@ -285,11 +285,11 @@ impl State {
         }
         if key.has_no_modifiers() {
             match key.bare_key {
-                BareKey::PageUp => {
+                BareKey::PageUp if self.selected_run_is_loaded() => {
                     self.history_scroll = self.history_scroll.saturating_add(3);
                     return true;
                 },
-                BareKey::PageDown => {
+                BareKey::PageDown if self.selected_run_is_loaded() => {
                     self.history_scroll = self.history_scroll.saturating_sub(3);
                     return true;
                 },
@@ -324,6 +324,14 @@ impl State {
     fn on_mouse(&mut self, mouse_event: Mouse) -> bool {
         match mouse_event {
             Mouse::LeftClick(line, _) if line >= 0 => self.on_click(line as usize),
+            Mouse::ScrollUp(lines) if self.selected_run_is_loaded() => {
+                self.history_scroll = self.history_scroll.saturating_add(lines.max(1));
+                true
+            },
+            Mouse::ScrollDown(lines) if self.selected_run_is_loaded() => {
+                self.history_scroll = self.history_scroll.saturating_sub(lines.max(1));
+                true
+            },
             _ => false,
         }
     }
@@ -463,6 +471,12 @@ impl State {
             Some(StripRow::Run { run_id, .. }) => run_id == &run.id,
             _ => false,
         }
+    }
+
+    fn selected_run_is_loaded(&self) -> bool {
+        self.run
+            .as_ref()
+            .is_some_and(|run| self.selected_run_matches(run))
     }
 
     /// Ask hocus for the current strip - and open one if there is none to ask.
@@ -922,8 +936,8 @@ mod tests {
             started_at_ms: 10,
             ended_at_ms: Some(20),
             outcome: agents::RunOutcome::Completed,
-            revision: 2,
-            summarized_revision: 2,
+            revision: 4,
+            summarized_revision: 4,
             summary: Some(agents::Summary {
                 text: "History is stored and rendered.".to_owned(),
                 title: "hook history".to_owned(),
@@ -940,6 +954,18 @@ mod tests {
                 agents::RunEntry {
                     revision: 2,
                     event_id: None,
+                    kind: agents::RunEntryKind::Question,
+                    text: "Keep old runs?".to_owned(),
+                },
+                agents::RunEntry {
+                    revision: 3,
+                    event_id: None,
+                    kind: agents::RunEntryKind::Step,
+                    text: "Bash cargo test".to_owned(),
+                },
+                agents::RunEntry {
+                    revision: 4,
+                    event_id: None,
                     kind: agents::RunEntryKind::Result,
                     text: "Implemented and tested.".to_owned(),
                 },
@@ -949,7 +975,13 @@ mod tests {
         let rows = state.summary_box(20, 50);
         assert!(rows[0].contains("claude · archived"), "{}", rows[0]);
         assert!(rows.iter().any(|row| row.contains("summary: History")));
-        assert!(rows.iter().any(|row| row.contains("result: Implemented")));
+        assert!(rows.iter().any(|row| row.contains("question: Keep")));
+        assert!(!rows.iter().any(|row| row.contains("Bash cargo")));
+        assert!(!rows.iter().any(|row| row.contains("result: Implemented")));
+        assert!(state.on_mouse(Mouse::ScrollUp(2)));
+        assert_eq!(state.history_scroll, 2);
+        assert!(state.on_mouse(Mouse::ScrollDown(1)));
+        assert_eq!(state.history_scroll, 1);
         assert!(!state.on_key(KeyWithModifier::new(BareKey::Enter)));
     }
 

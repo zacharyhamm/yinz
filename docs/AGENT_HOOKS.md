@@ -225,23 +225,24 @@ the idle summary no longer comes from the screen at all:
 ### The run history is retained
 
 The same hook stream also builds one durable run per agent `session_id`. It stores metadata
-(agent kind, pane, folder and timestamps) and only the events useful after the fact:
+(agent kind, pane, folder and timestamps) and only the conversation useful after the fact:
 
 - prompts and plans;
-- commands, edits and writes;
-- waits, errors and subagent boundaries;
-- final results, failed turns and interruptions.
+- explicit questions from `AskUserQuestion` and `request_user_input`.
 
-Reads, successful tool completions and routine lifecycle events are omitted. Tool output is
-never stored. The exact retained entries stay in `shared:hocus` for the life of the Zellij
-session; summarization advances `summarized_revision` but does not replace or delete them.
-Legacy hook scripts without a session id get a pane-and-start-time fallback id.
+Tool calls, permissions, errors, subagent boundaries and routine lifecycle events are omitted.
+Final results are retained as hidden summarization input while a run is active, so a failed or
+superseded request can carry them into the next summary. If the run is archived first, its
+unsummarized results are drawn as the durable fallback; accepted results remain hidden. Tool
+output is never stored. The retained entries stay in `shared:hocus` for the Zellij session.
+Summarization advances `summarized_revision` but does not replace or delete entries. Legacy hook
+scripts without a session ID get a pane-and-start-time fallback ID.
 
 The agents panel shows active runs on their live agent rows and completed runs under an
 `archive` header, newest first. It loads 50 archive rows at a time; select `load older runs…`
 and press Enter for the next page. Selecting a row fetches that run's full history. PageUp and
-PageDown move through its compact timeline while the rolling summary stays pinned. Enter still
-focuses and hides the panel for a live agent; an archived row has no pane to focus.
+PageDown or the mouse wheel move through its compact timeline. The rolling summary stays pinned.
+Enter focuses and hides the panel for a live agent. An archived row has no pane to focus.
 
 ### A waiting agent interrupts
 
@@ -330,8 +331,9 @@ that is silent when it does not match cannot drift. A broadcast that names no ki
 The event payloads are pinned against Claude Code's own shipped schemas rather than
 against its documentation. `strings` on the binary finds them: they are Zod definitions,
 one per `hook_event_name`, and they are the authority on which fields are optional. Codex's
-are not pinned that way, which is why nothing is read out of a `request_user_input`'s
-arguments: its wait says "a question" rather than risking the wrong key read as the right one.
+are not pinned that way. The shared defensive reader still takes a `request_user_input`'s
+`questions[0].question`, or its `header` when no question is present; if that shape changes,
+the wait falls back to "a question" rather than mistaking another field for the prompt.
 
 Note: `zellij hocus hooks` is unrelated to the `hooks { … }` block in zellij's own
 config, which binds a plugin to a moment in the session's life
