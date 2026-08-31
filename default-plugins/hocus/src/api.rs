@@ -18,14 +18,14 @@ use std::collections::BTreeMap;
 
 use crate::linear;
 use crate::tools::{self, ToolCall};
-use crate::{Message, Reasoning, ReasoningKey, Role};
+use crate::{Message, Reasoning, ReasoningItem, ReasoningKey, Role};
 
 // Endpoint shaping lives in hocus-proto so hocus-agentd, which calls the same endpoint to
 // summarise an idle agent, cannot disagree with us about where it is. Re-exported rather
 // than re-implemented: every call site here already spells them unqualified.
 pub use hocus_proto::llm::{
-    api_error_message, completions_url, is_openai, models_url, non_empty, responses_url,
-    DEFAULT_API_KEY_ENV, DEFAULT_BASE_URL, DEFAULT_MODEL,
+    api_error_message, completions_url, is_openai, is_reasoning_model, models_url, non_empty,
+    responses_url, DEFAULT_API_KEY_ENV, DEFAULT_BASE_URL, DEFAULT_MODEL,
 };
 /// SearxNG's own docker-compose default port.
 pub const DEFAULT_SEARCH_URL: &str = "http://localhost:8888";
@@ -209,10 +209,14 @@ impl Config {
         // OpenAI's, the rest DeepSeek's and OpenRouter's. `none` is also the
         // documented way to keep tools working on chat/completions against a
         // reasoning model, which refuses any other effort beside a `tools` array.
-        // Unset defaults to `medium` against OpenAI's own endpoint, since it is
-        // the one endpoint guaranteed to understand the field, and to unset
-        // everywhere else, since sending it to an endpoint that does not expect
-        // it is the same class of problem this key exists to avoid.
+        //
+        // Unset defaults to `medium` only where all three of the conditions that
+        // make the field safe hold: OpenAI's own endpoint, the Responses
+        // transport, and a model that reasons. Any one of them missing and the
+        // field is omitted, because sending it where it is not expected is the
+        // same class of problem this key exists to avoid - `gpt-4o-mini`, the
+        // built-in default model, rejects the `reasoning` object outright, and
+        // chat/completions rejects an effort sent alongside `tools`.
         let reasoning_effort = enum_setting(
             kdl,
             "reasoning_effort",
@@ -224,7 +228,10 @@ impl Config {
             model: model.clone(),
             api_key_env: api_key_env.clone(),
         })?
-        .or_else(|| openai.then(|| "medium".to_owned()));
+        .or_else(|| {
+            (openai && api == Api::Responses && is_reasoning_model(&model))
+                .then(|| "medium".to_owned())
+        });
         // Anything but an explicit "false" leaves tools on: a typo should not
         // silently disable them.
         let tools =
@@ -620,6 +627,12 @@ struct ResponsesRequest<'a> {
     instructions: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<ReasoningConfig<'a>>,
+    /// Asks for each reasoning item's chain-of-thought back sealed, so it can be
+    /// echoed on the next round of a tool loop. Only meaningful with `store: false`,
+    /// which is unconditional here, and only sent when a `reasoning` config is - a
+    /// model that produces no reasoning items has nothing to include.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    include: Option<[&'static str; 1]>,
     input: Vec<InputItem<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Value>,
@@ -659,6 +672,16 @@ enum InputItem<'a> {
         call_id: &'a str,
         output: &'a str,
     },
+    /// A reasoning item handed back exactly as it arrived. `summary` is sent empty:
+    /// the visible summary is ours to display, and the endpoint reads only the
+    /// sealed content.
+    Reasoning {
+        #[serde(rename = "type")]
+        kind: &'static str,
+        id: &'a str,
+        encrypted_content: &'a str,
+        summary: [(); 0],
+    },
 }
 
 impl<'a> InputItem<'a> {
@@ -669,15 +692,24 @@ impl<'a> InputItem<'a> {
             content: content.into(),
         }
     }
+
+    fn reasoning(item: &'a ReasoningItem) -> Self {
+        InputItem::Reasoning {
+            kind: "reasoning",
+            id: &item.id,
+            encrypted_content: &item.encrypted_content,
+            summary: [],
+        }
+    }
 }
 
-// ponytail: reasoning items are not carried across tool rounds on this transport,
-// so the model re-derives its thinking on each round of a tool loop — the same
-// ceiling chat/completions already has, and why `reasoning_echo` is a chat-only
-// setting. Upgrade path: `include: ["reasoning.encrypted_content"]` on the
-// request, then echoing every reasoning item back immediately before the
-// function_call it produced. The API rejects the request outright if that
-// pairing is ever broken, which is a good deal more machinery than a summary.
+/// Build the Responses request body.
+///
+/// The one rule that is not obvious: a reasoning item must be followed by the item it
+/// produced, or the API rejects the whole request. `ReasoningItem::before` records how
+/// many calls preceded each one in the stream, so replaying them at those positions
+/// reproduces the order the model emitted - which is the order it has to be given back
+/// in. `reasoning_echo` gates the lot, the same switch the other transport uses.
 fn responses_request_body(
     cfg: &Config,
     transcript: &[Message],
@@ -700,7 +732,19 @@ fn responses_request_body(
                 if !prose.is_empty() {
                     input.push(InputItem::message("assistant", prose));
                 }
-                for call in &message.tool_calls {
+                let reasoning_items: &[ReasoningItem] = if cfg.reasoning_echo {
+                    &message.reasoning_items
+                } else {
+                    &[]
+                };
+                let at = |position: usize| {
+                    reasoning_items
+                        .iter()
+                        .filter(move |item| item.before == position)
+                        .map(InputItem::reasoning)
+                };
+                for (position, call) in message.tool_calls.iter().enumerate() {
+                    input.extend(at(position));
                     input.push(InputItem::FunctionCall {
                         kind: "function_call",
                         call_id: &call.id,
@@ -708,6 +752,16 @@ fn responses_request_body(
                         arguments: wire_arguments(call),
                     });
                 }
+                // Anything recorded after the last call. Should not happen - a
+                // reasoning item is always followed by the item it produced - but
+                // dropping one silently would break the pairing rather than
+                // preserve it.
+                input.extend(
+                    reasoning_items
+                        .iter()
+                        .filter(|item| item.before >= message.tool_calls.len())
+                        .map(InputItem::reasoning),
+                );
             },
             Role::Assistant if !message.content.is_empty() => {
                 input.push(InputItem::message("assistant", &message.content))
@@ -738,6 +792,8 @@ fn responses_request_body(
                 effort,
                 summary: "auto",
             }),
+        include: (cfg.reasoning_effort.is_some() && cfg.reasoning_echo)
+            .then_some(["reasoning.encrypted_content"]),
         input,
         tools: tools.map(flatten_tools),
     };
@@ -822,6 +878,9 @@ pub fn wire_chars(transcript: &[Message]) -> usize {
                         .sum::<usize>()
             },
             Role::Assistant => message.content.len(),
+            // `reasoning_items` is counted nowhere: a sealed blob's length says
+            // nothing useful about what it costs in tokens, and the endpoint
+            // reports the real number on `response.completed` anyway.
             Role::Error | Role::Notice => 0,
         })
         .sum()
@@ -1044,6 +1103,13 @@ pub enum SseItem {
         text: String,
         key: ReasoningKey,
     },
+    /// A whole reasoning item, sealed. Unlike [`SseItem::Reasoning`], which is the
+    /// summary we display a fragment at a time, this arrives complete on one event
+    /// and is never shown - it exists only to be handed back. Responses only.
+    ReasoningItem {
+        id: String,
+        encrypted_content: String,
+    },
     ApiError(String),
     /// A piece of a tool call. Never complete on its own - see
     /// [`ToolCallAccumulator`].
@@ -1099,10 +1165,28 @@ impl SseParser {
 #[derive(Debug, Default)]
 pub struct ToolCallAccumulator {
     calls: Vec<(usize, ToolCall)>,
+    /// The turn's reasoning items, each tagged with how many calls had been seen
+    /// when it arrived. See [`ReasoningItem::before`]: that count is what lets the
+    /// request put them back where the model emitted them.
+    reasoning_items: Vec<ReasoningItem>,
 }
 
 impl ToolCallAccumulator {
     pub fn feed(&mut self, item: &SseItem) {
+        if let SseItem::ReasoningItem {
+            id,
+            encrypted_content,
+        } = item
+        {
+            // A reasoning item completes before the call it produced is announced,
+            // so the number of calls started so far *is* its position.
+            self.reasoning_items.push(ReasoningItem {
+                id: id.clone(),
+                encrypted_content: encrypted_content.clone(),
+                before: self.calls.len(),
+            });
+            return;
+        }
         let SseItem::ToolCallFragment {
             index,
             id,
@@ -1133,11 +1217,21 @@ impl ToolCallAccumulator {
         }
     }
 
+    /// Take the turn's reasoning items, leaving that half of the accumulator empty.
+    ///
+    /// Separate from [`Self::take`] so the several places that discard a dead
+    /// stream's half-accumulated calls go on saying `take()` and mean it - both
+    /// halves are cleared there either way.
+    pub fn take_reasoning_items(&mut self) -> Vec<ReasoningItem> {
+        std::mem::take(&mut self.reasoning_items)
+    }
+
     /// Take the completed calls, leaving the accumulator empty.
     ///
     /// A call with no name never had a usable fragment and is dropped: it would
     /// only reach dispatch to be rejected as an unknown tool.
     pub fn take(&mut self) -> Vec<ToolCall> {
+        self.reasoning_items.clear();
         std::mem::take(&mut self.calls)
             .into_iter()
             .map(|(_, call)| call)
@@ -1355,6 +1449,11 @@ struct ResponseEvent {
     /// rather than inside a response.
     #[serde(default)]
     error: Option<ApiError>,
+    /// The message of a `type: "error"` frame, which spells it as a bare top-level
+    /// field beside `code` and `param` rather than wrapping it in an `error` object
+    /// the way a non-2xx body does.
+    #[serde(default)]
+    message: Option<String>,
 }
 
 #[derive(Deserialize, PartialEq)]
@@ -1365,6 +1464,11 @@ enum ResponseEventKind {
     ReasoningSummaryTextDelta,
     #[serde(rename = "response.output_item.added")]
     OutputItemAdded,
+    /// The completed item. Only reasoning items are read from it - a function call
+    /// is already assembled from `added` plus its argument deltas - and only
+    /// because `encrypted_content` is not populated until the item is done.
+    #[serde(rename = "response.output_item.done")]
+    OutputItemDone,
     #[serde(rename = "response.function_call_arguments.delta")]
     FunctionCallArgumentsDelta,
     #[serde(rename = "response.completed")]
@@ -1393,6 +1497,13 @@ struct OutputItem {
     call_id: Option<String>,
     #[serde(default)]
     name: Option<String>,
+    /// A reasoning item's own id, which is what it must be echoed back under.
+    #[serde(default)]
+    id: Option<String>,
+    /// The sealed chain-of-thought, present only because the request asked for it
+    /// with `include: ["reasoning.encrypted_content"]`.
+    #[serde(default)]
+    encrypted_content: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1401,6 +1512,17 @@ struct ResponseBody {
     usage: Option<ResponseUsage>,
     #[serde(default)]
     error: Option<ApiError>,
+    /// Why a `response.incomplete` stopped early - `max_output_tokens`, a content
+    /// filter. That event carries no `error` at all, so this is the only thing it
+    /// has to say for itself.
+    #[serde(default)]
+    incomplete_details: Option<IncompleteDetails>,
+}
+
+#[derive(Deserialize)]
+struct IncompleteDetails {
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 /// The Responses API's spelling of `prompt_tokens`/`completion_tokens`. Reported
@@ -1443,6 +1565,24 @@ fn parse_response_event(event: ResponseEvent) -> Vec<SseItem> {
             }],
             _ => Vec::new(),
         },
+        // The sealed thinking, which is worth nothing on its own and everything on
+        // the next round of a tool loop. Both fields are required: an item missing
+        // either cannot be handed back, and a half-formed one would break the
+        // pairing rule rather than satisfy it.
+        ResponseEventKind::OutputItemDone => match event.item {
+            Some(OutputItem {
+                kind,
+                id: Some(id),
+                encrypted_content: Some(encrypted_content),
+                ..
+            }) if kind == "reasoning" && !encrypted_content.is_empty() => {
+                vec![SseItem::ReasoningItem {
+                    id,
+                    encrypted_content,
+                }]
+            },
+            _ => Vec::new(),
+        },
         ResponseEventKind::FunctionCallArgumentsDelta => vec![SseItem::ToolCallFragment {
             index: event.output_index,
             id: None,
@@ -1466,15 +1606,32 @@ fn parse_response_event(event: ResponseEvent) -> Vec<SseItem> {
             items.push(SseItem::Done);
             items
         },
-        // A failure mid-stream. The message is on the response for the two
-        // response-level events and at the top level for a transport `error`.
+        // A failure mid-stream, and the three events spell it three different
+        // ways: `response.failed` puts an error object on the response,
+        // `response.incomplete` has no error at all and reports through
+        // `incomplete_details.reason`, and a transport `error` frame carries a
+        // bare `message` at the top level. Tried in that order, and never
+        // allowed to come back empty - a terminal failure that produced no
+        // `ApiError` would leave an empty or truncated answer looking like a
+        // clean stop.
         ResponseEventKind::Failed | ResponseEventKind::Incomplete | ResponseEventKind::Error => {
-            event
+            let detail = event
                 .response
-                .and_then(|response| response.error)
-                .or(event.error)
-                .map(|error| vec![SseItem::ApiError(error.message)])
-                .unwrap_or_default()
+                .and_then(|response| {
+                    let ResponseBody {
+                        error,
+                        incomplete_details,
+                        ..
+                    } = response;
+                    error
+                        .map(|error| error.message)
+                        .or_else(|| incomplete_details.and_then(|details| details.reason))
+                })
+                .or_else(|| event.error.map(|error| error.message))
+                .or(event.message)
+                .filter(|detail| !detail.trim().is_empty())
+                .unwrap_or_else(|| "the response ended without completing".to_owned());
+            vec![SseItem::ApiError(detail)]
         },
         ResponseEventKind::Other => Vec::new(),
     }

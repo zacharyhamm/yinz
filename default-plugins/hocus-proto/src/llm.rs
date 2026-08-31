@@ -33,17 +33,16 @@ pub fn non_empty(map: &BTreeMap<String, String>, key: &str) -> Option<String> {
 /// https://api.openai.com/v1         -> https://api.openai.com/v1/chat/completions
 /// https://api.openai.com/v1/        -> https://api.openai.com/v1/chat/completions
 /// https://host/v1/chat/completions  -> unchanged
+/// https://host/v1/responses         -> https://host/v1/chat/completions
 /// http://localhost:11434            -> http://localhost:11434/v1/chat/completions
 /// ```
+///
+/// A base already pointing at the *other* endpoint is re-pointed for the same reason
+/// [`responses_url`] re-points one written this way: `base_url` names the API root for
+/// everything hocus does, so switching transports must not depend on which of the two the
+/// user happened to spell.
 pub fn completions_url(base: &str) -> String {
-    let base = base.trim().trim_end_matches('/');
-    if base.ends_with("/chat/completions") {
-        base.to_owned()
-    } else if base.ends_with("/v1") {
-        format!("{base}/chat/completions")
-    } else {
-        format!("{base}/v1/chat/completions")
-    }
+    format!("{}/chat/completions", api_root(base))
 }
 
 /// The Responses endpoint, for the same `base_url` and the same four shapes.
@@ -86,6 +85,21 @@ pub fn is_openai(base_url: &str) -> bool {
         .split('/')
         .next()
         .is_some_and(|host| host.eq_ignore_ascii_case("api.openai.com"))
+}
+
+/// Whether `model` names one of OpenAI's reasoning models, which are the only ones that
+/// accept a `reasoning` object at all - every other model 400s on the field.
+///
+/// A prefix list rather than a lookup: nothing on the wire answers the question, and the
+/// families are named consistently enough that a prefix is as good as it gets. An
+/// unrecognised name simply gets no default effort, which is the safe direction to be
+/// wrong in: a reasoning model without one thinks at OpenAI's own default anyway, while a
+/// non-reasoning model with one cannot make the request at all.
+pub fn is_reasoning_model(model: &str) -> bool {
+    let model = model.trim().to_ascii_lowercase();
+    ["gpt-5", "o1", "o3", "o4"]
+        .iter()
+        .any(|family| model.starts_with(family))
 }
 
 /// The `/v1` root a configured `base_url` names, whichever endpoint it was written as.
@@ -227,12 +241,37 @@ mod tests {
                 "https://host/v1/chat/completions",
                 "https://host/v1/chat/completions",
             ),
+            // A base written as the *other* endpoint still names the same root, or
+            // selecting `api "chat"` against it would reach /v1/responses/v1/chat/completions.
+            (
+                "https://host/v1/responses",
+                "https://host/v1/chat/completions",
+            ),
             (
                 "http://localhost:11434",
                 "http://localhost:11434/v1/chat/completions",
             ),
         ] {
             assert_eq!(completions_url(base), want, "{base}");
+        }
+    }
+
+    /// Only these accept a `reasoning` object; everything else 400s on it, which is why
+    /// hocus's default effort is gated on this rather than on the host alone.
+    #[test]
+    fn only_the_reasoning_families_are_recognised() {
+        for model in [
+            "gpt-5",
+            "gpt-5.1-mini",
+            "o1",
+            "o3-mini",
+            "o4-mini",
+            "  O3  ",
+        ] {
+            assert!(is_reasoning_model(model), "{model}");
+        }
+        for model in ["gpt-4o-mini", "gpt-4.1", "deepseek-chat", "llama3", ""] {
+            assert!(!is_reasoning_model(model), "{model}");
         }
     }
 

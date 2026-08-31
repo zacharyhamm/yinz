@@ -371,9 +371,10 @@ plugins {
         // models reject that pair with a 400. Both come off the same base_url.
         //
         // Against OpenAI's own endpoint (base_url api.openai.com, the default)
-        // hocus already defaults to api "responses" and reasoning_effort "medium";
-        // set either explicitly to override. Uncomment to force chat/completions
-        // against OpenAI instead:
+        // hocus already defaults to api "responses", and to reasoning_effort
+        // "medium" when the model reasons too (gpt-5, o1, o3, o4 - the default
+        // gpt-4o-mini does not, and rejects the field). Set either explicitly to
+        // override. Uncomment to force chat/completions against OpenAI instead:
         // api "chat"
     }
     // The agent list, bound to Ctrl e a above — its own overlay pane, beside the
