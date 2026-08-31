@@ -5,8 +5,22 @@
 //!
 //! It is sectioned for cost rather than for size. Every section fits inside `MAX_TOOL_OUTPUT`
 //! several times over, but a tool result stays in the transcript and is re-sent on every later
-//! turn of the conversation — so handing over the whole 26 KB once would tax every message that
+//! turn of the conversation — so handing the guide over whole would tax every message that
 //! followed it. Asking for a section is how the model pays only for what it needs.
+//!
+//! No number is quoted here, because the last one rotted: the guide had doubled since. The rule
+//! lives in `no_section_is_anywhere_near_the_tool_output_cap` instead, which fails when a
+//! section grows past what a tool call should cost. The two `##` sections that did outgrow it -
+//! `Commands` at 16 KB and `Hooks` at 12 KB - are served as their `###` children, so a model
+//! that wants the permission table does not also buy the pane-workflow guide.
+
+/// How much of a `plugin_docs` answer reaches the model.
+///
+/// Well above every section as they stand - the largest is a prelude part at ~13 KB - and that
+/// is the point: this is not the mechanism, `SECTIONS` is. It is the backstop that keeps a
+/// guide section which grows past what a tool call should cost from silently landing whole in
+/// a transcript that then re-sends it on every later turn.
+pub const MAX_DOCS_OUTPUT: usize = 16_000;
 
 /// The guide, verbatim.
 const GUIDE: &str = include_str!("../../../docs/LUA_PLUGINS.md");
@@ -46,18 +60,23 @@ fn prelude_part(index: usize) -> &'static str {
 ///
 /// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
 /// editing the guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 27] = [
+pub const SECTIONS: [&str; 32] = [
     "index",
     "quickstart",
     "contract",
     "events",
     "commands",
+    "commands_agents",
+    "commands_workflows",
+    "permissions",
     "rendering",
     "modules",
     "data",
     "queues",
     "hocus_extensions",
     "hooks",
+    "hooks_headless",
+    "hooks_context_menu",
     "files",
     "errors",
     "restrictions",
@@ -82,13 +101,13 @@ fn heading(section: &str) -> Option<&'static str> {
         "quickstart" => "A plugin",
         "contract" => "The contract",
         "events" => "Events",
-        "commands" => "Commands",
+        "commands" | "commands_agents" | "commands_workflows" | "permissions" => "Commands",
         "rendering" => "Rendering",
         "modules" => "Modules",
         "data" => "Data",
         "queues" => "Work queues",
         "hocus_extensions" => "Hocus extensions",
-        "hooks" => "Hooks",
+        "hooks" | "hooks_headless" | "hooks_context_menu" => "Hooks",
         "files" => "Files",
         "errors" => "Errors",
         "restrictions" => "What Lua plugins may not do",
@@ -97,16 +116,95 @@ fn heading(section: &str) -> Option<&'static str> {
     })
 }
 
-/// One `## `-delimited section of the guide, heading included.
+/// How much of its `##` section a name resolves to.
+///
+/// Two of the guide's sections are far larger than the rest - `Commands` at ~16 KB and `Hooks`
+/// at ~12 KB - and a model that wanted one paragraph of either paid for all of it, permanently.
+/// So those two are served as their `###` children, and the historical names keep the part
+/// everyone needs rather than becoming aliases for the whole thing again.
+#[derive(Clone, Copy)]
+enum Cut {
+    /// The whole `##` section, `###` children and all. What every other section is.
+    Whole,
+    /// The section down to, but not including, the named `###` child.
+    Until(&'static str),
+    /// One named `###` child, on its own.
+    Only(&'static str),
+}
+
+/// The `###` child a name is cut at, and whether it is the head or the child that is kept.
+fn cut(section: &str) -> Cut {
+    match section {
+        // The preamble, the keybinding rules and the short "commands that answer" - what a
+        // plugin that runs a command needs, and nothing about agents, workflows or permissions.
+        "commands" => Cut::Until("Agents and git checkouts"),
+        "commands_agents" => Cut::Only("Agents and git checkouts"),
+        "commands_workflows" => Cut::Only("Pane workflows"),
+        "permissions" => Cut::Only("Permissions"),
+        "hooks" => Cut::Until("Headless hooks"),
+        "hooks_headless" => Cut::Only("Headless hooks"),
+        "hooks_context_menu" => Cut::Only("The `context_menu` hook"),
+        _ => Cut::Whole,
+    }
+}
+
+/// One `## `-delimited section of the guide, heading included, cut down to `cut`.
 ///
 /// Split at read time rather than kept as offsets: ten splits of a 10 KB string costs nothing,
 /// and it means the guide is the single source of truth for where a section begins and ends.
-fn guide_section(heading: &str) -> Option<String> {
-    GUIDE
+/// The `###` split is the same trick one level down, which is why renaming a subheading fails a
+/// test rather than silently returning the wrong text.
+fn guide_section(heading: &str, cut: Cut) -> Option<String> {
+    let chunk = GUIDE
         .split("\n## ")
         .skip(1)
-        .find(|chunk| chunk.starts_with(heading))
-        .map(|chunk| format!("## {}", chunk.trim_end()))
+        .find(|chunk| chunk.starts_with(heading))?;
+    let text = match cut {
+        Cut::Whole => format!("## {}", chunk.trim_end()),
+        Cut::Until(sub) => {
+            let at = chunk.find(&format!("\n### {sub}"))?;
+            // The children left behind have to be nameable, or the model has no reason to
+            // guess that `commands_agents` exists and simply does without what is in it.
+            let rest: Vec<String> = subheadings(chunk)
+                .iter()
+                .filter_map(|name| section_for_sub(heading, name).map(|s| (s, *name)))
+                .map(|(name, sub)| format!("- {name}: \"{sub}\""))
+                .collect();
+            format!(
+                "## {}\n\nThe rest of \"{heading}\" is served separately, so it is not paid for \
+                 unless it is asked for. Call plugin_docs with:\n{}",
+                chunk[..at].trim_end(),
+                rest.join("\n")
+            )
+        },
+        Cut::Only(sub) => {
+            let child = chunk
+                .split("\n### ")
+                .skip(1)
+                .find(|child| child.starts_with(sub))?;
+            // The parent heading rides along: a child on its own reads as a fragment without
+            // it, and it is one line.
+            format!("## {heading}\n\n### {}", child.trim_end())
+        },
+    };
+    Some(text)
+}
+
+/// The `### ` headings inside one `##` chunk, in order.
+fn subheadings(chunk: &str) -> Vec<&str> {
+    chunk
+        .split("\n### ")
+        .skip(1)
+        .filter_map(|child| child.lines().next())
+        .collect()
+}
+
+/// The section name that serves one `###` child, if any does on its own.
+fn section_for_sub(parent: &str, sub: &str) -> Option<&'static str> {
+    SECTIONS
+        .iter()
+        .copied()
+        .find(|name| heading(name) == Some(parent) && matches!(cut(name), Cut::Only(s) if s == sub))
 }
 
 /// The default section: what the rest hold, plus the complete minimal plugin, which is the one
@@ -138,17 +236,29 @@ fn index() -> String {
             "prelude_data" => "its zellij.data part: the persistent store, with every helper".to_owned(),
             "prelude_ui" => "its zellij.text (widths) and zellij.ui (themed text, ribbons, tables, lists) parts".to_owned(),
             "prelude_workflows" => "the rest of it: pane_workflow and run_command_in_pane - command sequences in one pane".to_owned(),
+            "commands" => "the guide's \"Commands\", less the four parts below".to_owned(),
+            "commands_agents" => "running an agent, and cutting it a git worktree".to_owned(),
+            "commands_workflows" => "pane_workflow: a command sequence in one pane".to_owned(),
+            "permissions" => "every permission a plugin can request, and what each allows"
+                .to_owned(),
+            "hooks" => "the guide's \"Hooks\", and the agent_exit one".to_owned(),
+            "hooks_headless" => "hooks that run with no pane".to_owned(),
+            "hooks_context_menu" => "the context_menu hook".to_owned(),
             other => match heading(other) {
                 Some(heading) => format!("the guide's \"{heading}\""),
                 None => continue,
             },
         };
-        out.push_str(&format!("- {section}: {description}\n"));
+        // The size, so the choice can be made on what it costs. Every one of these lands in the
+        // transcript and is re-sent on every later turn, and the range is 700 bytes to 13 KB -
+        // wide enough that "read the relevant sections" is not advice a model can act on
+        // without knowing which ones are cheap.
+        let size = self::section(section).map_or(0, |text| text.len());
+        out.push_str(&format!("- {section} (~{}k): {description}\n", size / 1000));
     }
-    if let Some(quickstart) = heading("quickstart").and_then(guide_section) {
-        out.push('\n');
-        out.push_str(&quickstart);
-    }
+    // The quickstart used to be appended here in full - 3.8 KB nobody asked for, on the first
+    // call of every plugin conversation and on every round after it. It is one line above.
+    out.push_str("\nStart with `quickstart` unless you already know the shape.\n");
     out
 }
 
@@ -168,7 +278,7 @@ pub fn section(name: &str) -> Option<String> {
         "prelude_data" => Some(fenced(prelude_part(2))),
         "prelude_ui" => Some(fenced(prelude_part(3))),
         "prelude_workflows" => Some(fenced(prelude_part(4))),
-        other => heading(other).and_then(guide_section),
+        other => heading(other).and_then(|heading| guide_section(heading, cut(other))),
     }
 }
 
@@ -254,9 +364,86 @@ mod tests {
             !events.contains("\n## Commands"),
             "a section must stop at the next heading"
         );
-        // The `###` subsections belong to the `##` they sit under and travel with it.
+        // The `###` subsections belong to the `##` they sit under and travel with it, unless
+        // the `##` was too big to send whole - see `cut`.
         let commands = section("commands").unwrap();
         assert!(commands.contains("### Commands that answer"), "{commands}");
+        assert!(
+            !commands.contains("### Permissions"),
+            "the permission table is its own section now: {commands}"
+        );
+    }
+
+    /// The `###` half of the coupling `every_guide_heading_is_reachable_as_a_section` checks for
+    /// `##`: a child of a section that is served in parts must be reachable, or it is a piece of
+    /// the guide the model can never see. Children of a `Whole` section travel with their
+    /// parent and need no name of their own.
+    #[test]
+    fn every_subheading_of_a_split_section_is_reachable() {
+        for parent in ["Commands", "Hooks"] {
+            let chunk = GUIDE
+                .split("\n## ")
+                .skip(1)
+                .find(|chunk| chunk.starts_with(parent))
+                .unwrap_or_else(|| panic!("the guide has no '## {parent}'"));
+            let served = SECTIONS
+                .iter()
+                .filter(|name| heading(name) == Some(parent))
+                .filter_map(|name| section(name))
+                .collect::<Vec<_>>()
+                .join("\n");
+            for sub in subheadings(chunk) {
+                assert!(
+                    served.contains(&format!("### {sub}")),
+                    "'### {sub}' is in '## {parent}' but no section serves it"
+                );
+            }
+        }
+    }
+
+    /// A part left out of the section that used to hold it is a part the model has no reason to
+    /// know exists. The head has to name what it no longer carries.
+    #[test]
+    fn a_split_section_names_the_parts_it_no_longer_carries() {
+        let commands = section("commands").unwrap();
+        for name in ["commands_agents", "commands_workflows", "permissions"] {
+            assert!(commands.contains(name), "{commands}");
+        }
+        let hooks = section("hooks").unwrap();
+        for name in ["hooks_headless", "hooks_context_menu"] {
+            assert!(hooks.contains(name), "{hooks}");
+        }
+    }
+
+    /// 3.8 KB of quickstart used to be appended to the index unasked, on the first `plugin_docs`
+    /// call of every plugin conversation - and, being a tool result, on every round after it.
+    #[test]
+    fn the_index_does_not_carry_the_quickstart() {
+        let index = docs(None);
+        assert!(!index.contains("## A plugin"), "{index}");
+        assert!(index.contains("quickstart"), "but it still points at it");
+        assert!(
+            index.len() < 3_000,
+            "the index is {} bytes and is paid for on every later turn",
+            index.len()
+        );
+    }
+
+    /// "Read only the relevant sections" is not advice a model can act on without knowing which
+    /// ones are cheap: the range is under a kilobyte to thirteen.
+    #[test]
+    fn the_index_states_a_size_for_every_section() {
+        let index = docs(None);
+        for name in SECTIONS {
+            if name == "index" {
+                continue;
+            }
+            let line = index
+                .lines()
+                .find(|line| line.starts_with(&format!("- {name} ")))
+                .unwrap_or_else(|| panic!("the index has no line for '{name}'"));
+            assert!(line.contains("k):"), "{line}");
+        }
     }
 
     /// The index is the one thing a plugin request always sees, and the loop it names is the
@@ -295,6 +482,19 @@ mod tests {
         }
     }
 
+    /// The two sections that were split are the reason this file exists in its current shape.
+    /// If either grows back past a few kilobytes the split has stopped working.
+    #[test]
+    fn the_split_sections_are_a_fraction_of_what_they_were() {
+        for name in ["commands", "hooks"] {
+            let len = section(name).unwrap().len();
+            assert!(
+                len < 6_000,
+                "'{name}' is back to {len} bytes; it is served in parts for a reason"
+            );
+        }
+    }
+
     #[test]
     fn an_unknown_section_lists_the_real_ones() {
         let answer = docs(Some("nonsense"));
@@ -308,7 +508,7 @@ mod tests {
         for name in SECTIONS {
             let len = section(name).unwrap().len();
             assert!(
-                len < 20_000,
+                len < MAX_DOCS_OUTPUT,
                 "'{name}' is {len} bytes, which is too much to send on every later turn"
             );
         }
@@ -320,7 +520,7 @@ mod tests {
     /// from the guide, and a permission added later must fail here rather than be undocumented.
     #[test]
     fn the_guide_names_every_permission_a_plugin_can_ask_for() {
-        let permissions = section("commands").expect("the permissions live under Commands");
+        let permissions = section("permissions").expect("the permission table's own section");
         for name in zellij_tile::plugin_authoring::all_permission_names() {
             assert!(
                 permissions.contains(&format!("`{name}`")),

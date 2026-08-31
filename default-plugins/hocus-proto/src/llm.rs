@@ -117,6 +117,96 @@ fn api_root(base: &str) -> String {
     }
 }
 
+/// How long to wait before resending a request the endpoint turned away, or `None` when the
+/// status is not one worth resending.
+///
+/// The transient set is deliberately narrow. A 429 is the one this exists for — a per-minute
+/// token budget refills on its own, and the request that hit it is still exactly the right
+/// request to send. 500/502/503/504/529 are the same shape of "nothing about the body was
+/// wrong"; every other status describes something a resend would only repeat.
+///
+/// The plugin host hands the caller `(status, body)` and no headers, so `Retry-After` is out of
+/// reach. OpenAI writes the wait into the message instead — "Please try again in 3.565s", or
+/// "in 1m2s" for a longer one — and that hint is the endpoint's own arithmetic on its own
+/// budget, so it beats anything guessed here. `attempt` (0 for the first resend) supplies the
+/// `2^attempt` fallback when there is no hint, and the result is clamped either way: a hint of
+/// zero would spin, and one of ten minutes would look like a hang.
+pub fn retry_delay(status: u16, body: &[u8], attempt: u32) -> Option<f64> {
+    if !matches!(status, 429 | 500 | 502 | 503 | 504 | 529) {
+        return None;
+    }
+    let hinted = retry_hint(&api_error_message(status, body));
+    let seconds = hinted.unwrap_or_else(|| f64::from(1u32 << attempt.min(6)));
+    Some(seconds.clamp(MIN_RETRY_SECONDS, MAX_RETRY_SECONDS))
+}
+
+/// The same question for an error that arrived *inside* a stream, where there is a message and
+/// no status to go with it.
+///
+/// Stricter than the status form on purpose. A status of 429 is the endpoint saying, in the one
+/// place it cannot be mistaken, that nothing about the request was wrong; a mid-stream error is
+/// free text, and most of what arrives that way - a refusal, a context-length complaint, a
+/// malformed tool call - is a thing a resend would only repeat. So this asks the message to
+/// name a rate limit before it will wait on one.
+pub fn streamed_retry_delay(message: &str, attempt: u32) -> Option<f64> {
+    let lowered = message.to_ascii_lowercase();
+    let rate_limited = [
+        "rate limit",
+        "tokens per min",
+        "requests per min",
+        "too many requests",
+    ]
+    .iter()
+    .any(|marker| lowered.contains(marker));
+    if !rate_limited {
+        return None;
+    }
+    let seconds = retry_hint(message).unwrap_or_else(|| f64::from(1u32 << attempt.min(6)));
+    Some(seconds.clamp(MIN_RETRY_SECONDS, MAX_RETRY_SECONDS))
+}
+
+/// Never resend faster than this. A hint of `0s` is a busy loop, and the endpoint is no worse
+/// off for half a second of patience.
+const MIN_RETRY_SECONDS: f64 = 0.5;
+/// Never wait longer than this. Past a minute a retry is indistinguishable from a hang, and
+/// the person watching would rather be told and decide for themselves.
+const MAX_RETRY_SECONDS: f64 = 60.0;
+
+/// The wait an error message names, in seconds.
+///
+/// Read from the first `try again in ` in the message, so a number appearing anywhere else in
+/// the prose - the limit, the tokens used, the tokens requested - is never mistaken for a
+/// delay. What follows is a Go-style duration: one or more `<number><unit>` pairs, units `ms`,
+/// `s`, `m` and `h`. OpenAI writes all of `20ms`, `3.565s` and `1m2s`, so all of them are read,
+/// and scanning stops at the first byte that cannot continue one.
+fn retry_hint(message: &str) -> Option<f64> {
+    const MARKER: &str = "try again in ";
+    let mut rest = message.split_once(MARKER).map(|(_, rest)| rest)?;
+    let mut total = 0.0;
+    let mut read_any = false;
+    while !rest.is_empty() {
+        let digits = rest
+            .find(|c: char| !c.is_ascii_digit() && c != '.')
+            .unwrap_or(rest.len());
+        let Ok(value) = rest[..digits].parse::<f64>() else {
+            break;
+        };
+        rest = &rest[digits..];
+        // Longest unit first: `ms` must not be read as `m` with a stray `s` behind it.
+        let (unit, scale) = match rest {
+            _ if rest.starts_with("ms") => ("ms", 0.001),
+            _ if rest.starts_with('s') => ("s", 1.0),
+            _ if rest.starts_with('m') => ("m", 60.0),
+            _ if rest.starts_with('h') => ("h", 3600.0),
+            _ => break,
+        };
+        total += value * scale;
+        read_any = true;
+        rest = &rest[unit.len()..];
+    }
+    read_any.then_some(total)
+}
+
 /// Best-effort human-readable message from a non-2xx response body.
 pub fn api_error_message(status: u16, body: &[u8]) -> String {
     let text = String::from_utf8_lossy(body);
@@ -224,6 +314,101 @@ mod tests {
             .iter()
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
             .collect()
+    }
+
+    /// The body OpenAI turns a request away with when the per-minute token budget is spent.
+    fn rate_limited(hint: &str) -> Vec<u8> {
+        format!(
+            r#"{{"error":{{"message":"Rate limit reached for gpt-5.6-luna in organization \
+org-PY8t1WwcVzrAcPUs8vCKH02p on tokens per min (TPM): Limit 200000, Used 164171, Requested \
+47713. Please try again in {hint}. Visit https://platform.openai.com/account/rate-limits to \
+learn more."}}}}"#
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn retry_hint_reads_every_duration_openai_writes() {
+        for (hint, want) in [
+            ("3.565s", 3.565),
+            ("1m2s", 62.0),
+            ("2m", 120.0),
+            ("20ms", 0.02),
+            ("1h", 3600.0),
+            ("1h1m1s", 3661.0),
+        ] {
+            let message = String::from_utf8(rate_limited(hint)).expect("utf8");
+            assert_eq!(retry_hint(&message), Some(want), "hint {hint}");
+        }
+    }
+
+    /// Nothing that is not a duration is read as one, and a message with no marker at all
+    /// leaves the caller on its own backoff rather than on a number invented here.
+    #[test]
+    fn retry_hint_declines_what_is_not_a_duration() {
+        for message in [
+            "HTTP 429: Rate limit reached. Limit 200000, Used 164171.",
+            "HTTP 429: please try again in a little while",
+            "HTTP 429: try again in 5 minutes",
+        ] {
+            assert_eq!(retry_hint(message), None, "{message}");
+        }
+    }
+
+    #[test]
+    fn retry_delay_reads_the_wait_openai_names() {
+        assert_eq!(retry_delay(429, &rate_limited("3.565s"), 0), Some(3.565));
+        assert_eq!(
+            retry_delay(429, &rate_limited("20ms"), 0),
+            Some(0.5),
+            "held at the floor rather than spun on"
+        );
+    }
+
+    /// Only the delay is read. Every other number in that message - the limit, the tokens used,
+    /// the tokens requested, the URL - sits *before* the marker and must not be mistaken for
+    /// one, which is what a bare "find a number" would do with `200000`.
+    #[test]
+    fn retry_delay_ignores_the_other_numbers_in_the_message() {
+        assert_eq!(retry_delay(429, &rate_limited("4s"), 0), Some(4.0));
+    }
+
+    /// No hint, so the fallback: `2^attempt`, still clamped.
+    #[test]
+    fn retry_delay_backs_off_when_the_body_names_no_wait() {
+        let body = br#"{"error":{"message":"Rate limit reached"}}"#;
+        let waits: Vec<_> = (0..4).map(|n| retry_delay(429, body, n)).collect();
+        assert_eq!(
+            waits,
+            vec![Some(1.0), Some(2.0), Some(4.0), Some(8.0)],
+            "the fallback doubles"
+        );
+    }
+
+    /// The status set is the whole of the policy: a resend has to be able to succeed where the
+    /// first attempt did not, which a 400 or a 401 never will.
+    #[test]
+    fn retry_delay_declines_every_status_a_resend_would_only_repeat() {
+        let body = br#"{"error":{"message":"nope"}}"#;
+        for status in [400, 401, 403, 404, 413, 422, 200] {
+            assert_eq!(retry_delay(status, body, 0), None, "status {status}");
+        }
+        for status in [429, 500, 502, 503, 504, 529] {
+            assert!(retry_delay(status, body, 0).is_some(), "status {status}");
+        }
+    }
+
+    /// A hint of zero would spin, and one of ten minutes would be indistinguishable from a
+    /// hang, so both ends are held.
+    #[test]
+    fn retry_delay_clamps_both_ends() {
+        assert_eq!(retry_delay(429, &rate_limited("0s"), 0), Some(0.5));
+        assert_eq!(retry_delay(429, &rate_limited("10m"), 0), Some(60.0));
+        assert_eq!(
+            retry_delay(500, br"", 30),
+            Some(60.0),
+            "the shift is bounded"
+        );
     }
 
     #[test]

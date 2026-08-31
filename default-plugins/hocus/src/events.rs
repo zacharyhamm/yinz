@@ -747,6 +747,14 @@ impl State {
             if self.awaiting_plan() {
                 return self.decline_plan();
             }
+            // A waiting retry next. It reads as `tools_busy` - `AwaitingRetry` is a `Status`
+            // like any other - but there is no tool queue behind it, and `abort_tools` would
+            // announce "tools aborted" over an empty one. Only while it is *waiting*: once the
+            // resend is out, the record is just carrying the attempt count and the interrupt
+            // belongs to the tools and the stream, as it did before any of this existed.
+            if self.retry_armed() {
+                return self.cancel_stream();
+            }
             // Tools next, because they are the nearer thing: a stream and a tool
             // run can both be outstanding, and the tool is the one the prompt is
             // asking about.
@@ -1143,6 +1151,23 @@ impl State {
                 "allow_tools": cfg.tools,
             }),
         );
+        // Only for the requests big enough to be worth explaining. A breakdown on every round
+        // would be a dozen extra JSON lines per turn for a question nobody is asking; on a
+        // request this size, "which three messages made it 48 000 tokens" is the whole
+        // question, and there is no way to answer it after the fact.
+        if body_len > BREAKDOWN_BYTES {
+            self.log(
+                "api_request_breakdown",
+                serde_json::json!({
+                    "stream_id": stream_id,
+                    "body_bytes": body_len,
+                    "largest": api::wire_breakdown(&self.messages, 5)
+                        .into_iter()
+                        .map(|(label, chars)| serde_json::json!([label, chars]))
+                        .collect::<Vec<_>>(),
+                }),
+            );
+        }
 
         web_request_stream(
             &stream_id,
@@ -1201,6 +1226,19 @@ impl State {
 
         // Non-2xx: the entire error body is here and no chunks will follow.
         self.pop_empty_placeholder();
+        // A rate limit is not an answer, it is a "not yet" - and the request that hit it is
+        // still exactly the right request to send. `arm_retry` decides whether this one is
+        // worth waiting out; when it is, the transcript is left untouched and the countdown is
+        // drawn beside the spinner.
+        if self.arm_retry(status, body) {
+            self.stream = Some(StreamState {
+                id: stream_id,
+                finishing: true,
+                usage: None,
+            });
+            self.pin_to_bottom();
+            return true;
+        }
         let err = api::api_error_message(status, body);
         self.messages.push(Message::error(err.clone()));
         self.log(
@@ -1237,13 +1275,29 @@ impl State {
                 self.stream = None;
                 self.reply_at = None;
                 self.tool_calls.take();
-                self.scheduled_run = None;
+                // Not while a retry is armed. This is the terminator the host still owed for
+                // the request that was turned away, and letting it revoke `scheduled_run`
+                // would leave the resend running without the authority the job gave it.
+                if self.retry.is_none() {
+                    self.scheduled_run = None;
+                }
             }
             return done;
         }
 
         let items = self.sse.feed(chunk);
         for item in items {
+            // Something real arrived, so the outage is over. Cleared here rather than on the
+            // next success so the attempt count is per-outage: a rate limit an hour later
+            // starts its backoff from the beginning rather than from wherever the last one
+            // left off.
+            //
+            // An error is not arrival. Clearing on the way past one would hand
+            // `arm_streamed_retry` a count of zero every time, so the cap could never be
+            // reached and the countdown would say "1/4" forever.
+            if !matches!(item, SseItem::ApiError(_)) {
+                self.retry = None;
+            }
             match item {
                 SseItem::Delta(text) => {
                     self.append_to_reply(&text);
@@ -1253,6 +1307,25 @@ impl State {
                 },
                 SseItem::ApiError(message) => {
                     let m = message.clone();
+                    // The same "not yet" the non-2xx path takes, for a provider that reports
+                    // its rate limit inside the stream instead of ahead of it. A half-streamed
+                    // set of tool-call fragments is dropped either way.
+                    //
+                    // So is a half-streamed *reply*, which is the one thing this path does to
+                    // the transcript: the resend has to be the same request, and text the
+                    // provider never finished would go back out as an assistant turn for the
+                    // model to continue from. Cancelling keeps partial text because there is
+                    // no second chance at it; a retry is that second chance.
+                    if self.arm_streamed_retry(&m) {
+                        self.pop_placeholder();
+                        self.tool_calls.take();
+                        self.stream = Some(StreamState {
+                            id: stream_id.to_owned(),
+                            finishing: true,
+                            usage: None,
+                        });
+                        break;
+                    }
                     self.pop_empty_placeholder();
                     self.messages.push(Message::error(message));
                     self.log(
@@ -1354,18 +1427,18 @@ impl State {
                         asked.reasoning_items = reasoning_items;
                         asked.prose_before = prose_before;
                         self.messages.push(asked);
-                        // The swap moves neither the message count nor the
-                        // length of the prose, which is all the context memo
-                        // watches, so it has to be dropped by hand. The
-                        // transcript's per-message key would in fact notice
-                        // this one (the call summary arrives as `display`), but
-                        // the invalidation is explicit so that guarantee does
-                        // not rest on the coincidence.
+                        // The elision memo is dropped by hand. Its key would
+                        // in fact notice this swap — the replacement message
+                        // carries the tool calls the popped one did not — but
+                        // the invalidation is explicit so the guarantee does
+                        // not rest on the coincidence. Same for the
+                        // transcript's per-message key, which the call summary
+                        // arriving as `display` would move.
                         let swapped = self.messages.len() - 1;
                         if let Some(cache) = self.transcript_cache.as_mut() {
                             cache.invalidate_from(swapped);
                         }
-                        self.context_cache = None;
+                        self.elision_cache = None;
                         self.saved.1 = self.mutable_len().wrapping_add(1);
                         let tool_payload: Vec<serde_json::Value> = calls
                             .iter()
@@ -1426,7 +1499,7 @@ impl State {
                         if let Some(cache) = self.transcript_cache.as_mut() {
                             cache.invalidate_from(reply_at);
                         }
-                        self.context_cache = None;
+                        self.elision_cache = None;
                         self.pop_empty_placeholder();
                         let error = "the endpoint returned a tool call as text instead of structured tool_calls; no tool was run. Retry, or set `thinking \"disabled\"` for DeepSeek";
                         self.messages.push(Message::error(error));
@@ -1496,7 +1569,7 @@ impl State {
                     tokens,
                     wire_chars: api::wire_chars(&self.messages),
                 });
-                self.context_cache = None;
+                self.elision_cache = None;
             }
             // The reply is settled, so nothing is appending any more — whatever
             // a typed tool pushes from here on is its own message.

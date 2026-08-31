@@ -182,6 +182,51 @@ fn the_count_travels_with_its_chat() {
     assert_eq!(state.context_tokens(), (900, false));
 }
 
+/// The estimate is asked for on every render frame, and the elision it subtracts costs a JSON
+/// parse of every tool call in the transcript. Its memo is keyed so that an arriving reply -
+/// which changes the size of the body but not what is left out of it - does not move it, or a
+/// streaming chat re-plans the whole transcript ten times a second.
+#[test]
+fn the_elision_memo_is_not_moved_by_an_arriving_reply() {
+    let write = |id: &str, marker: &str| {
+        Message::tool_calls(vec![ToolCall {
+            id: id.to_owned(),
+            name: "plugin_write".to_owned(),
+            arguments: serde_json::json!({
+                "name": "todo.lua",
+                "source": format!("-- {marker}\n{}", "local x = 1\n".repeat(60)),
+            })
+            .to_string(),
+        }])
+    };
+    let mut state = state_with(
+        vec![
+            write("c1", "the draft"),
+            Message::tool_result("c1", "wrote todo.lua"),
+            write("c2", "the version that stands"),
+            Message::tool_result("c2", "wrote todo.lua"),
+            Message::assistant(String::new()),
+        ],
+        Status::Idle,
+    );
+
+    let (before, _) = state.context_tokens();
+    let (key, saved) = state.elision_cache.expect("memoised on the first ask");
+    assert!(saved > 0, "the superseded draft is what it saves");
+
+    // A reply arriving, chunk by chunk, is the case this is about.
+    let reply = state.messages.last_mut().expect("the placeholder");
+    reply.content.push_str(&"a word of the answer ".repeat(40));
+    let (after, _) = state.context_tokens();
+
+    assert_eq!(
+        state.elision_cache.expect("still memoised"),
+        (key, saved),
+        "nothing about what is elided changed, so nothing was re-planned"
+    );
+    assert!(after > before, "but the estimate followed the text");
+}
+
 #[test]
 fn counts_are_shown_at_title_width() {
     assert_eq!(ui::format_tokens(0), "0");

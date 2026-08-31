@@ -1,8 +1,9 @@
 use crate::message::{
-    Ask, Job, Message, Reasoning, ReasoningKey, Role, ScheduledRun, Status, StreamState,
+    Ask, Job, Message, Reasoning, ReasoningKey, Retry, Role, ScheduledRun, Status, StreamState,
 };
 use crate::*;
 use hocus_proto::jobs;
+use hocus_proto::llm::{api_error_message, retry_delay, streamed_retry_delay};
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
@@ -110,7 +111,7 @@ impl State {
         Chat {
             transcript_cache: self.transcript_cache.take(),
             plan_cache: self.plan_cache.take(),
-            context_cache: self.context_cache.take(),
+            elision_cache: self.elision_cache.take(),
             usage: self.usage.take(),
             messages: std::mem::take(&mut self.messages),
             status: std::mem::take(&mut self.status),
@@ -127,6 +128,7 @@ impl State {
             saved: std::mem::take(&mut self.saved),
             view: std::mem::take(&mut self.view),
             scheduled_run: self.scheduled_run.take(),
+            retry: self.retry.take(),
             plan: std::mem::take(&mut self.plan),
             plugin_load: self.plugin_load.take(),
             draft: (String::new(), 0),
@@ -141,7 +143,7 @@ impl State {
     pub(crate) fn put_chat(&mut self, chat: Chat) {
         self.transcript_cache = chat.transcript_cache;
         self.plan_cache = chat.plan_cache;
-        self.context_cache = chat.context_cache;
+        self.elision_cache = chat.elision_cache;
         self.messages = chat.messages;
         self.status = chat.status;
         self.stream = chat.stream;
@@ -157,6 +159,7 @@ impl State {
         self.saved = chat.saved;
         self.view = chat.view;
         self.scheduled_run = chat.scheduled_run;
+        self.retry = chat.retry;
         self.plan = chat.plan;
         self.usage = chat.usage;
         self.plugin_load = chat.plugin_load;
@@ -396,15 +399,20 @@ impl State {
     /// since; otherwise the provider's last count plus a `chars / 4` guess for
     /// what came after, or the guess alone before any reply has arrived.
     pub(crate) fn context_tokens(&mut self) -> (u64, bool) {
-        let key = self.fingerprint();
-        let chars = match self.context_cache {
-            Some((cached, chars)) if cached == key => chars,
+        // Only the elided saving is memoised. The sum it comes off is a walk of lengths, but
+        // planning the elision parses every tool call's arguments - and this is asked on every
+        // render frame, with a key that moves on every chunk of an arriving reply, so doing
+        // both under one memo meant a full transcript parse per frame in wasm.
+        let key = api::elision_key(&self.messages);
+        let saved = match self.elision_cache {
+            Some((cached, saved)) if cached == key => saved,
             _ => {
-                let chars = api::wire_chars(&self.messages);
-                self.context_cache = Some((key, chars));
-                chars
+                let saved = api::elision_saved(&self.messages);
+                self.elision_cache = Some((key, saved));
+                saved
             },
         };
+        let chars = api::wire_chars_whole(&self.messages).saturating_sub(saved);
         match self.usage {
             Some(usage) => {
                 let added = chars.saturating_sub(usage.wire_chars);
@@ -442,7 +450,8 @@ impl State {
             | Status::AwaitingSearch
             | Status::AwaitingLinear
             | Status::AwaitingExtension
-            | Status::AwaitingPluginLoad => true,
+            | Status::AwaitingPluginLoad
+            | Status::AwaitingRetry => true,
             // A confirmation prompt is waiting on the user rather than on us,
             // so the only thing left to be waiting on is the reply. Once its
             // first token lands the arriving text is its own proof of life; a
@@ -494,6 +503,22 @@ impl State {
             }
         } else if matches!(self.status, Status::AwaitingPluginLoad) {
             return Some(format!("{spinner} loading plugin"));
+        } else if let Some((due_ms, attempt)) = self
+            .retry
+            .and_then(|retry| Some((retry.due_ms?, retry.attempt)))
+        {
+            // The one loader phrase that counts down. Nobody watching a rate limit wants a
+            // joke; they want to know that something is still going to happen and roughly
+            // when, so they can decide whether to wait or to press Esc.
+            //
+            // Only while the wait is the thing being waited on: once the resend is out the
+            // record survives to carry the attempt count, and a countdown drawn over an
+            // in-flight request would sit at "retrying in 1s" for as long as it took.
+            let left = due_ms.saturating_sub(self.mono_ms).div_ceil(1000).max(1);
+            return Some(format!(
+                "{spinner} rate limited - retrying in {left}s ({}/{MAX_RETRIES})",
+                attempt + 1
+            ));
         }
 
         Some(format!(
@@ -877,6 +902,11 @@ impl State {
         // comes due on the same tick loses nothing by
         // going a second later. Once an ask starts, `is_in_flight` holds the
         // job back anyway — `tick_jobs` still runs, for its countdown.
+        // The resend goes first. `Status::AwaitingRetry` holds both of the others back on its
+        // own — `drain_asks` and `tick_jobs` bail on `is_in_flight` — so this only decides
+        // which tick they resume on, and losing a tick to a question that was queued behind
+        // this very request would be the wrong way round.
+        let retried = self.poll_retry();
         let asked = self.drain_asks();
         let mut fired = match self.tick_jobs(elapsed) {
             Some(Fired { show }) => {
@@ -895,7 +925,9 @@ impl State {
             .parked
             .iter()
             .enumerate()
-            .filter(|(_, chat)| !chat.jobs.is_empty() || !chat.asks.is_empty())
+            .filter(|(_, chat)| {
+                !chat.jobs.is_empty() || !chat.asks.is_empty() || chat.retry.is_some()
+            })
             .map(|(index, _)| index)
             .collect();
         // The bar position of the first chat whose job asked to be seen. A bar
@@ -903,14 +935,17 @@ impl State {
         // `parked`, and bar order is the one thing that never moves.
         let mut show_tab = None;
         for index in ticking {
-            let (job, asked) = self.with_parked(index, |state| {
+            let (job, asked, retried) = self.with_parked(index, |state| {
                 let asked = state.drain_asks();
-                (state.tick_jobs(elapsed), asked)
+                // Ahead of the job, and for the same reason the foreground's is: a chat still
+                // owed the answer to a request it already sent is not free to start another.
+                let retried = state.poll_retry();
+                (state.tick_jobs(elapsed), asked, retried)
             });
             if matches!(job, Some(Fired { show: true })) && show_tab.is_none() {
                 show_tab = Some(self.tab_of_parked(index));
             }
-            fired = fired || asked || job.is_some();
+            fired = fired || asked || retried || job.is_some();
         }
         // A job that asked to be seen fired into a tab nobody is looking at.
         // Popping the pane open would show the wrong chat, and any confirmation
@@ -927,13 +962,16 @@ impl State {
             self.tick += 1;
             self.wand_frame = self.wand_frame.wrapping_add(1);
         }
-        let fired = asked || fired;
+        let fired = asked || retried || fired;
         // A parked chat's plugin load keeps the chain running at frame rate even when nothing on
         // screen wants frames: nothing else will wake us, and the report is due in 750ms.
         let loads = self.plugin_load_pending();
         let extension_scan = self.extension_scan_due_ms.is_some();
-        if frames || loads || extension_scan || self.any_jobs() || self.any_asks() {
-            self.arm_timer(if frames || loads || extension_scan {
+        // A retry wants frames, not job-rate ticks: the countdown beside the spinner is drawn
+        // every frame, and a parked chat's retry has nothing else to wake it.
+        let retrying = self.retry_pending();
+        if frames || loads || extension_scan || retrying || self.any_jobs() || self.any_asks() {
+            self.arm_timer(if frames || loads || extension_scan || retrying {
                 FRAME_SECONDS
             } else {
                 JOB_SECONDS
@@ -942,6 +980,138 @@ impl State {
         // A quiet tick changed nothing on screen; asking for a render would
         // recomposite the whole session for nothing.
         frames || fired
+    }
+
+    /// Arm a resend of the request the endpoint just turned away, or answer `false` when this
+    /// one is not worth resending.
+    ///
+    /// `false` is the caller's signal to do what it always did: show the error and end the
+    /// turn. That covers a status a resend would only repeat, a provider still saying no after
+    /// `MAX_RETRIES`, and a configuration that has gone missing under us — in each case the
+    /// person is better served by being told than by a spinner.
+    ///
+    /// Nothing is appended to the transcript. A rate limit is a statement about the size of
+    /// the payload, so answering it by adding to that payload is the one thing that cannot
+    /// help; the countdown lives in `loader`, which is repainted rather than stored. The only
+    /// thing a retry does to the transcript is take back the placeholder the refused request
+    /// was streaming into — empty here, and, on the streamed path, whatever had arrived in it.
+    pub(crate) fn arm_retry(&mut self, status: u16, body: &[u8]) -> bool {
+        let attempt = self.next_attempt();
+        let wait = attempt.and_then(|attempt| retry_delay(status, body, attempt));
+        self.arm_retry_after(attempt, wait, &api_error_message(status, body))
+    }
+
+    /// The same, for an error that arrived inside the stream rather than ahead of it. See
+    /// `streamed_retry_delay` for why the bar is higher there.
+    pub(crate) fn arm_streamed_retry(&mut self, message: &str) -> bool {
+        let attempt = self.next_attempt();
+        let wait = attempt.and_then(|attempt| streamed_retry_delay(message, attempt));
+        self.arm_retry_after(attempt, wait, message)
+    }
+
+    /// Which resend this would be, or `None` when there is not going to be one: the cap is
+    /// spent, or there is no configuration left to send with.
+    fn next_attempt(&self) -> Option<u32> {
+        let attempt = self.retry.map_or(0, |retry| retry.attempt + 1);
+        (attempt < MAX_RETRIES && self.cfg.is_ok()).then_some(attempt)
+    }
+
+    fn arm_retry_after(&mut self, attempt: Option<u32>, wait: Option<f64>, detail: &str) -> bool {
+        let (Some(attempt), Some(wait)) = (attempt, wait) else {
+            self.retry = None;
+            return false;
+        };
+        self.retry = Some(Retry {
+            due_ms: Some(self.mono_ms.saturating_add((wait * 1000.0) as u64)),
+            attempt,
+        });
+        // `scheduled_run` is deliberately left alone. The job that started this turn still
+        // owns it, and a run that loses its authority to a rate limit comes back unable to
+        // call the tools it was armed for.
+        //
+        // Nor is a status something else owns. A stream and a tool run can both be
+        // outstanding, so a refusal can land while the queue is `AwaitingCommand` - and
+        // `on_command_result` answers to that status alone, so overwriting it would drop the
+        // result and leave the call unanswered. The tool is also the better thing for the
+        // loader to name while both are true.
+        if matches!(self.status, Status::Idle) {
+            self.status = Status::AwaitingRetry;
+        }
+        self.log(
+            "api_retry",
+            serde_json::json!({
+                "attempt": attempt + 1,
+                "of": MAX_RETRIES,
+                "wait_seconds": wait,
+                "error": log::truncate(detail),
+            }),
+        );
+        self.arm_timer(FRAME_SECONDS);
+        true
+    }
+
+    /// Send the rate-limited request again once its wait is up.
+    ///
+    /// `retry` is left set across `start_request`, so a second refusal reaches `arm_retry`
+    /// with the attempt count intact and the backoff keeps doubling. `on_chunk` clears it the
+    /// moment anything actually arrives, which is what makes the count per-outage rather than
+    /// per-conversation.
+    ///
+    /// What is *not* left set is the due time: this runs on every frame, and a `due_ms` still
+    /// in the past would send the request again 10 times a second for as long as the endpoint
+    /// took to answer - each one bumping `stream_seq` and orphaning the last. Clearing it is
+    /// what makes the resend happen once.
+    fn poll_retry(&mut self) -> bool {
+        let Some(retry) = self.retry else {
+            return false;
+        };
+        let Some(due_ms) = retry.due_ms else {
+            // Already resent; the record is only carrying the attempt count now.
+            return false;
+        };
+        if self.mono_ms < due_ms {
+            // Still counting down, but the countdown is drawn, so the frame is not wasted.
+            return false;
+        }
+        let Ok(cfg) = self.cfg.clone() else {
+            // Nothing to resend with. `arm_retry` checks the same thing, so this is only
+            // reachable if the configuration was reloaded out from under a waiting retry.
+            self.retry = None;
+            self.status = Status::Idle;
+            self.messages.push(Message::error(
+                "gave up retrying: the endpoint configuration is no longer valid",
+            ));
+            return true;
+        };
+        self.retry = Some(Retry {
+            due_ms: None,
+            attempt: retry.attempt,
+        });
+        // Only the status this armed. Anything else - a tool run the refusal landed on top of
+        // - still owns it and is still owed its result; `arm_retry_after` declined to take it
+        // for the same reason.
+        if matches!(self.status, Status::AwaitingRetry) {
+            self.status = Status::Idle;
+        }
+        self.start_request(&cfg);
+        true
+    }
+
+    /// Whether this chat's resend is still waiting on the clock, as opposed to already in
+    /// flight. What the countdown, the interrupt and the frame timer all mean by "retrying".
+    pub(crate) fn retry_armed(&self) -> bool {
+        matches!(self.retry, Some(retry) if retry.due_ms.is_some())
+    }
+
+    /// Whether any chat, foreground or parked, is waiting out a rate limit.
+    fn retry_pending(&self) -> bool {
+        // A resend that is already out needs no timer of its own: it is a stream like any
+        // other, and `wants_frames` keeps the chain running for it.
+        self.retry_armed()
+            || self
+                .parked
+                .iter()
+                .any(|chat| matches!(chat.retry, Some(retry) if retry.due_ms.is_some()))
     }
 
     fn poll_extension_scan(&mut self) -> bool {
@@ -1320,14 +1490,49 @@ impl State {
     /// leaves the anchor holding its first line on screen — a reply cut short is
     /// still worth reading.
     pub(crate) fn pop_empty_placeholder(&mut self) {
-        if let (true, Some(at)) = (self.reply_is_empty(), self.reply_at) {
+        if self.reply_is_empty() {
+            self.pop_placeholder();
+        }
+        self.reply_at = None;
+    }
+
+    /// Drop the streaming placeholder whatever is in it.
+    ///
+    /// Only for a resend of the same request. Partial text is worth reading when it is the
+    /// last word on the matter, which is why cancelling keeps it — but a retry is about to
+    /// fetch the whole answer again, and a half-sentence left in the transcript goes back out
+    /// as an assistant turn the provider never finished, for the model to continue from.
+    pub(crate) fn pop_placeholder(&mut self) {
+        if let Some(at) = self.reply_at.filter(|at| *at < self.messages.len()) {
             self.messages.remove(at);
+            // See `pop_empty_placeholder`: the anchor is an index into the list that just
+            // moved, and would otherwise slide onto whatever took the placeholder's place.
             self.view.anchor = None;
         }
         self.reply_at = None;
     }
 
     pub(crate) fn cancel_stream(&mut self) -> bool {
+        // Whichever half of a retry this interrupt found, it ends here: a wait has nothing
+        // left to count down to, and a resend already out is the stream cancelled below.
+        let waiting = self
+            .retry
+            .take()
+            .is_some_and(|retry| retry.due_ms.is_some());
+        // A retry waiting on the clock has no live stream to cancel - the request that failed
+        // is already `finishing`, whether or not the host has delivered the terminator it owes
+        // - so without this branch the interrupt would find nothing to do and the countdown
+        // would go on running under it. A resend that is already out is a stream like any
+        // other and takes the path below, which is what makes the notice true.
+        if waiting && !self.is_receiving() {
+            self.status = Status::Idle;
+            self.messages.push(Message::notice("cancelled"));
+            self.log("notice", serde_json::json!({"content": "cancelled"}));
+            self.log("cancel", serde_json::json!({"reason": "retry"}));
+            self.scheduled_run = None;
+            self.pin_to_bottom();
+            return true;
+        }
         let Some(stream_id) = self.active_stream_id() else {
             return false;
         };
@@ -1376,11 +1581,12 @@ impl State {
     pub(crate) fn reset_chat(&mut self) {
         self.cancel_in_flight();
         self.status = Status::Idle;
+        self.retry = None;
         self.stream = None;
         self.reply_at = None;
         self.messages.clear();
         self.plan_cache = None;
-        self.context_cache = None;
+        self.elision_cache = None;
         self.usage = None;
         self.chat_id = None;
         self.saved = self.fingerprint();
