@@ -897,7 +897,13 @@ impl State {
 
         // Needs no folder and touches no disk, so it answers even when nothing is configured.
         if call.name == "plugin_docs" {
-            self.finish_head(lua_docs::docs(args.section.as_deref()));
+            // The only tool result that used to go out uncapped. Sub-sectioning keeps every
+            // answer far under this, so it is a floor under the floor: a guide section that
+            // grows past what a tool call should cost cannot silently re-create the problem.
+            self.finish_head(log::truncate_str(
+                &lua_docs::docs(args.section.as_deref()),
+                lua_docs::MAX_DOCS_OUTPUT,
+            ));
             return true;
         }
         // Likewise: the host compiles the source it is handed and nothing else is involved.
@@ -956,13 +962,10 @@ impl State {
             "plugin_read" => {
                 let (start, end) = tools::read_range(&args);
                 let result = match tools::plugin_fs_read(&fs_path) {
-                    Ok(contents) => {
-                        let lines = tools::lines_in_range(&contents, start, end);
-                        match lines.is_empty() {
-                            true => "no lines".to_owned(),
-                            false => log::truncate_str(&lines, MAX_TOOL_OUTPUT),
-                        }
-                    },
+                    Ok(contents) => log::truncate_str(
+                        &tools::read_answer(&contents, start, end),
+                        MAX_TOOL_OUTPUT,
+                    ),
                     Err(error) => error,
                 };
                 self.finish_head(result);
@@ -1027,9 +1030,10 @@ impl State {
                     },
                 };
                 // The same gate a write goes through, and for the same reason: an edit that
-                // breaks the file must not be what the next reload finds.
-                if let Err(error) = tools::compile_report(&name, &edited) {
-                    self.finish_head(error);
+                // breaks the file must not be what the next reload finds. The refusal is the
+                // edit's own, though - see `edit_compile_report`.
+                if let Err(error) = tools::compile_check(&name, &edited) {
+                    self.finish_head(tools::edit_compile_report(&name, &error));
                     return true;
                 }
                 let result = match tools::plugin_fs_write(&fs_path, &edited, true) {

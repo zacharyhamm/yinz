@@ -239,6 +239,72 @@ fn a_load_report_names_the_outcome_before_the_pane_text() {
     }
 }
 
+/// A successful reload's pane render is a screenshot, and it is re-sent on every later round
+/// of the conversation. Three reloads used to put 30k chars of repeated pane drawing in the
+/// transcript permanently; a screenful is what identifies the plugin, and `read_pane` fetches
+/// the rest on the rare occasion it matters.
+#[test]
+fn a_successful_reload_report_keeps_only_a_screenful() {
+    let report = plugin_load_report(
+        &format!("{DIR}/dash.lua"),
+        Some(PluginObservation {
+            pane_id: 7,
+            contents: "row of a very wide dashboard\n".repeat(1_000),
+        }),
+    );
+
+    assert!(report.contains("loaded in plugin pane 7"), "{report}");
+    assert!(report.len() < 2_200, "the report is {} chars", report.len());
+    assert!(report.contains("pane truncated"), "{report}");
+}
+
+/// A load error is the only thing in this report the model can act on, and a traceback through
+/// a few required modules is not short. It keeps its room.
+#[test]
+fn a_failed_reload_keeps_its_error_text() {
+    let traceback = format!(
+        "failed to load the Lua plugin at '/x/keys.lua'\n{}",
+        "  stack traceback line\n".repeat(300)
+    );
+
+    let report = plugin_load_report(
+        &format!("{DIR}/keys.lua"),
+        Some(PluginObservation {
+            pane_id: 7,
+            contents: traceback.clone(),
+        }),
+    );
+
+    assert!(report.contains("FAILED to load"), "{report}");
+    assert!(
+        report.len() > 6_000,
+        "the traceback survives: {} chars",
+        report.len()
+    );
+}
+
+/// The verdict is read from the whole pane, not from the truncated copy. This used to work by
+/// luck - the markers land near the top of a real failure - and the success cap is now small
+/// enough that the luck would have run out, turning a failed load into a reported success.
+#[test]
+fn the_verdict_is_read_from_the_whole_pane_not_the_truncated_one() {
+    let late = format!(
+        "{}failed to run the plugin's `update`: keys.lua:12: attempt to index nil",
+        "harmless earlier output\n".repeat(400)
+    );
+
+    let report = plugin_load_report(
+        &format!("{DIR}/keys.lua"),
+        Some(PluginObservation {
+            pane_id: 7,
+            contents: late,
+        }),
+    );
+
+    assert!(report.contains("FAILED to load"), "{report}");
+    assert!(!report.contains("only proves it loads"), "{report}");
+}
+
 #[test]
 fn a_source_ends_in_exactly_one_newline_however_it_arrived() {
     for sent in [
@@ -567,4 +633,98 @@ fn replacing_a_plugin_says_so_rather_than_saying_it_writes_one() {
     // Malformed arguments must still produce a sentence: that is when the user most needs one.
     let malformed = consequence(&call("plugin_write", "not json at all")).unwrap();
     assert!(malformed.contains("plugin folder"), "{malformed}");
+}
+
+// -- reading a plugin ---------------------------------------------------
+
+fn numbered_lines(count: usize) -> String {
+    (1..=count)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The failure this exists to prevent: a model reads the default page of a longer plugin,
+/// believes it holds the file, and rewrites it from what it has - dropping everything past
+/// line 300. The answer has to say it is a fragment, and say where the rest starts.
+#[test]
+fn a_partial_read_says_how_much_is_left_and_how_to_get_it() {
+    let file = numbered_lines(900);
+
+    let answer = read_answer(&file, 1, 300);
+
+    assert!(answer.starts_with("lines 1-300 of 900\n"), "{answer}");
+    assert!(answer.contains("line 300"));
+    assert!(!answer.contains("line 301"));
+    assert!(
+        answer.contains("… 600 more lines (plugin_read start_line=301)"),
+        "{answer}"
+    );
+}
+
+/// A whole file is a whole file. No footer, because there is nothing left to fetch and the
+/// suggestion would send the model on a round trip for an empty page.
+#[test]
+fn a_whole_file_read_has_no_more_lines_marker() {
+    let answer = read_answer(&numbered_lines(12), 1, 300);
+
+    assert!(answer.starts_with("lines 1-12 of 12\n"), "{answer}");
+    assert!(!answer.contains("more lines"), "{answer}");
+}
+
+/// The last page ends exactly where the file does.
+#[test]
+fn the_final_page_reports_the_real_last_line() {
+    let answer = read_answer(&numbered_lines(350), 301, 600);
+
+    assert!(answer.starts_with("lines 301-350 of 350\n"), "{answer}");
+    assert!(!answer.contains("more lines"), "{answer}");
+}
+
+/// "No lines" alone reads as "this plugin is empty", which is a different and much more
+/// alarming thing than "you asked for a range past the end".
+#[test]
+fn a_read_past_the_end_says_how_long_the_file_actually_is() {
+    assert_eq!(
+        read_answer(&numbered_lines(40), 900, 1200),
+        "no lines there: the file has 40 lines"
+    );
+    assert_eq!(read_answer("", 1, 300), "the file is empty");
+}
+
+/// Line numbers are deliberately absent: `plugin_edit` matches `old_string` against the file
+/// exactly, so text handed to the model with prefixes on it would never match.
+#[test]
+fn the_lines_are_returned_verbatim_so_an_edit_can_match_them() {
+    let file = "local M = {}\nreturn M\n";
+
+    let answer = read_answer(file, 1, 300);
+
+    let body = answer.split_once('\n').expect("a header").1;
+    assert_eq!(body, "local M = {}\nreturn M");
+}
+
+/// A failed edit must say the file is untouched: the compile gate runs before anything is
+/// written, and the old wording - shared with the write path - left the model unable to tell
+/// whether the broken version had landed. It must also ask for another edit rather than for
+/// the whole file, which is how a missed edit used to turn into a full rewrite.
+#[test]
+fn a_failed_edit_says_the_file_is_unchanged_and_asks_for_another_edit() {
+    let report = edit_compile_report("keys.lua", "unexpected symbol near '{'");
+
+    assert!(report.contains("NOT applied"), "{report}");
+    assert!(report.contains("unchanged"), "{report}");
+    assert!(report.contains("plugin_edit again"), "{report}");
+    assert!(
+        !report.contains("whole file"),
+        "an edit is never fixed by sending the whole file: {report}"
+    );
+}
+
+/// The write-path refusal must not send an edit back to a whole-file rewrite either.
+#[test]
+fn no_plugin_refusal_asks_for_the_whole_file_again() {
+    let missing = plugin_source(&args("{}")).expect_err("no source");
+    assert!(missing.contains("plugin_edit"), "{missing}");
+    assert!(!missing.contains("not a patch"), "{missing}");
 }

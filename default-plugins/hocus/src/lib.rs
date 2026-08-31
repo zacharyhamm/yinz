@@ -28,7 +28,7 @@ mod worker;
 
 pub use message::{
     Ask, Job, Message, Picker, PickerKind, PickerRow, Plan, Reasoning, ReasoningItem, ReasoningKey,
-    Role, RowKind, ScheduledRun, Status, StreamState,
+    Retry, Role, RowKind, ScheduledRun, Status, StreamState,
 };
 use worker::post_log;
 
@@ -63,6 +63,20 @@ const FRAME_SECONDS: f64 = 0.1;
 /// scheduled jobs down. A job's interval is measured in tens of seconds at
 /// least, so a second of granularity is free and 10 Hz forever would not be.
 const JOB_SECONDS: f64 = 1.0;
+
+/// How big a request has to be before its makeup is logged as well as its size.
+///
+/// The rate limit that started all of this arrived at ~48 000 tokens, so this is well below the
+/// point where the question becomes interesting and well above an ordinary turn.
+const BREAKDOWN_BYTES: usize = 100_000;
+
+/// How many times a request the endpoint turned away is sent again before the refusal is
+/// shown as an error and the turn ends.
+///
+/// Four, on the doubling backoff `hocus_proto::llm::retry_delay` falls back to, is a little
+/// over half a minute of waiting — long enough to ride out a per-minute token budget refilling,
+/// short enough that a provider which is actually down says so rather than spinning.
+const MAX_RETRIES: u32 = 4;
 
 /// How long a `plugin_reload` waits before reading the plugin's pane. A Lua plugin loads in
 /// well under this; what the wait covers is the screen thread opening the pane and the first
@@ -187,9 +201,13 @@ struct Chat {
     pub(crate) saved: (usize, usize),
     pub(crate) view: View,
     pub(crate) scheduled_run: Option<ScheduledRun>,
+    /// A rate-limited request waiting to go out again. Travels with the chat for the reason
+    /// `plugin_load` does: it is *this* conversation's request that was turned away, and a
+    /// parked chat is as able to wait out a rate limit as a foreground one.
+    pub(crate) retry: Option<Retry>,
     pub(crate) plan: Plan,
     pub(crate) usage: Option<ContextUsage>,
-    pub(crate) context_cache: Option<((usize, usize), usize)>,
+    pub(crate) elision_cache: Option<((usize, usize), usize)>,
     /// Travels with the chat for the same reason `spotlight` does: the reload was asked for by
     /// *this* conversation, and it is the one owed the report. A watch left on `State` alone
     /// would be overwritten by another chat's reload and stranded when this one is parked.
@@ -428,9 +446,10 @@ pub struct State {
     /// The provider's last token count for this chat, `None` until a reply
     /// has carried one. See `context_tokens`.
     pub(crate) usage: Option<ContextUsage>,
-    /// Memoised `api::wire_chars` under the `fingerprint` it was taken at, so
-    /// the title's estimate does not re-walk the transcript on every keystroke.
-    pub(crate) context_cache: Option<((usize, usize), usize)>,
+    /// Memoised `api::elision_saved` under the `api::elision_key` it was taken
+    /// at, so the title's estimate does not re-plan the elision - a JSON parse
+    /// of every tool call in the transcript - on every render frame.
+    pub(crate) elision_cache: Option<((usize, usize), usize)>,
     /// Which archived chat this conversation is being written back to. `None`
     /// until the first save, which is what makes an untouched pane leave no file.
     chat_id: Option<u64>,
@@ -487,6 +506,9 @@ pub struct State {
     job_seq: u64,
     /// The scheduled run that currently owns the conversation, if one does.
     scheduled_run: Option<ScheduledRun>,
+    /// The foreground chat's rate-limited request, waiting on `poll_retry` to resend it. A
+    /// parked chat's is in `Chat::retry` and is polled through `with_parked`.
+    pub(crate) retry: Option<Retry>,
     /// Terminal panes from hocus-agentd's latest event-fed snapshot. This is the
     /// only snapshot agent tools trust, which stops them acting on a closed pane.
     panes: Vec<agents::AgentPane>,
@@ -801,7 +823,7 @@ impl Default for State {
             transcript_cache: None,
             plan_cache: None,
             usage: None,
-            context_cache: None,
+            elision_cache: None,
             chat_id: None,
             saved: (0, 0),
             parked: Vec::new(),
@@ -816,6 +838,7 @@ impl Default for State {
             asks: VecDeque::new(),
             job_seq: 0,
             scheduled_run: None,
+            retry: None,
             panes: Vec::new(),
             repositories: BTreeMap::new(),
             manual_kinds: BTreeMap::new(),

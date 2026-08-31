@@ -334,3 +334,338 @@ fn a_2xx_response_changes_nothing_because_the_body_arrives_as_chunks() {
     assert_eq!(state.messages.len(), 2);
     assert!(state.is_receiving());
 }
+
+// -- rate limits --------------------------------------------------------
+
+/// The body OpenAI turns a request away with once the per-minute token budget is spent.
+fn rate_limit_body(hint: &str) -> Vec<u8> {
+    format!(
+        r#"{{"error":{{"message":"Rate limit reached for gpt-5.6-luna on tokens per min (TPM): Limit 200000, Used 164171, Requested 47713. Please try again in {hint}. Visit https://platform.openai.com/account/rate-limits to learn more."}}}}"#
+    )
+    .into_bytes()
+}
+
+fn stream_context(id: &str) -> BTreeMap<String, String> {
+    BTreeMap::from([("stream".to_owned(), id.to_owned())])
+}
+
+/// The whole point: a rate limit is a "not yet", and answering it by ending the turn makes the
+/// user retype - which sends the very transcript that was too big all over again.
+#[test]
+fn a_rate_limit_arms_a_retry_instead_of_ending_the_turn() {
+    let mut state = ready_state();
+    let before = state.messages.len();
+
+    assert!(state.on_response(429, &rate_limit_body("3.565s"), &stream_context("hocus-1")));
+
+    assert!(state.retry.is_some(), "a retry is armed");
+    assert!(matches!(state.status, Status::AwaitingRetry));
+    assert!(
+        !state.messages.iter().any(|m| m.role == Role::Error),
+        "no error line: nothing has gone wrong yet"
+    );
+    assert_eq!(
+        state.messages.len(),
+        before - 1,
+        "only the empty placeholder went; nothing was added to the payload that hit the limit"
+    );
+    let retry = state.retry.expect("armed");
+    assert_eq!(retry.attempt, 0);
+    assert_eq!(
+        retry.due_ms,
+        Some(3565),
+        "the wait the provider itself named"
+    );
+}
+
+/// A status a resend would only repeat is still an error, immediately.
+#[test]
+fn a_bad_request_is_not_retried() {
+    let mut state = ready_state();
+
+    state.on_response(
+        400,
+        br#"{"error":{"message":"invalid tool schema"}}"#,
+        &stream_context("hocus-1"),
+    );
+
+    assert!(state.retry.is_none());
+    assert!(state.messages.iter().any(|m| m.role == Role::Error));
+}
+
+/// The transcript is what makes a resend a resend. It must go out byte-identical, which means
+/// nothing may be appended to it while the retry waits.
+#[test]
+fn the_retry_resends_the_transcript_untouched() {
+    let mut state = ready_state();
+    state.on_response(429, &rate_limit_body("1s"), &stream_context("hocus-1"));
+    let waiting = state.messages.clone();
+    let seq = state.stream_seq;
+
+    state.on_timer(2.0);
+
+    assert!(
+        state.retry.is_some(),
+        "still armed, so a second refusal keeps counting"
+    );
+    assert!(matches!(state.status, Status::Idle));
+    assert_eq!(
+        state.messages.len(),
+        waiting.len() + 1,
+        "only the new streaming placeholder"
+    );
+    assert_eq!(state.messages[..waiting.len()], waiting[..]);
+    assert!(state.stream_seq > seq, "a fresh request went out");
+}
+
+/// A job's authority has to survive its own rate limit, or the resend comes back unable to call
+/// the tools the run was armed for. Two paths could revoke it: the 429 itself, and the
+/// terminator the host still owes for the request that was turned away.
+#[test]
+fn a_rate_limited_scheduled_run_keeps_its_authority() {
+    let mut state = ready_state();
+    state.scheduled_run = Some(ScheduledRun {
+        job_id: 1,
+        auto_confirm: true,
+    });
+
+    state.on_response(429, &rate_limit_body("1s"), &stream_context("hocus-1"));
+    assert!(
+        state.scheduled_run.is_some(),
+        "the refusal did not revoke it"
+    );
+
+    state.on_chunk("hocus-1", b"", true, None);
+    assert!(state.scheduled_run.is_some(), "nor did the owed terminator");
+}
+
+/// A provider that keeps saying no is a provider the person should be told about, rather than
+/// one hocus spins on forever.
+#[test]
+fn the_retry_gives_up_after_the_cap() {
+    let mut state = ready_state();
+    // Each resend goes out under a fresh stream id, and `on_response` only answers to the one
+    // in flight - so the refusals have to be addressed to the request they are refusing.
+    let refuse = |state: &mut State| {
+        let id = state.active_stream_id().expect("a request in flight");
+        state.on_response(429, &rate_limit_body("1s"), &stream_context(&id));
+    };
+    for _ in 0..MAX_RETRIES {
+        refuse(&mut state);
+        assert!(state.retry.is_some());
+        state.on_timer(2.0);
+    }
+
+    refuse(&mut state);
+
+    assert!(state.retry.is_none(), "the cap is spent");
+    assert!(state.messages.iter().any(|m| m.role == Role::Error));
+    assert!(matches!(state.status, Status::Idle));
+    assert!(state.scheduled_run.is_none());
+}
+
+/// The count is per-outage. A reply that lands resets it, so a rate limit an hour later starts
+/// its backoff from the beginning instead of from wherever the last one stopped.
+#[test]
+fn a_reply_that_lands_clears_the_retry_count() {
+    let mut state = ready_state();
+    state.on_response(429, &rate_limit_body("1s"), &stream_context("hocus-1"));
+    state.on_timer(2.0);
+    let resent = state.active_stream_id().expect("resent");
+
+    state.on_chunk(
+        &resent,
+        b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n",
+        false,
+        None,
+    );
+
+    assert!(state.retry.is_none());
+}
+
+/// `AwaitingRetry` reads as busy to every predicate built on `Status`, so a scheduled job does
+/// not fire into the gap between a refusal and the resend answering it.
+#[test]
+fn a_job_does_not_fire_while_a_retry_is_pending() {
+    let mut state = ready_state();
+    state.on_response(429, &rate_limit_body("30s"), &stream_context("hocus-1"));
+
+    assert!(state.is_in_flight());
+    assert!(state.is_loading(), "the spinner stays up");
+    assert!(state.tick_jobs(1.0).is_none());
+}
+
+/// Ctrl-c reaches a waiting retry, which has no stream of its own to cancel.
+#[test]
+fn the_interrupt_cancels_a_waiting_retry() {
+    let mut state = ready_state();
+    state.scheduled_run = Some(ScheduledRun {
+        job_id: 1,
+        auto_confirm: true,
+    });
+    state.on_response(429, &rate_limit_body("30s"), &stream_context("hocus-1"));
+    state.on_chunk("hocus-1", b"", true, None);
+
+    assert!(state.cancel_stream());
+
+    assert!(state.retry.is_none());
+    assert!(state.scheduled_run.is_none());
+    assert!(matches!(state.status, Status::Idle));
+    assert_eq!(state.messages.last().expect("notice").role, Role::Notice);
+}
+
+/// A rate limit inside the stream, the way a provider that has already answered `200` reports
+/// one.
+fn streamed_rate_limit(hint: &str) -> Vec<u8> {
+    format!(
+        "data: {{\"error\":{{\"message\":\"Rate limit reached for gpt-5.6-luna on tokens per \
+         min (TPM). Please try again in {hint}.\"}}}}\n"
+    )
+    .into_bytes()
+}
+
+/// `poll_retry` runs on every frame, and a provider can take seconds to answer. The resend has
+/// to be one request, not one per frame: each extra POST bumps `stream_seq`, orphans the
+/// stream before it, and is itself another unit of the budget that was already spent.
+#[test]
+fn the_resend_goes_out_once_however_long_the_answer_takes() {
+    let mut state = ready_state();
+    state.on_response(429, &rate_limit_body("1s"), &stream_context("hocus-1"));
+
+    state.on_timer(2.0);
+    let resent = state.stream_seq;
+    // Thirty frames of the endpoint thinking about it, with nothing arriving.
+    for _ in 0..30 {
+        state.on_timer(0.1);
+    }
+
+    assert_eq!(state.stream_seq, resent, "one resend, not one per frame");
+    assert_eq!(
+        state
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::Assistant)
+            .count(),
+        1,
+        "and one placeholder to stream into"
+    );
+}
+
+/// The countdown is about a wait. Once the resend is out there is nothing left to count down
+/// to, and a loader still saying "retrying in 1s" describes a request that is already running.
+#[test]
+fn the_countdown_stops_once_the_resend_is_out() {
+    let mut state = ready_state();
+    state.on_response(429, &rate_limit_body("1s"), &stream_context("hocus-1"));
+    assert!(state.loader().expect("waiting").contains("rate limited"));
+
+    state.on_timer(2.0);
+
+    let phrase = state.loader().expect("still working");
+    assert!(!phrase.contains("rate limited"), "{phrase}");
+}
+
+/// The count has to survive the error that increments it. It used to be cleared on the way into
+/// every chunk, error or not, so a stream that kept failing armed attempt 0 forever: the cap was
+/// unreachable and the countdown said "1/4" for as long as the provider kept saying no.
+#[test]
+fn a_stream_that_keeps_failing_counts_towards_the_cap() {
+    let mut state = ready_state();
+    let refuse = |state: &mut State| {
+        let id = state.active_stream_id().expect("a request in flight");
+        state.on_chunk(&id, &streamed_rate_limit("1s"), false, None);
+    };
+
+    refuse(&mut state);
+    assert_eq!(state.retry.expect("armed").attempt, 0);
+    state.on_timer(2.0);
+    refuse(&mut state);
+
+    assert_eq!(
+        state.retry.expect("armed again").attempt,
+        1,
+        "the second refusal is the second attempt"
+    );
+    assert!(state.loader().expect("waiting").contains("2/4"));
+}
+
+/// Ctrl-c while the resend is in flight. The stream is a stream like any other: cancelling has
+/// to reach the host, or the notice is a lie and the reply lands behind it.
+#[test]
+fn the_interrupt_cancels_a_resend_in_flight() {
+    let mut state = ready_state();
+    state.on_response(429, &rate_limit_body("1s"), &stream_context("hocus-1"));
+    state.on_timer(2.0);
+    assert!(state.is_receiving(), "the resend is in flight");
+
+    assert!(state.cancel_stream());
+
+    assert!(state.retry.is_none(), "the retry is spent either way");
+    assert!(
+        !state.is_receiving(),
+        "the stream was cancelled, not left running under the notice"
+    );
+    // Kept rather than dropped: the host still owes one terminator for the cancelled request,
+    // and `finishing` is what stops it being recorded as a second outcome.
+    assert!(state.is_streaming());
+    assert_eq!(state.messages.last().expect("notice").role, Role::Notice);
+}
+
+/// A resend is the same request again, so it has to go out the same. Text that arrived before
+/// the provider gave up is a half-finished assistant turn: left in the transcript it goes back
+/// as prefill for the model to continue from, and the answer comes back with its first
+/// sentence twice.
+#[test]
+fn a_streamed_retry_takes_back_the_partial_reply() {
+    let mut state = ready_state();
+    state.on_chunk(
+        "hocus-1",
+        b"data: {\"choices\":[{\"delta\":{\"content\":\"half a sen\"}}]}\n",
+        false,
+        None,
+    );
+    assert!(state.messages.iter().any(|m| m.content == "half a sen"));
+
+    state.on_chunk("hocus-1", &streamed_rate_limit("1s"), false, None);
+
+    assert!(state.retry.is_some(), "armed");
+    assert!(
+        !state
+            .messages
+            .iter()
+            .any(|m| m.content.contains("half a sen")),
+        "the half sentence went back with the request that failed"
+    );
+    assert!(state.reply_at.is_none());
+}
+
+/// A stream and a tool run can both be outstanding. A refusal that arrives while the queue is
+/// running a command used to take `Status` for itself, and `on_command_result` answers to
+/// `AwaitingCommand` alone - so the result was dropped and the call stayed unanswered forever.
+#[test]
+fn a_refusal_does_not_take_the_status_a_tool_is_using() {
+    let mut state = ready_state();
+    state.status = Status::AwaitingCommand;
+
+    state.on_response(429, &rate_limit_body("30s"), &stream_context("hocus-1"));
+
+    assert!(state.retry.is_some(), "the retry is armed all the same");
+    assert!(
+        matches!(state.status, Status::AwaitingCommand),
+        "the tool still owns the status it is going to be answered on"
+    );
+}
+
+/// The countdown is drawn, never stored: a message mutated once a second would churn the
+/// render cache and the autosave for text nobody needs to keep.
+#[test]
+fn the_countdown_is_in_the_loader() {
+    let mut state = ready_state();
+    state.on_response(429, &rate_limit_body("4s"), &stream_context("hocus-1"));
+
+    let phrase = state.loader().expect("a spinner while waiting");
+
+    assert!(phrase.contains("rate limited"), "{phrase}");
+    assert!(phrase.contains("4s"), "{phrase}");
+    assert!(phrase.contains("1/4"), "{phrase}");
+}

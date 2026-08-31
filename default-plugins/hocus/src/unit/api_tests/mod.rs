@@ -88,6 +88,7 @@ fn accumulate(chunks: &[&[u8]]) -> Vec<ToolCall> {
 }
 
 mod config;
+mod elision;
 mod errors;
 mod request_body;
 mod responses;

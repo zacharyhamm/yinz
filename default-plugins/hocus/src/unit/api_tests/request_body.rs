@@ -74,7 +74,7 @@ fn request_body_adds_the_tool_first_policy_when_tools_are_enabled() {
 fn hocus_prompt_contract_keeps_global_routing_rules() {
     assert_eq!(
         TOOL_FIRST_PROMPT,
-        "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_tab`/`warp_pane` move current items out; `warp_tab_here`/`warp_pane_here` move listed items in. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` is authoritative, so read only the relevant sections, then `plugin_write` (its confirmation grants the permissions the source asks for), `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list`/`plugin_read` read the user's plugin folder. Make independent calls together."
+        "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_tab`/`warp_pane` move current items out; `warp_tab_here`/`warp_pane_here` move listed items in. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` is authoritative, so read only the relevant sections. `plugin_write` creates one (its confirmation grants the permissions it asks for); to change one that exists, `plugin_read` then `plugin_edit` - never re-send a whole file you did not just write. `plugin_check` compiles without writing. `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list`/`plugin_read` read the user's plugin folder. Make independent calls together."
     );
 }
 
@@ -187,13 +187,22 @@ fn request_body_advertises_registered_extension_tools() {
 /// Raised to 29kb when the pane-workflow docs sections arrived (`example_workflow`,
 /// `prelude_workflows`): two `plugin_docs` enum values, ~40 bytes, landing on a ceiling that
 /// had no headroom left.
+///
+/// Raised to 30kb when the guide's two oversized sections were split into their `###` children,
+/// which cost five more `plugin_docs` enum values, ~90 bytes. This is the one raise so far that
+/// *buys* tokens rather than spending them: a model that wants the permission table used to pay
+/// 16kb of "Commands", once per request for the rest of the conversation, and now pays 4.6kb.
+/// The same discipline was applied first, and this raise is what is left after it:
+/// `plugin_write`, `plugin_check`, `plugin_edit`, `plugin_reload` and `plugin_log` gave back
+/// ~400 bytes of description that the system prompt already said, and `plugin_read` spent ~150
+/// of it saying that a default read is a page rather than a file.
 #[test]
-fn hocus_prompt_contract_keeps_the_tool_payload_under_29_kb() {
+fn hocus_prompt_contract_keeps_the_tool_payload_under_30_kb() {
     let mut cfg = test_config();
     cfg.tools = true;
     let body = request_body(&cfg, &[Message::user("hi")]);
     assert!(
-        body.len() < 29_000,
+        body.len() < 30_000,
         "tool payload grew to {} bytes",
         body.len()
     );
@@ -579,4 +588,22 @@ fn acting_sends_the_body_it_always_did() {
         .as_str()
         .unwrap()
         .contains("Planning mode."));
+}
+
+/// The system prompt is the loudest voice in the room - it is on every request, ahead of every
+/// tool description - and it used to teach the authoring loop as docs → write → reload, never
+/// naming `plugin_edit`. That loop re-sends the whole plugin source on every change, and every
+/// earlier copy stays in the transcript and goes out again on every later round. The cheap path
+/// has to be the one the prompt names.
+#[test]
+fn the_system_prompt_names_the_cheap_authoring_path() {
+    for tool in ["plugin_edit", "plugin_check", "plugin_read"] {
+        assert!(TOOL_FIRST_PROMPT.contains(tool), "{tool} is not named");
+    }
+    let edit = TOOL_FIRST_PROMPT.find("plugin_edit").expect("named");
+    let reload = TOOL_FIRST_PROMPT.find("plugin_reload").expect("named");
+    assert!(
+        edit < reload,
+        "editing comes before reloading, as it does in the loop"
+    );
 }

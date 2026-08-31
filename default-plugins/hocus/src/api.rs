@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::linear;
 use crate::tools::{self, ToolCall};
@@ -38,7 +38,7 @@ pub const DEFAULT_MAX_TOOL_ROUNDS: usize = 50;
 /// How many search results the model gets. A SearxNG page is ~25, and every one
 /// of them is paid for on every subsequent turn of the conversation.
 pub const SEARCH_RESULTS: usize = 8;
-const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_tab`/`warp_pane` move current items out; `warp_tab_here`/`warp_pane_here` move listed items in. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` is authoritative, so read only the relevant sections, then `plugin_write` (its confirmation grants the permissions the source asks for), `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list`/`plugin_read` read the user's plugin folder. Make independent calls together.";
+const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_tab`/`warp_pane` move current items out; `warp_tab_here`/`warp_pane_here` move listed items in. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` is authoritative, so read only the relevant sections. `plugin_write` creates one (its confirmation grants the permissions it asks for); to change one that exists, `plugin_read` then `plugin_edit` - never re-send a whole file you did not just write. `plugin_check` compiles without writing. `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list`/`plugin_read` read the user's plugin folder. Make independent calls together.";
 /// Sent in planning mode, where the tool set is narrowed to the ones that only
 /// read. Says so explicitly: a model that believes a missing tool is an
 /// oversight spends the turn asking for it back.
@@ -479,9 +479,12 @@ pub fn request_body_with_project_and_tools(
 ) -> Vec<u8> {
     let system = system_text(cfg, project, plan);
     let tools = tool_specs(cfg, plan, extension_tools);
+    // What the transcript no longer needs to send. Built once and handed to whichever transport
+    // is speaking; see `Elision`.
+    let elision = Elision::plan(transcript);
     match cfg.api {
-        Api::Chat => chat_request_body(cfg, transcript, system, tools),
-        Api::Responses => responses_request_body(cfg, transcript, system, tools),
+        Api::Chat => chat_request_body(cfg, transcript, system, tools, &elision),
+        Api::Responses => responses_request_body(cfg, transcript, system, tools, &elision),
     }
 }
 
@@ -545,12 +548,13 @@ fn chat_request_body(
     transcript: &[Message],
     system: Option<String>,
     tools: Option<Value>,
+    elision: &Elision,
 ) -> Vec<u8> {
     let mut messages: Vec<WireMessage> = Vec::with_capacity(transcript.len() + 1);
     if let Some(system) = system {
         messages.push(WireMessage::text("system", system));
     }
-    for message in transcript {
+    for (index, message) in transcript.iter().enumerate() {
         match message.role {
             Role::User => messages.push(WireMessage::text("user", &message.content)),
             // Preserve the assistant response as one message: DeepSeek requires
@@ -566,7 +570,12 @@ fn chat_request_body(
                         .display
                         .as_ref()
                         .map_or("", |_| message.content.as_str()),
-                    tool_calls: message.tool_calls.iter().map(wire_tool_call).collect(),
+                    tool_calls: message
+                        .tool_calls
+                        .iter()
+                        .enumerate()
+                        .map(|(at, call)| wire_tool_call(call, elision.arguments(index, at)))
+                        .collect(),
                     reasoning_content,
                     reasoning,
                 })
@@ -581,7 +590,7 @@ fn chat_request_body(
             Role::Tool => messages.push(WireMessage::ToolResult {
                 role: "tool",
                 tool_call_id: message.tool_call_id.as_deref(),
-                content: &message.content,
+                content: elision.content(index).unwrap_or(&message.content),
             }),
             // Error and Notice lines are our own UI, not conversation - sending
             // them back would have the model apologise for our HTTP failures.
@@ -716,9 +725,10 @@ fn responses_request_body(
     transcript: &[Message],
     system: Option<String>,
     tools: Option<Value>,
+    elision: &Elision,
 ) -> Vec<u8> {
     let mut input: Vec<InputItem> = Vec::with_capacity(transcript.len());
-    for message in transcript {
+    for (index, message) in transcript.iter().enumerate() {
         match message.role {
             Role::User => input.push(InputItem::message("user", &message.content)),
             // Unlike chat/completions, the prose and the calls are separate
@@ -747,7 +757,7 @@ fn responses_request_body(
                         .unwrap_or(0)
                         .min(message.tool_calls.len())
                 });
-                let mut calls = message.tool_calls.iter();
+                let mut calls = message.tool_calls.iter().enumerate();
                 let output_items = message.tool_calls.len() + usize::from(prose_before.is_some());
                 for position in 0..output_items {
                     input.extend(at(position));
@@ -755,12 +765,14 @@ fn responses_request_body(
                         input.push(InputItem::message("assistant", prose));
                         continue;
                     }
-                    let call = calls.next().expect("one slot per call");
+                    // `position` counts output items, which includes the prose slot, so the
+                    // call's own index has to come from the iterator rather than from it.
+                    let (at, call) = calls.next().expect("one slot per call");
                     input.push(InputItem::FunctionCall {
                         kind: "function_call",
                         call_id: &call.id,
                         name: &call.name,
-                        arguments: wire_arguments(call),
+                        arguments: wire_arguments(call, elision.arguments(index, at)),
                     });
                 }
                 // Anything recorded after the last output item. Should not happen - a
@@ -784,7 +796,7 @@ fn responses_request_body(
                 // call unanswered fails the next request either way, and this
                 // one at least says which tool it was.
                 call_id: message.tool_call_id.as_deref().unwrap_or_default(),
-                output: &message.content,
+                output: elision.content(index).unwrap_or(&message.content),
             }),
             // Error and Notice lines are our own UI, as on the other transport.
             _ => continue,
@@ -860,6 +872,288 @@ fn enum_setting(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Elision
+// ---------------------------------------------------------------------------
+
+/// What the outgoing body leaves out because the transcript already holds something newer.
+///
+/// hocus sends the whole transcript every turn, so the cost of a round is the cost of every
+/// round before it. Plugin authoring is where that bites hardest: a `plugin_write` carries the
+/// complete Lua source in its arguments, those arguments are echoed back verbatim on every
+/// later request (`wire_arguments`), and a write-reload-fix loop makes four or five of them. By
+/// the fifth round the request is re-uploading four drafts nobody will ever read again, four
+/// pane screenshots of a plugin that has since changed, and every file it read on the way.
+///
+/// So the body drops what a later message has replaced. Three rules govern it:
+///
+/// - **Only the payload.** Names, call ids and `tool_call_id`s are untouched, and an elided
+///   argument object keeps its other keys, so every call still has an answer and every
+///   arguments string is still a JSON object - the two things the endpoints enforce.
+/// - **Never the most recent.** For each file, each plugin and each docs section, the newest of
+///   everything is sent whole. What goes is only history, and every placeholder names the call
+///   that fetches it back.
+/// - **Never the transcript itself.** This runs on the way out. `Message::content` and
+///   `Message::display` are what the archive writes and the pane draws, and neither changes.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Elision {
+    /// `(message index, index within that message's `tool_calls`)` -> the arguments to send.
+    calls: BTreeMap<(usize, usize), String>,
+    /// Index of a `Role::Tool` message -> the content to send in place of its result.
+    results: BTreeMap<usize, String>,
+}
+
+/// What one plugin call was about, as far as elision cares.
+///
+/// `plugin_docs` is keyed by section and everything else by plugin name, because those are the
+/// things a later call can supersede. A call whose arguments will not parse, or which names no
+/// target, gets no `Subject` and is left alone.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum Subject {
+    /// A plugin file, by the name the tools take back - `.lua` stripped, so `keys` and
+    /// `keys.lua` are the same file.
+    File(String),
+    /// One page of a plugin file: the name, and the 1-based inclusive line range the read
+    /// actually answered with.
+    ///
+    /// `plugin_read` pages, so the file alone is not what a read is *about*. Keyed by name
+    /// only, walking a 900-line plugin in three reads elided the first two as "out of date"
+    /// though nothing had changed, and sent the model back to page 1 to recover.
+    Page(String, usize, usize),
+    /// One `plugin_docs` section, by the name the model asked for.
+    Section(String),
+}
+
+impl Elision {
+    /// Work out what this transcript no longer needs to send.
+    pub(crate) fn plan(transcript: &[Message]) -> Self {
+        let mut elision = Elision::default();
+        // Backwards, which is the whole trick: the first thing seen for a subject is the newest
+        // one, so "keep the most recent" needs no special case - it is simply whatever got
+        // there first. `seen` is what has already been kept.
+        let mut seen: BTreeSet<(&'static str, Subject)> = BTreeSet::new();
+        // Which call each result answers, so a result can be keyed by the call that produced it
+        // rather than by guessing from its text.
+        let subjects = call_subjects(transcript);
+
+        for (index, message) in transcript.iter().enumerate().rev() {
+            match message.role {
+                Role::Tool => {
+                    let Some(id) = message.tool_call_id.as_deref() else {
+                        continue;
+                    };
+                    let Some((name, subject)) = subjects.get(id) else {
+                        continue;
+                    };
+                    if let Some(replacement) =
+                        stale_result(name, subject, &message.content, &mut seen)
+                    {
+                        elision.results.insert(index, replacement);
+                    }
+                },
+                Role::Assistant => {
+                    // Backwards within the turn as well as across turns. A model that edits
+                    // the same file twice in one batch sends both calls in one message, and
+                    // walking them forwards would call the *first* one the newest - keeping
+                    // the version that was superseded and eliding the one that stands.
+                    for (at, call) in message.tool_calls.iter().enumerate().rev() {
+                        let Some(subject) = subject_of(&call.name, &call.arguments) else {
+                            continue;
+                        };
+                        if let Some(replacement) =
+                            stale_arguments(&call.name, &subject, &call.arguments, &mut seen)
+                        {
+                            elision.calls.insert((index, at), replacement);
+                        }
+                        note_write(&call.name, &subject, &mut seen);
+                    }
+                },
+                _ => {},
+            }
+        }
+        elision
+    }
+
+    fn arguments(&self, message: usize, call: usize) -> Option<&str> {
+        self.calls.get(&(message, call)).map(String::as_str)
+    }
+
+    fn content(&self, message: usize) -> Option<&str> {
+        self.results.get(&message).map(String::as_str)
+    }
+
+    /// How many characters this removes, for the context estimate. See `wire_chars`.
+    fn saved(&self, transcript: &[Message]) -> usize {
+        let calls: usize = self
+            .calls
+            .iter()
+            .filter_map(|((message, at), replacement)| {
+                let call = transcript.get(*message)?.tool_calls.get(*at)?;
+                Some(call.arguments.len().saturating_sub(replacement.len()))
+            })
+            .sum();
+        let results: usize = self
+            .results
+            .iter()
+            .filter_map(|(message, replacement)| {
+                let content = &transcript.get(*message)?.content;
+                Some(content.len().saturating_sub(replacement.len()))
+            })
+            .sum();
+        calls + results
+    }
+}
+
+/// Every plugin call in the transcript, keyed by its id, as `(tool name, subject)`.
+fn call_subjects(transcript: &[Message]) -> BTreeMap<&str, (&str, Subject)> {
+    transcript
+        .iter()
+        .flat_map(|message| message.tool_calls.iter())
+        .filter_map(|call| {
+            let subject = subject_of(&call.name, &call.arguments)?;
+            Some((call.id.as_str(), (call.name.as_str(), subject)))
+        })
+        .collect()
+}
+
+/// What a call is about, or `None` for a call elision has no rule for.
+fn subject_of(name: &str, arguments: &str) -> Option<Subject> {
+    let args = tools::Args::parse(arguments).ok()?;
+    match name {
+        "plugin_docs" => Some(Subject::Section(
+            args.section.unwrap_or_else(|| "index".to_owned()),
+        )),
+        // The range as `plugin_read` itself resolves it, defaults and all, so two calls are
+        // the same page when they answered with the same lines rather than when they were
+        // spelled the same way.
+        "plugin_read" => {
+            let (start, end) = tools::read_range(&args);
+            plugin_file(args.name.as_deref()).map(|file| Subject::Page(file, start, end))
+        },
+        "plugin_write" | "plugin_edit" | "plugin_check" | "plugin_reload" => {
+            plugin_file(args.name.as_deref()).map(Subject::File)
+        },
+        _ => None,
+    }
+}
+
+/// The plugin a call names, as the tools take it back: trimmed, `.lua` stripped, so `keys` and
+/// `keys.lua` are the same file. `None` when it names nothing.
+fn plugin_file(name: Option<&str>) -> Option<String> {
+    let name = name?.trim().trim_end_matches(".lua");
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// The argument keys that carry a file's text. A call with none of them says nothing about
+/// what the file contains and so supersedes nothing.
+const PAYLOAD_KEYS: [&str; 3] = ["source", "old_string", "new_string"];
+
+/// The arguments to send for a call whose payload a later one has replaced, or `None` to send
+/// it as it stands.
+///
+/// The subject is entered under a *rule* rather than under the tool that made the call, because
+/// what supersedes what crosses tools: a `plugin_edit` replaces the source a `plugin_write`
+/// sent, and both replace what a `plugin_check` was checking.
+fn stale_arguments(
+    name: &str,
+    subject: &Subject,
+    arguments: &str,
+    seen: &mut BTreeSet<(&'static str, Subject)>,
+) -> Option<String> {
+    let rule = match name {
+        "plugin_write" | "plugin_edit" | "plugin_check" => "source",
+        _ => return None,
+    };
+    let Subject::File(file) = subject else {
+        return None;
+    };
+    let mut args: serde_json::Map<String, Value> = serde_json::from_str(arguments).ok()?;
+    // Whether this call carries a payload at all, settled before the slot is claimed. A
+    // `plugin_check` names a file and sends nothing; letting it take the slot would elide the
+    // `plugin_write` behind it as "replaced by a later write or edit" that never happened, and
+    // cost the model the only copy of the source it is working from.
+    if !PAYLOAD_KEYS.iter().any(|key| args.contains_key(*key)) {
+        return None;
+    }
+    if seen.insert((rule, Subject::File(file.clone()))) {
+        // The newest change to this file. Whatever the model most recently sent is what it is
+        // reasoning from, so it goes out whole.
+        return None;
+    }
+    let note = Value::String(format!(
+        "[elided: an earlier version of {file}.lua, replaced by a later write or edit in this \
+         conversation. plugin_read name={file} for what is on disk now.]"
+    ));
+    for key in PAYLOAD_KEYS {
+        if let Some(slot) = args.get_mut(key) {
+            *slot = note.clone();
+        }
+    }
+    let elided = serde_json::to_string(&args).ok()?;
+    // A placeholder is ~150 characters. Replacing a two-line plugin with it would *grow* the
+    // request, and cost the model the text as well - so the rewrite only happens when it
+    // actually saves something. The bookkeeping above already ran, so the newest version is
+    // still the newest either way.
+    (elided.len() < arguments.len()).then_some(elided)
+}
+
+/// The content to send for a result a later call has made stale, or `None` to send it whole.
+fn stale_result(
+    name: &str,
+    subject: &Subject,
+    content: &str,
+    seen: &mut BTreeSet<(&'static str, Subject)>,
+) -> Option<String> {
+    let (stale, note) = match (name, subject) {
+        // A read is out of date for either of two reasons, and they are not the same thing to
+        // say. Both lookups run: the page has to be recorded as seen whichever answer comes
+        // back, or the read before it would be judged against nothing.
+        ("plugin_read", Subject::Page(file, start, end)) => {
+            // A write or an edit is a later statement about the whole file's contents, so it
+            // invalidates every earlier read of it, page or not - which is why `note_write`
+            // records it under this same "read" rule.
+            let changed = seen.contains(&("read", Subject::File(file.clone())));
+            let read_again = !seen.insert(("read", Subject::Page(file.clone(), *start, *end)));
+            let count = end.saturating_sub(*start).saturating_add(1);
+            let note = if changed {
+                format!(
+                    "[elided: this read of {file}.lua is out of date - the file was written or \
+                     edited later in this conversation. plugin_read name={file} \
+                     start_line={start} line_count={count} for what is there now.]"
+                )
+            } else {
+                format!(
+                    "[elided: lines {start}-{end} of {file}.lua are read again later in this \
+                     conversation.]"
+                )
+            };
+            (changed || read_again, note)
+        },
+        // A pane screenshot of a plugin that has been reloaded since.
+        ("plugin_reload", Subject::File(file)) => (
+            !seen.insert(("reload", Subject::File(file.clone()))),
+            format!("[elided: superseded by a later plugin_reload of {file}.lua.]"),
+        ),
+        // The same section fetched twice. Rare, but it is 4-13 KB when it happens.
+        ("plugin_docs", Subject::Section(section)) => (
+            !seen.insert(("docs", Subject::Section(section.clone()))),
+            format!("[elided: plugin_docs section={section} appears again below.]"),
+        ),
+        _ => return None,
+    };
+    // See `stale_arguments`: a placeholder that is longer than what it replaces is a loss
+    // twice over.
+    (stale && note.len() < content.len()).then_some(note)
+}
+
+/// Mark a write or an edit as the newest statement about a file, so earlier reads of it are
+/// stale. Called from the same backwards walk, before any earlier read is looked at.
+fn note_write(name: &str, subject: &Subject, seen: &mut BTreeSet<(&'static str, Subject)>) {
+    if let (Subject::File(file), "plugin_write" | "plugin_edit") = (subject, name) {
+        seen.insert(("read", Subject::File(file.clone())));
+    }
+}
+
 /// How many characters of `transcript` go on the wire: the same messages
 /// `request_body_with_project_and_tools` sends, by the same rules, minus the
 /// system prompt and the JSON framing around each message. The basis of the `~chars/4` estimate shown while there is
@@ -869,8 +1163,22 @@ fn enum_setting(
 /// Reasoning is left out: it is echoed back on a few endpoints only, and a
 /// count that is honest about being rough is better than one that is rough
 /// in two directions at once.
+///
+/// Elision is not: it is subtracted here as it is on the wire, or the title's estimate and the
+/// `ContextUsage` baseline it is measured against would both drift from what is actually sent -
+/// and by exactly the amount this whole mechanism exists to save.
+///
+/// Split in two because the halves cost wildly different amounts. The sum below walks lengths;
+/// `elision_saved` parses every tool call's arguments as JSON, which is not something to do on
+/// a render frame — see `elision_key` for how the caller memoises it.
 pub fn wire_chars(transcript: &[Message]) -> usize {
-    transcript
+    wire_chars_whole(transcript).saturating_sub(elision_saved(transcript))
+}
+
+/// What `wire_chars` counts before elision is taken off: a walk of lengths, cheap enough to
+/// repeat on every frame.
+pub fn wire_chars_whole(transcript: &[Message]) -> usize {
+    let whole: usize = transcript
         .iter()
         .map(|message| match message.role {
             Role::User | Role::Tool => message.content.len(),
@@ -885,7 +1193,9 @@ pub fn wire_chars(transcript: &[Message]) -> usize {
                     + message
                         .tool_calls
                         .iter()
-                        .map(|call| call.id.len() + call.name.len() + wire_arguments(call).len())
+                        .map(|call| {
+                            call.id.len() + call.name.len() + wire_arguments(call, None).len()
+                        })
                         .sum::<usize>()
             },
             Role::Assistant => message.content.len(),
@@ -894,7 +1204,81 @@ pub fn wire_chars(transcript: &[Message]) -> usize {
             // reports the real number on `response.completed` anyway.
             Role::Error | Role::Notice => 0,
         })
-        .sum()
+        .sum();
+    whole
+}
+
+/// How many characters `Elision` takes off that walk. The expensive half: it JSON-parses the
+/// arguments of every tool call in the transcript.
+pub fn elision_saved(transcript: &[Message]) -> usize {
+    Elision::plan(transcript).saved(transcript)
+}
+
+/// What `elision_saved` is a function of, cheaply: how many messages there are and how many
+/// tool calls they carry between them.
+///
+/// Everything elision reads - a call's name and arguments, a tool result's id and content - is
+/// pushed complete and never edited afterwards, so nothing can change the answer without
+/// changing one of these two numbers. A reply arriving does not: it only grows the `content` of
+/// an assistant message, which elision does not look at, and it gains its tool calls in the
+/// same move that pushes them.
+pub fn elision_key(transcript: &[Message]) -> (usize, usize) {
+    (
+        transcript.len(),
+        transcript
+            .iter()
+            .map(|message| message.tool_calls.len())
+            .sum(),
+    )
+}
+
+/// The biggest things in the outgoing transcript, largest first, as `(label, chars)`.
+///
+/// What a "why was that request 48 000 tokens?" question is answered with. `body_bytes` alone
+/// says the request was large; this says which three messages made it so, and a label like
+/// `result:plugin_docs` is enough to know what to do about it.
+///
+/// Elision is applied, so what this reports is what was actually sent.
+pub fn wire_breakdown(transcript: &[Message], top: usize) -> Vec<(String, usize)> {
+    let elision = Elision::plan(transcript);
+    let subjects = call_subjects(transcript);
+    let mut rows: Vec<(String, usize)> = transcript
+        .iter()
+        .enumerate()
+        .filter_map(|(index, message)| match message.role {
+            Role::User => Some(("user".to_owned(), message.content.len())),
+            Role::Assistant if !message.tool_calls.is_empty() => {
+                let chars: usize = message
+                    .tool_calls
+                    .iter()
+                    .enumerate()
+                    .map(|(at, call)| wire_arguments(call, elision.arguments(index, at)).len())
+                    .sum();
+                let names: Vec<&str> = message
+                    .tool_calls
+                    .iter()
+                    .map(|call| call.name.as_str())
+                    .collect();
+                Some((format!("call:{}", names.join("+")), chars))
+            },
+            Role::Assistant => Some(("assistant".to_owned(), message.content.len())),
+            Role::Tool => {
+                let content = elision.content(index).unwrap_or(&message.content);
+                // The tool a result belongs to is only knowable through the call that made it,
+                // which is the same lookup elision does.
+                let name = message
+                    .tool_call_id
+                    .as_deref()
+                    .and_then(|id| subjects.get(id))
+                    .map_or("?", |(name, _)| *name);
+                Some((format!("result:{name}"), content.len()))
+            },
+            Role::Error | Role::Notice => None,
+        })
+        .collect();
+    rows.sort_by_key(|(_, chars)| std::cmp::Reverse(*chars));
+    rows.truncate(top);
+    rows
 }
 
 /// Which reasoning field, if either, this assistant turn goes out with, as
@@ -931,23 +1315,27 @@ fn wire_reasoning(carried: Option<&Reasoning>, echo: bool) -> (Option<&str>, Opt
 /// valid json" on anything that is not a JSON object. A no-argument call
 /// commonly streams as `""`, which dispatch accepts (see `tools::Args::parse`)
 /// but the next request would be rejected for.
-fn wire_arguments(call: &ToolCall) -> &str {
+fn wire_arguments<'a>(call: &'a ToolCall, elided: Option<&'a str>) -> &'a str {
+    // The elided form is checked too. It is an object by construction - `stale_arguments` edits
+    // a parsed map and re-serializes it - but the check is free, and this is the one invariant
+    // both endpoints enforce on us.
+    let arguments = elided.unwrap_or(&call.arguments);
     let valid =
-        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&call.arguments).is_ok();
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(arguments).is_ok();
     if valid {
-        call.arguments.as_str()
+        arguments
     } else {
         "{}"
     }
 }
 
-fn wire_tool_call(call: &ToolCall) -> WireToolCall<'_> {
+fn wire_tool_call<'a>(call: &'a ToolCall, elided: Option<&'a str>) -> WireToolCall<'a> {
     WireToolCall {
         id: &call.id,
         kind: "function",
         function: WireFunction {
             name: &call.name,
-            arguments: wire_arguments(call),
+            arguments: wire_arguments(call, elided),
         },
     }
 }

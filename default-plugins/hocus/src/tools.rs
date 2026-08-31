@@ -26,7 +26,6 @@ use zellij_tile::prelude::{
 
 use crate::log::truncate_str;
 use crate::lua_docs;
-use crate::MAX_TOOL_OUTPUT;
 
 /// One complete call requested by the model, reassembled from stream fragments.
 ///
@@ -1496,7 +1495,9 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_read",
-            "Read one of the user's Lua plugins. `name` is a file name, .lua optional.",
+            "Read one of the user's Lua plugins. `name` is a file name, .lua optional. 300 \
+             lines from `start_line` (default 1); `line_count` changes the span. Read before \
+             you edit.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1509,10 +1510,10 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_check",
-            "Compile a Lua plugin source without writing or loading it, answering with the \
-             compile error or that it compiles. plugin_write runs this check itself and refuses \
-             a source that fails it, so call this to try a fix before writing, not after. A \
-             source that compiles can still fail at load; plugin_reload shows that.",
+            "Compile a Lua plugin source without writing or loading it. plugin_write runs this \
+             check itself and refuses a source that fails it, so use this to try a fix before \
+             writing, not after. A source that compiles can still fail at load; plugin_reload \
+             shows that.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1524,13 +1525,11 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_write",
-            "Write a Lua plugin. This is how a plugin is authored: you write it yourself, never \
-             by spawning an agent to do it. Call plugin_docs first. `source` is the complete \
-             file, not a patch; it is compiled before anything is asked or written, and a \
-             compile error is the answer. Approving the write grants the permissions the source \
-             requests, and plugin_reload comes next. `overwrite` is required to replace one \
-             that exists - use plugin_edit to change one that works. `name` may be \
-             `folder/module` for a file the plugin loads with require(\"folder.module\").",
+            "Write a Lua plugin. `source` is the complete file; it is compiled before anything \
+             is asked or written, and a compile error is the answer. Approving the write grants \
+             the permissions the source requests, and plugin_reload comes next. `overwrite` is \
+             required to replace one that exists - plugin_edit changes one that works. `name` \
+             may be `folder/module` for a file the plugin loads with require(\"folder.module\").",
             json!({
                 "type": "object",
                 "properties": {
@@ -1544,9 +1543,9 @@ pub fn specs() -> Value {
         tool(
             "plugin_edit",
             "Change part of a plugin in place: `old_string` becomes `new_string`, matching the \
-             file exactly and once unless replace_all. Prefer this to re-sending a whole file, \
-             which is how features get dropped. Compiled before it is written; the version \
-             replaced is kept as <name>.bak.",
+             file exactly and once unless replace_all. Compiled before it is written, and not \
+             written at all if it would not compile; the version replaced is kept as \
+             <name>.bak.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1561,8 +1560,8 @@ pub fn specs() -> Value {
         tool(
             "plugin_reload",
             "Load or reload one of the user's Lua plugins, opening it in a pane if it is not \
-             running. Answers with the pane's id and what it shows once loaded - the plugin's \
-             first render, or the load error. plugin_log has anything it logged.",
+             running. Answers with the pane id and what it shows - the first render, or the \
+             load error. plugin_log has what it logged.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1573,8 +1572,8 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_log",
-            "The last lines one of the user's Lua plugins wrote with zellij.log or print, from \
-             zellij's log. `line_count` defaults to 50.",
+            "The last lines a plugin wrote with zellij.log or print. `line_count` defaults \
+             to 50.",
             json!({
                 "type": "object",
                 "properties": {
@@ -2357,9 +2356,25 @@ pub fn compile_report(name: &str, source: &str) -> Result<String, String> {
     match compile_check(name, source) {
         Ok(()) => Ok(format!("{chunk} compiles")),
         Err(error) => Err(format!(
-            "{chunk} does not compile: {error}\nFix the source and send the whole file again."
+            "{chunk} does not compile: {error}\nFix it and try again - plugin_edit to change a \
+             file that exists, plugin_write for a new one."
         )),
     }
+}
+
+/// The same refusal for an edit, which is a different situation and used to be told otherwise.
+///
+/// Two things this has to say that the write form does not. The file on disk is *unchanged* -
+/// the compile gate runs on the edited text before anything is written, so a model reading
+/// "does not compile" had no way to tell whether the broken version had landed. And the fix is
+/// a corrected `new_string`, not a whole file: the old wording sent the model back to
+/// `plugin_write`, which is how an edit loop turns into a rewrite loop.
+pub fn edit_compile_report(name: &str, error: &str) -> String {
+    let chunk = chunk_name(name);
+    format!(
+        "{chunk} does not compile after that edit, so it was NOT applied and the file is \
+         unchanged: {error}\nAdjust old_string/new_string and call plugin_edit again."
+    )
 }
 
 /// The refusal for a `plugin_write` whose source will not compile, or `None` when there is
@@ -2489,10 +2504,10 @@ pub fn resolve_plugin_file(dir: &str, name: Option<&str>) -> Result<String, Stri
 /// The source a `plugin_write` carries, with exactly one trailing newline so the file is
 /// well-formed whatever the model sent, or why there is none to write.
 pub fn plugin_source(args: &Args) -> Result<String, String> {
-    let source = args
-        .source
-        .as_deref()
-        .ok_or("source is required: send the complete plugin file, not a patch")?;
+    let source = args.source.as_deref().ok_or(
+        "source is required: plugin_write takes the complete file. To change part of a \
+                plugin that exists, use plugin_edit instead.",
+    )?;
     if source.trim().is_empty() {
         return Err("source is required and must not be empty".to_owned());
     }
@@ -2508,6 +2523,41 @@ pub fn read_range(args: &Args) -> (usize, usize) {
         None => start.saturating_add(FILE_TOOL_LINES).saturating_sub(1),
     };
     (start, end)
+}
+
+/// What `plugin_read` answers: the requested lines, said to be the requested lines.
+///
+/// The lines alone are what this used to send, and an unqualified read stops at
+/// `FILE_TOOL_LINES` - so a 900-line plugin came back as 300 lines with nothing to say it was a
+/// fragment. A model holding a fragment it believes is the whole file rewrites the file from
+/// it, and the other 600 lines are gone. The header says how much there is; the footer names
+/// the exact call that fetches the rest.
+///
+/// Deliberately *not* per-line numbers. They would cost ~6 bytes a line - 1.8KB on a default
+/// read, re-sent every later round, which is the cost this whole effort is about - and worse,
+/// they would poison `plugin_edit`: `old_string` has to match the file exactly, and a model
+/// copying numbered text into it misses every time.
+pub fn read_answer(contents: &str, start: usize, end: usize) -> String {
+    let total = contents.lines().count();
+    let lines = lines_in_range(contents, start, end);
+    if lines.is_empty() {
+        return match total {
+            0 => "the file is empty".to_owned(),
+            // Reading past the end used to answer a bare "no lines", which reads as "this
+            // plugin has nothing in it" rather than "you asked for a range it does not have".
+            total => format!("no lines there: the file has {total} lines"),
+        };
+    }
+    let last = end.min(total);
+    let header = format!("lines {start}-{last} of {total}\n");
+    let remaining = total.saturating_sub(last);
+    if remaining == 0 {
+        return format!("{header}{lines}");
+    }
+    format!(
+        "{header}{lines}\n… {remaining} more lines (plugin_read start_line={})",
+        last + 1
+    )
 }
 
 /// Lines `start..=end` of `contents`, as `sed -n 'start,endp'` would print them; empty past the
@@ -4016,6 +4066,20 @@ pub struct PluginObservation {
 /// The loading screen's error text is the whole of what the host says when a plugin fails to
 /// load or raises: it is painted into the pane in place of the plugin. Naming the failure up
 /// front is what lets the model act on it without reading the transcript for the word.
+/// How much of a *successful* first render reaches the model.
+///
+/// A first render is the weakest evidence a plugin can offer - it proves the file parsed and
+/// `render` returned a string - and it is a screenshot, so most of what a pane-filling plugin
+/// draws is repetition. The whole of it used to go, once per reload, and every earlier one was
+/// re-sent on every later round of the conversation. A screenful is enough to recognise what
+/// was drawn; `read_pane` fetches the rest on the rare occasion it matters.
+const PLUGIN_RENDER_CHARS: usize = 1_500;
+
+/// How much of a *failed* load reaches the model. The error text is the only thing here the
+/// model can act on, and a Lua traceback through a few `require`d modules is not short, so it
+/// keeps most of the old allowance.
+const PLUGIN_ERROR_CHARS: usize = 8_000;
+
 pub fn plugin_load_report(path: &str, observed: Option<PluginObservation>) -> String {
     let Some(observed) = observed else {
         return format!(
@@ -4023,11 +4087,22 @@ pub fn plugin_load_report(path: &str, observed: Option<PluginObservation>) -> St
              again to look once more, or list_session to see what is open."
         );
     };
-    let contents = truncate_str(observed.contents.trim_end(), MAX_TOOL_OUTPUT / 4);
-    let failed = contents.contains("failed to load the Lua plugin")
-        || contents.contains("failed to run the plugin's")
-        || contents.contains("Panic!");
+    // The verdict is read from the whole pane, before anything is cut. The markers happen to
+    // land near the top today, so truncating first worked by luck rather than by design - and
+    // the success cap below is small enough that the luck would have run out.
+    let whole = observed.contents.trim_end();
+    let failed = whole.contains("failed to load the Lua plugin")
+        || whole.contains("failed to run the plugin's")
+        || whole.contains("Panic!");
     let verdict = if failed { "FAILED to load" } else { "loaded" };
+    let contents = truncate_str(
+        whole,
+        if failed {
+            PLUGIN_ERROR_CHARS
+        } else {
+            PLUGIN_RENDER_CHARS
+        },
+    );
     // A first frame is the weakest evidence a plugin can offer - it proves the file parsed and
     // `render` returned a string. The loop that stops here reports a plugin that works when
     // what it has is a plugin that draws, which is the failure this sentence exists to prevent.
@@ -4039,9 +4114,13 @@ pub fn plugin_load_report(path: &str, observed: Option<PluginObservation>) -> St
                   not check."
         },
     };
+    let cut = match contents.len() < whole.len() {
+        true => "\n[pane truncated - read_pane with is_plugin=true for the rest]",
+        false => "",
+    };
     format!(
         "{path} {verdict} in plugin pane {} (read_pane with is_plugin=true for more).{next} The \
-         pane shows:\n{contents}",
+         pane shows:\n{contents}{cut}",
         observed.pane_id
     )
 }

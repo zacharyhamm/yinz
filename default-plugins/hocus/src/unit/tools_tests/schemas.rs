@@ -83,11 +83,14 @@ fn hocus_prompt_contract_keeps_tool_specific_routing_cues() {
         ("github_read", &["Active project", "GET only"][..]),
         ("close_pane", &["process"][..]),
         // The routing that was got wrong: a plugin is authored here, not handed to a spawned
-        // coding agent, and each step of the loop names the next.
-        (
-            "plugin_write",
-            &["yourself", "never", "plugin_docs", "plugin_reload"][..],
-        ),
+        // coding agent, and each step of the loop names the next. "You write these yourself,
+        // never by spawning an agent" used to be a fourth copy here; it is in the system
+        // prompt, in the `plugin_docs` index and cued from `agent_spawn`, and this description
+        // is on every request, so the copy went. What has to stay is the next step - and, since
+        // this is the tool a whole-file rewrite goes through, the cheaper tool beside it.
+        ("plugin_write", &["plugin_reload", "plugin_edit"][..]),
+        ("plugin_edit", &["old_string", "not written at all"][..]),
+        ("plugin_read", &["start_line", "before you edit"][..]),
         ("plugin_reload", &["plugin_log"][..]),
         ("agent_spawn", &["plugin_write"][..]),
     ] {

@@ -252,6 +252,36 @@ pub enum Status {
     /// A reload is fire-and-forget on the host, so the only way to say whether it worked is to
     /// read the pane afterwards; this is the state between asking and looking.
     AwaitingPluginLoad,
+    /// The endpoint turned the last request away for a reason that will pass — a spent
+    /// per-minute token budget, most often — and the same request is waiting on the clock to
+    /// go out again. See [`Retry`].
+    ///
+    /// The one state here that is not about the tool queue, and it earns its place: every
+    /// predicate built on `Status` wants the same answer for it as for the rest. `tools_busy`
+    /// keeps a scheduled job from firing into the gap, `is_loading` keeps the spinner up and
+    /// the timer chain alive, and `is_live` keeps a parked chat marked as still working.
+    AwaitingRetry,
+}
+
+/// A request the endpoint turned away, waiting to go out again unchanged.
+///
+/// Nothing about the transcript is recorded: the retry resends `messages` exactly as they
+/// stand, which is the whole point — a rate limit is not a reason to add to the payload that
+/// hit it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Retry {
+    /// Absolute `State::mono_ms` the resend is due at, the way `extension_scan_due_ms` is, or
+    /// `None` once that resend has gone out.
+    ///
+    /// The record outlives the resend: it is what carries `attempt` forward, so a second
+    /// refusal keeps the backoff doubling instead of starting over. `None` is how everything
+    /// that acts on a *waiting* retry - `poll_retry` firing it, the countdown in `loader`, the
+    /// interrupt - tells the wait apart from the request it started. Without it `poll_retry`
+    /// re-fires on every frame from a `due_ms` already in the past.
+    pub due_ms: Option<u64>,
+    /// How many resends have already been made, so the backoff can double and the cap can
+    /// count. `0` while the first is still pending.
+    pub attempt: u32,
 }
 
 /// Whether this conversation is planning rather than acting, and how far along.
