@@ -7,7 +7,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension};
 
-use crate::plugin_data::{AttrDef, DataError, DataSchemaInfo, EntityDef};
+use crate::plugin_data::{AttrDef, DataEntityInfo, DataError, DataSchemaInfo, EntityDef};
 
 use super::index::{create_attr_indexes, rebuild_full_text};
 use super::schema::EntitySchema;
@@ -92,6 +92,53 @@ pub(super) fn load_entity(
         def,
         owner_plugin,
     }))
+}
+
+/// Every entity in the registry, or only those of one namespace.
+///
+/// Skips a row whose stored definition will not parse rather than failing the whole listing: a
+/// catalog is what a plugin reaches for when something is already wrong, and one unreadable row
+/// should not hide the rest of them.
+pub(super) fn catalog(
+    conn: &Connection,
+    namespace: Option<&str>,
+) -> Result<Vec<DataEntityInfo>, DataError> {
+    let mut statement = conn
+        .prepare(
+            "SELECT namespace, entity, definition, owner_plugin FROM store_entities
+             WHERE (?1 IS NULL OR namespace = ?1)
+             ORDER BY namespace, entity",
+        )
+        .ctx("failed to prepare the entity listing")?;
+    let rows = statement
+        .query_map(rusqlite::params![namespace], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .ctx("failed to list the entity registry")?;
+    let mut entities = Vec::new();
+    for row in rows {
+        let (namespace, entity, definition, owner_plugin) =
+            row.ctx("failed to read an entity registry row")?;
+        match serde_json::from_str::<EntityDef>(&definition) {
+            Ok(def) => entities.push(DataEntityInfo {
+                namespace,
+                owner_plugin,
+                def,
+            }),
+            Err(e) => log::error!(
+                "the stored definition of `{}` in `{}` is unreadable, skipping it: {}",
+                entity,
+                namespace,
+                e
+            ),
+        }
+    }
+    Ok(entities)
 }
 
 pub(super) fn require_entity(

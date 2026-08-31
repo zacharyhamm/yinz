@@ -215,3 +215,70 @@ fn using_an_undeclared_entity_says_so() {
     let err = store.fetch(NS, &FetchRequest::entity("agent")).unwrap_err();
     assert_err!(err, DataError::UnknownEntity(_));
 }
+
+/// The catalog is the discovery seam: an author who does not know an entity's name cannot fetch
+/// it, so what it must answer with is the definition itself, not a summary of it.
+#[test]
+fn the_catalog_lists_declared_entities_with_their_definitions() {
+    let (store, _dir) = defined();
+    let entities = store.catalog(None).unwrap();
+    assert_eq!(entities.len(), 1);
+    assert_eq!(entities[0].namespace, NS);
+    assert_eq!(entities[0].owner_plugin, OWNER);
+    assert_eq!(entities[0].def, agent_def());
+}
+
+/// Ordered by namespace and then entity, so a listing does not shuffle between calls - and
+/// filtered to one namespace when asked, which is what a plugin reading someone else's data does.
+#[test]
+fn the_catalog_spans_namespaces_and_filters_to_one() {
+    let (store, _dir) = defined();
+    let other = "shared:elsewhere";
+    store
+        .define_entity(
+            other,
+            "zellij:other",
+            &EntityDef::new("note", 1).attr(AttrDef::text("text")),
+            false,
+        )
+        .unwrap();
+    store
+        .define_entity(
+            other,
+            "zellij:other",
+            &EntityDef::new("chat", 1).attr(AttrDef::text("title")),
+            false,
+        )
+        .unwrap();
+
+    let all: Vec<(String, String)> = store
+        .catalog(None)
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.namespace, e.def.name))
+        .collect();
+    assert_eq!(
+        all,
+        vec![
+            (NS.to_owned(), "agent".to_owned()),
+            (other.to_owned(), "chat".to_owned()),
+            (other.to_owned(), "note".to_owned()),
+        ]
+    );
+
+    let scoped: Vec<String> = store
+        .catalog(Some(other))
+        .unwrap()
+        .into_iter()
+        .map(|e| e.def.name)
+        .collect();
+    assert_eq!(scoped, vec!["chat".to_owned(), "note".to_owned()]);
+}
+
+/// A namespace nobody has declared anything in is empty, not an error: asking what is there is
+/// exactly what a plugin does before it knows whether anything is.
+#[test]
+fn the_catalog_of_an_unknown_namespace_is_empty() {
+    let (store, _dir) = defined();
+    assert!(store.catalog(Some("shared:nothing")).unwrap().is_empty());
+}

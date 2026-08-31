@@ -31,6 +31,7 @@ const EXAMPLE_DASHBOARD: &str = include_str!("../../../example-plugins/dashboard
 const EXAMPLE_WORKFLOW: &str = include_str!("../../../example-plugins/workflow.lua");
 const EXAMPLE_TODO_EXTENSION: &str = include_str!("../../../example-plugins/todo-extension.lua");
 const EXAMPLE_TODO_PANE: &str = include_str!("../../../example-plugins/todo-pane.lua");
+const EXAMPLE_HOCUS_TODOS: &str = include_str!("../../../example-plugins/hocus-todos.lua");
 /// The Lua half of the API, verbatim: the argument sugar and the named wrappers live here, so
 /// a model that has read it does not have to guess how a command is spelled. Served in five
 /// parts, cut at its own section markers, so that none is more than a tool call should cost.
@@ -60,7 +61,7 @@ fn prelude_part(index: usize) -> &'static str {
 ///
 /// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
 /// editing the guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 32] = [
+pub const SECTIONS: [&str; 34] = [
     "index",
     "quickstart",
     "contract",
@@ -72,6 +73,7 @@ pub const SECTIONS: [&str; 32] = [
     "rendering",
     "modules",
     "data",
+    "hocus_data",
     "queues",
     "hocus_extensions",
     "hooks",
@@ -88,6 +90,7 @@ pub const SECTIONS: [&str; 32] = [
     "example_workflow",
     "example_todo_extension",
     "example_todo_pane",
+    "example_hocus_todos",
     "prelude",
     "prelude_commands",
     "prelude_data",
@@ -105,6 +108,7 @@ fn heading(section: &str) -> Option<&'static str> {
         "rendering" => "Rendering",
         "modules" => "Modules",
         "data" => "Data",
+        "hocus_data" => "Hocus data",
         "queues" => "Work queues",
         "hocus_extensions" => "Hocus extensions",
         "hooks" | "hooks_headless" | "hooks_context_menu" => "Hooks",
@@ -231,6 +235,7 @@ fn index() -> String {
             "example_workflow" => "example: a multi-step command sequence in one pane (pane_workflow)".to_owned(),
             "example_todo_extension" => "example: a hocus extension owning a shared: data namespace - permissions, schema, registration, tools".to_owned(),
             "example_todo_pane" => "example: the pane half of the same shared data - a watch, keys, and an input mode".to_owned(),
+            "example_hocus_todos" => "example: reading hocus's own todo rows out of the shared data store".to_owned(),
             "prelude" => "the Lua side of the API itself: events, commands, files, and every named wrapper".to_owned(),
             "prelude_commands" => "its host-command wrappers and keybinding helpers".to_owned(),
             "prelude_data" => "its zellij.data part: the persistent store, with every helper".to_owned(),
@@ -273,6 +278,7 @@ pub fn section(name: &str) -> Option<String> {
         "example_workflow" => Some(fenced(EXAMPLE_WORKFLOW)),
         "example_todo_extension" => Some(fenced(EXAMPLE_TODO_EXTENSION)),
         "example_todo_pane" => Some(fenced(EXAMPLE_TODO_PANE)),
+        "example_hocus_todos" => Some(fenced(EXAMPLE_HOCUS_TODOS)),
         "prelude" => Some(fenced(prelude_part(0))),
         "prelude_commands" => Some(fenced(prelude_part(1))),
         "prelude_data" => Some(fenced(prelude_part(2))),
@@ -503,6 +509,59 @@ mod tests {
     }
 
     /// Nothing may outgrow the tool-output cap, which would cut a section mid-sentence.
+    /// The guide's "Hocus data" is the schema a plugin author writes fetches against, and the
+    /// failure it exists to prevent is exactly a guess at a name that does not exist. So it is
+    /// checked against the definitions themselves rather than trusted to be kept up by hand: an
+    /// entity or an attribute added to `store::shared_defs()` has to be written down here too.
+    ///
+    /// `import_marker` is the one exception, and is named as such below: it is bookkeeping for
+    /// hocus's own migration off the old JSON files, and means nothing to a reader.
+    #[test]
+    fn the_hocus_data_section_names_every_shared_entity_and_attribute() {
+        let text = section("hocus_data").expect("the section resolves");
+        for def in hocus_proto::store::shared_defs() {
+            if def.name == "import_marker" {
+                continue;
+            }
+            assert!(
+                text.contains(&format!("`{}`", def.name)),
+                "the guide does not name the `{}` entity",
+                def.name
+            );
+            for attr in &def.attrs {
+                assert!(
+                    text.contains(&format!("`{}`", attr.name)),
+                    "the guide does not name `{}`.`{}`",
+                    def.name,
+                    attr.name
+                );
+            }
+        }
+    }
+
+    /// And the other way: a name in the guide that no definition carries is a reader sent to
+    /// fetch a column that is not there.
+    #[test]
+    fn the_hocus_data_section_invents_no_entity_names() {
+        let text = section("hocus_data").expect("the section resolves");
+        let declared: Vec<String> = hocus_proto::store::shared_defs()
+            .into_iter()
+            .map(|def| def.name)
+            .collect();
+        for line in text.lines().filter(|line| line.starts_with("**`")) {
+            let name = line
+                .trim_start_matches("**`")
+                .split('`')
+                .next()
+                .unwrap()
+                .to_owned();
+            assert!(
+                declared.contains(&name),
+                "the guide describes `{name}`, which no shared definition declares"
+            );
+        }
+    }
+
     #[test]
     fn no_section_is_anywhere_near_the_tool_output_cap() {
         for name in SECTIONS {

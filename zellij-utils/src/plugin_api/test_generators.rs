@@ -1995,6 +1995,9 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             mode: watch_modes(tc),
         },
         CommandType::DataUnwatch => PluginCommand::DataUnwatch { watch_id: u64s(tc) },
+        CommandType::DataCatalog => PluginCommand::DataCatalog {
+            namespace: optional_strings(tc),
+        },
         CommandType::SetPaneTitlePrefix => PluginCommand::SetPaneTitlePrefix {
             pane_id: pane_id(tc),
             prefix: optional_strings(tc),

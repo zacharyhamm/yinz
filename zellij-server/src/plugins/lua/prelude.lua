@@ -677,6 +677,39 @@ function zellij.data.define(spec)
   })
 end
 
+--- What entities exist and what their columns are: a list of
+--- `{ namespace = , entity = , version = , owner = , attrs = { { name = , kind = , indexed = ,
+--- full_text = , unique = , required = } } }`, ordered by namespace and entity.
+---
+--- With no argument it is everything this plugin may see - its own namespace, plus every
+--- `shared:` one if it has `shared_plugin_data`. Another plugin's private namespace is never
+--- listed. With a namespace it is that one alone.
+---
+--- This is how to find data another plugin publishes without being told the schema out of band.
+--- Note that reading an entity someone else declared needs no `define` of your own: name the
+--- namespace and fetch.
+---
+---     for _, e in ipairs(zellij.data.catalog("shared:hocus")) do
+---       zellij.log(e.entity .. ": " .. #e.attrs .. " attributes")
+---     end
+function zellij.data.catalog(namespace)
+  local out = {}
+  for i, entity in ipairs(dispatch("data_catalog", { namespace = namespace }) or {}) do
+    local def = entity.def or {}
+    out[i] = {
+      namespace = entity.namespace,
+      owner = entity.owner_plugin,
+      entity = def.name,
+      version = def.version,
+      attrs = def.attrs or {},
+    }
+    for _, attr in ipairs(out[i].attrs) do
+      attr.kind = string.lower(tostring(attr.kind))
+    end
+  end
+  return out
+end
+
 --- `{ title = "x", done = false }` as the list of pairs a mutation carries, in a fixed order so
 --- the same write always looks the same.
 local function value_pairs(values)
