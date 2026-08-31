@@ -38,10 +38,19 @@ type the wasm shim would build, and hands back raw bytes for anything it does no
 lists every reply-returning command and fails when a new one is not decoded.
 `zellij-tile/src/shim.rs` is the reference for what each response means.
 
-hocus is the main consumer of all this: its `plugin_*` tools write, reload, read back the pane,
-and grep the log, and `docs/LUA_PLUGINS.md` plus `example-plugins/` plus `prelude.lua` are served
-to its model verbatim by `hocus/src/lua_docs.rs`, cut into sections that each stay under 20 KB.
-A new `##` heading in the guide needs a section name there, or a test fails. When hocus's
+hocus is the main consumer of all this: its `plugin_*` tools write, edit, reload, read back the
+pane, and grep the log, and `docs/LUA_PLUGINS.md` plus `example-plugins/` plus `prelude.lua` are
+served to its model verbatim by `hocus/src/lua_docs.rs`, cut into sections that each stay under
+20 KB. Two of those tests guard the guide against the rules it only *describes*: every
+`PermissionType` must be nameable from its permission table, and the `Data` section must state
+the `shared:` prefix and every `RESERVED_ATTR_NAMES` entry.
+A new `##` heading in the guide needs a section name there, or a test fails.
+`zellij_utils::plugin_authoring` is the other half of that: the naming rules, the backup name, the
+lexical permission parser, and `lint`, which reads a source for the traps a compile cannot see -
+a permission spelled wrong (granted to nobody, silently), a data namespace that is not
+`shared:`-prefixed, a reserved column declared as an attribute, a gated call made from `load`.
+`zellij plugins check`, `plugin_check` and `plugin_write` all report it, and none of them refuse
+a write over it: the compiler is the only thing that says no. When hocus's
 confirmation of a `plugin_write` is approved, the permissions the source asks for are granted
 through the builtin-only `PluginCommand::GrantPluginPermissions`, so an authored plugin never
 prompts in a pane the loop cannot see. Authoring is hocus's own job and is never delegated to a

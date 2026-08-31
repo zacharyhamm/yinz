@@ -989,14 +989,20 @@ pub(crate) fn plugins(command: zellij_utils::cli::Plugins, opts: &CliArgs) -> an
             no_check,
         } => {
             let source = read_source(file.as_deref())?;
-            let path = zellij_server::plugin_authoring::write(
+            let written = zellij_server::plugin_authoring::write(
                 &plugin_dir,
                 &name,
                 &source,
                 overwrite,
                 !no_check,
             )?;
-            println!("{}", path.display());
+            println!("{}", written.path.display());
+            if let Some(replaced) = written.replaced {
+                eprintln!("kept the version it replaced as {}", replaced.display());
+            }
+            // On stderr, and after the path: the path is the answer a script reads, and a
+            // warning is for the person watching. Never a refusal - see `plugin_authoring::lint`.
+            print_plugin_lint(&name, &source);
             Ok(())
         },
         PluginsCli::Check { name, file } => {
@@ -1024,6 +1030,7 @@ pub(crate) fn plugins(command: zellij_utils::cli::Plugins, opts: &CliArgs) -> an
             };
             zellij_server::check_lua_plugin(&source, &chunk).map_err(|e| anyhow::anyhow!(e))?;
             println!("{chunk} compiles");
+            print_plugin_lint(&chunk, &source);
             Ok(())
         },
         PluginsCli::Reload { name } => {
@@ -1052,6 +1059,14 @@ pub(crate) fn plugins(command: zellij_utils::cli::Plugins, opts: &CliArgs) -> an
             );
             Ok(())
         },
+    }
+}
+
+/// What the source is going to do wrong at run time, on stderr, under whatever the command
+/// printed. Compiling is the verdict; these are the traps a compile cannot see.
+fn print_plugin_lint(name: &str, source: &str) {
+    for finding in zellij_utils::plugin_authoring::lint(name, source) {
+        eprintln!("warning: {finding}");
     }
 }
 

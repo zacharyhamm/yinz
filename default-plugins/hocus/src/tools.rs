@@ -18,6 +18,7 @@ use hocus_proto::paths;
 use hocus_proto::projects::{self, Project};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use zellij_tile::plugin_authoring;
 use zellij_tile::prelude::{
     FloatingPaneCoordinates, GitCheckout, PaneId, PercentOrFixed, PermissionType, SessionInfo,
     WarpPlacement,
@@ -113,6 +114,7 @@ pub fn needs_confirmation(name: &str) -> bool {
             // reloads a plugin on a keypress - so confirming both would cost two prompts per
             // write-reload-fix iteration to say the same thing twice.
             | "plugin_write"
+            | "plugin_edit"
             | "skill_write"
             | "skill_enable"
             | "skill_disable"
@@ -136,6 +138,23 @@ pub fn summarize(call: &ToolCall) -> String {
             .map(|s| s.lines().count())
             .unwrap_or(0);
         return format!("{} {name} ({lines} lines)", call.name);
+    }
+    // The same reason, in miniature: an edit carries two chunks of the file, and a
+    // transcript line is not where they belong. The detail below has room for them.
+    if call.name == "plugin_edit" {
+        let args = Args::parse(&call.arguments).unwrap_or_default();
+        let name = args.name.as_deref().unwrap_or("?");
+        let lines = args
+            .new_string
+            .as_deref()
+            .map(|s| s.lines().count())
+            .unwrap_or(0);
+        let was = args
+            .old_string
+            .as_deref()
+            .map(|s| s.lines().count())
+            .unwrap_or(0);
+        return format!("plugin_edit {name} ({was} lines -> {lines})");
     }
     if arguments.is_empty() || arguments == "{}" {
         call.name.clone()
@@ -271,6 +290,21 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
             }
             sentence
         },
+        // An edit is the same act as a write - model-written code landing in the config dir -
+        // in a smaller package, and it may add a `request_permission` of its own, so the
+        // permissions named here are the ones the *edited* source asks for.
+        "plugin_edit" => {
+            let name = args.name.as_deref().unwrap_or("a plugin");
+            let mut sentence = format!("changes {name}.lua in your Zellij plugin folder");
+            let granted = requested_permissions(args.new_string.as_deref().unwrap_or(""));
+            if !granted.is_empty() {
+                sentence.push_str(&format!(
+                    ", and grants it: {}",
+                    permission_names(&granted).join(", ")
+                ));
+            }
+            sentence
+        },
         "skill_write" => {
             let name = args.name.as_deref().unwrap_or("a skill");
             let scope = args.scope.as_deref().unwrap_or("user");
@@ -294,70 +328,41 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
 /// approving the write can grant them and the plugin never prompts in its own pane - where the
 /// model, driving the write-reload-fix loop, cannot see or answer it.
 ///
-/// Read lexically, not by running the Lua: every quoted string inside the braces of a
-/// `request_permission` call, in either spelling (`"read_files"` or `"ReadFiles"`), which is
-/// what the prelude accepts. A name zellij does not know is dropped rather than refused, since
-/// the plugin's own call will report it. Anything more elaborate - a permission list built at
-/// runtime - gets the prompt it always got.
+/// Read lexically by `zellij_utils::plugin_authoring`, which `zellij plugins write` reads them
+/// with too: one parser, so a permission granted here and one granted from a shell cannot come
+/// out differently. A name zellij does not know is dropped rather than refused - the plugin's
+/// own call reports it - but [`lint`] says so before the write, since a dropped name is a
+/// denial nobody sees until the plugin runs.
 pub fn requested_permissions(source: &str) -> Vec<PermissionType> {
-    let mut found = Vec::new();
-    let mut rest = source;
-    while let Some(at) = rest.find("request_permission") {
-        rest = &rest[at + "request_permission".len()..];
-        let Some(open) = rest.find(['{', '(']) else {
-            break;
-        };
-        // Only whitespace may sit between the name and its argument, or this is some other
-        // identifier that happens to end the same way.
-        if !rest[..open].trim().is_empty() {
-            continue;
-        }
-        let closer = if rest.as_bytes()[open] == b'{' {
-            '}'
-        } else {
-            ')'
-        };
-        let Some(close) = rest[open..].find(closer) else {
-            break;
-        };
-        let inside = &rest[open + 1..open + close];
-        for quoted in inside.split(['"', '\'']).skip(1).step_by(2) {
-            let pascal = quoted
-                .split('_')
-                .map(|word| {
-                    let mut chars = word.chars();
-                    match chars.next() {
-                        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                        None => String::new(),
-                    }
-                })
-                .collect::<String>();
-            if let Ok(permission) = pascal.parse::<PermissionType>() {
-                if !found.contains(&permission) {
-                    found.push(permission);
-                }
-            }
-        }
-        rest = &rest[open + close..];
-    }
-    found
+    plugin_authoring::requested_permissions(source).known
 }
 
 /// Permissions as a plugin author spells them: `read_files`, not `ReadFiles`.
 pub fn permission_names(permissions: &[PermissionType]) -> Vec<String> {
-    permissions
-        .iter()
-        .map(|permission| {
-            let mut out = String::new();
-            for (i, c) in format!("{permission:?}").chars().enumerate() {
-                if c.is_uppercase() && i > 0 {
-                    out.push('_');
-                }
-                out.push(c.to_ascii_lowercase());
-            }
-            out
-        })
-        .collect()
+    plugin_authoring::permission_names(permissions)
+}
+
+/// What a source is about to do wrong, as lines to hand back with the compile result.
+///
+/// Never a refusal: see `plugin_authoring::lint`.
+pub fn lint(name: &str, source: &str) -> Vec<String> {
+    plugin_authoring::lint(name, source)
+}
+
+/// A compile result with the lint's findings under it, which is what `plugin_check` and
+/// `plugin_write` answer with.
+///
+/// The findings go *after* the result they qualify: the first line is the verdict the model
+/// acts on, and a warning that displaced it would read as one.
+pub fn with_lint(report: String, name: &str, source: &str) -> String {
+    let findings = lint(name, source);
+    if findings.is_empty() {
+        return report;
+    }
+    format!(
+        "{report}\n\nwarnings (the write is not blocked by these):\n{}",
+        findings.join("\n")
+    )
 }
 
 /// How many lines of source a toast keeps before summarizing the rest.
@@ -1526,8 +1531,8 @@ pub fn specs() -> Value {
              file, not a patch; it is compiled before anything is asked or written, and a \
              compile error is the answer. Approving the write grants the permissions the source \
              requests, and plugin_reload comes next. `overwrite` is required to replace one \
-             that exists. `name` may be `folder/module` for a file the plugin loads with \
-             require(\"folder.module\").",
+             that exists - use plugin_edit to change one that works. `name` may be \
+             `folder/module` for a file the plugin loads with require(\"folder.module\").",
             json!({
                 "type": "object",
                 "properties": {
@@ -1536,6 +1541,23 @@ pub fn specs() -> Value {
                     "overwrite": { "type": "boolean" },
                 },
                 "required": ["name", "source"],
+            }),
+        ),
+        tool(
+            "plugin_edit",
+            "Change part of a plugin in place: `old_string` becomes `new_string`, matching the \
+             file exactly and once unless replace_all. Prefer this to re-sending a whole file, \
+             which is how features get dropped. Compiled before it is written; the version \
+             replaced is kept as <name>.bak.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "old_string": { "type": "string" },
+                    "new_string": { "type": "string" },
+                    "replace_all": { "type": "boolean" },
+                },
+                "required": ["name", "old_string", "new_string"],
             }),
         ),
         tool(
@@ -1841,6 +1863,12 @@ pub struct Args {
     pub new_tab_name: Option<String>,
     pub panes: Vec<PaneRef>,
     pub name: Option<String>,
+    // `plugin_edit`'s halves. Named as the file tools of every other agent name them, so a
+    // model that has edited a file anywhere else already knows the shape.
+    pub old_string: Option<String>,
+    pub new_string: Option<String>,
+    #[serde(default)]
+    pub replace_all: bool,
     pub cwd: Option<String>,
     pub remote_host: Option<String>,
     pub command: Option<Value>,
@@ -2285,12 +2313,13 @@ pub const SKILL_FILE_TOOLS: [&str; 4] =
 /// `get_user_plugin_dir`, for the reload URL and the permission grant). None runs a command;
 /// every one but `plugin_reload` answers at once - a reload is fire-and-forget on the host, so
 /// that one defers until the pane has had time to show what happened.
-pub const PLUGIN_TOOLS: [&str; 7] = [
+pub const PLUGIN_TOOLS: [&str; 8] = [
     "plugin_docs",
     "plugin_check",
     "plugin_list",
     "plugin_read",
     "plugin_write",
+    "plugin_edit",
     "plugin_reload",
     "plugin_log",
 ];
@@ -2501,6 +2530,9 @@ pub fn listing_names(root: &str, entries: &[zellij_tile::prelude::FsEntry]) -> V
     let mut names: Vec<String> = entries
         .iter()
         .filter(|entry| entry.path.ends_with(".lua"))
+        // A backup is a copy of a plugin, not a plugin: listing it would offer the model a
+        // second file to edit and a name that reloads the version it just replaced.
+        .filter(|entry| !plugin_authoring::is_backup_name(&entry.path))
         .filter(|entry| entry.metadata.map(|m| m.is_file).unwrap_or(true))
         .map(|entry| {
             entry
@@ -2514,16 +2546,90 @@ pub fn listing_names(root: &str, entries: &[zellij_tile::prelude::FsEntry]) -> V
     names
 }
 
+/// The plugin name a backup of `name` is read back under: `plugin_read name=keys.bak`.
+pub fn backup_name(name: &str) -> String {
+    plugin_authoring::backup_name(name)
+}
+
+/// What a write or an edit says about the copy it kept of the file it replaced.
+fn kept_sentence(backup: Option<&str>) -> String {
+    match backup {
+        Some(backup) => format!(
+            " (the version it replaced is in {backup}, read it with \
+             plugin_read if this rewrite lost something)"
+        ),
+        None => String::new(),
+    }
+}
+
+/// Keep `replaced` - the source about to be overwritten - as the plugin's backup, answering
+/// with the name it reads back under (`plugin_read name=keys.bak`).
+///
+/// Best effort: a backup that cannot be written is not worth failing a write the user has
+/// already approved over, so the report simply says nothing about one. One version deep, since
+/// what a rewrite that dropped a feature needs is the file as it was one edit ago.
+pub fn keep_replaced(name: &str, replaced: Option<&str>) -> Option<String> {
+    let replaced = replaced?;
+    if replaced.trim().is_empty() {
+        return None;
+    }
+    let backup = backup_name(name);
+    let path = plugin_fs_path(Some(&backup)).ok()?;
+    plugin_fs_write(&path, replaced, true).ok()?;
+    Some(backup)
+}
+
 /// What a `plugin_write` answers once the file is there, and its permissions granted.
-pub fn write_report(name: &str, granted: &[PermissionType]) -> String {
+pub fn write_report(name: &str, granted: &[PermissionType], backup: Option<&str>) -> String {
     let name = name.trim().trim_end_matches(".lua");
+    let kept = kept_sentence(backup);
     if granted.is_empty() {
-        return format!("wrote {name}.lua; call plugin_reload to load it");
+        return format!("wrote {name}.lua; call plugin_reload to load it{kept}");
     }
     format!(
-        "wrote {name}.lua and granted it {}; call plugin_reload to load it",
+        "wrote {name}.lua and granted it {}; call plugin_reload to load it{kept}",
         permission_names(granted).join(", ")
     )
+}
+
+/// What a `plugin_edit` answers once the file has changed.
+pub fn edit_report(name: &str, granted: &[PermissionType], backup: Option<&str>) -> String {
+    let name = name.trim().trim_end_matches(".lua");
+    let kept = kept_sentence(backup);
+    if granted.is_empty() {
+        return format!("edited {name}.lua; call plugin_reload to load it{kept}");
+    }
+    format!(
+        "edited {name}.lua and granted it {}; call plugin_reload to load it{kept}",
+        permission_names(granted).join(", ")
+    )
+}
+
+/// `source` with `old` replaced by `new`, or why the edit does not apply.
+///
+/// One occurrence unless `replace_all`, which is what makes an edit a safe alternative to
+/// re-sending the file: a model that matched the wrong line is told so rather than silently
+/// changing the first of several.
+pub fn apply_edit(source: &str, old: &str, new: &str, replace_all: bool) -> Result<String, String> {
+    if old.is_empty() {
+        return Err("old_string is required: the exact text to replace".to_owned());
+    }
+    if old == new {
+        return Err("old_string and new_string are the same; nothing to do".to_owned());
+    }
+    match source.matches(old).count() {
+        0 => Err(
+            "old_string is not in the file. plugin_read it and copy the text to replace \
+             exactly, whitespace included."
+                .to_owned(),
+        ),
+        1 => Ok(source.replacen(old, new, 1)),
+        _ if replace_all => Ok(source.replace(old, new)),
+        n => Err(format!(
+            "old_string appears {n} times. Include enough surrounding lines to name one of \
+             them, or pass replace_all=true to change every one."
+        )),
+    }
 }
 
 /// What a `plugin_write` says about a file that is already there.
@@ -3899,9 +4005,20 @@ pub fn plugin_load_report(path: &str, observed: Option<PluginObservation>) -> St
         || contents.contains("failed to run the plugin's")
         || contents.contains("Panic!");
     let verdict = if failed { "FAILED to load" } else { "loaded" };
+    // A first frame is the weakest evidence a plugin can offer - it proves the file parsed and
+    // `render` returned a string. The loop that stops here reports a plugin that works when
+    // what it has is a plugin that draws, which is the failure this sentence exists to prevent.
+    let next = match failed {
+        true => "",
+        false => {
+            " A first render only proves it loads: press the keys it binds with send_keys, \
+                  call the tools it registers, read plugin_log, and say which of those you did \
+                  not check."
+        },
+    };
     format!(
-        "{path} {verdict} in plugin pane {} (read_pane with is_plugin=true for more). The pane \
-         shows:\n{contents}",
+        "{path} {verdict} in plugin pane {} (read_pane with is_plugin=true for more).{next} The \
+         pane shows:\n{contents}",
         observed.pane_id
     )
 }

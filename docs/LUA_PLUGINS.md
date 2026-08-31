@@ -40,6 +40,7 @@ Drop it in your plugin folder - `~/.config/zellij/plugins/` - and load it by nam
 
 ```sh
 zellij plugins write keys --file keys.lua   # compiles it first; --overwrite to replace
+                                            # (an overwrite keeps the old one as keys.bak.lua)
 zellij plugins check keys                   # the compile step on its own
 zellij plugins reload keys                  # in the running session, in a pane if it is not up
 zellij plugins log keys                     # what it logged
@@ -80,8 +81,16 @@ name=keys` compiles the complete file and puts it there - a source that does not
 refused with the error, before anyone is asked to approve it, and approving the write grants
 whatever permissions the source asks for - then `plugin_reload name=keys` loads it and answers
 with its first render or the load error, and `plugin_log name=keys` has anything it logged.
-`plugin_check` is the compile step on its own, for trying a fix before writing. `plugin_docs` is
-this guide, `plugin_list` and `plugin_read` are the folder as it stands.
+`plugin_check` is the compile step on its own, for trying a fix before writing, and both it and
+the write warn about the traps a compile cannot see - a permission spelled wrong, a namespace
+that is not shared, a column that cannot be declared. `plugin_docs` is this guide, `plugin_list`
+and `plugin_read` are the folder as it stands.
+
+Once a plugin works, change it with `plugin_edit name=keys old_string=... new_string=...` rather
+than sending the whole file again: an exact replacement cannot drop the parts of the file it does
+not mention, and a rewrite from memory routinely does. Either way the version replaced is kept as
+`<name>.bak.lua` - `plugin_read name=keys.bak` - so a rewrite that lost something is recoverable
+for exactly one round.
 
 The compile is a host command any plugin can call: `zellij.check_lua_plugin { name = "keys.lua",
 source = src }` answers `nil` when the source compiles and the error text otherwise. It only
@@ -409,13 +418,66 @@ local ok, err = pcall(function() zellij.copy_to_clipboard("hi") end)
 -- err: 'copy_to_clipboard' needs the 'WriteToClipboard' permission, ...
 ```
 
-There are five worked examples in `example-plugins/`, all of them reference sources to read
+**A permission is not in force while `load` runs.** Every plugin starts with its permissions
+unanswered - even one granted long ago, and even one hocus pre-granted when you approved the
+write - because the grant arrives as a `permission_request_result` event, and `load` runs before
+any event does. So `load` is where you *ask*; the handler is where you do the work:
+
+```lua
+function M.load()
+  zellij.request_permission { "plugin_data" }      -- ask here
+end
+
+zellij.on("permission_request_result", function()
+  zellij.data.define { ... }                       -- act here, on every run
+end)
+```
+
+The handler fires on every load, not only the first: an already-granted permission is answered
+immediately rather than prompting. A gated call made from `load` is refused, and the refusal
+says so.
+
+These are the names, as a plugin spells them:
+
+| Permission | What it covers |
+|---|---|
+| `read_application_state` | the session's panes, tabs and modes - most `*_update` events |
+| `change_application_state` | moving, closing, renaming and focusing panes and tabs |
+| `open_files` | opening a file in the user's editor |
+| `run_commands` | `zellij.run_command`, and commands in panes |
+| `open_terminals_or_plugins` | new terminal panes, and starting or reloading plugins |
+| `write_to_stdin` | typing into another pane |
+| `web_access` | `zellij.web_request` |
+| `read_cli_pipes` | pipes from the command line |
+| `message_and_launch_other_plugins` | `zellij.message_to_plugin` - what a hocus extension registers over |
+| `reconfigure` | changing the session's configuration and keybindings |
+| `full_hd_access` | files outside `/host`, `/data`, `/cache`, `/tmp` and `/plugins` |
+| `intercept_input` | taking keys and mouse before the rest of the session |
+| `read_pane_contents` | another pane's viewport and selection |
+| `run_actions_as_user` | `zellij.run_action`, which is anything a keybinding can do |
+| `write_to_clipboard` | the system clipboard |
+| `read_session_environment_variables` | the environment the session started in |
+| `plugin_data` | the plugin data store, in the plugin's own namespace |
+| `shared_plugin_data` | a `shared:` namespace, on top of `plugin_data` |
+| `read_files` | reading in the plugin's own folders |
+| `write_files` | writing in them |
+| `author_plugins` | writing into the plugin folder and reloading plugins by url |
+
+A name that is not on this list grants **nothing** and raises nothing: hocus reads the list out
+of your source lexically to pre-grant it, and a name it does not recognise is simply not there,
+so the plugin is denied at run time in a pane nobody is watching. `plugin_check` and `zellij
+plugins check` warn about that, and about the other traps a compile cannot see.
+
+There are seven worked examples in `example-plugins/`, all of them reference sources to read
 rather than a place to keep a plugin of your own - hocus serves each as a `plugin_docs` section.
 `clock.lua` (`section=example_clock`) is the small one, `playground.lua`
 (`section=example_playground`) is a keymap where each key calls a different shape of command and
 shows what came back, `dashboard.lua` (`section=example_dashboard`) is the one to read for how a
-plugin draws, `agent-commit.lua` (`section=example_agent_commit`) is an `agent_exit` hook, and
-`workflow.lua` (`section=example_workflow`) runs a multi-step command sequence in one pane.
+plugin draws, `agent-commit.lua` (`section=example_agent_commit`) is an `agent_exit` hook,
+`workflow.lua` (`section=example_workflow`) runs a multi-step command sequence in one pane, and
+`todo-extension.lua` (`section=example_todo_extension`) with `todo-pane.lua`
+(`section=example_todo_pane`) are the pair to read for shared data: an extension that owns a
+`shared:` namespace and registers tools over it, and a pane that watches the same rows.
 
 A plugin of your own goes in the plugin folder, written there with `plugin_write`. To run one of
 these from a checkout instead:
@@ -517,11 +579,71 @@ number. Mutations are `put(entity, values, uid)`, `update(entity, filter, values
 `all(...)`, `any(...)`, `negate(p)`. Attribute kinds are `text`, `int`, `real`, `bool`, `blob`
 and `json`; a value written as `{ json = table }` is stored as JSON and `{ blob = "bytes" }` as
 a blob. To clear an attribute, write `zellij.data.null` - a `nil` has no key for a mutation to
-read. `id`, `uid`, `created_at` and `updated_at` are on every row without being declared.
+read. `id`, `uid`, `created_at` and `updated_at` are on every row without being declared - and so
+**cannot be declared**. `rowid` and `oid` are reserved too, and a `define` that names any of the
+six fails whole, with no entity created. Read them, sort by them, filter on them; just do not
+put them in `attrs`.
 
-Everything in a plugin's own namespace is private to it. `shared_plugin_data` and a
-`namespace` argument reach the namespaces other plugins publish, on the same terms a wasm
-plugin does.
+### Sharing a namespace
+
+Everything in a plugin's own namespace is private to it, and a plugin cannot name another
+plugin's. Rows two plugins share live in a **shared namespace**, which is a namespace whose name
+begins with `shared:`:
+
+```lua
+function M.load()
+  -- Both permissions, in every plugin that touches the namespace - the reader too.
+  zellij.request_permission { "plugin_data", "shared_plugin_data" }
+end
+
+zellij.on("permission_request_result", function()
+  M.watch = zellij.data.watch { entity = "todo", namespace = "shared:todo", sort = { "id desc" } }
+end)
+```
+
+Three rules, and every one of them is a load error or a denial rather than something that
+degrades quietly:
+
+- **The prefix is not optional.** `namespace = "todo"` is refused; `"shared:todo"` is the same
+  store. The segment after the colon is lower-case letters, digits, `-` and `_`.
+- **`shared_plugin_data` as well as `plugin_data`**, in every plugin that reads or writes it.
+- **One plugin defines; the rest only use.** `define` is a migration: two plugins racing to
+  define the same entity is a bug waiting for the day their two spellings differ. `require` is
+  rooted at the plugin file's own folder, so a `hocus/` extension and a top-level pane genuinely
+  cannot share a schema module - which makes "the owner defines, the reader fetches" the pattern
+  rather than a preference. If a reader must be defensive, define exactly what the owner defines
+  and let the error out; never swallow it into an empty list.
+
+`namespace` is an argument to `define`, `fetch`, `count` and `watch`, and the second argument to
+`apply`.
+
+### Try it on twenty lines first
+
+The namespace, the permissions and the column names are all settled by one reload of a plugin
+that does nothing else. Write this before the real thing, not after:
+
+```lua
+local zellij = require("zellij")
+local M = {}
+
+function M.load()
+  zellij.request_permission { "plugin_data", "shared_plugin_data" }
+end
+
+zellij.on("permission_request_result", function()
+  zellij.log(zellij.json.encode(zellij.data.define {
+    name = "todo", version = 1, namespace = "shared:todo",
+    attrs = { { "title", "text", required = true }, { "done", "bool", default = false } },
+  }))
+  zellij.data.apply(zellij.data.put("todo", { title = "probe" }), "shared:todo")
+  zellij.log("rows: " .. #zellij.data.fetch { entity = "todo", namespace = "shared:todo" })
+end)
+
+return M
+```
+
+`plugin_reload` it, `plugin_log` it. A cycle spent here is a cycle not spent rewriting a finished
+plugin around a constraint it was built against.
 
 ## Work queues
 
@@ -683,10 +805,26 @@ through Zellij's plugin permissions. When Hocus writes the source, its `plugin_w
 shows and pre-grants the permissions requested in the file. A file installed by hand gets the
 normal permission prompt when Hocus first loads its suppressed pane.
 
+The order matters, and it is the same order for every extension that keeps data:
+
+1. `load` asks for the permissions - `message_and_launch_other_plugins` at least, plus
+   `plugin_data` and `shared_plugin_data` if it stores anything.
+2. The `permission_request_result` handler defines the schema, registers the tools, and takes its
+   first fetch or watch. Nothing above may happen in `load`: permissions are not in force there
+   (see [Permissions](#permissions)), so a `define` from `load` is refused and the extension
+   registers nothing.
+3. Tools and UI come after that lifecycle works. `example_todo_extension` is that lifecycle with
+   three tools on it, and `example_todo_pane` is a pane reading the same `shared:` namespace.
+
 Use `plugin_write name=hocus/weather`, then `plugin_reload name=hocus/weather`. The reload runs
 the extension in the background and reports the names it registered. A registration or runtime
 error is in `plugin_log name=hocus/weather`. There is deliberately no file watcher: reload is the
 point at which a complete edit becomes live.
+
+**Registered is not working.** The reload's `registered: ...` line says the extension offered
+those names, not that any of them ran. Call each one once - by name, as a tool, or as
+`/weather_forecast` at the prompt - before saying the extension works, and say plainly which ones
+you did not get to.
 
 ## Hooks
 

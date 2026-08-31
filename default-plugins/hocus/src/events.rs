@@ -505,7 +505,14 @@ impl State {
         let result = if names.is_empty() {
             format!("loaded {path}; it registered no tools")
         } else {
-            format!("loaded {path}; registered: {}", names.join(", "))
+            // Registration is the extension saying what it *offers*; nothing here has run any
+            // of it. The names are handed over with the ask to exercise them, because a reload
+            // that answers "registered" reads like a pass and is not one.
+            format!(
+                "loaded {path}; registered: {}. Call each one once before reporting that it \
+                 works, and say which you did not.",
+                names.join(", ")
+            )
         };
         self.finish_head(result);
         self.pump_tools();

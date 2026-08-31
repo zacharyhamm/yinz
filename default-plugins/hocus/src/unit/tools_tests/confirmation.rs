@@ -84,9 +84,9 @@ fn every_advertised_tool_is_covered_by_the_confirmation_table() {
         .iter()
         .map(|spec| spec["function"]["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 71);
+    assert_eq!(names.len(), 72);
     let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
-    assert_eq!(confirmed, 17);
+    assert_eq!(confirmed, 18);
 }
 
 /// The invariant the name table cannot state on its own: whatever decides to

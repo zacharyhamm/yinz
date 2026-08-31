@@ -207,11 +207,52 @@ fn hocus_writes_a_lua_plugin_and_loads_it() {
     );
     clear(&zellij, "is a symlink");
 
+    // A targeted change, which is what a plugin that already works should get instead of a
+    // whole file sent again from memory. The file it replaces is kept beside it.
+    submit_awaiting(
+        &zellij,
+        r#"/plugin_edit {"name": "probe", "old_string": "probe is running", "new_string": "probe is edited"}"#,
+        "probe is edited",
+    );
+    zellij.wait_until("the plugin is edited", |grid_snapshot| {
+        grid_snapshot.contains("edited probe.lua")
+    });
+    let edited = fs::read_to_string(&written).expect("the plugin is readable");
+    assert!(edited.contains("probe is edited"), "{edited}");
+    let backup = fs::read_to_string(plugin_dir.join("probe.bak.lua")).expect("the backup is kept");
+    assert!(
+        backup.contains("probe is running"),
+        "the backup holds the version that was replaced, got: {backup}"
+    );
+    clear(&zellij, "edited probe.lua");
+
+    // An edit that matches nothing changes nothing, and says so rather than guessing.
+    submit_awaiting(
+        &zellij,
+        r#"/plugin_edit {"name": "probe", "old_string": "never in the file", "new_string": "x"}"#,
+        "never in the file",
+    );
+    zellij.wait_until("an edit that matches nothing is refused", |grid_snapshot| {
+        grid_snapshot.contains("plugin_read it and copy")
+    });
+    clear(&zellij, "plugin_read it and copy");
+
+    // The backup is a copy, not a plugin: it is not offered as one to load or edit.
+    submit(&zellij, "/plugin_list");
+    zellij.wait_until("the plugin is listed", |grid_snapshot| {
+        grid_snapshot.contains("probe.lua")
+    });
+    assert!(
+        !zellij.snapshot().contains("probe.bak"),
+        "a backup must not be listed as a plugin"
+    );
+    clear(&zellij, "probe.lua");
+
     // And finally the whole point: the file becomes a running plugin. `plugin_reload` starts one
     // that is not already running, so this opens it in a pane of its own.
     submit(&zellij, r#"/plugin_reload {"name": "probe"}"#);
     zellij.wait_until("the plugin is loaded and renders", |grid_snapshot| {
-        grid_snapshot.contains("probe is running")
+        grid_snapshot.contains("probe is edited")
     });
 
     zellij.quit();
@@ -302,7 +343,7 @@ fn a_written_hook_is_bound_and_fired_by_a_reporting_agent_end_to_end() {
         true,
     )
     .expect("the hook is written");
-    assert_eq!(written, plugin_dir.join("agent-loop.lua"));
+    assert_eq!(written.path, plugin_dir.join("agent-loop.lua"));
 
     // 2. `zellij action set-hook <point> file:agent-loop.lua --write`, for every point the loop
     //    passes through. A bare `file:` name is looked up in the plugin folder.
