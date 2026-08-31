@@ -1061,7 +1061,7 @@ impl State {
         delta.push_str("result: ");
         delta.push_str(fallback);
         let delta = agents::tail(&delta, agents::SUMMARY_LINES, agents::SUMMARY_CHARS);
-        match run.summary.as_ref().filter(|_| run.summarized_revision > 0) {
+        match run.summary.as_ref() {
             Some(summary) => format!("previous summary: {}\n\n{delta}", summary.text),
             None => delta,
         }
@@ -4979,6 +4979,33 @@ mod tests {
             .expect("archived run");
         assert_eq!(completed.outcome, agents::RunOutcome::Completed);
         assert!(state.runs.is_empty());
+    }
+
+    #[test]
+    fn a_zero_entry_run_rolls_its_accepted_summary_forward() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        let (_, first) = feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
+        assert_eq!(first.len(), 1);
+        finish(
+            &mut state,
+            200,
+            &reply("The resumed turn completed.", false),
+            &context(7, 1),
+        );
+
+        let run = &state.runs[&7];
+        assert!(run.entries.is_empty());
+        assert_eq!(run.revision, 0);
+        assert_eq!(run.summarized_revision, 0);
+
+        let (_, second) = feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
+        let body: serde_json::Value = serde_json::from_slice(&second[0].1).expect("valid JSON");
+        let user = body["messages"][1]["content"].as_str().expect("a string");
+        assert!(user.contains("previous summary: The resumed turn completed."));
+        assert!(user.contains("result: I ran the test suite"));
     }
 
     #[test]

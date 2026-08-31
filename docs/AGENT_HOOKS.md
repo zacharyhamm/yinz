@@ -328,8 +328,9 @@ that is silent when it does not match cannot drift. A broadcast that names no ki
 The event payloads are pinned against Claude Code's own shipped schemas rather than
 against its documentation. `strings` on the binary finds them: they are Zod definitions,
 one per `hook_event_name`, and they are the authority on which fields are optional. Codex's
-are not pinned that way, which is why nothing is read out of a `request_user_input`'s
-arguments: its wait says "a question" rather than risking the wrong key read as the right one.
+are not pinned that way. The shared defensive reader still takes a `request_user_input`'s
+`questions[0].question`, or its `header` when no question is present; if that shape changes,
+the wait falls back to "a question" rather than mistaking another field for the prompt.
 
 Note: `zellij hocus hooks` is unrelated to the `hooks { … }` block in zellij's own
 config, which binds a plugin to a moment in the session's life
