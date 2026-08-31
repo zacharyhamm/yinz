@@ -353,10 +353,13 @@ plugins {
     //   reasoning_effort  how hard a reasoning model should think, one of "none",
     //                     "minimal", "low", "medium", "high", "xhigh", "max" (the
     //                     union of what OpenAI, DeepSeek and OpenRouter accept).
-    //                     Defaults to "medium" against OpenAI's own endpoint, and
-    //                     to unset - the field is simply omitted - everywhere else,
-    //                     since sending it to an endpoint that does not expect it
-    //                     is the problem this key exists to avoid.
+    //                     Defaults to "medium" only where all three conditions that
+    //                     make the field safe hold: OpenAI's own endpoint, api
+    //                     "responses", and a model that reasons (gpt-5, o1, o3, o4).
+    //                     Unset otherwise - the field is simply omitted - since
+    //                     sending it where it is not expected is the problem this
+    //                     key exists to avoid: gpt-4o-mini rejects it outright, and
+    //                     chat/completions rejects it beside a tool set.
     //
     //   reasoning_echo  "false" stops hocus handing a thinking model its own
     //                   `reasoning_content` back on the tool-calling turns of the

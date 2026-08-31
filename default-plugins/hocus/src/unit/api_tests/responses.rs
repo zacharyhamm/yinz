@@ -273,6 +273,49 @@ fn surfaces_a_transport_error_event() {
     assert_eq!(items, vec![SseItem::ApiError("upstream reset".into())]);
 }
 
+/// `response.incomplete` carries no error object at all - it says why it stopped
+/// under `incomplete_details`, and reading only `error` let a truncated answer
+/// through as if the model had simply finished.
+#[test]
+fn surfaces_an_incomplete_response() {
+    let mut parser = SseParser::default();
+    let items = parser.feed(
+        br#"data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}
+"#,
+    );
+    assert_eq!(items, vec![SseItem::ApiError("max_output_tokens".into())]);
+}
+
+/// A `type: "error"` frame spells its message as a bare top-level field, not as
+/// the `{"error": {...}}` object a non-2xx body uses.
+#[test]
+fn surfaces_a_top_level_error_message() {
+    let mut parser = SseParser::default();
+    let items = parser.feed(
+        br#"data: {"type":"error","code":"server_error","message":"upstream reset","param":null}
+"#,
+    );
+    assert_eq!(items, vec![SseItem::ApiError("upstream reset".into())]);
+}
+
+/// A terminal failure must never come back empty, whatever shape it arrives in:
+/// silence there reads as a clean stop and the user is shown nothing at all.
+#[test]
+fn a_failure_with_nothing_readable_still_says_something() {
+    let mut parser = SseParser::default();
+    for line in [
+        r#"data: {"type":"response.failed","response":{}}"#,
+        r#"data: {"type":"response.incomplete","response":{"incomplete_details":{}}}"#,
+        r#"data: {"type":"error","message":"   "}"#,
+    ] {
+        let items = parser.feed(format!("{line}\n").as_bytes());
+        assert!(
+            matches!(items.as_slice(), [SseItem::ApiError(message)] if !message.is_empty()),
+            "{line} produced {items:?}"
+        );
+    }
+}
+
 /// The lifecycle bookends carry nothing hocus can show. They must produce
 /// nothing at all - and, crucially, must not fall through to the
 /// chat/completions arm, whose fields all default and so match any object.
@@ -303,6 +346,121 @@ fn still_parses_a_chat_frame_alongside_a_responses_one() {
 "#,
     ));
     assert_eq!(deltas(items), vec!["Hello", " there"]);
+}
+
+// -- reasoning items ----------------------------------------------------
+
+fn sealed(id: &str, encrypted_content: &str, before: usize) -> ReasoningItem {
+    ReasoningItem {
+        id: id.to_owned(),
+        encrypted_content: encrypted_content.to_owned(),
+        before,
+    }
+}
+
+/// The sealed content is asked for only when there is reasoning to seal, and
+/// only when the echo is on - it is worth nothing to a model that produces none,
+/// and worth nothing at all if it is never sent back.
+#[test]
+fn include_is_sent_only_with_reasoning_and_only_when_echoed() {
+    let mut cfg = responses_config();
+    assert!(responses_body(&cfg, &[Message::user("hi")])
+        .get("include")
+        .is_none());
+
+    cfg.reasoning_effort = Some("medium".into());
+    assert_eq!(
+        responses_body(&cfg, &[Message::user("hi")])["include"],
+        json!(["reasoning.encrypted_content"])
+    );
+
+    cfg.reasoning_echo = false;
+    assert!(responses_body(&cfg, &[Message::user("hi")])
+        .get("include")
+        .is_none());
+}
+
+/// A reasoning item completes before the call it produced is announced, so the
+/// number of calls seen so far is its position - which is what the request needs
+/// to put it back where the model emitted it.
+#[test]
+fn captures_sealed_reasoning_items_in_position() {
+    let mut parser = SseParser::default();
+    let mut accumulator = ToolCallAccumulator::default();
+    for line in [
+        r#"data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","encrypted_content":"sealed-1"}}"#,
+        r#"data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"a","name":"close_pane"}}"#,
+        r#"data: {"type":"response.output_item.done","output_index":2,"item":{"type":"reasoning","id":"rs_2","encrypted_content":"sealed-2"}}"#,
+        r#"data: {"type":"response.output_item.added","output_index":3,"item":{"type":"function_call","call_id":"b","name":"close_tab"}}"#,
+    ] {
+        for item in parser.feed(format!("{line}\n").as_bytes()) {
+            accumulator.feed(&item);
+        }
+    }
+
+    assert_eq!(
+        accumulator.take_reasoning_items(),
+        vec![sealed("rs_1", "sealed-1", 0), sealed("rs_2", "sealed-2", 1)]
+    );
+    // And the items are not also mistaken for calls.
+    assert_eq!(accumulator.take().len(), 2);
+}
+
+/// An item with no sealed content is not one that can be handed back - echoing a
+/// half-formed one would break the pairing rule rather than satisfy it.
+#[test]
+fn ignores_a_reasoning_item_with_nothing_sealed() {
+    let mut parser = SseParser::default();
+    let mut accumulator = ToolCallAccumulator::default();
+    for line in [
+        r#"data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1"}}"#,
+        r#"data: {"type":"response.output_item.done","output_index":1,"item":{"type":"reasoning","id":"rs_2","encrypted_content":""}}"#,
+        r#"data: {"type":"response.output_item.done","output_index":2,"item":{"type":"message"}}"#,
+    ] {
+        for item in parser.feed(format!("{line}\n").as_bytes()) {
+            accumulator.feed(&item);
+        }
+    }
+    assert!(accumulator.take_reasoning_items().is_empty());
+}
+
+/// The correctness requirement: each item back in the position it came in. The
+/// API rejects a reasoning item that is not followed by the item it produced.
+#[test]
+fn request_body_interleaves_reasoning_items_with_the_calls() {
+    let mut cfg = responses_config();
+    cfg.reasoning_effort = Some("medium".into());
+    let mut asked = Message::tool_calls(vec![
+        call("call_1", "close_pane", "{}"),
+        call("call_2", "close_tab", "{}"),
+    ]);
+    asked.reasoning_items = vec![sealed("rs_1", "sealed-1", 0), sealed("rs_2", "sealed-2", 1)];
+    let body = responses_body(&cfg, &[asked.clone()]);
+    assert_eq!(
+        body["input"],
+        json!([
+            {"type": "reasoning", "id": "rs_1", "encrypted_content": "sealed-1", "summary": []},
+            {"type": "function_call", "call_id": "call_1", "name": "close_pane", "arguments": "{}"},
+            {"type": "reasoning", "id": "rs_2", "encrypted_content": "sealed-2", "summary": []},
+            {"type": "function_call", "call_id": "call_2", "name": "close_tab", "arguments": "{}"},
+        ])
+    );
+
+    // The ordinary shape: one item, then everything it decided on.
+    let mut one = asked.clone();
+    one.reasoning_items = vec![sealed("rs_1", "sealed-1", 0)];
+    let kinds: Vec<_> = responses_body(&cfg, &[one])["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["type"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(kinds, ["reasoning", "function_call", "function_call"]);
+
+    // Same switch as the other transport turns the whole thing off.
+    cfg.reasoning_echo = false;
+    let body = responses_body(&cfg, &[asked]);
+    assert_eq!(body["input"].as_array().map(Vec::len), Some(2));
 }
 
 // -- config -------------------------------------------------------------
@@ -346,17 +504,49 @@ fn reasoning_effort_accepts_the_openai_values() {
 /// unconfigured hocus should reach for the one transport that accepts both,
 /// not silently drop the setting.
 #[test]
-fn openai_base_url_defaults_to_responses_and_medium_reasoning() {
+fn openai_base_url_defaults_to_responses() {
     let env = map(&[("OPENAI_API_KEY", "sk-test")]);
     let cfg = Config::resolve(&BTreeMap::new(), &env).unwrap();
     assert_eq!(cfg.api, Api::Responses);
     assert_eq!(cfg.url, "https://api.openai.com/v1/responses");
-    assert_eq!(cfg.reasoning_effort.as_deref(), Some("medium"));
+}
 
-    // An explicit reasoning_effort still wins over the OpenAI default
+/// The effort default needs all three of OpenAI, Responses and a model that
+/// reasons. The built-in `DEFAULT_MODEL` is `gpt-4o-mini`, which rejects a
+/// `reasoning` object outright, so an untouched configuration must send none.
+#[test]
+fn the_effort_default_needs_a_reasoning_model_on_responses() {
+    let env = map(&[("OPENAI_API_KEY", "sk-test")]);
+
+    let untouched = Config::resolve(&BTreeMap::new(), &env).unwrap();
+    assert_eq!(untouched.model, DEFAULT_MODEL);
+    assert_eq!(
+        untouched.reasoning_effort, None,
+        "gpt-4o-mini does not reason"
+    );
+
+    let reasoning = Config::resolve(&map(&[("model", "gpt-5")]), &env).unwrap();
+    assert_eq!(reasoning.reasoning_effort.as_deref(), Some("medium"));
+
+    // chat/completions is the pairing OpenAI's reasoning models 400 on, which is
+    // the whole reason the Responses transport exists here.
+    let chat = Config::resolve(&map(&[("model", "gpt-5"), ("api", "chat")]), &env).unwrap();
+    assert_eq!(chat.reasoning_effort, None);
+
+    // An explicit value always wins, in every combination
     // (`api_key_selects_the_endpoint` covers the same for `api`).
-    let cfg = Config::resolve(&map(&[("reasoning_effort", "low")]), &env).unwrap();
-    assert_eq!(cfg.reasoning_effort.as_deref(), Some("low"));
+    for kdl in [
+        vec![("reasoning_effort", "low")],
+        vec![("reasoning_effort", "low"), ("model", "gpt-5")],
+        vec![
+            ("reasoning_effort", "low"),
+            ("model", "gpt-5"),
+            ("api", "chat"),
+        ],
+    ] {
+        let cfg = Config::resolve(&map(&kdl), &env).unwrap();
+        assert_eq!(cfg.reasoning_effort.as_deref(), Some("low"), "{kdl:?}");
+    }
 }
 
 /// Everyone else - a compatible proxy, a local model, DeepSeek, OpenRouter -

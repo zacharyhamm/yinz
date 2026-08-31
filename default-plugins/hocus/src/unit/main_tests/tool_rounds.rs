@@ -23,6 +23,69 @@ fn the_last_round_records_its_results_and_stops() {
         .contains("type continue"));
 }
 
+/// The Responses equivalent of the DeepSeek bug below: a reasoning model's
+/// sealed thinking arrives on its own event, and if it does not survive onto the
+/// tool-call message the model re-derives it every round of the loop.
+#[test]
+fn sealed_reasoning_survives_onto_the_tool_call_message_and_the_wire() {
+    let mut state = ready_state();
+    state.on_chunk(
+        "hocus-1",
+        br#"data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","encrypted_content":"sealed"}}
+"#,
+        false,
+        None,
+    );
+    state.on_chunk(
+        "hocus-1",
+        br#"data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"call_1","name":"list_session"}}
+"#,
+        false,
+        None,
+    );
+    state.on_chunk(
+        "hocus-1",
+        br#"data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"{}"}
+"#,
+        false,
+        None,
+    );
+    state.on_chunk("hocus-1", b"", true, None);
+
+    let asked = state
+        .messages
+        .iter()
+        .find(|message| !message.tool_calls.is_empty())
+        .expect("the turn asked for a tool");
+    assert_eq!(
+        asked.reasoning_items,
+        vec![ReasoningItem {
+            id: "rs_1".into(),
+            encrypted_content: "sealed".into(),
+            before: 0,
+        }]
+    );
+
+    let mut cfg = state.cfg.clone().expect("configured");
+    // The default model does not reason, so nothing would ask for the seal.
+    cfg.reasoning_effort = Some("medium".into());
+    let body = String::from_utf8(api::request_body_with_project(
+        &cfg,
+        &state.messages,
+        None,
+        false,
+    ))
+    .unwrap();
+    assert!(
+        body.contains(r#""include":["reasoning.encrypted_content"]"#),
+        "the next round has to ask for the seal again: {body}"
+    );
+    assert!(
+        body.contains(r#""type":"reasoning","id":"rs_1","encrypted_content":"sealed""#),
+        "and hand back the one it already has: {body}"
+    );
+}
+
 /// The whole of the DeepSeek bug, end to end: a thinking model streams its
 /// chain-of-thought and then the tool call it decided on. The placeholder that
 /// caught the thinking is thrown away when the tool-call message replaces it,
@@ -31,6 +94,13 @@ fn the_last_round_records_its_results_and_stops() {
 #[test]
 fn thinking_that_preceded_a_tool_call_survives_onto_the_message_and_the_wire() {
     let mut state = ready_state();
+    // Pinned to chat/completions: `reasoning_content` is that transport's
+    // spelling of thinking, and an unconfigured hocus now speaks Responses,
+    // which hands the same thinking back as an opaque item instead.
+    state.cfg = Config::resolve(
+        &BTreeMap::from([("api".to_owned(), "chat".to_owned())]),
+        &BTreeMap::from([("OPENAI_API_KEY".to_owned(), "sk-test".to_owned())]),
+    );
     let thinking = br#"data: {"choices":[{"delta":{"reasoning_content":"htop it is","content":"I'll inspect it."}}]}
 "#;
     state.on_chunk("hocus-1", thinking, false, None);

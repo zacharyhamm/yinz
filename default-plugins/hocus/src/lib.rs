@@ -27,8 +27,8 @@ mod wand;
 mod worker;
 
 pub use message::{
-    Ask, Job, Message, Picker, PickerKind, PickerRow, Plan, Reasoning, ReasoningKey, Role, RowKind,
-    ScheduledRun, Status, StreamState,
+    Ask, Job, Message, Picker, PickerKind, PickerRow, Plan, Reasoning, ReasoningItem, ReasoningKey,
+    Role, RowKind, ScheduledRun, Status, StreamState,
 };
 use worker::post_log;
 

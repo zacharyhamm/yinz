@@ -371,6 +371,10 @@ pub struct WireTermios {
 }
 
 impl WireTermios {
+    // `tcflag_t` is `c_uint` on Linux and `c_ulong` on macOS, so the widening
+    // casts onto the `u64` wire fields below are no-ops on one and required on
+    // the other. Clippy only ever sees one platform at a time.
+    #[allow(clippy::unnecessary_cast)]
     pub fn from_termios(termios: &nix::sys::termios::Termios) -> Self {
         // `From<Termios> for libc::termios` hands back the inner struct, which is
         // where the baud rate lives on platforms that keep it out of `c_cflag`.

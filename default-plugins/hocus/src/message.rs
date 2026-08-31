@@ -57,6 +57,26 @@ impl Reasoning {
     }
 }
 
+/// One opaque reasoning item from OpenAI's Responses API, kept so it can be handed
+/// straight back on the next turn of a tool loop.
+///
+/// Nothing here is readable: `encrypted_content` is the model's chain-of-thought sealed
+/// for the endpoint that produced it, asked for by `include:
+/// ["reasoning.encrypted_content"]` because `store: false` leaves nothing server-side to
+/// refer to by id. The visible summary is the separate [`Reasoning`] field.
+///
+/// `before` is how many of the turn's function calls had already been announced when this
+/// item arrived, which is what puts it back in the position it came in. The API rejects
+/// the request if a reasoning item is not followed by the item it produced, so the
+/// interleaving is a correctness requirement rather than tidiness.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ReasoningItem {
+    pub id: String,
+    pub encrypted_content: String,
+    #[serde(default)]
+    pub before: usize,
+}
+
 /// Serialized as-is into the archive (see `history`). The optional fields
 /// carry `serde(default)` so a future field can't make an existing file
 /// unreadable, and are skipped when empty so an archived chat stays greppable.
@@ -77,6 +97,13 @@ pub struct Message {
     /// keeps the field off the wire for OpenAI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<Reasoning>,
+    /// Assistant only, and only on the Responses transport: the opaque reasoning
+    /// items this turn produced, echoed back verbatim before the calls they led
+    /// to so a reasoning model keeps its thinking across a tool loop. Empty for
+    /// every endpoint that does not produce them, which keeps the request to
+    /// everyone else unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_items: Vec<ReasoningItem>,
     /// `Role::Tool` only: which call this message answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,

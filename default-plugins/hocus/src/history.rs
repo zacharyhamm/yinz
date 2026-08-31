@@ -274,6 +274,11 @@ pub fn load(backend: &impl Backend, id: u64) -> Option<Vec<Message>> {
                         )
                     }),
                     tool_call_id: text_at(&rows, row, "tool_call_id"),
+                    // Not archived. Sealed reasoning is worth having only inside
+                    // the tool loop it was produced in, and it is the one field on
+                    // a message that is deliberately unreadable - storing it would
+                    // put an opaque blob in a chat that is otherwise greppable.
+                    reasoning_items: Vec::new(),
                     full_output: matches!(
                         rows.get(row, "full_output"),
                         Some(DataValue::Bool(true))
