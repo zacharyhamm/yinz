@@ -25,7 +25,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
     path::PathBuf,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use wasmi::Engine;
 
@@ -421,12 +421,18 @@ pub(crate) fn plugin_thread_main(
             Some(next) => next,
             None => bus.recv().expect("failed to receive event on channel"),
         };
+        // The completion handles of reloads collapsed into this one. Held until the end of the
+        // iteration: dropping one is what answers the CLI waiting on it, and it must not be
+        // answered before the reload it was folded into has run.
+        let mut _collapsed_reload_completions: Vec<NotificationEnd> = vec![];
         let event = match event {
             PluginInstruction::Update(updates) => {
                 PluginInstruction::Update(drain_updates(&bus, updates, &mut queued))
             },
             reload @ (PluginInstruction::Reload(..) | PluginInstruction::ReloadPluginByUrl(..)) => {
-                drain_reloads(&bus, reload, &mut queued)
+                let (reload, completions) = drain_reloads(&bus, reload, &mut queued);
+                _collapsed_reload_completions = completions;
+                reload
             },
             other => other,
         };
@@ -1498,17 +1504,39 @@ pub(crate) fn plugin_thread_main(
 
     // first drop our sender, then call recv.
     // once all senders are dropped or the timeout is reached, recv will return an error, that we ignore
-
+    //
+    // One deadline, `EXIT_TIMEOUT` from now, for this wait and the cleanup after it. The thread
+    // has `PLUGIN_THREAD_EXIT_TIMEOUT` in all before its join is abandoned, and a separate
+    // budget for each step used to add up to exactly that: the join gave up on a thread about
+    // to exit.
+    //
+    // An in-flight job is what holds a `shutdown_send` clone. It gets `EXIT_GRACE` to finish
+    // on its own — a job that is merely in progress when the exit arrives (the plugin whose
+    // key sent the quit, say) has its work to complete, and must not be trapped mid-way — and
+    // only one that has not finished by then is a runaway, which is cancelled and given the
+    // same again to reach its next check of the token. Either way at least `EXIT_GRACE` of the
+    // budget is left for `cleanup`.
+    let deadline = Instant::now() + EXIT_TIMEOUT;
     drop(shutdown_send);
     let runtime = crate::global_async_runtime::get_tokio_runtime();
     runtime.block_on(async {
-        let result = tokio::time::timeout(EXIT_TIMEOUT, shutdown_receive.recv()).await;
-        if let Err(err) = result {
+        if tokio::time::timeout(EXIT_GRACE, shutdown_receive.recv())
+            .await
+            .is_ok()
+        {
+            return;
+        }
+        log::warn!(
+            "plugin jobs still running {EXIT_GRACE:?} after the exit was requested; cancelling \
+             them"
+        );
+        wasm_bridge.cancel_all_plugins();
+        if let Err(err) = tokio::time::timeout(EXIT_GRACE, shutdown_receive.recv()).await {
             log::error!("timeout waiting for plugin tasks to finish: {}", err);
         }
     });
 
-    wasm_bridge.cleanup();
+    wasm_bridge.cleanup(deadline);
 
     fs::remove_dir_all(&plugin_global_data_dir)
         .or_else(|err| {
@@ -2019,7 +2047,14 @@ pub(crate) fn add_suppressed_plugin_pane(
     )
 }
 
+/// The plugin thread's whole budget for exiting: the wait for in-flight jobs and the unloads
+/// after it. Must leave room inside `PLUGIN_THREAD_EXIT_TIMEOUT`, which is how long the server
+/// waits for the thread before leaving it behind.
 const EXIT_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long an in-flight job gets to finish on its own at exit before it is cancelled; the
+/// same again is then allowed for the cancel to take. Three of these fit in `EXIT_TIMEOUT`,
+/// the third being the unloads.
+const EXIT_GRACE: Duration = Duration::from_secs(1);
 
 /// How many queued `Update` messages one pass merges before letting the other instruction
 /// kinds through. A wheel flood is a few hundred messages at most; anything past that is
@@ -2058,9 +2093,9 @@ fn drain_updates(
     coalesce_hovers(updates)
 }
 
-/// Collapse the reloads of the same plugin waiting behind `first` into it, the way
-/// `drain_updates` merges `Update`s: adjacent only, same variant only, and the first message of
-/// another kind stops the drain and is left in `queued`.
+/// Collapse the identical reloads waiting behind `first` into it, the way `drain_updates`
+/// merges `Update`s: adjacent only, and the first message that is not the same reload stops the
+/// drain and is left in `queued`.
 ///
 /// A reload is a full unload and load, on the plugin thread and under the global plugin map
 /// lock, so it is the most expensive instruction there is — and a plugin can ask for one with a
@@ -2068,23 +2103,31 @@ fn drain_updates(
 /// this bus with reloads faster than one can run, and every other plugin's events wait behind
 /// them: the whole plugin subsystem reads as frozen. `pending_plugin_reloads` already folds
 /// reloads that arrive *while* one is in flight into a single follow-up; this closes the gap
-/// before that, where they queue up unseen. The extras' completion handles are dropped, which is
-/// what completes them for the CLI that may be waiting.
+/// before that, where they queue up unseen.
+///
+/// "Identical" is every field but the completion handle: a `Reload` also says where the pane
+/// goes if the plugin turns out not to be running, and two that differ there are two requests.
+/// The collapsed reloads' completion handles come back to the caller, which holds them until the
+/// surviving reload has run — dropping one is what answers the CLI waiting on it, and answering
+/// before the reload ran would report a success that had not happened yet.
 fn drain_reloads(
     bus: &Bus<PluginInstruction>,
     first: PluginInstruction,
     queued: &mut Option<(PluginInstruction, ErrorContext)>,
-) -> PluginInstruction {
-    let Some(target) = reload_target(&first) else {
-        return first;
-    };
+) -> (PluginInstruction, Vec<NotificationEnd>) {
+    let mut completions = vec![];
+    if reload_target(&first).is_none() {
+        return (first, completions);
+    }
     let mut collapsed = 0;
     while collapsed < MAX_UPDATE_DRAIN {
         match bus.try_recv() {
             Some((next, ctx)) => {
-                let same_kind = std::mem::discriminant(&next) == std::mem::discriminant(&first);
-                if same_kind && reload_target(&next) == Some(target) {
+                if same_reload(&first, &next) {
                     collapsed += 1;
+                    if let PluginInstruction::Reload(_, _, _, _, _, Some(completion)) = next {
+                        completions.push(completion);
+                    }
                 } else {
                     *queued = Some((next, ctx));
                     break;
@@ -2096,10 +2139,12 @@ fn drain_reloads(
     if collapsed > 0 {
         log::warn!(
             "collapsed {collapsed} queued reload(s) of {} into one",
-            target.location_string()
+            reload_target(&first)
+                .map(|target| target.location_string())
+                .unwrap_or_default()
         );
     }
-    first
+    (first, completions)
 }
 
 /// The plugin a reload instruction names, or `None` for any other instruction.
@@ -2108,6 +2153,29 @@ fn reload_target(instruction: &PluginInstruction) -> Option<&RunPluginOrAlias> {
         PluginInstruction::Reload(_, _, run_plugin, _, _, _)
         | PluginInstruction::ReloadPluginByUrl(run_plugin) => Some(run_plugin),
         _ => None,
+    }
+}
+
+/// Whether `b` asks for exactly what `a` does — same kind of reload, same plugin, and for a
+/// pane reload the same placement — so that running `a` satisfies `b`. Completion handles
+/// are not compared: they are who is waiting, not what for.
+fn same_reload(a: &PluginInstruction, b: &PluginInstruction) -> bool {
+    match (a, b) {
+        (
+            PluginInstruction::Reload(float_a, title_a, run_a, tab_a, size_a, _),
+            PluginInstruction::Reload(float_b, title_b, run_b, tab_b, size_b, _),
+        ) => {
+            float_a == float_b
+                && title_a == title_b
+                && run_a == run_b
+                && tab_a == tab_b
+                && size_a == size_b
+        },
+        (
+            PluginInstruction::ReloadPluginByUrl(run_a),
+            PluginInstruction::ReloadPluginByUrl(run_b),
+        ) => run_a == run_b,
+        _ => false,
     }
 }
 

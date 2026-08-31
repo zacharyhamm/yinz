@@ -762,7 +762,10 @@ pub enum ScreenInstruction {
     ToggleGroupMarking(ClientId, Option<NotificationEnd>),
     SetMouseSelectionSupport(PaneId, bool),
     InterceptKeyPresses(PluginId, ClientId),
-    ClearKeyPressesIntercepts(ClientId),
+    /// Drop `client_id`'s intercept if it belongs to this plugin. Plugin-scoped because the
+    /// unload path sends it for every plugin, and one client has at most one intercepting
+    /// plugin at a time: an unscoped clear would drop another plugin's.
+    ClearKeyPressesIntercepts(PluginId, ClientId),
     ReplacePaneWithExistingPane(PaneId, PaneId, bool, Option<NotificationEnd>), // bool -> suppress_replaced_pane
     AddWatcherClient(ClientId, Size),
     RemoveWatcherClient(ClientId),

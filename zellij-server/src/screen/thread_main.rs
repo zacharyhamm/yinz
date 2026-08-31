@@ -4620,8 +4620,10 @@ pub(crate) fn screen_thread_main(
             ScreenInstruction::InterceptKeyPresses(plugin_id, client_id) => {
                 keybind_intercepts.insert(client_id, plugin_id);
             },
-            ScreenInstruction::ClearKeyPressesIntercepts(client_id) => {
-                keybind_intercepts.remove(&client_id);
+            ScreenInstruction::ClearKeyPressesIntercepts(plugin_id, client_id) => {
+                if keybind_intercepts.get(&client_id) == Some(&plugin_id) {
+                    keybind_intercepts.remove(&client_id);
+                }
             },
             ScreenInstruction::ReplacePaneWithExistingPane(
                 old_pane_id,

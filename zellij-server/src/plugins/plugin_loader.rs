@@ -81,6 +81,7 @@ fn plugin_cache_key(
 fn install_cancel_hook(store: &mut Store<PluginEnv>) {
     store.call_hook(|plugin_env: &mut PluginEnv, _call| {
         if plugin_env.cancel.load(Ordering::Relaxed) {
+            plugin_env.cancel_tripped.store(true, Ordering::Relaxed);
             Err(wasmi::Error::new(
                 crate::plugins::plugin_map::CANCELLED_BY_HOST,
             ))
@@ -353,6 +354,7 @@ impl<'a> PluginLoader<'a> {
             response_sink: ResponseSink::WasiStdin,
             plugin_id: self.plugin_id,
             cancel: self.cancel.clone(),
+            cancel_tripped: Arc::new(AtomicBool::new(false)),
             client_id: self.client_id,
             owner_client_id: self.client_id,
             plugin: self.plugin_config.clone(), // TODO: change field name in PluginEnv to plugin_config
@@ -519,6 +521,7 @@ impl<'a> PluginLoader<'a> {
             response_sink: ResponseSink::WasiStdin,
             plugin_id: self.plugin_id,
             cancel: self.cancel.clone(),
+            cancel_tripped: Arc::new(AtomicBool::new(false)),
             client_id: self.client_id,
             owner_client_id: self.client_id,
             plugin: plugin_config,

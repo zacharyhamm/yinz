@@ -73,13 +73,20 @@ pub fn load_lua_plugin(source: &str, chunk_name: &str, env: PluginEnv) -> Result
         .map_err(|e| anyhow!("failed to create a Lua interpreter: {}", e))?;
 
     // The Lua half of `PluginEnv::cancel`: an instruction-count hook, so a loop that never calls
-    // the host is stopped too. The hook owns its own handle on the flag because `PluginEnv` is
+    // the host is stopped too. The hook owns its own handles on the flags because `PluginEnv` is
     // borrowed by `Lua::scope` for the length of every entrypoint call.
+    //
+    // A *global* hook, not `set_hook`: a coroutine inherits the C hook of the thread that
+    // created it, but mlua's per-thread hook looks its callback up by thread and, finding none
+    // for the coroutine, uninstalls itself — so a loop inside `coroutine.wrap` would run
+    // unhooked. The global hook has one callback for every thread of this interpreter.
     let cancel = env.cancel.clone();
-    lua.set_hook(
+    let cancel_tripped = env.cancel_tripped.clone();
+    lua.set_global_hook(
         mlua::HookTriggers::new().every_nth_instruction(CANCEL_CHECK_EVERY_N_INSTRUCTIONS),
         move |_lua, _debug| {
             if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                cancel_tripped.store(true, std::sync::atomic::Ordering::Relaxed);
                 Err(mlua::Error::runtime(
                     crate::plugins::plugin_map::CANCELLED_BY_HOST,
                 ))
@@ -98,6 +105,17 @@ pub fn load_lua_plugin(source: &str, chunk_name: &str, env: PluginEnv) -> Result
     }
 
     restrict_table(&lua, &globals, "os", ALLOWED_OS)?;
+
+    // The prelude wraps `pcall`, `xpcall` and `coroutine.resume` to re-raise this error rather
+    // than return it: the hook above is an ordinary Lua error, and a loop around a `pcall`
+    // would otherwise swallow the cancel and keep going. Handed over as a global the prelude
+    // takes and nils, so the message is spelled once, in Rust.
+    globals
+        .set(
+            "__zellij_cancelled_by_host",
+            crate::plugins::plugin_map::CANCELLED_BY_HOST,
+        )
+        .map_err(|e| anyhow!("failed to hand the cancel message to the prelude: {}", e))?;
 
     let zellij: Table = lua
         .load(PRELUDE)

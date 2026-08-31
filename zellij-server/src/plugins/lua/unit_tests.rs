@@ -55,6 +55,7 @@ fn test_env() -> PluginEnv {
         subscriptions: Arc::new(Mutex::new(HashSet::new())),
         keybinds: Default::default(),
         intercepting_key_presses: false,
+        cancel_tripped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         stdin_pipe: Arc::new(Mutex::new(VecDeque::new())),
         stdout_pipe: Arc::new(Mutex::new(VecDeque::new())),
         store_limits: PluginResourceLimits::new(1),
@@ -3604,20 +3605,22 @@ fn the_workflow_example_loads_and_runs_on_r() {
     );
 }
 
-/// The cancel token stops a loop that never calls the host: the instruction-count hook sees the
-/// flag and raises, and the entrypoint comes back as an error naming the cause.
-#[test]
-fn a_cancelled_plugin_stops_mid_loop() {
-    let source = r#"
-        local M = {}
+/// Load a plugin whose `update` is `body`, set its cancel token while `update` runs, and
+/// return the error `update` came back with — the test fails if it comes back at all.
+fn cancel_mid_update(body: &str) -> anyhow::Error {
+    let source = format!(
+        r#"
+        local M = {{}}
         function M.update(event)
-          while true do end
+          {body}
         end
         return M
-    "#;
+    "#
+    );
     let env = test_env();
     let cancel = env.cancel.clone();
-    let mut plugin = load_lua_plugin(source, "test.lua", env).unwrap();
+    let tripped = env.cancel_tripped.clone();
+    let mut plugin = load_lua_plugin(&source, "test.lua", env).unwrap();
     // Set from another thread while `update` is inside its loop. If the flag lands before the
     // loop starts the hook fires on the loop's first instructions instead, so the order does
     // not matter for the outcome - the delay only makes the interesting case the usual one.
@@ -3628,9 +3631,81 @@ fn a_cancelled_plugin_stops_mid_loop() {
     let error = plugin
         .update(&Event::InputReceived)
         .expect_err("the loop was stopped");
+    setter.join().unwrap();
+    assert!(
+        tripped.load(std::sync::atomic::Ordering::Relaxed),
+        "the hook records that it stopped the guest"
+    );
+    error
+}
+
+/// The cancel token stops a loop that never calls the host: the instruction-count hook sees the
+/// flag and raises, and the entrypoint comes back as an error naming the cause.
+#[test]
+fn a_cancelled_plugin_stops_mid_loop() {
+    let error = cancel_mid_update("while true do end");
     assert!(
         format!("{error:?}").contains(crate::plugins::plugin_map::CANCELLED_BY_HOST),
         "{error:?}"
     );
-    setter.join().unwrap();
+}
+
+/// A coroutine inherits the interpreter's hook. (With a per-thread hook it would not: mlua
+/// looks the callback up by thread, finds none for the coroutine, and uninstalls the hook
+/// there, so a loop inside `coroutine.wrap` ran unhooked.)
+#[test]
+fn a_cancelled_plugin_stops_inside_a_coroutine() {
+    let error = cancel_mid_update(
+        r#"
+        local step = coroutine.wrap(function()
+          while true do end
+        end)
+        step()
+        "#,
+    );
+    assert!(
+        format!("{error:?}").contains(crate::plugins::plugin_map::CANCELLED_BY_HOST),
+        "{error:?}"
+    );
+}
+
+/// The cancel is an ordinary Lua error, so `pcall` would catch it and a loop around a `pcall`
+/// would keep going — the prelude's wrappers re-raise it instead. `xpcall` and
+/// `coroutine.resume`, which also report errors as values, are wrapped the same way.
+#[test]
+fn a_cancelled_plugin_stops_inside_a_pcall_loop() {
+    for body in [
+        "while true do pcall(function() while true do end end) end",
+        "while true do xpcall(function() while true do end end, function(e) return e end) end",
+        "while true do coroutine.resume(coroutine.create(function() while true do end end)) end",
+    ] {
+        let error = cancel_mid_update(body);
+        assert!(
+            format!("{error:?}").contains(crate::plugins::plugin_map::CANCELLED_BY_HOST),
+            "{body}: {error:?}"
+        );
+    }
+}
+
+/// The wrappers change nothing for any other error: `pcall` and friends report it as a value,
+/// as they always did.
+#[test]
+fn pcall_still_reports_ordinary_errors_as_values() {
+    let source = r#"
+        local M = {}
+        function M.update(event)
+          local ok, err = pcall(error, "boom")
+          assert(not ok and string.find(err, "boom"), "pcall changed: " .. tostring(err))
+          local ok, err = xpcall(error, function(e) return "handled " .. e end, "boom")
+          assert(not ok and err == "handled boom", "xpcall changed: " .. tostring(err))
+          local ok, err = coroutine.resume(coroutine.create(function() error("boom") end))
+          assert(not ok and string.find(err, "boom"), "resume changed: " .. tostring(err))
+          local ok, a, b = pcall(function() return 1, 2 end)
+          assert(ok and a == 1 and b == 2, "pcall lost results")
+          return true
+        end
+        return M
+    "#;
+    let mut plugin = load_lua_plugin(source, "test.lua", test_env()).unwrap();
+    assert!(plugin.update(&Event::InputReceived).unwrap());
 }

@@ -7,6 +7,36 @@
 
 local zellij = {}
 
+-- The host stops a cancelled plugin by raising this error from an instruction-count hook. It is
+-- an ordinary Lua error, so `pcall` would catch it and a loop around a `pcall` would run on
+-- forever. These wrappers hand every other error back exactly as the real functions do, and
+-- re-raise this one, so it unwinds all the way out of the entrypoint however deeply it was
+-- caught. `coroutine.wrap` already propagates; only `resume` reports errors as values.
+do
+  local cancelled_by_host = __zellij_cancelled_by_host
+  __zellij_cancelled_by_host = nil
+  local pack, unpack = table.pack, table.unpack
+  local raw_pcall, raw_xpcall, raw_resume = pcall, xpcall, coroutine.resume
+
+  local function is_cancel(err)
+    return err ~= nil and string.find(tostring(err), cancelled_by_host, 1, true) ~= nil
+  end
+
+  local function rethrowing(raw)
+    return function(...)
+      local results = pack(raw(...))
+      if not results[1] and is_cancel(results[2]) then
+        error(results[2], 0)
+      end
+      return unpack(results, 1, results.n)
+    end
+  end
+
+  pcall = rethrowing(raw_pcall)
+  xpcall = rethrowing(raw_xpcall)
+  coroutine.resume = rethrowing(raw_resume)
+end
+
 --- The host installs `zellij.__dispatch` for the duration of each call into the plugin and
 --- removes it afterwards, so it is looked up per call rather than captured once here.
 ---

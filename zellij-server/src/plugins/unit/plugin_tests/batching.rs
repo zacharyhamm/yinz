@@ -627,7 +627,7 @@ pub fn adjacent_reloads_of_one_plugin_collapse_to_one() {
     ]);
     let mut queued = None;
 
-    let taken = drain_reloads(&bus, reload_of("file:/plugins/keys.lua"), &mut queued);
+    let (taken, _) = drain_reloads(&bus, reload_of("file:/plugins/keys.lua"), &mut queued);
 
     assert!(matches!(taken, PluginInstruction::Reload(..)));
     assert!(
@@ -666,6 +666,84 @@ pub fn a_reload_of_another_plugin_or_kind_stops_the_drain() {
     assert!(
         matches!(queued, Some((PluginInstruction::ReloadPluginByUrl(_), _))),
         "a by-url reload is not the same instruction as a pane reload"
+    );
+}
+
+/// A `Reload` also says where the pane goes if the plugin turns out not to be running, so two
+/// that name the same plugin but differ there are two requests: the second stops the drain.
+#[test]
+pub fn a_reload_of_the_same_plugin_with_other_pane_arguments_stops_the_drain() {
+    let differing = [
+        PluginInstruction::Reload(
+            Some(true), // floating rather than tiled
+            None,
+            RunPluginOrAlias::from_url("file:/plugins/keys.lua", &None, None, None).unwrap(),
+            1,
+            Size::default(),
+            None,
+        ),
+        PluginInstruction::Reload(
+            Some(false),
+            Some("titled".to_owned()),
+            RunPluginOrAlias::from_url("file:/plugins/keys.lua", &None, None, None).unwrap(),
+            1,
+            Size::default(),
+            None,
+        ),
+        PluginInstruction::Reload(
+            Some(false),
+            None,
+            RunPluginOrAlias::from_url("file:/plugins/keys.lua", &None, None, None).unwrap(),
+            2, // another tab
+            Size::default(),
+            None,
+        ),
+    ];
+    for other in differing {
+        let bus = bus_with(vec![other]);
+        let mut queued = None;
+        drain_reloads(&bus, reload_of("file:/plugins/keys.lua"), &mut queued);
+        assert!(
+            matches!(queued, Some((PluginInstruction::Reload(..), _))),
+            "a reload with other pane arguments is left for its own turn, got {queued:?}"
+        );
+    }
+}
+
+/// The CLIs waiting on collapsed reloads are answered when their completion handle is dropped,
+/// so the handles come back to the caller rather than being dropped in the drain — otherwise
+/// they would report success before the reload they were folded into had run.
+#[test]
+pub fn collapsed_reloads_hand_their_completion_handles_to_the_caller() {
+    let run = || RunPluginOrAlias::from_url("file:/plugins/keys.lua", &None, None, None).unwrap();
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    let waiting = PluginInstruction::Reload(
+        Some(false),
+        None,
+        run(),
+        1,
+        Size::default(),
+        Some(crate::route::NotificationEnd::new(tx)),
+    );
+    let bus = bus_with(vec![waiting]);
+    let mut queued = None;
+
+    let (_first, completions) =
+        drain_reloads(&bus, reload_of("file:/plugins/keys.lua"), &mut queued);
+
+    assert_eq!(
+        completions.len(),
+        1,
+        "the collapsed reload's handle comes back"
+    );
+    assert!(
+        rx.try_recv().is_err(),
+        "nothing has been answered while the handle is still held"
+    );
+    drop(completions);
+    assert!(
+        rx.try_recv().is_ok(),
+        "dropping the handle is what answers the CLI"
     );
 }
 

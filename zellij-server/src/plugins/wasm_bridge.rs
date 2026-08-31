@@ -610,18 +610,26 @@ impl WasmBridge {
     fn unload_plugin_with_deadline(
         &mut self,
         pid: PluginId,
-        plugin_map_deadline: Option<Duration>,
+        plugin_map_deadline: Option<Instant>,
     ) -> Result<()> {
         info!("Bye from plugin {}", pid);
         // The plugin's cancel token. Not set here: a plugin that is unloaded because it asked
         // to close itself is usually still inside the `update()` that asked, with more to do
         // (quit-confirmation closes itself and *then* sends `Quit`), and a token set now would
         // trap it between the two. At shutdown it is set already, by `cleanup`; otherwise the
-        // watchdog armed below sets it only if the unload's cleanup job has not started within
-        // `UNLOAD_GRACE` — which on the plugin's own pinned thread means the guest never came
-        // back from what it was doing.
+        // watchdog armed below sets it only if the guest is still inside an entrypoint
+        // `UNLOAD_GRACE` after the unload.
         let cancel = self.cancel_tokens.remove(&pid);
         let shutting_down = plugin_map_deadline.is_some();
+        // The one exception: a plugin whose loader is still running. Its loader holds
+        // `plugin_map` across the guest's `load()`, so if that `load()` is what never returns,
+        // the lock below would wait on it forever — and after the `remove` above nothing else
+        // could ever set its token. A plugin still loading has no `update()` to protect, so its
+        // token can go first.
+        let still_loading = self.loading_plugins.iter().any(|(p_id, _)| *p_id == pid);
+        if let (Some(cancel), true) = (&cancel, still_loading) {
+            cancel.store(true, Ordering::Relaxed);
+        }
         let _ = self.senders.send_to_server(ServerInstruction::RebindKeys {
             client_id: 0,
             keys_to_rebind: vec![],
@@ -644,7 +652,6 @@ impl WasmBridge {
                 return Ok(());
             };
             let removed: Vec<_> = plugin_map.remove_plugins(pid).into_iter().collect();
-            let still_loading = self.loading_plugins.iter().any(|(p_id, _)| *p_id == pid);
             if removed.is_empty() && still_loading {
                 self.unloaded_while_loading.lock().unwrap().insert(pid);
             }
@@ -660,22 +667,27 @@ impl WasmBridge {
         // submitted for an unregistered plugin is dropped — see
         // `PinnedExecutor::execute_plugin_unload`.
         let last_cleanup = plugins_to_cleanup.len().saturating_sub(1);
-        let cleanup_started = Arc::new(AtomicBool::new(false));
         if let (Some(cancel), false, false) =
             (&cancel, shutting_down, plugins_to_cleanup.is_empty())
         {
-            arm_unload_watchdog(pid, cancel.clone(), cleanup_started.clone());
+            let instances = plugins_to_cleanup
+                .iter()
+                .map(|(_, (running_plugin, _, _))| running_plugin.clone())
+                .collect();
+            arm_unload_watchdog(pid, cancel.clone(), instances);
         }
         for (index, ((plugin_id, client_id), (running_plugin, subscriptions, workers))) in
             plugins_to_cleanup.into_iter().enumerate()
         {
-            let cleanup_started = cleanup_started.clone();
             // Unconditionally, rather than asking the plugin whether it intercepts: asking
             // takes its lock, and an instance still running on its executor thread holds that
-            // lock for as long as it runs. An idle clear costs the screen nothing.
+            // lock for as long as it runs. The screen only drops an intercept that is this
+            // plugin's, so a clear for one that never intercepted costs nothing.
             let _ = self
                 .senders
-                .send_to_screen(ScreenInstruction::ClearKeyPressesIntercepts(client_id));
+                .send_to_screen(ScreenInstruction::ClearKeyPressesIntercepts(
+                    plugin_id, client_id,
+                ));
             // Clear any regex highlights this plugin registered across all panes
             let _ = self
                 .senders
@@ -695,29 +707,37 @@ impl WasmBridge {
                                 _connected_clients: Arc<Mutex<Vec<ClientId>>>,
                                 _plugin_cache: PluginCache,
                                 _engine: Engine| {
-                // Running at all is what the unload watchdog waits to see.
-                cleanup_started.store(true, Ordering::Relaxed);
                 let subscriptions_guard = subscriptions.lock().unwrap();
                 let needs_before_close = subscriptions_guard.contains(&EventType::BeforeClose);
                 drop(subscriptions_guard); // Release lock before calling plugin
 
                 if needs_before_close {
                     let mut rp = running_plugin.lock().unwrap();
-                    // Holding the lock means the guest is not running: if the token was set, it
-                    // has done its work, and `BeforeClose` gets a normal call.
+                    // Holding the lock means the guest is not running. If the token was set but
+                    // never tripped, the guest was idle and `BeforeClose` gets a normal call. If
+                    // it tripped, the guest was stopped mid-call, and is not called again: see
+                    // `PluginEnv::cancel_tripped`.
+                    let was_stopped_mid_call = rp.env().cancel_tripped.load(Ordering::Relaxed);
                     rp.env().cancel.store(false, Ordering::Relaxed);
-                    match apply_before_close_event_to_plugin(
-                        plugin_id,
-                        client_id,
-                        &mut rp,
-                        senders.clone(),
-                    ) {
-                        Ok(()) => {},
-                        Err(e) => {
-                            log::error!("{:?}", e);
-                            let stringified_error = format!("{:?}", e).replace("\n", "\n\r");
-                            handle_plugin_crash(plugin_id, stringified_error, senders.clone());
-                        },
+                    if was_stopped_mid_call {
+                        log::warn!(
+                            "plugin {plugin_id} was cancelled mid-call, so its BeforeClose is \
+                             skipped"
+                        );
+                    } else {
+                        match apply_before_close_event_to_plugin(
+                            plugin_id,
+                            client_id,
+                            &mut rp,
+                            senders.clone(),
+                        ) {
+                            Ok(()) => {},
+                            Err(e) => {
+                                log::error!("{:?}", e);
+                                let stringified_error = format!("{:?}", e).replace("\n", "\n\r");
+                                handle_plugin_crash(plugin_id, stringified_error, senders.clone());
+                            },
+                        }
                     }
                     let cache_dir = rp.env().plugin_own_data_dir.clone();
                     drop(rp); // Release lock before filesystem operation
@@ -1076,11 +1096,22 @@ impl WasmBridge {
                         // As in the unload job: holding the lock means the guest is not
                         // running, and the new instance shares this token, so a set one
                         // would trap `BeforeClose` here and the new `load()` after it.
+                        // And as there, an instance that was stopped mid-call is not
+                        // called again — see `PluginEnv::cancel_tripped`.
+                        let was_stopped_mid_call = running_plugin
+                            .env()
+                            .cancel_tripped
+                            .load(std::sync::atomic::Ordering::Relaxed);
                         running_plugin
                             .env()
                             .cancel
                             .store(false, std::sync::atomic::Ordering::Relaxed);
-                        if let Err(e) = apply_before_close_event_to_plugin(
+                        if was_stopped_mid_call {
+                            log::warn!(
+                                "plugin {plugin_id} was cancelled mid-call, so its BeforeClose \
+                                 is skipped before its reload"
+                            );
+                        } else if let Err(e) = apply_before_close_event_to_plugin(
                             plugin_id,
                             first_client_id,
                             &mut running_plugin,
@@ -2093,15 +2124,28 @@ impl WasmBridge {
         )]));
     }
 
-    pub fn cleanup(&mut self) {
-        // Before any unload: the unload hook pumps queues, and nothing may start now.
-        self.queues.lock().unwrap().shut_down();
-
-        // Stop every guest first, so an instance looping in `update()` or `load()` releases
-        // its lock and its executor thread before the unloads below need either.
+    /// Stop every guest: an instance looping in `update()` or `load()` releases its lock and
+    /// its executor thread at its next check of the token. Shutdown does this once in-flight
+    /// jobs have had their grace and not finished, so that the unloads in `cleanup` find the
+    /// guests already stopped rather than each waiting on them in turn.
+    pub fn cancel_all_plugins(&self) {
         for cancel in self.cancel_tokens.values() {
             cancel.store(true, Ordering::Relaxed);
         }
+    }
+
+    /// Unload everything at shutdown, giving up on any lock still held at `deadline`. One
+    /// absolute deadline for the whole of it, shared with the wait that precedes it: the
+    /// plugin thread has `PLUGIN_THREAD_EXIT_TIMEOUT` in all before its join is abandoned, and
+    /// a budget that re-armed per lock added up to more than that.
+    pub fn cleanup(&mut self, deadline: Instant) {
+        // Before any unload: the unload hook pumps queues, and nothing may start now.
+        self.queues.lock().unwrap().shut_down();
+
+        // Already done by the shutdown sequence if a job overran its grace; for every other
+        // guest this is the first it hears of it, and for a caller that skipped the wait
+        // (a test) it is the only cancel there is.
+        self.cancel_all_plugins();
 
         // A plugin whose loader has not run yet is not in the plugin map, so the loop below
         // would miss it and its loader would instantiate it after this thread is gone. Unload
@@ -2109,10 +2153,10 @@ impl WasmBridge {
         let still_loading: Vec<PluginId> =
             self.loading_plugins.iter().map(|(pid, _)| *pid).collect();
         for plugin_id in still_loading {
-            drop(self.unload_plugin_with_deadline(plugin_id, Some(SHUTDOWN_LOCK_TIMEOUT)));
+            drop(self.unload_plugin_with_deadline(plugin_id, Some(deadline)));
         }
 
-        let plugin_ids = match lock_with_deadline(&self.plugin_map, Some(SHUTDOWN_LOCK_TIMEOUT)) {
+        let plugin_ids = match lock_with_deadline(&self.plugin_map, Some(deadline)) {
             Some(plugin_map) => plugin_map.plugin_ids(),
             None => {
                 log::error!(
@@ -2123,7 +2167,7 @@ impl WasmBridge {
             },
         };
         for plugin_id in &plugin_ids {
-            drop(self.unload_plugin_with_deadline(*plugin_id, Some(SHUTDOWN_LOCK_TIMEOUT)));
+            drop(self.unload_plugin_with_deadline(*plugin_id, Some(deadline)));
         }
         if let Some(watcher) = self.watcher.take() {
             watcher.stop_nonblocking();
@@ -3277,15 +3321,25 @@ pub fn apply_events_to_plugin(
 /// has not returned in this long is not coming back on its own.
 const UNLOAD_GRACE: Duration = Duration::from_secs(3);
 
-/// Set `cancel` after `UNLOAD_GRACE` unless the unload's cleanup job has started by then.
+/// Set `cancel` after `UNLOAD_GRACE` if one of the plugin's `instances` is still inside an
+/// entrypoint by then.
+///
+/// "Inside an entrypoint" is read off the instance's lock, which the executor holds for exactly
+/// as long as the guest runs. Not off whether the cleanup job has run: executor threads are
+/// shared, so an idle instance whose cleanup is merely queued behind another plugin's long call
+/// would look stuck and be cancelled for nothing — and a flag the cleanup job sets races the
+/// job's own reset of the token. A lock that is free means the guest is not running, whether
+/// its cleanup ran or is still queued; one that is held means it is, and that call is what the
+/// grace was for. (Held by a *later* entrypoint queued before the cleanup is the one false
+/// positive left: that instance loses its `BeforeClose`, which is being unloaded anyway.)
 fn arm_unload_watchdog(
     plugin_id: PluginId,
     cancel: Arc<AtomicBool>,
-    cleanup_started: Arc<AtomicBool>,
+    instances: Vec<Arc<Mutex<RunningPlugin>>>,
 ) {
     crate::global_async_runtime::get_tokio_runtime().spawn(async move {
         tokio::time::sleep(UNLOAD_GRACE).await;
-        if !cleanup_started.load(Ordering::Relaxed) {
+        if instances.iter().any(is_inside_entrypoint) {
             log::warn!(
                 "plugin {plugin_id} has not returned from its entrypoint {UNLOAD_GRACE:?} after \
                  its unload; cancelling it"
@@ -3295,25 +3349,22 @@ fn arm_unload_watchdog(
     });
 }
 
-/// How long shutdown waits for `plugin_map` before giving a plugin up. Long enough for a
-/// cancelled guest to reach its next host call; short enough that a guest that never will does
-/// not hold the session's exit.
-const SHUTDOWN_LOCK_TIMEOUT: Duration = Duration::from_secs(1);
+/// Whether the guest is running right now: its executor holds the instance's lock for exactly
+/// that long. A poisoned lock is a guest that panicked, which is not running.
+fn is_inside_entrypoint(instance: &Arc<Mutex<RunningPlugin>>) -> bool {
+    matches!(instance.try_lock(), Err(TryLockError::WouldBlock))
+}
 
 /// `mutex.lock()`, or with a deadline a `try_lock` loop that gives up as `None` once it passes.
-fn lock_with_deadline<T>(
-    mutex: &Mutex<T>,
-    deadline: Option<Duration>,
-) -> Option<MutexGuard<'_, T>> {
+fn lock_with_deadline<T>(mutex: &Mutex<T>, deadline: Option<Instant>) -> Option<MutexGuard<'_, T>> {
     let Some(deadline) = deadline else {
         return Some(mutex.lock().unwrap());
     };
-    let started = Instant::now();
     loop {
         match mutex.try_lock() {
             Ok(guard) => return Some(guard),
             Err(TryLockError::Poisoned(poisoned)) => return Some(poisoned.into_inner()),
-            Err(TryLockError::WouldBlock) if started.elapsed() < deadline => {
+            Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(5));
             },
             Err(TryLockError::WouldBlock) => return None,

@@ -103,7 +103,8 @@ fn shutting_down_cancels_a_plugin_that_is_still_loading() {
     let mut test = TestBridge::new();
     test.bridge.loading_plugins.insert((7, run_plugin()));
 
-    test.bridge.cleanup();
+    test.bridge
+        .cleanup(std::time::Instant::now() + std::time::Duration::from_secs(1));
 
     assert_eq!(
         cancellation_marks(&test.bridge),
