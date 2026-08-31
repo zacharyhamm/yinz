@@ -415,14 +415,19 @@ plugins {
     // panes hide and open separately: `Ctrl e c` brings the conversation back,
     // `Ctrl e a` the agent list.
     //
-    // Ctrl o, in the conversation, moves it somewhere else — and every press
-    // moves it. The first press jumps it clear of a different tiled pane, the
-    // largest one you are not working in, and it stays clear of that pane
-    // through resizes until the pane closes or hocus follows you to another
-    // tab, when it returns to the corner. Press it again and it goes clear of
-    // the next pane, and once there are no panes left to show you it walks the
-    // four corners of the screen instead, then starts over. It works on a pane
-    // you have dragged, too.
+    // Ctrl o moves a pane somewhere else — and every press moves it. The first
+    // press jumps it clear of a different tiled pane, the largest one you are
+    // not working in, and it stays clear of that pane through resizes until the
+    // pane closes or hocus follows you to another tab, when it returns to the
+    // corner. Press it again and it goes clear of the next pane, and once there
+    // are no panes left to show you it walks the four corners of the screen
+    // instead, then starts over. It works on a pane you have dragged, too.
+    //
+    // Both panes take the key, and each moves on its own: pressed in the
+    // conversation it moves the conversation, pressed in the agent list it
+    // moves the list, and the one you did not press stays where you left it. A
+    // press prefers a corner the other pane is not already in, and only puts
+    // the two on top of each other when there is nowhere else to go.
     hocus location="zellij:hocus" {
         shared true
     }
