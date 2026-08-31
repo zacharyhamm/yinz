@@ -1216,9 +1216,22 @@ pub struct HistoryLines {
     pub label: String,
     /// Rows that stay at the top of the half whatever the scroll.
     pub pinned: Vec<MdLine>,
+    /// Whether the first of those rows is the `summary:` label on its own, carrying no text of
+    /// the summary. A caller capping how much of the half the pinned rows may have has to allow
+    /// for it, or a summary opening with a bullet can spend the whole cap saying `summary:`.
+    pub pinned_label_row: bool,
     /// The timeline, oldest first. The caller windows this against the room it has.
     pub entries: Vec<MdLine>,
 }
+
+/// Nothing selected, or nothing to say about what is - what a caller borrows when its cache is
+/// empty.
+pub static NO_HISTORY: HistoryLines = HistoryLines {
+    label: String::new(),
+    pinned: Vec::new(),
+    pinned_label_row: false,
+    entries: Vec::new(),
+};
 
 impl HistoryLines {
     /// Nothing to draw at all - no label, no summary, no timeline.
@@ -1266,7 +1279,7 @@ pub fn run_history(run: &AgentRun, width: usize) -> HistoryLines {
     let Some(inner) = wrap_width(width) else {
         return HistoryLines::default();
     };
-    let pinned = run
+    let (pinned, pinned_label_row) = run
         .summary
         .as_ref()
         .map(|summary| labelled(&summary.text, "summary", inner))
@@ -1282,7 +1295,7 @@ pub fn run_history(run: &AgentRun, width: usize) -> HistoryLines {
                 && entry.kind == RunEntryKind::Result
                 && entry.revision > run.summarized_revision)
         })
-        .flat_map(|entry| labelled(&entry.text, entry.kind.label(), inner))
+        .flat_map(|entry| labelled(&entry.text, entry.kind.label(), inner).0)
         .collect();
     let state = match run.outcome {
         RunOutcome::Active => "active",
@@ -1291,6 +1304,7 @@ pub fn run_history(run: &AgentRun, width: usize) -> HistoryLines {
     HistoryLines {
         label: format!("{} · {}", run.kind, state),
         pinned,
+        pinned_label_row,
         entries,
     }
 }
@@ -1300,47 +1314,6 @@ pub fn run_history(run: &AgentRun, width: usize) -> HistoryLines {
 /// All of it scrolls: nothing is pinned, because there is no timeline for a pinned line to
 /// stay above. A talkative model is windowed by the caller rather than cut here, which is
 /// what the box had to do with six rows to give.
-/// One history row's text as markdown, with `label` in front of it.
-///
-/// The label rides on the first rendered line rather than being spliced into the source: a
-/// result that opens with `# Heading` or `- one` must still be a heading or a bullet, and
-/// `result: # Heading` on one line is neither. When that first line carries a block prefix of
-/// its own - a bullet, a quote bar - the label takes a line to itself instead, so it cannot be
-/// glued onto a marker it does not belong to.
-///
-/// Dim, because it is the pane talking rather than the agent.
-fn labelled(text: &str, label: &str, width: usize) -> Vec<MdLine> {
-    let label = format!("{label}: ");
-    // Rendered to what is left after the label rather than to the whole half. Only the first
-    // row actually carries it, so the rows below come out a little short of the edge - but
-    // `print_text_with_coordinates` truncates rather than wraps, so wrapping to the full width
-    // and *then* prepending would cut the tail off the first row of every entry.
-    let body = width.saturating_sub(label.width()).max(1);
-    let mut lines = crate::markdown::render(text, body, crate::markdown::Options::compact());
-    let inline = lines
-        .first()
-        .is_some_and(|line| !line.text.starts_with(['•', '│', ' ']) && !line.text.is_empty());
-    if inline {
-        let first = lines.remove(0);
-        lines.insert(0, first.prepend(&label, LABEL_STYLE));
-        return lines;
-    }
-    // Nothing shares the rows in this branch, so they get the width back.
-    let mut lines = crate::markdown::render(text, width, crate::markdown::Options::compact());
-    let mut labelled = vec![MdLine::plain("").prepend(label.trim_end(), LABEL_STYLE)];
-    labelled.append(&mut lines);
-    labelled
-}
-
-/// How a history row's `prompt: ` / `summary: ` label is painted: dim, the way every other
-/// piece of pane furniture is.
-const LABEL_STYLE: MdStyle = MdStyle {
-    bold: false,
-    dim: true,
-    color: None,
-    error: false,
-};
-
 pub fn summary_history(pane_id: u32, kind: &str, summary: &Summary, width: usize) -> HistoryLines {
     let Some(inner) = wrap_width(width) else {
         return HistoryLines::default();
@@ -1357,8 +1330,57 @@ pub fn summary_history(pane_id: u32, kind: &str, summary: &Summary, width: usize
         // No label: the divider above it already names the agent this is about, and there is
         // no second kind of row here for one to tell it apart from.
         entries: crate::markdown::render(&summary.text, inner, crate::markdown::Options::compact()),
+        ..HistoryLines::default()
     }
 }
+
+/// One history row's text as markdown, with `label` in front of it, and whether the label took
+/// a row to itself.
+///
+/// The label rides on the first rendered line rather than being spliced into the source: a
+/// result that opens with `# Heading` or `- one` must still be a heading or a bullet, and
+/// `result: # Heading` on one line is neither. When the first block carries a prefix of its own,
+/// a list marker or a quote bar, the label takes a line to itself instead, so it cannot be glued
+/// onto a marker it does not belong to, and so the marker keeps the column its continuation rows
+/// are indented to.
+///
+/// Which of the two it is has to be known before a width can be picked, which is why the text
+/// is parsed into blocks here and wrapped once afterwards rather than rendered twice: the parse
+/// is by far the most expensive thing this does.
+///
+/// Dim, because it is the pane talking rather than the agent.
+fn labelled(text: &str, label: &str, width: usize) -> (Vec<MdLine>, bool) {
+    let label = format!("{label}: ");
+    let blocks = crate::markdown::parse(text);
+    let inline = blocks
+        .first()
+        .is_some_and(|block| block.prefix.is_empty() && !block.chars.is_empty());
+    if inline {
+        // Wrapped to what is left after the label rather than to the whole half. Only the first
+        // row actually carries it, so the rows below come out a little short of the edge - but
+        // `print_text_with_coordinates` truncates rather than wraps, so wrapping to the full
+        // width and *then* prepending would cut the tail off the first row of every entry.
+        let body = width.saturating_sub(label.width()).max(1);
+        let mut lines = crate::markdown::wrap(&blocks, body, crate::markdown::Options::compact());
+        let first = lines.remove(0);
+        lines.insert(0, first.prepend(&label, LABEL_STYLE));
+        return (lines, false);
+    }
+    // Nothing shares the rows in this branch, so they get the width back.
+    let mut lines = crate::markdown::wrap(&blocks, width, crate::markdown::Options::compact());
+    let mut labelled = vec![MdLine::plain("").prepend(label.trim_end(), LABEL_STYLE)];
+    labelled.append(&mut lines);
+    (labelled, true)
+}
+
+/// How a history row's `prompt: ` / `summary: ` label is painted: dim, the way every other
+/// piece of pane furniture is.
+const LABEL_STYLE: MdStyle = MdStyle {
+    bold: false,
+    dim: true,
+    color: None,
+    error: false,
+};
 
 /// Whether a pane holds enough to be worth asking about.
 pub fn worth_summarizing(text: &str) -> bool {
@@ -4340,6 +4362,54 @@ mod tests {
             pinned.styles[..8].iter().all(|style| style.dim),
             "and the label is the pane talking, not the model"
         );
+    }
+
+    /// An entry that opens with a marker of its own gives the label a row, whichever kind of
+    /// marker it is: `prompt: 1. one` is not a numbered list, and the numbering would take the
+    /// continuation rows of the item with it.
+    #[test]
+    fn a_label_never_lands_on_a_list_marker() {
+        let mut run = a_run();
+        run.summary = None;
+        run.entries = vec![
+            RunEntry {
+                revision: 1,
+                event_id: None,
+                kind: RunEntryKind::Prompt,
+                text: "1. one\n2. two".to_owned(),
+            },
+            RunEntry {
+                revision: 2,
+                event_id: None,
+                kind: RunEntryKind::Prompt,
+                text: "- one\n- two".to_owned(),
+            },
+        ];
+
+        assert_eq!(
+            texts(&run_history(&run, 40).entries),
+            [
+                "prompt:", "1. one", "2. two", // the numbering kept, and its column with it
+                "prompt:", "• one", "• two",
+            ],
+        );
+    }
+
+    /// The pinned summary is capped at half the half, and a row the label has to itself carries
+    /// none of the summary - so a half with one row to pin must not spend it on the word
+    /// `summary:` and pin nothing.
+    #[test]
+    fn a_summary_that_opens_with_a_marker_says_the_label_took_a_row() {
+        let mut run = a_run();
+        run.summary = Some(a_summary("- ran the tests", false));
+        let history = run_history(&run, 40);
+        assert_eq!(texts(&history.pinned), ["summary:", "• ran the tests"]);
+        assert!(history.pinned_label_row);
+
+        run.summary = Some(a_summary("ran the tests", false));
+        let history = run_history(&run, 40);
+        assert_eq!(texts(&history.pinned), ["summary: ran the tests"]);
+        assert!(!history.pinned_label_row);
     }
 
     /// The half has eight rows on a normal pane, so a paragraph break costs an eighth of what

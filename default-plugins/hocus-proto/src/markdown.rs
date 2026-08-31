@@ -138,22 +138,35 @@ impl Options {
 /// Never returns an empty `Vec`: text that renders to nothing is one empty line, so a caller
 /// counting lines never has to special-case it.
 pub fn render(text: &str, cols: usize, options: Options) -> Vec<MdLine> {
+    wrap(&parse(text), cols, options)
+}
+
+/// The blocks `text` is made of, before anything knows how wide the rows will be.
+///
+/// Split out from [`render`] for a caller that has to see the shape of the first block before
+/// it can pick a width - the agents pane's timeline decides where an entry's label goes by
+/// whether that block carries a marker of its own, and parsing is the expensive half.
+pub fn parse(text: &str) -> Vec<MdBlock> {
     let sanitized = sanitize(text);
     let mut renderer = MarkdownRenderer::default();
     for event in Parser::new_ext(&sanitized, ParserOptions::empty()) {
-        renderer.event(event, cols);
+        renderer.event(event);
     }
     renderer.finish_block();
+    renderer.blocks
+}
 
-    if renderer.blocks.is_empty() {
+/// [`parse`]'s blocks, wrapped to `cols` columns.
+pub fn wrap(blocks: &[MdBlock], cols: usize, options: Options) -> Vec<MdLine> {
+    if blocks.is_empty() {
         return vec![MdLine::blank()];
     }
 
     // ponytail: style metadata is one tiny Copy value per displayed character.
     // Replace it with ranges only if transcript memory shows up in a profile.
     let mut lines = Vec::new();
-    for (index, block) in renderer.blocks.iter().enumerate() {
-        let separated = index > 0 && !(renderer.blocks[index - 1].compact && block.compact);
+    for (index, block) in blocks.iter().enumerate() {
+        let separated = index > 0 && !(blocks[index - 1].compact && block.compact);
         if separated && !options.compact_blocks {
             lines.push(MdLine::blank());
         }
@@ -213,6 +226,10 @@ pub struct MdBlock {
     pub compact: bool,
     /// Break at the column rather than between words — what a code block and a rule want.
     pub hard_wrap: bool,
+    /// A horizontal rule: no text of its own, filled with `─` to whatever width it is wrapped
+    /// to. Filled at wrap time rather than at parse time so that [`parse`] can run before the
+    /// caller has settled on a width.
+    pub rule: bool,
 }
 
 struct ListState {
@@ -378,7 +395,7 @@ impl MarkdownRenderer {
         }
     }
 
-    fn event(&mut self, event: Event<'_>, cols: usize) {
+    fn event(&mut self, event: Event<'_>) {
         match event {
             Event::Start(Tag::Paragraph) => self.start_paragraph(),
             Event::End(TagEnd::Paragraph) => self.finish_block(),
@@ -474,14 +491,9 @@ impl MarkdownRenderer {
             Event::Rule => {
                 self.finish_block();
                 self.start_block(String::new(), String::new(), false, MdStyle::default());
-                self.append_with_style(
-                    &"─".repeat(cols),
-                    MdStyle {
-                        dim: true,
-                        ..MdStyle::default()
-                    },
-                );
-                self.current.as_mut().expect("just started").hard_wrap = true;
+                let block = self.current.as_mut().expect("just started");
+                block.hard_wrap = true;
+                block.rule = true;
                 self.finish_block();
             },
             _ => {},
@@ -579,6 +591,17 @@ pub fn word_wrap_styled(chars: &[StyledChar], width: usize) -> Vec<Vec<StyledCha
 
 /// Wrap one block to `cols`, giving the first row its prefix and the rest the continuation.
 pub fn render_block(block: &MdBlock, cols: usize) -> Vec<MdLine> {
+    if block.rule {
+        let text = "─".repeat(cols);
+        let styles = vec![
+            MdStyle {
+                dim: true,
+                ..MdStyle::default()
+            };
+            text.chars().count()
+        ];
+        return vec![MdLine { text, styles }];
+    }
     let body_width = cols.saturating_sub(block.prefix.width()).max(1);
     let bodies = if block.hard_wrap {
         hard_wrap_styled(&block.chars, body_width)
