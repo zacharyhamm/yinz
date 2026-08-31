@@ -1205,7 +1205,8 @@ pub const HISTORY_MIN_COLS: usize = 20;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HistoryLines {
     /// What the divider says - `"claude · archived"`, `"3 · claude !"`. Empty when there is
-    /// nothing to name.
+    /// nothing to name. Uncut: the row it goes on carries the scroll readout too, so only
+    /// whoever draws the divider knows the room a label has. See `fit_label`.
     pub label: String,
     /// Rows that stay at the top of the half whatever the scroll.
     pub pinned: Vec<String>,
@@ -1220,8 +1221,22 @@ impl HistoryLines {
     }
 }
 
+/// The room a half `width` columns wide has for text, or `None` when there is not enough of it
+/// to wrap into anything but a column of single words.
+///
+/// A margin column at each edge, the same one the list's marker column gives it. The divider is
+/// not held to it - a rule wants both ends of the row - so this is the body's width alone.
+fn wrap_width(width: usize) -> Option<usize> {
+    let inner = width.saturating_sub(2);
+    (inner >= HISTORY_MIN_COLS).then_some(inner)
+}
+
 /// A label cut to the room the divider has, so a long kind cannot push the rule off the row.
-fn fit_label(mut label: String, width: usize) -> String {
+///
+/// `width` is what is left of the row for the label and its rule: the caller has already
+/// taken off anything else sharing it, which for the agents pane is the scroll readout at the
+/// right-hand end.
+pub fn fit_label(mut label: String, width: usize) -> String {
     // Two dashes and a space either side of the label is the least a divider is worth
     // drawing; below that there is no label at all.
     let room = width.saturating_sub(4);
@@ -1242,10 +1257,9 @@ fn fit_label(mut label: String, width: usize) -> String {
 /// finished run whose summary is up to date says what it did once, in the pinned line,
 /// rather than twice.
 pub fn run_history(run: &AgentRun, width: usize) -> HistoryLines {
-    let inner = width.saturating_sub(2);
-    if inner < HISTORY_MIN_COLS {
+    let Some(inner) = wrap_width(width) else {
         return HistoryLines::default();
-    }
+    };
     let pinned = run
         .summary
         .as_ref()
@@ -1271,7 +1285,7 @@ pub fn run_history(run: &AgentRun, width: usize) -> HistoryLines {
         _ => "archived",
     };
     HistoryLines {
-        label: fit_label(format!("{} · {}", run.kind, state), width),
+        label: format!("{} · {}", run.kind, state),
         pinned,
         entries,
     }
@@ -1283,10 +1297,9 @@ pub fn run_history(run: &AgentRun, width: usize) -> HistoryLines {
 /// stay above. A talkative model is windowed by the caller rather than cut here, which is
 /// what the box had to do with six rows to give.
 pub fn summary_history(pane_id: u32, kind: &str, summary: &Summary, width: usize) -> HistoryLines {
-    let inner = width.saturating_sub(2);
-    if inner < HISTORY_MIN_COLS {
+    let Some(inner) = wrap_width(width) else {
         return HistoryLines::default();
-    }
+    };
     let mut label = format!("{pane_id} · {kind}");
     if summary.awaiting {
         // The same claim the strip's `!` marker makes, in the one place the user
@@ -1294,7 +1307,7 @@ pub fn summary_history(pane_id: u32, kind: &str, summary: &Summary, width: usize
         label.push_str(" !");
     }
     HistoryLines {
-        label: fit_label(label, width),
+        label,
         pinned: Vec::new(),
         entries: crate::text::wrap(&summary.text, inner),
     }
@@ -4258,13 +4271,17 @@ mod tests {
 
     /// A kind is up to 32 characters and this pane is half a panel wide, so the label can
     /// be asked for more room than the divider has. It is cut rather than allowed to push
-    /// the rule off the row.
+    /// the rule off the row - but only by whoever draws the divider, which is the one place
+    /// that knows what else is on that row.
     #[test]
     fn a_label_too_wide_for_its_divider_is_cut_rather_than_burst() {
         let kind = "a-very-long-agent-kind-indeed-xx";
-        let history = summary_history(7, kind, &a_summary("Done.", true), 26);
-        assert_eq!(history.label.width(), 22, "{}", history.label);
-        assert!(kind.starts_with(&history.label["7 · ".len()..]));
+        let label = summary_history(7, kind, &a_summary("Done.", true), 26).label;
+        assert_eq!(label, format!("7 · {kind} !"), "uncut where it is built");
+
+        let cut = fit_label(label, 26);
+        assert_eq!(cut.width(), 22, "{cut}");
+        assert!(kind.starts_with(&cut["7 · ".len()..]));
 
         // And a divider with no room for a label at all keeps the rule.
         assert!(fit_label("claude · active".to_owned(), 3).is_empty());
