@@ -355,15 +355,20 @@ fn ensure(
         log,
         known_hosts,
     };
+    if let Err(error) = write_state(&state_path, &vm) {
+        terminate(&vm, config);
+        cleanup_files(&vm);
+        return Err(error);
+    }
     if let Err(error) = wait_for_ssh(&mut child, &vm, config.boot_timeout_secs) {
         let log = fs::read_to_string(&vm.log).unwrap_or_else(|read_error| {
             format!("<failed to read {}: {read_error}>", vm.log.display())
         });
         terminate(&vm, config);
         cleanup_files(&vm);
+        let _ = fs::remove_file(&state_path);
         return Err(error).context(format!("Firecracker log:\n{log}"));
     }
-    write_state(&state_path, &vm)?;
     Ok(response(config, &vm))
 }
 
@@ -517,7 +522,11 @@ fn read_state(path: &Path) -> Result<VmState> {
 fn write_state(path: &Path, state: &VmState) -> Result<()> {
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, serde_json::to_vec_pretty(state)?)?;
-    fs::rename(tmp, path).context("failed to commit VM state")
+    if let Err(error) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(tmp);
+        return Err(error).context("failed to commit VM state");
+    }
+    Ok(())
 }
 
 fn vm_id(session: &str, name: &str) -> String {
@@ -787,6 +796,17 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
     fs::set_permissions(
         root.join("usr/local/bin/fcnet-setup.sh"),
         fs::Permissions::from_mode(0o755),
+    )?;
+    let network_service = root.join("etc/systemd/system/zellij-firecracker-network.service");
+    fs::write(
+        &network_service,
+        "[Unit]\nDescription=Configure Zellij Firecracker guest network\nAfter=network-pre.target\nBefore=network.target ssh.service\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/local/bin/fcnet-setup.sh\n\n[Install]\nWantedBy=multi-user.target\n",
+    )?;
+    let wants = root.join("etc/systemd/system/multi-user.target.wants");
+    fs::create_dir_all(&wants)?;
+    std::os::unix::fs::symlink(
+        "../zellij-firecracker-network.service",
+        wants.join("zellij-firecracker-network.service"),
     )?;
     fs::create_dir_all(root.join("workspace"))?;
     let rootfs = output.join("ubuntu-24.04.ext4");

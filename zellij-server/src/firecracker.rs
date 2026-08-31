@@ -1,7 +1,7 @@
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use serde::{Deserialize, Serialize};
 use std::{
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     os::fd::AsFd,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -175,12 +175,16 @@ impl Provider {
                 )
             })?;
 
-        child
+        if let Err(error) = child
             .stdin
             .take()
             .context("firecracker provider stdin was unavailable")?
             .write_all(&request_json)
-            .context("failed to write the firecracker provider request")?;
+        {
+            if error.kind() != ErrorKind::BrokenPipe {
+                return Err(error).context("failed to write the firecracker provider request");
+            }
+        }
 
         let mut stdout = child
             .stdout

@@ -574,19 +574,23 @@ fn duplicate_command(
     manual_kinds: &BTreeMap<u32, String>,
 ) -> Option<CommandToRun> {
     let (kind, _) = agents::classify(pane, manual_kinds)?;
-    let (remote_host, firecracker_vm) = match pane
+    let (remote_host, firecracker_vm, cwd) = match pane
         .host
         .as_deref()
         .and_then(|host| host.strip_prefix("firecracker:"))
     {
-        Some(name) => (None, Some(name.to_owned())),
-        None => (pane.host.clone(), None),
+        Some(name) => (
+            None,
+            Some(name.to_owned()),
+            pane.cwd.clone().map(Into::into),
+        ),
+        None => (pane.host.clone(), None, Some("/host".into())),
     };
     Some(CommandToRun {
         path: launch::binary_for(kind).into(),
-        // `/host` is translated to the plugin's launch-time caller CWD, without
-        // reinterpreting a real `/tmp`, `/host`, `/data` or `/cache` path.
-        cwd: Some("/host".into()),
+        // Local `/host` is translated to the caller CWD; Firecracker keeps the
+        // pane's already-remote guest CWD.
+        cwd,
         remote_host,
         firecracker_vm,
         ..Default::default()
@@ -1215,6 +1219,7 @@ mod tests {
             ..pane.clone()
         };
         let command = duplicate_command(&firecracker_pane, &BTreeMap::new()).unwrap();
+        assert_eq!(command.cwd, Some("/tmp/repo".into()));
         assert_eq!(command.remote_host, None);
         assert_eq!(command.firecracker_vm.as_deref(), Some("review"));
 
