@@ -13,7 +13,8 @@ impl State {
     }
 
     /// Ctrl-o: move the conversation somewhere else - clear of a tiled pane, or on round the
-    /// corners once every pane has been offered. See `State::reposition`.
+    /// corners once every pane has been offered. See `State::reposition`. The agent list takes
+    /// the same key in its own pane, and asks hocus for it over `wire::AGENT_STRIP_REPOSITION`.
     pub(crate) fn is_reposition_key(key: &KeyWithModifier) -> bool {
         key.bare_key == BareKey::Char('o') && key.has_modifiers(&[KeyModifier::Ctrl])
     }
@@ -709,7 +710,7 @@ impl State {
         // out of the way is wanted whatever is on screen in it, and the input box would swallow
         // the key. Nothing to redraw here - the move is the server's to paint.
         if Self::is_reposition_key(&key) {
-            self.reposition();
+            self.reposition(overlay::Which::Chat);
             return false;
         }
         // The temporary lists are modal while open.
