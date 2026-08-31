@@ -707,9 +707,10 @@ impl<'a> InputItem<'a> {
 ///
 /// The one rule that is not obvious: a reasoning item must be followed by the item it
 /// produced, or the API rejects the whole request. `ReasoningItem::before` records how
-/// many calls preceded each one in the stream, so replaying them at those positions
-/// reproduces the order the model emitted - which is the order it has to be given back
-/// in. `reasoning_echo` gates the lot, the same switch the other transport uses.
+/// many prose/call output items preceded each one in the stream, and
+/// `Message::prose_before` puts the prose back among the calls. Replaying both positions
+/// reproduces the order the model emitted. `reasoning_echo` gates the sealed items, the
+/// same switch the other transport uses.
 fn responses_request_body(
     cfg: &Config,
     transcript: &[Message],
@@ -729,9 +730,6 @@ fn responses_request_body(
                     .display
                     .as_ref()
                     .map_or("", |_| message.content.as_str());
-                if !prose.is_empty() {
-                    input.push(InputItem::message("assistant", prose));
-                }
                 let reasoning_items: &[ReasoningItem] = if cfg.reasoning_echo {
                     &message.reasoning_items
                 } else {
@@ -743,8 +741,21 @@ fn responses_request_body(
                         .filter(move |item| item.before == position)
                         .map(InputItem::reasoning)
                 };
-                for (position, call) in message.tool_calls.iter().enumerate() {
+                let prose_before = (!prose.is_empty()).then(|| {
+                    message
+                        .prose_before
+                        .unwrap_or(0)
+                        .min(message.tool_calls.len())
+                });
+                let mut calls = message.tool_calls.iter();
+                let output_items = message.tool_calls.len() + usize::from(prose_before.is_some());
+                for position in 0..output_items {
                     input.extend(at(position));
+                    if prose_before == Some(position) {
+                        input.push(InputItem::message("assistant", prose));
+                        continue;
+                    }
+                    let call = calls.next().expect("one slot per call");
                     input.push(InputItem::FunctionCall {
                         kind: "function_call",
                         call_id: &call.id,
@@ -752,14 +763,14 @@ fn responses_request_body(
                         arguments: wire_arguments(call),
                     });
                 }
-                // Anything recorded after the last call. Should not happen - a
+                // Anything recorded after the last output item. Should not happen - a
                 // reasoning item is always followed by the item it produced - but
                 // dropping one silently would break the pairing rather than
                 // preserve it.
                 input.extend(
                     reasoning_items
                         .iter()
-                        .filter(|item| item.before >= message.tool_calls.len())
+                        .filter(|item| item.before >= output_items)
                         .map(InputItem::reasoning),
                 );
             },
@@ -1110,6 +1121,10 @@ pub enum SseItem {
         id: String,
         encrypted_content: String,
     },
+    /// The Responses output item that owns any streamed assistant prose. Its
+    /// contents still arrive through [`SseItem::Delta`]; this marker records its
+    /// position among calls for stateless replay.
+    AssistantMessage,
     ApiError(String),
     /// A piece of a tool call. Never complete on its own - see
     /// [`ToolCallAccumulator`].
@@ -1165,10 +1180,11 @@ impl SseParser {
 #[derive(Debug, Default)]
 pub struct ToolCallAccumulator {
     calls: Vec<(usize, ToolCall)>,
-    /// The turn's reasoning items, each tagged with how many calls had been seen
-    /// when it arrived. See [`ReasoningItem::before`]: that count is what lets the
-    /// request put them back where the model emitted them.
+    /// The turn's reasoning items, each tagged with how many replayable output
+    /// items had been seen when it arrived.
     reasoning_items: Vec<ReasoningItem>,
+    /// How many calls preceded the assistant prose output item.
+    prose_before: Option<usize>,
 }
 
 impl ToolCallAccumulator {
@@ -1183,8 +1199,12 @@ impl ToolCallAccumulator {
             self.reasoning_items.push(ReasoningItem {
                 id: id.clone(),
                 encrypted_content: encrypted_content.clone(),
-                before: self.calls.len(),
+                before: self.calls.len() + usize::from(self.prose_before.is_some()),
             });
+            return;
+        }
+        if matches!(item, SseItem::AssistantMessage) {
+            self.prose_before.get_or_insert(self.calls.len());
             return;
         }
         let SseItem::ToolCallFragment {
@@ -1217,13 +1237,17 @@ impl ToolCallAccumulator {
         }
     }
 
-    /// Take the turn's reasoning items, leaving that half of the accumulator empty.
+    /// Take the turn's stateless replay metadata, leaving that part of the
+    /// accumulator empty.
     ///
     /// Separate from [`Self::take`] so the several places that discard a dead
     /// stream's half-accumulated calls go on saying `take()` and mean it - both
     /// halves are cleared there either way.
-    pub fn take_reasoning_items(&mut self) -> Vec<ReasoningItem> {
-        std::mem::take(&mut self.reasoning_items)
+    pub fn take_replay(&mut self) -> (Vec<ReasoningItem>, Option<usize>) {
+        (
+            std::mem::take(&mut self.reasoning_items),
+            self.prose_before.take(),
+        )
     }
 
     /// Take the completed calls, leaving the accumulator empty.
@@ -1232,6 +1256,7 @@ impl ToolCallAccumulator {
     /// only reach dispatch to be rejected as an unknown tool.
     pub fn take(&mut self) -> Vec<ToolCall> {
         self.reasoning_items.clear();
+        self.prose_before = None;
         std::mem::take(&mut self.calls)
             .into_iter()
             .map(|(_, call)| call)
@@ -1563,6 +1588,7 @@ fn parse_response_event(event: ResponseEvent) -> Vec<SseItem> {
                 name: item.name,
                 arguments: None,
             }],
+            Some(item) if item.kind == "message" => vec![SseItem::AssistantMessage],
             _ => Vec::new(),
         },
         // The sealed thinking, which is worth nothing on its own and everything on

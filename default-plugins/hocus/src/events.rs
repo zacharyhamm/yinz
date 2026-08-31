@@ -1264,9 +1264,9 @@ impl State {
                     });
                     break;
                 },
-                SseItem::ToolCallFragment { .. } | SseItem::ReasoningItem { .. } => {
-                    self.tool_calls.feed(&item)
-                },
+                SseItem::ToolCallFragment { .. }
+                | SseItem::ReasoningItem { .. }
+                | SseItem::AssistantMessage => self.tool_calls.feed(&item),
                 // Held on the stream rather than recorded here: Ollama hangs
                 // the count on the last content chunk, ahead of the text it
                 // covers, and a tool-calling reply is still fragments in
@@ -1306,7 +1306,7 @@ impl State {
                 },
                 _ => {
                     // Taken before `take()`, which clears both halves.
-                    let reasoning_items = self.tool_calls.take_reasoning_items();
+                    let (reasoning_items, prose_before) = self.tool_calls.take_replay();
                     let calls = self.tool_calls.take();
                     if let Some(message) = error {
                         let m = message.clone();
@@ -1345,6 +1345,7 @@ impl State {
                         // a turn ending in prose has nothing to hand back, and
                         // echoing there would break the pairing rule.
                         asked.reasoning_items = reasoning_items;
+                        asked.prose_before = prose_before;
                         self.messages.push(asked);
                         // The swap moves neither the message count nor the
                         // length of the prose, which is all the context memo

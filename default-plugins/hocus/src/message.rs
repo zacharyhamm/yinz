@@ -65,10 +65,11 @@ impl Reasoning {
 /// ["reasoning.encrypted_content"]` because `store: false` leaves nothing server-side to
 /// refer to by id. The visible summary is the separate [`Reasoning`] field.
 ///
-/// `before` is how many of the turn's function calls had already been announced when this
-/// item arrived, which is what puts it back in the position it came in. The API rejects
-/// the request if a reasoning item is not followed by the item it produced, so the
-/// interleaving is a correctness requirement rather than tidiness.
+/// `before` is how many of the turn's replayable output items (assistant prose or
+/// function calls) had already been announced when this item arrived, which is what
+/// puts it back in the position it came in. The API rejects the request if a reasoning
+/// item is not followed by the item it produced, so the interleaving is a correctness
+/// requirement rather than tidiness.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ReasoningItem {
     pub id: String,
@@ -104,6 +105,11 @@ pub struct Message {
     /// everyone else unchanged.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_items: Vec<ReasoningItem>,
+    /// Assistant tool-call turns only, on the Responses transport: how many calls
+    /// preceded the assistant prose item. `None` preserves the historical shape,
+    /// where prose was replayed first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prose_before: Option<usize>,
     /// `Role::Tool` only: which call this message answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
