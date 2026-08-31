@@ -1053,9 +1053,8 @@ impl State {
     /// Send the rate-limited request again once its wait is up.
     ///
     /// `retry` is left set across `start_request`, so a second refusal reaches `arm_retry`
-    /// with the attempt count intact and the backoff keeps doubling. `on_chunk` clears it the
-    /// moment anything actually arrives, which is what makes the count per-outage rather than
-    /// per-conversation.
+    /// with the attempt count intact and the backoff keeps doubling. A completed successful
+    /// response clears it, which is what makes the count per-outage rather than per-conversation.
     ///
     /// What is *not* left set is the due time: this runs on every frame, and a `due_ms` still
     /// in the past would send the request again 10 times a second for as long as the endpoint

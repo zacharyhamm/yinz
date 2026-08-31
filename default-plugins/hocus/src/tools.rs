@@ -290,19 +290,11 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
             sentence
         },
         // An edit is the same act as a write - model-written code landing in the config dir -
-        // in a smaller package, and it may add a `request_permission` of its own, so the
-        // permissions named here are the ones the *edited* source asks for.
+        // in a smaller package. `State` adds any newly requested permissions after reading
+        // and applying the edit to the complete source.
         "plugin_edit" => {
             let name = args.name.as_deref().unwrap_or("a plugin");
-            let mut sentence = format!("changes {name}.lua in your Zellij plugin folder");
-            let granted = requested_permissions(args.new_string.as_deref().unwrap_or(""));
-            if !granted.is_empty() {
-                sentence.push_str(&format!(
-                    ", and grants it: {}",
-                    permission_names(&granted).join(", ")
-                ));
-            }
-            sentence
+            format!("changes {name}.lua in your Zellij plugin folder")
         },
         "skill_write" => {
             let name = args.name.as_deref().unwrap_or("a skill");
@@ -334,6 +326,25 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
 /// denial nobody sees until the plugin runs.
 pub fn requested_permissions(source: &str) -> Vec<PermissionType> {
     plugin_authoring::requested_permissions(source).known
+}
+
+/// Apply a plugin edit and return only the permissions it adds to the complete source.
+pub fn edit_source_and_permissions(
+    source: &str,
+    args: &Args,
+) -> Result<(String, Vec<PermissionType>), String> {
+    let edited = apply_edit(
+        source,
+        args.old_string.as_deref().unwrap_or_default(),
+        args.new_string.as_deref().unwrap_or_default(),
+        args.replace_all,
+    )?;
+    let before = requested_permissions(source);
+    let added = requested_permissions(&edited)
+        .into_iter()
+        .filter(|permission| !before.contains(permission))
+        .collect();
+    Ok((edited, added))
 }
 
 /// Permissions as a plugin author spells them: `read_files`, not `ReadFiles`.
@@ -444,6 +455,7 @@ pub fn confirmation_detail(call: &ToolCall) -> Vec<String> {
 /// say it twice, and the box supplies the indent that the toast has to draw for
 /// itself. The flag is what lets that one line — the sentence saying what the
 /// call will actually do — be the only red thing on screen.
+#[cfg(test)]
 pub fn confirmation_body(call: &ToolCall) -> Vec<(String, bool)> {
     let mut lines = Vec::new();
     if let Some(consequence) = consequence(call) {
@@ -455,6 +467,7 @@ pub fn confirmation_body(call: &ToolCall) -> Vec<(String, bool)> {
 
 /// The confirmation as a toast: a bounded preview behind a line saying who is
 /// asking, since a toast is read from a pane that has nothing to do with hocus.
+#[cfg(test)]
 pub fn confirmation_toast(call: &ToolCall) -> String {
     let mut lines = vec![TOAST_HEADLINE.to_owned(), call.name.clone()];
     if let Some(consequence) = consequence(call) {
@@ -3149,7 +3162,6 @@ pub fn session_listing(session: &SessionInfo) -> Value {
 #[cfg(target_arch = "wasm32")]
 mod host {
     use super::*;
-    use std::collections::BTreeMap;
     use std::path::PathBuf;
     use zellij_tile::prelude::*;
 
@@ -4141,17 +4153,18 @@ pub fn new_pane_with_context(_args: &Args, _context: BTreeMap<String, String>) -
     "tools are unavailable outside zellij".to_owned()
 }
 
-/// Test seams for the reload path, which off wasm has no host to talk to. `PLUGIN_FS_EXISTS`
-/// is what `plugin_fs_exists` answers (`None` keeps the "unreachable" error every other file
-/// tool gives); `RELOAD_CALLS` counts what `reload_plugin` was asked. Per thread, so tests
+/// Test seams for plugin tools, which off wasm have no host to talk to. Per thread, so tests
 /// running in parallel do not see each other's.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod test_seams {
-    use std::cell::Cell;
+    use super::PermissionType;
+    use std::cell::{Cell, RefCell};
 
     thread_local! {
         pub static PLUGIN_FS_EXISTS: Cell<Option<bool>> = const { Cell::new(None) };
         pub static RELOAD_CALLS: Cell<usize> = const { Cell::new(0) };
+        pub static PLUGIN_SOURCE: RefCell<Option<String>> = const { RefCell::new(None) };
+        pub static GRANTED_PERMISSIONS: RefCell<Vec<PermissionType>> = const { RefCell::new(Vec::new()) };
     }
 
     /// One `plugin_reload` is one ask. Past this many the tool loop is re-running a head it
@@ -4162,6 +4175,16 @@ pub mod test_seams {
     pub fn reset() {
         PLUGIN_FS_EXISTS.set(None);
         RELOAD_CALLS.set(0);
+        PLUGIN_SOURCE.with_borrow_mut(|source| *source = None);
+        GRANTED_PERMISSIONS.with_borrow_mut(Vec::clear);
+    }
+
+    pub fn set_plugin_source(source: &str) {
+        PLUGIN_SOURCE.with_borrow_mut(|stored| *stored = Some(source.to_owned()));
+    }
+
+    pub fn granted_permissions() -> Vec<PermissionType> {
+        GRANTED_PERMISSIONS.with_borrow(Clone::clone)
     }
 }
 
@@ -4187,12 +4210,17 @@ pub const PLUGIN_FOLDER_UNREACHABLE: &str =
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn plugin_fs_write(_path: &str, _source: &str, _overwrite: bool) -> Result<bool, String> {
-    Err(PLUGIN_FOLDER_UNREACHABLE.to_owned())
+    match test_seams::PLUGIN_SOURCE.with_borrow(Option::is_some) {
+        true => Ok(true),
+        false => Err(PLUGIN_FOLDER_UNREACHABLE.to_owned()),
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn plugin_fs_read(_path: &str) -> Result<String, String> {
-    Err(PLUGIN_FOLDER_UNREACHABLE.to_owned())
+    test_seams::PLUGIN_SOURCE
+        .with_borrow(Clone::clone)
+        .ok_or_else(|| PLUGIN_FOLDER_UNREACHABLE.to_owned())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -4218,7 +4246,11 @@ pub fn observe_plugin(_path: &str) -> Option<PluginObservation> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn grant_permissions(_path: &str, _permissions: &[PermissionType]) {}
+pub fn grant_permissions(_path: &str, permissions: &[PermissionType]) {
+    test_seams::GRANTED_PERMISSIONS.with_borrow_mut(|granted| {
+        granted.extend_from_slice(permissions);
+    });
+}
 
 /// Point at the pane a confirmation is about: bring it into view for whoever is
 /// being asked, and write `label` on its frame. Never moves keyboard focus, so

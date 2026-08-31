@@ -111,6 +111,14 @@ impl State {
             }
         }
 
+        // A rate limit can arrive while the last tool is using `Status`. Once that tool
+        // releases it, the resend owns the only request slot; queued asks and follow-ups wait
+        // until the retry succeeds.
+        if self.retry_armed() {
+            self.status = Status::AwaitingRetry;
+            return;
+        }
+
         // Only the user's own calls were in the queue: nothing to send.
         self.status = Status::Idle;
         if !std::mem::take(&mut self.owes_reply) {
@@ -208,7 +216,16 @@ impl State {
 
     pub(crate) fn confirmation_body(&self, call: &ToolCall) -> Vec<(String, bool)> {
         let Some(tool) = self.extensions.tool(&call.name) else {
-            return tools::confirmation_body(call);
+            let mut lines = Vec::new();
+            if let Some(consequence) = self.confirmation_consequence(call) {
+                lines.push((consequence, true));
+            }
+            lines.extend(
+                tools::argument_lines(call)
+                    .into_iter()
+                    .map(|line| (line, false)),
+            );
+            return lines;
         };
         let mut lines = Vec::new();
         if let Some(consequence) = &tool.consequence {
@@ -224,7 +241,16 @@ impl State {
 
     pub(crate) fn confirmation_toast(&self, call: &ToolCall) -> String {
         let Some(tool) = self.extensions.tool(&call.name) else {
-            return tools::confirmation_toast(call);
+            let mut lines = vec![tools::TOAST_HEADLINE.to_owned(), call.name.clone()];
+            if let Some(consequence) = self.confirmation_consequence(call) {
+                lines.push(format!("  {consequence}"));
+            }
+            lines.extend(
+                tools::toast_argument_lines(call)
+                    .into_iter()
+                    .map(|line| format!("  {line}")),
+            );
+            return lines.join("\n");
         };
         let mut lines = vec![tools::TOAST_HEADLINE.to_owned(), call.name.clone()];
         if let Some(consequence) = &tool.consequence {
@@ -236,6 +262,36 @@ impl State {
                 .map(|line| format!("  {line}")),
         );
         lines.join("\n")
+    }
+
+    fn confirmation_consequence(&self, call: &ToolCall) -> Option<String> {
+        let mut consequence = tools::consequence(call)?;
+        if call.name != "plugin_edit" {
+            return Some(consequence);
+        }
+        let granted = self.plugin_edit_permissions(call);
+        if !granted.is_empty() {
+            consequence.push_str(&format!(
+                ", and grants it: {}",
+                tools::permission_names(&granted).join(", ")
+            ));
+        }
+        Some(consequence)
+    }
+
+    fn plugin_edit_permissions(&self, call: &ToolCall) -> Vec<PermissionType> {
+        let Ok(args) = tools::Args::parse(&call.arguments) else {
+            return Vec::new();
+        };
+        let Ok(fs_path) = tools::plugin_fs_path(args.name.as_deref()) else {
+            return Vec::new();
+        };
+        let Ok(previous) = tools::plugin_fs_read(&fs_path) else {
+            return Vec::new();
+        };
+        tools::edit_source_and_permissions(&previous, &args)
+            .map(|(_, permissions)| permissions)
+            .unwrap_or_default()
     }
 
     fn start_extension_tool(&mut self, call: &ToolCall) -> bool {
@@ -1016,14 +1072,8 @@ impl State {
                         return true;
                     },
                 };
-                let edited = tools::apply_edit(
-                    &previous,
-                    args.old_string.as_deref().unwrap_or_default(),
-                    args.new_string.as_deref().unwrap_or_default(),
-                    args.replace_all,
-                );
-                let edited = match edited {
-                    Ok(edited) => edited,
+                let (edited, granted) = match tools::edit_source_and_permissions(&previous, &args) {
+                    Ok(edit) => edit,
                     Err(error) => {
                         self.finish_head(error);
                         return true;
@@ -1038,13 +1088,6 @@ impl State {
                 }
                 let result = match tools::plugin_fs_write(&fs_path, &edited, true) {
                     Ok(_) => {
-                        // An edit may add a `request_permission` the write never granted - and
-                        // only the text being inserted may, because that text is the whole of
-                        // what the confirmation named (see `tools::consequence`). Reading the
-                        // permissions off the edited *file* would grant what was never in the
-                        // sentence the user said yes to.
-                        let granted =
-                            tools::requested_permissions(args.new_string.as_deref().unwrap_or(""));
                         if !granted.is_empty() {
                             tools::grant_permissions(&target, &granted);
                         }

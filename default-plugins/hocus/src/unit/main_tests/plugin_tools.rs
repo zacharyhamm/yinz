@@ -10,6 +10,43 @@ fn plugin_state() -> State {
     state
 }
 
+/// Disclosure, pre-granting and the report all use the same complete-source difference.
+#[test]
+fn a_plugin_edit_discloses_and_grants_only_the_permission_it_adds() {
+    crate::tools::test_seams::reset();
+    crate::tools::test_seams::set_plugin_source(r#"zellij.request_permission { "read_files" }"#);
+    let mut state = plugin_state();
+    state.pending = vec![ToolCall {
+        id: "edit".into(),
+        name: "plugin_edit".into(),
+        arguments: r#"{"name":"keys","old_string":"\"read_files\"","new_string":"\"read_files\", \"write_files\""}"#.into(),
+    }]
+    .into();
+
+    state.pump_tools();
+    let prompt = state.confirmation_prompt().expect("confirmation");
+    let consequence = &prompt.detail[0].0;
+    assert!(
+        consequence.contains("grants it: write_files"),
+        "{consequence}"
+    );
+    assert!(
+        !consequence.contains("grants it: read_files"),
+        "{consequence}"
+    );
+
+    state.confirm_tool();
+
+    assert_eq!(
+        crate::tools::test_seams::granted_permissions(),
+        vec![PermissionType::WriteFiles]
+    );
+    let report = &tool_results(&state)[0].content;
+    assert!(report.contains("granted it write_files"), "{report}");
+    assert!(!report.contains("granted it read_files"), "{report}");
+    crate::tools::test_seams::reset();
+}
+
 /// Without a folder there is nowhere to put a plugin, and guessing at a path would be worse
 /// than saying so — the same shape as a file tool refusing without a project.
 #[test]
