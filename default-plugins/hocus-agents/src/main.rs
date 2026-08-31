@@ -25,6 +25,13 @@
 //! the keyboard between them and so does a click; the divider is where the focus shows,
 //! because the list's own dim-against-colour already means something else.
 //!
+//! **The history is drawn as markdown**, by the same renderer the conversation uses
+//! (`hocus_proto::markdown`) — everything in the half is markdown by the time it arrives, a
+//! prompt being what the user typed and a result a model's last message, so the asterisks were
+//! never what any of it meant. Compacted: the half has eight rows on a normal pane and cannot
+//! spend one on a paragraph break. Parsing it is much the most expensive thing this pane does,
+//! so `cached_history_lines` does it once per thing it depends on rather than once a frame.
+//!
 //! Which pane the user is *in* comes over the same wire, and the cursor follows
 //! it: walking into an agent by any route — the pane keys, a tab switch, a tool
 //! — selects its row here, so the list shows where you are and not only where
@@ -49,6 +56,7 @@ use std::collections::BTreeMap;
 
 use hocus_proto::agents::{self, Strip, StripRow, Summaries};
 use hocus_proto::launch;
+use hocus_proto::markdown;
 use hocus_proto::wire;
 use unicode_width::UnicodeWidthStr;
 use zellij_tile::prelude::*;
@@ -102,6 +110,24 @@ struct State {
     /// it a wheel against the top of the history would keep counting, and scrolling back down
     /// would cost as many notches as were wasted going up.
     last_history_max_scroll: usize,
+    /// Bumped whenever anything the history half is drawn *from* changes - the loaded run, or
+    /// a strip carrying fresh summaries. Counted rather than compared field by field: what
+    /// `history_lines` reads is spread across four of them, and a counter cannot be half
+    /// updated by someone adding a fifth.
+    generation: u64,
+    /// The last `history_lines`, and what it was computed from. See `cached_history_lines`.
+    history_cache: Option<(HistoryKey, agents::HistoryLines)>,
+}
+
+/// Everything [`State::history_lines`] reads, as one comparable value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HistoryKey {
+    /// The row under the cursor, which is what the half is about.
+    selection: Option<String>,
+    /// The half's width, which is what its lines are wrapped to.
+    width: usize,
+    /// [`State::generation`] - the state behind the selection.
+    generation: u64,
 }
 
 /// Which half of the pane the keys work.
@@ -167,6 +193,9 @@ impl ZellijPlugin for State {
             };
             let changed = self.run.as_ref() != Some(&run);
             self.run = Some(run);
+            if changed {
+                self.generation += 1;
+            }
             return changed;
         }
         if pipe_message.name != wire::AGENT_STRIP {
@@ -539,6 +568,13 @@ impl State {
             || self.selected != selected
             || self.summaries != summaries
             || self.live() != live(&rows, selected, focused);
+        // The rows carry the kind the divider names and the summaries carry the text below it,
+        // so a push worth a redraw is a push the history cache cannot survive. Tied to
+        // `changed` rather than to the summaries alone: the once-a-second push that moves
+        // nothing is the one that must not throw the cache away.
+        if changed {
+            self.generation += 1;
+        }
         self.rows = rows;
         self.selected = selected;
         self.summaries = summaries;
@@ -553,7 +589,7 @@ impl State {
     /// never moves under the pointer, and an empty history is a sentence rather than an
     /// absence.
     fn render_history(&mut self, top: usize, rows: usize, cols: usize) {
-        let history = self.history_lines(cols);
+        let history = self.cached_history_lines(cols);
         // `rows` is the body alone: `split` takes the divider off the list's share, and it is
         // drawn on the row above the body at `top`.
         //
@@ -595,24 +631,54 @@ impl State {
             );
             return;
         }
+        let pinned_rows = pinned.len();
         for (index, line) in pinned
-            .iter()
-            .chain(&history.entries[start..end])
+            .into_iter()
+            .chain(history.entries[start..end].iter().cloned())
             .enumerate()
         {
             // The margin is part of the string rather than an `x` offset, so a style range
-            // covers the row as it reads rather than the text alone. Nothing has to be padded
-            // out to the pane's width: the host deletes the viewport before every render, so
-            // there is no frame underneath for a short line to leave showing.
-            let text = Text::new(format!(" {line}"));
+            // covers the row as it reads rather than the text alone - which is why the styles
+            // are shifted along with it. Nothing has to be padded out to the pane's width: the
+            // host deletes the viewport before every render, so there is no frame underneath
+            // for a short line to leave showing.
+            let line = line.indent(1);
             // The pinned summary is the model's conclusion and the timeline is the record;
-            // dimming the record is what keeps the eye on the first.
-            let text = match index < pinned.len() {
-                true => text,
-                false => text.dim_range(..),
-            };
+            // dimming the record is what keeps the eye on the first. Dimmed *under* whatever
+            // the markdown asked for rather than instead of it, so a bulleted result still
+            // reads as a list down there.
+            let text = markdown::style_text(&line.text, &line.styles, index >= pinned_rows);
             print_text_with_coordinates(text, 0, body + index, Some(cols), None);
         }
+    }
+
+    /// [`Self::history_lines`], computed once per thing it depends on.
+    ///
+    /// The half is redrawn on every keystroke and on every strip hocus pushes, about once a
+    /// second, and rendering it is now a markdown parse plus a style per displayed character -
+    /// which `hocus/benches/transcript.rs` calls by far the most expensive thing a render does,
+    /// and which the conversation needed its own caches to afford. Nothing here holds still
+    /// except what the key names, so a hit is exact rather than approximate: walking the list,
+    /// resizing the pane, or a run gaining an entry all miss, and scrolling the half - the one
+    /// gesture that redraws fastest - always hits.
+    ///
+    /// A hit still clones what it hands back, which a borrow would not - but the caller wants
+    /// the lines by value and a page of them is a few dozen small strings, against a parse of
+    /// up to six thousand characters.
+    fn cached_history_lines(&mut self, width: usize) -> agents::HistoryLines {
+        let key = HistoryKey {
+            selection: self.selection_key(),
+            width,
+            generation: self.generation,
+        };
+        if let Some((cached, lines)) = &self.history_cache {
+            if *cached == key {
+                return lines.clone();
+            }
+        }
+        let lines = self.history_lines(width);
+        self.history_cache = Some((key, lines.clone()));
+        lines
     }
 
     /// What the history half has to draw for the row under the cursor, for a half `width`
@@ -622,6 +688,8 @@ impl State {
     /// A loaded run first - the whole point of asking hocus for one - then the idle summary
     /// hocus pushes with every strip, then nothing. Empty is a real answer here rather than a
     /// reason not to draw: see `render_history`.
+    ///
+    /// Not called from `render`: `cached_history_lines` is, for what it costs.
     fn history_lines(&self, width: usize) -> agents::HistoryLines {
         if let Some(run) = self
             .run
@@ -1236,7 +1304,10 @@ mod tests {
         let history = state.history_lines(38);
         assert_eq!(history.label, "3 · claude");
         assert!(
-            history.entries.iter().any(|row| row.contains("all green")),
+            history
+                .entries
+                .iter()
+                .any(|row| row.text.contains("all green")),
             "{history:?}"
         );
 
@@ -1263,16 +1334,19 @@ mod tests {
         assert!(history
             .pinned
             .iter()
-            .any(|row| row.contains("summary: History")));
+            .any(|row| row.text.contains("summary: History")));
         assert!(history
             .entries
             .iter()
-            .any(|row| row.contains("question: Keep")));
-        assert!(!history.entries.iter().any(|row| row.contains("Bash cargo")));
+            .any(|row| row.text.contains("question: Keep")));
         assert!(!history
             .entries
             .iter()
-            .any(|row| row.contains("result: Implemented")));
+            .any(|row| row.text.contains("Bash cargo")));
+        assert!(!history
+            .entries
+            .iter()
+            .any(|row| row.text.contains("result: Implemented")));
         assert!(!state.on_key(KeyWithModifier::new(BareKey::Enter)));
     }
 
@@ -1510,6 +1584,62 @@ mod tests {
             label.find('!').unwrap() > label.find('◆').unwrap(),
             "{label}"
         );
+    }
+
+    /// Rendering the half is a markdown parse per entry, and the half is redrawn on every
+    /// keystroke, so it is computed once per thing it depends on rather than once per frame.
+    ///
+    /// Read by poisoning the cache: a second render that draws the poison never recomputed,
+    /// which is the only observable difference between a hit and a very fast miss.
+    #[test]
+    fn the_history_is_rendered_once_per_thing_it_depends_on() {
+        let mut state = State::default();
+        state.set_rows(unfocused(vec![
+            StripRow::Project("archive".to_owned()),
+            StripRow::Run {
+                run_id: "claude:session-1".to_owned(),
+                text: "claude · hook history".to_owned(),
+                kind: "claude".to_owned(),
+            },
+        ]));
+        state.run = Some(a_run());
+        state.render(20, 50);
+
+        let poison = agents::HistoryLines {
+            label: "poison".to_owned(),
+            ..agents::HistoryLines::default()
+        };
+        let key = state.history_cache.as_ref().unwrap().0.clone();
+        state.history_cache = Some((key, poison.clone()));
+
+        assert_eq!(
+            state.cached_history_lines(50),
+            poison,
+            "same row, same width, same run - nothing to parse again"
+        );
+        assert_ne!(
+            state.cached_history_lines(40),
+            poison,
+            "a resize rewraps every line"
+        );
+
+        // and a run gaining an entry is a new history, at any width
+        state.history_cache = Some((state.history_cache.take().unwrap().0, poison.clone()));
+        let mut run = a_run();
+        run.entries.push(agents::RunEntry {
+            revision: 5,
+            event_id: None,
+            kind: agents::RunEntryKind::Question,
+            text: "Ship it?".to_owned(),
+        });
+        state.pipe(PipeMessage::new(
+            PipeSource::Plugin(0),
+            wire::AGENT_RUN_DETAIL,
+            &Some(serde_json::to_string(&run).unwrap()),
+            &None,
+            false,
+        ));
+        assert_ne!(state.cached_history_lines(40), poison);
     }
 
     /// Better nothing than a column of single words: a half too narrow to wrap into says so
