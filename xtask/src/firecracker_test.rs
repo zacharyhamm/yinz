@@ -41,9 +41,10 @@ fn build(sh: &Shell) -> anyhow::Result<()> {
     let provider = crate::target_dir().join("debug/zellij-firecracker");
     let guest = crate::target_dir().join(target).join("release/zellij");
     let image = test_dir.join("data/zellij/firecracker");
+    let project = crate::project_root();
     cmd!(
         sh,
-        "{provider} image build --zellij {guest} --output {image}"
+        "{provider} image build --name zellij-dev --project {project} --zellij {guest} --output {image}"
     )
     .envs(test_env())
     .run()

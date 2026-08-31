@@ -60,7 +60,10 @@ fn a_provider_boots_a_real_firecracker_remote_pane() {
     let provider = Provider::new(provider_path, Duration::from_secs(120)).unwrap();
     let session = "firecracker-test";
     let name = "pane";
-    let ensured = provider.ensure(session, name, None, None).unwrap();
+    let project = repo_root();
+    let ensured = provider
+        .ensure(session, name, Some("zellij-dev"), Some(&project))
+        .unwrap();
     let _vm = VmGuard {
         provider: provider.clone(),
         session,
@@ -76,7 +79,7 @@ fn a_provider_boots_a_real_firecracker_remote_pane() {
         command: PathBuf::from("/bin/sh"),
         args: vec![
             "-lc".to_owned(),
-            "printf 'firecracker-pane-ok '; zellij --version".to_owned(),
+            "set -e; test -f Cargo.toml; rustc --version >/dev/null; printf 'rustc-ok '; cargo x --help >/dev/null; printf 'cargo-x-ok '; codex --version >/dev/null; printf 'codex-ok '; claude --version >/dev/null; printf 'claude-ok firecracker-pane-ok '; zellij --version".to_owned(),
         ],
         cwd: ensured.cwd,
         remote_host: Some(ensured.ssh_host.clone()),
@@ -93,7 +96,10 @@ fn a_provider_boots_a_real_firecracker_remote_pane() {
         TIMEOUT,
         |output| {
             let text = String::from_utf8_lossy(&output.bytes);
-            (output.ended && text.contains("firecracker-pane-ok zellij")).then(|| text.into_owned())
+            (output.ended
+                && text
+                    .contains("rustc-ok cargo-x-ok codex-ok claude-ok firecracker-pane-ok zellij"))
+            .then(|| text.into_owned())
         },
         |output| format!("{output:?}"),
     );
