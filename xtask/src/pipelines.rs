@@ -97,6 +97,16 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
     sh.copy_file(&binary, &tmp).with_context(err_context)?;
     std::fs::rename(&tmp, &destination).with_context(err_context)?;
 
+    #[cfg(target_os = "linux")]
+    {
+        let provider = crate::target_dir().join("release/zellij-firecracker");
+        let provider_destination = destination.with_file_name("zellij-firecracker");
+        let provider_tmp = provider_destination.with_extension("xtask-install-tmp");
+        sh.copy_file(&provider, &provider_tmp)
+            .with_context(err_context)?;
+        std::fs::rename(provider_tmp, provider_destination).with_context(err_context)?;
+    }
+
     if flags.no_builtins {
         return Ok(());
     }

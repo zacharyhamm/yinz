@@ -127,6 +127,18 @@ xflags::xflags! {
             repeated args: OsString
         }
 
+        /// Build and run the ignored tests against a real Firecracker VM
+        cmd firecracker-test {
+            /// Build the guest image and provider
+            optional --build
+            /// Run the tests in an isolated network namespace
+            optional --test
+            /// Remove generated images and test state
+            optional --clean
+            /// Additional arguments for `--test`
+            repeated args: OsString
+        }
+
         /// Run the render throughput benchmarks
         cmd bench {
             /// Arguments to pass to criterion (e.g. `--save-baseline main`, `--sample-size 20`,
@@ -171,6 +183,7 @@ pub enum XtaskCmd {
     Test(Test),
     IntegrationTest(IntegrationTest),
     RemoteTest(RemoteTest),
+    FirecrackerTest(FirecrackerTest),
     Bench(Bench),
     Build(Build),
 }
@@ -272,6 +285,15 @@ pub struct IntegrationTest {
 
 #[derive(Debug)]
 pub struct RemoteTest {
+    pub args: Vec<OsString>,
+
+    pub build: bool,
+    pub test: bool,
+    pub clean: bool,
+}
+
+#[derive(Debug)]
+pub struct FirecrackerTest {
     pub args: Vec<OsString>,
 
     pub build: bool,

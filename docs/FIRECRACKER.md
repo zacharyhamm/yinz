@@ -1,9 +1,68 @@
 # Firecracker panes
 
-Zellij can open panes in named, session-scoped Firecracker VMs through an external provider.
-The provider owns VM images, jailer setup, networking, repository setup, credentials, and SSH
-readiness. Zellij only asks it for an SSH endpoint and then uses the existing remote-pane
-transport.
+Zellij can open panes in named, session-scoped Firecracker VMs. The Linux package includes the
+`zellij-firecracker` provider. Zellij asks the provider for an SSH endpoint and then uses the
+existing remote-pane transport.
+
+## Set up the included provider
+
+The included provider supports x86_64 Linux. It requires:
+
+- `/dev/kvm` with read and write access for the user
+- Firecracker on `PATH`
+- `curl`, `sha256sum`, `ssh-keygen`, `ssh-keyscan`, `unshare`, `unsquashfs`, and `mkfs.ext4`
+- `ip`, `nft`, and `systemd` for the one-time host network setup
+
+`cargo x install` installs `zellij-firecracker` beside `zellij` on Linux. Distribution packages
+must also install both binaries.
+
+Complete these steps once:
+
+1. Build the guest image as your normal user:
+
+   ```sh
+   zellij-firecracker image build --zellij /usr/bin/zellij
+   ```
+
+   The builder downloads pinned Firecracker CI kernel and Ubuntu 24.04 root file system artifacts.
+   It verifies both SHA-256 checksums. It then creates an 8 GiB sparse ext4 image and an SSH key.
+
+2. Install the host network as root for the Zellij user:
+
+   ```sh
+   sudo zellij-firecracker network setup --user "$USER"
+   ```
+
+   This command creates one bridge, 16 user-owned TAP devices, and nftables NAT rules. It also
+   installs a systemd unit that restores the network after boot.
+
+3. Check the setup:
+
+   ```sh
+   zellij-firecracker doctor
+   ```
+
+4. Add the provider to the Zellij configuration:
+
+   ```kdl
+   firecracker_provider "/usr/bin/zellij-firecracker"
+   firecracker_provider_timeout_secs 90
+   ```
+
+Use `--output` to select a different image directory. Use `--disk-size-gib` to change the sparse
+disk size. The builder writes its provider configuration to
+`$XDG_CONFIG_HOME/zellij/firecracker.json`.
+
+The network command accepts `--subnet`, `--taps`, and `--dns`. It uses
+`172.31.0.0/24`, 16 TAP devices, and `1.1.1.1` by default. Remove the host network with:
+
+```sh
+sudo zellij-firecracker network teardown --user "$USER"
+```
+
+This is a single-user developer provider. It does not use the Firecracker jailer and it is not a
+multi-user VM service. Each VM runs as the Zellij user. The provider deletes each writable guest
+disk when the VM stops.
 
 Configure one executable and, optionally, its timeout:
 
@@ -37,11 +96,11 @@ Requests:
 {"version":1,"action":"list","session":null}
 ```
 
-An `ensure` response supplies an SSH URL and may supply the guest working directory used when
-the pane request omitted `--cwd`:
+An `ensure` response supplies an SSH URL. It can also supply the guest working directory, SSH key,
+and known-hosts file:
 
 ```json
-{"version":1,"ssh_host":"ssh://zellij@127.0.0.1:2201","cwd":"/workspace"}
+{"version":1,"ssh_host":"ssh://root@172.31.0.2:22","cwd":"/workspace","ssh_identity_file":"/home/me/.local/share/zellij/firecracker/id_ed25519","ssh_known_hosts_file":"/home/me/.local/state/zellij/firecracker/vms/abc/known_hosts"}
 ```
 
 `stop` and `stop_session` return `{"version":1}`. `list` returns:
@@ -50,7 +109,7 @@ the pane request omitted `--cwd`:
 {"version":1,"vms":[{"session":"work","name":"review","state":"running"}]}
 ```
 
-The guest must have a matching Zellij binary on `PATH`, and OpenSSH must permit Unix-socket
+The guest must have a matching Zellij binary on `PATH`. OpenSSH must permit Unix-socket
 forwarding. Provider failures, invalid JSON, output over 1 MiB, and timeouts are reported to the
 pane or management command.
 
@@ -77,4 +136,6 @@ reporting bridge. Zellij passes only the remote pane's existing terminal/locale 
 environment values explicitly supplied to `agent_spawn`; it does not copy host credentials or
 the rest of the host environment.
 
-This repository does not include a production Firecracker provider or VM image.
+The provider stores VM state under `$XDG_STATE_HOME/zellij/firecracker`. It stores the base image
+under `$XDG_DATA_HOME/zellij/firecracker`. A crashed server can leave a VM running, so use the
+management commands above to inspect and stop it.

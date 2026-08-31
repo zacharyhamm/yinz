@@ -15,6 +15,7 @@ cargo x run -- -l strider
 cargo x integration-test # whole-app tests (needs cargo-nextest)
 cargo x bench            # render throughput benchmarks (criterion); not part of the gate
 cargo x remote-test --build && cargo x remote-test --test  # remote panes, real ssh in docker
+cargo x firecracker-test --build && cargo x firecracker-test --test  # real VM through /dev/kvm
 ```
 
 `cargo x` is an alias for `cargo xtask`. `cargo x --help` lists everything.
@@ -65,6 +66,8 @@ work directly**:
 - **Integration tests:** `cargo x integration-test -E 'test(resize)'`, or a bare name filter.
 - **Remote-pane tests:** `cargo x remote-test --test -- --exact <name>`. They are
   `#[ignore]`d and need `--build` first (docker); see CONTRIBUTING.md.
+- **Firecracker tests:** `cargo x firecracker-test --test`. They are `#[ignore]`d and need
+  `--build` first; see `docs/FIRECRACKER.md`.
 
 `x test`'s separate doctest pass follows the narrowing: a `-p`-selected run runs only that
 package's doctests, and a run narrowed by a test name or filterset skips them (`cargo test --doc`
