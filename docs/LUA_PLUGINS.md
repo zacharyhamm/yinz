@@ -788,6 +788,13 @@ end
 return M
 ```
 
+`hocus_extension_name` and `hocus_extension_path` are in the configuration only when Hocus was
+the one that launched the file — that is how the registration says which extension it is for.
+Reloaded by hand (`zellij plugins reload hocus/weather`, or from a layout) they are `nil` and the
+registration goes nowhere, so guard `register()` on them and log which of the two happened;
+`example-plugins/todo-extension.lua` does. Hocus's own `plugin_reload` always launches it the way
+that registers.
+
 Every tool declares one safety mode:
 
 | Mode | Planning mode | Confirmation |

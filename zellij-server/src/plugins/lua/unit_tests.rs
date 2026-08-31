@@ -33,6 +33,7 @@ fn test_env() -> PluginEnv {
             relative_path: None,
         },
         permissions: Arc::new(Mutex::new(None)),
+        permissions_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         senders: ThreadSenders::default().silently_fail_on_send(),
         wasi_ctx: None,
         plugin_own_data_dir: PathBuf::from("."),
@@ -1063,6 +1064,19 @@ fn the_todo_examples_load_and_the_pane_renders_its_keys() {
     );
     plugin.pipe(&discover).unwrap();
 
+    // The same file reloaded by hand has none of that configuration, and the registration it
+    // would send is addressed to nothing. It has to say so rather than raise or go quiet.
+    let mut env = test_env();
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+    let mut unlaunched = load_lua_plugin(&extension, "todo.lua", env).unwrap();
+    unlaunched.load(&BTreeMap::new()).unwrap();
+    unlaunched
+        .update(&Event::PermissionRequestResult(
+            zellij_utils::data::PermissionStatus::Granted,
+        ))
+        .unwrap();
+    unlaunched.pipe(&discover).unwrap();
+
     let mut env = test_env();
     env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
     let pane = example_plugin("todo-pane.lua");
@@ -1073,14 +1087,16 @@ fn the_todo_examples_load_and_the_pane_renders_its_keys() {
 
     // The input mode is the part a rewrite is most likely to drop, so it is the part pressed
     // here: `a` opens it, and every key after that is text until Esc.
-    for key in ["a", "h", "i"] {
+    // A space among them on purpose: there is no `Space` key, so a plugin that compares against
+    // one has a branch that never runs. It arrives as the character it prints.
+    for key in ["a", "h", "i", " ", "t"] {
         let key = BareKey::Char(key.chars().next().unwrap());
         plugin
             .update(&Event::Key(KeyWithModifier::new(key)))
             .unwrap();
     }
     let rendered = component_text(&String::from_utf8(plugin.render(10, 80).unwrap()).unwrap());
-    assert!(rendered.contains("new: hi_"), "got: {rendered}");
+    assert!(rendered.contains("new: hi t_"), "got: {rendered}");
     plugin
         .update(&Event::Key(KeyWithModifier::new(BareKey::Esc)))
         .unwrap();
@@ -1125,6 +1141,33 @@ fn a_denial_before_any_answer_says_to_wait_for_the_answer() {
     assert!(
         !rendered.contains("permission_request_result"),
         "an answered plugin is not waiting for anything, got: {rendered}"
+    );
+}
+
+/// A plugin that never asked is in the same `permissions: None` state as one whose answer has
+/// not arrived, and telling it to wait for an answer names a moment that will never come. Its
+/// fix is the ordinary one: ask.
+#[test]
+fn a_denial_with_no_request_behind_it_says_to_ask() {
+    let source = r#"
+        local zellij = require("zellij")
+        local M = {}
+        function M.load()
+          M.err = tostring(select(2, pcall(function()
+            zellij.data.fetch { entity = "note" }
+          end)))
+        end
+        function M.render() return M.err end
+        return M
+    "#;
+    let mut plugin = load_lua_plugin(source, "test.lua", test_env()).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    let rendered = String::from_utf8(plugin.render(10, 200).unwrap()).unwrap();
+    assert!(rendered.contains("PluginData"), "got: {rendered}");
+    assert!(rendered.contains("request_permission"), "got: {rendered}");
+    assert!(
+        !rendered.contains("permission_request_result"),
+        "nothing is pending for a plugin that never asked, got: {rendered}"
     );
 }
 

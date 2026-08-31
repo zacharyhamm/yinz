@@ -30,7 +30,7 @@ use zellij_utils::errors::prelude::*;
 
 use crate::plugins::plugin_map::{PluginEnv, ResponseSink};
 use crate::plugins::zellij_exports::{
-    check_command_permission, permissions_answered, run_plugin_command,
+    check_command_permission, permission_answer_pending, run_plugin_command,
 };
 use command::plugin_command_from_lua;
 
@@ -168,12 +168,13 @@ fn dispatch(
     // function call, and silently doing nothing is the worst answer it could get.
     if let (PermissionStatus::Denied, Some(permission)) = check_command_permission(&env, &command) {
         // Two different failures wear the same denial, and they have opposite fixes. A plugin
-        // whose permissions have not been *answered* yet - which is every plugin for the whole
-        // of `load`, even one whose permissions were granted long ago, because the grant is
-        // carried by an event that has not arrived - is refused everything. Telling that author
-        // to ask in `load` names what they already did; what they need is to wait for the
-        // answer. See `permissions_answered`.
-        if !permissions_answered(&env) {
+        // that has asked and not yet been *answered* - which is every plugin that asks in `load`,
+        // for the whole of `load`, even one whose permissions were granted long ago, because the
+        // grant is carried by an event that has not arrived - is refused everything. Telling that
+        // author to ask in `load` names what they already did; what they need is to wait for the
+        // answer. A plugin that never asked gets the ordinary denial below, which is its actual
+        // fix. See `permission_answer_pending`.
+        if permission_answer_pending(&env) {
             return Err(mlua::Error::runtime(format!(
                 "'{spelling}' needs the '{permission}' permission, and no permission has been \
                  answered for this plugin yet - a grant arrives as an event, so nothing gated \

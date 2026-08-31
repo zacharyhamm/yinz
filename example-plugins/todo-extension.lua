@@ -72,13 +72,25 @@ local function define()
   }
 end
 
+-- Hocus names the extension it launched in the plugin's configuration, and the registration is
+-- addressed with those two values. They are only there when hocus did the launching: reloaded
+-- by hand (`zellij plugins reload hocus/todo`, or from a layout) this plugin runs perfectly
+-- well and registers nothing, so say which of the two happened rather than sending a payload
+-- hocus will drop.
 local function register()
+  local config = M.config or {}
+  local namespace, path = config.hocus_extension_name, config.hocus_extension_path
+  if not (namespace and path) then
+    zellij.log("todo: not launched by hocus, so its tools are not registered - ask hocus to "
+      .. "reload it (plugin_reload name=hocus/todo) to pick them up")
+    return
+  end
   zellij.message_to_plugin {
     message_name = "hocus_extension_register",
     message_payload = zellij.json.encode {
       version = 1,
-      namespace = M.config.hocus_extension_name,
-      path = M.config.hocus_extension_path,
+      namespace = namespace,
+      path = path,
       tools = TOOLS,
     },
   }

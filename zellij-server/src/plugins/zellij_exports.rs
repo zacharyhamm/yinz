@@ -25,7 +25,7 @@ use std::{
     path::{Component, Path, PathBuf},
     process,
     str::FromStr,
-    sync::OnceLock,
+    sync::{atomic, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -1015,6 +1015,11 @@ fn grant_plugin_permissions(
 }
 
 fn request_permission(env: &PluginEnv, permissions: Vec<PermissionType>) -> Result<()> {
+    // Before either branch: from here on this plugin is waiting for an answer, and a denial it
+    // meets in the meantime is a timing problem rather than a missing request. See
+    // [`permission_answer_pending`].
+    env.permissions_requested
+        .store(true, atomic::Ordering::SeqCst);
     if PermissionCache::from_path_or_default(None)
         .check_permissions(env.plugin.location.to_string(), &permissions)
     {
@@ -7115,6 +7120,24 @@ pub fn wasi_read_bytes(plugin_env: &PluginEnv) -> Result<Vec<u8>> {
         .with_context(|| "failed to deserialize object from WASI env".to_string())
 }
 
+/// Whether this plugin has asked for permissions and is still waiting to hear back.
+///
+/// The window is real and every plugin passes through it: the grant, cached or freshly prompted
+/// for, arrives as a `PermissionRequestResult` event, and `load` runs before any event does, so
+/// a plugin that asks in `load` is refused everything for the rest of it however long ago the
+/// permission was granted. A denial made in that window has a different fix from one made after
+/// (wait for the answer, rather than ask), and a different fix again from the one a plugin that
+/// never asked at all needs, which is why the request is tracked separately from its answer.
+/// Only the Lua runtime can pass the difference on: a wasm guest is mid-call and cannot be
+/// handed a refusal at all.
+pub(crate) fn permission_answer_pending(plugin_env: &PluginEnv) -> bool {
+    !plugin_env.plugin.is_builtin()
+        && plugin_env
+            .permissions_requested
+            .load(atomic::Ordering::SeqCst)
+        && plugin_env.permissions.lock().unwrap().is_none()
+}
+
 // TODO: move to permissions?
 /// Whether `plugin_env` may run `command`, and which permission it is short of if not.
 ///
@@ -7122,17 +7145,6 @@ pub fn wasi_read_bytes(plugin_env: &PluginEnv) -> Result<Vec<u8>> {
 /// no - the denied branch of [`run_plugin_command`] logs and returns, because the guest is
 /// mid-call and has no way to receive a refusal - but a Lua plugin's command is an ordinary
 /// function call that can raise.
-/// Whether anything has answered this plugin's permissions yet.
-///
-/// `None` is not "denied everything": it is "nobody has said yet", which is where every plugin
-/// starts and where it stays for the whole of `load` - the grant, cached or freshly prompted
-/// for, arrives as a `PermissionRequestResult` event, and `load` runs before any event does. A
-/// denial made in that window has a different fix from one made after, and only the Lua runtime
-/// can pass the difference on (a wasm guest is mid-call and cannot be handed a refusal at all).
-pub(crate) fn permissions_answered(plugin_env: &PluginEnv) -> bool {
-    plugin_env.plugin.is_builtin() || plugin_env.permissions.lock().unwrap().is_some()
-}
-
 pub(crate) fn check_command_permission(
     plugin_env: &PluginEnv,
     command: &PluginCommand,

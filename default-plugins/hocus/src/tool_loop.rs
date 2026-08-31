@@ -992,9 +992,9 @@ impl State {
                         if !granted.is_empty() {
                             tools::grant_permissions(&target, &granted);
                         }
-                        let backup = tools::keep_replaced(&name, replaced.as_deref());
+                        let backup = tools::keep_replaced(&name, replaced.as_deref(), &source);
                         tools::with_lint(
-                            tools::write_report(&name, &granted, backup.as_deref()),
+                            tools::write_report(&name, &granted, &backup),
                             &name,
                             &source,
                         )
@@ -1034,14 +1034,19 @@ impl State {
                 }
                 let result = match tools::plugin_fs_write(&fs_path, &edited, true) {
                     Ok(_) => {
-                        // An edit may add a `request_permission` the write never granted.
-                        let granted = tools::requested_permissions(&edited);
+                        // An edit may add a `request_permission` the write never granted - and
+                        // only the text being inserted may, because that text is the whole of
+                        // what the confirmation named (see `tools::consequence`). Reading the
+                        // permissions off the edited *file* would grant what was never in the
+                        // sentence the user said yes to.
+                        let granted =
+                            tools::requested_permissions(args.new_string.as_deref().unwrap_or(""));
                         if !granted.is_empty() {
                             tools::grant_permissions(&target, &granted);
                         }
-                        let backup = tools::keep_replaced(&name, Some(&previous));
+                        let backup = tools::keep_replaced(&name, Some(&previous), &edited);
                         tools::with_lint(
-                            tools::edit_report(&name, &granted, backup.as_deref()),
+                            tools::edit_report(&name, &granted, &backup),
                             &name,
                             &edited,
                         )

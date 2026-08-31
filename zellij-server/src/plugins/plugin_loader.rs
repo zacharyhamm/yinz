@@ -359,6 +359,7 @@ impl<'a> PluginLoader<'a> {
             owner_client_id: self.client_id,
             plugin: self.plugin_config.clone(), // TODO: change field name in PluginEnv to plugin_config
             permissions: Arc::new(Mutex::new(None)),
+            permissions_requested: Arc::new(AtomicBool::new(false)),
             senders: self.senders.clone(),
             wasi_ctx,
             plugin_own_data_dir: self.plugin_own_data_dir.clone(),
@@ -526,6 +527,7 @@ impl<'a> PluginLoader<'a> {
             owner_client_id: self.client_id,
             plugin: plugin_config,
             permissions: Arc::new(Mutex::new(None)),
+            permissions_requested: Arc::new(AtomicBool::new(false)),
             senders: self.senders.clone(),
             wasi_ctx: Some(wasi_ctx),
             plugin_own_data_dir: self.plugin_own_data_dir.clone(),

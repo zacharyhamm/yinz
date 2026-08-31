@@ -99,8 +99,6 @@ local function typing(key)
     commit()
   elseif key == "Backspace" then
     M.input = M.input:sub(1, -2)
-  elseif key == "Space" then
-    M.input = M.input .. " "
   elseif #key == 1 then
     M.input = M.input .. key
   end
@@ -125,7 +123,9 @@ zellij.on("key", function(event)
     if todo then
       M.input, M.editing = todo.title, todo.id
     end
-  elseif key == "Enter" or key == "Space" then
+  -- There is no `Space` key: a space arrives as `Char(" ")`, and `zellij.key_name` hands it
+  -- over as the character itself. Everything a keyboard prints is one character wide here.
+  elseif key == "Enter" or key == " " then
     local todo = selected_todo()
     if todo then
       apply(zellij.data.update("todo", zellij.data.eq("id", todo.id), { done = not todo.done }))
