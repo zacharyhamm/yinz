@@ -1287,17 +1287,6 @@ impl State {
 
         let items = self.sse.feed(chunk);
         for item in items {
-            // Something real arrived, so the outage is over. Cleared here rather than on the
-            // next success so the attempt count is per-outage: a rate limit an hour later
-            // starts its backoff from the beginning rather than from wherever the last one
-            // left off.
-            //
-            // An error is not arrival. Clearing on the way past one would hand
-            // `arm_streamed_retry` a count of zero every time, so the cap could never be
-            // reached and the countdown would say "1/4" forever.
-            if !matches!(item, SseItem::ApiError(_)) {
-                self.retry = None;
-            }
             match item {
                 SseItem::Delta(text) => {
                     self.append_to_reply(&text);
@@ -1400,6 +1389,9 @@ impl State {
                             }),
                         );
                     } else if !calls.is_empty() {
+                        // A complete response ends the outage. Partial fragments do not: a
+                        // provider may still end the same stream with another rate limit.
+                        self.retry = None;
                         // DeepSeek requires the prose, reasoning and tool calls
                         // from one response to remain one assistant message.
                         let (prior_text, prior_reasoning) = self
@@ -1523,6 +1515,7 @@ impl State {
                         );
                     } else {
                         // Successful assistant reply.
+                        self.retry = None;
                         let reply = self
                             .reply()
                             .map(|message| message.content.clone())

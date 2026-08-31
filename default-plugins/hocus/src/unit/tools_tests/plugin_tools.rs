@@ -560,42 +560,40 @@ fn a_write_confirmation_names_the_permissions_it_grants() {
     assert!(!without.contains("grants"), "{without}");
 }
 
-/// An edit's permissions are the ones in the text being inserted, and only those: that is the
-/// clause the user is shown, so it has to be the set `tool_loop` grants. Reading them off the
-/// edited file would grant permissions that were never in the sentence anyone agreed to.
+/// An edit grants the set difference between the complete source before and after it. Looking
+/// only at `new_string` mistakes an existing permission repeated there for a new grant.
 #[test]
-fn an_edit_confirmation_names_the_permissions_in_the_text_it_inserts() {
-    let edit = call(
-        "plugin_edit",
-        r#"{"name":"keys","old_string":"-- todo","new_string":"zellij.request_permission { \"read_files\" }"}"#,
-    );
-    let sentence = consequence(&edit).unwrap();
-    assert!(sentence.contains("changes keys.lua"), "{sentence}");
-    assert!(
-        sentence.ends_with("and grants it: read_files"),
-        "{sentence}"
-    );
-    let args = Args::parse(&edit.arguments).unwrap();
+fn an_edit_grants_only_permissions_added_to_the_complete_source() {
+    let args = Args::parse(
+        r#"{"old_string":"\"read_files\"","new_string":"\"read_files\", \"write_files\""}"#,
+    )
+    .unwrap();
+    let (_, granted) =
+        edit_source_and_permissions(r#"zellij.request_permission { "read_files" }"#, &args)
+            .unwrap();
     assert_eq!(
-        requested_permissions(args.new_string.as_deref().unwrap_or("")),
-        vec![PermissionType::ReadFiles],
-        "the grant in `tool_loop` reads the same text this sentence does"
+        granted,
+        vec![PermissionType::WriteFiles],
+        "read_files was already present"
     );
-    // The rest of the file is not part of the sentence, so it is not part of the grant.
-    let elsewhere = "zellij.request_permission { \"write_files\" }\n-- todo\n";
-    assert!(
-        !requested_permissions(
-            &apply_edit(
-                elsewhere,
-                "-- todo",
-                args.new_string.as_deref().unwrap_or(""),
-                false
-            )
-            .unwrap()
-        )
-        .is_empty(),
-        "the edited file asks for more than the edit did, which is the point"
-    );
+
+    let unchanged = Args::parse(r#"{"old_string":"old","new_string":"new"}"#).unwrap();
+    assert!(edit_source_and_permissions(
+        "zellij.request_permission { \"read_files\" }\n-- old",
+        &unchanged,
+    )
+    .unwrap()
+    .1
+    .is_empty());
+
+    let removed = Args::parse(r#"{"old_string":", \"write_files\"","new_string":""}"#).unwrap();
+    assert!(edit_source_and_permissions(
+        r#"zellij.request_permission { "read_files", "write_files" }"#,
+        &removed,
+    )
+    .unwrap()
+    .1
+    .is_empty());
 }
 
 /// A toast is a glance. `source` was capped for that reason and an edit's two code arguments

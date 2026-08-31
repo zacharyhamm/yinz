@@ -479,6 +479,8 @@ fn a_reply_that_lands_clears_the_retry_count() {
         false,
         None,
     );
+    assert!(state.retry.is_some(), "a partial reply is not success yet");
+    state.on_chunk(&resent, b"", true, None);
 
     assert!(state.retry.is_none());
 }
@@ -571,22 +573,67 @@ fn the_countdown_stops_once_the_resend_is_out() {
 #[test]
 fn a_stream_that_keeps_failing_counts_towards_the_cap() {
     let mut state = ready_state();
-    let refuse = |state: &mut State| {
+    let refuse_after_partial = |state: &mut State| {
         let id = state.active_stream_id().expect("a request in flight");
+        state.on_chunk(&id, &delta_frame("partial"), false, None);
         state.on_chunk(&id, &streamed_rate_limit("1s"), false, None);
     };
 
-    refuse(&mut state);
-    assert_eq!(state.retry.expect("armed").attempt, 0);
-    state.on_timer(2.0);
-    refuse(&mut state);
+    for attempt in 0..MAX_RETRIES {
+        refuse_after_partial(&mut state);
+        assert_eq!(
+            state.retry.expect("armed").attempt,
+            attempt,
+            "partial content did not reset attempt {attempt}"
+        );
+        state.on_timer(2.0);
+    }
+    refuse_after_partial(&mut state);
 
-    assert_eq!(
-        state.retry.expect("armed again").attempt,
-        1,
-        "the second refusal is the second attempt"
+    assert!(state.retry.is_none(), "the cap is reachable");
+    assert!(state.messages.iter().any(|m| m.role == Role::Error));
+}
+
+/// A refused stream can overlap a command. Once the command lands, its queued follow-up and a
+/// user ask must leave the request slot to the retry, including across the refused terminator.
+#[test]
+fn a_retry_takes_the_next_request_after_a_concurrent_command_finishes() {
+    let mut state = ready_state();
+    state.pending = vec![ToolCall {
+        id: "command".into(),
+        name: "slack_read".into(),
+        arguments: r##"{"channel":"#general"}"##.into(),
+    }]
+    .into();
+    state.status = Status::AwaitingCommand;
+    state.owes_reply = true;
+    state.input.set_text("queued ask".to_owned());
+    state.submit();
+
+    state.on_response(429, &rate_limit_body("30s"), &stream_context("hocus-1"));
+    state.on_command_result(
+        Some(0),
+        b"done",
+        b"",
+        &BTreeMap::from([("tool_call_id".to_owned(), "command".to_owned())]),
     );
-    assert!(state.loader().expect("waiting").contains("2/4"));
+
+    assert!(matches!(state.status, Status::AwaitingRetry));
+    assert!(state.owes_reply, "the tool follow-up is still owed");
+    assert_eq!(state.asks.len(), 1, "the queued ask is still waiting");
+
+    state.on_chunk("hocus-1", b"", true, None);
+    assert!(matches!(state.status, Status::AwaitingRetry));
+    assert!(
+        state.stream.is_none(),
+        "the refused stream is fully terminated"
+    );
+
+    state.on_timer(31.0);
+    assert!(state.is_receiving(), "the retry owns the next request");
+    assert!(state.retry.is_some_and(|retry| retry.due_ms.is_none()));
+    assert!(state.owes_reply);
+    assert_eq!(state.asks.len(), 1);
 }
 
 /// Ctrl-c while the resend is in flight. The stream is a stream like any other: cancelling has
