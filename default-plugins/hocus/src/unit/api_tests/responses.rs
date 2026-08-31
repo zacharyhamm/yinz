@@ -314,7 +314,7 @@ fn api_key_selects_the_endpoint() {
     assert_eq!(cfg.api, Api::Responses);
     assert_eq!(cfg.url, "https://api.openai.com/v1/responses");
 
-    let cfg = Config::resolve(&BTreeMap::new(), &env).unwrap();
+    let cfg = Config::resolve(&map(&[("api", "chat")]), &env).unwrap();
     assert_eq!(cfg.api, Api::Chat);
     assert_eq!(cfg.url, "https://api.openai.com/v1/chat/completions");
 }
@@ -339,4 +339,37 @@ fn reasoning_effort_accepts_the_openai_values() {
         let cfg = Config::resolve(&map(&[("reasoning_effort", effort)]), &env).unwrap();
         assert_eq!(cfg.reasoning_effort.as_deref(), Some(effort));
     }
+}
+
+/// The built-in default `base_url` points at OpenAI's own endpoint, which
+/// refuses `reasoning_effort` alongside `tools` on chat/completions - so an
+/// unconfigured hocus should reach for the one transport that accepts both,
+/// not silently drop the setting.
+#[test]
+fn openai_base_url_defaults_to_responses_and_medium_reasoning() {
+    let env = map(&[("OPENAI_API_KEY", "sk-test")]);
+    let cfg = Config::resolve(&BTreeMap::new(), &env).unwrap();
+    assert_eq!(cfg.api, Api::Responses);
+    assert_eq!(cfg.url, "https://api.openai.com/v1/responses");
+    assert_eq!(cfg.reasoning_effort.as_deref(), Some("medium"));
+
+    // An explicit reasoning_effort still wins over the OpenAI default
+    // (`api_key_selects_the_endpoint` covers the same for `api`).
+    let cfg = Config::resolve(&map(&[("reasoning_effort", "low")]), &env).unwrap();
+    assert_eq!(cfg.reasoning_effort.as_deref(), Some("low"));
+}
+
+/// Everyone else - a compatible proxy, a local model, DeepSeek, OpenRouter -
+/// keeps today's defaults: `reasoning_effort` and `/v1/responses` are OpenAI
+/// specifics that another endpoint may well reject.
+#[test]
+fn non_openai_base_url_keeps_the_old_defaults() {
+    let env = map(&[
+        ("OPENAI_API_KEY", "sk-test"),
+        ("OPENAI_BASE_URL", "http://localhost:11434"),
+    ]);
+    let cfg = Config::resolve(&BTreeMap::new(), &env).unwrap();
+    assert_eq!(cfg.api, Api::Chat);
+    assert_eq!(cfg.url, "http://localhost:11434/v1/chat/completions");
+    assert_eq!(cfg.reasoning_effort, None);
 }

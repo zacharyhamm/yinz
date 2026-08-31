@@ -76,6 +76,18 @@ pub fn models_url(base: &str) -> String {
     format!("{}/models", api_root(base))
 }
 
+/// Whether `base_url` names OpenAI's own API, as opposed to a compatible proxy, a
+/// local model server, or another provider. Only OpenAI's endpoint understands
+/// `reasoning_effort` and `/v1/responses`, so this gates their defaults in hocus.
+pub fn is_openai(base_url: &str) -> bool {
+    api_root(base_url)
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .is_some_and(|host| host.eq_ignore_ascii_case("api.openai.com"))
+}
+
 /// The `/v1` root a configured `base_url` names, whichever endpoint it was written as.
 fn api_root(base: &str) -> String {
     let base = base.trim().trim_end_matches('/');

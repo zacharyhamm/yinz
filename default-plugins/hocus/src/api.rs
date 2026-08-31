@@ -24,8 +24,8 @@ use crate::{Message, Reasoning, ReasoningKey, Role};
 // summarise an idle agent, cannot disagree with us about where it is. Re-exported rather
 // than re-implemented: every call site here already spells them unqualified.
 pub use hocus_proto::llm::{
-    api_error_message, completions_url, models_url, non_empty, responses_url, DEFAULT_API_KEY_ENV,
-    DEFAULT_BASE_URL, DEFAULT_MODEL,
+    api_error_message, completions_url, is_openai, models_url, non_empty, responses_url,
+    DEFAULT_API_KEY_ENV, DEFAULT_BASE_URL, DEFAULT_MODEL,
 };
 /// SearxNG's own docker-compose default port.
 pub const DEFAULT_SEARCH_URL: &str = "http://localhost:8888";
@@ -56,8 +56,9 @@ end by asking permission; the user is asked for you.";
 /// Which of the two wire protocols an endpoint is spoken to with.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Api {
-    /// `/v1/chat/completions`. The default, because it is the only one every
-    /// OpenAI-compatible provider implements.
+    /// `/v1/chat/completions`. The default for every provider except OpenAI's
+    /// own endpoint, because it is the only one every OpenAI-compatible
+    /// provider implements.
     #[default]
     Chat,
     /// OpenAI's `/v1/responses`. Opt-in: OpenAI's reasoning models refuse
@@ -157,9 +158,16 @@ impl Config {
             .unwrap_or_else(|| DEFAULT_MODEL.to_owned());
         let api_key_env =
             non_empty(kdl, "api_key_env").unwrap_or_else(|| DEFAULT_API_KEY_ENV.to_owned());
+        // Unset defaults to `responses` against OpenAI's own endpoint, since that is
+        // the only one of the two it can send `reasoning_effort` and `tools` to
+        // together, and to `chat` everywhere else, since it's the only one every
+        // OpenAI-compatible provider implements. An explicit value always wins.
+        let openai = is_openai(&base_url);
         let api = match enum_setting(kdl, "api", &["chat", "responses"]) {
             Ok(Some(value)) if value == "responses" => Api::Responses,
-            Ok(_) => Api::Chat,
+            Ok(Some(_)) => Api::Chat,
+            Ok(None) if openai => Api::Responses,
+            Ok(None) => Api::Chat,
             Err(message) => {
                 return Err(ConfigError {
                     message,
@@ -201,6 +209,10 @@ impl Config {
         // OpenAI's, the rest DeepSeek's and OpenRouter's. `none` is also the
         // documented way to keep tools working on chat/completions against a
         // reasoning model, which refuses any other effort beside a `tools` array.
+        // Unset defaults to `medium` against OpenAI's own endpoint, since it is
+        // the one endpoint guaranteed to understand the field, and to unset
+        // everywhere else, since sending it to an endpoint that does not expect
+        // it is the same class of problem this key exists to avoid.
         let reasoning_effort = enum_setting(
             kdl,
             "reasoning_effort",
@@ -211,7 +223,8 @@ impl Config {
             base_url: base_url.clone(),
             model: model.clone(),
             api_key_env: api_key_env.clone(),
-        })?;
+        })?
+        .or_else(|| openai.then(|| "medium".to_owned()));
         // Anything but an explicit "false" leaves tools on: a typo should not
         // silently disable them.
         let tools =
