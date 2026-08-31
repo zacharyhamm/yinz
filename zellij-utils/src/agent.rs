@@ -596,24 +596,22 @@ fn tool_summary(event: &HookEvent) -> Option<String> {
 /// reshapes `AskUserQuestion`'s arguments must cost us the question's text, not the fact that a
 /// question was asked.
 pub fn waiting_detail(event: &HookEvent) -> Option<String> {
+    let question = || {
+        event
+            .tool_input
+            .as_ref()
+            .and_then(|input| input.get("questions")?.get(0))
+            .and_then(|question| {
+                let text = question.get("question").and_then(|v| v.as_str());
+                let header = question.get("header").and_then(|v| v.as_str());
+                text.or(header).and_then(clean_line)
+            })
+            .or_else(|| Some("a question".to_owned()))
+    };
     match event.hook_event_name.as_str() {
         "PreToolUse" => match event.tool_name.as_deref() {
-            Some("AskUserQuestion") => event
-                .tool_input
-                .as_ref()
-                .and_then(|input| input.get("questions")?.get(0).cloned())
-                .and_then(|question| {
-                    let text = question.get("question").and_then(|v| v.as_str());
-                    let header = question.get("header").and_then(|v| v.as_str());
-                    text.or(header).and_then(clean_line)
-                })
-                .or_else(|| Some("a question".to_owned())),
+            Some("AskUserQuestion" | "request_user_input") => question(),
             Some("ExitPlanMode") => Some("approve the plan".to_owned()),
-            // Codex's question. Nothing is read out of its `tool_input`: the shape of that
-            // one is not pinned here the way Claude Code's shipped schemas pin the rest, and
-            // a wrong key read defensively is a wait with no words rather than the wrong
-            // ones. The same fallback `AskUserQuestion` lands on when its arguments move.
-            Some("request_user_input") => Some("a question".to_owned()),
             _ => None,
         },
         // The tool it wants to run is the whole of what is being asked. No fallback:
@@ -1089,13 +1087,19 @@ mod tests {
         // Codex's question, which is a tool call and not an event of its own.
         let question = HookEvent {
             tool_name: Some("request_user_input".to_owned()),
+            tool_input: Some(serde_json::json!({
+                "questions": [{"question": "Which history should we keep?"}]
+            })),
             ..event("PreToolUse")
         };
         match hook_outcome("codex", &question) {
             HookOutcome::Reported(info) => {
                 assert_eq!(info.kind, "codex");
                 assert_eq!(info.state, AgentState::Waiting);
-                assert_eq!(info.waiting_on.as_deref(), Some("a question"));
+                assert_eq!(
+                    info.waiting_on.as_deref(),
+                    Some("Which history should we keep?")
+                );
             },
             other => panic!("{other:?}"),
         }
