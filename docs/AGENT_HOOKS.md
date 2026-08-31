@@ -231,11 +231,12 @@ The same hook stream also builds one durable run per agent `session_id`. It stor
 - explicit questions from `AskUserQuestion` and `request_user_input`.
 
 Tool calls, permissions, errors, subagent boundaries and routine lifecycle events are omitted.
-Final results are retained as hidden summarization input, so a failed or superseded request can
-carry them into the next summary, but they are not drawn in the timeline. Tool output is never
-stored. The retained entries stay in `shared:hocus` for the Zellij session. Summarization advances
-`summarized_revision` but does not replace or delete entries. Legacy hook scripts without a
-session ID get a pane-and-start-time fallback ID.
+Final results are retained as hidden summarization input while a run is active, so a failed or
+superseded request can carry them into the next summary. If the run is archived first, its
+unsummarized results are drawn as the durable fallback; accepted results remain hidden. Tool
+output is never stored. The retained entries stay in `shared:hocus` for the Zellij session.
+Summarization advances `summarized_revision` but does not replace or delete entries. Legacy hook
+scripts without a session ID get a pane-and-start-time fallback ID.
 
 The agents panel shows active runs on their live agent rows and completed runs under an
 `archive` header, newest first. It loads 50 archive rows at a time; select `load older runs…`
