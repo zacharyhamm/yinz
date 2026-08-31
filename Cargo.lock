@@ -1391,7 +1391,6 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "hocus-proto",
- "pulldown-cmark",
  "serde",
  "serde_json",
  "unicode-width 0.2.2",
@@ -1431,6 +1430,7 @@ dependencies = [
 name = "hocus-proto"
 version = "0.1.0"
 dependencies = [
+ "pulldown-cmark",
  "serde",
  "serde_json",
  "tempfile",
