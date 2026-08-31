@@ -579,7 +579,7 @@ pub struct State {
     ///
     /// An overlay's coordinates are resolved against the whole session surface
     /// (`OverlayPanes::surface`), which a tab occupies in full. `overlay::surface_of` reads the
-    /// pair off a `TabInfo`; `overlay::overlay_geometry` does the arithmetic.
+    /// pair off a `TabInfo`; `overlay::overlay_rects` does the arithmetic.
     pub(crate) surface_rows: usize,
     pub(crate) surface_cols: usize,
     /// This plugin's own pane id, read once at load.
@@ -677,45 +677,16 @@ pub struct State {
     /// *what they were last placed against*.
     #[cfg(test)]
     pub(crate) placed_against: (usize, usize),
-    /// The tiled pane the conversation was last asked to keep clear of, chosen with Ctrl-o.
-    /// `None` is "nothing in particular".
+    /// Where the conversation sits, and what the next Ctrl-o in it moves it clear of.
     ///
-    /// A pane rather than a position, because it is the *next* press that reads it: `pick_anchor`
-    /// will not offer the same pane twice in a tour, and `corner_for` ranks the four corners
-    /// against wherever the pane is by then. It is not something the conversation follows -
-    /// `track_anchor` keeps it current and places nothing. Cleared when the pane is no longer on
-    /// our tab - closed, or we followed a client to another tab - which starts a fresh tour and
-    /// leaves the conversation where it is.
-    pub(crate) anchor: Option<PaneId>,
-    /// The anchor's rectangle as the last `PaneUpdate` reported it - what the next press ranks
-    /// the corners against.
-    pub(crate) anchor_rect: Option<overlay::Rect>,
-    /// The panes Ctrl-o has toured since the cycle last wrapped.
+    /// See [`overlay::Panel`]: the anchor, the tour and the corner are all per-panel, because
+    /// both panes take the key and each moves on its own.
+    pub(crate) chat: overlay::Panel,
+    /// The same, for the agent list.
     ///
-    /// What makes a repeat press walk to a *different* pane instead of re-picking the best one:
-    /// the ranking is a function of rectangles, so it answers the same pane twice whenever nothing
-    /// overlaps or the manifest has not caught up. Pruned to the panes still on the tab by
-    /// `track_anchor`, and emptied when the cycle comes round.
-    pub(crate) warp_visited: Vec<PaneId>,
-    /// How far into the anchor's corner ordering the *next press* is.
-    ///
-    /// Reset to 0 by a press that reaches a new pane, advanced by a press that has none left to
-    /// reach - which is what turns "nowhere better to go" from a no-op into the next corner. Read
-    /// only by `reposition`: where the conversation actually sits is [`State::placed_corner`].
-    pub(crate) warp_step: usize,
-    /// The corner the conversation was last placed in.
-    ///
-    /// **What makes a placement independent of the layout.** Choosing a corner reads the anchor
-    /// and the tab; resolving one reads only the screen. Remembering the choice means every
-    /// placement after a press - a hide, a reveal, a config change, a terminal resize - is the
-    /// second half alone, so a pane opening or closing cannot move either panel and a resize
-    /// re-resolves the corner the user left it in rather than dragging it home.
-    pub(crate) placed_corner: Option<overlay::Corner>,
-    /// The rectangle the last placement asked for.
-    ///
-    /// The reference for "did this press actually move me?", and better than the manifest for
-    /// ranking because it is never stale - two presses can arrive between two `PaneUpdate`s.
-    pub(crate) placed_rect: Option<overlay::Rect>,
+    /// Its `placed_corner` starts `None` and stays that way until the first press: a list nobody
+    /// has moved sits in the slot beside the conversation, exactly where it always did.
+    pub(crate) agents: overlay::Panel,
     /// Every pane on our tab from the last `PaneUpdate`, our own entry included.
     ///
     /// What Ctrl-o ranks. `TabUpdate` reports the surface but not the panes on it, so the manifest
@@ -864,12 +835,8 @@ impl Default for State {
             agents_placed: true,
             #[cfg(test)]
             placed_against: (0, 0),
-            anchor: None,
-            anchor_rect: None,
-            warp_visited: Vec::new(),
-            warp_step: 0,
-            placed_corner: None,
-            placed_rect: None,
+            chat: overlay::Panel::default(),
+            agents: overlay::Panel::default(),
             tab_panes: Vec::new(),
             #[cfg(test)]
             last_placement: None,
@@ -1034,6 +1001,12 @@ impl ZellijPlugin for State {
                 return false;
             },
             wire::AGENT_SELECTION => return self.on_selection(&pipe_message),
+            wire::AGENT_STRIP_REPOSITION => {
+                // Ctrl-o in the agent list. hocus owns both panes' geometry, so the list asks
+                // rather than moves; nothing to redraw here, the move is the server's to paint.
+                self.reposition(overlay::Which::Agents);
+                return false;
+            },
             wire::AGENT_ARCHIVE_MORE => {
                 self.load_more_agent_runs();
                 self.push_strip(false);

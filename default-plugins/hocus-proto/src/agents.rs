@@ -1192,95 +1192,80 @@ pub fn waiting_toast(pane_id: u32, kind: Option<&str>, feed: &HookFeed) -> Strin
     format!("{headline}\n{detail}")
 }
 
-/// How wide the summary box is allowed to get. A box the full width of a wide pane reads as a
-/// second list rather than a note about one row of the one above it.
-pub const SUMMARY_BOX_MAX_COLS: usize = 64;
-/// Below this the text inside the box wraps into a column of single words.
-pub const SUMMARY_BOX_MIN_COLS: usize = 20;
-/// Rows of summary the box draws before it cuts the rest off. Two sentences is what the model
-/// is asked for; this is the ceiling for the ones that ignore it.
-pub const SUMMARY_BOX_MAX_ROWS: usize = 6;
+/// Below this the text in the history half wraps into a column of single words, and the
+/// half draws a placeholder instead.
+pub const HISTORY_MIN_COLS: usize = 20;
 
-/// The idle summary as a framed box: a header naming the pane, the model's words wrapped
-/// inside it, and a footer. Every row is exactly `width` columns.
+/// What the history half of the agents pane draws, wrapped to `width` and unframed.
 ///
-/// Drawn at the foot of the agents pane, under the list, for the agent the cursor is on. It
-/// used to be drawn over the head of hocus's transcript, in the pane *beside* the list; it is
-/// here now because the two panes are separate surfaces and a note about the row under your
-/// cursor belongs in the pane that cursor is in.
-///
-/// `None` when there is nowhere to put it - a box narrower than [`SUMMARY_BOX_MIN_COLS`] wraps
-/// into a column of single words, and one shorter than three rows has no room for a line of
-/// text at all. Better nothing than either.
-pub fn summary_box(
-    pane_id: u32,
-    kind: &str,
-    summary: &Summary,
-    width: usize,
-    height: usize,
-) -> Option<Vec<String>> {
-    let inner = width.saturating_sub(4);
-    if inner < SUMMARY_BOX_MIN_COLS || height < 3 {
-        return None;
-    }
-
-    let room = (height - 2).min(SUMMARY_BOX_MAX_ROWS);
-    let mut lines = crate::text::wrap(&summary.text, inner);
-    if lines.len() > room {
-        lines.truncate(room);
-        // The cut is marked rather than silent: a summary that stops mid-sentence
-        // reads as a summary that had nothing more to say.
-        let last = lines.last_mut().expect("room is at least one");
-        while last.width() + 1 > inner {
-            last.pop();
-        }
-        last.push('…');
-    }
-
-    let mut label = format!(" {pane_id} · {kind} ");
-    if summary.awaiting {
-        // The same claim the strip's `!` marker makes, in the one place the user
-        // is already looking.
-        label.push_str("! ");
-    }
-    // A label wider than the box it heads is cut rather than allowed to push the
-    // frame's corner off the row.
-    while label.width() > width - 3 {
-        label.pop();
-    }
-
-    Some(
-        [format!(
-            "┌─{label}{}┐",
-            "─".repeat(width - 3 - label.width())
-        )]
-        .into_iter()
-        .chain(
-            lines
-                .iter()
-                .map(|line| format!("│ {line}{} │", " ".repeat(inner - line.width()))),
-        )
-        .chain([format!("└{}┘", "─".repeat(width - 2))])
-        .collect(),
-    )
+/// This used to be a framed box pinned to the foot of the pane, drawn only when there was
+/// something to put in it. The half is permanent now and has a divider of its own, so what
+/// the caller wants back is content plus enough to label and window it - the frame, the
+/// width cap and the row ceiling all belonged to the box rather than to the history.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HistoryLines {
+    /// What the divider says - `"claude · archived"`, `"3 · claude !"`. Empty when there is
+    /// nothing to name. Uncut: the row it goes on carries the scroll readout too, so only
+    /// whoever draws the divider knows the room a label has. See `fit_label`.
+    pub label: String,
+    /// Rows that stay at the top of the half whatever the scroll.
+    pub pinned: Vec<String>,
+    /// The timeline, oldest first. The caller windows this against the room it has.
+    pub entries: Vec<String>,
 }
 
-/// The selected hook run as a compact framed history. The rolling summary stays pinned while
-/// `scroll` walks backward from the newest timeline entry.
-pub fn run_box(run: &AgentRun, width: usize, height: usize, scroll: usize) -> Option<Vec<String>> {
-    let inner = width.saturating_sub(4);
-    if inner < SUMMARY_BOX_MIN_COLS || height < 4 {
-        return None;
+impl HistoryLines {
+    /// Nothing to draw at all - no label, no summary, no timeline.
+    pub fn is_empty(&self) -> bool {
+        self.pinned.is_empty() && self.entries.is_empty()
     }
-    let room = height - 2;
-    let mut pinned = run
+}
+
+/// The room a half `width` columns wide has for text, or `None` when there is not enough of it
+/// to wrap into anything but a column of single words.
+///
+/// A margin column at each edge, the same one the list's marker column gives it. The divider is
+/// not held to it - a rule wants both ends of the row - so this is the body's width alone.
+fn wrap_width(width: usize) -> Option<usize> {
+    let inner = width.saturating_sub(2);
+    (inner >= HISTORY_MIN_COLS).then_some(inner)
+}
+
+/// A label cut to the room the divider has, so a long kind cannot push the rule off the row.
+///
+/// `width` is what is left of the row for the label and its rule: the caller has already
+/// taken off anything else sharing it, which for the agents pane is the scroll readout at the
+/// right-hand end.
+pub fn fit_label(mut label: String, width: usize) -> String {
+    // Two dashes and a space either side of the label is the least a divider is worth
+    // drawing; below that there is no label at all.
+    let room = width.saturating_sub(4);
+    if room == 0 {
+        return String::new();
+    }
+    while label.width() > room {
+        label.pop();
+    }
+    label
+}
+
+/// The selected run as the history half draws it: the rolling summary pinned, then the
+/// timeline.
+///
+/// The filter is the one the box drew: prompts, plans and questions always, and a result
+/// only on a run that has stopped and only while the summary has not yet absorbed it. A
+/// finished run whose summary is up to date says what it did once, in the pinned line,
+/// rather than twice.
+pub fn run_history(run: &AgentRun, width: usize) -> HistoryLines {
+    let Some(inner) = wrap_width(width) else {
+        return HistoryLines::default();
+    };
+    let pinned = run
         .summary
         .as_ref()
         .map(|summary| crate::text::wrap(&format!("summary: {}", summary.text), inner))
         .unwrap_or_default();
-    pinned.truncate(room.min(2));
-    let history_room = room.saturating_sub(pinned.len());
-    let history: Vec<String> = run
+    let entries = run
         .entries
         .iter()
         .filter(|entry| {
@@ -1295,37 +1280,37 @@ pub fn run_box(run: &AgentRun, width: usize, height: usize, scroll: usize) -> Op
             crate::text::wrap(&format!("{}: {}", entry.kind.label(), entry.text), inner)
         })
         .collect();
-    let max_scroll = history.len().saturating_sub(history_room);
-    let end = history.len().saturating_sub(scroll.min(max_scroll));
-    let start = end.saturating_sub(history_room);
-    let body: Vec<String> = pinned
-        .into_iter()
-        .chain(history[start..end].iter().cloned())
-        .collect();
-    if body.is_empty() {
-        return None;
-    }
     let state = match run.outcome {
         RunOutcome::Active => "active",
         _ => "archived",
     };
-    let mut label = format!(" {} · {} ", run.kind, state);
-    while label.width() > width - 3 {
-        label.pop();
+    HistoryLines {
+        label: format!("{} · {}", run.kind, state),
+        pinned,
+        entries,
     }
-    Some(
-        [format!(
-            "┌─{label}{}┐",
-            "─".repeat(width - 3 - label.width())
-        )]
-        .into_iter()
-        .chain(
-            body.into_iter()
-                .map(|line| format!("│ {line}{} │", " ".repeat(inner - line.width()))),
-        )
-        .chain([format!("└{}┘", "─".repeat(width - 2))])
-        .collect(),
-    )
+}
+
+/// The idle summary as the history half draws it, for a selected agent with no run loaded.
+///
+/// All of it scrolls: nothing is pinned, because there is no timeline for a pinned line to
+/// stay above. A talkative model is windowed by the caller rather than cut here, which is
+/// what the box had to do with six rows to give.
+pub fn summary_history(pane_id: u32, kind: &str, summary: &Summary, width: usize) -> HistoryLines {
+    let Some(inner) = wrap_width(width) else {
+        return HistoryLines::default();
+    };
+    let mut label = format!("{pane_id} · {kind}");
+    if summary.awaiting {
+        // The same claim the strip's `!` marker makes, in the one place the user
+        // is already looking.
+        label.push_str(" !");
+    }
+    HistoryLines {
+        label,
+        pinned: Vec::new(),
+        entries: crate::text::wrap(&summary.text, inner),
+    }
 }
 
 /// Whether a pane holds enough to be worth asking about.
@@ -2884,8 +2869,11 @@ mod tests {
         assert_eq!(run_entry(&event("PermissionRequest")), None);
     }
 
+    /// The whole timeline comes back, oldest first, and the caller windows it. The
+    /// windowing itself now lives in the agents pane, which is the only thing that knows
+    /// how many rows the history half has.
     #[test]
-    fn run_history_scrolling_stops_at_the_oldest_visible_page() {
+    fn a_run_history_is_the_whole_timeline_oldest_first() {
         let mut run = AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
@@ -2911,14 +2899,21 @@ mod tests {
                 .collect(),
         };
 
-        let page = run_box(&run, 40, 6, usize::MAX).expect("the oldest full page");
-        assert!(page.iter().any(|line| line.contains("oldest")));
-        assert!(page.iter().any(|line| line.contains("fourth")));
-        assert!(!page.iter().any(|line| line.contains("fifth")));
+        let history = run_history(&run, 40);
+        assert_eq!(history.label, "claude · active");
+        assert!(history.pinned.is_empty(), "no summary yet, nothing to pin");
+        assert_eq!(history.entries.len(), 6);
+        assert!(history.entries[0].contains("oldest"));
+        assert!(history.entries[5].contains("newest"));
 
         run.entries.truncate(1);
-        let short = run_box(&run, 40, 6, usize::MAX).expect("a short run remains visible");
-        assert!(short.iter().any(|line| line.contains("oldest")));
+        let short = run_history(&run, 40);
+        assert_eq!(short.entries.len(), 1);
+        assert!(short.entries[0].contains("oldest"));
+
+        // Too narrow to wrap into anything but a column of single words: better nothing,
+        // and the half says so instead.
+        assert!(run_history(&run, HISTORY_MIN_COLS + 1).is_empty());
     }
 
     #[test]
@@ -2944,11 +2939,16 @@ mod tests {
             }],
         };
 
-        assert!(run_box(&run, 40, 6, 0).is_none());
+        assert!(
+            run_history(&run, 40).entries.is_empty(),
+            "a running agent's result is not final"
+        );
 
         run.outcome = RunOutcome::Completed;
-        let archived = run_box(&run, 40, 6, 0).expect("the result is the archived fallback");
+        let archived = run_history(&run, 40);
+        assert_eq!(archived.label, "claude · archived");
         assert!(archived
+            .entries
             .iter()
             .any(|line| line.contains("result: Implemented and tested.")));
 
@@ -2959,8 +2959,16 @@ mod tests {
             awaiting: false,
             hash: 0,
         });
-        let summarized = run_box(&run, 40, 6, 0).expect("the summary remains visible");
-        assert!(!summarized.iter().any(|line| line.contains("result:")));
+        let summarized = run_history(&run, 40);
+        assert!(!summarized
+            .entries
+            .iter()
+            .any(|line| line.contains("result:")));
+        assert!(
+            summarized.pinned[0].starts_with("summary: The implementation"),
+            "{:?}",
+            summarized.pinned
+        );
     }
 
     #[test]
@@ -4203,7 +4211,7 @@ mod tests {
         assert!(tab_projects(&panes, &manual(&[]), &owners).is_empty());
     }
 
-    // -- the idle summary box -------------------------------------------------
+    // -- the idle summary in the history half --------------------------------
 
     fn a_summary(text: &str, awaiting: bool) -> Summary {
         Summary {
@@ -4214,84 +4222,68 @@ mod tests {
         }
     }
 
-    /// Every row exactly as wide as every other, or the frame does not close and
-    /// the transcript shows through the ragged end of it.
+    /// The model's words, wrapped to the half and nothing else: no frame, no ceiling. The
+    /// box this replaced cut at six rows because it had six rows to give; the half scrolls.
     #[test]
-    fn the_inset_is_a_box_of_one_width() {
-        let rows = summary_box(
+    fn an_idle_summary_is_the_model_s_words_wrapped_to_the_half() {
+        let history = summary_history(
             7,
             "claude",
             &a_summary("Ran the tests, all green.", false),
             30,
-            10,
-        )
-        .expect("room for a box");
-        assert_eq!(rows.len(), 3, "a header, one line of summary, a footer");
-        for row in &rows {
-            assert_eq!(row.width(), 30, "{row}");
-        }
-        assert!(rows[0].starts_with("┌─ 7 · claude ─"), "{}", rows[0]);
-        assert!(rows[0].ends_with('┐'));
-        assert_eq!(
-            rows[1], "│ Ran the tests, all green.  │",
-            "padded to the frame"
         );
-        assert!(rows[2].starts_with('└') && rows[2].ends_with('┘'));
-    }
+        assert_eq!(history.label, "7 · claude");
+        assert!(history.pinned.is_empty(), "nothing to pin above nothing");
+        assert_eq!(
+            history.entries,
+            vec!["Ran the tests, all green.".to_owned()]
+        );
 
-    /// The claim the strip's `!` makes, in the box the user is already reading.
-    #[test]
-    fn a_blocked_agent_is_marked_in_the_header() {
-        let rows = summary_box(7, "claude", &a_summary("Shall I?", true), 30, 10).expect("a box");
-        assert!(rows[0].contains("! "), "{}", rows[0]);
-        assert_eq!(rows[0].width(), 30);
-        // And an agent that merely finished is not.
-        let rows = summary_box(7, "claude", &a_summary("Shall I?", false), 30, 10).expect("a box");
-        assert!(!rows[0].contains('!'), "{}", rows[0]);
-    }
-
-    /// A model told to write two sentences occasionally writes ten, and the box
-    /// has to end above the input either way.
-    #[test]
-    fn a_long_summary_is_cut_to_the_room_there_is_and_marked_where_it_was_cut() {
         let long = "word ".repeat(200);
-        let rows = summary_box(7, "claude", &a_summary(&long, false), 30, 40).expect("a box");
-        assert_eq!(
-            rows.len(),
-            SUMMARY_BOX_MAX_ROWS + 2,
-            "the ceiling, not the text"
+        let long = summary_history(7, "claude", &a_summary(&long, false), 30);
+        assert!(
+            long.entries.len() > 6,
+            "every line of it, for the half to window, past the box's old ceiling of {}",
+            long.entries.len()
         );
-        let last = &rows[SUMMARY_BOX_MAX_ROWS];
-        assert!(last.contains('…'), "{last}");
-        assert_eq!(last.width(), 30);
-
-        // And the transcript is the tighter of the two ceilings.
-        let rows = summary_box(7, "claude", &a_summary(&long, false), 30, 5).expect("a box");
-        assert_eq!(rows.len(), 5);
     }
 
-    /// Better nothing than a column of single words, or a box drawn over the
-    /// input line because there was nowhere else for it to go.
+    /// The claim the strip's `!` makes, on the divider the user is already reading.
     #[test]
-    fn there_is_no_box_where_there_is_no_room_for_one() {
+    fn a_blocked_agent_is_marked_on_the_divider() {
+        let waiting = summary_history(7, "claude", &a_summary("Shall I?", true), 30);
+        assert_eq!(waiting.label, "7 · claude !");
+        // And an agent that merely finished is not.
+        let done = summary_history(7, "claude", &a_summary("Shall I?", false), 30);
+        assert!(!done.label.contains('!'), "{}", done.label);
+    }
+
+    /// Better nothing than a column of single words - the half draws a placeholder instead.
+    #[test]
+    fn there_is_no_history_where_there_is_no_room_for_one() {
         let one = a_summary("Ran the tests.", false);
-        assert!(summary_box(7, "claude", &one, SUMMARY_BOX_MIN_COLS + 3, 10).is_none());
-        assert!(summary_box(7, "claude", &one, 30, 2).is_none());
+        assert!(summary_history(7, "claude", &one, HISTORY_MIN_COLS + 1).is_empty());
         assert!(
-            summary_box(7, "claude", &one, 30, 3).is_some(),
+            !summary_history(7, "claude", &one, HISTORY_MIN_COLS + 2).is_empty(),
             "just enough"
         );
     }
 
-    /// A kind is up to 32 characters and a pane can be in a narrow split, so the
-    /// header can be asked for more room than the box has. The corner survives.
+    /// A kind is up to 32 characters and this pane is half a panel wide, so the label can
+    /// be asked for more room than the divider has. It is cut rather than allowed to push
+    /// the rule off the row - but only by whoever draws the divider, which is the one place
+    /// that knows what else is on that row.
     #[test]
-    fn a_header_too_wide_for_its_box_is_cut_rather_than_burst() {
+    fn a_label_too_wide_for_its_divider_is_cut_rather_than_burst() {
         let kind = "a-very-long-agent-kind-indeed-xx";
-        let rows = summary_box(7, kind, &a_summary("Done.", true), 26, 10).expect("a box");
-        for row in &rows {
-            assert_eq!(row.width(), 26, "{row}");
-        }
-        assert!(rows[0].ends_with('┐'), "{}", rows[0]);
+        let label = summary_history(7, kind, &a_summary("Done.", true), 26).label;
+        assert_eq!(label, format!("7 · {kind} !"), "uncut where it is built");
+
+        let cut = fit_label(label, 26);
+        assert_eq!(cut.width(), 22, "{cut}");
+        assert!(kind.starts_with(&cut["7 · ".len()..]));
+
+        // And a divider with no room for a label at all keeps the rule.
+        assert!(fit_label("claude · active".to_owned(), 3).is_empty());
     }
 }
