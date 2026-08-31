@@ -1441,6 +1441,14 @@ pub fn start_server_impl(
                         // what makes an unrelated `zellij attach` hang.
                         // The guard is a temporary, so it is released at the
                         // semicolon — before the `drop` below.
+                        //
+                        // The socket goes first, for the same reason as at the
+                        // end of this function: those joins are where a
+                        // shutdown that waits on a stuck plugin thread spends
+                        // its time, and a client connecting meanwhile — a
+                        // hook's `zellij action agent-report`, a probe — must
+                        // be refused, not parked behind them.
+                        drop(std::fs::remove_file(&socket_path));
                         let session_metadata = session_data.write().unwrap().take();
                         drop(session_metadata);
                         let client_ids_to_cleanup: Vec<ClientId> = session_state

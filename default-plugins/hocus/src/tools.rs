@@ -2282,8 +2282,9 @@ pub const SKILL_FILE_TOOLS: [&str; 4] =
 ///
 /// Intercepted in `run_head` for the same reason the file tools are: they need the plugin
 /// folder, which the host exposes as the `/plugins` root (and names through
-/// `get_user_plugin_dir`, for the reload URL and the permission grant). Every one answers at
-/// once; none runs a command.
+/// `get_user_plugin_dir`, for the reload URL and the permission grant). None runs a command;
+/// every one but `plugin_reload` answers at once - a reload is fire-and-forget on the host, so
+/// that one defers until the pane has had time to show what happened.
 pub const PLUGIN_TOOLS: [&str; 7] = [
     "plugin_docs",
     "plugin_check",

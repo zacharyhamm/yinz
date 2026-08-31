@@ -1073,6 +1073,13 @@ impl WasmBridge {
                         .contains(&EventType::BeforeClose);
                     if wants_before_close {
                         let mut running_plugin = running_plugin.lock().unwrap();
+                        // As in the unload job: holding the lock means the guest is not
+                        // running, and the new instance shares this token, so a set one
+                        // would trap `BeforeClose` here and the new `load()` after it.
+                        running_plugin
+                            .env()
+                            .cancel
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
                         if let Err(e) = apply_before_close_event_to_plugin(
                             plugin_id,
                             first_client_id,
@@ -1218,6 +1225,9 @@ impl WasmBridge {
 
             let cwd = self.cwd_of_plugin_id(plugin_id);
 
+            // So the context below shares the plugin's token rather than getting one nobody
+            // sets; a no-op when the plugin is registered, as it normally is here.
+            self.cancel_token(plugin_id);
             let loading_context = LoadingContext::new(
                 &self,
                 cwd,
