@@ -238,11 +238,18 @@ output is never stored. The retained entries stay in `shared:hocus` for the Zell
 Summarization advances `summarized_revision` but does not replace or delete entries. Legacy hook
 scripts without a session ID get a pane-and-start-time fallback ID.
 
-The agents panel shows active runs on their live agent rows and completed runs under an
-`archive` header, newest first. It loads 50 archive rows at a time; select `load older runs…`
-and press Enter for the next page. Selecting a row fetches that run's full history. PageUp and
-PageDown or the mouse wheel move through its compact timeline. The rolling summary stays pinned.
-Enter focuses and hides the panel for a live agent. An archived row has no pane to focus.
+The agents panel is two permanent halves with a rule between them: the list on top, and the
+events history of whatever the cursor is on below. The list shows active runs on their live
+agent rows and completed runs under an `archive` header, newest first. It loads 50 archive rows
+at a time; select `load older runs…` and press Enter for the next page. Selecting a row fetches
+that run's full history into the bottom half; the rolling summary stays pinned above the
+timeline, and the rule names the run and says how far it is wound back.
+
+`Tab` moves the keyboard between the halves, and so does a click — the rule is where the focus
+shows. `j`/`k` do whatever the half they are in does with a line: walk the selection, or scroll
+the history. The arrows always walk the list, and PageUp/PageDown and the mouse wheel always
+scroll the history, from either half. Enter focuses a live agent's pane and hides the panel. An
+archived row has no pane to focus.
 
 ### A waiting agent interrupts
 
@@ -319,7 +326,7 @@ added. `zellij hocus hooks status` says when the installed script is old.
 | Carrying it on the pane | `zellij-server/src/panes/terminal_pane.rs` (`agent`, `agent_from_run`), `screen/thread_main.rs` (`SetPaneAgent`), `screen/mod.rs` (`fire_agent_exit_hook`, `fire_agent_state_hooks`, `agent_hook_edges`) |
 | What a row draws | `default-plugins/hocus-proto/src/agents.rs` (`HookFeed::from_agent`, `status_cell`, `waiting_marker`, `kind_cell`, `HOOK_MARKER`) |
 | What a wait says, and the summary | same (`waiting_toast`, `turn_summary_request_body`, `local_summary`) |
-| Run types, reduction and rendering | same (`AgentRun`, `run_entry`, `run_box`, `rows::run_mutation`) |
+| Run types, reduction and rendering | same (`AgentRun`, `run_entry`, `run_history`, `rows::run_mutation`) |
 | Receiving the broadcast, persisting, publishing, toasting | `default-plugins/hocus-agentd/src/main.rs` (`on_hook_with`, `record_run_event`, `on_turn_end_with`, `finish_local_summary_with`) |
 | Archive paging and selection | `default-plugins/hocus/src/transitions.rs`, `default-plugins/hocus-agents/src/main.rs` |
 
