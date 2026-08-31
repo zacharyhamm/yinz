@@ -677,16 +677,18 @@ pub struct State {
     /// *what they were last placed against*.
     #[cfg(test)]
     pub(crate) placed_against: (usize, usize),
-    /// The tiled pane the conversation is keeping clear of, chosen with Ctrl-o. `None` is the
-    /// corner.
+    /// The tiled pane the conversation was last asked to keep clear of, chosen with Ctrl-o.
+    /// `None` is "nothing in particular".
     ///
-    /// A pane rather than a position, so the conversation stays out of *this pane's* way: a
-    /// terminal resize re-tiles the layout, and `on_panes` re-places the conversation clear of
-    /// wherever the pane went. Cleared when the pane is no longer on our tab - closed, or we
-    /// followed a client to another tab - at which point the corner is the only place left to be.
+    /// A pane rather than a position, because it is the *next* press that reads it: `pick_anchor`
+    /// will not offer the same pane twice in a tour, and `corner_for` ranks the four corners
+    /// against wherever the pane is by then. It is not something the conversation follows -
+    /// `track_anchor` keeps it current and places nothing. Cleared when the pane is no longer on
+    /// our tab - closed, or we followed a client to another tab - which starts a fresh tour and
+    /// leaves the conversation where it is.
     pub(crate) anchor: Option<PaneId>,
-    /// The anchor's rectangle as the last `PaneUpdate` reported it - what a re-tile is detected
-    /// against, and what the placement is computed away from.
+    /// The anchor's rectangle as the last `PaneUpdate` reported it - what the next press ranks
+    /// the corners against.
     pub(crate) anchor_rect: Option<overlay::Rect>,
     /// The panes Ctrl-o has toured since the cycle last wrapped.
     ///
@@ -695,12 +697,20 @@ pub struct State {
     /// overlaps or the manifest has not caught up. Pruned to the panes still on the tab by
     /// `track_anchor`, and emptied when the cycle comes round.
     pub(crate) warp_visited: Vec<PaneId>,
-    /// How far into the anchor's corner ordering the conversation is.
+    /// How far into the anchor's corner ordering the *next press* is.
     ///
     /// Reset to 0 by a press that reaches a new pane, advanced by a press that has none left to
-    /// reach - which is what turns "nowhere better to go" from a no-op into the next corner. Kept
-    /// across a re-tile, so the conversation follows its pane at the same corner.
+    /// reach - which is what turns "nowhere better to go" from a no-op into the next corner. Read
+    /// only by `reposition`: where the conversation actually sits is [`State::placed_corner`].
     pub(crate) warp_step: usize,
+    /// The corner the conversation was last placed in.
+    ///
+    /// **What makes a placement independent of the layout.** Choosing a corner reads the anchor
+    /// and the tab; resolving one reads only the screen. Remembering the choice means every
+    /// placement after a press - a hide, a reveal, a config change, a terminal resize - is the
+    /// second half alone, so a pane opening or closing cannot move either panel and a resize
+    /// re-resolves the corner the user left it in rather than dragging it home.
+    pub(crate) placed_corner: Option<overlay::Corner>,
     /// The rectangle the last placement asked for.
     ///
     /// The reference for "did this press actually move me?", and better than the manifest for
@@ -858,6 +868,7 @@ impl Default for State {
             anchor_rect: None,
             warp_visited: Vec::new(),
             warp_step: 0,
+            placed_corner: None,
             placed_rect: None,
             tab_panes: Vec::new(),
             #[cfg(test)]

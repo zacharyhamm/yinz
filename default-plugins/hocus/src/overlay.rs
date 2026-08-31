@@ -38,12 +38,24 @@
 //!
 //! **The corner is the default, not the only place.** Ctrl-o (`State::reposition`) moves the
 //! conversation *clear of* a tiled pane - whichever one it is covering, or the largest one the
-//! user is not working in, by `pick_anchor` - and remembers that pane as `State::anchor`. From
-//! then on the conversation is placed on the side of the screen opposite the pane
-//! (`chat_placement`) rather than in the corner, at exactly the size the corner placement would
-//! have given it, and it stays with the pane: `track_anchor` reads each `PaneUpdate` and follows a
-//! re-tile or, once the pane is gone, releases the conversation back to the corner. The list is
-//! not part of this; it keeps its corner arithmetic as if the conversation were still there.
+//! user is not working in, by `pick_anchor` - and remembers that pane as `State::anchor`. The
+//! press puts the conversation in the corner that clears that pane best (`corner_for`), at
+//! exactly the size the corner placement would have given it. The list is not part of this; it
+//! keeps its corner arithmetic as if the conversation were still there.
+//!
+//! **Nothing the layout does moves either panel.** A placement is two steps - *choose* a corner,
+//! then *resolve* it against the surface (`corner_for`, then `rect_in_corner`) - and only the
+//! first reads the layout. The corner a press chose is remembered (`State::placed_corner`), so
+//! every later placement is a function of that corner, the screen and the config: a pane opening,
+//! a pane closing, a re-tile and a swap layout are not inputs to it. `track_anchor` still reads
+//! every `PaneUpdate`, but only to keep the anchor the *next* press ranks against - it places
+//! nothing. What places is a press, a hide, a reveal, a config change, and a terminal resize,
+//! which resolves the same corner against the screen's new size.
+//!
+//! The config is where the *size* comes from, which is the one thing a placement does not carry
+//! over: a press threads the size the manifest reports (`own_rect`, then `reposition`), so it
+//! keeps a pane the user resized, but every other placement passes `None` and gets `panel_size`'s
+//! configured size back.
 //!
 //! **A press always moves the conversation.** Every placement is one of four corners
 //! (`Corner`), so a repeat press is a walk: `pick_anchor` tours the panes nobody has been sent
@@ -355,9 +367,10 @@ impl Rect {
 ///
 /// Every placement is one of these four - the default corner, the placement that gets clear of an
 /// anchor, and every step of the cycle a repeat Ctrl-o walks - so naming them is what lets a press
-/// ask for "the next place" rather than restate the arithmetic.
+/// ask for "the next place" rather than restate the arithmetic. It is also what lets a placement
+/// be *remembered* rather than re-derived: see [`State::placed_corner`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Corner {
+pub(crate) enum Corner {
     BottomLeft,
     BottomRight,
     TopRight,
@@ -544,12 +557,13 @@ pub(crate) fn pick_anchor(
 /// Where the conversation goes: the size [`panel_size`] gives, at the corner `step` of the order
 /// [`corner_order`] gives for `anchor`.
 ///
-/// **The one placement path.** `anchor: None` at `step: 0` is the default bottom-left corner, so
-/// the corner placement, the placement that gets clear of a pane and every step of Ctrl-o's cycle
-/// are the same arithmetic asked a different question - they cannot drift apart, and a size or a
-/// padding the user configured means the same thing in all of them. The pane is never resized to
-/// suit the anchor and neither is the anchor: Ctrl-o is a request to *see* a pane, and the whole
-/// job is to stop covering it.
+/// **The one placement path**, and it is two steps - [`corner_for`] chooses, [`rect_in_corner`]
+/// resolves. `anchor: None` at `step: 0` is the default bottom-left corner, so the corner
+/// placement, the placement that gets clear of a pane and every step of Ctrl-o's cycle are the
+/// same arithmetic asked a different question - they cannot drift apart, and a size or a padding
+/// the user configured means the same thing in all of them. The pane is never resized to suit the
+/// anchor and neither is the anchor: Ctrl-o is a request to *see* a pane, and the whole job is to
+/// stop covering it.
 ///
 /// `step` is taken modulo the four corners, so a cycle that has walked past the end comes back to
 /// the best one.
@@ -565,7 +579,7 @@ pub(crate) fn chat_placement(
     alone: bool,
     step: usize,
 ) -> Option<Rect> {
-    chat_placement_with_size(
+    let corner = corner_for(
         config,
         surface_rows,
         surface_cols,
@@ -574,10 +588,25 @@ pub(crate) fn chat_placement(
         alone,
         step,
         None,
+    )?;
+    rect_in_corner(
+        config,
+        surface_rows,
+        surface_cols,
+        chat_visible,
+        corner,
+        None,
     )
 }
 
-fn chat_placement_with_size(
+/// The choosing half of a placement: which corner the conversation belongs in, given the pane it
+/// has been asked to get clear of.
+///
+/// **The only half that reads the layout.** The anchor's rectangle and whether it has the tab to
+/// itself are what rank the four corners, and they are read when a press asks and at no other
+/// time. What a press produces is a `Corner`, which [`State::placed_corner`] remembers - so every
+/// later placement goes straight to [`rect_in_corner`], and no manifest can move the panel.
+fn corner_for(
     config: &BTreeMap<String, String>,
     surface_rows: usize,
     surface_cols: usize,
@@ -586,21 +615,48 @@ fn chat_placement_with_size(
     alone: bool,
     step: usize,
     size: Option<(usize, usize)>,
+) -> Option<Corner> {
+    let (pad, size) = placement_terms(config, surface_rows, surface_cols, chat_visible, size)?;
+    let anchor = anchor.filter(|anchor| anchor.rows > 0 && anchor.cols > 0);
+    let order = corner_order(anchor, alone, surface_rows, surface_cols, pad, size);
+    Some(order[step % CORNERS.len()])
+}
+
+/// The placing half: the rectangle `corner` names on the surface as it is now, at the size
+/// [`panel_size`] gives unless the caller states one.
+///
+/// Reads the config and the screen and nothing else, which is the whole of the stability the
+/// module header claims: with the corner remembered, no pane event is an input to where either
+/// panel sits.
+fn rect_in_corner(
+    config: &BTreeMap<String, String>,
+    surface_rows: usize,
+    surface_cols: usize,
+    chat_visible: bool,
+    corner: Corner,
+    size: Option<(usize, usize)>,
 ) -> Option<Rect> {
+    let (pad, size) = placement_terms(config, surface_rows, surface_cols, chat_visible, size)?;
+    Some(corner_rect(corner, surface_rows, surface_cols, pad, size))
+}
+
+/// The padding and the panel size both halves of a placement resolve against, so the two cannot
+/// disagree about either. `None` on a surface with no extent to put anything on.
+fn placement_terms(
+    config: &BTreeMap<String, String>,
+    surface_rows: usize,
+    surface_cols: usize,
+    chat_visible: bool,
+    size: Option<(usize, usize)>,
+) -> Option<(usize, (usize, usize))> {
     if surface_rows == 0 || surface_cols == 0 {
         return None;
     }
-    let anchor = anchor.filter(|anchor| anchor.rows > 0 && anchor.cols > 0);
     let pad = pad_of(config, surface_rows, surface_cols, chat_visible);
     let size = size.unwrap_or_else(|| panel_size(config, surface_rows, surface_cols, chat_visible));
-    let size = (size.0.clamp(1, surface_cols), size.1.clamp(1, surface_rows));
-    let order = corner_order(anchor, alone, surface_rows, surface_cols, pad, size);
-    Some(corner_rect(
-        order[step % CORNERS.len()],
-        surface_rows,
-        surface_cols,
+    Some((
         pad,
-        size,
+        (size.0.clamp(1, surface_cols), size.1.clamp(1, surface_rows)),
     ))
 }
 
@@ -709,7 +765,7 @@ impl State {
     /// Both halves are tracked, and separately: see [`State::agents_placed`] for why one flag was
     /// not enough.
     pub(crate) fn apply_overlay_geometry(&mut self) {
-        self.place(false, None);
+        self.place(false, None, None);
     }
 
     /// The placement itself. `override_user_placement` is the one thing Ctrl-o adds: the server
@@ -721,10 +777,17 @@ impl State {
     /// where it is, so the corner arithmetic answers for it unchanged - the user moved the
     /// conversation, and the list is a separate pane they did not ask to move.
     ///
-    /// The conversation's rectangle comes from [`State::chat_rect_with_size`], which answers for
-    /// the corner, the anchor and the step of the cycle in one - so a resize re-places it where
-    /// the last press left it rather than dragging it home.
-    fn place(&mut self, override_user_placement: bool, size: Option<(usize, usize)>) {
+    /// **`corner` is what a press has to say and nothing else does.** Every other caller passes
+    /// `None`, which means "the corner we are already in" ([`State::placed_corner`]) - so a
+    /// resize re-places the conversation where the last press left it, and a `PaneUpdate` cannot
+    /// re-place it at all. `CORNERS[0]` is the fallback for the very first placement, which is
+    /// the same bottom-left corner an unanchored order would have named at step 0.
+    fn place(
+        &mut self,
+        override_user_placement: bool,
+        size: Option<(usize, usize)>,
+        corner: Option<Corner>,
+    ) {
         let Some((_, agents)) = overlay_geometry(
             &self.kdl,
             self.surface_rows,
@@ -733,9 +796,11 @@ impl State {
         ) else {
             return;
         };
-        let Some(chat) = self.chat_rect_with_size(self.warp_step, size) else {
+        let corner = corner.or(self.placed_corner).unwrap_or(CORNERS[0]);
+        let Some(chat) = self.rect_in(corner, size) else {
             return;
         };
+        self.placed_corner = Some(corner);
         // What the next press ranks against, and what tells it whether it has moved. Set on every
         // placement and not only Ctrl-o's, because a resize re-places and so moves us too.
         self.placed_rect = Some(chat);
@@ -762,19 +827,34 @@ impl State {
         }
     }
 
-    /// The conversation's rectangle at `step`, optionally retaining its current size.
-    fn chat_rect_with_size(&self, step: usize, size: Option<(usize, usize)>) -> Option<Rect> {
-        chat_placement_with_size(
+    /// The corner a press at `step` would choose, against the anchor and the tab as the last
+    /// manifest reported them.
+    ///
+    /// Asked by [`State::reposition`] and by nothing else - a press is the only thing allowed to
+    /// read the layout, which is what keeps a re-tile from moving the panel. `alone` is read from
+    /// the manifest rather than remembered from the last press, so the single-pane rule is
+    /// re-decided by each one.
+    fn corner_at(&self, step: usize, size: Option<(usize, usize)>) -> Option<Corner> {
+        corner_for(
             &self.kdl,
             self.surface_rows,
             self.surface_cols,
             !self.hidden,
             self.anchor.and(self.anchor_rect),
-            // Read from the manifest at placement time rather than remembered from the press, so
-            // the single-pane rule is re-decided every time: a second pane opening re-tiles the
-            // tab, and `track_anchor` comes back through here with a manifest that says so.
             sole_tiled_pane(&self.tab_panes),
             step,
+            size,
+        )
+    }
+
+    /// The conversation's rectangle in `corner`, optionally retaining its current size.
+    fn rect_in(&self, corner: Corner, size: Option<(usize, usize)>) -> Option<Rect> {
+        rect_in_corner(
+            &self.kdl,
+            self.surface_rows,
+            self.surface_cols,
+            !self.hidden,
+            corner,
             size,
         )
     }
@@ -855,16 +935,20 @@ impl State {
         }
         // The invariant, and the whole of the fix: where the step names the rectangle the
         // conversation is already at, take the next one. Once round at most.
-        let mut moves = false;
+        let mut target = None;
         for _ in 0..CORNERS.len() {
-            if self.chat_rect_with_size(self.warp_step, size) != Some(own) {
-                moves = true;
+            let Some(corner) = self.corner_at(self.warp_step, size) else {
+                // No surface to rank against, so there is no corner to move to either.
+                break;
+            };
+            if self.rect_in(corner, size) != Some(own) {
+                target = Some(corner);
                 break;
             }
             self.advance_warp();
         }
-        if moves {
-            self.place(true, size);
+        if let Some(corner) = target {
+            self.place(true, size, Some(corner));
         }
     }
 
@@ -882,13 +966,18 @@ impl State {
 
     /// Read the anchor off a fresh manifest of our tab: gone, moved, or as it was.
     ///
-    /// The anchor is a pane, and a `PaneUpdate` is the only word about where panes are. A pane
-    /// that is no longer a tiled pane on our tab - closed, floated, or left behind on the tab we
-    /// moved from - releases the conversation to the corner; one that was re-tiled takes the
-    /// conversation with it. Either way the placement is restated, and only then: an anchor
-    /// exactly where it was asks for nothing, which is what keeps this from placing on every
-    /// event. No loop is possible either way - the trigger is a *tiled* rect, and nothing the
-    /// conversation does to itself moves a tiled pane.
+    /// **Bookkeeping for the next press, and not a placement.** The anchor is what Ctrl-o ranks
+    /// the four corners against, so it has to keep up with the pane it names - but keeping up is
+    /// all it does. Nothing here moves the conversation, because nothing the *layout* does is
+    /// allowed to: a pane closing, opening or being re-tiled leaves both panels exactly where
+    /// they are, and the corner they are in is remembered rather than re-derived (see
+    /// [`State::placed_corner`] and the module header). Following a pane around used to be this
+    /// function's job, and it is what made a pane close jump the panel across the screen - a
+    /// re-tile could flip `sole_tiled_pane` and swap the whole corner ordering underneath it.
+    ///
+    /// A pane that is no longer a tiled pane on our tab - closed, floated, or left behind on the
+    /// tab we moved from - releases the anchor: there is nothing left to be clear of, so the next
+    /// press starts a fresh tour. The conversation stays put through that too.
     pub(crate) fn track_anchor(&mut self, panes: &[PaneInfo]) {
         // A pane that has closed cannot hold a slot in the tour: the press that came round to it
         // would find it gone and go nowhere new.
@@ -905,19 +994,15 @@ impl State {
             None => {
                 self.anchor = None;
                 self.anchor_rect = None;
-                // The cycle belongs to the anchor: with the pane gone the conversation is back in
-                // the corner, and the next press starts a fresh tour from there.
+                // The cycle belongs to the anchor: with the pane gone there is nothing to be
+                // clear of, and the next press starts a fresh tour. Safe to reset because the
+                // conversation's position is `placed_corner` now, not `(anchor_rect, warp_step)`.
                 self.warp_step = 0;
                 self.warp_visited.clear();
-                self.apply_overlay_geometry();
             },
-            Some(rect) if self.anchor_rect != Some(rect) => {
-                // The step is kept, so a re-tile re-resolves *the same* corner against the pane's
-                // new rectangle - the conversation follows the pane rather than jumping on.
-                self.anchor_rect = Some(rect);
-                self.apply_overlay_geometry();
-            },
-            Some(_) => {},
+            // The rectangle a press ranks against, kept current. The step is kept too, so a press
+            // after a re-tile carries on from where the cycle had got to.
+            Some(rect) => self.anchor_rect = Some(rect),
         }
     }
 
