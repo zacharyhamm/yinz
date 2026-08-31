@@ -2382,6 +2382,7 @@ impl Action {
                 cwd,
                 hook_json,
                 clear,
+                run_id,
             } => {
                 let pane_id_str = match pane_id {
                     Some(id) => id,
@@ -2434,6 +2435,10 @@ impl Action {
                         waiting_on: None,
                         cwd: cwd.map(|cwd| cwd.display().to_string()),
                         session_id: None,
+                        // `None` is not "no run": a record that does not name one inherits
+                        // the pane's, so a script that sets it once need not repeat it on
+                        // every report. See `AgentInfo::run_id`.
+                        run_id: run_id.filter(|run_id| !run_id.trim().is_empty()),
                     })
                 };
                 Ok(vec![Action::SetPaneAgent { pane_id, agent }])
@@ -4129,6 +4134,7 @@ mod tests {
                     cwd: Some(PathBuf::from("/work/.worktrees/topic")),
                     hook_json: false,
                     clear,
+                    run_id: None,
                 },
                 Box::new(|| PathBuf::from("/tmp")),
                 None,
@@ -4146,6 +4152,7 @@ mod tests {
                     waiting_on: None,
                     cwd: Some("/work/.worktrees/topic".to_owned()),
                     session_id: None,
+                    run_id: None,
                 }),
             }]
         );
@@ -4161,6 +4168,40 @@ mod tests {
             "a report has to say something"
         );
         assert!(report(Some("asleep"), false).is_err());
+    }
+
+    /// A script keeping its own history names the run it is keeping. Agents that report a
+    /// session id of their own do not need this — their run id is derived from it — but a
+    /// pane whose run id is only ever a local invention has nothing else to be found by
+    /// after a warp.
+    #[test]
+    fn agent_report_carries_the_run_id_it_was_given() {
+        let report = |run_id: Option<&str>| {
+            Action::actions_from_cli(
+                CliAction::AgentReport {
+                    pane_id: Some("terminal_4".to_owned()),
+                    kind: None,
+                    state: Some("busy".to_owned()),
+                    detail: None,
+                    cwd: None,
+                    hook_json: false,
+                    clear: false,
+                    run_id: run_id.map(str::to_owned),
+                },
+                Box::new(|| PathBuf::from("/tmp")),
+                None,
+            )
+            .unwrap()
+        };
+        let run_id_of = |actions: Vec<Action>| match actions.into_iter().next() {
+            Some(Action::SetPaneAgent { agent, .. }) => agent.and_then(|agent| agent.run_id),
+            other => panic!("expected a SetPaneAgent, got {other:?}"),
+        };
+        assert_eq!(run_id_of(report(Some("mine:7"))), Some("mine:7".to_owned()));
+        // Unset, not cleared: the pane keeps whatever it already carries, which is what lets a
+        // script name its run once rather than on every report.
+        assert_eq!(run_id_of(report(None)), None);
+        assert_eq!(run_id_of(report(Some("  "))), None, "blank is not an id");
     }
 
     /// Each `--block-until-exit*` flag names the condition that ends the wait, and a condition

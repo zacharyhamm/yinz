@@ -975,6 +975,9 @@ fn test_client_messages() {
                     waiting_on: Some("approval".to_owned()),
                     cwd: Some("/work".to_owned()),
                     session_id: Some("agent-session".to_owned()),
+                    // The whole point of the field: a warp is where a run id has to survive
+                    // the wire, or the adopting session cannot find the run it names.
+                    run_id: Some("codex:agent-session".to_owned()),
                 }),
             }),
             placement: WarpPlacement::NewTab,
@@ -3528,6 +3531,7 @@ fn test_client_messages() {
                 waiting_on: Some("Bash cargo".to_owned()),
                 cwd: Some("/work".to_owned()),
                 session_id: Some("s1".to_owned()),
+                run_id: Some("claude:s1".to_owned()),
             }),
         },
         terminal_id: None,

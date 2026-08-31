@@ -1207,6 +1207,7 @@ fn agent_infos(tc: &hegel::TestCase) -> AgentInfo {
         waiting_on: optional_strings(tc),
         cwd: optional_strings(tc),
         session_id: optional_strings(tc),
+        run_id: optional_strings(tc),
     }
 }
 
@@ -1467,6 +1468,10 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::SetPaneAgent => PluginCommand::SetPaneAgent {
             pane_id: pane_id(tc),
             agent: optional_agent_infos(tc),
+        },
+        CommandType::SetPaneAgentRun => PluginCommand::SetPaneAgentRun {
+            pane_id: pane_id(tc),
+            run_id: optional_strings(tc),
         },
         CommandType::ReloadPluginByUrl => PluginCommand::ReloadPluginByUrl(strings(tc)),
         CommandType::ReadPluginLog => PluginCommand::ReadPluginLog {

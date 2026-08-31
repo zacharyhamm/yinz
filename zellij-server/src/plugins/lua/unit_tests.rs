@@ -1545,6 +1545,11 @@ fn a_plugin_can_set_a_panes_agent_record() {
                 agent = { kind = "codex", state = "Waiting", source = "Reported", detail = "y/n" },
             }
             zellij.set_pane_agent { pane_id = zellij.terminal_pane(3) }
+            zellij.set_pane_agent_run {
+                pane_id = zellij.terminal_pane(3),
+                run_id = "codex:s1",
+            }
+            zellij.set_pane_agent_run { pane_id = zellij.terminal_pane(3) }
         end
         return M
         "#,
@@ -1554,10 +1559,16 @@ fn a_plugin_can_set_a_panes_agent_record() {
     .unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
 
-    let records: Vec<_> = screen_receiver
+    // Drained once: `try_iter` consumes, so the two assertions below read one snapshot of the
+    // channel rather than racing each other for it.
+    let instructions: Vec<_> = screen_receiver
         .try_iter()
-        .filter_map(|(instruction, _)| match instruction {
-            ScreenInstruction::SetPaneAgent(pane_id, agent, _) => Some((pane_id, agent)),
+        .map(|(instruction, _)| instruction)
+        .collect();
+    let records: Vec<_> = instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            ScreenInstruction::SetPaneAgent(pane_id, agent, _) => Some((*pane_id, agent.clone())),
             _ => None,
         })
         .collect();
@@ -1573,9 +1584,32 @@ fn a_plugin_can_set_a_panes_agent_record() {
             waiting_on: None,
             cwd: None,
             session_id: None,
+            run_id: None,
         })
     );
     assert_eq!(records[1].1, None, "leaving `agent` out clears the record");
+
+    // The additive twin: it names one field and says nothing about the rest of the record.
+    let runs: Vec<_> = instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            ScreenInstruction::SetPaneAgentRun(pane_id, run_id, _) => {
+                Some((*pane_id, run_id.clone()))
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        runs,
+        vec![
+            (
+                crate::panes::PaneId::Terminal(3),
+                Some("codex:s1".to_owned())
+            ),
+            (crate::panes::PaneId::Terminal(3), None),
+        ],
+        "leaving `run_id` out clears it"
+    );
 }
 
 #[test]

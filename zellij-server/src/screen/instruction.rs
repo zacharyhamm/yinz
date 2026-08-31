@@ -791,6 +791,9 @@ pub enum ScreenInstruction {
     },
     SetCliEventSubscribersPresent(bool),
     SetPaneAgent(PaneId, Option<AgentInfo>, Option<NotificationEnd>),
+    /// Set (or clear) the run id on a pane's existing agent record, leaving every field the
+    /// agent itself reports alone. See `AgentInfo::run_id`.
+    SetPaneAgentRun(PaneId, Option<String>, Option<NotificationEnd>),
     DesktopNotificationResponse(Vec<u8>, ClientId),
     UpdateBackgroundPluginSubscriptions(PluginId, ClientId, HashSet<EventType>),
     ClearHintTextCache,

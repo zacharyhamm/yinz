@@ -751,6 +751,7 @@ pub fn registered_agent(kind: &str, cwd: Option<String>) -> AgentInfo {
         waiting_on: None,
         cwd,
         session_id: None,
+        run_id: None,
     }
 }
 
@@ -838,6 +839,25 @@ pub struct AgentRun {
 }
 
 impl AgentRun {
+    /// Re-point this run at the pane and session that hold it now, keeping everything the run
+    /// is made of.
+    ///
+    /// What a warp moves is the process, not the run: the same agent goes on doing the same
+    /// work, and its prompts, plans, questions, results and summary are as much a part of it
+    /// after the move as before. Only the two facts that were never the run's own — which pane
+    /// it sits in and which zellij session owns that pane — are allowed to change.
+    ///
+    /// `ended_at_ms` and `outcome` are cleared because the session that lost the pane closed
+    /// the run when it saw the pane leave. It could not tell a warp from a `kill`; this is the
+    /// answer arriving afterwards.
+    pub fn adopted_by(mut self, pane_id: u32, zellij_session_name: &str) -> AgentRun {
+        self.pane_id = pane_id;
+        self.zellij_session_name = zellij_session_name.to_owned();
+        self.ended_at_ms = None;
+        self.outcome = RunOutcome::Active;
+        self
+    }
+
     pub fn header(&self) -> AgentRunHeader {
         AgentRunHeader {
             id: self.id.clone(),
@@ -886,6 +906,29 @@ pub fn run_id(kind: &str, pane_id: u32, session_id: &str, started_at_ms: i64) ->
         "" => format!("{kind}:pane:{pane_id}:{started_at_ms}"),
         session_id => format!("{kind}:{session_id}"),
     }
+}
+
+/// The stored run a pane's record points at, where it points at one.
+///
+/// Two roads to the same answer, in order of authority. The record may *name* the run
+/// outright — a plugin keeping the history says so with `set_pane_agent_run`, and that is the
+/// only road open to an agent that supplies no session id of its own. Failing that, an agent
+/// that does supply one has a run id derived from it, and the derivation is the same wherever
+/// it happens ([`run_id`]), so it can be recomputed on the far side of a warp.
+///
+/// `None` where neither holds: a run keyed by pane id and a timestamp is a name only the
+/// session that made it can pronounce, and there is nothing honest to do but start a new one.
+pub fn stored_run_id(agent: &AgentInfo, pane_id: u32) -> Option<String> {
+    if let Some(run_id) = agent
+        .run_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        return Some(run_id.to_owned());
+    }
+    let session_id = agent.session_id.as_deref().unwrap_or_default().trim();
+    (!session_id.is_empty()).then(|| run_id(&agent.kind, pane_id, session_id, 0))
 }
 
 /// Reduce one hook event to the small history it is worth keeping.
@@ -993,6 +1036,18 @@ pub mod rows {
             .select(["payload"])
     }
 
+    /// One run by its id, whatever session it belongs to and whether or not it is still open.
+    ///
+    /// The lookup a session performs for a pane that arrived from somewhere else: the row is
+    /// under another session's name and has already been closed by the session that lost the
+    /// pane, so neither of [`active_runs_request`]'s filters would find it.
+    pub fn run_by_id_request(run_id: &str) -> FetchRequest {
+        FetchRequest::entity(RUN_ENTITY)
+            .filter(Pred::eq("uid", run_id))
+            .select(["payload"])
+            .limit(1)
+    }
+
     fn pane_id_at(rows: &DataRows, row: &[DataValue]) -> Option<u32> {
         match rows.get(row, "pane_id") {
             Some(DataValue::Int(id)) => u32::try_from(*id).ok(),
@@ -1007,16 +1062,54 @@ pub mod rows {
         }
     }
 
-    pub fn latch_mutation(pane_id: u32, kind: &str) -> Mutation {
+    /// A pane's row key. The session is half of it because the store is not per-session: one
+    /// file holds every zellij server on the machine, so a bare pane id makes two sessions'
+    /// pane 5 into one row.
+    fn pane_uid(zellij_session_name: &str, pane_id: u32) -> String {
+        format!("{zellij_session_name}:{pane_id}")
+    }
+
+    /// Only this session's rows. Every prune and every restore is scoped by it, so one session
+    /// closing a pane cannot delete another's row for the pane id it happens to share.
+    fn owned_by(zellij_session_name: &str) -> Pred {
+        Pred::eq("zellij_session_name", zellij_session_name)
+    }
+
+    /// This session's latches, or summaries — `entity` is [`LATCH_ENTITY`] or
+    /// [`SUMMARY_ENTITY`].
+    pub fn owned_rows_request(entity: &str, zellij_session_name: &str) -> FetchRequest {
+        FetchRequest::entity(entity).filter(owned_by(zellij_session_name))
+    }
+
+    /// Rows left behind by the version of these entities that keyed on the pane id alone.
+    ///
+    /// They cannot be reached by any predicate that a current row matches, and their uids
+    /// collide with nothing, so they would simply accumulate. Dropped once, on the first write
+    /// after the migration.
+    pub fn stale_unowned_delete_mutations() -> Vec<Mutation> {
+        [LATCH_ENTITY, SUMMARY_ENTITY]
+            .into_iter()
+            .map(|entity| Mutation::delete(entity, owned_by("")))
+            .collect()
+    }
+
+    pub fn latch_mutation(zellij_session_name: &str, pane_id: u32, kind: &str) -> Mutation {
         Mutation::put(LATCH_ENTITY)
-            .uid(pane_id.to_string())
+            .uid(pane_uid(zellij_session_name, pane_id))
             .set("pane_id", pane_id)
+            .set("zellij_session_name", zellij_session_name)
             .set("kind", kind)
             .build()
     }
 
-    pub fn latch_delete_mutation(pane_ids: impl IntoIterator<Item = u32>) -> Mutation {
-        Mutation::delete(LATCH_ENTITY, Pred::is_in("pane_id", pane_ids))
+    pub fn latch_delete_mutation(
+        zellij_session_name: &str,
+        pane_ids: impl IntoIterator<Item = u32>,
+    ) -> Mutation {
+        Mutation::delete(
+            LATCH_ENTITY,
+            Pred::is_in("pane_id", pane_ids).and(owned_by(zellij_session_name)),
+        )
     }
 
     pub fn latches_from_rows(rows: &DataRows) -> BTreeMap<u32, String> {
@@ -1032,18 +1125,29 @@ pub mod rows {
             .collect()
     }
 
-    pub fn summary_mutation(pane_id: u32, summary: &Summary) -> Mutation {
+    pub fn summary_mutation(
+        zellij_session_name: &str,
+        pane_id: u32,
+        summary: &Summary,
+    ) -> Mutation {
         Mutation::put(SUMMARY_ENTITY)
-            .uid(pane_id.to_string())
+            .uid(pane_uid(zellij_session_name, pane_id))
             .set("pane_id", pane_id)
+            .set("zellij_session_name", zellij_session_name)
             .set("text", summary.text.clone())
             .set("title", summary.title.clone())
             .set("awaiting", summary.awaiting)
             .build()
     }
 
-    pub fn summary_delete_mutation(pane_ids: impl IntoIterator<Item = u32>) -> Mutation {
-        Mutation::delete(SUMMARY_ENTITY, Pred::is_in("pane_id", pane_ids))
+    pub fn summary_delete_mutation(
+        zellij_session_name: &str,
+        pane_ids: impl IntoIterator<Item = u32>,
+    ) -> Mutation {
+        Mutation::delete(
+            SUMMARY_ENTITY,
+            Pred::is_in("pane_id", pane_ids).and(owned_by(zellij_session_name)),
+        )
     }
 
     /// The summaries these rows describe, with no activity hash: the hash is a fact about a
@@ -1067,14 +1171,18 @@ pub mod rows {
 
     /// The writes that turn `before` into `after`, ignoring the hash: an unchanged summary
     /// produces no write, so a poll that changes nothing is silent.
-    pub fn summary_diff_mutations(before: &Summaries, after: &Summaries) -> Vec<Mutation> {
+    pub fn summary_diff_mutations(
+        zellij_session_name: &str,
+        before: &Summaries,
+        after: &Summaries,
+    ) -> Vec<Mutation> {
         let same = |a: &Summary, b: &Summary| {
             a.text == b.text && a.title == b.title && a.awaiting == b.awaiting
         };
         let mut mutations: Vec<Mutation> = after
             .iter()
             .filter(|(pane_id, summary)| !before.get(pane_id).is_some_and(|b| same(b, summary)))
-            .map(|(pane_id, summary)| summary_mutation(*pane_id, summary))
+            .map(|(pane_id, summary)| summary_mutation(zellij_session_name, *pane_id, summary))
             .collect();
         let gone: Vec<u32> = before
             .keys()
@@ -1082,29 +1190,67 @@ pub mod rows {
             .copied()
             .collect();
         if !gone.is_empty() {
-            mutations.push(summary_delete_mutation(gone));
+            mutations.push(summary_delete_mutation(zellij_session_name, gone));
         }
         mutations
     }
 
-    pub fn run_mutation(run: &AgentRun) -> Mutation {
-        Mutation::put(RUN_ENTITY)
-            .uid(run.id.clone())
-            .set("pane_id", run.pane_id)
-            .set("session_id", run.session_id.clone())
-            .set("zellij_session_name", run.zellij_session_name.clone())
-            .set("kind", run.kind.clone())
-            .set("active", run.ended_at_ms.is_none())
-            .set("started_at_ms", run.started_at_ms)
-            .set(
+    /// The columns a run is stored as. One list, so a `Put` and a guarded `Update` cannot
+    /// disagree about what a row holds.
+    fn run_values(run: &AgentRun) -> Vec<(&'static str, DataValue)> {
+        vec![
+            ("pane_id", DataValue::from(run.pane_id)),
+            ("session_id", DataValue::from(run.session_id.clone())),
+            (
+                "zellij_session_name",
+                DataValue::from(run.zellij_session_name.clone()),
+            ),
+            ("kind", DataValue::from(run.kind.clone())),
+            ("active", DataValue::from(run.ended_at_ms.is_none())),
+            ("started_at_ms", DataValue::from(run.started_at_ms)),
+            (
                 "header",
-                serde_json::to_string(&run.header()).expect("AgentRunHeader serializes"),
-            )
-            .set(
+                DataValue::from(
+                    serde_json::to_string(&run.header()).expect("AgentRunHeader serializes"),
+                ),
+            ),
+            (
                 "payload",
-                serde_json::to_string(run).expect("AgentRun serializes"),
-            )
-            .build()
+                DataValue::from(serde_json::to_string(run).expect("AgentRun serializes")),
+            ),
+        ]
+    }
+
+    pub fn run_mutation(run: &AgentRun) -> Mutation {
+        let mut put = Mutation::put(RUN_ENTITY).uid(run.id.clone());
+        for (attr, value) in run_values(run) {
+            put = put.set(attr, value);
+        }
+        put.build()
+    }
+
+    /// Write a run *only while it is still ours*.
+    ///
+    /// Every session on a machine shares one store, so two daemons can hold opinions about one
+    /// run id — which is exactly what a warp arranges. The session that lost the pane closes
+    /// the run when it notices the pane gone; the session that gained it has by then reopened
+    /// the same row under its own name. An unconditional `Put` from the loser would overwrite
+    /// the winner's copy with a stale, closed one, and the entries the agent has produced
+    /// since would be gone.
+    ///
+    /// The predicate settles that inside the transaction rather than by hoping about order: a
+    /// row already claimed by another session matches nothing, and the write is simply
+    /// dropped. An adoption is deliberately *not* guarded — claiming the row is precisely the
+    /// write that changes `zellij_session_name`, so it must be a `Put`.
+    pub fn run_owned_mutation(run: &AgentRun, owner: &str) -> Mutation {
+        let mut update = Mutation::update(
+            RUN_ENTITY,
+            Pred::eq("uid", run.id.clone()).and(Pred::eq("zellij_session_name", owner)),
+        );
+        for (attr, value) in run_values(run) {
+            update = update.set(attr, value);
+        }
+        update.build()
     }
 
     pub fn runs_from_rows(rows: &DataRows) -> Vec<AgentRun> {
@@ -1986,6 +2132,7 @@ mod tests {
             waiting_on: waiting_on.map(str::to_owned),
             cwd: None,
             session_id: None,
+            run_id: None,
         };
 
         let waiting = HookFeed::from_agent(&record(AgentState::Waiting, Some("Bash rm")))
@@ -3046,6 +3193,292 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rows::runs_from_rows(&detail), vec![run]);
+    }
+
+    fn a_run(id: &str, session: &str, pane_id: u32, entries: &[&str]) -> AgentRun {
+        AgentRun {
+            id: id.to_owned(),
+            pane_id,
+            zellij_session_name: session.to_owned(),
+            session_id: "session-1".to_owned(),
+            kind: "claude".to_owned(),
+            cwd: Some("/work".to_owned()),
+            started_at_ms: 10,
+            ended_at_ms: None,
+            outcome: RunOutcome::Active,
+            revision: entries.len() as u64,
+            summarized_revision: 0,
+            summary: None,
+            entries: entries
+                .iter()
+                .enumerate()
+                .map(|(index, text)| RunEntry {
+                    revision: index as u64 + 1,
+                    event_id: None,
+                    kind: RunEntryKind::Prompt,
+                    text: (*text).to_owned(),
+                })
+                .collect(),
+        }
+    }
+
+    fn stored_run(local: &impl crate::store::Backend, id: &str) -> AgentRun {
+        let rows = local.fetch(&rows::run_by_id_request(id)).unwrap();
+        rows::runs_from_rows(&rows)
+            .into_iter()
+            .next()
+            .expect("the run is stored")
+    }
+
+    /// A warped pane's run continues where it left off.
+    ///
+    /// The session that lost the pane cannot tell a warp from a `kill -9`, so it closes the
+    /// run. The session that gained it looks the same row up by id — which is the agent's own
+    /// session id, unchanged by the move — and reopens it. Nothing about the run is rebuilt:
+    /// the prompts, plans and results are the same work by the same agent.
+    #[test]
+    fn a_closed_run_is_reopened_by_the_session_that_adopted_its_pane() {
+        use crate::store::{self, Backend};
+
+        let losing = store::Local::shared("hocus-agentd");
+        losing.define_all(&store::shared_defs()).unwrap();
+        let gaining = losing.joined(store::SHARED, "hocus-agentd");
+
+        let mut run = a_run("claude:session-1", "here", 7, &["ship it"]);
+        losing.apply(vec![rows::run_mutation(&run)]).unwrap();
+        // The pane leaves the manifest, so the losing session releases the run.
+        run.ended_at_ms = Some(20);
+        run.outcome = RunOutcome::Closed;
+        losing
+            .apply(vec![rows::run_owned_mutation(&run, "here")])
+            .unwrap();
+        assert_eq!(
+            stored_run(&losing, "claude:session-1").outcome,
+            RunOutcome::Closed
+        );
+
+        // The gaining session finds it by the id the record carried, and claims it.
+        let adopted = stored_run(&gaining, "claude:session-1").adopted_by(2, "there");
+        assert_eq!(adopted.entries.len(), 1, "the history came with it");
+        assert_eq!(adopted.started_at_ms, 10, "and so did when it began");
+        assert_eq!(adopted.outcome, RunOutcome::Active);
+        gaining.apply(vec![rows::run_mutation(&adopted)]).unwrap();
+
+        let stored = stored_run(&losing, "claude:session-1");
+        assert_eq!(stored.pane_id, 2);
+        assert_eq!(stored.zellij_session_name, "there");
+        assert_eq!(stored.ended_at_ms, None);
+    }
+
+    /// The race the guard exists for, in the order that used to lose the history.
+    ///
+    /// A session notices a pane is gone on its next manifest, which can be well after the
+    /// session that took it has adopted the run and added to it. An unconditional write of the
+    /// loser's closed copy would put the row back to where it was before the move, throwing
+    /// away everything the agent has done since. The predicate settles it inside the
+    /// transaction: the row is no longer ours, so the write matches nothing.
+    #[test]
+    fn a_release_after_the_run_moved_on_does_not_overwrite_it() {
+        use crate::store::{self, Backend};
+
+        let losing = store::Local::shared("hocus-agentd");
+        losing.define_all(&store::shared_defs()).unwrap();
+        let gaining = losing.joined(store::SHARED, "hocus-agentd");
+
+        let run = a_run("claude:session-1", "here", 7, &["ship it"]);
+        losing.apply(vec![rows::run_mutation(&run)]).unwrap();
+
+        // The gaining session gets there first, and the agent keeps working.
+        let mut adopted = stored_run(&gaining, "claude:session-1").adopted_by(2, "there");
+        adopted.revision += 1;
+        adopted.entries.push(RunEntry {
+            revision: adopted.revision,
+            event_id: None,
+            kind: RunEntryKind::Result,
+            text: "shipped".to_owned(),
+        });
+        gaining.apply(vec![rows::run_mutation(&adopted)]).unwrap();
+
+        // Only now does the losing session notice the pane is gone.
+        let mut released = run.clone();
+        released.ended_at_ms = Some(20);
+        released.outcome = RunOutcome::Closed;
+        losing
+            .apply(vec![rows::run_owned_mutation(&released, "here")])
+            .unwrap();
+
+        let stored = stored_run(&losing, "claude:session-1");
+        assert_eq!(stored, adopted, "the loser's last word was dropped whole");
+        assert_eq!(
+            stored.entries.len(),
+            2,
+            "including what arrived after the move"
+        );
+        assert_eq!(stored.ended_at_ms, None, "and the run is still open");
+    }
+
+    /// The same guard, doing nothing when it should do nothing: a run whose pane really did
+    /// close is still ours, so releasing it closes it.
+    #[test]
+    fn a_release_of_a_run_nobody_took_closes_it() {
+        use crate::store::{self, Backend};
+
+        let local = store::Local::shared("hocus-agentd");
+        local.define_all(&store::shared_defs()).unwrap();
+        let mut run = a_run("claude:session-1", "here", 7, &["ship it"]);
+        local.apply(vec![rows::run_mutation(&run)]).unwrap();
+
+        run.ended_at_ms = Some(20);
+        run.outcome = RunOutcome::Closed;
+        local
+            .apply(vec![rows::run_owned_mutation(&run, "here")])
+            .unwrap();
+
+        let stored = stored_run(&local, "claude:session-1");
+        assert_eq!(stored.outcome, RunOutcome::Closed);
+        assert_eq!(stored.ended_at_ms, Some(20));
+        assert!(
+            local
+                .fetch(&rows::active_runs_request("here"))
+                .unwrap()
+                .rows
+                .is_empty(),
+            "and it is out of the live set"
+        );
+    }
+
+    /// Which id a pane's record points at, and when it points at nothing.
+    #[test]
+    fn a_records_stored_run_is_named_or_derived_or_neither() {
+        let record = |session_id: Option<&str>, run_id: Option<&str>| AgentInfo {
+            kind: "claude".to_owned(),
+            state: AgentState::Busy,
+            source: AgentSource::Reported,
+            detail: None,
+            waiting_on: None,
+            cwd: None,
+            session_id: session_id.map(str::to_owned),
+            run_id: run_id.map(str::to_owned),
+        };
+        // Named outright: the only road open to an agent with no session id of its own.
+        assert_eq!(
+            stored_run_id(&record(None, Some("mine:7")), 4),
+            Some("mine:7".to_owned())
+        );
+        // Derived, and the derivation does not mention the pane - which is what lets the far
+        // side of a warp reach the same answer.
+        assert_eq!(
+            stored_run_id(&record(Some("s1"), None), 4),
+            Some("claude:s1".to_owned())
+        );
+        assert_eq!(
+            stored_run_id(&record(Some("s1"), None), 99),
+            stored_run_id(&record(Some("s1"), None), 4)
+        );
+        // A name wins over a derivation: it is what a plugin actually wrote down.
+        assert_eq!(
+            stored_run_id(&record(Some("s1"), Some("mine:7")), 4),
+            Some("mine:7".to_owned())
+        );
+        // Neither. A run keyed by pane id and a timestamp cannot be found from here.
+        assert_eq!(stored_run_id(&record(None, None), 4), None);
+        assert_eq!(stored_run_id(&record(Some("  "), Some(" ")), 4), None);
+    }
+
+    /// Two sessions, one store file, one pane id. These rows used to be uid'd by the pane id
+    /// alone, so each session's write landed on the other's row and each session's prune
+    /// deleted the other's rows.
+    #[test]
+    fn per_pane_rows_belong_to_one_session() {
+        use crate::store::{self, Backend};
+
+        let here = store::Local::shared("hocus");
+        here.define_all(&store::shared_defs()).unwrap();
+        let there = here.joined(store::SHARED, "hocus");
+
+        here.apply(vec![rows::latch_mutation("here", 5, "reviewer")])
+            .unwrap();
+        there
+            .apply(vec![rows::latch_mutation("there", 5, "builder")])
+            .unwrap();
+        let latches_of = |backend: &dyn Backend, session: &str| {
+            let rows = backend
+                .fetch(&rows::owned_rows_request(rows::LATCH_ENTITY, session))
+                .unwrap();
+            rows::latches_from_rows(&rows)
+        };
+        assert_eq!(
+            latches_of(&here, "here"),
+            BTreeMap::from([(5, "reviewer".to_owned())])
+        );
+        assert_eq!(
+            latches_of(&there, "there"),
+            BTreeMap::from([(5, "builder".to_owned())])
+        );
+
+        // And a prune reaches only its own.
+        here.apply(vec![rows::latch_delete_mutation("here", [5])])
+            .unwrap();
+        assert!(latches_of(&here, "here").is_empty());
+        assert_eq!(
+            latches_of(&there, "there"),
+            BTreeMap::from([(5, "builder".to_owned())]),
+            "the other session's pane 5 is a different pane"
+        );
+    }
+
+    /// The v1 → v2 migration is one the store performs unasked, and it had better be: every
+    /// hocus declares these entities on load and gives up on the store entirely if a
+    /// declaration is refused. Dropping `unique` from `pane_id` and adding a column with a
+    /// default are both non-destructive, but that is a property of the engine rather than of
+    /// this crate, so it is checked here rather than assumed.
+    #[test]
+    fn the_pane_id_only_entities_migrate_rather_than_refusing() {
+        use crate::store::{self, Backend};
+        use zellij_tile::prelude::{AttrDef, EntityDef, FetchRequest, Mutation};
+
+        let local = store::Local::shared("hocus");
+        // The definitions as they were, and a row under the uid they used.
+        local
+            .define(
+                &EntityDef::new(rows::LATCH_ENTITY, 1)
+                    .attr(AttrDef::int("pane_id").unique().required())
+                    .attr(AttrDef::text("kind").required()),
+            )
+            .expect("the old definition still declares");
+        local
+            .apply(vec![Mutation::put(rows::LATCH_ENTITY)
+                .uid("5")
+                .set("pane_id", 5_u32)
+                .set("kind", "reviewer")
+                .build()])
+            .expect("an old row");
+
+        local
+            .define_all(&store::shared_defs())
+            .expect("the new definition migrates rather than being refused");
+
+        // Two sessions can now hold pane 5, which is what the unique index forbade.
+        local
+            .apply(vec![
+                rows::latch_mutation("here", 5, "reviewer"),
+                rows::latch_mutation("there", 5, "builder"),
+            ])
+            .expect("one pane id, two sessions");
+
+        // And the row from before, which no predicate a current row matches can reach, is
+        // dropped by the one-time cleanup.
+        local
+            .apply(rows::stale_unowned_delete_mutations())
+            .expect("cleaned up");
+        let all = local
+            .fetch(&FetchRequest::entity(rows::LATCH_ENTITY))
+            .unwrap();
+        assert_eq!(
+            all.rows.len(),
+            2,
+            "only the two session-scoped rows are left"
+        );
     }
 
     /// The interruption the feed exists to make in time. Shaped like `summary_toast`, so

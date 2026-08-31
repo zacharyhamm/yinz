@@ -728,6 +728,8 @@ pub struct AgentInfo {
     pub session_id: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="7")]
     pub waiting_on: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="8")]
+    pub run_id: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

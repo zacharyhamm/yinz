@@ -2607,7 +2607,8 @@ pub enum AgentSource {
 /// events`, `list-panes --json` — sees the same answer to "is this an agent, and is it waiting
 /// on me". Written by the spawn path, by `PluginCommand::SetPaneAgent`, and by `zellij action
 /// agent-report`, which is what coding-agent hooks call. A record is complete every time it is
-/// set; nothing merges.
+/// set; nothing merges — with one stated exception, [`AgentInfo::run_id`], which the agent
+/// never reports and the session therefore carries forward for it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AgentInfo {
     /// `claude`, `codex`, … — the program, not a version of it.
@@ -2634,6 +2635,19 @@ pub struct AgentInfo {
     /// told from a pane that merely went quiet.
     #[serde(default)]
     pub session_id: Option<String>,
+    /// The id of the run record a plugin is keeping for this pane's agent, where one is
+    /// keeping one.
+    ///
+    /// Opaque to the session: written by whoever holds the agent's history, read back by
+    /// whoever picks the pane up. That is what lets a warped pane's run continue in the
+    /// session that adopted it — an agent that supplies no session id has nothing else
+    /// stable to be found by.
+    ///
+    /// The one field of a record the agent itself never says, and so the one field that is
+    /// carried forward rather than re-supplied: a report that leaves it `None` inherits the
+    /// pane's, and only clearing the whole record clears it. See `apply_pane_agent_report`.
+    #[serde(default)]
+    pub run_id: Option<String>,
 }
 
 impl AgentSource {
@@ -4675,6 +4689,18 @@ pub enum PluginCommand {
     SetPaneAgent {
         pane_id: PaneId,
         agent: Option<AgentInfo>,
+    },
+    /// Set the id of the run record this plugin is keeping for `pane_id`'s agent, or clear it
+    /// with `None`.
+    ///
+    /// Additive where [`PluginCommand::SetPaneAgent`] is wholesale: this touches one field and
+    /// leaves the rest of the record as the agent last reported it, which is what a plugin
+    /// holding an agent's history needs — it is not the authority on what the agent is doing,
+    /// only on which run it is doing it in. A run id for a pane with no record is dropped:
+    /// it is bookkeeping about a record, not a record.
+    SetPaneAgentRun {
+        pane_id: PaneId,
+        run_id: Option<String>,
     },
     /// Reload every running instance of the plugin at `url` in place, opening nothing. For a
     /// plugin that is not running this does nothing; `StartOrReloadPlugin` is the one that opens

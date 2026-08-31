@@ -164,8 +164,9 @@ pub use super::generated_api::api::{
         SearchHit as ProtobufSearchHit, SearchRecordingsPayload as ProtobufSearchRecordingsPayload,
         SearchRecordingsResponse as ProtobufSearchRecordingsResponse,
         SessionListSnapshot as ProtobufSessionListSnapshot, SetContextMenuPayload,
-        SetFloatingPanePinnedPayload, SetPaneAgentPayload, SetPaneBorderlessPayload,
-        SetPaneColorPayload, SetPaneFrameStylePayload as ProtobufSetPaneFrameStylePayload,
+        SetFloatingPanePinnedPayload, SetPaneAgentPayload, SetPaneAgentRunPayload,
+        SetPaneBorderlessPayload, SetPaneColorPayload,
+        SetPaneFrameStylePayload as ProtobufSetPaneFrameStylePayload,
         SetPaneRegexHighlightsPayload, SetPaneTitlePrefixPayload,
         SetSelfMouseSelectionSupportPayload, SetTabProjectsPayload, SetTimeoutPayload,
         ShowCursorPayload, ShowFloatingPanesPayload as ProtobufShowFloatingPanesPayload,
@@ -2780,6 +2781,18 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 }),
                 _ => Err("Mismatched payload for SetPaneAgent"),
             },
+            Some(CommandName::SetPaneAgentRun) => match protobuf_plugin_command.payload {
+                Some(Payload::SetPaneAgentRunPayload(payload)) => {
+                    Ok(PluginCommand::SetPaneAgentRun {
+                        pane_id: payload
+                            .pane_id
+                            .ok_or("SetPaneAgentRun must have a pane id")?
+                            .try_into()?,
+                        run_id: payload.run_id,
+                    })
+                },
+                _ => Err("Mismatched payload for SetPaneAgentRun"),
+            },
             Some(CommandName::CheckLuaPlugin) => match protobuf_plugin_command.payload {
                 Some(Payload::CheckLuaPluginPayload(payload)) => {
                     Ok(PluginCommand::CheckLuaPlugin {
@@ -4971,6 +4984,13 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     agent: agent.map(ProtobufAgentInfo::try_from).transpose()?,
                 })),
             }),
+            PluginCommand::SetPaneAgentRun { pane_id, run_id } => Ok(ProtobufPluginCommand {
+                name: CommandName::SetPaneAgentRun as i32,
+                payload: Some(Payload::SetPaneAgentRunPayload(SetPaneAgentRunPayload {
+                    pane_id: pane_id.try_into().ok(),
+                    run_id,
+                })),
+            }),
             PluginCommand::CheckLuaPlugin { name, source } => Ok(ProtobufPluginCommand {
                 name: CommandName::CheckLuaPlugin as i32,
                 payload: Some(Payload::CheckLuaPluginPayload(CheckLuaPluginPayload {
@@ -7050,6 +7070,7 @@ mod tests {
                 carried @ (PluginCommand::Subscribe(_)
                 | PluginCommand::CheckLuaPlugin { .. }
                 | PluginCommand::SetPaneAgent { .. }
+                | PluginCommand::SetPaneAgentRun { .. }
                 | PluginCommand::ReloadPluginByUrl(_)
                 | PluginCommand::ReadPluginLog { .. }
                 | PluginCommand::Unsubscribe(_)

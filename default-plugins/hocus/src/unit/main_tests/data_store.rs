@@ -107,10 +107,16 @@ fn summaries_are_mirrored_and_restored_without_their_hash() {
         before
     );
 
-    let mut restarted = State::default();
+    // Named, because a summary belongs to a session as well as a pane - see
+    // `store::agent_summary_def`.
+    let mut restarted = State {
+        zellij_session_name: "test-session".to_owned(),
+        ..State::default()
+    };
     restarted
         .store()
         .apply(vec![agents::rows::summary_mutation(
+            "test-session",
             3,
             &summary("reviewing", 7),
         )])

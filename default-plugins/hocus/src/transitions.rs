@@ -581,6 +581,10 @@ impl State {
             return;
         }
         self.restore_persisted();
+        // A no-op at a cold start, where the session name has not arrived yet and the first
+        // snapshot will do this instead. It is not a no-op for a reload: the state that
+        // carries the name across one is the same state this is called on.
+        self.restore_pane_rows();
         // `Rows` rather than `Ids`: the registry is small, and paging for the
         // rows after every change would be a second call for nothing. The limit
         // is explicit because the default hundred would silently lose the rest.
@@ -711,6 +715,28 @@ impl State {
                 )));
             }
         }
+        self.load_more_agent_runs();
+    }
+
+    /// The other half of the restore: the rows that are about *panes*.
+    ///
+    /// Split off and deferred because they cannot be read at load. Every session on the
+    /// machine shares one store file, so a latch or a summary is keyed by session as well as
+    /// pane id - and hocus learns its session name from the daemon's first snapshot, which has
+    /// not arrived yet when `restore_persisted` runs. Reading them unscoped would take another
+    /// session's rows.
+    ///
+    /// Runs once, on that first snapshot. Same rule as the rows themselves: hocus is the only
+    /// writer, so nothing watches them and one read is enough.
+    pub(crate) fn restore_pane_rows(&mut self) {
+        if self.zellij_session_name.is_empty() || self.restored_pane_rows {
+            return;
+        }
+        self.restored_pane_rows = true;
+        let owner = self.zellij_session_name.clone();
+        let fetch = |entity: &str| {
+            agents::rows::owned_rows_request(entity, &owner).limit(store::LIST_FETCH_LIMIT)
+        };
         let fetched = self.store().fetch(&fetch(agents::rows::LATCH_ENTITY)).ok();
         if let Some(rows) = fetched {
             let latches = agents::rows::latches_from_rows(&rows);
@@ -729,7 +755,12 @@ impl State {
                 self.summaries = summaries;
             }
         }
-        self.load_more_agent_runs();
+        // The rows the pane-id-only version of these entities left behind. Unreachable by any
+        // predicate a current row matches, so they would otherwise sit there for good.
+        self.write_store_quietly(
+            "agent_rows_migration",
+            agents::rows::stale_unowned_delete_mutations(),
+        );
     }
 
     pub(crate) fn load_more_agent_runs(&mut self) {
@@ -794,25 +825,46 @@ impl State {
     }
 
     pub(crate) fn persist_latch(&mut self, pane_id: u32, kind: &str) {
-        self.write_store_quietly(
-            "agent_latch",
-            vec![agents::rows::latch_mutation(pane_id, kind)],
-        );
-    }
-
-    pub(crate) fn forget_latches(&mut self, pane_ids: Vec<u32>) {
-        if pane_ids.is_empty() {
+        // Nothing per-pane is written before the first snapshot names the session: the store
+        // is shared by every session on the machine, so a row that cannot say which session's
+        // pane 5 it means is a row that collides with somebody else's. The next snapshot
+        // arrives within a heartbeat, and `agent_register` re-persists from `manual_kinds`.
+        if self.zellij_session_name.is_empty() {
             return;
         }
         self.write_store_quietly(
             "agent_latch",
-            vec![agents::rows::latch_delete_mutation(pane_ids)],
+            vec![agents::rows::latch_mutation(
+                &self.zellij_session_name,
+                pane_id,
+                kind,
+            )],
+        );
+    }
+
+    pub(crate) fn forget_latches(&mut self, pane_ids: Vec<u32>) {
+        if pane_ids.is_empty() || self.zellij_session_name.is_empty() {
+            return;
+        }
+        self.write_store_quietly(
+            "agent_latch",
+            vec![agents::rows::latch_delete_mutation(
+                &self.zellij_session_name,
+                pane_ids,
+            )],
         );
     }
 
     /// Mirror the daemon's summaries, writing only what changed.
     pub(crate) fn persist_summaries(&mut self, before: &agents::Summaries) {
-        let mutations = agents::rows::summary_diff_mutations(before, &self.summaries);
+        if self.zellij_session_name.is_empty() {
+            return;
+        }
+        let mutations = agents::rows::summary_diff_mutations(
+            &self.zellij_session_name,
+            before,
+            &self.summaries,
+        );
         self.write_store_quietly("agent_summary", mutations);
     }
 

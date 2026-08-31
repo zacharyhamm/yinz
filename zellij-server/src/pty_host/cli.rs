@@ -279,6 +279,11 @@ pub fn adopt_payload(host_id: &str) -> Result<WarpedPane> {
         // machine's runtime directory. Remote survivors are found by asking the
         // broker holding them — see `remote_adopt_payload`.
         remote: None,
+        // Adopting an orphan is not a warp: there is no session on the other side to have
+        // read the pane's record off, and a supervisor keeps none - it clears
+        // `originating_plugin` on attach, so even the spawn path cannot re-derive one. The
+        // process comes back; what it was reported to be doing does not, and the agent has to
+        // say so again on its next hook.
         agent: None,
     })
 }
@@ -436,6 +441,11 @@ fn warped_pane_from_entry(
                 ..Default::default()
             },
         }),
+        // Adopting an orphan is not a warp: there is no session on the other side to have
+        // read the pane's record off, and a supervisor keeps none - it clears
+        // `originating_plugin` on attach, so even the spawn path cannot re-derive one. The
+        // process comes back; what it was reported to be doing does not, and the agent has to
+        // say so again on its next hook.
         agent: None,
     })
 }
