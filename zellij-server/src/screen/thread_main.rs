@@ -2108,6 +2108,7 @@ pub(crate) fn screen_thread_main(
                     screen.update_pixel_dimensions(client_id, pixel_dimensions);
                 if character_cell_size_changed {
                     screen.resize_pty_all_panes()?;
+                    screen.render(None)?;
                 }
             },
             ScreenInstruction::TerminalBackgroundColor(background_color_instruction) => {

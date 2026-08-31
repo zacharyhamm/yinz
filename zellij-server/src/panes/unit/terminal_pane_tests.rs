@@ -1,5 +1,5 @@
 use super::super::TerminalPane;
-use crate::panes::kitty_graphics::KittyImageStore;
+use crate::panes::kitty_graphics::{test_support::apc_b64, KittyImageStore};
 use crate::panes::sixel::SixelImageStore;
 use crate::panes::LinkHandler;
 use crate::tab::Pane;
@@ -1187,6 +1187,15 @@ pub fn guest_modal_no_modal_passes_input_through() {
 // every chunk size and compare the pane that comes out.
 
 fn make_pane_for_ingest() -> TerminalPane {
+    make_pane_for_ingest_with_cell_size(Rc::new(RefCell::new(Some(SizeInPixels {
+        width: 8,
+        height: 21,
+    }))))
+}
+
+fn make_pane_for_ingest_with_cell_size(
+    character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
+) -> TerminalPane {
     let mut fake_win_size = PaneGeom::default();
     fake_win_size.cols.set_inner(121);
     fake_win_size.rows.set_inner(20);
@@ -1197,10 +1206,7 @@ fn make_pane_for_ingest() -> TerminalPane {
         0,
         String::new(),
         Rc::new(RefCell::new(LinkHandler::new())),
-        Rc::new(RefCell::new(Some(SizeInPixels {
-            width: 8,
-            height: 21,
-        }))),
+        character_cell_size,
         Rc::new(RefCell::new(SixelImageStore::default())),
         Rc::new(RefCell::new(KittyImageStore::default())),
         Rc::new(RefCell::new(Palette::default())),
@@ -1214,6 +1220,38 @@ fn make_pane_for_ingest() -> TerminalPane {
         false,
         None,
     )
+}
+
+#[test]
+fn a_character_cell_size_change_rescales_kitty_images_without_a_geometry_change() {
+    let character_cell_size = Rc::new(RefCell::new(Some(SizeInPixels {
+        width: 8,
+        height: 21,
+    })));
+    let mut pane = make_pane_for_ingest_with_cell_size(character_cell_size.clone());
+    pane.handle_pty_bytes(apc_b64(
+        "a=T,f=32,s=1,v=1,i=1,c=2,r=2,q=2",
+        &[255, 255, 255, 255],
+    ));
+    let before = pane
+        .render(None)
+        .expect("TEST")
+        .expect("kitty image render")
+        .3;
+    assert_eq!(before[0].scaled_px, Some((16, 42)));
+
+    *character_cell_size.borrow_mut() = Some(SizeInPixels {
+        width: 10,
+        height: 20,
+    });
+    pane.character_cell_size_possibly_changed();
+
+    let after = pane
+        .render(None)
+        .expect("TEST")
+        .expect("rescaled kitty image render")
+        .3;
+    assert_eq!(after[0].scaled_px, Some((20, 40)));
 }
 
 /// Everything that distinguishes one ingested stream from another: what landed on the grid, how

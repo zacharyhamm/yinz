@@ -115,6 +115,29 @@ fn plugins_receive_kitty_support_per_client() {
 }
 
 #[test]
+fn plugins_receive_kitty_support_after_a_client_id_is_reused() {
+    let size = Size { cols: 80, rows: 20 };
+    let (mut screen, capture) = create_new_screen_with_theme_capture(size);
+    new_tab(&mut screen, 1, 0);
+    add_pane_to_tab(&mut screen, 0, PaneId::Plugin(77), false);
+
+    screen.update_kitty_graphics_support(1, true);
+    screen.remove_client(1).expect("TEST");
+    screen.add_client(1).expect("TEST");
+    capture.drain_plugin_updates();
+
+    screen.update_kitty_graphics_support(1, true);
+
+    assert!(capture.drain_plugin_updates().into_iter().any(
+        |(plugin_id, client_id, event)| matches!(
+            (plugin_id, client_id, event),
+            (Some(77), Some(1), Event::ModeUpdate(mode_info))
+                if mode_info.capabilities.kitty_graphics
+        )
+    ));
+}
+
+#[test]
 fn primary_da_advertises_sixel_when_capable_client_connected() {
     let size = Size {
         cols: 121,

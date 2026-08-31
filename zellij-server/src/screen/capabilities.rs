@@ -84,16 +84,6 @@ impl Screen {
     /// the client's probe reply, so it has to be written back into each copy and re-fanned out.
     /// Same shape as the host-theme swap in `Screen::apply_host_terminal_theme_mode`.
     fn push_kitty_capability_to_plugins(&mut self, client_id: ClientId, supported: bool) {
-        if self
-            .mode_info
-            .get(&client_id)
-            .unwrap_or(&self.default_mode_info)
-            .capabilities
-            .kitty_graphics
-            == supported
-        {
-            return;
-        }
         let default_for_new = self.default_mode_info.clone();
         let mode_info = self.mode_info.entry(client_id).or_insert(default_for_new);
         mode_info.capabilities.kitty_graphics = supported;

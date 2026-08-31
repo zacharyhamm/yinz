@@ -98,9 +98,22 @@ pub struct VirtualPlacement {
     /// The `c` x `r` cell box the image is fitted into.
     pub columns: u16,
     pub rows: u16,
+    /// The rectangle of the original image fitted into the cell box.
+    pub source: (usize, usize, usize, usize),
     /// The image is fitted into the box preserving its aspect ratio, so this is at most the box.
     pub fitted_px: (usize, usize),
     pub z_index: i32,
+}
+
+fn fit_into_box(source: (usize, usize), box_px: (usize, usize)) -> (usize, usize) {
+    let scale = f64::min(
+        box_px.0 as f64 / source.0 as f64,
+        box_px.1 as f64 / source.1 as f64,
+    );
+    (
+        std::cmp::max((source.0 as f64 * scale).round() as usize, 1),
+        std::cmp::max((source.1 as f64 * scale).round() as usize, 1),
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -977,14 +990,7 @@ impl KittyGrid {
         let box_px = (columns * cell.width, rows * cell.height);
         // Spec: "The image will eventually be fit to the specified rectangle, its aspect ratio
         // preserved" - so a square image in a wide box keeps its shape rather than stretching.
-        let scale = f64::min(
-            box_px.0 as f64 / source_w as f64,
-            box_px.1 as f64 / source_h as f64,
-        );
-        let fitted_px = (
-            std::cmp::max((source_w as f64 * scale).round() as usize, 1),
-            std::cmp::max((source_h as f64 * scale).round() as usize, 1),
-        );
+        let fitted_px = fit_into_box((source_w, source_h), box_px);
         let variant_key = (columns as u16, rows as u16);
         let fitted_bytes = {
             let store = self.kitty_image_store.borrow();
@@ -1024,6 +1030,7 @@ impl KittyGrid {
             internal_id: internal,
             columns: columns as u16,
             rows: rows as u16,
+            source,
             fitted_px,
             z_index: command.z_index,
         });
@@ -1594,7 +1601,7 @@ impl KittyGrid {
                     placement.display_rect.y = (placement.display_rect.y
                         / previous_cell_size.height as isize)
                         * character_cell_size.height as isize;
-                    if placement.scaled_px.is_some() {
+                    if placement.scaled_px.is_some() && !placement.is_placeholder {
                         let (cols, rows) = placement.dest_cells;
                         let scaled_px = (
                             cols as usize * character_cell_size.width,
@@ -1655,6 +1662,54 @@ impl KittyGrid {
                             placement.emit_x = 0;
                             placement.emit_y = 0;
                         }
+                    }
+                }
+                let mut virtual_regenerations = Vec::new();
+                for placement in &mut self.virtual_placements {
+                    let (_, _, source_width, source_height) = placement.source;
+                    placement.fitted_px = fit_into_box(
+                        (source_width, source_height),
+                        (
+                            placement.columns as usize * character_cell_size.width,
+                            placement.rows as usize * character_cell_size.height,
+                        ),
+                    );
+                    virtual_regenerations.push((
+                        placement.internal_id,
+                        (placement.columns, placement.rows),
+                        placement.source,
+                        placement.fitted_px,
+                    ));
+                }
+                for (internal, variant_key, source, fitted_px) in virtual_regenerations {
+                    let (source_x, source_y, source_width, source_height) = source;
+                    let scaled_bytes = {
+                        let store = self.kitty_image_store.borrow();
+                        store.get(internal).map(|image| {
+                            let cropped = crop_rgba(
+                                image.displayed_rgba(),
+                                image.width as usize,
+                                image.height as usize,
+                                source_x,
+                                source_y,
+                                source_width,
+                                source_height,
+                            );
+                            scale_rgba(
+                                &cropped,
+                                source_width,
+                                source_height,
+                                fitted_px.0,
+                                fitted_px.1,
+                            )
+                        })
+                    };
+                    if let Some(scaled_bytes) = scaled_bytes {
+                        self.kitty_image_store.borrow_mut().add_scaled_variant(
+                            internal,
+                            variant_key,
+                            scaled_bytes,
+                        );
                     }
                 }
             }
