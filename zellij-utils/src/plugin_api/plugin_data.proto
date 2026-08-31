@@ -64,6 +64,13 @@ message EntityDef {
   repeated AttrDef attrs = 3;
 }
 
+// One entity as the store holds it, for a plugin asking what is there.
+message EntityInfo {
+  string namespace = 1;
+  string owner_plugin = 2;
+  EntityDef def = 3;
+}
+
 // A oneof cannot hold a repeated field, so the branches needing one wrap it.
 message PredList {
   repeated Pred preds = 1;

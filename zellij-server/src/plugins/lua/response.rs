@@ -24,11 +24,11 @@ use prost::Message;
 use serde::Serialize;
 
 use zellij_utils::data::{
-    CommandType, DataApplyResponse, DataCountResponse, DataDefineResponse, DataFetchResponse,
-    DataUnwatchResponse, DataWatchResponse, FileMetadata, GetSessionListResponse, LayoutMetadata,
-    LayoutParsingError, ListOrphanedPanesResponse, NotificationInfo, PaneGitProbe, PaneId,
-    PaneScrollbackResponse, PluginIds, QueueStatusResponse, RecordingSummary, SearchHit,
-    WarpPaneResponse,
+    CommandType, DataApplyResponse, DataCatalogResponse, DataCountResponse, DataDefineResponse,
+    DataFetchResponse, DataUnwatchResponse, DataWatchResponse, FileMetadata,
+    GetSessionListResponse, LayoutMetadata, LayoutParsingError, ListOrphanedPanesResponse,
+    NotificationInfo, PaneGitProbe, PaneId, PaneScrollbackResponse, PluginIds, QueueStatusResponse,
+    RecordingSummary, SearchHit, WarpPaneResponse,
 };
 use zellij_utils::errors::prelude::*;
 use zellij_utils::plugin_api::event::ProtobufPaneScrollbackResponse;
@@ -44,17 +44,18 @@ use zellij_utils::plugin_api::plugin_command::{
     save_session_response, show_floating_panes_response, ProtobufBreakPanesToNewTabResponse,
     ProtobufBreakPanesToTabWithIdResponse, ProtobufBreakPanesToTabWithIndexResponse,
     ProtobufCheckLuaPluginResponse, ProtobufCurrentSessionLastSavedTimeResponse,
-    ProtobufDataApplyResponse, ProtobufDataCountResponse, ProtobufDataDefineResponse,
-    ProtobufDataFetchResponse, ProtobufDataUnwatchResponse, ProtobufDataWatchResponse,
-    ProtobufDeleteAllDeadSessionsResponse, ProtobufDeleteDeadSessionResponse,
-    ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse, ProtobufDumpSessionLayoutResponse,
-    ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse, ProtobufFocusOrCreateTabResponse,
-    ProtobufFsListResponse, ProtobufFsMetadataResponse, ProtobufFsMutateResponse,
-    ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse, ProtobufGetFocusedPaneInfoResponse,
-    ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneGitProbeResponse,
-    ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
-    ProtobufGetPluginAliasConfigurationResponse, ProtobufGetSessionEnvironmentVariablesResponse,
-    ProtobufGetSessionListResponse, ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
+    ProtobufDataApplyResponse, ProtobufDataCatalogResponse, ProtobufDataCountResponse,
+    ProtobufDataDefineResponse, ProtobufDataFetchResponse, ProtobufDataUnwatchResponse,
+    ProtobufDataWatchResponse, ProtobufDeleteAllDeadSessionsResponse,
+    ProtobufDeleteDeadSessionResponse, ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse,
+    ProtobufDumpSessionLayoutResponse, ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse,
+    ProtobufFocusOrCreateTabResponse, ProtobufFsListResponse, ProtobufFsMetadataResponse,
+    ProtobufFsMutateResponse, ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse,
+    ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse,
+    ProtobufGetPaneGitProbeResponse, ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
+    ProtobufGetPaneRunningCommandResponse, ProtobufGetPluginAliasConfigurationResponse,
+    ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
+    ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
     ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
     ProtobufListNotificationsResponse, ProtobufListOrphanedPanesResponse,
     ProtobufListRecordingsResponse, ProtobufNewTabResponse, ProtobufNewTabsResponse,
@@ -369,6 +370,12 @@ pub fn response_to_lua(lua: &Lua, command: CommandType, bytes: &[u8]) -> Option<
                 },
             )
         },
+        CommandType::DataCatalog => decode(bytes).and_then(|r: ProtobufDataCatalogResponse| {
+            match DataCatalogResponse::try_from(r).map_err(|e| anyhow!("{}", e))? {
+                DataCatalogResponse::Ok(entities) => value(lua, entities),
+                DataCatalogResponse::Err(e) => Err(anyhow!("{}", e)),
+            }
+        }),
         CommandType::DataUnwatch => decode(bytes).and_then(|r: ProtobufDataUnwatchResponse| {
             match DataUnwatchResponse::try_from(r).map_err(|e| anyhow!("{}", e))? {
                 DataUnwatchResponse::Ok => Ok(LuaValue::Boolean(true)),

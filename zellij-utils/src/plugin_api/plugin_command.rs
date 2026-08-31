@@ -10,20 +10,20 @@ pub use super::generated_api::api::{
     pane_frame_style::PaneFrameStyle as ProtobufPaneFrameStyle,
     plugin_command::{
         break_panes_to_new_tab_response, break_panes_to_tab_with_id_response,
-        break_panes_to_tab_with_index_response, data_apply_response, data_count_response,
-        data_define_response, data_fetch_response, data_unwatch_response, data_watch_response,
-        delete_layout_response, dump_layout_response, dump_session_layout_response,
-        edit_layout_response, enqueue_queue_job_response, focus_or_create_tab_response,
-        fs_list_response, fs_metadata_response, fs_mutate_response, fs_read_response,
-        get_focused_pane_info_response, get_pane_cwd_response, get_pane_git_probe_response,
-        get_pane_pid_response, get_pane_running_command_response, get_session_list_response,
-        hide_floating_panes_response, highlight_style::Style as ProtobufHighlightStyleVariant,
-        list_orphaned_panes_response, new_tab_response, new_tab_unfocused_response,
-        open_command_pane_in_git_checkout_payload, open_command_pane_in_git_checkout_response,
-        parse_layout_response, plugin_command::Payload, read_plugin_log_response,
-        rename_layout_response, save_layout_response, save_session_response,
-        show_floating_panes_response, warp_pane_response, AdoptOrphanedPanePayload,
-        BreakPanesToNewTabPayload,
+        break_panes_to_tab_with_index_response, data_apply_response, data_catalog_response,
+        data_count_response, data_define_response, data_fetch_response, data_unwatch_response,
+        data_watch_response, delete_layout_response, dump_layout_response,
+        dump_session_layout_response, edit_layout_response, enqueue_queue_job_response,
+        focus_or_create_tab_response, fs_list_response, fs_metadata_response, fs_mutate_response,
+        fs_read_response, get_focused_pane_info_response, get_pane_cwd_response,
+        get_pane_git_probe_response, get_pane_pid_response, get_pane_running_command_response,
+        get_session_list_response, hide_floating_panes_response,
+        highlight_style::Style as ProtobufHighlightStyleVariant, list_orphaned_panes_response,
+        new_tab_response, new_tab_unfocused_response, open_command_pane_in_git_checkout_payload,
+        open_command_pane_in_git_checkout_response, parse_layout_response, plugin_command::Payload,
+        read_plugin_log_response, rename_layout_response, save_layout_response,
+        save_session_response, show_floating_panes_response, warp_pane_response,
+        AdoptOrphanedPanePayload, BreakPanesToNewTabPayload,
         BreakPanesToNewTabResponse as ProtobufBreakPanesToNewTabResponse,
         BreakPanesToTabWithIdPayload,
         BreakPanesToTabWithIdResponse as ProtobufBreakPanesToTabWithIdResponse,
@@ -39,10 +39,11 @@ pub use super::generated_api::api::{
         CurrentSessionLastSavedTimeResponse as ProtobufCurrentSessionLastSavedTimeResponse,
         CursorPosition, CustomIndexHighlight as ProtobufCustomIndexHighlight,
         CustomRgbHighlight as ProtobufCustomRgbHighlight, DataApplyPayload,
-        DataApplyResponse as ProtobufDataApplyResponse,
+        DataApplyResponse as ProtobufDataApplyResponse, DataCatalogPayload,
+        DataCatalogResponse as ProtobufDataCatalogResponse,
         DataCountResponse as ProtobufDataCountResponse, DataDefineEntityPayload,
-        DataDefineResponse as ProtobufDataDefineResponse, DataFetchPayload,
-        DataFetchResponse as ProtobufDataFetchResponse, DataUnwatchPayload,
+        DataDefineResponse as ProtobufDataDefineResponse, DataEntityList as ProtobufDataEntityList,
+        DataFetchPayload, DataFetchResponse as ProtobufDataFetchResponse, DataUnwatchPayload,
         DataUnwatchResponse as ProtobufDataUnwatchResponse, DataWatchPayload,
         DataWatchResponse as ProtobufDataWatchResponse,
         DeleteAllDeadSessionsResponse as ProtobufDeleteAllDeadSessionsResponse,
@@ -187,18 +188,19 @@ use crate::plugin_api::plugin_data::{watch_mode_from_i32, ProtobufMutation, Prot
 
 use super::generated_api::api::event::AgentInfo as ProtobufAgentInfo;
 use crate::data::{
-    AgentInfo, ConnectToSession, DataApplyResponse, DataCountResponse, DataDefineResponse,
-    DataFetchResponse, DataUnwatchResponse, DataWatchResponse, DeleteAllDeadSessionsResponse,
-    DeleteDeadSessionResponse, DeleteLayoutResponse, EditLayoutResponse, EnqueueQueueJobResponse,
-    FloatingPaneCoordinates, GetFocusedPaneInfoResponse, GetPaneCwdResponse,
-    GetPaneGitProbeResponse, GetPanePidResponse, GetPaneRunningCommandResponse,
-    GetSessionListResponse, GitCheckout, HighlightLayer, HighlightStyle, HttpVerb, InputMode,
-    KeyWithModifier, KillSessionsResponse, ListOrphanedPanesResponse, MessageToPlugin, Mutation,
-    NewPluginArgs, NotificationInfo, OpenCommandPaneInGitCheckoutResponse,
-    OpenCommandPaneOverlayResponse, OrphanedPane, OverlayPlacement, PaneGitProbe, PaneId,
-    PermissionType, PluginCommand, QueueSnapshot, QueueStatusResponse, RecordingSummary,
-    RegexHighlight, RenameLayoutResponse, SaveLayoutResponse, SearchHit, SessionInfo,
-    SessionListSnapshot, WarpPaneResponse, WarpPlacement,
+    AgentInfo, ConnectToSession, DataApplyResponse, DataCatalogResponse, DataCountResponse,
+    DataDefineResponse, DataEntityInfo, DataFetchResponse, DataUnwatchResponse, DataWatchResponse,
+    DeleteAllDeadSessionsResponse, DeleteDeadSessionResponse, DeleteLayoutResponse,
+    EditLayoutResponse, EnqueueQueueJobResponse, FloatingPaneCoordinates,
+    GetFocusedPaneInfoResponse, GetPaneCwdResponse, GetPaneGitProbeResponse, GetPanePidResponse,
+    GetPaneRunningCommandResponse, GetSessionListResponse, GitCheckout, HighlightLayer,
+    HighlightStyle, HttpVerb, InputMode, KeyWithModifier, KillSessionsResponse,
+    ListOrphanedPanesResponse, MessageToPlugin, Mutation, NewPluginArgs, NotificationInfo,
+    OpenCommandPaneInGitCheckoutResponse, OpenCommandPaneOverlayResponse, OrphanedPane,
+    OverlayPlacement, PaneGitProbe, PaneId, PermissionType, PluginCommand, QueueSnapshot,
+    QueueStatusResponse, RecordingSummary, RegexHighlight, RenameLayoutResponse,
+    SaveLayoutResponse, SearchHit, SessionInfo, SessionListSnapshot, WarpPaneResponse,
+    WarpPlacement,
 };
 use crate::input::actions::Action;
 use crate::input::layout::PercentOrFixed;
@@ -3242,6 +3244,12 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 }),
                 _ => Err("Mismatched payload for DataUnwatch"),
             },
+            Some(CommandName::DataCatalog) => match protobuf_plugin_command.payload {
+                Some(Payload::DataCatalogPayload(payload)) => Ok(PluginCommand::DataCatalog {
+                    namespace: payload.namespace,
+                }),
+                _ => Err("Mismatched payload for DataCatalog"),
+            },
             Some(CommandName::EnqueueQueueJob) => match protobuf_plugin_command.payload {
                 Some(Payload::EnqueueQueueJobPayload(payload)) => {
                     Ok(PluginCommand::EnqueueQueueJob {
@@ -5426,6 +5434,12 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 name: CommandName::DataUnwatch as i32,
                 payload: Some(Payload::DataUnwatchPayload(DataUnwatchPayload { watch_id })),
             }),
+            PluginCommand::DataCatalog { namespace } => Ok(ProtobufPluginCommand {
+                name: CommandName::DataCatalog as i32,
+                payload: Some(Payload::DataCatalogPayload(DataCatalogPayload {
+                    namespace,
+                })),
+            }),
             PluginCommand::EnqueueQueueJob {
                 queue,
                 plugin_url,
@@ -5716,6 +5730,39 @@ impl TryFrom<ProtobufDataCountResponse> for DataCountResponse {
             Some(data_count_response::Result::Count(count)) => Ok(DataCountResponse::Ok(count)),
             Some(data_count_response::Result::Error(error)) => Ok(DataCountResponse::Err(error)),
             None => Err("DataCountResponse without a result"),
+        }
+    }
+}
+
+impl From<DataCatalogResponse> for ProtobufDataCatalogResponse {
+    fn from(response: DataCatalogResponse) -> Self {
+        ProtobufDataCatalogResponse {
+            result: Some(match response {
+                DataCatalogResponse::Ok(entities) => {
+                    data_catalog_response::Result::Entities(ProtobufDataEntityList {
+                        entities: entities.into_iter().map(Into::into).collect(),
+                    })
+                },
+                DataCatalogResponse::Err(error) => data_catalog_response::Result::Error(error),
+            }),
+        }
+    }
+}
+
+impl TryFrom<ProtobufDataCatalogResponse> for DataCatalogResponse {
+    type Error = &'static str;
+    fn try_from(protobuf: ProtobufDataCatalogResponse) -> Result<Self, &'static str> {
+        match protobuf.result {
+            Some(data_catalog_response::Result::Entities(list)) => Ok(DataCatalogResponse::Ok(
+                list.entities
+                    .into_iter()
+                    .map(DataEntityInfo::try_from)
+                    .collect::<Result<Vec<_>, _>>()?,
+            )),
+            Some(data_catalog_response::Result::Error(error)) => {
+                Ok(DataCatalogResponse::Err(error))
+            },
+            None => Err("DataCatalogResponse without a result"),
         }
     }
 }
@@ -7293,6 +7340,7 @@ mod tests {
                 | PluginCommand::DataCount { .. }
                 | PluginCommand::DataWatch { .. }
                 | PluginCommand::DataUnwatch { .. }
+                | PluginCommand::DataCatalog { .. }
                 | PluginCommand::SetPaneTitlePrefix { .. }
                 | PluginCommand::EnqueueQueueJob { .. }
                 | PluginCommand::ConfigureQueue { .. }

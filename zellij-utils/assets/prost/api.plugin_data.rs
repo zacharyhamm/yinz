@@ -55,6 +55,17 @@ pub struct EntityDef {
     #[prost(message, repeated, tag="3")]
     pub attrs: ::prost::alloc::vec::Vec<AttrDef>,
 }
+/// One entity as the store holds it, for a plugin asking what is there.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EntityInfo {
+    #[prost(string, tag="1")]
+    pub namespace: ::prost::alloc::string::String,
+    #[prost(string, tag="2")]
+    pub owner_plugin: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="3")]
+    pub def: ::core::option::Option<EntityDef>,
+}
 /// A oneof cannot hold a repeated field, so the branches needing one wrap it.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

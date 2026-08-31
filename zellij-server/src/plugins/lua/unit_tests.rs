@@ -2823,6 +2823,7 @@ const REPLYING_COMMANDS: &[CommandType] = &[
     CommandType::DataCount,
     CommandType::DataWatch,
     CommandType::DataUnwatch,
+    CommandType::DataCatalog,
     CommandType::EnqueueQueueJob,
     CommandType::QueueStatus,
     CommandType::ListRecordings,
@@ -3335,6 +3336,209 @@ fn the_data_sugar_builds_requests_the_host_accepts() {
             "call {i} did not marshal: {part}"
         );
     }
+}
+
+/// The catalog is what a plugin reaches for when it does not know the schema, so what matters is
+/// that a declared entity comes back with its columns readable as plain Lua - and that the kind is
+/// spelled the way `zellij.data.define` spells it, not the way the wire does.
+#[test]
+fn the_catalog_answers_with_the_entities_the_plugin_may_see() {
+    let source = r#"
+        local M = {}
+        function M.render()
+          zellij.data.define {
+            name = "note", version = 2,
+            attrs = { { "title", "text", required = true }, { "done", "bool", indexed = true } },
+          }
+          local out = {}
+          for _, e in ipairs(zellij.data.catalog()) do
+            local attrs = {}
+            for _, a in ipairs(e.attrs) do
+              attrs[#attrs + 1] = a.name .. ":" .. a.kind .. ":" .. tostring(a.indexed)
+            end
+            out[#out + 1] = e.entity .. "@" .. e.version .. "[" .. table.concat(attrs, ",") .. "]"
+          end
+          return table.concat(out, "|")
+        end
+        return M
+    "#;
+    let store = tempfile::tempdir().unwrap();
+    let mut env = test_env();
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+    env.plugin_data_store = Arc::new(PluginDataStore::new(store.path()));
+    let mut plugin = load_lua_plugin(source, "test.lua", env).unwrap();
+    let out = String::from_utf8(plugin.render(1, 500).unwrap()).unwrap();
+    assert_eq!(out.trim(), "note@2[title:text:false,done:bool:true]");
+}
+
+/// `example-plugins/hocus-todos.lua` is what "Hocus data" in the guide points at, so it should not
+/// be allowed to rot - and it is the end-to-end proof that a Lua plugin reads hocus's rows with no
+/// bridge and no declaration of its own: the store here is seeded the way `hocus-store` seeds it.
+#[test]
+fn the_hocus_todos_example_reads_a_project_list_out_of_the_shared_namespace() {
+    use zellij_utils::data::{AttrDef, EntityDef, Mutation, PermissionStatus};
+
+    let store_dir = tempfile::tempdir().unwrap();
+    let store = PluginDataStore::new(store_dir.path());
+    // Exactly the definitions `hocus-proto`'s `store::shared_defs()` declares for these two, by
+    // another plugin - this one declares nothing.
+    store
+        .define_entity(
+            "shared:hocus",
+            "zellij:hocus-store",
+            &EntityDef::new("project", 1)
+                .attr(AttrDef::text("name").required())
+                .attr(AttrDef::text("root").indexed().required()),
+            false,
+        )
+        .unwrap();
+    store
+        .define_entity(
+            "shared:hocus",
+            "zellij:hocus-store",
+            &EntityDef::new("todo", 1)
+                .attr(AttrDef::text("root").indexed().required())
+                .attr(AttrDef::int("parent_id"))
+                .attr(AttrDef::text("text").full_text().required())
+                .attr(AttrDef::boolean("done").indexed().required().default(false)),
+            false,
+        )
+        .unwrap();
+    store
+        .apply(
+            "shared:hocus",
+            &[
+                Mutation::put("project")
+                    .uid("work")
+                    .set("name", "work")
+                    .set("root", ".")
+                    .build(),
+                // A shallower root that also matches, to prove the longest one wins.
+                Mutation::put("project")
+                    .uid("everything")
+                    .set("name", "everything")
+                    .set("root", "")
+                    .build(),
+            ],
+        )
+        .unwrap();
+    let parent = store
+        .apply(
+            "shared:hocus",
+            &[Mutation::put("todo")
+                .set("root", ".")
+                .set("text", "ship it")
+                .set("done", false)
+                .build()],
+        )
+        .unwrap()
+        .report
+        .ids[0];
+    store
+        .apply(
+            "shared:hocus",
+            &[Mutation::put("todo")
+                .set("root", ".")
+                .set("parent_id", parent)
+                .set("text", "write the test")
+                .set("done", true)
+                .build()],
+        )
+        .unwrap();
+
+    let source = example_plugin("hocus-todos.lua");
+    let mut env = test_env();
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+    env.plugin_data_store = Arc::new(store);
+    let mut plugin = load_lua_plugin(&source, "hocus-todos.lua", env).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    plugin
+        .update(&Event::PermissionRequestResult(PermissionStatus::Granted))
+        .unwrap();
+
+    let rendered = String::from_utf8(plugin.render(10, 60).unwrap()).unwrap();
+    // The UI components carry their text as byte codes, so the assertions have to as well.
+    let codes = |text: &str| {
+        text.bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    assert!(rendered.contains(&codes("work todos")), "{rendered}");
+    assert!(
+        rendered.contains(&format!(";{};", codes("- ship it"))),
+        "{rendered}"
+    );
+    // Indented one level under its parent by the `parent_id` edge, and crossed off. The list's
+    // items are `;`-separated and an indent is a leading `|`.
+    let child = rendered
+        .split(';')
+        .find(|item| item.contains(&codes("x write the test")))
+        .unwrap_or_else(|| panic!("no child item in: {rendered}"));
+    assert!(child.starts_with('|'), "not indented: {child}");
+}
+
+/// What the catalog is allowed to show, which is the one new rule the command carries.
+///
+/// `SharedPluginData` is a claim on `shared:` and nothing else, so another plugin's *private*
+/// namespace stays invisible either way - this is the only call that could otherwise enumerate
+/// namespaces nobody chose to publish.
+#[test]
+fn the_catalog_shows_shared_namespaces_only_with_the_permission_and_never_a_private_one() {
+    let source = r#"
+        local M = {}
+        function M.render()
+          zellij.data.define { name = "mine", attrs = { { "t", "text" } } }
+          local ok, shared = pcall(zellij.data.catalog, "shared:hocus")
+          local seen = {}
+          for _, e in ipairs(zellij.data.catalog()) do
+            seen[#seen + 1] = e.namespace .. "/" .. e.entity
+          end
+          return table.concat(seen, ",") .. " | " .. (ok and ("shared:" .. #shared) or "refused")
+        end
+        return M
+    "#;
+    let store_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(PluginDataStore::new(store_dir.path()));
+    // Two namespaces this plugin did not declare: one published, one another plugin's own.
+    for (namespace, entity) in [("shared:hocus", "todo"), ("plugin:someone_else", "secret")] {
+        store
+            .define_entity(
+                namespace,
+                "zellij:elsewhere",
+                &zellij_utils::data::EntityDef::new(entity, 1)
+                    .attr(zellij_utils::data::AttrDef::text("text")),
+                false,
+            )
+            .unwrap();
+    }
+
+    let run = |permissions: Vec<PermissionType>| {
+        let mut env = test_env();
+        env.permissions = Arc::new(Mutex::new(Some(permissions.into_iter().collect())));
+        env.plugin_data_store = store.clone();
+        let mut plugin = load_lua_plugin(source, "test.lua", env).unwrap();
+        String::from_utf8(plugin.render(1, 200).unwrap())
+            .unwrap()
+            .trim()
+            .to_owned()
+    };
+
+    let own_only = run(vec![PermissionType::PluginData]);
+    assert!(own_only.contains("/mine"), "{own_only}");
+    assert!(!own_only.contains("shared:hocus/todo"), "{own_only}");
+    assert!(own_only.ends_with("| refused"), "{own_only}");
+
+    let with_shared = run(vec![
+        PermissionType::PluginData,
+        PermissionType::SharedPluginData,
+    ]);
+    assert!(with_shared.contains("shared:hocus/todo"), "{with_shared}");
+    assert!(with_shared.ends_with("| shared:1"), "{with_shared}");
+
+    // Never, on either run.
+    assert!(!own_only.contains("someone_else"), "{own_only}");
+    assert!(!with_shared.contains("someone_else"), "{with_shared}");
 }
 
 #[test]

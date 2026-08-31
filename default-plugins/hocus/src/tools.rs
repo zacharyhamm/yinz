@@ -1497,7 +1497,7 @@ pub fn specs() -> Value {
             json!({
                 "type": "object",
                 "properties": {
-                    "section": { "type": "string", "enum": lua_docs::SECTIONS },
+                    "section": { "type": "string", "enum": lua_docs::SECTIONS.as_slice() },
                 },
             }),
         ),

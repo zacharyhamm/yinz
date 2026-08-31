@@ -20,17 +20,18 @@ use zellij_utils::plugin_api::plugin_command::{
     read_plugin_log_response, ProtobufBreakPanesToNewTabResponse,
     ProtobufBreakPanesToTabWithIdResponse, ProtobufBreakPanesToTabWithIndexResponse,
     ProtobufCheckLuaPluginResponse, ProtobufCurrentSessionLastSavedTimeResponse,
-    ProtobufDataApplyResponse, ProtobufDataCountResponse, ProtobufDataDefineResponse,
-    ProtobufDataFetchResponse, ProtobufDataUnwatchResponse, ProtobufDataWatchResponse,
-    ProtobufDeleteAllDeadSessionsResponse, ProtobufDeleteDeadSessionResponse,
-    ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse, ProtobufDumpSessionLayoutResponse,
-    ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse, ProtobufFocusOrCreateTabResponse,
-    ProtobufFsListResponse, ProtobufFsMetadataResponse, ProtobufFsMutateResponse,
-    ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse, ProtobufGetFocusedPaneInfoResponse,
-    ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneGitProbeResponse,
-    ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
-    ProtobufGetPluginAliasConfigurationResponse, ProtobufGetSessionEnvironmentVariablesResponse,
-    ProtobufGetSessionListResponse, ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
+    ProtobufDataApplyResponse, ProtobufDataCatalogResponse, ProtobufDataCountResponse,
+    ProtobufDataDefineResponse, ProtobufDataFetchResponse, ProtobufDataUnwatchResponse,
+    ProtobufDataWatchResponse, ProtobufDeleteAllDeadSessionsResponse,
+    ProtobufDeleteDeadSessionResponse, ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse,
+    ProtobufDumpSessionLayoutResponse, ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse,
+    ProtobufFocusOrCreateTabResponse, ProtobufFsListResponse, ProtobufFsMetadataResponse,
+    ProtobufFsMutateResponse, ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse,
+    ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse,
+    ProtobufGetPaneGitProbeResponse, ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
+    ProtobufGetPaneRunningCommandResponse, ProtobufGetPluginAliasConfigurationResponse,
+    ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
+    ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
     ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
     ProtobufListNotificationsResponse, ProtobufListOrphanedPanesResponse,
     ProtobufListRecordingsResponse, ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse,
@@ -2230,6 +2231,32 @@ pub fn data_count(request: &FetchRequest) -> Result<u64, String> {
     match response {
         DataCountResponse::Ok(count) => Ok(count),
         DataCountResponse::Err(error) => Err(error),
+    }
+}
+
+/// What entities exist, and what their columns are.
+///
+/// `None` asks for everything this plugin may see: its own namespace, plus every `shared:` one if
+/// it holds `SharedPluginData`. Another plugin's private namespace is never listed, whatever the
+/// permissions. `Some(namespace)` asks about one `shared:` namespace.
+///
+/// This is how a plugin finds data another plugin publishes without being told the schema out of
+/// band — and note that reading an entity someone else declared needs no declaration of your own:
+/// name the namespace and fetch.
+///
+/// # Permissions Required
+///
+/// `PermissionType::PluginData`, plus `PermissionType::SharedPluginData` for a `shared:` namespace.
+pub fn data_catalog(namespace: Option<&str>) -> Result<Vec<DataEntityInfo>, String> {
+    let response: DataCatalogResponse = data_request::<_, ProtobufDataCatalogResponse>(
+        PluginCommand::DataCatalog {
+            namespace: namespace.map(str::to_owned),
+        },
+        "catalog",
+    )?;
+    match response {
+        DataCatalogResponse::Ok(entities) => Ok(entities),
+        DataCatalogResponse::Err(error) => Err(error),
     }
 }
 

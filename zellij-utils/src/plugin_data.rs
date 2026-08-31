@@ -1015,6 +1015,22 @@ pub struct DataSchemaInfo {
     pub full_text_rebuilt: bool,
 }
 
+/// One entity as the store currently holds it, for a plugin asking what is there.
+///
+/// The whole definition rather than a summary: an author's next move after discovering an entity
+/// is to write a fetch against it, and that needs the attribute names, their kinds, and which of
+/// them are indexed or full-text searchable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DataEntityInfo {
+    /// The namespace it lives in, always spelled out — a catalog spans namespaces, so an entity
+    /// name on its own would not say where to fetch it from.
+    pub namespace: String,
+    /// The URL of the plugin that declared it. Informational: it is the plugin a migration would
+    /// have to come from, and the one to ask about the meaning of a column.
+    pub owner_plugin: String,
+    pub def: EntityDef,
+}
+
 /// How much a watch wants to be told when its results change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum WatchMode {

@@ -645,6 +645,124 @@ return M
 `plugin_reload` it, `plugin_log` it. A cycle spent here is a cycle not spent rewriting a finished
 plugin around a constraint it was built against.
 
+### Finding what is already there
+
+**You do not declare an entity you only read** - `define` is for entities you own, and a fetch
+works against anything already in the store. `data.catalog()` says what that is:
+
+```lua
+for _, e in ipairs(data.catalog()) do          -- every namespace this plugin may see
+  zellij.log(e.namespace .. " " .. e.entity .. " v" .. e.version)
+  for _, a in ipairs(e.attrs) do
+    zellij.log("  " .. a.name .. " " .. a.kind .. (a.indexed and " indexed" or ""))
+  end
+end
+data.catalog("shared:hocus")                   -- or just one namespace
+```
+
+With no argument it lists the plugin's own namespace plus every `shared:` one, once
+`shared_plugin_data` is granted. Another plugin's private namespace is never listed. See
+"Hocus data" below for the one every session already has.
+
+## Hocus data
+
+Hocus keeps its projects, todos, scheduled prompts and coding-agent records in the shared
+namespace `shared:hocus`, and `hocus-store` declares every entity at session start - so the
+tables are there whether or not a hocus pane is open. Any plugin holding `plugin_data` and
+`shared_plugin_data` can read them:
+
+```lua
+local data = zellij.data
+zellij.request_permission { "plugin_data", "shared_plugin_data" }
+
+local todos = data.fetch {
+  namespace = "shared:hocus", entity = "todo",
+  filter = data.all(data.eq("root", project_root), data.eq("done", false)),
+  sort = { "id" },
+}
+```
+
+`example-plugins/hocus-todos.lua` is a working read-only plugin over exactly this.
+
+**Read these; do not write them.** Nothing blocks a write, but hocus maintains invariants the
+rows do not carry - list caps, tree shape, project discovery - so a plugin that adds a todo row
+by hand can produce a list hocus will not accept. Mutate through hocus's tools (`/todo_add`,
+`/todo_done`) or `zellij pipe` to `hocus-store` instead.
+
+`id`, `uid`, `created_at` and `updated_at` are on every row without being declared, here as
+anywhere else.
+
+**`project`** - the project registry. `uid` is the name.
+
+| Attribute | Kind | |
+|---|---|---|
+| `name` | text | required; also the uid |
+| `root` | text | required, indexed; the folder. Not unique - resolve a cwd by *longest matching root* |
+| `remote` | text | |
+| `worktree_status` | text | snake case, as serde spells it |
+| `common_dir` | text | the main checkout, for a worktree |
+| `discovered` | bool | required; true for one found by a running agent rather than named by hand |
+
+**`todo`** - one item. The tree is edges, not nesting.
+
+| Attribute | Kind | |
+|---|---|---|
+| `root` | text | required, indexed; the project's `root`, which is how a list is scoped |
+| `parent_id` | int | the store `id` of the item above; null at top level |
+| `text` | text | required, full-text searchable; Markdown |
+| `done` | bool | required, indexed |
+
+There is no `position` and no `depth`: siblings are only ever appended, so `id` ascending *is*
+sibling order, and depth follows from the parent chain. One project's whole list fits in a single
+fetch.
+
+**`job`** - a scheduled prompt.
+
+| Attribute | Kind | |
+|---|---|---|
+| `job_id` | int | required, unique |
+| `chat_id` | int | the chat that armed it; null for one never saved |
+| `every` | real | seconds |
+| `next_due_at` | int | wall-clock seconds; written when armed and when it fires, never per tick |
+| `prompt` | text | required |
+| `show` | bool | required |
+| `auto_confirm` | bool | required |
+
+**`agent_latch`** - a kind set on a pane by hand with `agent_register`. **`agent_summary`** - what
+the daemon's model last said about an idle agent's pane. Both are keyed `<session>:<pane id>`:
+
+| Attribute | Kind | |
+|---|---|---|
+| `pane_id` | int | required, indexed |
+| `zellij_session_name` | text | required, indexed |
+| `kind` | text | `agent_latch` only - `claude`, `codex`, ... |
+| `text`, `title` | text | `agent_summary` only |
+| `awaiting` | bool | `agent_summary` only |
+
+The session is half the key because the store is not per-session: one file serves every zellij
+server on the machine, so a bare pane id would make two sessions' pane 5 into one row. Filter by
+`zellij_session_name` unless you mean every session.
+
+**`agent_run`** - one hook-backed agent session, live or finished. `uid` is `<kind>:<session id>`.
+
+| Attribute | Kind | |
+|---|---|---|
+| `pane_id` | int | required, indexed |
+| `session_id` | text | required, indexed; the agent's own |
+| `zellij_session_name` | text | indexed |
+| `kind` | text | required |
+| `active` | bool | required, indexed; false once the run ended |
+| `started_at_ms` | int | required |
+| `header` | json | the cheap summary an archive listing reads |
+| `payload` | json | required; the whole run - prompts, plans, questions |
+
+`payload` is much the largest column here, so `select = { "header" }` a listing and fetch
+`payload` only for the row you are showing. Decode either with `zellij.json.decode`.
+
+Pane-level agent state - busy, waiting, idle - does not need this table at all: it is on
+`PaneInfo.agent` in the pane manifest, and the `agent_start` / `agent_waiting` hook points below
+fire on the transitions.
+
 ## Work queues
 
 A plugin can put *other plugin code* on a named **work queue**, to run later as its own headless

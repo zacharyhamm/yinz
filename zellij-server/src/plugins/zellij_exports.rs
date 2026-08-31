@@ -36,9 +36,9 @@ use zellij_utils::consts::ipc_connect;
 use zellij_utils::data::AgentInfo;
 use zellij_utils::data::EnqueueQueueJobResponse;
 use zellij_utils::data::{
-    validate_namespace, DataApplyResponse, DataCountResponse, DataDefineResponse, DataError,
-    DataFetchResponse, DataUnwatchResponse, DataWatchResponse, EntityDef, FetchRequest, Mutation,
-    WatchMode,
+    validate_namespace, DataApplyResponse, DataCatalogResponse, DataCountResponse,
+    DataDefineResponse, DataEntityInfo, DataError, DataFetchResponse, DataUnwatchResponse,
+    DataWatchResponse, EntityDef, FetchRequest, Mutation, WatchMode, SHARED_NAMESPACE_PREFIX,
 };
 use zellij_utils::data::{
     BreakPanesToNewTabResponse, BreakPanesToTabWithIdResponse, BreakPanesToTabWithIndexResponse,
@@ -103,14 +103,14 @@ use zellij_utils::{
             save_session_response, show_floating_panes_response,
             ProtobufBreakPanesToNewTabResponse, ProtobufBreakPanesToTabWithIdResponse,
             ProtobufBreakPanesToTabWithIndexResponse, ProtobufCheckLuaPluginResponse,
-            ProtobufDataApplyResponse, ProtobufDataCountResponse, ProtobufDataDefineResponse,
-            ProtobufDataFetchResponse, ProtobufDataUnwatchResponse, ProtobufDataWatchResponse,
-            ProtobufDeleteAllDeadSessionsResponse, ProtobufDeleteDeadSessionResponse,
-            ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse,
-            ProtobufDumpSessionLayoutResponse, ProtobufEditLayoutResponse,
-            ProtobufFocusOrCreateTabResponse, ProtobufFsEntry, ProtobufFsEntryList,
-            ProtobufFsListResponse, ProtobufFsMetadataResponse, ProtobufFsMutateResponse,
-            ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse,
+            ProtobufDataApplyResponse, ProtobufDataCatalogResponse, ProtobufDataCountResponse,
+            ProtobufDataDefineResponse, ProtobufDataFetchResponse, ProtobufDataUnwatchResponse,
+            ProtobufDataWatchResponse, ProtobufDeleteAllDeadSessionsResponse,
+            ProtobufDeleteDeadSessionResponse, ProtobufDeleteLayoutResponse,
+            ProtobufDumpLayoutResponse, ProtobufDumpSessionLayoutResponse,
+            ProtobufEditLayoutResponse, ProtobufFocusOrCreateTabResponse, ProtobufFsEntry,
+            ProtobufFsEntryList, ProtobufFsListResponse, ProtobufFsMetadataResponse,
+            ProtobufFsMutateResponse, ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse,
             ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse,
             ProtobufGetPaneCwdResponse, ProtobufGetPaneGitProbeResponse,
             ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
@@ -535,6 +535,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::DataFetch { request } => data_fetch(env, request),
             PluginCommand::DataCount { request } => data_count(env, request),
             PluginCommand::DataWatch { request, mode } => data_watch(env, request, mode),
+            PluginCommand::DataCatalog { namespace } => data_catalog(env, namespace),
             PluginCommand::DataUnwatch { watch_id } => data_unwatch(env, watch_id),
             PluginCommand::ScanHostFolder(folder_to_scan) => scan_host_folder(env, folder_to_scan),
             PluginCommand::FsRead { path, max_bytes } => fs_read(env, path, max_bytes),
@@ -4657,23 +4658,28 @@ fn resolve_data_namespace(env: &PluginEnv, namespace: Option<String>) -> Result<
         return Ok(plugin_data_store::private_namespace(&plugin_url));
     };
     validate_namespace(Some(&namespace))?;
-    if !env.plugin.is_builtin() {
-        let granted = env
+    if !may_reach_shared_namespaces(env) {
+        return Err(DataError::PermissionDenied(format!(
+            "reading or writing the shared namespace `{}` needs the SharedPluginData permission",
+            namespace
+        )));
+    }
+    Ok(namespace)
+}
+
+/// Whether this plugin may reach `shared:` namespaces at all.
+///
+/// Split out of [`resolve_data_namespace`] because the catalog asks the same question without
+/// having a namespace to resolve: it is deciding what to *list*, not what to open.
+fn may_reach_shared_namespaces(env: &PluginEnv) -> bool {
+    env.plugin.is_builtin()
+        || env
             .permissions
             .lock()
             .unwrap()
             .as_ref()
             .map(|permissions| permissions.contains(&PermissionType::SharedPluginData))
-            .unwrap_or(false);
-        if !granted {
-            return Err(DataError::PermissionDenied(format!(
-                "reading or writing the shared namespace `{}` needs the SharedPluginData \
-                 permission",
-                namespace
-            )));
-        }
-    }
-    Ok(namespace)
+            .unwrap_or(false)
 }
 
 /// The namespace a fetch means, resolved from the request it is carried in.
@@ -4748,6 +4754,52 @@ fn data_count(env: &mut PluginEnv, request: FetchRequest) {
         ProtobufDataCountResponse::from(response).encode_to_vec(),
         "count response",
     );
+}
+
+fn data_catalog(env: &mut PluginEnv, namespace: Option<String>) {
+    let response = match catalog_entities(env, namespace) {
+        Ok(entities) => DataCatalogResponse::Ok(entities),
+        Err(e) => DataCatalogResponse::Err(e.to_string()),
+    };
+    write_data_response(
+        env,
+        ProtobufDataCatalogResponse::from(response).encode_to_vec(),
+        "catalog response",
+    );
+}
+
+/// The entities this plugin may see.
+///
+/// A named namespace goes through [`resolve_data_namespace`], so listing a `shared:` one costs
+/// exactly the permission fetching from it would.
+///
+/// An unnamed one is the discovery case, and is the one place `None` does not mean "my own
+/// namespace": that would answer only with what the caller declared itself, which it already
+/// knows. It is the plugin's own namespace *plus* every `shared:` one, once it holds
+/// `SharedPluginData`.
+///
+/// Another plugin's private namespace is never listed, whatever the permissions. `SharedPluginData`
+/// is a claim on `shared:`, and this is the only call that could otherwise enumerate namespaces
+/// nobody chose to publish.
+fn catalog_entities(
+    env: &PluginEnv,
+    namespace: Option<String>,
+) -> Result<Vec<DataEntityInfo>, DataError> {
+    if namespace.is_some() {
+        let namespace = resolve_data_namespace(env, namespace)?;
+        return env.plugin_data_store.catalog(Some(&namespace));
+    }
+    let own = plugin_data_store::private_namespace(Url::from(&env.plugin.location).as_ref());
+    let shared_visible = may_reach_shared_namespaces(env);
+    Ok(env
+        .plugin_data_store
+        .catalog(None)?
+        .into_iter()
+        .filter(|entity| {
+            entity.namespace == own
+                || (shared_visible && entity.namespace.starts_with(SHARED_NAMESPACE_PREFIX))
+        })
+        .collect())
 }
 
 fn data_watch(env: &mut PluginEnv, request: FetchRequest, mode: WatchMode) {
@@ -7386,7 +7438,8 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::DataFetch
         | CommandType::DataCount
         | CommandType::DataWatch
-        | CommandType::DataUnwatch => PermissionType::PluginData,
+        | CommandType::DataUnwatch
+        | CommandType::DataCatalog => PermissionType::PluginData,
         CommandType::RebindKeys
         | CommandType::RegisterDefaultKeybindings
         | CommandType::Reconfigure => PermissionType::Reconfigure,

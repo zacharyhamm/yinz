@@ -254,6 +254,7 @@ enum CommandName {
   ReadPluginLog = 275;
   RunCommandInPane = 276;
   SetPaneAgentRun = 277;
+  DataCatalog = 278;
 }
 
 message PluginCommand {
@@ -455,6 +456,7 @@ message PluginCommand {
     ReadPluginLogPayload read_plugin_log_payload = 216;
     RunCommandInPanePayload run_command_in_pane_payload = 217;
     SetPaneAgentRunPayload set_pane_agent_run_payload = 218;
+    DataCatalogPayload data_catalog_payload = 219;
   }
 }
 
@@ -670,6 +672,11 @@ message DataUnwatchPayload {
   uint64 watch_id = 1;
 }
 
+// An absent namespace asks for every namespace the plugin may see, not for its own.
+message DataCatalogPayload {
+  optional string namespace = 1;
+}
+
 message SetPaneTitlePrefixPayload {
   PaneId pane_id = 1;
   // Absent drops the prefix.
@@ -714,6 +721,18 @@ message DataWatchResponse {
 message DataUnwatchResponse {
   oneof result {
     bool ok = 1;
+    string error = 2;
+  }
+}
+
+// A oneof cannot hold a repeated field, so the entities are wrapped.
+message DataEntityList {
+  repeated plugin_data.EntityInfo entities = 1;
+}
+
+message DataCatalogResponse {
+  oneof result {
+    DataEntityList entities = 1;
     string error = 2;
   }
 }

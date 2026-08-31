@@ -4637,6 +4637,16 @@ pub enum PluginCommand {
     DataUnwatch {
         watch_id: u64,
     },
+    /// What entities exist, and what their columns are. Sends a response back.
+    ///
+    /// Unlike every other `Data*` command, `None` means *every namespace this plugin may see* —
+    /// its own, plus the `shared:` ones if it holds `SharedPluginData` — rather than its own
+    /// alone. A catalog of only what the caller declared itself would have nothing to tell it,
+    /// and discovering another plugin's published entities is the whole point. `Some(namespace)`
+    /// names one `shared:` namespace, on the same terms a fetch does.
+    DataCatalog {
+        namespace: Option<String>,
+    },
     /// Compose a decoration in front of a pane's title, or drop it with `None`.
     ///
     /// Not a rename: the pane's name, its own OSC title and the title a layout gave
@@ -4763,6 +4773,13 @@ pub enum DataFetchResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DataCountResponse {
     Ok(u64),
+    Err(String),
+}
+
+/// The entities a plugin may see, with their definitions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum DataCatalogResponse {
+    Ok(Vec<DataEntityInfo>),
     Err(String),
 }
 

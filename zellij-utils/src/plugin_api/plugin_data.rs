@@ -17,16 +17,16 @@ pub use super::generated_api::api::plugin_data::{
     ApplyReport as ProtobufApplyReport, AttrDef as ProtobufAttrDef, AttrKind as ProtobufAttrKind,
     AttrPattern as ProtobufAttrPattern, AttrValue as ProtobufAttrValue,
     AttrValues as ProtobufAttrValues, Delete as ProtobufDelete, EntityDef as ProtobufEntityDef,
-    FetchRequest as ProtobufFetchRequest, Mutation as ProtobufMutation, Pred as ProtobufPred,
-    PredList as ProtobufPredList, Put as ProtobufPut, Row as ProtobufRow, Rows as ProtobufRows,
-    SchemaInfo as ProtobufSchemaInfo, Sort as ProtobufSort, SortDir as ProtobufSortDir,
-    Update as ProtobufUpdate, Value as ProtobufValue, WatchHandle as ProtobufWatchHandle,
-    WatchMode as ProtobufWatchMode,
+    EntityInfo as ProtobufEntityInfo, FetchRequest as ProtobufFetchRequest,
+    Mutation as ProtobufMutation, Pred as ProtobufPred, PredList as ProtobufPredList,
+    Put as ProtobufPut, Row as ProtobufRow, Rows as ProtobufRows, SchemaInfo as ProtobufSchemaInfo,
+    Sort as ProtobufSort, SortDir as ProtobufSortDir, Update as ProtobufUpdate,
+    Value as ProtobufValue, WatchHandle as ProtobufWatchHandle, WatchMode as ProtobufWatchMode,
 };
 
 use crate::data::{
-    ApplyReport, AttrDef, AttrKind, DataRows, DataSchemaInfo, DataValue, DataWatchHandle,
-    EntityDef, FetchRequest, Mutation, Pred, SortDir, WatchMode, MAX_PRED_DEPTH,
+    ApplyReport, AttrDef, AttrKind, DataEntityInfo, DataRows, DataSchemaInfo, DataValue,
+    DataWatchHandle, EntityDef, FetchRequest, Mutation, Pred, SortDir, WatchMode, MAX_PRED_DEPTH,
 };
 
 use std::convert::TryFrom;
@@ -203,6 +203,27 @@ impl TryFrom<ProtobufEntityDef> for EntityDef {
                 .into_iter()
                 .map(AttrDef::try_from)
                 .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+}
+
+impl From<DataEntityInfo> for ProtobufEntityInfo {
+    fn from(info: DataEntityInfo) -> Self {
+        ProtobufEntityInfo {
+            namespace: info.namespace,
+            owner_plugin: info.owner_plugin,
+            def: Some(ProtobufEntityDef::from(info.def)),
+        }
+    }
+}
+
+impl TryFrom<ProtobufEntityInfo> for DataEntityInfo {
+    type Error = &'static str;
+    fn try_from(info: ProtobufEntityInfo) -> Result<Self, &'static str> {
+        Ok(DataEntityInfo {
+            namespace: info.namespace,
+            owner_plugin: info.owner_plugin,
+            def: EntityDef::try_from(info.def.ok_or("EntityInfo without a definition")?)?,
         })
     }
 }

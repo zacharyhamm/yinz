@@ -4,7 +4,7 @@
 pub struct PluginCommand {
     #[prost(enumeration="CommandName", tag="1")]
     pub name: i32,
-    #[prost(oneof="plugin_command::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 196, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 168, 169, 170, 171, 172, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 188, 189, 190, 191, 192, 193, 194, 195, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218")]
+    #[prost(oneof="plugin_command::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 196, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 168, 169, 170, 171, 172, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 188, 189, 190, 191, 192, 193, 194, 195, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219")]
     pub payload: ::core::option::Option<plugin_command::Payload>,
 }
 /// Nested message and enum types in `PluginCommand`.
@@ -402,6 +402,8 @@ pub mod plugin_command {
         RunCommandInPanePayload(super::RunCommandInPanePayload),
         #[prost(message, tag="218")]
         SetPaneAgentRunPayload(super::SetPaneAgentRunPayload),
+        #[prost(message, tag="219")]
+        DataCatalogPayload(super::DataCatalogPayload),
     }
 }
 // Filesystem access, confined by the server to the plugin's four roots
@@ -783,6 +785,13 @@ pub struct DataUnwatchPayload {
     #[prost(uint64, tag="1")]
     pub watch_id: u64,
 }
+/// An absent namespace asks for every namespace the plugin may see, not for its own.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataCatalogPayload {
+    #[prost(string, optional, tag="1")]
+    pub namespace: ::core::option::Option<::prost::alloc::string::String>,
+}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SetPaneTitlePrefixPayload {
@@ -890,6 +899,30 @@ pub mod data_unwatch_response {
     pub enum Result {
         #[prost(bool, tag="1")]
         Ok(bool),
+        #[prost(string, tag="2")]
+        Error(::prost::alloc::string::String),
+    }
+}
+/// A oneof cannot hold a repeated field, so the entities are wrapped.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataEntityList {
+    #[prost(message, repeated, tag="1")]
+    pub entities: ::prost::alloc::vec::Vec<super::plugin_data::EntityInfo>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataCatalogResponse {
+    #[prost(oneof="data_catalog_response::Result", tags="1, 2")]
+    pub result: ::core::option::Option<data_catalog_response::Result>,
+}
+/// Nested message and enum types in `DataCatalogResponse`.
+pub mod data_catalog_response {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag="1")]
+        Entities(super::DataEntityList),
         #[prost(string, tag="2")]
         Error(::prost::alloc::string::String),
     }
@@ -3130,6 +3163,7 @@ pub enum CommandName {
     ReadPluginLog = 275,
     RunCommandInPane = 276,
     SetPaneAgentRun = 277,
+    DataCatalog = 278,
 }
 impl CommandName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -3376,6 +3410,7 @@ impl CommandName {
             CommandName::ReadPluginLog => "ReadPluginLog",
             CommandName::RunCommandInPane => "RunCommandInPane",
             CommandName::SetPaneAgentRun => "SetPaneAgentRun",
+            CommandName::DataCatalog => "DataCatalog",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -3619,6 +3654,7 @@ impl CommandName {
             "ReadPluginLog" => Some(Self::ReadPluginLog),
             "RunCommandInPane" => Some(Self::RunCommandInPane),
             "SetPaneAgentRun" => Some(Self::SetPaneAgentRun),
+            "DataCatalog" => Some(Self::DataCatalog),
             _ => None,
         }
     }

@@ -49,13 +49,13 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::data::ClientId;
 use crate::plugin_data::{
-    ApplyReport, DataError, DataRows, DataSchemaInfo, DataWatchHandle, EntityDef, FetchRequest,
-    Mutation, WatchMode,
+    ApplyReport, DataEntityInfo, DataError, DataRows, DataSchemaInfo, DataWatchHandle, EntityDef,
+    FetchRequest, Mutation, WatchMode,
 };
 
 use self::migrate::migrate_entity;
 use self::query::{build_count_sql, run_fetch_with_search_fallback, with_search_fallback};
-use self::registry::{create_entity, load_entity, open_db, require_entity};
+use self::registry::{catalog, create_entity, load_entity, open_db, require_entity};
 use self::schema::EntitySchema;
 use self::sql::SqlContext;
 use self::value::now_ms;
@@ -209,6 +209,14 @@ impl PluginDataStore {
         entity: &str,
     ) -> Result<Option<EntityDef>, DataError> {
         self.with_conn(|conn| Ok(load_entity(conn, namespace, entity)?.map(|schema| schema.def)))
+    }
+
+    /// Every entity the store holds, or only those of one namespace.
+    ///
+    /// The seam behind `DataCatalog`. Filtering to what a plugin may see is the caller's job:
+    /// this is the engine, and it has no idea who is asking.
+    pub fn catalog(&self, namespace: Option<&str>) -> Result<Vec<DataEntityInfo>, DataError> {
+        self.with_conn(|conn| catalog(conn, namespace))
     }
 
     // ----------------------------------------------------------------- reads
