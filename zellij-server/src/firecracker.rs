@@ -14,7 +14,7 @@ use zellij_utils::input::command::validate_firecracker_vm_name;
 #[cfg(target_os = "linux")]
 pub mod provider;
 
-const PROTOCOL_VERSION: u32 = 1;
+const PROTOCOL_VERSION: u32 = 2;
 const MAX_OUTPUT: usize = 1024 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
@@ -31,6 +31,8 @@ enum Request<'a> {
         version: u32,
         session: &'a str,
         name: &'a str,
+        image: Option<&'a str>,
+        worktree: Option<&'a Path>,
     },
     Stop {
         version: u32,
@@ -44,6 +46,11 @@ enum Request<'a> {
     List {
         version: u32,
         session: Option<&'a str>,
+    },
+    Sync {
+        version: u32,
+        session: &'a str,
+        name: &'a str,
     },
 }
 
@@ -93,12 +100,26 @@ impl Provider {
         Ok(Self { path, timeout })
     }
 
-    pub fn ensure(&self, session: &str, name: &str) -> Result<EnsureResponse> {
+    pub fn ensure(
+        &self,
+        session: &str,
+        name: &str,
+        image: Option<&str>,
+        worktree: Option<&Path>,
+    ) -> Result<EnsureResponse> {
         validate_firecracker_vm_name(name).map_err(|e| anyhow!(e))?;
+        if let Some(image) = image {
+            validate_firecracker_vm_name(image).map_err(|e| anyhow!(e))?;
+        }
+        if worktree.is_some_and(|path| !path.is_absolute()) {
+            return Err(anyhow!("firecracker_worktree must be an absolute path"));
+        }
         let response: EnsureResponse = self.invoke(Request::Ensure {
             version: PROTOCOL_VERSION,
             session,
             name,
+            image,
+            worktree,
         })?;
         self.check_version(response.version)?;
         if response.ssh_host.trim().is_empty() {
@@ -148,6 +169,16 @@ impl Provider {
                 .context("firecracker provider returned an invalid VM name")?;
         }
         Ok(response.vms)
+    }
+
+    pub fn sync(&self, session: &str, name: &str) -> Result<()> {
+        validate_firecracker_vm_name(name).map_err(|e| anyhow!(e))?;
+        let response: EmptyResponse = self.invoke(Request::Sync {
+            version: PROTOCOL_VERSION,
+            session,
+            name,
+        })?;
+        self.check_version(response.version)
     }
 
     fn check_version(&self, version: u32) -> Result<()> {
@@ -332,9 +363,9 @@ mod tests {
 request=$(cat)
 printf '%s\n' "$request" >> '{}'
 case "$request" in
-  *'"action":"ensure"'*) printf '%s' '{{"version":1,"ssh_host":"ssh://zellij@127.0.0.1:2201","cwd":"/workspace"}}' ;;
-  *'"action":"list"'*) printf '%s' '{{"version":1,"vms":[{{"session":"work","name":"review","state":"running"}}]}}' ;;
-  *) printf '%s' '{{"version":1}}' ;;
+  *'"action":"ensure"'*) printf '%s' '{{"version":2,"ssh_host":"ssh://zellij@127.0.0.1:2201","cwd":"/workspace"}}' ;;
+  *'"action":"list"'*) printf '%s' '{{"version":2,"vms":[{{"session":"work","name":"review","state":"running"}}]}}' ;;
+  *) printf '%s' '{{"version":2}}' ;;
 esac
 "#,
                 log.display()
@@ -344,8 +375,12 @@ esac
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         let provider = Provider::new(path, Duration::from_secs(1)).unwrap();
 
-        let first = provider.ensure("work", "review").unwrap();
-        let second = provider.ensure("work", "review").unwrap();
+        let first = provider
+            .ensure("work", "review", Some("rust"), Some(Path::new("/repo")))
+            .unwrap();
+        let second = provider
+            .ensure("work", "review", Some("rust"), Some(Path::new("/repo")))
+            .unwrap();
         assert_eq!(first, second);
         assert_eq!(first.ssh_host, "ssh://zellij@127.0.0.1:2201");
         assert_eq!(first.cwd, Some(PathBuf::from("/workspace")));
@@ -360,6 +395,7 @@ esac
             }]
         );
         provider.stop("work", "review").unwrap();
+        provider.sync("work", "review").unwrap();
         provider.stop_session("work").unwrap();
 
         let requests: Vec<serde_json::Value> = fs::read_to_string(log)
@@ -370,11 +406,12 @@ esac
         assert_eq!(
             requests,
             vec![
-                json!({"version": 1, "action": "ensure", "session": "work", "name": "review"}),
-                json!({"version": 1, "action": "ensure", "session": "work", "name": "review"}),
-                json!({"version": 1, "action": "list", "session": null}),
-                json!({"version": 1, "action": "stop", "session": "work", "name": "review"}),
-                json!({"version": 1, "action": "stop_session", "session": "work"}),
+                json!({"version": 2, "action": "ensure", "session": "work", "name": "review", "image": "rust", "worktree": "/repo"}),
+                json!({"version": 2, "action": "ensure", "session": "work", "name": "review", "image": "rust", "worktree": "/repo"}),
+                json!({"version": 2, "action": "list", "session": null}),
+                json!({"version": 2, "action": "stop", "session": "work", "name": "review"}),
+                json!({"version": 2, "action": "sync", "session": "work", "name": "review"}),
+                json!({"version": 2, "action": "stop_session", "session": "work"}),
             ]
         );
     }
@@ -382,7 +419,10 @@ esac
     #[test]
     fn malformed_provider_output_is_rejected() {
         let (_dir, provider) = provider_script("printf 'not json'", Duration::from_secs(1));
-        let error = provider.ensure("work", "review").unwrap_err().to_string();
+        let error = provider
+            .ensure("work", "review", None, None)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("invalid JSON"), "{error}");
     }
 
@@ -390,7 +430,10 @@ esac
     fn provider_exit_failures_include_stderr() {
         let (_dir, provider) =
             provider_script("printf 'broken' >&2; exit 7", Duration::from_secs(1));
-        let error = provider.ensure("work", "review").unwrap_err().to_string();
+        let error = provider
+            .ensure("work", "review", None, None)
+            .unwrap_err()
+            .to_string();
         assert!(
             error.contains("exit status: 7") && error.contains("broken"),
             "{error}"
@@ -402,7 +445,10 @@ esac
         let (_dir, provider) =
             provider_script("sleep 2 & while :; do :; done", Duration::from_millis(200));
         let started = Instant::now();
-        let error = provider.ensure("work", "review").unwrap_err().to_string();
+        let error = provider
+            .ensure("work", "review", None, None)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("timed out"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(1));
     }
@@ -410,13 +456,16 @@ esac
     #[test]
     fn provider_does_not_wait_for_pipes_inherited_by_a_background_child() {
         let (_dir, provider) = provider_script(
-            "sleep 2 & printf '{\"version\":1,\"ssh_host\":\"build-box\"}'",
+            "sleep 2 & printf '{\"version\":2,\"ssh_host\":\"build-box\"}'",
             Duration::from_secs(1),
         );
         let started = Instant::now();
 
         assert_eq!(
-            provider.ensure("work", "review").unwrap().ssh_host,
+            provider
+                .ensure("work", "review", None, None)
+                .unwrap()
+                .ssh_host,
             "build-box"
         );
         assert!(started.elapsed() < Duration::from_secs(1));
@@ -428,7 +477,10 @@ esac
             "dd if=/dev/zero bs=1048577 count=1 2>/dev/null",
             Duration::from_secs(1),
         );
-        let error = provider.ensure("work", "review").unwrap_err().to_string();
+        let error = provider
+            .ensure("work", "review", None, None)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("output exceeded"), "{error}");
     }
 }

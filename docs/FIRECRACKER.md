@@ -1,8 +1,11 @@
 # Firecracker panes
 
-Zellij can open panes in named, session-scoped Firecracker VMs. The Linux package includes the
-`zellij-firecracker` provider. Zellij asks the provider for an SSH endpoint and then uses the
-existing remote-pane transport.
+Zellij can run agent panes in Firecracker microVMs. The Linux package includes the
+`zellij-firecracker` provider. Zellij connects to each VM through the existing remote-pane
+transport.
+
+A host worktree identifies a VM. Sessions that use the same worktree share the VM. The provider
+stops the VM after the last session releases it.
 
 ## Set up the included provider
 
@@ -10,7 +13,8 @@ The included provider supports x86_64 Linux. It requires:
 
 - `/dev/kvm` with read and write access for the user
 - Firecracker on `PATH`
-- `curl`, `sha256sum`, `ssh-keygen`, `ssh-keyscan`, `unshare`, `unsquashfs`, and `mkfs.ext4`
+- `curl`, `git`, `rsync`, `sha256sum`, `ssh`, `ssh-keygen`, `ssh-keyscan`, `unshare`,
+  `unsquashfs`, and `mkfs.ext4`
 - `ip`, `nft`, and `systemd` for the one-time host network setup
 
 `cargo x install` installs `zellij-firecracker` beside `zellij` on Linux. Distribution packages
@@ -33,8 +37,8 @@ Complete these steps once:
    sudo zellij-firecracker network setup --user "$USER"
    ```
 
-   This command creates one bridge, 16 user-owned TAP devices, and nftables NAT rules. It also
-   installs a systemd unit that restores the network after boot.
+   This command creates one bridge and 16 user-owned TAP devices. It also creates a delegated
+   cgroup and restrictive nftables rules. A systemd unit restores these resources after boot.
 
 3. Check the setup:
 
@@ -53,6 +57,40 @@ Use `--output` to select a different image directory. Use `--disk-size-gib` to c
 disk size. The builder writes its provider configuration to
 `$XDG_CONFIG_HOME/zellij/firecracker.json`.
 
+## Build a project image
+
+Image builds are explicit. Add a script at `.zellij/firecracker-image.sh` in the project. Then run:
+
+```sh
+zellij-firecracker image build --name rust-dev --project /absolute/path/to/project
+```
+
+The builder runs the script inside the staged guest root file system. It writes the image to
+`$XDG_DATA_HOME/zellij/firecracker/images/rust-dev.ext4`.
+
+Use `--customize /absolute/path/to/script` when the script is not in a project. Image names use
+the same character rules as VM names. The provider never builds a missing image during agent
+startup.
+
+A Hocus project can store `firecracker_image`. `agent_spawn` and the New Agent dialog can override
+that value for one agent. An image requires a Firecracker VM name.
+
+## Configure credentials
+
+Add credential files to `firecracker.json` when an agent needs a host credential:
+
+```json
+{
+  "credential_files": [
+    {"host": "~/.config/codex/auth.json", "guest": "/root/.config/codex/auth.json"}
+  ]
+}
+```
+
+The provider copies each file after SSH is ready. It sets mode `0600` in the guest. Host paths
+must be absolute or start with `~/`. Guest paths must be absolute and cannot contain parent path
+components.
+
 The network command accepts `--subnet`, `--taps`, and `--dns`. It uses
 `172.31.0.0/24`, 16 TAP devices, and `1.1.1.1` by default. Remove the host network with:
 
@@ -60,9 +98,14 @@ The network command accepts `--subnet`, `--taps`, and `--dns`. It uses
 sudo zellij-firecracker network teardown --user "$USER"
 ```
 
-This is a single-user developer provider. It does not use the Firecracker jailer and it is not a
-multi-user VM service. Each VM runs as the Zellij user. The provider deletes each writable guest
-disk when the VM stops.
+This is a single-user developer provider. It is not a multi-user VM service. Each VM runs as the
+Zellij user in a user and mount namespace. Firecracker applies its seccomp filter. The provider
+also applies CPU, memory, and process limits through cgroup v2.
+
+The network permits DNS through the configured resolver and outbound TCP ports 22, 80, and 443.
+It blocks guest access to the host and private networks. The provider does not use the privileged
+Firecracker jailer. Use a dedicated host or a privileged VM service when the host user is not a
+trusted boundary.
 
 Configure one executable and, optionally, its timeout:
 
@@ -79,34 +122,34 @@ zellij action new-pane --firecracker review --cwd /workspace/repo -- cargo test
 ```
 
 Names contain 1–64 ASCII letters, digits, `.`, `_`, or `-`. `--firecracker` cannot be combined
-with `--remote-host` or a plugin pane. Multiple panes may use the same VM name; the provider's
-`ensure` operation must return the same VM for the same session and name.
+with `--remote-host` or a plugin pane. Multiple panes can use the same VM.
 
 ## Provider protocol
 
-Zellij executes the configured path directly, writes one JSON object to stdin, and reads one
-JSON object from stdout. It does not invoke a shell. Every message has `version: 1`.
+Zellij executes the configured path directly. It writes one JSON object to stdin and reads one
+JSON object from stdout. It does not invoke a shell. Every message has `version: 2`.
 
 Requests:
 
 ```json
-{"version":1,"action":"ensure","session":"work","name":"review"}
-{"version":1,"action":"stop","session":"work","name":"review"}
-{"version":1,"action":"stop_session","session":"work"}
-{"version":1,"action":"list","session":null}
+{"version":2,"action":"ensure","session":"work","name":"review","image":"rust-dev","worktree":"/home/me/src/project"}
+{"version":2,"action":"sync","session":"work","name":"review"}
+{"version":2,"action":"stop","session":"work","name":"review"}
+{"version":2,"action":"stop_session","session":"work"}
+{"version":2,"action":"list","session":null}
 ```
 
 An `ensure` response supplies an SSH URL. It can also supply the guest working directory, SSH key,
 and known-hosts file:
 
 ```json
-{"version":1,"ssh_host":"ssh://root@172.31.0.2:22","cwd":"/workspace","ssh_identity_file":"/home/me/.local/share/zellij/firecracker/id_ed25519","ssh_known_hosts_file":"/home/me/.local/state/zellij/firecracker/vms/abc/known_hosts"}
+{"version":2,"ssh_host":"ssh://root@172.31.0.2:22","cwd":"/workspace","ssh_identity_file":"/home/me/.local/share/zellij/firecracker/id_ed25519","ssh_known_hosts_file":"/home/me/.local/state/zellij/firecracker/vms/abc/known_hosts"}
 ```
 
-`stop` and `stop_session` return `{"version":1}`. `list` returns:
+`sync`, `stop`, and `stop_session` return `{"version":2}`. `list` returns:
 
 ```json
-{"version":1,"vms":[{"session":"work","name":"review","state":"running"}]}
+{"version":2,"vms":[{"session":"work","name":"review","state":"running"}]}
 ```
 
 The guest must have a matching Zellij binary on `PATH`. OpenSSH must permit Unix-socket
@@ -115,26 +158,47 @@ pane or management command.
 
 ## Lifecycle and recovery
 
-Zellij closes the session's panes before sending `stop_session` during a normal session exit.
-Detaching does not stop VMs. A killed or crashed server may leave VMs running; inspect and stop
-them through the provider with:
+The provider copies the host worktree to `/workspace` when it starts a worktree VM. It keeps a
+standalone Git repository in the guest. It does not copy the host worktree's `.git` file or
+directory.
+
+The provider copies guest files back when the last session releases the VM. Before that copy, it
+checks every host file and symlink except `.git`. If the host changed, the provider refuses the
+copy and retains the guest disk for recovery. A manual sync uses the same check:
+
+```sh
+zellij firecracker sync review [--session work]
+```
+
+Zellij closes the session's panes before it sends `stop_session` during a normal session exit.
+Detaching does not stop VMs. A killed server can leave VMs running. Inspect and stop them with:
 
 ```sh
 zellij firecracker list [--session work] [--json]
 zellij firecracker stop review [--session work]
 ```
 
-Firecracker panes cannot be warped to another session because their VM remains owned by the
-originating session.
+The provider retains disks from crashed VMs, failed provisioning, and failed workspace syncs.
+Recovery directories are under `$XDG_STATE_HOME/zellij/firecracker/vms/recovery`. The provider
+deletes recovery directories after seven days.
+
+Firecracker panes cannot be warped to another session. A worktree VM can still have leases from
+more than one session.
 
 ## Agents
 
-The hocus `agent_spawn` tool and New Agent dialog accept a `firecracker` VM name. `cwd` is a
-guest path. VM agents cannot request host project, branch, or worktree setup. Agent-report hooks
-are disabled by default and `hooks: true` is rejected because the guest has no authenticated
-reporting bridge. Zellij passes only the remote pane's existing terminal/locale allowlist and
-environment values explicitly supplied to `agent_spawn`; it does not copy host credentials or
-the rest of the host environment.
+The Hocus `agent_spawn` tool and New Agent dialog accept `firecracker` and `firecracker_image`.
+They also support project, branch, and worktree setup. Hocus creates the checkout on the host.
+The provider then synchronizes that checkout with `/workspace` in the VM.
+
+Claude hook events use a pane-scoped control sequence on the authenticated SSH terminal. Zellij
+updates the pane agent record and broadcasts the event to plugins. The control sequence does not
+open a host listener. Configure Codex in a custom image to run `zellij --pty-broker report codex`
+for equivalent hook reporting.
+
+Zellij passes the remote pane's terminal and locale allowlist. It also passes environment values
+that `agent_spawn` explicitly supplies. It does not copy the rest of the host environment. Use
+`credential_files` for required credentials.
 
 The provider stores VM state under `$XDG_STATE_HOME/zellij/firecracker`. It stores the base image
 under `$XDG_DATA_HOME/zellij/firecracker`. A crashed server can leave a VM running, so use the

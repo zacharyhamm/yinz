@@ -1255,6 +1255,8 @@ fn open_command_pane_in_new_tab(
     let command = command_to_run.path;
     let remote_host = command_to_run.remote_host;
     let firecracker_vm = command_to_run.firecracker_vm;
+    let firecracker_image = command_to_run.firecracker_image;
+    let firecracker_worktree = command_to_run.firecracker_worktree;
     let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
         command_to_run.cwd
     } else {
@@ -1282,6 +1284,8 @@ fn open_command_pane_in_new_tab(
         use_terminal_title: false,
         remote_host,
         firecracker_vm,
+        firecracker_image,
+        firecracker_worktree,
         remote_default_shell,
     };
     let initial_panes = Some(vec![CommandOrPlugin::Command(run_command_action)]);
@@ -2209,6 +2213,8 @@ fn open_command_pane_in_place_of_plugin(
     let command = command_to_run.path;
     let remote_host = command_to_run.remote_host;
     let firecracker_vm = command_to_run.firecracker_vm;
+    let firecracker_image = command_to_run.firecracker_image;
+    let firecracker_worktree = command_to_run.firecracker_worktree;
     let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
         command_to_run.cwd
     } else {
@@ -2238,6 +2244,8 @@ fn open_command_pane_in_place_of_plugin(
         use_terminal_title,
         remote_host,
         firecracker_vm,
+        firecracker_image,
+        firecracker_worktree,
         remote_default_shell,
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
@@ -2322,6 +2330,8 @@ fn open_command_pane_in_place_of_pane_id(
     let command = command_to_run.path;
     let remote_host = command_to_run.remote_host;
     let firecracker_vm = command_to_run.firecracker_vm;
+    let firecracker_image = command_to_run.firecracker_image;
+    let firecracker_worktree = command_to_run.firecracker_worktree;
     let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
         command_to_run.cwd
     } else {
@@ -2351,6 +2361,8 @@ fn open_command_pane_in_place_of_pane_id(
         use_terminal_title,
         remote_host,
         firecracker_vm,
+        firecracker_image,
+        firecracker_worktree,
         remote_default_shell,
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
@@ -2429,6 +2441,8 @@ fn open_command_pane(
     let command = command_to_run.path;
     let remote_host = command_to_run.remote_host;
     let firecracker_vm = command_to_run.firecracker_vm;
+    let firecracker_image = command_to_run.firecracker_image;
+    let firecracker_worktree = command_to_run.firecracker_worktree;
     let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
         command_to_run.cwd
     } else {
@@ -2458,6 +2472,8 @@ fn open_command_pane(
         use_terminal_title,
         remote_host,
         firecracker_vm,
+        firecracker_image,
+        firecracker_worktree,
         remote_default_shell,
     };
     let action = Action::NewTiledPane {
@@ -2502,6 +2518,8 @@ fn spawn_command_pane_near_plugin(
     let command = command_to_run.path;
     let remote_host = command_to_run.remote_host;
     let firecracker_vm = command_to_run.firecracker_vm;
+    let firecracker_image = command_to_run.firecracker_image;
+    let firecracker_worktree = command_to_run.firecracker_worktree;
     let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
         command_to_run.cwd
     } else {
@@ -2531,6 +2549,8 @@ fn spawn_command_pane_near_plugin(
         use_terminal_title,
         remote_host,
         firecracker_vm,
+        firecracker_image,
+        firecracker_worktree,
         remote_default_shell,
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
@@ -2563,7 +2583,14 @@ fn open_command_pane_in_git_checkout_near_plugin(
 ) {
     let result: OpenCommandPaneInGitCheckoutResponse =
         prepare_git_checkout(env, source_directory, checkout).and_then(|cwd| {
-            command_to_run.cwd = Some(cwd);
+            if command_to_run.firecracker_vm.is_some() {
+                command_to_run.firecracker_worktree = Some(cwd);
+                command_to_run
+                    .cwd
+                    .get_or_insert_with(|| PathBuf::from("/workspace"));
+            } else {
+                command_to_run.cwd = Some(cwd);
+            }
             // The marker's value is the agent's kind - the program - which is what the pane's
             // agent record starts from. See `agent_from_run` in `panes::terminal_pane`.
             let kind =
@@ -2827,6 +2854,8 @@ fn open_command_pane_floating(
     let command = command_to_run.path;
     let remote_host = command_to_run.remote_host;
     let firecracker_vm = command_to_run.firecracker_vm;
+    let firecracker_image = command_to_run.firecracker_image;
+    let firecracker_worktree = command_to_run.firecracker_worktree;
     let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
         command_to_run.cwd
     } else {
@@ -2856,6 +2885,8 @@ fn open_command_pane_floating(
         use_terminal_title,
         remote_host,
         firecracker_vm,
+        firecracker_image,
+        firecracker_worktree,
         remote_default_shell,
     };
     let action = Action::NewFloatingPane {
@@ -2893,6 +2924,8 @@ fn open_command_pane_overlay(
     let error_msg = || format!("failed to open command in plugin {}", env.name());
     let remote_host = command_to_run.remote_host;
     let firecracker_vm = command_to_run.firecracker_vm;
+    let firecracker_image = command_to_run.firecracker_image;
+    let firecracker_worktree = command_to_run.firecracker_worktree;
     let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
         command_to_run.cwd
     } else {
@@ -2915,6 +2948,8 @@ fn open_command_pane_overlay(
         use_terminal_title: false,
         remote_host,
         firecracker_vm,
+        firecracker_image,
+        firecracker_worktree,
         remote_default_shell: command_to_run.remote_default_shell,
     };
     let action = Action::NewFloatingPane {
@@ -2944,6 +2979,8 @@ fn open_command_pane_floating_near_plugin(
     let command = command_to_run.path;
     let remote_host = command_to_run.remote_host;
     let firecracker_vm = command_to_run.firecracker_vm;
+    let firecracker_image = command_to_run.firecracker_image;
+    let firecracker_worktree = command_to_run.firecracker_worktree;
     let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
         command_to_run.cwd
     } else {
@@ -2973,6 +3010,8 @@ fn open_command_pane_floating_near_plugin(
         use_terminal_title,
         remote_host,
         firecracker_vm,
+        firecracker_image,
+        firecracker_worktree,
         remote_default_shell,
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
@@ -3016,6 +3055,8 @@ fn open_command_pane_in_place(
     let command = command_to_run.path;
     let remote_host = command_to_run.remote_host;
     let firecracker_vm = command_to_run.firecracker_vm;
+    let firecracker_image = command_to_run.firecracker_image;
+    let firecracker_worktree = command_to_run.firecracker_worktree;
     let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
         command_to_run.cwd
     } else {
@@ -3045,6 +3086,8 @@ fn open_command_pane_in_place(
         use_terminal_title,
         remote_host,
         firecracker_vm,
+        firecracker_image,
+        firecracker_worktree,
         remote_default_shell,
     };
     let action = Action::NewInPlacePane {
@@ -3077,6 +3120,8 @@ fn open_command_pane_background(
     let command = command_to_run.path;
     let remote_host = command_to_run.remote_host;
     let firecracker_vm = command_to_run.firecracker_vm;
+    let firecracker_image = command_to_run.firecracker_image;
+    let firecracker_worktree = command_to_run.firecracker_worktree;
     let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
         command_to_run.cwd
     } else {
@@ -3108,6 +3153,8 @@ fn open_command_pane_background(
         use_terminal_title,
         remote_host,
         firecracker_vm,
+        firecracker_image,
+        firecracker_worktree,
         remote_default_shell,
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
@@ -3156,6 +3203,8 @@ fn run_command_in_pane(
     };
     let remote_host = command_to_run.remote_host;
     let firecracker_vm = command_to_run.firecracker_vm;
+    let firecracker_image = command_to_run.firecracker_image;
+    let firecracker_worktree = command_to_run.firecracker_worktree;
     let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
         command_to_run.cwd
     } else {
@@ -3178,6 +3227,8 @@ fn run_command_in_pane(
         use_terminal_title: false,
         remote_host,
         firecracker_vm,
+        firecracker_image,
+        firecracker_worktree,
         remote_default_shell: command_to_run.remote_default_shell,
     };
     let _ = env

@@ -1077,6 +1077,11 @@ fn run_command_to_protobuf(
         remote_host: cmd.remote_host.clone(),
         remote_default_shell: cmd.remote_default_shell,
         firecracker_vm: cmd.firecracker_vm.clone(),
+        firecracker_image: cmd.firecracker_image.clone(),
+        firecracker_worktree: cmd
+            .firecracker_worktree
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string()),
     }
 }
 
@@ -1094,6 +1099,8 @@ fn run_command_from_protobuf(
         remote_host: cmd.remote_host,
         remote_default_shell: cmd.remote_default_shell,
         firecracker_vm: cmd.firecracker_vm,
+        firecracker_image: cmd.firecracker_image,
+        firecracker_worktree: cmd.firecracker_worktree.map(std::path::PathBuf::from),
     })
 }
 
@@ -4273,6 +4280,10 @@ impl From<crate::input::command::RunCommandAction>
             remote_host: action.remote_host,
             remote_default_shell: action.remote_default_shell,
             firecracker_vm: action.firecracker_vm,
+            firecracker_image: action.firecracker_image,
+            firecracker_worktree: action
+                .firecracker_worktree
+                .map(|path| path.to_string_lossy().to_string()),
         }
     }
 }
@@ -4377,6 +4388,10 @@ impl From<crate::input::layout::Run>
                         remote_host: cmd.remote_host,
                         remote_default_shell: cmd.remote_default_shell,
                         firecracker_vm: cmd.firecracker_vm,
+                        firecracker_image: cmd.firecracker_image,
+                        firecracker_worktree: cmd
+                            .firecracker_worktree
+                            .map(|path| path.to_string_lossy().to_string()),
                     },
                 )),
             },
@@ -4766,6 +4781,8 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Run>
                     remote_host: cmd.remote_host,
                     remote_default_shell: cmd.remote_default_shell,
                     firecracker_vm: cmd.firecracker_vm,
+                    firecracker_image: cmd.firecracker_image,
+                    firecracker_worktree: cmd.firecracker_worktree.map(std::path::PathBuf::from),
                 },
             )),
             RunType::EditFile(edit) => Ok(crate::input::layout::Run::EditFile(
@@ -4878,6 +4895,8 @@ impl TryFrom<crate::client_server_contract::client_server_contract::RunCommandAc
             remote_host: action.remote_host,
             remote_default_shell: action.remote_default_shell,
             firecracker_vm: action.firecracker_vm,
+            firecracker_image: action.firecracker_image,
+            firecracker_worktree: action.firecracker_worktree.map(std::path::PathBuf::from),
         })
     }
 }

@@ -1121,6 +1121,8 @@ message RunCommandAction {
   optional string remote_host = 9;                     // The machine this command runs on, if not this one
   bool remote_default_shell = 10;                         // Resolve the login shell on the machine the pane runs on, ignoring command
   optional string firecracker_vm = 11;                    // Named Firecracker VM owned by this session
+  optional string firecracker_image = 12;
+  optional string firecracker_worktree = 13;
 }
 
 message TiledPaneLayout {

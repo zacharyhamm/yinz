@@ -69,6 +69,7 @@ pub fn project_def() -> EntityDef {
     EntityDef::new("project", 1)
         .attr(AttrDef::text("name").required())
         .attr(AttrDef::text("root").indexed().required())
+        .attr(AttrDef::text("firecracker_image"))
         .attr(AttrDef::text("remote"))
         // The snake_case strings serde already emits, rather than an integer
         // that would need a mapping table to read in the file.

@@ -27,7 +27,7 @@ use std::{
     process::{Command, Stdio},
     str::FromStr,
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::command::validate_firecracker_vm_name;
@@ -36,6 +36,7 @@ const CONFIG_ENV: &str = "ZELLIJ_FIRECRACKER_CONFIG";
 const TEST_NETWORK_ENV: &str = "ZELLIJ_FIRECRACKER_NETWORK_CONFIG";
 const DEFAULT_SUBNET: &str = "172.31.0.0/24";
 const DEFAULT_TAPS: u8 = 16;
+const RECOVERY_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const KERNEL_URL: &str = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260826-761f88fbb951-0/x86_64/vmlinux-6.1.182";
 const KERNEL_SHA256: &str = "90f6c45a719c76c08f09ba5e80b4a7f1044e33152c92b9e45a22e87c0021bac5";
 const ROOTFS_URL: &str = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260826-761f88fbb951-0/x86_64/ubuntu-24.04.squashfs";
@@ -48,6 +49,8 @@ enum Request {
         version: u32,
         session: String,
         name: String,
+        image: Option<String>,
+        worktree: Option<PathBuf>,
     },
     Stop {
         version: u32,
@@ -62,6 +65,11 @@ enum Request {
         version: u32,
         session: Option<String>,
     },
+    Sync {
+        version: u32,
+        session: String,
+        name: String,
+    },
 }
 
 impl Request {
@@ -70,7 +78,8 @@ impl Request {
             Self::Ensure { version, .. }
             | Self::Stop { version, .. }
             | Self::StopSession { version, .. }
-            | Self::List { version, .. } => *version,
+            | Self::List { version, .. }
+            | Self::Sync { version, .. } => *version,
         }
     }
 }
@@ -82,6 +91,10 @@ pub struct NetworkConfig {
     pub subnet: String,
     pub taps: u8,
     pub dns: Ipv4Addr,
+    #[serde(default)]
+    pub cgroup: Option<PathBuf>,
+    #[serde(default)]
+    pub gid: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -89,6 +102,8 @@ struct Config {
     firecracker: PathBuf,
     kernel: PathBuf,
     rootfs: PathBuf,
+    #[serde(default = "default_images_dir")]
+    images_dir: PathBuf,
     ssh_private_key: PathBuf,
     #[serde(default = "default_vcpus")]
     vcpu_count: u8,
@@ -100,6 +115,14 @@ struct Config {
     boot_timeout_secs: u64,
     #[serde(default)]
     network: Option<NetworkConfig>,
+    #[serde(default)]
+    credential_files: Vec<CredentialFile>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CredentialFile {
+    host: PathBuf,
+    guest: PathBuf,
 }
 
 fn default_vcpus() -> u8 {
@@ -114,11 +137,22 @@ fn default_cwd() -> PathBuf {
 fn default_boot_timeout() -> u64 {
     60
 }
+fn default_images_dir() -> PathBuf {
+    data_dir().join("images")
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct VmState {
     session: String,
+    #[serde(default)]
+    leases: Vec<String>,
     name: String,
+    #[serde(default)]
+    image: Option<String>,
+    #[serde(default)]
+    worktree: Option<PathBuf>,
+    #[serde(default)]
+    host_fingerprint: Option<u64>,
     pid: i32,
     start_time: u64,
     slot: u8,
@@ -127,6 +161,8 @@ struct VmState {
     api_socket: PathBuf,
     log: PathBuf,
     known_hosts: PathBuf,
+    #[serde(default)]
+    cgroup: Option<PathBuf>,
 }
 
 struct LockedState {
@@ -138,6 +174,7 @@ impl LockedState {
     fn new() -> Result<Self> {
         let dir = state_dir();
         secure_dir(&dir)?;
+        prune_recoveries(&dir)?;
         let lock = OpenOptions::new()
             .create(true)
             .read(true)
@@ -154,6 +191,16 @@ impl LockedState {
 
     fn path(&self, session: &str, name: &str) -> PathBuf {
         self.dir.join(format!("{}.json", vm_id(session, name)))
+    }
+
+    fn identity_path(&self, session: &str, name: &str, worktree: Option<&Path>) -> PathBuf {
+        match worktree {
+            Some(worktree) => self.dir.join(format!(
+                "{}.json",
+                vm_id("worktree", &worktree.to_string_lossy())
+            )),
+            None => self.path(session, name),
+        }
     }
 
     fn entries(&self) -> Result<Vec<(PathBuf, VmState)>> {
@@ -222,9 +269,21 @@ fn serve_request() -> Result<()> {
     let network = load_network(&config)?;
     let state = LockedState::new()?;
     let response = match request {
-        Request::Ensure { session, name, .. } => {
-            serde_json::to_value(ensure(&state, &config, &network, &session, &name)?)?
-        },
+        Request::Ensure {
+            session,
+            name,
+            image,
+            worktree,
+            ..
+        } => serde_json::to_value(ensure(
+            &state,
+            &config,
+            &network,
+            &session,
+            &name,
+            image.as_deref(),
+            worktree.as_deref(),
+        )?)?,
         Request::Stop { session, name, .. } => {
             stop_one(&state, &config, &session, &name)?;
             json!({"version": PROTOCOL_VERSION})
@@ -237,6 +296,10 @@ fn serve_request() -> Result<()> {
             "version": PROTOCOL_VERSION,
             "vms": list(&state, &config, session.as_deref())?,
         }),
+        Request::Sync { session, name, .. } => {
+            sync_one(&state, &config, &session, &name)?;
+            json!({"version": PROTOCOL_VERSION})
+        },
     };
     serde_json::to_writer(std::io::stdout(), &response).context("failed to write response")
 }
@@ -247,14 +310,39 @@ fn ensure(
     network: &NetworkConfig,
     session: &str,
     name: &str,
+    image: Option<&str>,
+    worktree: Option<&Path>,
 ) -> Result<EnsureResponse> {
     validate_firecracker_vm_name(name).map_err(|error| anyhow!(error))?;
-    let state_path = locked.path(session, name);
-    if let Ok(existing) = read_state(&state_path) {
+    if let Some(image) = image {
+        validate_firecracker_vm_name(image).map_err(|error| anyhow!(error))?;
+    }
+    let worktree = worktree
+        .map(|path| {
+            path.canonicalize()
+                .with_context(|| format!("failed to resolve worktree {}", path.display()))
+        })
+        .transpose()?;
+    if worktree.as_ref().is_some_and(|path| !path.is_dir()) {
+        return Err(anyhow!("Firecracker worktree must be a directory"));
+    }
+    let state_path = locked.identity_path(session, name, worktree.as_deref());
+    if let Ok(mut existing) = read_state(&state_path) {
         if vm_is_running(&existing, config) {
+            if existing.image.as_deref() != image {
+                return Err(anyhow!(
+                    "worktree VM is already running with image {:?}, not {:?}",
+                    existing.image,
+                    image
+                ));
+            }
+            if !existing.leases.iter().any(|lease| lease == session) {
+                existing.leases.push(session.to_owned());
+                write_state(&state_path, &existing)?;
+            }
             return Ok(response(config, &existing));
         }
-        cleanup_files(&existing);
+        retain_recovery(locked, &state_path, &existing, "crashed")?;
         let _ = fs::remove_file(&state_path);
     }
 
@@ -280,14 +368,18 @@ fn ensure(
         ));
     }
 
-    let id = vm_id(session, name);
+    let id = state_path
+        .file_stem()
+        .and_then(|id| id.to_str())
+        .context("invalid VM state path")?
+        .to_owned();
     let vm_dir = locked.dir.join(&id);
     secure_dir(&vm_dir)?;
     let rootfs = vm_dir.join("rootfs.ext4");
     run(
         Command::new("cp")
             .args(["--reflink=auto", "--sparse=always"])
-            .arg(&config.rootfs)
+            .arg(image_path(config, image)?.as_path())
             .arg(&rootfs),
         "failed to clone the Firecracker rootfs",
     )?;
@@ -330,7 +422,10 @@ fn ensure(
     fs::write(&vm_config, serde_json::to_vec_pretty(&firecracker_config)?)
         .context("failed to write Firecracker VM config")?;
     let log_file = File::create(&log).context("failed to create Firecracker log")?;
-    let mut child = Command::new(&config.firecracker)
+    let mut firecracker = Command::new("unshare");
+    firecracker
+        .args(["--user", "--map-current-user", "--mount", "--"])
+        .arg(&config.firecracker)
         .arg("--api-sock")
         .arg(&api_socket)
         .arg("--config-file")
@@ -338,14 +433,54 @@ fn ensure(
         .stdin(Stdio::null())
         .stdout(Stdio::from(log_file.try_clone()?))
         .stderr(Stdio::from(log_file))
-        .process_group(0)
-        .spawn()
-        .context("failed to start Firecracker")?;
+        .process_group(0);
+    unsafe {
+        firecracker.pre_exec(|| {
+            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let limit = libc::rlimit {
+                rlim_cur: 1024,
+                rlim_max: 1024,
+            };
+            if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = firecracker.spawn().context("failed to start Firecracker")?;
     let pid = child.id() as i32;
-    let start_time = wait_for_process_start(pid, Duration::from_secs(2))?;
+    let start_time = match wait_for_process_start(pid, Duration::from_secs(2)) {
+        Ok(start_time) => start_time,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            cleanup_vm_paths(&rootfs, &api_socket);
+            return Err(error);
+        },
+    };
+    let cgroup = match network.cgroup.as_deref() {
+        Some(parent) => {
+            match place_in_cgroup(parent, &id, pid, config.memory_mib, config.vcpu_count) {
+                Ok(cgroup) => Some(cgroup),
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    cleanup_vm_paths(&rootfs, &api_socket);
+                    return Err(error);
+                },
+            }
+        },
+        None => None,
+    };
     let vm = VmState {
         session: session.to_owned(),
+        leases: vec![session.to_owned()],
         name: name.to_owned(),
+        image: image.map(str::to_owned),
+        worktree: worktree.clone(),
+        host_fingerprint: worktree.as_deref().map(tree_fingerprint).transpose()?,
         pid,
         start_time,
         slot,
@@ -354,6 +489,7 @@ fn ensure(
         api_socket,
         log,
         known_hosts,
+        cgroup,
     };
     if let Err(error) = write_state(&state_path, &vm) {
         terminate(&vm, config);
@@ -368,6 +504,12 @@ fn ensure(
         cleanup_files(&vm);
         let _ = fs::remove_file(&state_path);
         return Err(error).context(format!("Firecracker log:\n{log}"));
+    }
+    if let Err(error) = provision_guest(&vm, config) {
+        terminate(&vm, config);
+        retain_recovery(locked, &state_path, &vm, "provision-failed")?;
+        let _ = fs::remove_file(&state_path);
+        return Err(error);
     }
     Ok(response(config, &vm))
 }
@@ -418,18 +560,254 @@ fn wait_for_ssh(child: &mut std::process::Child, state: &VmState, timeout_secs: 
     }
 }
 
+fn image_path(config: &Config, image: Option<&str>) -> Result<PathBuf> {
+    let path = match image {
+        Some(image) => config.images_dir.join(format!("{image}.ext4")),
+        None => config.rootfs.clone(),
+    };
+    path.is_file().then_some(path.clone()).with_context(|| {
+        format!(
+            "Firecracker image {} does not exist; build it explicitly",
+            path.display()
+        )
+    })
+}
+
+fn provision_guest(state: &VmState, config: &Config) -> Result<()> {
+    if let Some(worktree) = state.worktree.as_deref() {
+        sync_to_guest(state, config, worktree)?;
+    }
+    for credential in &config.credential_files {
+        copy_credential(state, config, credential)?;
+    }
+    Ok(())
+}
+
+fn sync_to_guest(state: &VmState, config: &Config, worktree: &Path) -> Result<()> {
+    let staging = tempfile::tempdir().context("failed to stage the Firecracker worktree")?;
+    let staged = staging.path().join("workspace");
+    if worktree.join(".git").exists() {
+        run(
+            Command::new("git")
+                .args(["clone", "--no-hardlinks", "--quiet", "--"])
+                .arg(worktree)
+                .arg(&staged),
+            "failed to clone the worktree for the guest",
+        )?;
+    } else {
+        fs::create_dir(&staged)?;
+    }
+    run(
+        Command::new("rsync")
+            .args(["-a", "--delete", "--exclude=.git"])
+            .arg(with_trailing_slash(worktree))
+            .arg(with_trailing_slash(&staged)),
+        "failed to stage the worktree for the guest",
+    )?;
+    run(
+        Command::new("rsync")
+            .args(["-a", "--delete", "-e", &rsync_remote_shell(state, config)])
+            .arg(with_trailing_slash(&staged))
+            .arg(format!("root@{}:/workspace/", state.guest_ip)),
+        "failed to copy the worktree into the guest",
+    )
+}
+
+fn sync_from_guest(state: &VmState, config: &Config) -> Result<()> {
+    let Some(worktree) = state.worktree.as_deref() else {
+        return Ok(());
+    };
+    let expected = state
+        .host_fingerprint
+        .context("VM has no host worktree baseline")?;
+    let actual = tree_fingerprint(worktree)?;
+    if actual != expected {
+        return Err(anyhow!(
+            "refusing to overwrite host changes in {}; the guest disk was retained for recovery",
+            worktree.display()
+        ));
+    }
+    let staging = tempfile::tempdir().context("failed to stage guest changes")?;
+    run(
+        Command::new("rsync")
+            .args(["-a", "--delete", "-e", &rsync_remote_shell(state, config)])
+            .arg(format!("root@{}:/workspace/", state.guest_ip))
+            .arg(with_trailing_slash(staging.path())),
+        "failed to copy changes out of the guest",
+    )?;
+    run(
+        Command::new("rsync")
+            .args(["-a", "--delete", "--exclude=.git"])
+            .arg(with_trailing_slash(staging.path()))
+            .arg(with_trailing_slash(worktree)),
+        "failed to apply guest changes to the host worktree",
+    )
+}
+
+fn copy_credential(state: &VmState, config: &Config, credential: &CredentialFile) -> Result<()> {
+    let host = expand_home(&credential.host)?;
+    if !host.is_file() {
+        return Err(anyhow!("credential file {} does not exist", host.display()));
+    }
+    validate_guest_path(&credential.guest)?;
+    let parent = credential
+        .guest
+        .parent()
+        .context("credential guest path has no parent")?;
+    run(
+        ssh_command(state, config)
+            .arg("mkdir")
+            .arg("-p")
+            .arg("--")
+            .arg(parent),
+        "failed to create the guest credential directory",
+    )?;
+    run(
+        Command::new("rsync")
+            .args([
+                "-a",
+                "--chmod=F600",
+                "-e",
+                &rsync_remote_shell(state, config),
+            ])
+            .arg(&host)
+            .arg(format!(
+                "root@{}:{}",
+                state.guest_ip,
+                credential.guest.display()
+            )),
+        "failed to copy a configured credential into the guest",
+    )
+}
+
+fn ssh_command(state: &VmState, config: &Config) -> Command {
+    let mut command = Command::new("ssh");
+    command
+        .args([
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+        ])
+        .arg(format!(
+            "UserKnownHostsFile={}",
+            state.known_hosts.display()
+        ))
+        .arg("-i")
+        .arg(&config.ssh_private_key)
+        .arg(format!("root@{}", state.guest_ip));
+    command
+}
+
+fn rsync_remote_shell(state: &VmState, config: &Config) -> String {
+    format!(
+        "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile={} -i {}",
+        shell_quote(&state.known_hosts),
+        shell_quote(&config.ssh_private_key)
+    )
+}
+
+fn shell_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
+fn with_trailing_slash(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}/", path.display()))
+}
+
+fn expand_home(path: &Path) -> Result<PathBuf> {
+    let text = path.to_string_lossy();
+    if let Some(relative) = text.strip_prefix("~/") {
+        let home = env::var_os("HOME").context("HOME is unavailable for credential expansion")?;
+        Ok(PathBuf::from(home).join(relative))
+    } else if path.is_absolute() {
+        Ok(path.to_owned())
+    } else {
+        Err(anyhow!(
+            "credential host path must be absolute or start with ~/"
+        ))
+    }
+}
+
+fn validate_guest_path(path: &Path) -> Result<()> {
+    let valid = path.is_absolute()
+        && path
+            .as_os_str()
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"/._-".contains(byte))
+        && !path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir));
+    valid
+        .then_some(())
+        .with_context(|| format!("unsafe credential guest path {}", path.display()))
+}
+
+fn tree_fingerprint(root: &Path) -> Result<u64> {
+    fn visit(root: &Path, path: &Path, hasher: &mut DefaultHasher) -> Result<()> {
+        let mut entries = fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            if path == root && entry.file_name() == ".git" {
+                continue;
+            }
+            let path = entry.path();
+            path.strip_prefix(root)?.hash(hasher);
+            let metadata = fs::symlink_metadata(&path)?;
+            metadata.file_type().is_dir().hash(hasher);
+            metadata.file_type().is_symlink().hash(hasher);
+            metadata.len().hash(hasher);
+            metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos())
+                .hash(hasher);
+            if metadata.file_type().is_symlink() {
+                fs::read_link(&path)?.hash(hasher);
+            } else if metadata.is_dir() {
+                visit(root, &path, hasher)?;
+            } else if metadata.is_file() {
+                let mut file = File::open(&path)?;
+                let mut buffer = [0; 64 * 1024];
+                loop {
+                    let read = file.read(&mut buffer)?;
+                    if read == 0 {
+                        break;
+                    }
+                    buffer[..read].hash(hasher);
+                }
+            }
+        }
+        Ok(())
+    }
+    let mut hasher = DefaultHasher::new();
+    visit(root, root, &mut hasher)?;
+    Ok(hasher.finish())
+}
+
 fn list(locked: &LockedState, config: &Config, session: Option<&str>) -> Result<Vec<VmEntry>> {
     let mut vms = vec![];
     for (path, state) in locked.entries()? {
         if !vm_is_running(&state, config) {
-            cleanup_files(&state);
+            retain_recovery(locked, &path, &state, "crashed")?;
             let _ = fs::remove_file(path);
             continue;
         }
-        if session.is_none_or(|wanted| wanted == state.session) {
+        let leases = if state.leases.is_empty() {
+            vec![state.session.clone()]
+        } else {
+            state.leases.clone()
+        };
+        for lease in leases
+            .into_iter()
+            .filter(|lease| session.is_none_or(|wanted| wanted == lease))
+        {
             vms.push(VmEntry {
-                session: state.session,
-                name: state.name,
+                session: lease,
+                name: state.name.clone(),
                 state: "running".to_owned(),
             });
         }
@@ -440,25 +818,72 @@ fn list(locked: &LockedState, config: &Config, session: Option<&str>) -> Result<
 
 fn stop_one(locked: &LockedState, config: &Config, session: &str, name: &str) -> Result<()> {
     validate_firecracker_vm_name(name).map_err(|error| anyhow!(error))?;
-    let path = locked.path(session, name);
-    let Ok(state) = read_state(&path) else {
+    let Some((path, state)) = locked.entries()?.into_iter().find(|(_, state)| {
+        state.name == name
+            && (state.leases.iter().any(|lease| lease == session)
+                || (state.leases.is_empty() && state.session == session))
+    }) else {
         return Ok(());
     };
+    release(locked, config, path, state, session)
+}
+
+fn stop_session(locked: &LockedState, config: &Config, session: &str) -> Result<()> {
+    let mut first_error = None;
+    for (path, state) in locked.entries()? {
+        if state.session == session || state.leases.iter().any(|lease| lease == session) {
+            if let Err(error) = release(locked, config, path, state, session) {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+fn release(
+    locked: &LockedState,
+    config: &Config,
+    path: PathBuf,
+    mut state: VmState,
+    session: &str,
+) -> Result<()> {
+    state.leases.retain(|lease| lease != session);
+    if !state.leases.is_empty() {
+        return write_state(&path, &state);
+    }
+    if let Err(error) = sync_from_guest(&state, config) {
+        terminate(&state, config);
+        retain_recovery(locked, &path, &state, "sync-conflict")?;
+        let _ = fs::remove_file(path);
+        return Err(error);
+    }
     terminate(&state, config);
     cleanup_files(&state);
     let _ = fs::remove_file(path);
     Ok(())
 }
 
-fn stop_session(locked: &LockedState, config: &Config, session: &str) -> Result<()> {
-    for (path, state) in locked.entries()? {
-        if state.session == session {
-            terminate(&state, config);
-            cleanup_files(&state);
-            let _ = fs::remove_file(path);
-        }
+fn sync_one(locked: &LockedState, config: &Config, session: &str, name: &str) -> Result<()> {
+    validate_firecracker_vm_name(name).map_err(|error| anyhow!(error))?;
+    let Some((path, mut state)) = locked.entries()?.into_iter().find(|(_, state)| {
+        state.name == name
+            && (state.leases.iter().any(|lease| lease == session)
+                || (state.leases.is_empty() && state.session == session))
+    }) else {
+        return Err(anyhow!(
+            "Firecracker VM {name:?} is not running for session {session:?}"
+        ));
+    };
+    if !vm_is_running(&state, config) {
+        return Err(anyhow!("Firecracker VM {name:?} is not running"));
     }
-    Ok(())
+    sync_from_guest(&state, config)?;
+    state.host_fingerprint = state
+        .worktree
+        .as_deref()
+        .map(tree_fingerprint)
+        .transpose()?;
+    write_state(&path, &state)
 }
 
 fn terminate(state: &VmState, config: &Config) {
@@ -476,10 +901,103 @@ fn terminate(state: &VmState, config: &Config) {
 }
 
 fn cleanup_files(state: &VmState) {
-    let _ = fs::remove_file(&state.api_socket);
-    if let Some(dir) = state.rootfs.parent() {
+    cleanup_vm_paths(&state.rootfs, &state.api_socket);
+    if let Some(cgroup) = &state.cgroup {
+        let _ = fs::remove_dir(cgroup);
+    }
+}
+
+fn cleanup_vm_paths(rootfs: &Path, api_socket: &Path) {
+    let _ = fs::remove_file(api_socket);
+    if let Some(dir) = rootfs.parent() {
         let _ = fs::remove_dir_all(dir);
     }
+}
+
+fn place_in_cgroup(
+    parent: &Path,
+    id: &str,
+    pid: i32,
+    memory_mib: usize,
+    vcpu_count: u8,
+) -> Result<PathBuf> {
+    if !parent.starts_with("/sys/fs/cgroup") || !parent.is_dir() {
+        return Err(anyhow!(
+            "delegated Firecracker cgroup {} is unavailable; rerun network setup",
+            parent.display()
+        ));
+    }
+    let cgroup = parent.join(id);
+    fs::create_dir(&cgroup)?;
+    let configured = (|| -> Result<()> {
+        fs::write(
+            cgroup.join("memory.max"),
+            ((memory_mib + 512) * 1024 * 1024).to_string(),
+        )?;
+        fs::write(cgroup.join("pids.max"), "64")?;
+        fs::write(
+            cgroup.join("cpu.max"),
+            format!("{} 100000", 100000 * usize::from(vcpu_count)),
+        )?;
+        fs::write(cgroup.join("cgroup.procs"), pid.to_string())?;
+        Ok(())
+    })();
+    if let Err(error) = configured {
+        let _ = fs::remove_dir(&cgroup);
+        return Err(error).context("failed to configure the Firecracker cgroup");
+    }
+    Ok(cgroup)
+}
+
+fn retain_recovery(
+    locked: &LockedState,
+    state_path: &Path,
+    state: &VmState,
+    reason: &str,
+) -> Result<()> {
+    let Some(vm_dir) = state.rootfs.parent() else {
+        return Ok(());
+    };
+    if !vm_dir.exists() {
+        return Ok(());
+    }
+    let recovery = locked.dir.join("recovery");
+    secure_dir(&recovery)?;
+    let id = state_path
+        .file_stem()
+        .and_then(|id| id.to_str())
+        .unwrap_or("vm");
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let destination = recovery.join(format!("{id}-{timestamp}-{reason}"));
+    fs::rename(vm_dir, &destination).with_context(|| {
+        format!(
+            "failed to retain Firecracker disk at {}",
+            destination.display()
+        )
+    })?;
+    fs::write(
+        destination.join("state.json"),
+        serde_json::to_vec_pretty(state)?,
+    )?;
+    Ok(())
+}
+
+fn prune_recoveries(state: &Path) -> Result<()> {
+    let recovery = state.join("recovery");
+    secure_dir(&recovery)?;
+    let now = SystemTime::now();
+    for entry in fs::read_dir(&recovery)? {
+        let entry = entry?;
+        let age = entry
+            .metadata()?
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok());
+        if age.is_some_and(|age| age > RECOVERY_RETENTION) {
+            fs::remove_dir_all(entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 fn vm_is_running(state: &VmState, config: &Config) -> bool {
@@ -557,6 +1075,13 @@ fn load_config() -> Result<Config> {
                 path.display()
             ));
         }
+    }
+    if !config.images_dir.is_absolute() {
+        return Err(anyhow!("provider config images_dir must be absolute"));
+    }
+    for credential in &config.credential_files {
+        expand_home(&credential.host)?;
+        validate_guest_path(&credential.guest)?;
     }
     Ok(config)
 }
@@ -672,6 +1197,11 @@ fn doctor() -> Result<()> {
             return Err(anyhow!("network TAP {tap} is missing"));
         }
     }
+    for command in ["cp", "git", "rsync", "ssh", "ssh-keyscan", "unshare"] {
+        if find_in_path(Path::new(command)).is_none() {
+            return Err(anyhow!("required command {command:?} is not on PATH"));
+        }
+    }
     let output = Command::new(&config.firecracker)
         .arg("--version")
         .output()
@@ -708,6 +1238,23 @@ fn image_build(args: &[String]) -> Result<()> {
 fn image_build_inner(args: &[String]) -> Result<()> {
     let zellij = option_path(args, "--zellij")?.unwrap_or_else(|| PathBuf::from("zellij"));
     let output = option_path(args, "--output")?.unwrap_or_else(data_dir);
+    let image = option_value(args, "--name")?;
+    if let Some(image) = image {
+        validate_firecracker_vm_name(image).map_err(|error| anyhow!(error))?;
+    }
+    let project = option_path(args, "--project")?;
+    let explicit_customize = option_path(args, "--customize")?;
+    if project.is_some() && explicit_customize.is_some() {
+        return Err(anyhow!("use only one of --project and --customize"));
+    }
+    let customize = explicit_customize
+        .or_else(|| project.map(|project| project.join(".zellij/firecracker-image.sh")));
+    if customize.as_ref().is_some_and(|path| !path.is_file()) {
+        return Err(anyhow!(
+            "Firecracker customization script does not exist: {}",
+            customize.as_deref().unwrap().display()
+        ));
+    }
     let disk_gib = option_value(args, "--disk-size-gib")?
         .map(|value| value.parse::<u64>().context("invalid --disk-size-gib"))
         .transpose()?
@@ -809,7 +1356,30 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
         wants.join("zellij-firecracker-network.service"),
     )?;
     fs::create_dir_all(root.join("workspace"))?;
-    let rootfs = output.join("ubuntu-24.04.ext4");
+    if let Some(customize) = customize {
+        let guest_script = root.join("tmp/zellij-firecracker-customize.sh");
+        fs::copy(&customize, &guest_script).with_context(|| {
+            format!(
+                "failed to stage Firecracker customization script {}",
+                customize.display()
+            )
+        })?;
+        run(
+            Command::new("chroot")
+                .arg(&root)
+                .args(["/bin/sh", "/tmp/zellij-firecracker-customize.sh"]),
+            "Firecracker customization script failed",
+        )?;
+        fs::remove_file(guest_script)?;
+    }
+    let rootfs = match image {
+        Some(image) => {
+            let images = output.join("images");
+            secure_dir(&images)?;
+            images.join(format!("{image}.ext4"))
+        },
+        None => output.join("ubuntu-24.04.ext4"),
+    };
     let file = File::create(&rootfs)?;
     file.set_len(disk_gib * 1024 * 1024 * 1024)?;
     run(
@@ -822,19 +1392,33 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
     fs::copy(kernel, output.join("vmlinux-6.1.182"))?;
     let firecracker =
         find_in_path(Path::new("firecracker")).context("firecracker is not installed")?;
-    let config = Config {
-        firecracker,
-        kernel: output.join("vmlinux-6.1.182"),
-        rootfs,
-        ssh_private_key: private_key,
-        vcpu_count: default_vcpus(),
-        memory_mib: default_memory(),
-        guest_cwd: default_cwd(),
-        boot_timeout_secs: default_boot_timeout(),
-        network: None,
-    };
     secure_dir(&config_dir())?;
     let config_path = config_dir().join("firecracker.json");
+    let config = if config_path.exists() {
+        let mut config: Config = serde_json::from_slice(&fs::read(&config_path)?)?;
+        config.firecracker = firecracker;
+        config.kernel = output.join("vmlinux-6.1.182");
+        config.images_dir = output.join("images");
+        config.ssh_private_key = private_key;
+        if image.is_none() {
+            config.rootfs = rootfs;
+        }
+        config
+    } else {
+        Config {
+            firecracker,
+            kernel: output.join("vmlinux-6.1.182"),
+            rootfs,
+            images_dir: output.join("images"),
+            ssh_private_key: private_key,
+            vcpu_count: default_vcpus(),
+            memory_mib: default_memory(),
+            guest_cwd: default_cwd(),
+            boot_timeout_secs: default_boot_timeout(),
+            network: None,
+            credential_files: vec![],
+        }
+    };
     fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
     println!("Wrote image and key to {}", output.display());
     println!("Wrote provider config to {}", config_path.display());
@@ -894,6 +1478,7 @@ fn network_setup(args: &[String]) -> Result<()> {
     require_root()?;
     let user = option_value(args, "--user")?.context("network setup requires --user USER")?;
     let uid = id_value(user, "-u")?;
+    let gid = id_value(user, "-g")?;
     let subnet = option_value(args, "--subnet")?.unwrap_or(DEFAULT_SUBNET);
     let taps = option_value(args, "--taps")?
         .map(|value| value.parse().context("invalid --taps"))
@@ -909,6 +1494,10 @@ fn network_setup(args: &[String]) -> Result<()> {
         subnet: subnet.to_owned(),
         taps,
         dns,
+        cgroup: Some(PathBuf::from(format!(
+            "/sys/fs/cgroup/zellij-firecracker-{uid}"
+        ))),
+        gid: Some(gid),
     };
     if config.tap_prefix.len() + 2 > 15 || config.bridge.len() > 15 {
         return Err(anyhow!("UID {uid} is too long for Linux interface names"));
@@ -947,6 +1536,9 @@ fn network_apply_cli(args: &[String]) -> Result<()> {
 }
 
 fn network_apply(uid: u32, config: &NetworkConfig) -> Result<()> {
+    if let Some(cgroup) = &config.cgroup {
+        delegate_cgroup(cgroup, uid, config.gid.unwrap_or(uid))?;
+    }
     let (base, _) = parse_subnet(&config.subnet)?;
     let gateway = ipv4_add(base, 1)?;
     fs::write("/proc/sys/net/ipv4/ip_forward", "1")?;
@@ -999,10 +1591,7 @@ fn network_apply(uid: u32, config: &NetworkConfig) -> Result<()> {
     let _ = Command::new("nft")
         .args(["delete", "table", "ip", &table])
         .status();
-    let rules = format!(
-        "table ip {table} {{\n chain forward {{ type filter hook forward priority filter; policy accept; ip saddr {} ip daddr 169.254.169.254 drop }}\n chain postrouting {{ type nat hook postrouting priority srcnat; ip saddr {} masquerade }}\n}}\n",
-        config.subnet, config.subnet
-    );
+    let rules = network_rules(&table, config);
     let mut nft = Command::new("nft")
         .args(["-f", "-"])
         .stdin(Stdio::piped())
@@ -1015,6 +1604,25 @@ fn network_apply(uid: u32, config: &NetworkConfig) -> Result<()> {
         return Err(anyhow!("failed to configure Firecracker nftables rules"));
     }
     Ok(())
+}
+
+fn network_rules(table: &str, config: &NetworkConfig) -> String {
+    format!(
+        "table ip {table} {{\n chain input {{ type filter hook input priority filter; policy accept; iifname \"{}\" ip saddr {} drop }}\n chain forward {{ type filter hook forward priority filter; policy drop; ct state established,related accept; iifname \"{}\" ip saddr {} ip daddr {} udp dport 53 accept; iifname \"{}\" ip saddr {} ip daddr {} tcp dport 53 accept; iifname \"{}\" ip saddr {} ip daddr {{ 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 }} drop; iifname \"{}\" ip saddr {} tcp dport {{ 22, 80, 443 }} accept }}\n chain postrouting {{ type nat hook postrouting priority srcnat; ip saddr {} masquerade }}\n}}\n",
+        config.bridge,
+        config.subnet,
+        config.bridge,
+        config.subnet,
+        config.dns,
+        config.bridge,
+        config.subnet,
+        config.dns,
+        config.bridge,
+        config.subnet,
+        config.bridge,
+        config.subnet,
+        config.subnet
+    )
 }
 
 fn network_teardown(args: &[String]) -> Result<()> {
@@ -1037,7 +1645,31 @@ fn network_teardown(args: &[String]) -> Result<()> {
     let _ = Command::new("ip")
         .args(["link", "delete", &config.bridge])
         .status();
+    if let Some(cgroup) = &config.cgroup {
+        let _ = fs::remove_dir(cgroup);
+    }
     fs::remove_file(path)?;
+    Ok(())
+}
+
+fn delegate_cgroup(path: &Path, uid: u32, gid: u32) -> Result<()> {
+    if !path.starts_with("/sys/fs/cgroup") {
+        return Err(anyhow!("refusing to create cgroup outside /sys/fs/cgroup"));
+    }
+    fs::create_dir_all(path)?;
+    fs::write(path.join("cgroup.subtree_control"), "+cpu +memory +pids")?;
+    chown(path, uid, gid)?;
+    for file in ["cgroup.procs", "cgroup.subtree_control"] {
+        chown(&path.join(file), uid, gid)?;
+    }
+    Ok(())
+}
+
+fn chown(path: &Path, uid: u32, gid: u32) -> Result<()> {
+    let path = CString::new(path.as_os_str().as_bytes())?;
+    if unsafe { libc::chown(path.as_ptr(), uid, gid) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("failed to delegate cgroup");
+    }
     Ok(())
 }
 
@@ -1115,5 +1747,47 @@ mod tests {
         );
         assert_ne!(vm_id("work", "review"), vm_id("other", "review"));
         assert!(!vm_id("work/../../other", "review").contains('/'));
+    }
+
+    #[test]
+    fn worktree_fingerprint_detects_content_changes_and_ignores_git_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("source.rs"), "one").unwrap();
+        let original = tree_fingerprint(root.path()).unwrap();
+
+        fs::write(root.path().join("source.rs"), "two").unwrap();
+        assert_ne!(tree_fingerprint(root.path()).unwrap(), original);
+
+        let without_git = tree_fingerprint(root.path()).unwrap();
+        fs::create_dir(root.path().join(".git")).unwrap();
+        fs::write(root.path().join(".git/HEAD"), "ref: changed").unwrap();
+        assert_eq!(tree_fingerprint(root.path()).unwrap(), without_git);
+    }
+
+    #[test]
+    fn provider_security_boundaries_reject_unsafe_credentials_and_protect_private_networks() {
+        assert!(validate_guest_path(Path::new("/root/.config/codex/auth.json")).is_ok());
+        assert!(validate_guest_path(Path::new("/root/../etc/shadow")).is_err());
+        assert!(validate_guest_path(Path::new("/root/key;touch-pwned")).is_err());
+
+        let config = NetworkConfig {
+            bridge: "zfc1000".to_owned(),
+            tap_prefix: "zft1000-".to_owned(),
+            subnet: "172.31.0.0/24".to_owned(),
+            taps: 2,
+            dns: Ipv4Addr::new(10, 0, 0, 53),
+            cgroup: None,
+            gid: None,
+        };
+        let rules = network_rules("zellij_fc_1000", &config);
+        let dns = rules
+            .find("ip daddr 10.0.0.53 udp dport 53 accept")
+            .unwrap();
+        let private = rules.find("ip daddr { 10.0.0.0/8").unwrap();
+        assert!(
+            dns < private,
+            "the configured DNS exception must precede the private-network drop"
+        );
+        assert!(rules.contains("iifname \"zfc1000\" ip saddr 172.31.0.0/24 drop"));
     }
 }

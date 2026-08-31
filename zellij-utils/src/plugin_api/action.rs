@@ -2245,6 +2245,10 @@ impl TryFrom<ProtobufRunCommandAction> for RunCommandAction {
         let hold_on_close = protobuf_run_command_action.hold_on_close;
         let hold_on_start = protobuf_run_command_action.hold_on_start;
         let firecracker_vm = protobuf_run_command_action.firecracker_vm;
+        let firecracker_image = protobuf_run_command_action.firecracker_image;
+        let firecracker_worktree = protobuf_run_command_action
+            .firecracker_worktree
+            .map(PathBuf::from);
         Ok(RunCommandAction {
             command,
             args,
@@ -2253,6 +2257,8 @@ impl TryFrom<ProtobufRunCommandAction> for RunCommandAction {
             hold_on_close,
             hold_on_start,
             firecracker_vm,
+            firecracker_image,
+            firecracker_worktree,
             ..Default::default()
         })
     }
@@ -2271,6 +2277,10 @@ impl TryFrom<RunCommandAction> for ProtobufRunCommandAction {
         let hold_on_close = run_command_action.hold_on_close;
         let hold_on_start = run_command_action.hold_on_start;
         let firecracker_vm = run_command_action.firecracker_vm;
+        let firecracker_image = run_command_action.firecracker_image;
+        let firecracker_worktree = run_command_action
+            .firecracker_worktree
+            .map(|path| path.display().to_string());
         Ok(ProtobufRunCommandAction {
             command,
             args,
@@ -2280,6 +2290,8 @@ impl TryFrom<RunCommandAction> for ProtobufRunCommandAction {
             hold_on_start,
             pane_name: None,
             firecracker_vm,
+            firecracker_image,
+            firecracker_worktree,
         })
     }
 }

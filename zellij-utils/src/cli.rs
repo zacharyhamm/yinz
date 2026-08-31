@@ -386,6 +386,12 @@ pub enum Firecracker {
         #[clap(long)]
         session: Option<String>,
     },
+    /// Copy a running VM's workspace back to its unchanged host worktree.
+    Sync {
+        name: String,
+        #[clap(long)]
+        session: Option<String>,
+    },
 }
 
 #[derive(Debug, Parser, Clone, Serialize, Deserialize)]

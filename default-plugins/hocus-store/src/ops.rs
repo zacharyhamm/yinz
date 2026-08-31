@@ -744,6 +744,7 @@ mod tests {
         let found = projects::Project {
             name: "found".to_owned(),
             root: "/tmp/found".to_owned(),
+            firecracker_image: None,
             remote: None,
             worktree_status: Some(projects::WorktreeStatus::Primary),
             common_dir: Some("/tmp/found/.git".to_owned()),
@@ -771,6 +772,7 @@ mod tests {
         let found = projects::Project {
             name: "tmp-found".to_owned(),
             root: "/tmp/found".to_owned(),
+            firecracker_image: None,
             remote: Some("git@example.com:me/found".to_owned()),
             worktree_status: Some(projects::WorktreeStatus::Primary),
             common_dir: None,

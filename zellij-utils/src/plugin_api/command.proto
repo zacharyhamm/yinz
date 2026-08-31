@@ -9,4 +9,6 @@ message Command {
   optional string remote_host = 4;
   bool remote_default_shell = 5;
   optional string firecracker_vm = 6;
+  optional string firecracker_image = 7;
+  optional string firecracker_worktree = 8;
 }

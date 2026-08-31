@@ -959,6 +959,41 @@ pub fn broker_invocation() -> Option<String> {
     broker_invocation_from_args(std::env::args())
 }
 
+/// Write one hook event into this pane's authenticated pty stream. The host
+/// consumes the private OSC marker instead of displaying it.
+pub fn report_agent_hook() -> Result<()> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use std::io::{Read, Write};
+
+    let kind = std::env::args()
+        .nth(3)
+        .unwrap_or_else(|| "claude".to_owned());
+    if kind.is_empty()
+        || kind.len() > 32
+        || !kind
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+    {
+        return Err(anyhow!("invalid remote agent kind"));
+    }
+    let mut json = Vec::new();
+    std::io::stdin()
+        .take(zellij_utils::agent::HOOK_BROADCAST_MAX_BYTES as u64 + 1)
+        .read_to_end(&mut json)?;
+    if json.len() > zellij_utils::agent::HOOK_BROADCAST_MAX_BYTES {
+        return Err(anyhow!("agent hook event exceeds the 64 KiB limit"));
+    }
+    serde_json::from_slice::<zellij_utils::agent::HookEvent>(&json)
+        .context("invalid agent hook JSON")?;
+    let encoded = STANDARD.encode(json);
+    let mut tty = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/tty")
+        .context("agent hook has no controlling terminal")?;
+    write!(tty, "\x1b]777;zellij-agent-report;{kind};{encoded}\x1b\\")?;
+    Ok(())
+}
+
 fn broker_invocation_from_args<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
     let mut args = args.into_iter();
     let _bin = args.next();

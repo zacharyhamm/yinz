@@ -3394,6 +3394,8 @@ pub struct CommandToRun {
     pub cwd: Option<PathBuf>,
     pub remote_host: Option<String>,
     pub firecracker_vm: Option<String>,
+    pub firecracker_image: Option<String>,
+    pub firecracker_worktree: Option<PathBuf>,
     /// Ignore `path` and run the login shell of the machine named by
     /// `remote_host`, resolved there. See `RunCommand::remote_default_shell`:
     /// which shell a user has is a fact about that machine, so a plugin has

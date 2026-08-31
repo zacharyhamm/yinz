@@ -14,6 +14,8 @@ fn sample_run_command() -> RunCommand {
         use_terminal_title: true,
         remote_host: None,
         firecracker_vm: None,
+        firecracker_image: None,
+        firecracker_worktree: None,
         remote_default_shell: false,
     }
 }

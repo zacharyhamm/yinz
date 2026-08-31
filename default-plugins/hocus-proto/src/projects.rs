@@ -14,6 +14,8 @@ pub struct Project {
     pub name: String,
     pub root: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firecracker_image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_status: Option<WorktreeStatus>,
@@ -185,6 +187,7 @@ pub fn parse_legacy(json: &[u8]) -> Registry {
         .filter_map(|saved| {
             let mut project = validate(&saved.name, &saved.root).ok()?;
             project.discovered = saved.discovered;
+            project.firecracker_image = saved.firecracker_image;
             project.remote = saved.remote;
             project.worktree_status = saved.worktree_status;
             project.common_dir = saved.common_dir;
@@ -211,6 +214,7 @@ pub fn validate(name: &str, root: &str) -> Result<Project, String> {
     Ok(Project {
         name: name.to_owned(),
         root,
+        firecracker_image: None,
         remote: None,
         worktree_status: None,
         common_dir: None,
@@ -232,6 +236,7 @@ pub fn validate(name: &str, root: &str) -> Result<Project, String> {
 pub const ROW_COLUMNS: &[&str] = &[
     "name",
     "root",
+    "firecracker_image",
     "remote",
     "worktree_status",
     "common_dir",
@@ -286,6 +291,7 @@ pub fn from_rows(rows: &DataRows) -> Registry {
                 Project {
                     name,
                     root,
+                    firecracker_image: text_at(rows, row, "firecracker_image"),
                     remote: text_at(rows, row, "remote"),
                     worktree_status: text_at(rows, row, "worktree_status")
                         .as_deref()
@@ -308,6 +314,7 @@ pub fn to_mutation(project: &Project) -> Mutation {
         .uid(project.name.clone())
         .set("name", project.name.clone())
         .set("root", project.root.clone())
+        .set("firecracker_image", project.firecracker_image.clone())
         .set("remote", project.remote.clone())
         .set(
             "worktree_status",
@@ -357,6 +364,10 @@ pub fn to_rows(projects: &Registry) -> DataRows {
                 vec![
                     DataValue::Text(project.name.clone()),
                     DataValue::Text(project.root.clone()),
+                    project
+                        .firecracker_image
+                        .clone()
+                        .map_or(DataValue::Null, DataValue::Text),
                     project
                         .remote
                         .clone()

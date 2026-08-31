@@ -86,6 +86,8 @@ pub struct Spec {
     pub hooks: Option<bool>,
     /// Named session-scoped Firecracker VM to run in.
     pub firecracker: Option<String>,
+    /// Immutable project image selected for the Firecracker VM.
+    pub firecracker_image: Option<String>,
 }
 
 /// The permission modes `claude --permission-mode` accepts, plus `skip` for
@@ -149,10 +151,7 @@ pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<S
     let mode = trimmed(&spec.permission_mode);
     let resume = trimmed(&spec.resume);
     let firecracker = trimmed(&spec.firecracker).is_some();
-    if firecracker && spec.hooks == Some(true) {
-        return Err("agent-report hooks are unavailable in Firecracker VMs; omit hooks or set hooks to false".to_owned());
-    }
-    let hooks = spec.hooks.unwrap_or(!firecracker);
+    let hooks = spec.hooks.unwrap_or(true);
     let unknown_mode = |accepted: &[&str], mode: &str| {
         Err(format!(
             "{kind} has no permission mode {mode:?}; it accepts: {}",
@@ -183,7 +182,12 @@ pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<S
                 // The hooks that make the pane report its own state, handed over whole:
                 // no script, no settings file, and nothing to install first.
                 flags.push("--settings".to_owned());
-                flags.push(claude_hook_settings_argument());
+                flags.push(if firecracker {
+                    zellij_tile::agent::claude_hook_settings("zellij --pty-broker report claude")
+                        .to_string()
+                } else {
+                    claude_hook_settings_argument()
+                });
             }
         },
         Some("codex") => {
@@ -252,8 +256,12 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
     let firecracker = trimmed(&spec.firecracker).map(str::to_owned);
     if let Some(name) = firecracker.as_deref() {
         validate_firecracker_vm_name(name)?;
-        if trimmed(&spec.branch).is_some() || spec.worktree == Some(true) {
-            return Err("Firecracker agents cannot create host branches or worktrees".to_owned());
+    }
+    let firecracker_image = trimmed(&spec.firecracker_image).map(str::to_owned);
+    if let Some(image) = firecracker_image.as_deref() {
+        validate_firecracker_vm_name(image)?;
+        if firecracker.is_none() {
+            return Err("firecracker_image requires a Firecracker VM".to_owned());
         }
     }
     let kind = trimmed(&spec.kind).map(str::to_lowercase);
@@ -293,6 +301,7 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
         path: path.into(),
         args,
         firecracker_vm: firecracker,
+        firecracker_image,
         ..Default::default()
     };
 
@@ -347,10 +356,6 @@ fn trimmed(value: &Option<String>) -> Option<&str> {
 #[cfg(target_family = "wasm")]
 pub fn open(spec: &Spec, source_directory: std::path::PathBuf) -> Result<PaneId, String> {
     let (command, checkout) = plan(spec)?;
-    if command.firecracker_vm.is_some() {
-        return zellij_tile::shim::open_command_pane_near_plugin(command, agent_pane_context())
-            .ok_or_else(|| "zellij did not open the Firecracker agent pane".to_owned());
-    }
     zellij_tile::shim::open_command_pane_in_git_checkout_near_plugin(
         command,
         source_directory,
@@ -449,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn firecracker_agents_skip_host_git_and_hooks_but_keep_explicit_environment() {
+    fn firecracker_agents_use_the_reporting_bridge_and_keep_explicit_environment() {
         let (command, checkout) = plan(&Spec {
             firecracker: Some("review".to_owned()),
             env: BTreeMap::from([("TOKEN".to_owned(), "explicit".to_owned())]),
@@ -460,7 +465,13 @@ mod tests {
         assert_eq!(command.firecracker_vm.as_deref(), Some("review"));
         assert_eq!(command.path, PathBuf::from("env"));
         assert_eq!(command.args[0], "TOKEN=explicit");
-        assert!(!command.args.iter().any(|arg| arg == "--settings"));
+        let settings = command
+            .args
+            .iter()
+            .position(|arg| arg == "--settings")
+            .and_then(|index| command.args.get(index + 1))
+            .expect("Firecracker Claude hook settings");
+        assert!(settings.contains("zellij --pty-broker report claude"));
     }
 
     #[test]
@@ -475,26 +486,12 @@ mod tests {
     }
 
     #[test]
-    fn firecracker_agents_reject_host_git_and_agent_report_hooks() {
-        for invalid in [
-            Spec {
-                firecracker: Some("review".to_owned()),
-                branch: Some("topic".to_owned()),
-                ..spec("codex")
-            },
-            Spec {
-                firecracker: Some("review".to_owned()),
-                worktree: Some(true),
-                ..spec("codex")
-            },
-            Spec {
-                firecracker: Some("review".to_owned()),
-                hooks: Some(true),
-                ..spec("claude")
-            },
-        ] {
-            assert!(plan(&invalid).is_err());
-        }
+    fn a_firecracker_image_requires_a_vm() {
+        assert!(plan(&Spec {
+            firecracker_image: Some("rust".to_owned()),
+            ..spec("codex")
+        })
+        .is_err());
     }
 
     #[test]
