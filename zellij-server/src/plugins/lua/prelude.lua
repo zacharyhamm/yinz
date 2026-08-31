@@ -12,6 +12,11 @@ local zellij = {}
 -- forever. These wrappers hand every other error back exactly as the real functions do, and
 -- re-raise this one, so it unwinds all the way out of the entrypoint however deeply it was
 -- caught. `coroutine.wrap` already propagates; only `resume` reports errors as values.
+--
+-- `xpcall` is the odd one out: its message handler runs *before* the error comes back, and may
+-- replace it (`function(_) return "failed" end`), so the marker cannot be looked for in the
+-- result. The handler is wrapped instead, and a cancel is noted there and never shown to the
+-- plugin's own handler.
 do
   local cancelled_by_host = __zellij_cancelled_by_host
   __zellij_cancelled_by_host = nil
@@ -33,8 +38,30 @@ do
   end
 
   pcall = rethrowing(raw_pcall)
-  xpcall = rethrowing(raw_xpcall)
   coroutine.resume = rethrowing(raw_resume)
+
+  local xpcall_rethrowing = rethrowing(raw_xpcall)
+  xpcall = function(f, handler, ...)
+    if type(handler) ~= "function" then
+      -- Lua's own "bad argument #2" error, unchanged.
+      return xpcall_rethrowing(f, handler, ...)
+    end
+    local cancelled = false
+    local function guard(err)
+      if is_cancel(err) then
+        cancelled = true
+        return err
+      end
+      return handler(err)
+    end
+    local results = pack(raw_xpcall(f, guard, ...))
+    -- `cancelled` is the signal; the marker check covers a cancel raised where the handler did
+    -- not run (Lua reports an error inside the handler itself without calling it again).
+    if cancelled or (not results[1] and is_cancel(results[2])) then
+      error(cancelled_by_host, 0)
+    end
+    return unpack(results, 1, results.n)
+  end
 end
 
 --- The host installs `zellij.__dispatch` for the duration of each call into the plugin and
