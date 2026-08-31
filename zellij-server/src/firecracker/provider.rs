@@ -10,7 +10,7 @@ use serde_json::json;
 use std::{
     collections::hash_map::DefaultHasher,
     env,
-    ffi::CString,
+    ffi::{CString, OsStr},
     fs::{self, File, OpenOptions},
     hash::{Hash, Hasher},
     io::{Read, Write},
@@ -634,9 +634,8 @@ fn sync_to_guest(state: &VmState, config: &Config, worktree: &Path) -> Result<()
     }
     stage_filtered_worktree(worktree, &staged)?;
     run(
-        Command::new("rsync")
+        filtered_rsync()
             .args(["-a", "--delete", "-e", &rsync_remote_shell(state, config)])
-            .arg(format!("--filter={GITIGNORE_FILTER}"))
             .arg(with_trailing_slash(&staged))
             .arg(format!("root@{}:/workspace/", state.guest_ip)),
         "failed to copy the worktree into the guest",
@@ -653,7 +652,7 @@ fn sync_from_guest(state: &VmState, config: &Config) -> Result<()> {
     ensure_host_unchanged(worktree, expected)?;
     let staging = tempfile::tempdir().context("failed to stage guest changes")?;
     run(
-        Command::new("rsync")
+        filtered_rsync()
             .args([
                 "-a",
                 "--delay-updates",
@@ -661,7 +660,6 @@ fn sync_from_guest(state: &VmState, config: &Config) -> Result<()> {
                 "-e",
                 &rsync_remote_shell(state, config),
             ])
-            .arg(format!("--filter={GITIGNORE_FILTER}"))
             .arg(format!("root@{}:/workspace/", state.guest_ip))
             .arg(with_trailing_slash(staging.path())),
         "failed to copy changes out of the guest",
@@ -672,9 +670,8 @@ fn sync_from_guest(state: &VmState, config: &Config) -> Result<()> {
 
 fn stage_filtered_worktree(source: &Path, destination: &Path) -> Result<()> {
     run(
-        Command::new("rsync")
+        filtered_rsync()
             .args(["-a", "--delete", "--exclude=.git"])
-            .arg(format!("--filter={GITIGNORE_FILTER}"))
             .arg(with_trailing_slash(source))
             .arg(with_trailing_slash(destination)),
         "failed to stage the filtered worktree",
@@ -683,13 +680,18 @@ fn stage_filtered_worktree(source: &Path, destination: &Path) -> Result<()> {
 
 fn apply_filtered_worktree(source: &Path, destination: &Path) -> Result<()> {
     run(
-        Command::new("rsync")
+        filtered_rsync()
             .args(["-a", "--delay-updates", "--delete-delay", "--exclude=.git"])
-            .arg(format!("--filter={GITIGNORE_FILTER}"))
             .arg(with_trailing_slash(source))
             .arg(with_trailing_slash(destination)),
         "failed to apply guest changes to the host worktree",
     )
+}
+
+fn filtered_rsync() -> Command {
+    let mut command = Command::new("rsync");
+    command.arg(format!("--filter={GITIGNORE_FILTER}"));
+    command
 }
 
 fn ensure_host_unchanged(worktree: &Path, expected: u64) -> Result<()> {
@@ -776,17 +778,8 @@ fn with_trailing_slash(path: &Path) -> PathBuf {
 }
 
 fn expand_home(path: &Path) -> Result<PathBuf> {
-    let text = path.to_string_lossy();
-    if let Some(relative) = text.strip_prefix("~/") {
-        let home = env::var_os("HOME").context("HOME is unavailable for credential expansion")?;
-        Ok(PathBuf::from(home).join(relative))
-    } else if path.is_absolute() {
-        Ok(path.to_owned())
-    } else {
-        Err(anyhow!(
-            "credential host path must be absolute or start with ~/"
-        ))
-    }
+    let home = env::var_os("HOME").context("HOME is unavailable for credential expansion")?;
+    expand_home_from(path, Path::new(&home))
 }
 
 fn validate_guest_path(path: &Path) -> Result<()> {
@@ -1256,43 +1249,146 @@ fn network_config_path(uid: u32) -> PathBuf {
 
 fn setup(args: &[String]) -> Result<()> {
     let options = parse_setup_options(args)?;
-    let project = options.project.canonicalize().with_context(|| {
-        format!(
-            "failed to resolve setup project {}",
-            options.project.display()
-        )
-    })?;
-    if !project.is_dir() {
-        return Err(anyhow!("setup project must be a directory"));
+    setup_with(&options, &mut RealSetup)
+}
+
+trait SetupRuntime {
+    fn project(&mut self, project: &Path) -> Result<PathBuf>;
+    fn zellij(&mut self, explicit: Option<&Path>) -> Result<PathBuf>;
+    fn provider(&mut self) -> Result<(PathBuf, PathBuf)>;
+    fn network(&mut self, provider: &Path) -> Result<()>;
+    fn image(
+        &mut self,
+        options: &SetupOptions,
+        project: &Path,
+        zellij: &Path,
+        current_provider: &Path,
+    ) -> Result<()>;
+    fn config(&mut self, provider: &Path) -> Result<()>;
+    fn doctor(&mut self, provider: &Path) -> Result<()>;
+}
+
+struct RealSetup;
+
+impl SetupRuntime for RealSetup {
+    fn project(&mut self, project: &Path) -> Result<PathBuf> {
+        let project = project
+            .canonicalize()
+            .with_context(|| format!("failed to resolve setup project {}", project.display()))?;
+        project
+            .is_dir()
+            .then_some(project)
+            .context("setup project must be a directory")
     }
-    let zellij = resolve_zellij(options.zellij.as_deref())?;
-    let current_provider = env::current_exe()
-        .context("failed to find the running zellij-firecracker")?
-        .canonicalize()
-        .context("failed to resolve the running zellij-firecracker")?;
-    let provider = ensure_installed_provider(&current_provider)?;
 
-    let user = current_user()?;
+    fn zellij(&mut self, explicit: Option<&Path>) -> Result<PathBuf> {
+        resolve_zellij(explicit)
+    }
+
+    fn provider(&mut self) -> Result<(PathBuf, PathBuf)> {
+        let current = env::current_exe()
+            .context("failed to find the running zellij-firecracker")?
+            .canonicalize()
+            .context("failed to resolve the running zellij-firecracker")?;
+        let provider = ensure_installed_provider(&current)?;
+        Ok((current, provider))
+    }
+
+    fn network(&mut self, provider: &Path) -> Result<()> {
+        let user = current_user()?;
+        println!(
+            "sudo: configuring Firecracker networking for {user} with {}",
+            provider.display()
+        );
+        run(
+            Command::new("sudo")
+                .arg(provider)
+                .args(["network", "setup", "--user", &user]),
+            "failed to configure Firecracker networking",
+        )
+    }
+
+    fn image(
+        &mut self,
+        options: &SetupOptions,
+        project: &Path,
+        zellij: &Path,
+        current_provider: &Path,
+    ) -> Result<()> {
+        setup_image(options, project, zellij, current_provider)
+    }
+
+    fn config(&mut self, provider: &Path) -> Result<()> {
+        configure_credentials()?;
+        let overlay_dir = zellij_utils::home::get_config_overlay_dir(Some(
+            env::var_os(zellij_utils::consts::ZELLIJ_CONFIG_DIR_ENV)
+                .map(PathBuf::from)
+                .unwrap_or_else(zellij_utils::home::xdg_config_dir),
+        ))
+        .context("could not determine the Zellij config.d directory")?;
+        write_zellij_provider_config(&overlay_dir, provider)
+    }
+
+    fn doctor(&mut self, provider: &Path) -> Result<()> {
+        run(
+            Command::new(provider).arg("doctor"),
+            "Firecracker doctor failed",
+        )
+    }
+}
+
+fn setup_with(options: &SetupOptions, runtime: &mut impl SetupRuntime) -> Result<()> {
+    let project = runtime.project(&options.project)?;
+    let zellij = runtime.zellij(options.zellij.as_deref())?;
+    let (current_provider, provider) = runtime.provider()?;
+    runtime.network(&provider)?;
+    runtime.image(options, &project, &zellij, &current_provider)?;
+    runtime.config(&provider)?;
+    runtime.doctor(&provider)?;
     println!(
-        "sudo: configuring Firecracker networking for {user} with {}",
-        provider.display()
+        "Firecracker setup is ready. Use image {:?} for this project.",
+        options.image
     );
-    run(
-        Command::new("sudo")
-            .arg(&provider)
-            .args(["network", "setup", "--user", &user]),
-        "failed to configure Firecracker networking",
-    )?;
+    Ok(())
+}
 
-    if should_build_image(options.rebuild, setup_image_is_valid(&options.image)) {
-        let mut command = Command::new(&current_provider);
+fn setup_image(
+    options: &SetupOptions,
+    project: &Path,
+    zellij: &Path,
+    current_provider: &Path,
+) -> Result<()> {
+    setup_image_with(
+        options,
+        project,
+        zellij,
+        current_provider,
+        setup_image_is_valid,
+        run,
+    )
+}
+
+fn setup_image_with<V, R>(
+    options: &SetupOptions,
+    project: &Path,
+    zellij: &Path,
+    current_provider: &Path,
+    mut image_is_valid: V,
+    mut execute: R,
+) -> Result<()>
+where
+    V: FnMut(&str) -> bool,
+    R: FnMut(&mut Command, &str) -> Result<()>,
+{
+    if should_build_image(options.rebuild, image_is_valid(&options.image)) {
+        let mut command = Command::new(current_provider);
         command
             .args(["image", "build", "--name", &options.image, "--project"])
-            .arg(&project)
+            .arg(project)
             .arg("--zellij")
-            .arg(&zellij)
+            .arg(zellij)
             .args(["--disk-size-gib", &options.disk_size_gib.to_string()]);
-        run(
+        execute(
             &mut command,
             "failed to build the Firecracker development image",
         )?;
@@ -1302,30 +1398,12 @@ fn setup(args: &[String]) -> Result<()> {
             options.image
         );
     }
-    if !setup_image_is_valid(&options.image) {
+    if !image_is_valid(&options.image) {
         return Err(anyhow!(
             "Firecracker image {:?} was not created correctly",
             options.image
         ));
     }
-
-    configure_credentials()?;
-    let overlay_dir = zellij_utils::home::get_config_overlay_dir(Some(
-        env::var_os(zellij_utils::consts::ZELLIJ_CONFIG_DIR_ENV)
-            .map(PathBuf::from)
-            .unwrap_or_else(zellij_utils::home::xdg_config_dir),
-    ))
-    .context("could not determine the Zellij config.d directory")?;
-    write_zellij_provider_config(&overlay_dir, &provider)?;
-
-    run(
-        Command::new(&provider).arg("doctor"),
-        "Firecracker doctor failed",
-    )?;
-    println!(
-        "Firecracker setup is ready. Use image {:?} for this project.",
-        options.image
-    );
     Ok(())
 }
 
@@ -1371,9 +1449,18 @@ fn parse_setup_options(args: &[String]) -> Result<SetupOptions> {
 }
 
 fn resolve_zellij(explicit: Option<&Path>) -> Result<PathBuf> {
+    let provider = env::current_exe().context("failed to find the running zellij-firecracker")?;
+    resolve_zellij_from(explicit, &provider, env::var_os("PATH").as_deref())
+}
+
+fn resolve_zellij_from(
+    explicit: Option<&Path>,
+    provider: &Path,
+    search_path: Option<&OsStr>,
+) -> Result<PathBuf> {
     if let Some(explicit) = explicit {
         let path = if explicit.components().count() == 1 {
-            find_in_path(explicit).unwrap_or_else(|| explicit.to_owned())
+            find_in_path_from(explicit, search_path).unwrap_or_else(|| explicit.to_owned())
         } else {
             explicit.to_owned()
         };
@@ -1381,45 +1468,70 @@ fn resolve_zellij(explicit: Option<&Path>) -> Result<PathBuf> {
             .canonicalize()
             .with_context(|| format!("could not find Zellij at {}", explicit.display()));
     }
-    if let Some(sibling) = env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(|parent| parent.join("zellij")))
+    if let Some(sibling) = provider
+        .parent()
+        .map(|parent| parent.join("zellij"))
         .filter(|path| path.is_file())
     {
         return sibling
             .canonicalize()
             .context("failed to resolve the Zellij binary beside the provider");
     }
-    find_in_path(Path::new("zellij"))
+    find_in_path_from(Path::new("zellij"), search_path)
         .context("could not find Zellij beside zellij-firecracker or on PATH")?
         .canonicalize()
         .context("failed to resolve the Zellij binary on PATH")
 }
 
 fn ensure_installed_provider(current: &Path) -> Result<PathBuf> {
-    if trusted_provider(current) {
+    let installed = Path::new(INSTALLED_PROVIDER);
+    ensure_installed_provider_with(
+        current,
+        installed,
+        trusted_provider,
+        confirm,
+        |source, target| {
+            println!("sudo: installing the provider at {INSTALLED_PROVIDER}");
+            run(
+                Command::new("sudo")
+                    .args(["install", "-o", "root", "-g", "root", "-m", "0755", "--"])
+                    .arg(source)
+                    .arg(target),
+                "failed to install zellij-firecracker",
+            )
+        },
+    )
+}
+
+fn ensure_installed_provider_with<T, C, I>(
+    current: &Path,
+    installed: &Path,
+    mut trusted: T,
+    mut ask: C,
+    mut install: I,
+) -> Result<PathBuf>
+where
+    T: FnMut(&Path) -> bool,
+    C: FnMut(&str) -> Result<bool>,
+    I: FnMut(&Path, &Path) -> Result<()>,
+{
+    if trusted(current) {
         return Ok(current.to_owned());
     }
-    let installed = Path::new(INSTALLED_PROVIDER);
-    if trusted_provider(installed) && files_equal(current, installed)? {
+    if trusted(installed) && files_equal(current, installed)? {
         return Ok(installed.to_owned());
     }
-    if !confirm(&format!(
-        "Install the provider at {INSTALLED_PROVIDER} with sudo?"
+    if !ask(&format!(
+        "Install the provider at {} with sudo?",
+        installed.display()
     ))? {
         return Err(anyhow!(
-            "setup requires a trusted provider at {INSTALLED_PROVIDER}"
+            "setup requires a trusted provider at {}",
+            installed.display()
         ));
     }
-    println!("sudo: installing the provider at {INSTALLED_PROVIDER}");
-    run(
-        Command::new("sudo")
-            .args(["install", "-o", "root", "-g", "root", "-m", "0755", "--"])
-            .arg(current)
-            .arg(installed),
-        "failed to install zellij-firecracker",
-    )?;
-    trusted_provider(installed)
+    install(current, installed)?;
+    trusted(installed)
         .then(|| installed.to_owned())
         .context("the installed provider is not a trusted root-owned executable")
 }
@@ -1491,18 +1603,25 @@ fn should_build_image(rebuild: bool, valid: bool) -> bool {
 
 fn configure_credentials() -> Result<()> {
     let path = config_dir().join("firecracker.json");
+    let home = env::var_os("HOME").context("HOME is unavailable for credential setup")?;
+    configure_credentials_at(&path, Path::new(&home), confirm)
+}
+
+fn configure_credentials_at<F>(path: &Path, home: &Path, ask: F) -> Result<()>
+where
+    F: FnMut(&str) -> Result<bool>,
+{
     let mut config: Config = serde_json::from_slice(
-        &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
+        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
     )
     .with_context(|| format!("invalid provider config {}", path.display()))?;
-    let home = env::var_os("HOME").context("HOME is unavailable for credential setup")?;
     let candidates = [
         (
             CredentialFile {
                 host: PathBuf::from("~/.codex/auth.json"),
                 guest: PathBuf::from("/root/.codex/auth.json"),
             },
-            PathBuf::from(&home).join(".codex/auth.json"),
+            home.join(".codex/auth.json"),
             "Copy Codex credentials into Firecracker VMs?",
         ),
         (
@@ -1510,13 +1629,13 @@ fn configure_credentials() -> Result<()> {
                 host: PathBuf::from("~/.claude/.credentials.json"),
                 guest: PathBuf::from("/root/.claude/.credentials.json"),
             },
-            PathBuf::from(home).join(".claude/.credentials.json"),
+            home.join(".claude/.credentials.json"),
             "Copy Claude Code credentials into Firecracker VMs?",
         ),
     ];
-    let changed = merge_credentials(&mut config, &candidates, confirm)?;
+    let changed = merge_credentials(&mut config, &candidates, home, ask)?;
     if changed {
-        fs::write(&path, serde_json::to_vec_pretty(&config)?)
+        fs::write(path, serde_json::to_vec_pretty(&config)?)
             .with_context(|| format!("failed to update {}", path.display()))?;
         println!("Updated credential mappings in {}.", path.display());
     }
@@ -1526,6 +1645,7 @@ fn configure_credentials() -> Result<()> {
 fn merge_credentials<F>(
     config: &mut Config,
     candidates: &[(CredentialFile, PathBuf, &str)],
+    home: &Path,
     mut ask: F,
 ) -> Result<bool>
 where
@@ -1535,7 +1655,8 @@ where
     for (credential, detected, question) in candidates {
         let duplicate = config.credential_files.iter().any(|existing| {
             existing.guest == credential.guest
-                && expand_home(&existing.host).ok().as_deref() == Some(detected.as_path())
+                && expand_home_from(&existing.host, home).ok().as_deref()
+                    == Some(detected.as_path())
         });
         if detected.is_file() && !duplicate && ask(question)? {
             config.credential_files.push(credential.clone());
@@ -1543,6 +1664,19 @@ where
         }
     }
     Ok(changed)
+}
+
+fn expand_home_from(path: &Path, home: &Path) -> Result<PathBuf> {
+    let text = path.to_string_lossy();
+    if let Some(relative) = text.strip_prefix("~/") {
+        Ok(home.join(relative))
+    } else if path.is_absolute() {
+        Ok(path.to_owned())
+    } else {
+        Err(anyhow!(
+            "credential host path must be absolute or start with ~/"
+        ))
+    }
 }
 
 fn write_zellij_provider_config(overlay_dir: &Path, provider: &Path) -> Result<()> {
@@ -2118,8 +2252,12 @@ fn run(command: &mut Command, context: &str) -> Result<()> {
 }
 
 fn find_in_path(program: &Path) -> Option<PathBuf> {
-    env::var_os("PATH").and_then(|path| {
-        env::split_paths(&path)
+    find_in_path_from(program, env::var_os("PATH").as_deref())
+}
+
+fn find_in_path_from(program: &Path, path: Option<&OsStr>) -> Option<PathBuf> {
+    path.and_then(|path| {
+        env::split_paths(path)
             .map(|dir| dir.join(program))
             .find(|candidate| candidate.is_file())
     })
@@ -2128,6 +2266,76 @@ fn find_in_path(program: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum SetupStage {
+        Provider,
+        Network,
+        Image,
+        Config,
+        Doctor,
+    }
+
+    struct RecordingSetup {
+        stages: Vec<SetupStage>,
+        fail: Option<SetupStage>,
+    }
+
+    impl RecordingSetup {
+        fn new(fail: Option<SetupStage>) -> Self {
+            Self {
+                stages: vec![],
+                fail,
+            }
+        }
+
+        fn stage(&mut self, stage: SetupStage) -> Result<()> {
+            self.stages.push(stage);
+            (self.fail != Some(stage))
+                .then_some(())
+                .context("injected setup failure")
+        }
+    }
+
+    impl SetupRuntime for RecordingSetup {
+        fn project(&mut self, _project: &Path) -> Result<PathBuf> {
+            Ok(PathBuf::from("/project"))
+        }
+
+        fn zellij(&mut self, _explicit: Option<&Path>) -> Result<PathBuf> {
+            Ok(PathBuf::from("/bin/zellij"))
+        }
+
+        fn provider(&mut self) -> Result<(PathBuf, PathBuf)> {
+            self.stage(SetupStage::Provider)?;
+            Ok((
+                PathBuf::from("/build/zellij-firecracker"),
+                PathBuf::from(INSTALLED_PROVIDER),
+            ))
+        }
+
+        fn network(&mut self, _provider: &Path) -> Result<()> {
+            self.stage(SetupStage::Network)
+        }
+
+        fn image(
+            &mut self,
+            _options: &SetupOptions,
+            _project: &Path,
+            _zellij: &Path,
+            _current_provider: &Path,
+        ) -> Result<()> {
+            self.stage(SetupStage::Image)
+        }
+
+        fn config(&mut self, _provider: &Path) -> Result<()> {
+            self.stage(SetupStage::Config)
+        }
+
+        fn doctor(&mut self, _provider: &Path) -> Result<()> {
+            self.stage(SetupStage::Doctor)
+        }
+    }
 
     fn vm_state(rootfs: PathBuf, api_socket: PathBuf, cgroup: Option<PathBuf>) -> VmState {
         VmState {
@@ -2165,6 +2373,99 @@ mod tests {
             credential_files: vec![],
             extra: serde_json::Map::new(),
         }
+    }
+
+    fn setup_options(rebuild: bool) -> SetupOptions {
+        SetupOptions {
+            project: PathBuf::from("project"),
+            image: "zellij-dev".to_owned(),
+            zellij: None,
+            disk_size_gib: 64,
+            rebuild,
+        }
+    }
+
+    #[test]
+    fn setup_runs_provider_network_image_config_and_doctor_in_order() {
+        let expected = vec![
+            SetupStage::Provider,
+            SetupStage::Network,
+            SetupStage::Image,
+            SetupStage::Config,
+            SetupStage::Doctor,
+        ];
+        let mut runtime = RecordingSetup::new(None);
+        setup_with(&setup_options(false), &mut runtime).unwrap();
+        assert_eq!(runtime.stages, expected);
+
+        for (index, failed) in expected.iter().copied().enumerate() {
+            let mut runtime = RecordingSetup::new(Some(failed));
+            assert!(setup_with(&setup_options(false), &mut runtime).is_err());
+            assert_eq!(runtime.stages, expected[..=index]);
+        }
+    }
+
+    #[test]
+    fn setup_reuses_valid_images_and_rebuilds_with_exact_arguments() {
+        let project = Path::new("/workspace/project");
+        let zellij = Path::new("/build/zellij");
+        let provider = Path::new("/build/zellij-firecracker");
+        let mut commands = vec![];
+        setup_image_with(
+            &setup_options(false),
+            project,
+            zellij,
+            provider,
+            |_| true,
+            |command, _| {
+                commands.push(
+                    command
+                        .get_args()
+                        .map(ToOwned::to_owned)
+                        .collect::<Vec<_>>(),
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(commands.is_empty());
+
+        setup_image_with(
+            &setup_options(true),
+            project,
+            zellij,
+            provider,
+            |_| true,
+            |command, _| {
+                assert_eq!(command.get_program(), provider);
+                commands.push(
+                    command
+                        .get_args()
+                        .map(ToOwned::to_owned)
+                        .collect::<Vec<_>>(),
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            commands,
+            vec![[
+                "image",
+                "build",
+                "--name",
+                "zellij-dev",
+                "--project",
+                "/workspace/project",
+                "--zellij",
+                "/build/zellij",
+                "--disk-size-gib",
+                "64",
+            ]
+            .map(std::ffi::OsString::from)
+            .into_iter()
+            .collect::<Vec<_>>()]
+        );
     }
 
     #[test]
@@ -2229,6 +2530,130 @@ mod tests {
         fs::set_permissions(&provider, fs::Permissions::from_mode(0o755)).unwrap();
         assert!(!trusted_provider(&provider));
         assert!(files_equal(&provider, &provider).unwrap());
+        assert!(!trusted_provider_attributes(
+            Path::new("/usr/local/bin/zellij-firecracker"),
+            0,
+            0o100644,
+            true
+        ));
+    }
+
+    #[test]
+    fn setup_selects_only_a_trusted_current_or_matching_installed_provider() {
+        let root = tempfile::tempdir().unwrap();
+        let current = root.path().join("current");
+        let installed = root.path().join("installed");
+        fs::write(&current, "provider").unwrap();
+
+        let selected = ensure_installed_provider_with(
+            &current,
+            &installed,
+            |path| path == current,
+            |_| panic!("a trusted current provider must not prompt"),
+            |_, _| panic!("a trusted current provider must not be installed"),
+        )
+        .unwrap();
+        assert_eq!(selected, current);
+
+        fs::write(&installed, "provider").unwrap();
+        let selected = ensure_installed_provider_with(
+            &current,
+            &installed,
+            |path| path == installed,
+            |_| panic!("a matching installed provider must not prompt"),
+            |_, _| panic!("a matching installed provider must not be replaced"),
+        )
+        .unwrap();
+        assert_eq!(selected, installed);
+
+        for case in ["missing", "mismatched", "untrusted"] {
+            if case == "missing" {
+                fs::remove_file(&installed).unwrap();
+            } else {
+                fs::write(
+                    &installed,
+                    if case == "mismatched" {
+                        "different"
+                    } else {
+                        "provider"
+                    },
+                )
+                .unwrap();
+            }
+            let trusted_installed = case == "mismatched";
+            let error = ensure_installed_provider_with(
+                &current,
+                &installed,
+                |path| path == installed && trusted_installed,
+                |_| Ok(false),
+                |_, _| panic!("a rejected install must not run"),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("requires a trusted provider"));
+        }
+    }
+
+    #[test]
+    fn provider_install_prompt_and_command_failures_stop_setup() {
+        let root = tempfile::tempdir().unwrap();
+        let current = root.path().join("current");
+        let installed = root.path().join("installed");
+        fs::write(&current, "provider").unwrap();
+
+        let prompt = ensure_installed_provider_with(
+            &current,
+            &installed,
+            |_| false,
+            |_| Err(anyhow!("prompt failed")),
+            |_, _| panic!("a failed prompt must not install"),
+        )
+        .unwrap_err();
+        assert!(prompt.to_string().contains("prompt failed"));
+
+        let install = ensure_installed_provider_with(
+            &current,
+            &installed,
+            |_| false,
+            |_| Ok(true),
+            |_, _| Err(anyhow!("install failed")),
+        )
+        .unwrap_err();
+        assert!(install.to_string().contains("install failed"));
+    }
+
+    #[test]
+    fn zellij_resolution_prefers_explicit_then_sibling_then_path() {
+        let root = tempfile::tempdir().unwrap();
+        let provider_dir = root.path().join("provider");
+        let explicit_dir = root.path().join("explicit");
+        let path_dir = root.path().join("path");
+        for directory in [&provider_dir, &explicit_dir, &path_dir] {
+            fs::create_dir(directory).unwrap();
+        }
+        let provider = provider_dir.join("zellij-firecracker");
+        let sibling = provider_dir.join("zellij");
+        let explicit = explicit_dir.join("zellij");
+        let path_zellij = path_dir.join("zellij");
+        for binary in [&provider, &sibling, &explicit, &path_zellij] {
+            fs::write(binary, "binary").unwrap();
+        }
+        let path = env::join_paths([&path_dir]).unwrap();
+
+        assert_eq!(
+            resolve_zellij_from(Some(&explicit), &provider, Some(&path)).unwrap(),
+            explicit.canonicalize().unwrap()
+        );
+        assert_eq!(
+            resolve_zellij_from(None, &provider, Some(&path)).unwrap(),
+            sibling.canonicalize().unwrap()
+        );
+        fs::remove_file(&sibling).unwrap();
+        assert_eq!(
+            resolve_zellij_from(None, &provider, Some(&path)).unwrap(),
+            path_zellij.canonicalize().unwrap()
+        );
+        fs::remove_file(&path_zellij).unwrap();
+        assert!(resolve_zellij_from(None, &provider, Some(&path)).is_err());
     }
 
     #[test]
@@ -2244,8 +2669,9 @@ mod tests {
     }
 
     #[test]
-    fn credential_setup_prompts_and_merges_each_mapping_only_once() {
+    fn credential_setup_handles_each_prompt_missing_files_and_tilde_deduplication() {
         let root = tempfile::tempdir().unwrap();
+        let home = root.path();
         let codex = root.path().join("codex.json");
         let claude = root.path().join("claude.json");
         fs::write(&codex, "secret").unwrap();
@@ -2269,25 +2695,92 @@ mod tests {
                     host: claude.clone(),
                     guest: PathBuf::from("/root/.claude/.credentials.json"),
                 },
-                claude,
+                claude.clone(),
                 "Claude?",
             ),
         ];
+        assert!(
+            merge_credentials(&mut config, &candidates, home, |question| {
+                Ok(question == "Codex?")
+            })
+            .unwrap()
+        );
+        assert_eq!(config.credential_files.len(), 2);
+        assert_eq!(
+            config.credential_files[1].guest,
+            Path::new("/root/.codex/auth.json")
+        );
+
+        fs::remove_file(&claude).unwrap();
         let mut prompts = 0;
-        assert!(merge_credentials(&mut config, &candidates, |_| {
+        assert!(!merge_credentials(&mut config, &candidates, home, |_| {
             prompts += 1;
             Ok(true)
         })
         .unwrap());
-        assert_eq!(prompts, 2);
-        assert_eq!(config.credential_files.len(), 3);
-        assert!(!merge_credentials(&mut config, &candidates, |_| {
-            prompts += 1;
-            Ok(true)
-        })
+        assert_eq!(prompts, 0, "missing and duplicate files must not prompt");
+
+        let tilde = CredentialFile {
+            host: PathBuf::from("~/.codex/auth.json"),
+            guest: PathBuf::from("/root/.codex/auth.json"),
+        };
+        let detected = home.join(".codex/auth.json");
+        fs::create_dir_all(detected.parent().unwrap()).unwrap();
+        fs::write(&detected, "secret").unwrap();
+        config.credential_files.push(tilde.clone());
+        assert!(!merge_credentials(
+            &mut config,
+            &[(tilde, detected, "duplicate?")],
+            home,
+            |_| panic!("equivalent tilde mappings must not prompt"),
+        )
         .unwrap());
-        assert_eq!(prompts, 2);
-        assert_eq!(config.credential_files.len(), 3);
+    }
+
+    #[test]
+    fn credential_prompt_failures_propagate_without_adding_a_mapping() {
+        let root = tempfile::tempdir().unwrap();
+        let detected = root.path().join("credential.json");
+        fs::write(&detected, "secret").unwrap();
+        let mut config = provider_config(root.path());
+        let candidate = CredentialFile {
+            host: detected.clone(),
+            guest: PathBuf::from("/root/credential.json"),
+        };
+        let error = merge_credentials(
+            &mut config,
+            &[(candidate, detected, "Copy?")],
+            root.path(),
+            |_| Err(anyhow!("prompt failed")),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("prompt failed"));
+        assert!(config.credential_files.is_empty());
+    }
+
+    #[test]
+    fn credential_config_updates_preserve_unknown_json() {
+        let root = tempfile::tempdir().unwrap();
+        let config_path = root.path().join("firecracker.json");
+        let credential = root.path().join(".codex/auth.json");
+        fs::create_dir_all(credential.parent().unwrap()).unwrap();
+        fs::write(&credential, "secret").unwrap();
+        let mut config = provider_config(root.path());
+        config.extra.insert(
+            "future_setting".to_owned(),
+            serde_json::json!({"enabled": true}),
+        );
+        fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+
+        configure_credentials_at(&config_path, root.path(), |_| Ok(true)).unwrap();
+
+        let updated: serde_json::Value =
+            serde_json::from_slice(&fs::read(config_path).unwrap()).unwrap();
+        assert_eq!(
+            updated["future_setting"],
+            serde_json::json!({"enabled": true})
+        );
+        assert_eq!(updated["credential_files"].as_array().unwrap().len(), 1);
     }
 
     #[test]
@@ -2301,7 +2794,7 @@ mod tests {
     }
 
     #[test]
-    fn worktree_fingerprint_detects_content_changes_and_ignores_git_metadata() {
+    fn worktree_fingerprint_ignores_root_outputs() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join(".gitignore"), "target/\n").unwrap();
         fs::write(root.path().join("source.rs"), "one").unwrap();
@@ -2311,11 +2804,37 @@ mod tests {
 
         fs::write(root.path().join("target/output"), "two").unwrap();
         assert_eq!(tree_fingerprint(root.path()).unwrap(), original);
+    }
+
+    #[test]
+    fn worktree_fingerprint_ignores_nested_outputs() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("source.rs"), "one").unwrap();
+        fs::create_dir(root.path().join("nested")).unwrap();
+        fs::write(root.path().join("nested/.gitignore"), "generated/\n").unwrap();
+        fs::create_dir(root.path().join("nested/generated")).unwrap();
+        fs::write(root.path().join("nested/generated/output"), "one").unwrap();
+        let original = tree_fingerprint(root.path()).unwrap();
+
+        fs::write(root.path().join("nested/generated/output"), "two").unwrap();
+        assert_eq!(tree_fingerprint(root.path()).unwrap(), original);
+    }
+
+    #[test]
+    fn worktree_fingerprint_detects_non_ignored_host_changes() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("source.rs"), "one").unwrap();
+        let original = tree_fingerprint(root.path()).unwrap();
 
         fs::write(root.path().join("source.rs"), "two").unwrap();
         assert_ne!(tree_fingerprint(root.path()).unwrap(), original);
         assert!(ensure_host_unchanged(root.path(), original).is_err());
+    }
 
+    #[test]
+    fn worktree_fingerprint_ignores_git_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("source.rs"), "one").unwrap();
         let without_git = tree_fingerprint(root.path()).unwrap();
         fs::create_dir(root.path().join(".git")).unwrap();
         fs::write(root.path().join(".git/HEAD"), "ref: changed").unwrap();
@@ -2323,13 +2842,21 @@ mod tests {
     }
 
     #[test]
-    fn worktree_sync_excludes_gitignored_files_in_both_directions() {
+    fn worktree_sync_honors_root_and_nested_ignores_and_protects_host_outputs() {
         let host = tempfile::tempdir().unwrap();
         let staged = tempfile::tempdir().unwrap();
         fs::write(host.path().join(".gitignore"), "target/\n").unwrap();
         fs::write(host.path().join("source.rs"), "host").unwrap();
         fs::create_dir(host.path().join("target")).unwrap();
         fs::write(host.path().join("target/host-output"), "ignored").unwrap();
+        fs::create_dir(host.path().join("nested")).unwrap();
+        fs::write(host.path().join("nested/.gitignore"), "generated/\n").unwrap();
+        fs::create_dir(host.path().join("nested/generated")).unwrap();
+        fs::write(
+            host.path().join("nested/generated/host-output"),
+            "protected",
+        )
+        .unwrap();
 
         stage_filtered_worktree(host.path(), staged.path()).unwrap();
         assert_eq!(
@@ -2337,16 +2864,46 @@ mod tests {
             "host"
         );
         assert!(!staged.path().join("target").exists());
+        assert!(!staged.path().join("nested/generated").exists());
 
         fs::write(staged.path().join("source.rs"), "guest").unwrap();
         fs::create_dir(staged.path().join("target")).unwrap();
         fs::write(staged.path().join("target/guest-output"), "ignored").unwrap();
+        fs::create_dir(staged.path().join("nested/generated")).unwrap();
+        fs::write(
+            staged.path().join("nested/generated/host-output"),
+            "guest overwrite",
+        )
+        .unwrap();
+        fs::write(
+            staged.path().join("nested/generated/guest-output"),
+            "guest output",
+        )
+        .unwrap();
         apply_filtered_worktree(staged.path(), host.path()).unwrap();
         assert_eq!(
             fs::read_to_string(host.path().join("source.rs")).unwrap(),
             "guest"
         );
         assert!(!host.path().join("target/guest-output").exists());
+        assert_eq!(
+            fs::read_to_string(host.path().join("target/host-output")).unwrap(),
+            "ignored"
+        );
+        assert_eq!(
+            fs::read_to_string(host.path().join("nested/generated/host-output")).unwrap(),
+            "protected"
+        );
+        assert!(!host.path().join("nested/generated/guest-output").exists());
+    }
+
+    #[test]
+    fn every_worktree_rsync_uses_the_shared_gitignore_filter() {
+        let args = filtered_rsync()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(args, vec![format!("--filter={GITIGNORE_FILTER}")]);
     }
 
     #[test]
