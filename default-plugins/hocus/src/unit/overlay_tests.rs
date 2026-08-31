@@ -1896,6 +1896,9 @@ fn a_pane_closing_does_not_move_the_agent_list() {
             .chain(std::iter::once(overlay_pane(9, 66, 14, 60, 33)))
             .collect(),
     ));
+    // The press is what gives `track_anchor` an anchor to lose: with none, it returns at its
+    // first guard and the assertion below holds however the placement arms are written.
+    state.on_key(ctrl_o());
     state.last_placement = None;
 
     state.on_panes(manifest(
