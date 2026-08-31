@@ -1042,6 +1042,9 @@ impl State {
         let Some(run) = self.runs.get(&pane_id) else {
             return agents::tail(fallback, agents::SUMMARY_LINES, agents::SUMMARY_CHARS);
         };
+        let has_result = run.entries.iter().any(|entry| {
+            entry.revision > run.summarized_revision && entry.kind == agents::RunEntryKind::Result
+        });
         let mut delta = run
             .entries
             .iter()
@@ -1049,17 +1052,21 @@ impl State {
                 entry.revision > run.summarized_revision
                     && matches!(
                         entry.kind,
-                        agents::RunEntryKind::Plan | agents::RunEntryKind::Question
+                        agents::RunEntryKind::Plan
+                            | agents::RunEntryKind::Question
+                            | agents::RunEntryKind::Result
                     )
             })
             .map(|entry| format!("{}: {}", entry.kind.label(), entry.text))
             .collect::<Vec<_>>()
             .join("\n");
-        if !delta.is_empty() {
+        if !delta.is_empty() && !has_result {
             delta.push('\n');
         }
-        delta.push_str("result: ");
-        delta.push_str(fallback);
+        if !has_result {
+            delta.push_str("result: ");
+            delta.push_str(fallback);
+        }
         let delta = agents::tail(&delta, agents::SUMMARY_LINES, agents::SUMMARY_CHARS);
         match run.summary.as_ref() {
             Some(summary) => format!("previous summary: {}\n\n{delta}", summary.text),
@@ -4947,6 +4954,7 @@ mod tests {
                 agents::RunEntryKind::Prompt,
                 agents::RunEntryKind::Plan,
                 agents::RunEntryKind::Question,
+                agents::RunEntryKind::Result,
             ]
         );
         assert_eq!(
@@ -4982,7 +4990,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_entry_run_rolls_its_accepted_summary_forward() {
+    fn a_result_only_run_rolls_its_accepted_summary_forward() {
         let mut state = State {
             panes: Some(vec![pane(7, "claude", "/work")]),
             ..State::default()
@@ -4997,15 +5005,43 @@ mod tests {
         );
 
         let run = &state.runs[&7];
-        assert!(run.entries.is_empty());
-        assert_eq!(run.revision, 0);
-        assert_eq!(run.summarized_revision, 0);
+        assert_eq!(run.entries.len(), 1);
+        assert_eq!(run.entries[0].kind, agents::RunEntryKind::Result);
+        assert_eq!(run.summarized_revision, run.revision);
 
         let (_, second) = feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
         let body: serde_json::Value = serde_json::from_slice(&second[0].1).expect("valid JSON");
         let user = body["messages"][1]["content"].as_str().expect("a string");
         assert!(user.contains("previous summary: The resumed turn completed."));
         assert!(user.contains("result: I ran the test suite"));
+    }
+
+    #[test]
+    fn unsummarized_results_survive_failure_and_supersession() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        let first = "The first turn completed and its durable result must survive.";
+        let second = "The second turn completed before the first summary was accepted.";
+        let third = "The third turn completed after the second request was superseded.";
+
+        let (_, sent) = feed(&mut state, 7, &stop_saying(first), Some(&endpoint()));
+        assert_eq!(sent.len(), 1);
+        finish(&mut state, 500, b"failed", &context(7, 1));
+
+        feed(&mut state, 7, &hook("UserPromptSubmit"), None);
+        let (_, sent) = feed(&mut state, 7, &stop_saying(second), Some(&endpoint()));
+        assert_eq!(sent.len(), 1);
+
+        feed(&mut state, 7, &hook("UserPromptSubmit"), None);
+        let (_, sent) = feed(&mut state, 7, &stop_saying(third), Some(&endpoint()));
+        let body: serde_json::Value = serde_json::from_slice(&sent[0].1).expect("valid JSON");
+        let user = body["messages"][1]["content"].as_str().expect("a string");
+        for result in [first, second, third] {
+            assert_eq!(user.matches(result).count(), 1, "{user}");
+        }
+        assert_eq!(state.runs[&7].summarized_revision, 0);
     }
 
     #[test]
