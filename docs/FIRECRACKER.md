@@ -7,7 +7,7 @@ transport.
 A host worktree identifies a VM. Sessions that use the same worktree share the VM. The provider
 stops the VM after the last session releases it.
 
-## Set up the included provider
+## One-command development setup
 
 The included provider supports x86_64 Linux. It requires:
 
@@ -17,41 +17,68 @@ The included provider supports x86_64 Linux. It requires:
   `unsquashfs`, and `mkfs.ext4`
 - `ip`, `nft`, and `systemd` for the one-time host network setup
 
+From a Zellij checkout, build the binaries and run the interactive setup:
+
+```sh
+cargo x build
+target/debug/zellij-firecracker setup
+```
+
+`setup` uses the current directory as the project, installs the provider at
+`/usr/local/bin/zellij-firecracker` when needed, configures the host network, and builds the
+project's `.zellij/firecracker-image.sh` as a 64 GiB sparse `zellij-dev` image. It also writes the
+provider and a 90-second timeout to Zellij's managed `config.d` fragment, then runs `doctor`.
+Every `sudo` operation is announced before it runs.
+
+An existing valid `zellij-dev` image is reused. Rebuild it, including current Codex and Claude Code
+releases, with:
+
+```sh
+target/debug/zellij-firecracker setup --rebuild
+```
+
+The full interface is:
+
+```text
+zellij-firecracker setup
+  [--project PATH]
+  [--name IMAGE]
+  [--zellij PATH]
+  [--disk-size-gib N]
+  [--rebuild]
+```
+
+Zellij is resolved from `--zellij`, beside the provider, or from `PATH`, in that order. The image
+builder downloads pinned Firecracker CI kernel and Ubuntu 24.04 root file system artifacts and
+verifies their SHA-256 checksums.
+
+If `~/.codex/auth.json` exists, setup offers to copy it to `/root/.codex/auth.json` in each VM. It
+separately offers the same for `~/.claude/.credentials.json`. Setup records only the selected file
+mappings; it never prints credential contents, preserves existing mappings, and does not duplicate
+them on later runs.
+
+For Hocus, set the project's `firecracker_image` to `zellij-dev`, or select that image in the New
+Agent dialog. A Firecracker image selection requires a Firecracker VM name.
+
+## Advanced and manual setup
+
 `cargo x install` installs `zellij-firecracker` beside `zellij` on Linux. Distribution packages
-must also install both binaries.
+must also install both binaries. The individual setup commands remain available:
 
-Complete these steps once:
+```sh
+zellij-firecracker image build --zellij /usr/bin/zellij
+sudo zellij-firecracker network setup --user "$USER"
+zellij-firecracker doctor
+```
 
-1. Build the guest image as your normal user:
+The network command creates one bridge and 16 user-owned TAP devices, a delegated cgroup,
+restrictive nftables rules, and a systemd unit that restores these resources after boot. Configure
+the provider manually when not using `setup`:
 
-   ```sh
-   zellij-firecracker image build --zellij /usr/bin/zellij
-   ```
-
-   The builder downloads pinned Firecracker CI kernel and Ubuntu 24.04 root file system artifacts.
-   It verifies both SHA-256 checksums. It then creates an 8 GiB sparse ext4 image and an SSH key.
-
-2. Install the host network as root for the Zellij user:
-
-   ```sh
-   sudo zellij-firecracker network setup --user "$USER"
-   ```
-
-   This command creates one bridge and 16 user-owned TAP devices. It also creates a delegated
-   cgroup and restrictive nftables rules. A systemd unit restores these resources after boot.
-
-3. Check the setup:
-
-   ```sh
-   zellij-firecracker doctor
-   ```
-
-4. Add the provider to the Zellij configuration:
-
-   ```kdl
-   firecracker_provider "/usr/bin/zellij-firecracker"
-   firecracker_provider_timeout_secs 90
-   ```
+```kdl
+firecracker_provider "/usr/bin/zellij-firecracker"
+firecracker_provider_timeout_secs 90
+```
 
 Use `--output` to select a different image directory. Use `--disk-size-gib` to change the sparse
 disk size. The builder writes its provider configuration to
@@ -82,7 +109,7 @@ Add credential files to `firecracker.json` when an agent needs a host credential
 ```json
 {
   "credential_files": [
-    {"host": "~/.config/codex/auth.json", "guest": "/root/.config/codex/auth.json"}
+    {"host": "~/.codex/auth.json", "guest": "/root/.codex/auth.json"}
   ]
 }
 ```
