@@ -1385,6 +1385,7 @@ impl OverlayPanes {
     pub fn resize_pty_all_panes(&mut self) -> Result<()> {
         for overlay in self.panes.values_mut() {
             let pane = &mut overlay.pane;
+            pane.character_cell_size_possibly_changed();
             resize_pty!(pane, os_api, self.senders, self.character_cell_size)
                 .with_context(|| format!("failed to resize PTY in overlay {:?}", pane.pid()))?;
         }

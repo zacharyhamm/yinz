@@ -540,6 +540,12 @@ impl KittySession {
         );
     }
 
+    pub fn change_character_cell_size(&mut self, size: SizeInPixels) {
+        *self.grid.character_cell_size.borrow_mut() = Some(size);
+        self.grid.character_cell_size_possibly_changed();
+        self.grid.render_full_viewport();
+    }
+
     pub fn placement_count(&mut self) -> usize {
         self.grid.kitty_placement_count()
     }

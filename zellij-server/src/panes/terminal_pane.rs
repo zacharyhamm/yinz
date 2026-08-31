@@ -250,6 +250,11 @@ impl Pane for TerminalPane {
         self.geom_override = Some(pane_geom);
         self.reflow_lines();
     }
+    fn character_cell_size_possibly_changed(&mut self) {
+        self.grid.character_cell_size_possibly_changed();
+        self.render_full_viewport();
+        self.set_should_render(true);
+    }
     fn handle_pty_bytes(&mut self, bytes: VteBytes) {
         self.set_should_render(true);
         if self.forward_paused {

@@ -1877,6 +1877,11 @@ impl Grid {
         self.change_size(intermediate_rows, intermediate_columns);
         self.change_size(new_rows, new_columns);
     }
+    pub fn character_cell_size_possibly_changed(&mut self) {
+        self.sixel_grid.character_cell_size_possibly_changed();
+        self.kitty_grid.character_cell_size_possibly_changed();
+        self.kitty_reanchor_all_from_pixels();
+    }
     pub fn change_size(&mut self, new_rows: usize, new_columns: usize) {
         // Do nothing if this pane hasn't been given a proper size yet
         if new_columns == 0 || new_rows == 0 {
@@ -1893,9 +1898,7 @@ impl Grid {
         }
         self.selection.reset();
         self.command_output_flash = None;
-        self.sixel_grid.character_cell_size_possibly_changed();
-        self.kitty_grid.character_cell_size_possibly_changed();
-        self.kitty_reanchor_all_from_pixels();
+        self.character_cell_size_possibly_changed();
         let cursors = if new_columns != self.width {
             self.horizontal_tabstops = create_horizontal_tabstops(new_columns);
             let mut cursor_canonical_line_index = self.cursor_canonical_line_index();

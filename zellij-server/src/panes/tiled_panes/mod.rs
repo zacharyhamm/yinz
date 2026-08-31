@@ -645,6 +645,7 @@ impl TiledPanes {
     }
     pub fn resize_pty_all_panes(&mut self) -> Result<()> {
         for pane in self.panes.values_mut() {
+            pane.character_cell_size_possibly_changed();
             resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
                 .with_context(|| format!("failed to resize PTY in pane {:?}", pane.pid()))?;
         }

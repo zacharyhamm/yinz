@@ -388,6 +388,7 @@ pub trait Pane {
     fn reset_size_and_position_override(&mut self);
     fn set_geom(&mut self, position_and_size: PaneGeom);
     fn set_geom_override(&mut self, pane_geom: PaneGeom);
+    fn character_cell_size_possibly_changed(&mut self) {}
     fn handle_pty_bytes(&mut self, _bytes: VteBytes) {}
     fn handle_plugin_bytes(&mut self, _client_id: ClientId, _bytes: VteBytes) {}
     fn show_cursor(&mut self, _client_id: ClientId, _cursor_position: Option<(usize, usize)>) {}
@@ -5783,6 +5784,7 @@ impl Tab {
             .resize_pty_all_panes()
             .with_context(err_context)?;
         for pane in self.suppressed_panes.values_mut().map(|s| &mut s.pane) {
+            pane.character_cell_size_possibly_changed();
             resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
                 .with_context(err_context)?;
         }

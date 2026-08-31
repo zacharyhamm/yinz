@@ -376,6 +376,34 @@ fn the_image_is_fitted_to_the_box_preserving_its_aspect_ratio() {
 }
 
 #[test]
+fn a_font_size_change_refits_virtual_placements() {
+    let mut session = KittySession::new(10, 20);
+    virtual_placement(&mut session, 1, 4, 1);
+    session.feed(
+        placeholder_cells(
+            PlaceholderColor::Indexed(1),
+            None,
+            &[
+                PlaceholderCell::at(0, 0),
+                PlaceholderCell::at(0, 1),
+                PlaceholderCell::at(0, 2),
+                PlaceholderCell::at(0, 3),
+            ],
+        )
+        .as_bytes(),
+    );
+    assert_eq!(session.grid.kitty_placements()[0].scaled_px, Some((20, 20)));
+
+    session.change_character_cell_size(SizeInPixels {
+        width: 10,
+        height: 30,
+    });
+    session.grid.read_changes(0, 0);
+
+    assert_eq!(session.grid.kitty_placements()[0].scaled_px, Some((30, 30)));
+}
+
+#[test]
 fn erasing_the_line_removes_the_images_it_held() {
     // The placeholder cells *are* the placement; erasing them erases it. This is the one case
     // where an erase command is supposed to affect graphics.

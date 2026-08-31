@@ -242,6 +242,13 @@ impl Pane for PluginPane {
         self.resize_grids();
         self.set_should_render(true);
     }
+    fn character_cell_size_possibly_changed(&mut self) {
+        for grid in self.grids.values_mut() {
+            grid.character_cell_size_possibly_changed();
+        }
+        self.render_full_viewport();
+        self.set_should_render(true);
+    }
     fn handle_plugin_bytes(&mut self, client_id: ClientId, bytes: VteBytes) {
         self.set_client_should_render(client_id, true);
 
