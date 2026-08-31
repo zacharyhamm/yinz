@@ -360,11 +360,32 @@ pub enum Command {
     #[clap(subcommand)]
     Hocus(Hocus),
 
+    /// Manage session-scoped Firecracker VMs.
+    #[clap(subcommand)]
+    Firecracker(Firecracker),
+
     /// Inspect and clean up detached pane supervisors. Panes outlive a server
     /// that was killed rather than shut down, and this is how you find them.
     #[cfg(unix)]
     #[clap(subcommand, name = "pty-host")]
     PtyHosts(PtyHosts),
+}
+
+#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
+pub enum Firecracker {
+    /// List VMs known to the configured provider.
+    List {
+        #[clap(long)]
+        session: Option<String>,
+        #[clap(long)]
+        json: bool,
+    },
+    /// Stop one VM.
+    Stop {
+        name: String,
+        #[clap(long)]
+        session: Option<String>,
+    },
 }
 
 #[derive(Debug, Parser, Clone, Serialize, Deserialize)]
@@ -1078,8 +1099,11 @@ pub enum CliAction {
         /// (a host, an alias from your ssh config, or user@host). Needs a zellij
         /// of the same version on its PATH there. With no command, opens that
         /// machine's default login shell, like a plain ssh would.
-        #[clap(long, value_parser, conflicts_with("plugin"))]
+        #[clap(long, value_parser, conflicts_with_all(["plugin", "firecracker"]))]
         remote_host: Option<String>,
+        /// Run the pane in a named Firecracker VM owned by this session.
+        #[clap(long, value_parser, conflicts_with_all(["plugin", "remote_host"]))]
+        firecracker: Option<String>,
         #[clap(long, value_parser)]
         configuration: Option<PluginUserConfiguration>,
         #[clap(long, value_parser)]
@@ -1869,6 +1893,64 @@ mod tests {
                 exited: true,
                 ..
             }))
+        ));
+    }
+
+    #[test]
+    fn firecracker_commands_and_pane_flags_parse() {
+        let pane = try_parse_cli([
+            "zellij",
+            "action",
+            "new-pane",
+            "--firecracker",
+            "review",
+            "--",
+            "pwd",
+        ])
+        .unwrap();
+        assert!(matches!(
+            pane.command,
+            Some(Command::Action(action))
+                if matches!(*action, CliAction::NewPane {
+                    firecracker: Some(ref name),
+                    ref command,
+                    ..
+                } if name == "review" && command == &["pwd"])
+        ));
+        assert!(try_parse_cli([
+            "zellij",
+            "action",
+            "new-pane",
+            "--firecracker",
+            "review",
+            "--remote-host",
+            "build-box",
+        ])
+        .is_err());
+
+        let list = try_parse_cli(["zellij", "firecracker", "list", "--json"]).unwrap();
+        assert!(matches!(
+            list.command,
+            Some(Command::Firecracker(Firecracker::List {
+                session: None,
+                json: true,
+            }))
+        ));
+        let stop = try_parse_cli([
+            "zellij",
+            "firecracker",
+            "stop",
+            "review",
+            "--session",
+            "work",
+        ])
+        .unwrap();
+        assert!(matches!(
+            stop.command,
+            Some(Command::Firecracker(Firecracker::Stop {
+                ref name,
+                session: Some(ref session),
+            })) if name == "review" && session == "work"
         ));
     }
 

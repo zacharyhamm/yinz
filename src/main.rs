@@ -71,6 +71,21 @@ fn main() {
         }
     }
 
+    if let Some(Command::Firecracker(command)) = opts.command.clone() {
+        let config = match Config::try_from(&opts) {
+            Ok(config) => config,
+            Err(error) => {
+                eprintln!("Error: {error}");
+                std::process::exit(1);
+            },
+        };
+        if let Err(error) = commands::firecracker(command, &config) {
+            eprintln!("Error: {error:#}");
+            std::process::exit(1);
+        }
+        std::process::exit(0);
+    }
+
     // Local file work only - a hook is installed into Claude Code's settings, not
     // into a session - so it branches here beside the other two commands that need
     // neither a client nor a server.
@@ -170,6 +185,7 @@ fn main() {
                 // `zellij run`/`edit` stay local for now; remote panes are
                 // reached through `zellij action new-pane --remote-host`.
                 remote_host: None,
+                firecracker: None,
                 plugin: None,
                 direction,
                 cwd,
@@ -229,6 +245,7 @@ fn main() {
             let command_cli_action = CliAction::NewPane {
                 command: vec![],
                 remote_host: None,
+                firecracker: None,
                 plugin: Some(url),
                 direction: None,
                 cwd,

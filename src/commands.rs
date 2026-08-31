@@ -48,6 +48,44 @@ fn sessions_to_kill(
         .collect())
 }
 
+pub(crate) fn firecracker(
+    command: zellij_utils::cli::Firecracker,
+    config: &Config,
+) -> zellij_utils::errors::prelude::Result<()> {
+    use zellij_utils::cli::Firecracker;
+    use zellij_utils::errors::prelude::*;
+
+    let provider = zellij_server::firecracker::provider_from_options(
+        config.options.firecracker_provider.as_deref(),
+        config.options.firecracker_provider_timeout_secs,
+    )?;
+    match command {
+        Firecracker::List { session, json } => {
+            let entries = provider.list(session.as_deref())?;
+            if json {
+                println!("{}", serde_json::to_string(&entries)?);
+            } else if entries.is_empty() {
+                println!("No Firecracker VMs found.");
+            } else {
+                for entry in entries {
+                    println!("{}\t{}\t{}", entry.session, entry.name, entry.state);
+                }
+            }
+        },
+        Firecracker::Stop { name, session } => {
+            let session = session
+                .or_else(|| envs::get_session_name().ok())
+                .or_else(|| match get_active_session() {
+                    ActiveSession::One(name) => Some(name),
+                    _ => None,
+                })
+                .context("no session selected; pass --session SESSION")?;
+            provider.stop(&session, &name)?;
+        },
+    }
+    Ok(())
+}
+
 pub(crate) fn kill_all_sessions(yes: bool) {
     match sessions_to_kill(get_sessions_with_status) {
         Ok(sessions) if sessions.is_empty() => {

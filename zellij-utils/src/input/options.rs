@@ -278,6 +278,14 @@ pub struct Options {
     #[clap(skip)]
     #[serde(default)]
     pub detachable_panes: Option<bool>,
+    /// Executable implementing the Firecracker provider JSON protocol.
+    #[clap(skip)]
+    #[serde(default)]
+    pub firecracker_provider: Option<PathBuf>,
+    /// Maximum time to wait for one Firecracker provider request.
+    #[clap(skip)]
+    #[serde(default)]
+    pub firecracker_provider_timeout_secs: Option<u64>,
     #[clap(long, value_parser)]
     #[serde(default)]
     /// Set display of the pane frames (true or false)
@@ -536,6 +544,12 @@ impl Options {
     pub fn merge(&self, other: Options) -> Options {
         let mouse_mode = other.mouse_mode.or(self.mouse_mode);
         let detachable_panes = other.detachable_panes.or(self.detachable_panes);
+        let firecracker_provider = other
+            .firecracker_provider
+            .or_else(|| self.firecracker_provider.clone());
+        let firecracker_provider_timeout_secs = other
+            .firecracker_provider_timeout_secs
+            .or(self.firecracker_provider_timeout_secs);
         let pane_frames = other.pane_frames.or(self.pane_frames);
         let pane_frame_style = other.pane_frame_style.or(self.pane_frame_style);
         let notification_position = other.notification_position.or(self.notification_position);
@@ -640,6 +654,8 @@ impl Options {
             user_plugin_dir,
             mouse_mode,
             detachable_panes,
+            firecracker_provider,
+            firecracker_provider_timeout_secs,
             pane_frames,
             pane_frame_style,
             notification_position,
@@ -703,6 +719,12 @@ impl Options {
         let simplified_ui = merge_bool(other.simplified_ui, self.simplified_ui);
         let mouse_mode = merge_bool(other.mouse_mode, self.mouse_mode);
         let detachable_panes = merge_bool(other.detachable_panes, self.detachable_panes);
+        let firecracker_provider = other
+            .firecracker_provider
+            .or_else(|| self.firecracker_provider.clone());
+        let firecracker_provider_timeout_secs = other
+            .firecracker_provider_timeout_secs
+            .or(self.firecracker_provider_timeout_secs);
         let pane_frames = merge_bool(other.pane_frames, self.pane_frames);
         let pane_frame_style = other.pane_frame_style.or(self.pane_frame_style);
         let notification_position = other.notification_position.or(self.notification_position);
@@ -807,6 +829,8 @@ impl Options {
             user_plugin_dir,
             mouse_mode,
             detachable_panes,
+            firecracker_provider,
+            firecracker_provider_timeout_secs,
             pane_frames,
             pane_frame_style,
             notification_position,

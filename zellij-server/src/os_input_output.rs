@@ -544,10 +544,32 @@ pub struct ServerOsInputOutput {
     /// ssh forwards to the machines this session has remote panes on. One per
     /// host, shared by every pane there.
     remote_hosts: Arc<RemoteHosts>,
+    firecracker: Arc<Mutex<Option<(crate::firecracker::Provider, String)>>>,
 }
 
 #[cfg(not(windows))]
 impl ServerOsInputOutput {
+    fn resolve_firecracker(&self, mut cmd: RunCommand) -> Result<RunCommand> {
+        let Some(name) = cmd.firecracker_vm.as_deref() else {
+            return Ok(cmd);
+        };
+        if cmd.remote_host.is_some() {
+            return Err(anyhow!(
+                "a pane cannot use both firecracker_vm and remote_host"
+            ));
+        }
+        let guard = self.firecracker.lock().to_anyhow()?;
+        let (provider, session) = guard.as_ref().context(
+            "Firecracker is not configured; set firecracker_provider in the session config",
+        )?;
+        let ensured = provider.ensure(session, name)?;
+        cmd.remote_host = Some(ensured.ssh_host);
+        if cmd.cwd.is_none() {
+            cmd.cwd = ensured.cwd;
+        }
+        Ok(cmd)
+    }
+
     /// Resume a warped-in remote pane on the broker holding it, and give this
     /// session a reader for it.
     ///
@@ -751,6 +773,17 @@ pub trait ServerOsApi: Send + Sync {
     /// arrives with the first client, long after the backend is built, so this is
     /// set once at session init. Defaulted so mock implementations are unaffected.
     fn set_pty_host_enabled(&self, _enabled: bool) {}
+    fn set_firecracker_provider(
+        &self,
+        _provider: Option<PathBuf>,
+        _timeout_secs: Option<u64>,
+        _session: String,
+    ) -> Result<()> {
+        Ok(())
+    }
+    fn stop_firecracker_session(&self) -> Result<()> {
+        Ok(())
+    }
     /// Terminate every pty-host supervisor this server owns, on the way out.
     fn shutdown_pty_hosts(&self) {}
     /// Wait for queued client messages to reach their sockets, on the way out.
@@ -890,6 +923,14 @@ impl ServerOsApi for ServerOsInputOutput {
         self.pty_backend.reserve_terminal_id(terminal_id);
 
         let (cmd, failover_cmd) = build_command(terminal_action, default_editor);
+        let display_host = cmd.display_host();
+        let cmd = self.resolve_firecracker(cmd).map_err(|e| {
+            pane_start_failed(
+                terminal_id,
+                display_host.as_deref().unwrap_or("firecracker"),
+                e,
+            )
+        })?;
 
         if let Some(host) = cmd.remote_host.clone() {
             let (conn, reader_socket) = self
@@ -1153,6 +1194,14 @@ impl ServerOsApi for ServerOsInputOutput {
         // A held remote pane re-runs on the machine it was held on. Without this
         // the command would quietly run *here* under the same pane, and the pane
         // still open on the far machine would be left to the orphan timeout.
+        let display_host = run_command.display_host();
+        let run_command = self.resolve_firecracker(run_command).map_err(|e| {
+            pane_start_failed(
+                terminal_id,
+                display_host.as_deref().unwrap_or("firecracker"),
+                e,
+            )
+        })?;
         if let Some(host) = run_command.remote_host.clone() {
             // The pane being re-run is held, not closed, so the broker still
             // holds the session it was held from. Registering over it would drop
@@ -1184,6 +1233,27 @@ impl ServerOsApi for ServerOsInputOutput {
     #[cfg(not(windows))]
     fn set_pty_host_enabled(&self, enabled: bool) {
         self.pty_backend.set_pty_host_enabled(enabled);
+    }
+    fn set_firecracker_provider(
+        &self,
+        provider: Option<PathBuf>,
+        timeout_secs: Option<u64>,
+        session: String,
+    ) -> Result<()> {
+        let configured = provider
+            .as_deref()
+            .map(|path| crate::firecracker::provider_from_options(Some(path), timeout_secs))
+            .transpose()?
+            .map(|provider| (provider, session));
+        *self.firecracker.lock().to_anyhow()? = configured;
+        Ok(())
+    }
+    fn stop_firecracker_session(&self) -> Result<()> {
+        let guard = self.firecracker.lock().to_anyhow()?;
+        if let Some((provider, session)) = guard.as_ref() {
+            provider.stop_session(session)?;
+        }
+        Ok(())
     }
     #[cfg(not(windows))]
     fn shutdown_pty_hosts(&self) {
@@ -1300,6 +1370,7 @@ pub fn get_server_os_input() -> Result<ServerOsInputOutput, std::io::Error> {
     Ok(ServerOsInputOutput {
         pty_backend: PtyBackendImpl::new()?,
         remote_hosts: Arc::new(RemoteHosts::new()),
+        firecracker: Arc::new(Mutex::new(None)),
         client_senders: Arc::new(Mutex::new(HashMap::new())),
         live_writers: Arc::new(LiveWriters::default()),
         cached_resizes: Arc::new(Mutex::new(None)),

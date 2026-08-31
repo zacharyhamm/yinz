@@ -173,6 +173,7 @@ fn new_pane_cli_action(
         // to be on, neither of which this in-process harness has — that is what
         // `zellij-server/tests/remote_pane_ssh.rs` is for.
         remote_host: None,
+        firecracker: None,
         configuration: None,
         skip_plugin_cache: false,
         x: None,

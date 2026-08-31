@@ -82,6 +82,9 @@ pub struct RunCommand {
     /// parsing unchanged.
     #[serde(default)]
     pub remote_host: Option<String>,
+    /// Named Firecracker VM owned by this session.
+    #[serde(default)]
+    pub firecracker_vm: Option<String>,
     /// Run the default login shell of the machine this pane runs on, and ignore
     /// `command`.
     ///
@@ -107,7 +110,7 @@ impl std::fmt::Display for RunCommand {
             return write!(
                 f,
                 "login shell on {}",
-                self.remote_host.as_deref().unwrap_or_default()
+                self.display_host().as_deref().unwrap_or_default()
             );
         }
         let mut command: String = self
@@ -146,6 +149,9 @@ pub struct RunCommandAction {
     /// See `RunCommand::remote_host`.
     #[serde(default)]
     pub remote_host: Option<String>,
+    /// See `RunCommand::firecracker_vm`.
+    #[serde(default)]
+    pub firecracker_vm: Option<String>,
     /// See `RunCommand::remote_default_shell`.
     #[serde(default)]
     pub remote_default_shell: bool,
@@ -162,6 +168,7 @@ impl From<RunCommandAction> for RunCommand {
             originating_plugin: action.originating_plugin,
             use_terminal_title: action.use_terminal_title,
             remote_host: action.remote_host,
+            firecracker_vm: action.firecracker_vm,
             remote_default_shell: action.remote_default_shell,
         }
     }
@@ -179,6 +186,7 @@ impl From<RunCommand> for RunCommandAction {
             originating_plugin: run_command.originating_plugin,
             use_terminal_title: run_command.use_terminal_title,
             remote_host: run_command.remote_host,
+            firecracker_vm: run_command.firecracker_vm,
             remote_default_shell: run_command.remote_default_shell,
         }
     }
@@ -220,6 +228,45 @@ impl RunCommand {
     /// the ordinary `CommandNotFound` path instead of quietly logging the user
     /// in somewhere.
     pub fn is_remote_default_shell(&self) -> bool {
-        self.remote_default_shell && self.remote_host.is_some()
+        self.remote_default_shell && (self.remote_host.is_some() || self.firecracker_vm.is_some())
+    }
+    pub fn display_host(&self) -> Option<String> {
+        self.firecracker_vm
+            .as_ref()
+            .map(|name| format!("firecracker:{name}"))
+            .or_else(|| self.remote_host.clone())
+    }
+}
+
+pub fn validate_firecracker_vm_name(name: &str) -> Result<(), String> {
+    if (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid Firecracker VM name {name:?}: use 1-64 letters, digits, '.', '_' or '-'"
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn firecracker_panes_hide_the_provider_ssh_endpoint() {
+        let command = RunCommand {
+            remote_host: Some("ssh://zellij@127.0.0.1:2201".to_owned()),
+            firecracker_vm: Some("review".to_owned()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            command.display_host().as_deref(),
+            Some("firecracker:review")
+        );
     }
 }

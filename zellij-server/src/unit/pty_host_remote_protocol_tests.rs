@@ -13,6 +13,7 @@ fn sample_run_command() -> RunCommand {
         originating_plugin: None,
         use_terminal_title: true,
         remote_host: None,
+        firecracker_vm: None,
         remote_default_shell: false,
     }
 }

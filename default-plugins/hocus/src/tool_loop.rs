@@ -2473,6 +2473,19 @@ impl State {
     ///   failing, and `floating`/`in_new_tab` would quietly stop working.
     pub(crate) fn agent_spawn(&mut self, args: &tools::Args) -> String {
         let spec = args.launch_spec();
+        let firecracker = spec
+            .firecracker
+            .as_deref()
+            .is_some_and(|name| !name.trim().is_empty());
+        if firecracker
+            && (args.project.is_some()
+                || args.branch.is_some()
+                || args.base.is_some()
+                || args.worktree == Some(true)
+                || args.worktree_path.is_some())
+        {
+            return "Firecracker agents cannot use host projects, branches or worktrees; use cwd for a guest path".to_owned();
+        }
         // What to run *and* which route to take are both `launch`'s to say — down to
         // which of `agent` and `command` is missing when both are. Routing on the
         // checkout rather than on `args.branch` is what keeps the two in step: a
@@ -2502,6 +2515,7 @@ impl State {
                 )),
                 args: command.args,
                 cwd,
+                firecracker: command.firecracker_vm,
                 ..tools::Args::default()
             };
             // The one thing this route did not do. `spawn_in_checkout` goes through a host
@@ -2516,6 +2530,13 @@ impl State {
     }
 
     pub(crate) fn agent_cwd(&self, args: &tools::Args) -> Result<Option<String>, String> {
+        if args
+            .firecracker
+            .as_deref()
+            .is_some_and(|name| !name.trim().is_empty())
+        {
+            return Ok(args.cwd.clone());
+        }
         let selected = args.project.as_deref().or(self.active_project.as_deref());
         let project = match selected {
             Some(name) => match self.projects.get(name) {

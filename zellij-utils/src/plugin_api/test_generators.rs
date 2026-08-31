@@ -386,6 +386,7 @@ pub(crate) fn run_command_actions(tc: &hegel::TestCase) -> RunCommandAction {
         originating_plugin: optional_originating_plugins(tc),
         use_terminal_title: booleans(tc),
         remote_host: optional_strings(tc),
+        firecracker_vm: optional_strings(tc),
         remote_default_shell: booleans(tc),
     }
 }
@@ -404,6 +405,7 @@ pub(crate) fn run_commands(tc: &hegel::TestCase) -> RunCommand {
         originating_plugin: optional_originating_plugins(tc),
         use_terminal_title: booleans(tc),
         remote_host: optional_strings(tc),
+        firecracker_vm: optional_strings(tc),
         remote_default_shell: booleans(tc),
     }
 }
@@ -1254,6 +1256,7 @@ pub(crate) fn commands_to_run(tc: &hegel::TestCase) -> CommandToRun {
         args: up_to(tc, 3, strings),
         cwd: optional_paths(tc),
         remote_host: optional_strings(tc),
+        firecracker_vm: optional_strings(tc),
         remote_default_shell: booleans(tc),
     }
 }

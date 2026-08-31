@@ -847,12 +847,18 @@ impl UnixPtyBackend {
 
     /// What git last said about a remote pane's working directory.
     pub fn remote_git_probe(&self, terminal_id: u32) -> Option<RemoteGitProbe> {
-        self.terminal_id_to_transport
+        let conn = self
+            .terminal_id_to_transport
             .lock()
             .ok()?
             .get(&terminal_id)?
             .remote()
-            .and_then(|conn| conn.git_probe())
+            .cloned()?;
+        let mut probe = conn.git_probe()?;
+        if let Some(host) = conn.cmd().display_host() {
+            probe.host = host;
+        }
+        Some(probe)
     }
 
     /// The machine a pane runs on, or `None` if it runs on this one.
@@ -862,7 +868,7 @@ impl UnixPtyBackend {
             .ok()?
             .get(&terminal_id)?
             .remote()
-            .map(|conn| conn.host().to_owned())
+            .and_then(|conn| conn.cmd().display_host())
     }
 
     /// Deliver a signal to a remote pane's child, by name rather than by pid.
@@ -1011,6 +1017,11 @@ impl UnixPtyBackend {
             .and_then(|transport| transport.remote())
             .cloned();
         if let Some(conn) = remote {
+            if conn.cmd().firecracker_vm.is_some() {
+                return Err(anyhow!(
+                    "Firecracker panes belong to their originating session and cannot be moved between sessions"
+                ));
+            }
             if conn.transport_lost() {
                 return Err(anyhow!(
                     "the connection to {} is down and this pane is reconnecting, so it cannot \

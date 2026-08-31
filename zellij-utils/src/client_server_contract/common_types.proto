@@ -1120,6 +1120,7 @@ message RunCommandAction {
   bool use_terminal_title = 8;                         // Added missing use_terminal_title field
   optional string remote_host = 9;                     // The machine this command runs on, if not this one
   bool remote_default_shell = 10;                         // Resolve the login shell on the machine the pane runs on, ignoring command
+  optional string firecracker_vm = 11;                    // Named Firecracker VM owned by this session
 }
 
 message TiledPaneLayout {
@@ -1404,6 +1405,8 @@ message Options {
   optional bool context_menu_on_right_click = 65;
   optional ThemeHue explicit_theme_hue = 69;
   optional string host_notification_protocol = 67;
+  optional string firecracker_provider = 70;
+  optional uint64 firecracker_provider_timeout_secs = 71;
 }
 
 enum OnForceClose {

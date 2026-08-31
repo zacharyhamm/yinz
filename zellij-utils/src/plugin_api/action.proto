@@ -649,6 +649,7 @@ message RunCommandAction {
   bool hold_on_close = 6;
   bool hold_on_start = 7;
   reserved 8;
+  optional string firecracker_vm = 9;
 }
 
 message PluginConfiguration {

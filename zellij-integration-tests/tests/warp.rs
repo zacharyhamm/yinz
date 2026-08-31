@@ -279,6 +279,7 @@ fn split_off_a_remote_pane(zellij: &TestSession, says: &str) -> FakePtyHandle {
         direction: None,
         command: vec!["cargo".to_string(), "watch".to_string()],
         remote_host: Some("build-box".to_string()),
+        firecracker: None,
         plugin: None,
         cwd: None,
         floating: false,

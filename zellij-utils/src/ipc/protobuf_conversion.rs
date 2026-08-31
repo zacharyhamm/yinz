@@ -744,6 +744,10 @@ impl From<crate::input::options::Options>
             builtin_plugins_dir: options
                 .builtin_plugins_dir
                 .map(|p| p.to_string_lossy().to_string()),
+            firecracker_provider: options
+                .firecracker_provider
+                .map(|p| p.to_string_lossy().to_string()),
+            firecracker_provider_timeout_secs: options.firecracker_provider_timeout_secs,
             mouse_mode: options.mouse_mode,
             pane_frames: options.pane_frames,
             mirror_session: options.mirror_session,
@@ -853,6 +857,8 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             theme_dir: options.theme_dir.map(std::path::PathBuf::from),
             user_plugin_dir: options.user_plugin_dir.map(std::path::PathBuf::from),
             builtin_plugins_dir: options.builtin_plugins_dir.map(std::path::PathBuf::from),
+            firecracker_provider: options.firecracker_provider.map(std::path::PathBuf::from),
+            firecracker_provider_timeout_secs: options.firecracker_provider_timeout_secs,
             mouse_mode: options.mouse_mode,
             // Not on the wire: the server reads this straight out of the config
             // file it loads itself, and it has no per-invocation CLI form.
@@ -1070,6 +1076,7 @@ fn run_command_to_protobuf(
         use_terminal_title: cmd.use_terminal_title,
         remote_host: cmd.remote_host.clone(),
         remote_default_shell: cmd.remote_default_shell,
+        firecracker_vm: cmd.firecracker_vm.clone(),
     }
 }
 
@@ -1086,6 +1093,7 @@ fn run_command_from_protobuf(
         use_terminal_title: cmd.use_terminal_title,
         remote_host: cmd.remote_host,
         remote_default_shell: cmd.remote_default_shell,
+        firecracker_vm: cmd.firecracker_vm,
     })
 }
 
@@ -4264,6 +4272,7 @@ impl From<crate::input::command::RunCommandAction>
             use_terminal_title: action.use_terminal_title,
             remote_host: action.remote_host,
             remote_default_shell: action.remote_default_shell,
+            firecracker_vm: action.firecracker_vm,
         }
     }
 }
@@ -4367,6 +4376,7 @@ impl From<crate::input::layout::Run>
                         use_terminal_title: cmd.use_terminal_title,
                         remote_host: cmd.remote_host,
                         remote_default_shell: cmd.remote_default_shell,
+                        firecracker_vm: cmd.firecracker_vm,
                     },
                 )),
             },
@@ -4755,6 +4765,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Run>
                     use_terminal_title: cmd.use_terminal_title,
                     remote_host: cmd.remote_host,
                     remote_default_shell: cmd.remote_default_shell,
+                    firecracker_vm: cmd.firecracker_vm,
                 },
             )),
             RunType::EditFile(edit) => Ok(crate::input::layout::Run::EditFile(
@@ -4866,6 +4877,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::RunCommandAc
             use_terminal_title: action.use_terminal_title,
             remote_host: action.remote_host,
             remote_default_shell: action.remote_default_shell,
+            firecracker_vm: action.firecracker_vm,
         })
     }
 }

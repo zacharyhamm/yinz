@@ -1253,12 +1253,17 @@ fn open_command_pane_in_new_tab(
     context: BTreeMap<String, String>,
 ) {
     let command = command_to_run.path;
-    let cwd = command_to_run
-        .cwd
-        .map(|cwd| translate_plugin_path(env, cwd))
-        .or_else(|| Some(env.plugin_cwd.clone()));
-    let args = command_to_run.args;
     let remote_host = command_to_run.remote_host;
+    let firecracker_vm = command_to_run.firecracker_vm;
+    let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
+        command_to_run.cwd
+    } else {
+        command_to_run
+            .cwd
+            .map(|cwd| translate_plugin_path(env, cwd))
+            .or_else(|| Some(env.plugin_cwd.clone()))
+    };
+    let args = command_to_run.args;
     let remote_default_shell = command_to_run.remote_default_shell;
     let hold_on_close = true;
     let hold_on_start = false;
@@ -1276,6 +1281,7 @@ fn open_command_pane_in_new_tab(
         )),
         use_terminal_title: false,
         remote_host,
+        firecracker_vm,
         remote_default_shell,
     };
     let initial_panes = Some(vec![CommandOrPlugin::Command(run_command_action)]);
@@ -2201,11 +2207,16 @@ fn open_command_pane_in_place_of_plugin(
     context: BTreeMap<String, String>,
 ) {
     let command = command_to_run.path;
-    let cwd = command_to_run
-        .cwd
-        .map(|cwd| translate_plugin_path(env, cwd));
-    let args = command_to_run.args;
     let remote_host = command_to_run.remote_host;
+    let firecracker_vm = command_to_run.firecracker_vm;
+    let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
+        command_to_run.cwd
+    } else {
+        command_to_run
+            .cwd
+            .map(|cwd| translate_plugin_path(env, cwd))
+    };
+    let args = command_to_run.args;
     let remote_default_shell = command_to_run.remote_default_shell;
     let direction = None;
     let hold_on_close = true;
@@ -2226,6 +2237,7 @@ fn open_command_pane_in_place_of_plugin(
         )),
         use_terminal_title,
         remote_host,
+        firecracker_vm,
         remote_default_shell,
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
@@ -2308,11 +2320,16 @@ fn open_command_pane_in_place_of_pane_id(
     context: BTreeMap<String, String>,
 ) {
     let command = command_to_run.path;
-    let cwd = command_to_run
-        .cwd
-        .map(|cwd| translate_plugin_path(env, cwd));
-    let args = command_to_run.args;
     let remote_host = command_to_run.remote_host;
+    let firecracker_vm = command_to_run.firecracker_vm;
+    let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
+        command_to_run.cwd
+    } else {
+        command_to_run
+            .cwd
+            .map(|cwd| translate_plugin_path(env, cwd))
+    };
+    let args = command_to_run.args;
     let remote_default_shell = command_to_run.remote_default_shell;
     let direction = None;
     let hold_on_close = true;
@@ -2333,6 +2350,7 @@ fn open_command_pane_in_place_of_pane_id(
         )),
         use_terminal_title,
         remote_host,
+        firecracker_vm,
         remote_default_shell,
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
@@ -2409,11 +2427,16 @@ fn open_command_pane(
 ) {
     let error_msg = || format!("failed to open command in plugin {}", env.name());
     let command = command_to_run.path;
-    let cwd = command_to_run
-        .cwd
-        .map(|cwd| translate_plugin_path(env, cwd));
-    let args = command_to_run.args;
     let remote_host = command_to_run.remote_host;
+    let firecracker_vm = command_to_run.firecracker_vm;
+    let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
+        command_to_run.cwd
+    } else {
+        command_to_run
+            .cwd
+            .map(|cwd| translate_plugin_path(env, cwd))
+    };
+    let args = command_to_run.args;
     let remote_default_shell = command_to_run.remote_default_shell;
     let direction = None;
     let hold_on_close = true;
@@ -2434,6 +2457,7 @@ fn open_command_pane(
         )),
         use_terminal_title,
         remote_host,
+        firecracker_vm,
         remote_default_shell,
     };
     let action = Action::NewTiledPane {
@@ -2476,11 +2500,16 @@ fn spawn_command_pane_near_plugin(
     context: BTreeMap<String, String>,
 ) -> OpenCommandPaneNearPluginResponse {
     let command = command_to_run.path;
-    let cwd = command_to_run
-        .cwd
-        .map(|cwd| translate_plugin_path(env, cwd));
-    let args = command_to_run.args;
     let remote_host = command_to_run.remote_host;
+    let firecracker_vm = command_to_run.firecracker_vm;
+    let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
+        command_to_run.cwd
+    } else {
+        command_to_run
+            .cwd
+            .map(|cwd| translate_plugin_path(env, cwd))
+    };
+    let args = command_to_run.args;
     let remote_default_shell = command_to_run.remote_default_shell;
     let direction = None;
     let hold_on_close = true;
@@ -2501,6 +2530,7 @@ fn spawn_command_pane_near_plugin(
         )),
         use_terminal_title,
         remote_host,
+        firecracker_vm,
         remote_default_shell,
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
@@ -2795,11 +2825,16 @@ fn open_command_pane_floating(
 ) {
     let error_msg = || format!("failed to open command in plugin {}", env.name());
     let command = command_to_run.path;
-    let cwd = command_to_run
-        .cwd
-        .map(|cwd| translate_plugin_path(env, cwd));
-    let args = command_to_run.args;
     let remote_host = command_to_run.remote_host;
+    let firecracker_vm = command_to_run.firecracker_vm;
+    let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
+        command_to_run.cwd
+    } else {
+        command_to_run
+            .cwd
+            .map(|cwd| translate_plugin_path(env, cwd))
+    };
+    let args = command_to_run.args;
     let remote_default_shell = command_to_run.remote_default_shell;
     let direction = None;
     let hold_on_close = true;
@@ -2820,6 +2855,7 @@ fn open_command_pane_floating(
         )),
         use_terminal_title,
         remote_host,
+        firecracker_vm,
         remote_default_shell,
     };
     let action = Action::NewFloatingPane {
@@ -2855,9 +2891,15 @@ fn open_command_pane_overlay(
     context: BTreeMap<String, String>,
 ) {
     let error_msg = || format!("failed to open command in plugin {}", env.name());
-    let cwd = command_to_run
-        .cwd
-        .map(|cwd| translate_plugin_path(env, cwd));
+    let remote_host = command_to_run.remote_host;
+    let firecracker_vm = command_to_run.firecracker_vm;
+    let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
+        command_to_run.cwd
+    } else {
+        command_to_run
+            .cwd
+            .map(|cwd| translate_plugin_path(env, cwd))
+    };
     let run_command_action = RunCommandAction {
         command: command_to_run.path,
         args: command_to_run.args,
@@ -2871,7 +2913,8 @@ fn open_command_pane_overlay(
             context,
         )),
         use_terminal_title: false,
-        remote_host: command_to_run.remote_host,
+        remote_host,
+        firecracker_vm,
         remote_default_shell: command_to_run.remote_default_shell,
     };
     let action = Action::NewFloatingPane {
@@ -2899,11 +2942,16 @@ fn open_command_pane_floating_near_plugin(
     context: BTreeMap<String, String>,
 ) {
     let command = command_to_run.path;
-    let cwd = command_to_run
-        .cwd
-        .map(|cwd| translate_plugin_path(env, cwd));
-    let args = command_to_run.args;
     let remote_host = command_to_run.remote_host;
+    let firecracker_vm = command_to_run.firecracker_vm;
+    let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
+        command_to_run.cwd
+    } else {
+        command_to_run
+            .cwd
+            .map(|cwd| translate_plugin_path(env, cwd))
+    };
+    let args = command_to_run.args;
     let remote_default_shell = command_to_run.remote_default_shell;
     let direction = None;
     let hold_on_close = true;
@@ -2924,6 +2972,7 @@ fn open_command_pane_floating_near_plugin(
         )),
         use_terminal_title,
         remote_host,
+        firecracker_vm,
         remote_default_shell,
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
@@ -2965,11 +3014,16 @@ fn open_command_pane_in_place(
 ) {
     let error_msg = || format!("failed to open command in plugin {}", env.name());
     let command = command_to_run.path;
-    let cwd = command_to_run
-        .cwd
-        .map(|cwd| translate_plugin_path(env, cwd));
-    let args = command_to_run.args;
     let remote_host = command_to_run.remote_host;
+    let firecracker_vm = command_to_run.firecracker_vm;
+    let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
+        command_to_run.cwd
+    } else {
+        command_to_run
+            .cwd
+            .map(|cwd| translate_plugin_path(env, cwd))
+    };
+    let args = command_to_run.args;
     let remote_default_shell = command_to_run.remote_default_shell;
     let direction = None;
     let hold_on_close = true;
@@ -2990,6 +3044,7 @@ fn open_command_pane_in_place(
         )),
         use_terminal_title,
         remote_host,
+        firecracker_vm,
         remote_default_shell,
     };
     let action = Action::NewInPlacePane {
@@ -3020,12 +3075,17 @@ fn open_command_pane_background(
     context: BTreeMap<String, String>,
 ) {
     let command = command_to_run.path;
-    let cwd = command_to_run
-        .cwd
-        .map(|cwd| translate_plugin_path(env, cwd))
-        .or_else(|| Some(env.plugin_cwd.clone()));
-    let args = command_to_run.args;
     let remote_host = command_to_run.remote_host;
+    let firecracker_vm = command_to_run.firecracker_vm;
+    let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
+        command_to_run.cwd
+    } else {
+        command_to_run
+            .cwd
+            .map(|cwd| translate_plugin_path(env, cwd))
+            .or_else(|| Some(env.plugin_cwd.clone()))
+    };
+    let args = command_to_run.args;
     let remote_default_shell = command_to_run.remote_default_shell;
     let direction = None;
     let hold_on_close = true;
@@ -3047,6 +3107,7 @@ fn open_command_pane_background(
         )),
         use_terminal_title,
         remote_host,
+        firecracker_vm,
         remote_default_shell,
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
@@ -3093,15 +3154,16 @@ fn run_command_in_pane(
         log::error!("cannot run a command in a plugin pane");
         return;
     };
-    let cwd = command_to_run
-        .cwd
-        .map(|cwd| translate_plugin_path(env, cwd))
-        .or_else(|| {
-            command_to_run
-                .remote_host
-                .is_none()
-                .then(|| env.plugin_cwd.clone())
-        });
+    let remote_host = command_to_run.remote_host;
+    let firecracker_vm = command_to_run.firecracker_vm;
+    let cwd = if remote_host.is_some() || firecracker_vm.is_some() {
+        command_to_run.cwd
+    } else {
+        command_to_run
+            .cwd
+            .map(|cwd| translate_plugin_path(env, cwd))
+            .or_else(|| Some(env.plugin_cwd.clone()))
+    };
     let run_command = RunCommand {
         command: command_to_run.path,
         args: command_to_run.args,
@@ -3114,7 +3176,8 @@ fn run_command_in_pane(
             context,
         )),
         use_terminal_title: false,
-        remote_host: command_to_run.remote_host,
+        remote_host,
+        firecracker_vm,
         remote_default_shell: command_to_run.remote_default_shell,
     };
     let _ = env

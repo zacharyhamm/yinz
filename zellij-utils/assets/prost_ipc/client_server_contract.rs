@@ -1820,6 +1820,9 @@ pub struct RunCommandAction {
     /// Resolve the login shell on the machine the pane runs on, ignoring command
     #[prost(bool, tag="10")]
     pub remote_default_shell: bool,
+    /// Named Firecracker VM owned by this session
+    #[prost(string, optional, tag="11")]
+    pub firecracker_vm: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -2283,6 +2286,10 @@ pub struct Options {
     pub explicit_theme_hue: ::core::option::Option<i32>,
     #[prost(string, optional, tag="67")]
     pub host_notification_protocol: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="70")]
+    pub firecracker_provider: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint64, optional, tag="71")]
+    pub firecracker_provider_timeout_secs: ::core::option::Option<u64>,
 }
 /// Pane-targeting action messages
 #[allow(clippy::derive_partial_eq_without_eq)]

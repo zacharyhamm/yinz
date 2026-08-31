@@ -12,12 +12,14 @@ impl TryFrom<ProtobufCommand> for CommandToRun {
         let cwd = protobuf_command.cwd.map(PathBuf::from);
         let remote_host = protobuf_command.remote_host;
         let remote_default_shell = protobuf_command.remote_default_shell;
+        let firecracker_vm = protobuf_command.firecracker_vm;
         Ok(CommandToRun {
             path,
             args,
             cwd,
             remote_host,
             remote_default_shell,
+            firecracker_vm,
         })
     }
 }
@@ -31,6 +33,7 @@ impl TryFrom<CommandToRun> for ProtobufCommand {
             cwd: command_to_run.cwd.map(|c| c.display().to_string()),
             remote_host: command_to_run.remote_host,
             remote_default_shell: command_to_run.remote_default_shell,
+            firecracker_vm: command_to_run.firecracker_vm,
         })
     }
 }
@@ -79,6 +82,7 @@ mod tests {
             cwd: None,
             remote_host: Some("build-box".to_owned()),
             remote_default_shell: true,
+            firecracker_vm: None,
         };
         let protobuf_command = ProtobufCommand::try_from(command_to_run.clone()).unwrap();
         assert!(protobuf_command.remote_default_shell);

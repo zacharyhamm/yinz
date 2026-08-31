@@ -12,4 +12,6 @@ pub struct Command {
     pub remote_host: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, tag="5")]
     pub remote_default_shell: bool,
+    #[prost(string, optional, tag="6")]
+    pub firecracker_vm: ::core::option::Option<::prost::alloc::string::String>,
 }

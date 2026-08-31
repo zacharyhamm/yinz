@@ -33,6 +33,7 @@ fn sh(script: &str) -> RunCommand {
         originating_plugin: None,
         use_terminal_title: false,
         remote_host: None,
+        firecracker_vm: None,
         remote_default_shell: false,
     }
 }
