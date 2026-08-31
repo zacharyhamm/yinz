@@ -846,6 +846,17 @@ fn closing_a_remote_pane_does_not_signal_a_local_process() {
 }
 
 #[test]
+fn pty_teardown_closes_remote_panes_without_local_pids() {
+    let os_api = MockOsApi::new();
+    let (pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    os_api.mark_remote(7);
+
+    drop(pty);
+
+    assert_eq!(os_api.remote_signals(), vec![(7, ChildSignal::Hup)]);
+}
+
+#[test]
 fn sigint_to_a_remote_pane_does_not_signal_a_local_process() {
     let (pty, os_api) = pty_with_remote_pane(7, 4242);
     pty.send_sigint_to_pane(PaneId::Terminal(7));

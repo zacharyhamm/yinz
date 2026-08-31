@@ -6842,6 +6842,8 @@ impl PaneInfo {
         let is_selectable = bool_node!("is_selectable");
         let pane_info = PaneInfo {
             host: None,
+            firecracker_image: None,
+            firecracker_worktree: None,
             agent: None,
             id,
             is_plugin,

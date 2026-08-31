@@ -143,6 +143,7 @@ fn default_images_dir() -> PathBuf {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct VmState {
+    ready: bool,
     session: String,
     #[serde(default)]
     leases: Vec<String>,
@@ -268,6 +269,7 @@ fn serve_request() -> Result<()> {
     let config = load_config()?;
     let network = load_network(&config)?;
     let state = LockedState::new()?;
+    recover_unusable_vms(&state, &config)?;
     let response = match request {
         Request::Ensure {
             session,
@@ -294,7 +296,7 @@ fn serve_request() -> Result<()> {
         },
         Request::List { session, .. } => json!({
             "version": PROTOCOL_VERSION,
-            "vms": list(&state, &config, session.as_deref())?,
+            "vms": list(&state, session.as_deref())?,
         }),
         Request::Sync { session, name, .. } => {
             sync_one(&state, &config, &session, &name)?;
@@ -326,24 +328,32 @@ fn ensure(
     if worktree.as_ref().is_some_and(|path| !path.is_dir()) {
         return Err(anyhow!("Firecracker worktree must be a directory"));
     }
+    let host_fingerprint = worktree.as_deref().map(tree_fingerprint).transpose()?;
     let state_path = locked.identity_path(session, name, worktree.as_deref());
     if let Ok(mut existing) = read_state(&state_path) {
         if vm_is_running(&existing, config) {
-            if existing.image.as_deref() != image {
-                return Err(anyhow!(
-                    "worktree VM is already running with image {:?}, not {:?}",
-                    existing.image,
-                    image
-                ));
+            if !existing.ready {
+                terminate(&existing, config);
+                retain_recovery(locked, &state_path, &existing, "unready")?;
+                let _ = fs::remove_file(&state_path);
+            } else {
+                if existing.image.as_deref() != image {
+                    return Err(anyhow!(
+                        "worktree VM is already running with image {:?}, not {:?}",
+                        existing.image,
+                        image
+                    ));
+                }
+                if !existing.leases.iter().any(|lease| lease == session) {
+                    existing.leases.push(session.to_owned());
+                    write_state(&state_path, &existing)?;
+                }
+                return Ok(response(config, &existing));
             }
-            if !existing.leases.iter().any(|lease| lease == session) {
-                existing.leases.push(session.to_owned());
-                write_state(&state_path, &existing)?;
-            }
-            return Ok(response(config, &existing));
+        } else {
+            retain_recovery(locked, &state_path, &existing, "crashed")?;
+            let _ = fs::remove_file(&state_path);
         }
-        retain_recovery(locked, &state_path, &existing, "crashed")?;
-        let _ = fs::remove_file(&state_path);
     }
 
     let entries = locked.entries()?;
@@ -474,13 +484,14 @@ fn ensure(
         },
         None => None,
     };
-    let vm = VmState {
+    let mut vm = VmState {
+        ready: false,
         session: session.to_owned(),
         leases: vec![session.to_owned()],
         name: name.to_owned(),
         image: image.map(str::to_owned),
         worktree: worktree.clone(),
-        host_fingerprint: worktree.as_deref().map(tree_fingerprint).transpose()?,
+        host_fingerprint,
         pid,
         start_time,
         slot,
@@ -508,6 +519,13 @@ fn ensure(
     if let Err(error) = provision_guest(&vm, config) {
         terminate(&vm, config);
         retain_recovery(locked, &state_path, &vm, "provision-failed")?;
+        let _ = fs::remove_file(&state_path);
+        return Err(error);
+    }
+    vm.ready = true;
+    if let Err(error) = write_state(&state_path, &vm) {
+        terminate(&vm, config);
+        retain_recovery(locked, &state_path, &vm, "state-commit-failed")?;
         let _ = fs::remove_file(&state_path);
         return Err(error);
     }
@@ -620,28 +638,40 @@ fn sync_from_guest(state: &VmState, config: &Config) -> Result<()> {
     let expected = state
         .host_fingerprint
         .context("VM has no host worktree baseline")?;
-    let actual = tree_fingerprint(worktree)?;
-    if actual != expected {
-        return Err(anyhow!(
-            "refusing to overwrite host changes in {}; the guest disk was retained for recovery",
-            worktree.display()
-        ));
-    }
+    ensure_host_unchanged(worktree, expected)?;
     let staging = tempfile::tempdir().context("failed to stage guest changes")?;
     run(
         Command::new("rsync")
-            .args(["-a", "--delete", "-e", &rsync_remote_shell(state, config)])
+            .args([
+                "-a",
+                "--delay-updates",
+                "--delete-delay",
+                "-e",
+                &rsync_remote_shell(state, config),
+            ])
             .arg(format!("root@{}:/workspace/", state.guest_ip))
             .arg(with_trailing_slash(staging.path())),
         "failed to copy changes out of the guest",
     )?;
+    ensure_host_unchanged(worktree, expected)?;
     run(
         Command::new("rsync")
-            .args(["-a", "--delete", "--exclude=.git"])
+            .args(["-a", "--delay-updates", "--delete-delay", "--exclude=.git"])
             .arg(with_trailing_slash(staging.path()))
             .arg(with_trailing_slash(worktree)),
         "failed to apply guest changes to the host worktree",
     )
+}
+
+fn ensure_host_unchanged(worktree: &Path, expected: u64) -> Result<()> {
+    (tree_fingerprint(worktree)? == expected)
+        .then_some(())
+        .with_context(|| {
+            format!(
+                "refusing to overwrite host changes in {}; the guest disk was retained for recovery",
+                worktree.display()
+            )
+        })
 }
 
 fn copy_credential(state: &VmState, config: &Config, credential: &CredentialFile) -> Result<()> {
@@ -788,14 +818,9 @@ fn tree_fingerprint(root: &Path) -> Result<u64> {
     Ok(hasher.finish())
 }
 
-fn list(locked: &LockedState, config: &Config, session: Option<&str>) -> Result<Vec<VmEntry>> {
+fn list(locked: &LockedState, session: Option<&str>) -> Result<Vec<VmEntry>> {
     let mut vms = vec![];
-    for (path, state) in locked.entries()? {
-        if !vm_is_running(&state, config) {
-            retain_recovery(locked, &path, &state, "crashed")?;
-            let _ = fs::remove_file(path);
-            continue;
-        }
+    for (_, state) in locked.entries()? {
         let leases = if state.leases.is_empty() {
             vec![state.session.clone()]
         } else {
@@ -814,6 +839,23 @@ fn list(locked: &LockedState, config: &Config, session: Option<&str>) -> Result<
     }
     vms.sort_by(|a, b| (&a.session, &a.name).cmp(&(&b.session, &b.name)));
     Ok(vms)
+}
+
+fn recover_unusable_vms(locked: &LockedState, config: &Config) -> Result<()> {
+    for (path, state) in locked.entries()? {
+        if state.ready && vm_is_running(&state, config) {
+            continue;
+        }
+        terminate(&state, config);
+        retain_recovery(
+            locked,
+            &path,
+            &state,
+            if state.ready { "crashed" } else { "unready" },
+        )?;
+        let _ = fs::remove_file(path);
+    }
+    Ok(())
 }
 
 fn stop_one(locked: &LockedState, config: &Config, session: &str, name: &str) -> Result<()> {
@@ -902,6 +944,11 @@ fn terminate(state: &VmState, config: &Config) {
 
 fn cleanup_files(state: &VmState) {
     cleanup_vm_paths(&state.rootfs, &state.api_socket);
+    cleanup_recovery_resources(state);
+}
+
+fn cleanup_recovery_resources(state: &VmState) {
+    let _ = fs::remove_file(&state.api_socket);
     if let Some(cgroup) = &state.cgroup {
         let _ = fs::remove_dir(cgroup);
     }
@@ -955,30 +1002,27 @@ fn retain_recovery(
     state: &VmState,
     reason: &str,
 ) -> Result<()> {
-    let Some(vm_dir) = state.rootfs.parent() else {
-        return Ok(());
-    };
-    if !vm_dir.exists() {
-        return Ok(());
+    if let Some(vm_dir) = state.rootfs.parent().filter(|dir| dir.exists()) {
+        let recovery = locked.dir.join("recovery");
+        secure_dir(&recovery)?;
+        let id = state_path
+            .file_stem()
+            .and_then(|id| id.to_str())
+            .unwrap_or("vm");
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let destination = recovery.join(format!("{id}-{timestamp}-{reason}"));
+        fs::rename(vm_dir, &destination).with_context(|| {
+            format!(
+                "failed to retain Firecracker disk at {}",
+                destination.display()
+            )
+        })?;
+        fs::write(
+            destination.join("state.json"),
+            serde_json::to_vec_pretty(state)?,
+        )?;
     }
-    let recovery = locked.dir.join("recovery");
-    secure_dir(&recovery)?;
-    let id = state_path
-        .file_stem()
-        .and_then(|id| id.to_str())
-        .unwrap_or("vm");
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    let destination = recovery.join(format!("{id}-{timestamp}-{reason}"));
-    fs::rename(vm_dir, &destination).with_context(|| {
-        format!(
-            "failed to retain Firecracker disk at {}",
-            destination.display()
-        )
-    })?;
-    fs::write(
-        destination.join("state.json"),
-        serde_json::to_vec_pretty(state)?,
-    )?;
+    cleanup_recovery_resources(state);
     Ok(())
 }
 
@@ -1548,15 +1592,16 @@ fn network_apply(uid: u32, config: &NetworkConfig) -> Result<()> {
             "failed to create the Firecracker bridge",
         )?;
     }
-    let _ = Command::new("ip")
-        .args([
+    run(
+        Command::new("ip").args([
             "addr",
             "replace",
             &format!("{gateway}/24"),
             "dev",
             &config.bridge,
-        ])
-        .status();
+        ]),
+        "failed to assign the Firecracker bridge address",
+    )?;
     run(
         Command::new("ip").args(["link", "set", &config.bridge, "up"]),
         "failed to start the Firecracker bridge",
@@ -1739,6 +1784,27 @@ fn find_in_path(program: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    fn vm_state(rootfs: PathBuf, api_socket: PathBuf, cgroup: Option<PathBuf>) -> VmState {
+        VmState {
+            ready: false,
+            session: "work".to_owned(),
+            leases: vec!["work".to_owned()],
+            name: "review".to_owned(),
+            image: None,
+            worktree: None,
+            host_fingerprint: None,
+            pid: i32::MAX,
+            start_time: 0,
+            slot: 0,
+            guest_ip: Ipv4Addr::new(172, 31, 0, 2),
+            rootfs,
+            api_socket,
+            log: PathBuf::from("firecracker.log"),
+            known_hosts: PathBuf::from("known_hosts"),
+            cgroup,
+        }
+    }
+
     #[test]
     fn vm_ids_are_stable_and_do_not_expose_session_paths() {
         assert_eq!(
@@ -1757,11 +1823,56 @@ mod tests {
 
         fs::write(root.path().join("source.rs"), "two").unwrap();
         assert_ne!(tree_fingerprint(root.path()).unwrap(), original);
+        assert!(ensure_host_unchanged(root.path(), original).is_err());
 
         let without_git = tree_fingerprint(root.path()).unwrap();
         fs::create_dir(root.path().join(".git")).unwrap();
         fs::write(root.path().join(".git/HEAD"), "ref: changed").unwrap();
         assert_eq!(tree_fingerprint(root.path()).unwrap(), without_git);
+    }
+
+    #[test]
+    fn readiness_is_required_in_persisted_vm_state() {
+        let state = vm_state(
+            PathBuf::from("rootfs.ext4"),
+            PathBuf::from("firecracker.sock"),
+            None,
+        );
+        let mut serialized = serde_json::to_value(state).unwrap();
+        serialized.as_object_mut().unwrap().remove("ready");
+        assert!(serde_json::from_value::<VmState>(serialized).is_err());
+    }
+
+    #[test]
+    fn retaining_a_vm_removes_its_socket_and_cgroup() {
+        let root = tempfile::tempdir().unwrap();
+        let vm_dir = root.path().join("vm");
+        let rootfs = vm_dir.join("rootfs.ext4");
+        let api_socket = root.path().join("firecracker.sock");
+        let cgroup = root.path().join("cgroup");
+        fs::create_dir(&vm_dir).unwrap();
+        fs::write(&rootfs, "disk").unwrap();
+        fs::write(&api_socket, "socket").unwrap();
+        fs::create_dir(&cgroup).unwrap();
+        let lock = File::create(root.path().join("lock")).unwrap();
+        let locked = LockedState {
+            dir: root.path().to_owned(),
+            _lock: lock,
+        };
+        let state = vm_state(rootfs, api_socket.clone(), Some(cgroup.clone()));
+
+        retain_recovery(&locked, &root.path().join("vm.json"), &state, "unready").unwrap();
+
+        assert!(!api_socket.exists());
+        assert!(!cgroup.exists());
+        let recovered = fs::read_dir(root.path().join("recovery"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert!(recovered.join("rootfs.ext4").exists());
+        assert!(recovered.join("state.json").exists());
     }
 
     #[test]

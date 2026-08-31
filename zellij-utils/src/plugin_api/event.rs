@@ -2052,6 +2052,8 @@ impl TryFrom<ProtobufPaneInfo> for PaneInfo {
             default_bg: protobuf_pane_info.default_bg,
             cwd: protobuf_pane_info.cwd,
             host: protobuf_pane_info.host,
+            firecracker_image: protobuf_pane_info.firecracker_image,
+            firecracker_worktree: protobuf_pane_info.firecracker_worktree,
             agent: protobuf_pane_info
                 .agent
                 .map(AgentInfo::try_from)
@@ -2103,6 +2105,8 @@ impl TryFrom<PaneInfo> for ProtobufPaneInfo {
             default_bg: pane_info.default_bg,
             cwd: pane_info.cwd,
             host: pane_info.host,
+            firecracker_image: pane_info.firecracker_image,
+            firecracker_worktree: pane_info.firecracker_worktree,
             agent: pane_info
                 .agent
                 .map(ProtobufAgentInfo::try_from)
@@ -3030,6 +3034,8 @@ fn serialize_session_update_event_with_non_default_values() {
     let panes_list = vec![
         PaneInfo {
             host: None,
+            firecracker_image: Some("rust-dev".to_owned()),
+            firecracker_worktree: Some("/work/hocus".to_owned()),
             agent: None,
             id: 1,
             is_plugin: false,
@@ -3060,6 +3066,8 @@ fn serialize_session_update_event_with_non_default_values() {
         },
         PaneInfo {
             host: None,
+            firecracker_image: None,
+            firecracker_worktree: None,
             agent: None,
             id: 1,
             is_plugin: true,

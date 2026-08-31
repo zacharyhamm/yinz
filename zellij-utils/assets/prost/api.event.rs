@@ -710,6 +710,10 @@ pub struct PaneInfo {
     pub host: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, optional, tag="30")]
     pub agent: ::core::option::Option<AgentInfo>,
+    #[prost(string, optional, tag="31")]
+    pub firecracker_image: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="32")]
+    pub firecracker_worktree: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

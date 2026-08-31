@@ -37,6 +37,31 @@ fn firecracker_resolution_keeps_an_unresolved_command_for_reruns() {
     assert!(server.resolve_firecracker(rerun).is_ok());
 }
 
+#[test]
+fn failed_firecracker_pane_quiescence_skips_provider_shutdown() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("provider");
+    fs::write(
+        &path,
+        "#!/bin/sh\ntouch \"$(dirname \"$0\")/called\"\nprintf '{\"version\":2}'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    let server = make_server();
+    *server.firecracker.lock().unwrap() = Some((
+        crate::firecracker::Provider::new(path, Duration::from_secs(1)).unwrap(),
+        "work".to_owned(),
+    ));
+    server
+        .firecracker_panes_quiesced
+        .store(false, Ordering::SeqCst);
+
+    assert!(server.stop_firecracker_session().is_err());
+    assert!(!dir.path().join("called").exists());
+}
+
 #[allow(dead_code)]
 fn long_running_cmd() -> Command {
     let mut cmd = Command::new("sleep");
@@ -207,7 +232,7 @@ fn spawn_and_read_output() {
 #[test]
 fn a_local_rerun_terminates_the_previous_remote_transport() {
     use crate::pty_host::remote::{
-        protocol::{read_frame, ServerToBrokerMsg},
+        protocol::{read_frame, write_control, BrokerToServerMsg, ServerToBrokerMsg},
         RemoteConn,
     };
     use std::os::unix::net::UnixStream;
@@ -216,7 +241,13 @@ fn a_local_rerun_terminates_the_previous_remote_transport() {
     let (write_socket, mut broker_peer) = UnixStream::pair().unwrap();
     let (frame_tx, frame_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = frame_tx.send(read_frame(&mut broker_peer));
+        let frame = read_frame(&mut broker_peer);
+        write_control(
+            &mut broker_peer,
+            &BrokerToServerMsg::ChildExited { status: Some(0) },
+        )
+        .unwrap();
+        let _ = frame_tx.send(frame);
     });
     let (read_socket, _reader_peer) = UnixStream::pair().unwrap();
     let remote_command = RunCommand {

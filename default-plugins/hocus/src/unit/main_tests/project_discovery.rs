@@ -278,6 +278,8 @@ fn poll_reply_round_trips_through_json() {
             tab: Some((2, "work".to_owned())),
             cwd: Some("/tmp/work".to_owned()),
             host: None,
+            firecracker_image: None,
+            firecracker_worktree: None,
             detected: None,
             agent: None,
         }]),

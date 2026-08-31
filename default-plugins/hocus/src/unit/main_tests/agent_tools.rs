@@ -342,6 +342,27 @@ fn a_branch_is_what_sends_a_spawn_through_the_git_route() {
     );
 }
 
+#[test]
+fn project_images_apply_only_to_firecracker_spawns_and_explicit_images_win() {
+    let mut local = launch::Spec {
+        kind: Some("codex".to_owned()),
+        ..Default::default()
+    };
+    crate::tool_loop::apply_project_firecracker_image(&mut local, Some("rust".to_owned()));
+    assert_eq!(local.firecracker_image, None);
+
+    let mut firecracker = launch::Spec {
+        firecracker: Some("review".to_owned()),
+        ..local.clone()
+    };
+    crate::tool_loop::apply_project_firecracker_image(&mut firecracker, Some("rust".to_owned()));
+    assert_eq!(firecracker.firecracker_image.as_deref(), Some("rust"));
+
+    firecracker.firecracker_image = Some("custom".to_owned());
+    crate::tool_loop::apply_project_firecracker_image(&mut firecracker, Some("ignored".to_owned()));
+    assert_eq!(firecracker.firecracker_image.as_deref(), Some("custom"));
+}
+
 /// `agent` and `command` are alternatives, and the schema cannot say so — this is
 /// where a call naming neither is turned back.
 #[test]

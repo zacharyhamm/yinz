@@ -307,6 +307,8 @@ mod tests {
             command: command.map(str::to_owned),
             cwd: Some(cwd.to_owned()),
             host: None,
+            firecracker_image: None,
+            firecracker_worktree: None,
             status: agents::AgentStatus::Running,
             tab: None,
             detected: None,

@@ -33,10 +33,10 @@ struct Pane {
 
 impl Drop for Pane {
     fn drop(&mut self) {
-        let _ = self.conn.terminate();
         if let Some(pump) = self.pump.take() {
             let _ = pump.join();
         }
+        let _ = self.conn.terminate(Duration::from_secs(5));
     }
 }
 

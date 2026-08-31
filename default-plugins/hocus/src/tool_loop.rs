@@ -2483,18 +2483,14 @@ impl State {
     ///   failing, and `floating`/`in_new_tab` would quietly stop working.
     pub(crate) fn agent_spawn(&mut self, args: &tools::Args) -> String {
         let mut spec = args.launch_spec();
-        if spec
-            .firecracker_image
-            .as_deref()
-            .is_none_or(|image| image.trim().is_empty())
-        {
-            spec.firecracker_image = args
-                .project
+        apply_project_firecracker_image(
+            &mut spec,
+            args.project
                 .as_deref()
                 .or(self.active_project.as_deref())
                 .and_then(|name| self.projects.get(name))
-                .and_then(|project| project.firecracker_image.clone());
-        }
+                .and_then(|project| project.firecracker_image.clone()),
+        );
         let firecracker = spec
             .firecracker
             .as_deref()
@@ -3162,4 +3158,21 @@ impl State {
 /// The note an id names, or the error that says what to call.
 fn existing_note(backend: &impl Backend, id: u64) -> Result<notes::Note, String> {
     notes::fetch_note(backend, id)?.ok_or_else(|| format!("no note {id}; call note_list"))
+}
+
+pub(crate) fn apply_project_firecracker_image(
+    spec: &mut launch::Spec,
+    project_image: Option<String>,
+) {
+    if spec
+        .firecracker
+        .as_deref()
+        .is_some_and(|name| !name.trim().is_empty())
+        && spec
+            .firecracker_image
+            .as_deref()
+            .is_none_or(|image| image.trim().is_empty())
+    {
+        spec.firecracker_image = project_image;
+    }
 }

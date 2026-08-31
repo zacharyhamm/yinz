@@ -67,6 +67,10 @@ pub struct AgentPane {
     /// send input to is on one of them specifically.
     #[serde(default)]
     pub host: Option<String>,
+    #[serde(default)]
+    pub firecracker_image: Option<String>,
+    #[serde(default)]
+    pub firecracker_worktree: Option<String>,
     pub status: AgentStatus,
     /// The stable tab id and tab name this pane sits in. `None` for a session-global
     /// pane, which is in no tab.
@@ -2853,6 +2857,8 @@ mod tests {
             command: command.map(str::to_owned),
             cwd: None,
             host: None,
+            firecracker_image: None,
+            firecracker_worktree: None,
             status: AgentStatus::Running,
             tab: None,
             detected: None,
@@ -2867,6 +2873,17 @@ mod tests {
             detected: Some(kind.to_owned()),
             ..pane(pane_id, "zsh", Some(command))
         }
+    }
+
+    #[test]
+    fn agent_pane_serialization_keeps_firecracker_identity() {
+        let pane = AgentPane {
+            firecracker_image: Some("rust-dev".to_owned()),
+            firecracker_worktree: Some("/host/work".to_owned()),
+            ..pane(7, "codex", Some("codex"))
+        };
+        let json = serde_json::to_string(&pane).unwrap();
+        assert_eq!(serde_json::from_str::<AgentPane>(&json).unwrap(), pane);
     }
 
     fn manual(pairs: &[(u32, &str)]) -> BTreeMap<u32, String> {

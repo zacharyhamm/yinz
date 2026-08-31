@@ -14,7 +14,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::pty_host::client::PtyHostHandle;
@@ -157,6 +157,8 @@ pub struct PaneSession {
     /// Set once the pty has been read to its end, so nothing the child wrote is
     /// still on its way here.
     output_drained: AtomicBool,
+    output_drained_wait: Mutex<()>,
+    output_drained_cv: Condvar,
     /// Set once the exit has actually been put on a wire, so the two things that
     /// might do it — the quit callback and the output pump — cannot both.
     exit_reported: AtomicBool,
@@ -195,6 +197,8 @@ impl PaneSession {
             generation: AtomicU64::new(0),
             child_exit: Mutex::new(None),
             output_drained: AtomicBool::new(false),
+            output_drained_wait: Mutex::new(()),
+            output_drained_cv: Condvar::new(),
             exit_reported: AtomicBool::new(false),
             git_probe: Mutex::new(None),
             disconnected_since: Mutex::new(None),
@@ -348,6 +352,24 @@ impl PaneSession {
     /// The pty gave up its end. Nothing the child wrote is still in flight.
     pub fn mark_output_drained(&self) {
         self.output_drained.store(true, Ordering::SeqCst);
+        if let Ok(_guard) = self.output_drained_wait.lock() {
+            self.output_drained_cv.notify_all();
+        }
+    }
+
+    pub fn wait_for_output_drained(&self, timeout: Duration) -> bool {
+        if self.output_drained.load(Ordering::SeqCst) {
+            return true;
+        }
+        let Ok(guard) = self.output_drained_wait.lock() else {
+            return false;
+        };
+        let _ = self
+            .output_drained_cv
+            .wait_timeout_while(guard, timeout, |_| {
+                !self.output_drained.load(Ordering::SeqCst)
+            });
+        self.output_drained.load(Ordering::SeqCst)
     }
 
     /// The exit status, but only once it is safe to send.
