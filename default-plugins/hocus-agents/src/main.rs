@@ -277,23 +277,7 @@ impl ZellijPlugin for State {
 /// says whether the selected agent is the pane the user is *in* - overloading it with "and the
 /// keys are up here" would cost the pane the only thing it says about the agent.
 fn render_divider(label: &str, above: usize, below: usize, focused: bool, y: usize, cols: usize) {
-    let mut line = match label.is_empty() {
-        true => "──".to_owned(),
-        false => format!("─ {label} "),
-    };
-    // Both ends of it, so a half wound back into the past says how far and how much is still
-    // ahead of it. No scrollbar: nothing in the tree draws one.
-    let position = match (above, below) {
-        (0, 0) => String::new(),
-        (above, 0) => format!(" ↑{above} "),
-        (0, below) => format!(" ↓{below} "),
-        (above, below) => format!(" ↑{above} ↓{below} "),
-    };
-    let rule = cols
-        .saturating_sub(line.width())
-        .saturating_sub(position.width());
-    line.push_str(&"─".repeat(rule));
-    line.push_str(&position);
+    let line = divider_line(label, above, below, cols);
     // Found rather than counted: a label cut to fit may have lost the marker, and no kind can
     // contain one (`valid_kind` allows no punctuation).
     let marker = label
@@ -310,6 +294,35 @@ fn render_divider(label: &str, above: usize, below: usize, focused: bool, y: usi
         None => text,
     };
     print_text_with_coordinates(text, 0, y, Some(cols), None);
+}
+
+/// The row the divider draws, never wider than `cols`.
+///
+/// Split out from the drawing because it is the one line in the pane that has to fit three
+/// things onto a row rather than one, and a string is what a test can measure.
+fn divider_line(label: &str, above: usize, below: usize, cols: usize) -> String {
+    // Both ends of it, so a half wound back into the past says how far and how much is still
+    // ahead of it. No scrollbar: nothing in the tree draws one.
+    let position = match (above, below) {
+        (0, 0) => String::new(),
+        (above, 0) => format!(" ↑{above} "),
+        (0, below) => format!(" ↓{below} "),
+        (above, below) => format!(" ↑{above} ↓{below} "),
+    };
+    // The readout shares the row with the label, so it is taken out of the label's room rather
+    // than out of the rule: how far back the history is wound is worth more than the last few
+    // characters of a kind, and this is the only place that knows both.
+    let label = agents::fit_label(label.to_owned(), cols.saturating_sub(position.width()));
+    let mut line = match label.is_empty() {
+        true => "──".to_owned(),
+        false => format!("─ {label} "),
+    };
+    let rule = cols
+        .saturating_sub(line.width())
+        .saturating_sub(position.width());
+    line.push_str(&"─".repeat(rule));
+    line.push_str(&position);
+    line
 }
 
 /// How the pane divides: `(list_rows, history_rows)`, with the divider on the row between
@@ -372,8 +385,11 @@ impl State {
         // pane is steered, and a user reading the history still wants to point at the next
         // agent without going back for the focus first.
         if let Some(motion) = arrow(&key) {
+            let focus_moved = self.focus != Focus::List;
             self.focus = Focus::List;
-            return self.step_selection(motion);
+            // The keys moving is worth a redraw on its own - the divider draws them - even
+            // when the selection they came back for was already at the end of the list.
+            return self.step_selection(motion) || focus_moved;
         }
         if key.has_no_modifiers() {
             match key.bare_key {
@@ -427,7 +443,7 @@ impl State {
     /// One page of the history half: what it can show, less a line of overlap so a page turn
     /// does not lose the sentence that was straddling the seam.
     fn page(&self) -> usize {
-        self.last_history_rows.saturating_sub(2).max(1)
+        self.last_history_rows.saturating_sub(1).max(1)
     }
 
     fn on_mouse(&mut self, mouse_event: Mouse) -> bool {
@@ -537,11 +553,13 @@ impl State {
     /// never moves under the pointer, and an empty history is a sentence rather than an
     /// absence.
     fn render_history(&mut self, top: usize, rows: usize, cols: usize) {
-        // A margin column at each edge, the same one the list's marker column gives it.
-        let history = self.history_lines(cols.saturating_sub(2));
+        let history = self.history_lines(cols);
+        // `rows` is the body alone: `split` takes the divider off the list's share, and it is
+        // drawn on the row above the body at `top`.
+        //
         // The summary is pinned above the timeline, and never takes more than half the half:
         // a talkative model must not leave the timeline it is summarising with no room.
-        let body_rows = rows - 1;
+        let body_rows = rows;
         let mut pinned = history.pinned;
         pinned.truncate(body_rows / 2);
         let room = body_rows - pinned.len();
@@ -597,7 +615,9 @@ impl State {
         }
     }
 
-    /// What the history half has to draw for the row under the cursor, wrapped to `width`.
+    /// What the history half has to draw for the row under the cursor, for a half `width`
+    /// columns wide. The margin inside that is `agents`' to take: the body keeps one, the
+    /// divider wants the whole row.
     ///
     /// A loaded run first - the whole point of asking hocus for one - then the idle summary
     /// hocus pushes with every strip, then nothing. Empty is a real answer here rather than a
@@ -1132,6 +1152,63 @@ mod tests {
         assert_eq!(split(20).0, list_rows, "a summary");
     }
 
+    /// The history's share is body and nothing else: `split` has already taken the divider off
+    /// the list's, so taking it off again here is what left the last row of the pane blank.
+    ///
+    /// Nothing observable is printed by a unit test, so the height is read off the room the
+    /// scroll is clamped against - which is the body's, less anything pinned above it.
+    #[test]
+    fn the_history_body_is_the_whole_of_its_share() {
+        let mut state = State::default();
+        state.set_rows(unfocused(vec![
+            StripRow::Project("archive".to_owned()),
+            StripRow::Run {
+                run_id: "claude:session-1".to_owned(),
+                text: "claude · hook history".to_owned(),
+                kind: "claude".to_owned(),
+            },
+        ]));
+        let mut run = a_run();
+        // No summary, so nothing is pinned and the timeline has the whole body to itself.
+        run.summary = None;
+        run.entries = (0..30)
+            .map(|index| agents::RunEntry {
+                revision: index + 1,
+                event_id: None,
+                kind: agents::RunEntryKind::Question,
+                text: format!("question {index}"),
+            })
+            .collect();
+        state.run = Some(run);
+
+        let (_, history_rows) = split(20);
+        state.render(20, 50);
+        assert_eq!(state.last_history_rows, history_rows);
+        assert_eq!(
+            state.last_history_max_scroll,
+            30 - history_rows,
+            "every row of the share holds a line of timeline"
+        );
+        assert_eq!(state.page(), history_rows - 1, "less a line of overlap");
+    }
+
+    /// The label, the rule and the scroll readout share the divider's row, and the readout is
+    /// the only thing in the pane that says how far back the history is wound. A kind long
+    /// enough to fill the row is cut for it rather than pushing it off the end.
+    #[test]
+    fn a_long_label_does_not_push_the_scroll_readout_off_the_divider() {
+        let kind = "a-very-long-agent-kind-indeed-xx";
+        let label = format!("7 · {kind} !");
+        for cols in [22, 26, 40, 80] {
+            let line = divider_line(&label, 12, 34, cols);
+            assert!(line.width() <= cols, "{cols}: {line}");
+            assert!(line.ends_with(" ↑12 ↓34 "), "{cols}: {line}");
+        }
+
+        // and a divider with nothing wound back has no readout to make room for
+        assert_eq!(divider_line("", 0, 0, 6), "──────");
+    }
+
     /// A pane with room for one half is the list. Two halves of nothing is worse than one
     /// list, and the focus has nowhere else to be.
     #[test]
@@ -1213,10 +1290,17 @@ mod tests {
                 kind: "claude".to_owned(),
             },
         ]));
-        state.run = Some(a_run());
-        // Three rows of history: the divider, one pinned summary line and one of timeline,
-        // against the two timeline entries the filter lets through - so exactly one line to
-        // wind back over.
+        let mut run = a_run();
+        run.entries.push(agents::RunEntry {
+            revision: 5,
+            event_id: None,
+            kind: agents::RunEntryKind::Question,
+            text: "Ship it?".to_owned(),
+        });
+        state.run = Some(run);
+        // Three rows of history below the divider: one pinned summary line and two of
+        // timeline, against the three timeline entries the filter lets through - so exactly
+        // one line to wind back over.
         state.render(7, 50);
         assert_eq!(state.last_history_rows, 3);
         assert_eq!(state.last_history_max_scroll, 1);
@@ -1251,8 +1335,15 @@ mod tests {
                 kind: "claude".to_owned(),
             },
         ]));
-        state.run = Some(a_run());
-        // one line of timeline against two entries: exactly one line to scroll
+        let mut run = a_run();
+        run.entries.push(agents::RunEntry {
+            revision: 5,
+            event_id: None,
+            kind: agents::RunEntryKind::Question,
+            text: "Ship it?".to_owned(),
+        });
+        state.run = Some(run);
+        // two lines of timeline against three entries: exactly one line to scroll
         state.render(7, 50);
         assert_eq!(state.selected, 1);
 
@@ -1274,6 +1365,23 @@ mod tests {
         assert_eq!(state.focus, Focus::History);
         assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
         assert_eq!(state.focus, Focus::List);
+
+        // An arrow that finds nowhere to go still took the keys back, and the divider draws
+        // them: without the redraw it would go on claiming the focus is down there.
+        state.on_key(KeyWithModifier::new(BareKey::Down));
+        assert_eq!(state.selected, 2, "the last row there is");
+        state.on_key(KeyWithModifier::new(BareKey::Tab));
+        assert_eq!(state.focus, Focus::History);
+        assert!(
+            state.on_key(KeyWithModifier::new(BareKey::Down)),
+            "the focus moved even though the selection could not"
+        );
+        assert_eq!(state.focus, Focus::List);
+        assert_eq!(state.selected, 2);
+        assert!(
+            !state.on_key(KeyWithModifier::new(BareKey::Down)),
+            "and now nothing moved at all"
+        );
     }
 
     /// The page keys are the history's from either half: the list has no page of its own,
