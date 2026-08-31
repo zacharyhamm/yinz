@@ -1787,17 +1787,21 @@ fn a_closed_pane_does_not_hold_a_slot_in_the_tour() {
     );
 }
 
+/// The whole of the stability guarantee, from the side a user sees: a tab that re-tiles under
+/// the conversation leaves it exactly where it was. Following the pane used to be the behaviour,
+/// and it is what made an unrelated pane close move the panel across the screen.
 #[test]
-fn an_anchored_conversation_follows_its_pane_when_the_tab_is_re_tiled() {
+fn a_re_tile_does_not_move_the_conversation() {
     let mut state = two_pane_state();
     state.on_key(ctrl_o());
+    let parked = state.placed_rect.expect("a placement");
     state.last_placement = None;
 
     // the same manifest again: nothing moved, nothing to say
     state.on_panes(manifest(0, two_panes()));
     assert_eq!(
         state.last_placement, None,
-        "an anchor where it was asks for nothing"
+        "an unchanged tab asks for nothing"
     );
 
     // pane 2 was re-tiled narrower
@@ -1810,25 +1814,26 @@ fn an_anchored_conversation_follows_its_pane_when_the_tab_is_re_tiled() {
         ],
     ));
 
-    let (placements, is_the_users) = state.last_placement.clone().expect("re-placed");
-    assert!(
-        !is_the_users,
-        "a re-tile is the plugin keeping up, not a gesture"
+    assert_eq!(
+        state.last_placement, None,
+        "a re-tile is not a request to move anything"
     );
-    assert_eq!(placements.len(), 1);
-    let (x, _, w, _) = placed_chat(&state);
-    assert!(
-        x + w <= 150,
-        "still clear of the pane, where it is now: {x} {w}"
+    assert_eq!(state.placed_rect, Some(parked), "and nothing moved");
+    assert_eq!(
+        state.anchor_rect,
+        Some(at(150, 0, 50, 50)),
+        "the anchor is still tracked - the next press ranks against it"
     );
-    assert_eq!(x, DEFAULT_PAD);
-    assert_eq!(state.anchor_rect, Some(at(150, 0, 50, 50)));
 }
 
+/// The same rule for the pane the conversation was sent clear of: it going away releases the
+/// anchor, and releases nothing else. Snapping back to the corner here was the most visible half
+/// of the old behaviour.
 #[test]
-fn closing_the_anchor_pane_returns_the_conversation_to_the_corner() {
+fn closing_the_anchor_pane_leaves_the_conversation_where_it_is() {
     let mut state = two_pane_state();
     state.on_key(ctrl_o());
+    let parked = state.placed_rect.expect("a placement");
     state.last_placement = None;
 
     state.on_panes(manifest(
@@ -1839,18 +1844,87 @@ fn closing_the_anchor_pane_returns_the_conversation_to_the_corner() {
         ],
     ));
 
-    assert_eq!(state.anchor, None);
-    let (corner, _) = beside(&BTreeMap::new(), 50, 200);
-    assert_eq!(placed_chat(&state), rect(&corner), "back in the corner");
+    assert_eq!((state.anchor, state.anchor_rect), (None, None));
+    assert_eq!(state.last_placement, None, "a pane closing places nothing");
+    assert_eq!(state.placed_rect, Some(parked), "and moves nothing");
+}
+
+/// The corner survives the anchor that chose it, which is what makes the guarantee hold through
+/// the one event that genuinely has to re-place: a terminal resize. Without the remembered corner
+/// this is where the delayed jump home would happen.
+#[test]
+fn a_resize_keeps_the_corner_the_last_press_chose() {
+    let mut state = two_pane_state();
+    state.on_key(ctrl_o());
+    let corner = state.placed_corner.expect("a corner");
+    assert_ne!(corner, CORNERS[0], "the press left the default corner");
+
+    // the anchor closes, and then the terminal is made smaller
+    state.on_panes(manifest(
+        0,
+        vec![
+            overlay_pane(7, 103, 14, 60, 33),
+            tiled(1, 0, 0, 200, 50, true),
+        ],
+    ));
+    state.last_placement = None;
+    state.on_tabs(vec![TabInfo {
+        display_area_rows: 40,
+        display_area_columns: 160,
+        ..a_tab()
+    }]);
+
+    let expected = rect_in_corner(&state.kdl, 40, 160, true, corner, None).expect("a rectangle");
+    assert_eq!(state.placed_corner, Some(corner), "the same corner");
+    assert_eq!(
+        placed_chat(&state),
+        (expected.x, expected.y, expected.cols, expected.rows),
+        "resolved against the new screen, not dragged home"
+    );
+}
+
+/// The list is the other half of "both panels stay put": it is placed from the same call, so a
+/// manifest that placed nothing cannot have moved it either.
+#[test]
+fn a_pane_closing_does_not_move_the_agent_list() {
+    let mut state = two_pane_state();
+    state.pipe(selection(9));
+    state.on_panes(manifest(
+        0,
+        two_panes()
+            .into_iter()
+            .chain(std::iter::once(overlay_pane(9, 66, 14, 60, 33)))
+            .collect(),
+    ));
+    state.last_placement = None;
+
+    state.on_panes(manifest(
+        0,
+        vec![
+            overlay_pane(7, 3, 14, 60, 33),
+            overlay_pane(9, 66, 14, 60, 33),
+            tiled(1, 0, 0, 200, 50, true),
+        ],
+    ));
+
+    assert_eq!(
+        state.last_placement, None,
+        "neither panel is placed by a pane closing"
+    );
 }
 
 /// `follow_tab` releases the anchor before its own placement (a host call with a reply, so not
 /// driven here); the manifest of the tab we landed on is the other route, and the one every
 /// cross-tab move ends in.
+///
+/// Nothing is placed on arrival, and nothing needs to be: the move carries the overlay's exact
+/// coordinates and its `OverlayCarry` across (`Tab::overlay_placement_for`), and every tab
+/// resolves against the same session surface.
 #[test]
 fn arriving_on_another_tab_drops_the_anchor() {
     let mut state = two_pane_state();
     state.on_key(ctrl_o());
+    let parked = state.placed_rect.expect("a placement");
     state.last_placement = None;
 
     state.on_panes(manifest(
@@ -1863,12 +1937,8 @@ fn arriving_on_another_tab_drops_the_anchor() {
 
     assert_eq!(state.own_tab_index, Some(1));
     assert_eq!((state.anchor, state.anchor_rect), (None, None));
-    let (corner, _) = beside(&BTreeMap::new(), 50, 200);
-    assert_eq!(
-        placed_chat(&state),
-        rect(&corner),
-        "placed in the corner of the tab it landed on"
-    );
+    assert_eq!(state.last_placement, None, "the move carried the geometry");
+    assert_eq!(state.placed_rect, Some(parked));
 }
 
 #[test]
