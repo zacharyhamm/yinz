@@ -1,4 +1,5 @@
 use super::super::Grid;
+use super::MAX_DCS_PAYLOAD_BYTES;
 use crate::panes::grid::SixelImageStore;
 use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::link_handler::LinkHandler;
@@ -752,6 +753,62 @@ fn kitty_marker_with_image_on_first_row(
     assert_eq!(kitty_marker_absolute_cell_row(&grid), Some(0));
     assert_eq!(kitty_image_absolute_cell_row(&mut grid), 0);
     (grid, kitty_image_store, vte_parser, interceptor)
+}
+
+#[derive(Clone, Copy)]
+enum BufferedDcs {
+    UiComponent,
+    NestedFrame,
+    Xtgettcap,
+}
+
+fn buffered_dcs(grid: &Grid, kind: BufferedDcs) -> Option<&Vec<u8>> {
+    match kind {
+        BufferedDcs::UiComponent => grid.ui_component_bytes.as_ref(),
+        BufferedDcs::NestedFrame => grid.nested_frame_bytes.as_ref(),
+        BufferedDcs::Xtgettcap => grid.xtgettcap_bytes.as_ref(),
+    }
+}
+
+fn assert_dcs_payload_is_bounded(prefix: &[u8], kind: BufferedDcs) {
+    let mut grid = create_grid_with_content("");
+    let mut parser = vte::Parser::new();
+    parser.advance(&mut grid, prefix);
+    parser.advance(&mut grid, &vec![b'a'; MAX_DCS_PAYLOAD_BYTES]);
+    assert_eq!(
+        buffered_dcs(&grid, kind).map(Vec::len),
+        Some(MAX_DCS_PAYLOAD_BYTES),
+        "the exact limit remains valid"
+    );
+    parser.advance(&mut grid, b"b");
+    assert!(
+        buffered_dcs(&grid, kind).is_none(),
+        "byte MAX + 1 drops the whole payload"
+    );
+    parser.advance(&mut grid, b"\x1b\\");
+
+    parser.advance(&mut grid, prefix);
+    parser.advance(&mut grid, b"c");
+    assert_eq!(
+        buffered_dcs(&grid, kind).map(Vec::as_slice),
+        Some(&b"c"[..])
+    );
+}
+
+#[test]
+fn ui_component_dcs_payload_is_bounded_and_recovers() {
+    assert_dcs_payload_is_bounded(b"\x1bPz", BufferedDcs::UiComponent);
+}
+
+#[test]
+fn nested_frame_dcs_payload_is_bounded_and_recovers() {
+    let prefix = format!("\x1bP{}n", zellij_utils::nested_session::NESTED_DCS_PARAM);
+    assert_dcs_payload_is_bounded(prefix.as_bytes(), BufferedDcs::NestedFrame);
+}
+
+#[test]
+fn xtgettcap_dcs_payload_is_bounded_and_recovers() {
+    assert_dcs_payload_is_bounded(b"\x1bP+q", BufferedDcs::Xtgettcap);
 }
 
 mod app_replay;

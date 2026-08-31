@@ -98,9 +98,9 @@ fn byte_accounting_matches_hand_computed_total_with_scaled_variants() {
     let mut store = KittyImageStore::default();
     let id_a = store.store_image(rgba_image(10, 10)).unwrap();
     let id_b = store.store_image(rgba_image(4, 5)).unwrap();
-    store.add_scaled_variant(id_a, (3, 2), vec![0; 120]);
-    store.add_scaled_variant(id_a, (5, 4), vec![0; 60]);
-    store.add_scaled_variant(id_a, (3, 2), vec![0; 100]);
+    assert!(store.add_scaled_variant(id_a, (3, 2), vec![0; 120]));
+    assert!(store.add_scaled_variant(id_a, (5, 4), vec![0; 60]));
+    assert!(store.add_scaled_variant(id_a, (3, 2), vec![0; 100]));
     assert_eq!(store.total_bytes(), 640);
     assert_eq!(store.scaled_variant(id_a, (3, 2)).unwrap().len(), 100);
     store.free(id_a);
@@ -110,7 +110,7 @@ fn byte_accounting_matches_hand_computed_total_with_scaled_variants() {
 }
 
 #[test]
-fn remove_placement_ref_keeps_data_but_makes_image_evictable() {
+fn all_referenced_images_reject_new_image_without_exceeding_quota() {
     let mut store = KittyImageStore::with_quota(1000);
     let id_a = store.store_image(rgba_image(10, 10)).unwrap();
     store.add_placement_ref(id_a);
@@ -124,9 +124,11 @@ fn remove_placement_ref_keeps_data_but_makes_image_evictable() {
     assert!(store.get(id_b).is_some());
     assert!(store.get(id_c).is_some());
     store.add_placement_ref(id_c);
-    let id_d = store.store_image(rgba_image(10, 10)).unwrap();
-    assert!(store.get(id_d).is_some());
-    assert_eq!(store.total_bytes(), 1200);
+    let error = store.store_image(rgba_image(10, 10)).unwrap_err();
+    assert_eq!(error.code, KittyErrorCode::Enospc);
+    assert!(store.get(id_b).is_some());
+    assert!(store.get(id_c).is_some());
+    assert_eq!(store.total_bytes(), 800);
 }
 
 #[test]
@@ -146,6 +148,71 @@ fn rgb24_images_are_normalized_to_rgba_at_store_time() {
         vec![1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255]
     );
     assert_eq!(store.total_bytes(), 16);
+}
+
+#[test]
+fn base64_cache_is_charged_and_dropped_before_image_eviction() {
+    let mut store = KittyImageStore::with_quota(200);
+    let id_a = store.store_image(rgba_image(4, 4)).unwrap();
+    store.add_placement_ref(id_a);
+    let encoded = store.base64_for(id_a, None).unwrap();
+    assert_eq!(store.total_bytes(), 64 + encoded.len());
+
+    let id_b = store.store_image(rgba_image(4, 4)).unwrap();
+    assert!(store.get(id_a).is_some());
+    assert!(store.get(id_b).is_some());
+    assert_eq!(store.total_bytes(), 128);
+}
+
+#[test]
+fn base64_is_returned_uncached_when_only_live_pixels_fit() {
+    let mut store = KittyImageStore::with_quota(64);
+    let id = store.store_image(rgba_image(4, 4)).unwrap();
+    let first = store.base64_for(id, None).unwrap();
+    let second = store.base64_for(id, None).unwrap();
+    assert_eq!(first, second);
+    assert_eq!(store.total_bytes(), 64);
+}
+
+#[test]
+fn scaled_variant_overflow_does_not_replace_the_previous_variant() {
+    let mut store = KittyImageStore::with_quota(120);
+    let id = store.store_image(rgba_image(4, 4)).unwrap();
+    assert!(store.add_scaled_variant(id, (2, 2), vec![1; 40]));
+
+    assert!(!store.add_scaled_variant(id, (2, 2), vec![2; 80]));
+    assert_eq!(store.scaled_variant(id, (2, 2)), Some(&[1; 40][..]));
+    assert_eq!(store.total_bytes(), 104);
+}
+
+#[test]
+fn animation_frame_overflow_is_atomic() {
+    let mut store = KittyImageStore::with_quota(100);
+    let id = store.store_image(rgba_image(4, 4)).unwrap();
+
+    let error = store.write_frame(id, None, vec![1; 64], 40).unwrap_err();
+    assert_eq!(error.code, KittyErrorCode::Enospc);
+    assert_eq!(store.get(id).unwrap().frame_count(), 1);
+    assert_eq!(store.total_bytes(), 64);
+}
+
+#[test]
+fn deleting_frames_debits_frames_variants_and_base64() {
+    let mut store = KittyImageStore::default();
+    let id = store.store_image(rgba_image(4, 4)).unwrap();
+    assert_eq!(
+        store.write_frame(id, None, vec![1; 64], 40).unwrap(),
+        Some(2)
+    );
+    store.set_current_frame(id, 2).unwrap();
+    assert!(store.add_scaled_variant(id, (2, 2), vec![2; 20]));
+    let _ = store.base64_for(id, None).unwrap();
+    assert!(store.total_bytes() > 128);
+
+    store.remove_frames(id, None).unwrap();
+    assert_eq!(store.get(id).unwrap().frame_count(), 1);
+    assert!(store.get(id).unwrap().scaled_variants.is_empty());
+    assert_eq!(store.total_bytes(), 64);
 }
 
 // ---- property-based tests (hegel) ----
@@ -249,6 +316,26 @@ impl KittyImageStoreModel {
         let _ = self.store.base64_for(id, variant);
     }
 
+    #[rule]
+    fn write_frame(&mut self, tc: hegel::TestCase) {
+        let id = self.any_id(&tc);
+        let bytes = tc.draw(generators::binary().max_size(64));
+        let _ = self.store.write_frame(id, None, bytes, 40);
+    }
+
+    #[rule]
+    fn remove_frames(&mut self, tc: hegel::TestCase) {
+        let id = self.any_id(&tc);
+        let _ = self.store.remove_frames(id, None);
+    }
+
+    #[rule]
+    fn set_current_frame(&mut self, tc: hegel::TestCase) {
+        let id = self.any_id(&tc);
+        let frame = tc.draw(generators::integers::<u32>().max_value(4));
+        let _ = self.store.set_current_frame(id, frame);
+    }
+
     #[invariant]
     fn accounting_matches_the_live_images(&self, _: hegel::TestCase) {
         let live: Vec<InternalImageId> = self
@@ -265,17 +352,11 @@ impl KittyImageStoreModel {
             live.len(),
             self.known_ids
         );
-        let expected: usize = live
-            .iter()
-            .map(|id| {
-                let image = self.store.get(*id).unwrap();
-                image.rgba.len()
-                    + image
-                        .scaled_variants
-                        .values()
-                        .map(|bytes| bytes.len())
-                        .sum::<usize>()
-            })
+        let expected: usize = self
+            .store
+            .images
+            .values()
+            .map(KittyImageStore::stored_image_bytes)
             .sum();
         assert_eq!(
             self.store.total_bytes(),
@@ -284,6 +365,12 @@ impl KittyImageStoreModel {
             self.store.total_bytes(),
             live,
             expected
+        );
+        assert!(
+            self.store.total_bytes() <= self.store.quota_bytes,
+            "store retained {} bytes under a {} byte quota",
+            self.store.total_bytes(),
+            self.store.quota_bytes
         );
     }
 }

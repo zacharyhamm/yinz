@@ -1103,6 +1103,8 @@ pub fn switch_to_input_mode(mode: &InputMode) {
 }
 
 /// Provide a stringified [`layout`](https://zellij.dev/documentation/layouts.html) to be applied to the current session. If the layout has multiple tabs, they will all be opened.
+/// Requires `ChangeApplicationState` plus the permission for every command, editor or plugin pane
+/// the layout starts.
 pub fn new_tabs_with_layout(layout: &str) -> Vec<usize> {
     let plugin_command = PluginCommand::NewTabsWithLayout(layout.to_owned());
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
@@ -1114,6 +1116,9 @@ pub fn new_tabs_with_layout(layout: &str) -> Vec<usize> {
 }
 
 /// Provide a LayoutInfo to be applied to the current session in a new tab. If the layout has multiple tabs, they will all be opened.
+/// File layouts are confined to the layout directory and require `OpenFiles`, `RunCommands` and
+/// `OpenTerminalsOrPlugins`; URL layouts additionally require `WebAccess`. Stringified and
+/// built-in layouts require only the capabilities they actually start.
 pub fn new_tabs_with_layout_info<L: AsRef<LayoutInfo>>(layout_info: L) -> Vec<usize> {
     let plugin_command = PluginCommand::NewTabsWithLayoutInfo(layout_info.as_ref().clone());
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
@@ -1749,7 +1754,8 @@ pub fn switch_session(name: Option<&str>) {
     unsafe { host_run_plugin_command() };
 }
 
-/// Switch to a session with the given name, create one if no name is given
+/// Switch to a session with the given name, creating one from `layout` if needed. Layout
+/// permissions follow [`new_tabs_with_layout_info`].
 pub fn switch_session_with_layout(name: Option<&str>, layout: LayoutInfo, cwd: Option<PathBuf>) {
     let plugin_command = PluginCommand::SwitchSession(ConnectToSession {
         name: name.map(|n| n.to_string()),
@@ -3378,7 +3384,7 @@ pub fn break_panes_to_tab_with_id(
     BreakPanesToTabWithIdResponse::try_from(response).unwrap()
 }
 
-/// Reload an already-running in this session, optionally skipping the cache
+/// Reload an already-running plugin in this session
 pub fn reload_plugin_with_id(plugin_id: u32) {
     let plugin_command = PluginCommand::ReloadPlugin(plugin_id);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
@@ -3386,7 +3392,7 @@ pub fn reload_plugin_with_id(plugin_id: u32) {
     unsafe { host_run_plugin_command() };
 }
 
-/// Reload an already-running in this session, optionally skipping the cache
+/// Load a plugin into this session. Requires `OpenTerminalsOrPlugins`.
 pub fn load_new_plugin<S>(
     url: S,
     config: BTreeMap<String, String>,
@@ -3752,6 +3758,7 @@ pub fn get_focused_pane(tab_position: usize, pane_manifest: &PaneManifest) -> Op
     None
 }
 
+/// Replace the current layout. Layout permissions follow [`new_tabs_with_layout_info`].
 pub fn override_layout<L: AsRef<LayoutInfo>>(
     layout_info: L,
     retain_existing_terminal_panes: bool,

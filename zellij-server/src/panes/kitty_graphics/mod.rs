@@ -23,7 +23,7 @@
 //!
 //! # Judgement calls, deliberately left green
 //!
-//! Eleven places where the specification does not say enough to call the current behaviour wrong,
+//! Twelve places where the specification does not say enough to call the current behaviour wrong,
 //! or where two of its rules pull in opposite directions. They are pinned as-is so a future
 //! change to any of them is a visible decision:
 //!
@@ -34,6 +34,10 @@
 //!   retransmission to the host on every tick, and is deliberately left for later. A client that
 //!   asks the terminal to play an animation is told OK and sees a still image, which is the one
 //!   place in this module where a success reply overstates what happened.
+//! * **A full store never evicts displayed images.** The specification says images without
+//!   placements are deleted preferentially, but a store shared by many panes cannot remove the
+//!   corresponding placements itself. Once only placed images remain, a transmission that needs
+//!   more room receives `ENOSPC`; retained base64 caches are discarded before that decision.
 //! * An absent `Q` on a relative placement selects **any** placement of the parent image rather
 //!   than placement 0. The spec gives `Q` a default of 0, but a virtual placement created without
 //!   a `p` key also has placement id 0, and reading `Q` as "unspecified" is what lets a client

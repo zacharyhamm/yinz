@@ -24,6 +24,11 @@ completion includes focused regression coverage and a passing `cargo x ci check`
   stages only its generated config; named-session creation fails closed on probe errors; no-op
   scroll clears do not dirty or render; filesystem notifications preserve every path; and the two
   remaining `Result`-returning plugin SDK queries propagate transport and decode failures.
+- **Fourth round** (2026-08-30 quality pass): the six highest-ranked findings that were not already
+  in this backlog. Plugin layout reads are confined to the layout directory and embedded pane
+  actions require their own capabilities; internal DCS payloads are bounded; the Kitty graphics
+  quota is a hard retained-byte limit; debug plugin builds detect missing wasm and build-recipe
+  changes; and Kitty/termwiz stdin parsing has one owner for every byte.
 
 ## Next up
 

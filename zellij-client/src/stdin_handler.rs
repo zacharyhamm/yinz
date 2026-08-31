@@ -41,12 +41,7 @@ pub(crate) fn stdin_loop(
 
     // Byte reader + termwiz/kitty parser path.
     let mut input_parser = InputParser::new();
-    // Kitty keyboard parser is long-lived so a Kitty CSI sequence split
-    // across stdin reads still resolves on a follow-up chunk instead of
-    // silently degrading to a legacy CSI form (and losing modifier
-    // metadata).
-    let mut kitty_parser = KittyKeyboardParser::new();
-    let mut current_buffer = vec![];
+    let mut termwiz_buffer = vec![];
     let (stdin_tx, stdin_rx) = mpsc::sync_channel(32);
     let _stdin_pump = std::thread::Builder::new()
         .name("stdin_pump".to_string())
@@ -126,74 +121,22 @@ pub(crate) fn stdin_loop(
                             );
                             continue;
                         }
-                        current_buffer.append(&mut residue.clone());
-
-                        if !explicitly_disable_kitty_keyboard_protocol {
-                            // first we try to parse with the KittyKeyboardParser
-                            // if we fail, we try to parse normally.
-                            // Incomplete and NoMatch both fall through to the
-                            // termwiz parser below; on Incomplete the Kitty
-                            // parser keeps its state so the next chunk's
-                            // continuation completes the sequence.
-                            match kitty_parser.feed(&residue) {
-                                KittyParseOutcome::Complete(key_with_modifier) => {
-                                    if send_input_instructions
-                                        .send(InputInstruction::KeyWithModifierEvent(
-                                            key_with_modifier,
-                                            std::mem::take(&mut current_buffer),
-                                            true,
-                                        ))
-                                        .is_err()
-                                    {
-                                        break 'stdin;
-                                    }
-                                    schedule_finalization(
-                                        &stdin_ansi_parser,
-                                        false,
-                                        &mut needs_finalization,
-                                        &mut reply_in_progress_since,
-                                    );
-                                    continue;
-                                },
-                                KittyParseOutcome::Incomplete | KittyParseOutcome::NoMatch => {},
-                            }
-                        }
-
-                        // Parse with maybe_more = true - complete events sent immediately
-                        //
-                        // Ambiguous events (if any) will be finalized later only if 50ms
-                        // passes with no new input
-                        let maybe_more = true;
-                        let mut events: Vec<(InputEvent, usize)> = vec![];
-                        input_parser.parse_with_consumed(
+                        let (instructions, fed_termwiz) = parse_keyboard_bytes(
+                            &mut input_parser,
+                            &mut termwiz_buffer,
                             &residue,
-                            |input_event: InputEvent, consumed: usize| {
-                                events.push((input_event, consumed));
-                            },
-                            maybe_more,
+                            !explicitly_disable_kitty_keyboard_protocol,
+                            true,
                         );
-
-                        // Residue contains no OSC or whitelisted CSI
-                        // reports — `StdinAnsiParser::feed` strips both
-                        // before the keyboard parser sees the bytes.
-                        // Every termwiz event is a key/mouse/paste/etc.
-                        // Each event is forwarded with exactly the bytes
-                        // that produced it, never bytes belonging to other
-                        // events decoded from the same read.
-                        for (input_event, consumed) in events.into_iter() {
-                            let take = consumed.min(current_buffer.len());
-                            let raw_bytes: Vec<u8> = current_buffer.drain(..take).collect();
-                            if send_input_instructions
-                                .send(InputInstruction::KeyEvent(input_event, raw_bytes))
-                                .is_err()
-                            {
+                        for instruction in instructions {
+                            if send_input_instructions.send(instruction).is_err() {
                                 break 'stdin;
                             }
                         }
 
                         schedule_finalization(
                             &stdin_ansi_parser,
-                            true,
+                            fed_termwiz,
                             &mut needs_finalization,
                             &mut reply_in_progress_since,
                         );
@@ -219,9 +162,10 @@ pub(crate) fn stdin_loop(
                         let drained = stdin_ansi_parser.lock().unwrap().finalize_force();
                         drain_partial_to_keyboard(
                             &mut input_parser,
-                            &mut current_buffer,
+                            &mut termwiz_buffer,
                             send_input_instructions.clone(),
                             drained,
+                            !explicitly_disable_kitty_keyboard_protocol,
                         );
                         needs_finalization = false;
                         reply_in_progress_since = None;
@@ -232,9 +176,10 @@ pub(crate) fn stdin_loop(
                     let drained = stdin_ansi_parser.lock().unwrap().finalize_fast_partial();
                     drain_partial_to_keyboard(
                         &mut input_parser,
-                        &mut current_buffer,
+                        &mut termwiz_buffer,
                         send_input_instructions.clone(),
                         drained,
+                        !explicitly_disable_kitty_keyboard_protocol,
                     );
                     needs_finalization = false;
                     reply_in_progress_since = None;
@@ -268,30 +213,148 @@ fn schedule_finalization(
     }
 }
 
-fn drain_partial_to_keyboard(
+/// Parse keyboard residue without letting the Kitty and termwiz parsers own
+/// the same bytes. `StdinAnsiParser` has already reassembled incomplete CSI
+/// sequences, so each framed CSI candidate can be classified independently.
+fn parse_keyboard_bytes(
     input_parser: &mut InputParser,
-    current_buffer: &mut Vec<u8>,
-    send_input_instructions: SenderWithContext<InputInstruction>,
-    drained: Vec<u8>,
-) {
-    if !drained.is_empty() {
-        current_buffer.extend_from_slice(&drained);
+    termwiz_buffer: &mut Vec<u8>,
+    bytes: &[u8],
+    kitty_enabled: bool,
+    maybe_more: bool,
+) -> (Vec<InputInstruction>, bool) {
+    let mut instructions = vec![];
+    let mut fed_termwiz = false;
+    let mut cursor = 0;
+
+    if kitty_enabled {
+        while let Some((start, end)) = next_complete_csi(&bytes[cursor..]) {
+            let start = cursor + start;
+            let end = cursor + end;
+            if cursor < start {
+                feed_termwiz(
+                    input_parser,
+                    termwiz_buffer,
+                    &bytes[cursor..start],
+                    true,
+                    &mut instructions,
+                );
+                fed_termwiz = true;
+            }
+
+            let candidate = &bytes[start..end];
+            // A previous ambiguous key or an open bracketed paste owns all
+            // bytes until termwiz produces its event. In particular, do not
+            // finalize a parked ESC before its following legacy CSI.
+            let kitty_key = termwiz_buffer
+                .is_empty()
+                .then(|| KittyKeyboardParser::new().feed(candidate))
+                .and_then(|outcome| match outcome {
+                    KittyParseOutcome::Complete(key) => Some(key),
+                    KittyParseOutcome::Incomplete | KittyParseOutcome::NoMatch => None,
+                });
+            if let Some(key) = kitty_key {
+                instructions.push(InputInstruction::KeyWithModifierEvent(
+                    key,
+                    candidate.to_vec(),
+                    true,
+                ));
+            } else {
+                feed_termwiz(
+                    input_parser,
+                    termwiz_buffer,
+                    candidate,
+                    true,
+                    &mut instructions,
+                );
+                fed_termwiz = true;
+            }
+            cursor = end;
+        }
     }
 
+    if cursor < bytes.len() {
+        feed_termwiz(
+            input_parser,
+            termwiz_buffer,
+            &bytes[cursor..],
+            true,
+            &mut instructions,
+        );
+        fed_termwiz = true;
+    }
+    if !maybe_more {
+        feed_termwiz(input_parser, termwiz_buffer, &[], false, &mut instructions);
+    }
+    (instructions, fed_termwiz)
+}
+
+fn feed_termwiz(
+    input_parser: &mut InputParser,
+    termwiz_buffer: &mut Vec<u8>,
+    bytes: &[u8],
+    maybe_more: bool,
+    instructions: &mut Vec<InputInstruction>,
+) {
+    termwiz_buffer.extend_from_slice(bytes);
     let mut events: Vec<(InputEvent, usize)> = vec![];
     input_parser.parse_with_consumed(
-        &drained,
+        bytes,
         |input_event: InputEvent, consumed: usize| {
             events.push((input_event, consumed));
         },
-        false,
+        maybe_more,
     );
     for (input_event, consumed) in events {
-        let take = consumed.min(current_buffer.len());
-        let raw_bytes: Vec<u8> = current_buffer.drain(..take).collect();
-        send_input_instructions
-            .send(InputInstruction::KeyEvent(input_event, raw_bytes))
-            .unwrap();
+        let take = consumed.min(termwiz_buffer.len());
+        let raw_bytes: Vec<u8> = termwiz_buffer.drain(..take).collect();
+        instructions.push(InputInstruction::KeyEvent(input_event, raw_bytes));
+    }
+}
+
+/// Find the next structurally complete 7-bit CSI sequence in `bytes` and
+/// return its start/end offsets. Invalid or incomplete candidates are skipped
+/// so a later complete candidate in the same read can still be recognized.
+fn next_complete_csi(bytes: &[u8]) -> Option<(usize, usize)> {
+    let mut search_from = 0;
+    while search_from + 1 < bytes.len() {
+        let relative_start = bytes[search_from..]
+            .windows(2)
+            .position(|window| window == b"\x1b[")?;
+        let start = search_from + relative_start;
+        if let Some(len) = complete_csi_len(&bytes[start..]) {
+            return Some((start, start + len));
+        }
+        search_from = start + 1;
+    }
+    None
+}
+
+fn complete_csi_len(bytes: &[u8]) -> Option<usize> {
+    if !bytes.starts_with(b"\x1b[") {
+        return None;
+    }
+    for (offset, byte) in bytes[2..].iter().enumerate() {
+        match byte {
+            0x20..=0x3f => {},
+            0x40..=0x7e => return Some(offset + 3),
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn drain_partial_to_keyboard(
+    input_parser: &mut InputParser,
+    termwiz_buffer: &mut Vec<u8>,
+    send_input_instructions: SenderWithContext<InputInstruction>,
+    drained: Vec<u8>,
+    kitty_enabled: bool,
+) {
+    let (instructions, _) =
+        parse_keyboard_bytes(input_parser, termwiz_buffer, &drained, kitty_enabled, false);
+    for instruction in instructions {
+        send_input_instructions.send(instruction).unwrap();
     }
 }
 
@@ -350,7 +413,135 @@ fn extract_focus_reports(residue: Vec<u8>) -> (Vec<u8>, Vec<bool>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_startup_query_string, extract_focus_reports, PIXEL_SIZE_QUERY};
+    use super::{
+        build_startup_query_string, extract_focus_reports, parse_keyboard_bytes, PIXEL_SIZE_QUERY,
+    };
+    use crate::{stdin_ansi_parser::StdinAnsiParser, InputInstruction};
+    use zellij_utils::{
+        data::BareKey,
+        vendored::termwiz::input::{InputEvent, InputParser, KeyCode, Modifiers},
+    };
+
+    fn parse_stdin_chunks(chunks: &[&[u8]]) -> Vec<InputInstruction> {
+        let mut ansi_parser = StdinAnsiParser::new();
+        let mut input_parser = InputParser::new();
+        let mut termwiz_buffer = vec![];
+        let mut instructions = vec![];
+        for chunk in chunks {
+            let output = ansi_parser.feed(chunk);
+            assert!(output.replies.is_empty());
+            let (mut parsed, _) = parse_keyboard_bytes(
+                &mut input_parser,
+                &mut termwiz_buffer,
+                &output.residue,
+                true,
+                true,
+            );
+            instructions.append(&mut parsed);
+        }
+        let (mut flushed, _) =
+            parse_keyboard_bytes(&mut input_parser, &mut termwiz_buffer, &[], true, false);
+        instructions.append(&mut flushed);
+        instructions
+    }
+
+    fn assert_mixed_kitty_events(instructions: &[InputInstruction]) {
+        assert_eq!(instructions.len(), 3, "got {instructions:?}");
+        match &instructions[0] {
+            InputInstruction::KeyEvent(InputEvent::Key(key), raw_bytes) => {
+                assert_eq!(key.key, KeyCode::Char('x'));
+                assert_eq!(raw_bytes, b"x");
+            },
+            other => panic!("expected plain x, got {other:?}"),
+        }
+        match &instructions[1] {
+            InputInstruction::KeyWithModifierEvent(key, raw_bytes, true) => {
+                assert!(key.is_key_with_ctrl_modifier(BareKey::Char('a')));
+                assert_eq!(raw_bytes, b"\x1b[97;5u");
+            },
+            other => panic!("expected Kitty Ctrl-a, got {other:?}"),
+        }
+        match &instructions[2] {
+            InputInstruction::KeyEvent(InputEvent::Key(key), raw_bytes) => {
+                assert_eq!(key.key, KeyCode::Char('y'));
+                assert_eq!(raw_bytes, b"y");
+            },
+            other => panic!("expected plain y, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mixed_kitty_and_plain_keys_keep_order_and_raw_bytes_at_every_split() {
+        let input = b"x\x1b[97;5uy";
+        for split in 0..=input.len() {
+            let instructions = parse_stdin_chunks(&[&input[..split], &input[split..]]);
+            assert_mixed_kitty_events(&instructions);
+        }
+    }
+
+    #[test]
+    fn consecutive_kitty_keys_in_one_read_are_dispatched_separately() {
+        let instructions = parse_stdin_chunks(&[b"\x1b[97;5u\x1b[98;2u"]);
+        assert_eq!(instructions.len(), 2, "got {instructions:?}");
+        match &instructions[0] {
+            InputInstruction::KeyWithModifierEvent(key, raw_bytes, true) => {
+                assert!(key.is_key_with_ctrl_modifier(BareKey::Char('a')));
+                assert_eq!(raw_bytes, b"\x1b[97;5u");
+            },
+            other => panic!("expected Kitty Ctrl-a, got {other:?}"),
+        }
+        match &instructions[1] {
+            InputInstruction::KeyWithModifierEvent(key, raw_bytes, true) => {
+                assert!(key.is_key_with_shift_modifier(BareKey::Char('b')));
+                assert_eq!(raw_bytes, b"\x1b[98;2u");
+            },
+            other => panic!("expected Kitty Shift-b, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_alt_arrow_remains_one_event_at_every_split() {
+        let input = b"\x1b\x1b[A";
+        for split in 0..=input.len() {
+            let instructions = parse_stdin_chunks(&[&input[..split], &input[split..]]);
+            assert_eq!(instructions.len(), 1, "split at {split}: {instructions:?}");
+            match &instructions[0] {
+                InputInstruction::KeyEvent(InputEvent::Key(key), raw_bytes) => {
+                    assert_eq!(key.key, KeyCode::UpArrow, "split at {split}");
+                    assert_eq!(key.modifiers, Modifiers::ALT, "split at {split}");
+                    assert_eq!(raw_bytes, input, "split at {split}");
+                },
+                other => panic!("split at {split}: expected Alt+Up, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn kitty_sequence_inside_fragmented_bracketed_paste_stays_literal() {
+        let start = b"\x1b[200~";
+        let body = b"before\x1b[97;5uafter";
+        let end_and_key = b"\x1b[201~b";
+        let instructions = parse_stdin_chunks(&[start, body, end_and_key]);
+
+        assert_eq!(instructions.len(), 2, "got {instructions:?}");
+        match &instructions[0] {
+            InputInstruction::KeyEvent(InputEvent::Paste(pasted), raw_bytes) => {
+                assert_eq!(pasted.as_bytes(), body);
+                let mut expected_raw = start.to_vec();
+                expected_raw.extend_from_slice(body);
+                expected_raw.extend_from_slice(b"\x1b[201~");
+                assert_eq!(raw_bytes, &expected_raw);
+            },
+            other => panic!("expected one literal paste, got {other:?}"),
+        }
+        match &instructions[1] {
+            InputInstruction::KeyEvent(InputEvent::Key(key), raw_bytes) => {
+                assert_eq!(key.key, KeyCode::Char('b'));
+                assert_eq!(raw_bytes, b"b");
+            },
+            other => panic!("expected plain b after paste, got {other:?}"),
+        }
+    }
 
     #[test]
     fn focus_reports_are_extracted_from_the_byte_stream() {

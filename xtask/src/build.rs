@@ -22,6 +22,8 @@ const PLUGIN_INPUT_FILES: &[&str] = &[
     "Cargo.lock",
     "Cargo.toml",
     "rust-toolchain.toml",
+    "xtask/src/build.rs",
+    "xtask/src/main.rs",
     "zellij-tile/Cargo.toml",
     "zellij-tile-utils/Cargo.toml",
     "zellij-utils/Cargo.toml",
@@ -49,7 +51,11 @@ pub fn build(sh: &Shell, flags: flags::Build) -> anyhow::Result<()> {
 
     if flags.release && !flags.no_plugins {
         ensure_release_plugins(sh)?;
-    } else if !flags.no_plugins && (plugins_force() || plugin_sources_changed()) {
+    } else if !flags.no_plugins
+        && (plugins_force()
+            || plugin_outputs_missing(plugin_names().into_iter().map(debug_plugin_path))
+            || plugin_sources_changed())
+    {
         // Build all plugins in a single invocation so Cargo can unify transitive dependency
         // features across all of them and compile shared crates (e.g. zellij-utils) only once.
         let plugin_members: Vec<&WorkspaceMember> = crate::workspace_members()
@@ -134,6 +140,10 @@ pub fn release_plugin_path(plugin_name: &str) -> PathBuf {
 /// Where the debug plugin build leaves a plugin - what a debug zellij looks for first.
 pub fn debug_plugin_path(plugin_name: &str) -> PathBuf {
     wasm_target_path("debug", plugin_name)
+}
+
+fn plugin_outputs_missing(paths: impl IntoIterator<Item = PathBuf>) -> bool {
+    paths.into_iter().any(|path| !path.is_file())
 }
 
 /// Hashes the inputs which can change plugin wasm, so checkout and worktree mtime changes do not
@@ -512,7 +522,31 @@ mod tests {
         fs::write(&stray_wasm, "wasm").unwrap();
         assert_eq!(changed, hash_plugin_files(&root).unwrap().finalize());
 
+        fs::write(root.join("xtask/src/build.rs"), "changed build recipe\n").unwrap();
+        let changed_recipe = hash_plugin_files(&root).unwrap().finalize();
+        assert_ne!(changed, changed_recipe);
+
+        fs::write(
+            root.join("xtask/src/main.rs"),
+            "changed plugin membership\n",
+        )
+        .unwrap();
+        assert_ne!(changed_recipe, hash_plugin_files(&root).unwrap().finalize());
+
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_plugin_output_is_not_fresh() {
+        let root = tempfile::tempdir().unwrap();
+        let present = root.path().join("present.wasm");
+        fs::write(&present, "wasm").unwrap();
+
+        assert!(!plugin_outputs_missing([present.clone()]));
+        assert!(plugin_outputs_missing([
+            present,
+            root.path().join("missing.wasm"),
+        ]));
     }
 
     #[test]

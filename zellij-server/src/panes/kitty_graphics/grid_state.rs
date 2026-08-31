@@ -174,6 +174,25 @@ fn enoent(command: &KittyCommand, message: &str) -> KittyError {
     }
 }
 
+fn enospc(command: &KittyCommand, message: &str) -> KittyError {
+    KittyError {
+        code: KittyErrorCode::Enospc,
+        message: message.to_owned(),
+        image_id: command.image_id,
+        image_number: command.image_number,
+        placement_id: command.placement_id,
+        quiet: command.quiet,
+    }
+}
+
+fn with_command_fields(mut error: KittyError, command: &KittyCommand) -> KittyError {
+    error.image_id = command.image_id;
+    error.image_number = command.image_number;
+    error.placement_id = command.placement_id;
+    error.quiet = command.quiet;
+    error
+}
+
 /// The three ways a relative placement can be refused, all echoing the same fields as the errors
 /// above so a client can tell which of several in-flight placements was rejected.
 fn relative_error(command: &KittyCommand, code: KittyErrorCode, message: &str) -> KittyError {
@@ -274,40 +293,39 @@ impl KittyGrid {
         } else {
             command.image_id.unwrap_or(0)
         };
-        if pane_image_id != 0 {
-            if let Some(old_internal) = self.image_ids.get(&pane_image_id).copied() {
-                self.remove_virtual_placements(|virtual_placement| {
-                    virtual_placement.image_id == pane_image_id
-                });
-                let mut store = self.kitty_image_store.borrow_mut();
-                let mut kept = Vec::with_capacity(self.placements.len());
-                for placement in self.placements.drain(..) {
-                    if placement.image_id == pane_image_id {
-                        store.free(placement.internal_id);
-                    } else {
-                        kept.push(placement);
-                    }
+        let old_internal = if pane_image_id == 0 {
+            None
+        } else {
+            self.image_ids.get(&pane_image_id).copied()
+        };
+        // Store the replacement before touching its placements or pane-local ids. The store can
+        // credit the old image's bytes while preflighting, then swap it only after success.
+        let internal = {
+            let mut store = self.kitty_image_store.borrow_mut();
+            let result = match old_internal {
+                Some(old_internal) => store.replace_image(old_internal, image),
+                None => store.store_image(image),
+            };
+            result.map_err(|error| with_command_fields(error, command))?
+        };
+        if old_internal.is_some() {
+            self.remove_virtual_placements(|virtual_placement| {
+                virtual_placement.image_id == pane_image_id
+            });
+            let mut store = self.kitty_image_store.borrow_mut();
+            let mut kept = Vec::with_capacity(self.placements.len());
+            for placement in self.placements.drain(..) {
+                if placement.image_id == pane_image_id {
+                    store.free(placement.internal_id);
+                } else {
+                    kept.push(placement);
                 }
-                self.placements = kept;
-                if store.get(old_internal).is_some() {
-                    store.free(old_internal);
-                }
-                drop(store);
-                self.image_ids.remove(&pane_image_id);
-                self.drop_image_number_references(pane_image_id);
             }
+            self.placements = kept;
+            drop(store);
+            self.image_ids.remove(&pane_image_id);
+            self.drop_image_number_references(pane_image_id);
         }
-        let internal = self
-            .kitty_image_store
-            .borrow_mut()
-            .store_image(image)
-            .map_err(|mut error| {
-                error.image_id = command.image_id;
-                error.image_number = command.image_number;
-                error.placement_id = command.placement_id;
-                error.quiet = command.quiet;
-                error
-            })?;
         if let Some(image_number) = command.image_number {
             self.image_numbers
                 .entry(image_number)
@@ -403,6 +421,7 @@ impl KittyGrid {
         };
         store
             .write_frame(internal, edit, canvas, gap_ms)
+            .map_err(|error| with_command_fields(error, command))?
             .ok_or_else(|| enoent(command, "no such frame"))
     }
     /// `a=a`: control playback. Nothing here advances the animation by itself — this terminal has
@@ -496,6 +515,7 @@ impl KittyGrid {
         );
         store
             .write_frame(internal, Some(dest_frame), dest, 0)
+            .map_err(|error| with_command_fields(error, command))?
             .ok_or_else(|| enoent(command, "no such destination frame"))?;
         drop(store);
         self.retransmit_placements_of(internal);
@@ -650,11 +670,13 @@ impl KittyGrid {
                 );
                 scale_rgba(&cropped, source_w, source_h, dst_w, dst_h)
             };
-            self.kitty_image_store.borrow_mut().add_scaled_variant(
+            if !self.kitty_image_store.borrow_mut().add_scaled_variant(
                 internal,
                 dest_cells,
                 scaled_bytes,
-            );
+            ) {
+                return Err(enospc(command, "scaled image exceeds storage quota"));
+            }
         }
         let (origin_x, origin_y) = match &relative_to {
             // Spec: "a relative placement gets its position specified based on another placement,
@@ -980,9 +1002,13 @@ impl KittyGrid {
             );
             scale_rgba(&cropped, source_w, source_h, fitted_px.0, fitted_px.1)
         };
-        self.kitty_image_store
-            .borrow_mut()
-            .add_scaled_variant(internal, variant_key, fitted_bytes);
+        if !self.kitty_image_store.borrow_mut().add_scaled_variant(
+            internal,
+            variant_key,
+            fitted_bytes,
+        ) {
+            return Err(enospc(command, "scaled image exceeds storage quota"));
+        }
         let placement_id = if pane_image_id != 0 {
             command.placement_id.unwrap_or(0)
         } else {
@@ -1553,8 +1579,15 @@ impl KittyGrid {
             (self.previous_cell_size, *self.character_cell_size.borrow())
         {
             if previous_cell_size != character_cell_size {
-                let mut regenerations: Vec<(InternalImageId, (u16, u16), PixelRect)> = Vec::new();
-                for placement in self.placements.iter_mut() {
+                struct Regeneration {
+                    placement_index: usize,
+                    internal_id: InternalImageId,
+                    dest_cells: (u16, u16),
+                    source_rect: PixelRect,
+                    scaled_px: (usize, usize),
+                }
+                let mut regenerations = Vec::new();
+                for (index, placement) in self.placements.iter_mut().enumerate() {
                     placement.display_rect.x = (placement.display_rect.x
                         / previous_cell_size.width)
                         * character_cell_size.width;
@@ -1563,23 +1596,30 @@ impl KittyGrid {
                         * character_cell_size.height as isize;
                     if placement.scaled_px.is_some() {
                         let (cols, rows) = placement.dest_cells;
-                        placement.display_rect.width = cols as usize * character_cell_size.width;
-                        placement.display_rect.height = rows as usize * character_cell_size.height;
-                        placement.scaled_px =
-                            Some((placement.display_rect.width, placement.display_rect.height));
-                        placement.emit_x = 0;
-                        placement.emit_y = 0;
-                        regenerations.push((
-                            placement.internal_id,
-                            placement.dest_cells,
-                            placement.source_rect,
-                        ));
+                        let scaled_px = (
+                            cols as usize * character_cell_size.width,
+                            rows as usize * character_cell_size.height,
+                        );
+                        regenerations.push(Regeneration {
+                            placement_index: index,
+                            internal_id: placement.internal_id,
+                            dest_cells: placement.dest_cells,
+                            source_rect: placement.source_rect,
+                            scaled_px,
+                        });
                     }
                 }
-                for (internal, dest_cells, source_rect) in regenerations {
+                for regeneration in regenerations {
+                    let Regeneration {
+                        placement_index,
+                        internal_id,
+                        dest_cells,
+                        source_rect,
+                        scaled_px,
+                    } = regeneration;
                     let scaled_bytes = {
                         let store = self.kitty_image_store.borrow();
-                        match store.get(internal) {
+                        match store.get(internal_id) {
                             Some(image) => {
                                 let cropped = crop_rgba(
                                     image.displayed_rgba(),
@@ -1594,19 +1634,27 @@ impl KittyGrid {
                                     &cropped,
                                     source_rect.width,
                                     source_rect.height,
-                                    dest_cells.0 as usize * character_cell_size.width,
-                                    dest_cells.1 as usize * character_cell_size.height,
+                                    scaled_px.0,
+                                    scaled_px.1,
                                 ))
                             },
                             None => None,
                         }
                     };
                     if let Some(scaled_bytes) = scaled_bytes {
-                        self.kitty_image_store.borrow_mut().add_scaled_variant(
-                            internal,
+                        let stored = self.kitty_image_store.borrow_mut().add_scaled_variant(
+                            internal_id,
                             dest_cells,
                             scaled_bytes,
                         );
+                        if stored {
+                            let placement = &mut self.placements[placement_index];
+                            placement.display_rect.width = scaled_px.0;
+                            placement.display_rect.height = scaled_px.1;
+                            placement.scaled_px = Some(scaled_px);
+                            placement.emit_x = 0;
+                            placement.emit_y = 0;
+                        }
                     }
                 }
             }

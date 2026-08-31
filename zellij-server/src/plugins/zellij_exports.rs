@@ -22,7 +22,7 @@ use std::{
     collections::{BTreeMap, HashSet},
     fs,
     io::{Read, Write},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process,
     str::FromStr,
     sync::OnceLock,
@@ -88,7 +88,7 @@ use zellij_utils::{
         command::{OpenFilePayload, RunCommand, RunCommandAction, TerminalAction},
         config::ConfigError,
         keybinds::Keybinds,
-        layout::{Layout, RunPluginOrAlias, TabLayoutInfo},
+        layout::{Layout, Run, RunPluginOrAlias, TabLayoutInfo},
         options::Options,
     },
     plugin_api::{
@@ -1118,7 +1118,13 @@ fn dump_layout(env: &mut PluginEnv, layout_name: String) {
     let layout_path = PathBuf::from(&layout_name);
 
     let layout_dir = env.layout_dir.clone().or_else(default_layout_dir);
-    let response = match Layout::stringified_from_dir(&layout_path, layout_dir.as_ref()) {
+    let result = validate_plugin_layout_path(&layout_name, layout_dir.as_ref())
+        .map_err(|e| e.to_string())
+        .and_then(|_| {
+            Layout::stringified_from_dir(&layout_path, layout_dir.as_ref())
+                .map_err(|e| e.to_string())
+        });
+    let response = match result {
         Ok((_, layout_content, _)) => ProtobufDumpLayoutResponse {
             result: Some(dump_layout_response::Result::LayoutContent(layout_content)),
         },
@@ -3534,6 +3540,156 @@ fn switch_to_mode(env: &PluginEnv, input_mode: InputMode) {
     apply_action!(action, error_msg, env);
 }
 
+fn ensure_plugin_permissions(
+    env: &PluginEnv,
+    permissions: impl IntoIterator<Item = PermissionType>,
+) -> Result<()> {
+    let missing: Vec<_> = permissions
+        .into_iter()
+        .filter(|permission| !has_permission(env, *permission))
+        .collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "layout needs permissions this plugin has not been granted: {}",
+            missing
+                .into_iter()
+                .map(|permission| permission.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
+}
+
+fn layout_run_permissions(layout: &Layout) -> BTreeSet<PermissionType> {
+    let mut permissions = BTreeSet::new();
+    let mut inspect =
+        |tiled_layout: &zellij_utils::input::layout::TiledPaneLayout,
+         floating_layouts: &[zellij_utils::input::layout::FloatingPaneLayout]| {
+            let runs = tiled_layout
+                .extract_run_instructions()
+                .into_iter()
+                .flatten()
+                .chain(
+                    floating_layouts
+                        .iter()
+                        .filter(|pane| !pane.already_running)
+                        .filter_map(|pane| pane.run.clone()),
+                );
+            for run in runs {
+                match run {
+                    Run::Command(_) => {
+                        permissions.insert(PermissionType::RunCommands);
+                    },
+                    Run::EditFile(..) => {
+                        permissions.insert(PermissionType::OpenFiles);
+                    },
+                    Run::Plugin(_) => {
+                        permissions.insert(PermissionType::OpenTerminalsOrPlugins);
+                    },
+                    Run::Cwd(_) => {},
+                }
+            }
+        };
+    if layout.tabs.is_empty() {
+        if let Some((tiled_layout, floating_layouts)) = layout.template.as_ref() {
+            inspect(tiled_layout, floating_layouts);
+        }
+    } else {
+        for (_, tiled_layout, floating_layouts) in &layout.tabs {
+            inspect(tiled_layout, floating_layouts);
+        }
+    }
+    permissions
+}
+
+fn validate_plugin_layout_path(layout_name: &str, layout_dir: Option<&PathBuf>) -> Result<()> {
+    let requested = Path::new(layout_name);
+    if requested.components().any(|component| {
+        matches!(
+            component,
+            Component::Prefix(_) | Component::RootDir | Component::ParentDir
+        )
+    }) {
+        return Err(anyhow!(
+            "plugin layout path must stay inside the layout directory: {}",
+            requested.display()
+        ));
+    }
+
+    let Some(layout_dir) = layout_dir.cloned().or_else(default_layout_dir) else {
+        return Ok(());
+    };
+    let requested = layout_dir.join(requested);
+    let candidates = [
+        requested.clone(),
+        requested.with_extension("kdl"),
+        requested.with_extension("swap.kdl"),
+    ];
+    if !candidates.iter().any(|candidate| candidate.exists()) {
+        return Ok(());
+    }
+
+    let canonical_root = layout_dir.canonicalize().with_context(|| {
+        format!(
+            "failed to resolve layout directory {}",
+            layout_dir.display()
+        )
+    })?;
+    for candidate in candidates
+        .into_iter()
+        .filter(|candidate| candidate.exists())
+    {
+        let canonical_candidate = candidate
+            .canonicalize()
+            .with_context(|| format!("failed to resolve layout path {}", candidate.display()))?;
+        if !canonical_candidate.starts_with(&canonical_root) {
+            return Err(anyhow!(
+                "plugin layout path resolves outside the layout directory: {}",
+                candidate.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_layout_info_permissions(env: &PluginEnv, layout_info: &LayoutInfo) -> Result<()> {
+    match layout_info {
+        LayoutInfo::File(layout_name, _) => {
+            validate_plugin_layout_path(layout_name, env.layout_dir.as_ref())?;
+            ensure_plugin_permissions(
+                env,
+                [
+                    PermissionType::OpenFiles,
+                    PermissionType::RunCommands,
+                    PermissionType::OpenTerminalsOrPlugins,
+                ],
+            )
+        },
+        LayoutInfo::Url(_) => ensure_plugin_permissions(
+            env,
+            [
+                PermissionType::OpenFiles,
+                PermissionType::RunCommands,
+                PermissionType::OpenTerminalsOrPlugins,
+                PermissionType::WebAccess,
+            ],
+        ),
+        LayoutInfo::BuiltIn(_) | LayoutInfo::Stringified(_) => {
+            let layout = Layout::from_layout_info(&env.layout_dir, layout_info.clone())
+                .map_err(|e| anyhow!("Failed to parse layout: {:?}", e))?;
+            ensure_plugin_permissions(env, layout_run_permissions(&layout))
+        },
+    }
+}
+
+fn layout_from_plugin_info(env: &PluginEnv, layout_info: LayoutInfo) -> Result<Layout> {
+    ensure_layout_info_permissions(env, &layout_info)?;
+    Layout::from_layout_info(&env.layout_dir, layout_info)
+        .map_err(|e| anyhow!("Failed to parse layout: {:?}", e))
+}
+
 fn new_tabs_with_layout(env: &mut PluginEnv, raw_layout: &str) -> Result<()> {
     // TODO: cwd
     let layout = Layout::from_str(
@@ -3543,14 +3699,14 @@ fn new_tabs_with_layout(env: &mut PluginEnv, raw_layout: &str) -> Result<()> {
         None,
     )
     .map_err(|e| anyhow!("Failed to parse layout: {:?}", e))?;
+    ensure_plugin_permissions(env, layout_run_permissions(&layout))?;
     apply_layout(env, layout);
     Ok(())
 }
 
 fn new_tabs_with_layout_info(env: &mut PluginEnv, layout_info: LayoutInfo) -> Result<()> {
     // TODO: cwd
-    let layout = Layout::from_layout_info(&env.layout_dir, layout_info)
-        .map_err(|e| anyhow!("Failed to parse layout: {:?}", e))?;
+    let layout = layout_from_plugin_info(env, layout_info)?;
     apply_layout(env, layout);
     Ok(())
 }
@@ -3774,12 +3930,8 @@ fn switch_session(
 ) -> Result<()> {
     // pane_id is (id, is_plugin)
     let err_context = || "Failed to switch session".to_string();
-    if let Some(LayoutInfo::Stringified(stringified_layout)) = layout.as_ref() {
-        // we verify the stringified layout here to fail early rather than when parsing it at the
-        // session-switching phase
-        if let Err(e) = Layout::from_kdl(stringified_layout, None, None, None) {
-            return Err(anyhow!("Failed to deserialize layout: {}", e));
-        }
+    if let Some(layout) = layout.as_ref() {
+        ensure_layout_info_permissions(env, layout)?;
     }
 
     let (completion_tx, completion_rx) = oneshot::channel();
@@ -6845,8 +6997,7 @@ fn override_layout(
     apply_only_to_active_tab: bool,
     context: BTreeMap<String, String>,
 ) -> Result<()> {
-    let layout = Layout::from_layout_info(&env.layout_dir, layout_info)
-        .map_err(|e| anyhow!("Failed to parse layout: {:?}", e))?;
+    let layout = layout_from_plugin_info(env, layout_info)?;
 
     // Convert all tabs to Vec<TabLayoutInfo>
     let tabs: Vec<TabLayoutInfo> = layout
@@ -7017,6 +7168,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::OpenTerminalInPlaceOfPlugin
         | CommandType::OpenPluginPaneInNewTab
         | CommandType::OpenPluginPaneFloating
+        | CommandType::LoadNewPlugin
         | CommandType::NewTiledPaneInTab
         | CommandType::OpenTerminalPaneInPlaceOfPaneId => PermissionType::OpenTerminalsOrPlugins,
         CommandType::OpenCommandPane
@@ -7124,7 +7276,6 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::SetTabProjects
         | CommandType::BreakPanesToTabWithId
         | CommandType::ReloadPlugin
-        | CommandType::LoadNewPlugin
         | CommandType::SetFloatingPanePinned
         | CommandType::StackPanes
         | CommandType::ChangeFloatingPanesCoordinates
@@ -7327,6 +7478,102 @@ mod permission_tests {
                 "{kind}"
             );
         }
+    }
+
+    #[test]
+    fn loading_a_new_plugin_needs_plugin_launch_permission() {
+        assert_eq!(
+            command_permission(CommandType::LoadNewPlugin),
+            Some(PermissionType::OpenTerminalsOrPlugins)
+        );
+        assert_eq!(
+            command_permission(CommandType::ReloadPlugin),
+            Some(PermissionType::ChangeApplicationState)
+        );
+    }
+
+    #[test]
+    fn layout_permissions_cover_every_active_startup_pane_kind() {
+        let tiled_layout = zellij_utils::input::layout::TiledPaneLayout {
+            children: vec![
+                zellij_utils::input::layout::TiledPaneLayout {
+                    run: Some(Run::Command(RunCommand::default())),
+                    ..Default::default()
+                },
+                zellij_utils::input::layout::TiledPaneLayout {
+                    run: Some(Run::EditFile(PathBuf::from("active"), None, None)),
+                    ..Default::default()
+                },
+                zellij_utils::input::layout::TiledPaneLayout {
+                    run: Some(Run::Plugin(RunPluginOrAlias::default())),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let layout = Layout {
+            template: Some((tiled_layout, vec![])),
+            ..Default::default()
+        };
+        assert_eq!(
+            layout_run_permissions(&layout),
+            BTreeSet::from([
+                PermissionType::OpenFiles,
+                PermissionType::RunCommands,
+                PermissionType::OpenTerminalsOrPlugins,
+            ])
+        );
+    }
+
+    #[test]
+    fn layout_permissions_ignore_non_startup_work() {
+        let ignored = Some(Run::Command(RunCommand::default()));
+        let tiled_layout = zellij_utils::input::layout::TiledPaneLayout {
+            run: ignored.clone(),
+            run_instructions_to_ignore: vec![ignored],
+            ..Default::default()
+        };
+        let already_running = zellij_utils::input::layout::FloatingPaneLayout {
+            run: Some(Run::Plugin(RunPluginOrAlias::default())),
+            already_running: true,
+            ..Default::default()
+        };
+        let swap_layout = zellij_utils::input::layout::TiledPaneLayout {
+            run: Some(Run::EditFile(PathBuf::from("swap"), None, None)),
+            ..Default::default()
+        };
+        let layout = Layout {
+            template: Some((tiled_layout, vec![already_running])),
+            swap_layouts: vec![(swap_layout, vec![])],
+            ..Default::default()
+        };
+        assert!(layout_run_permissions(&layout).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plugin_layout_paths_cannot_escape_the_layout_directory() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let layout_dir = temp.path().join("layouts");
+        std::fs::create_dir(&layout_dir).unwrap();
+        std::fs::write(layout_dir.join("safe.kdl"), "layout {}").unwrap();
+        let outside = temp.path().join("outside.kdl");
+        std::fs::write(&outside, "layout {}").unwrap();
+
+        validate_plugin_layout_path("safe", Some(&layout_dir)).unwrap();
+        symlink(layout_dir.join("safe.kdl"), layout_dir.join("inside.kdl")).unwrap();
+        validate_plugin_layout_path("inside", Some(&layout_dir)).unwrap();
+
+        assert!(validate_plugin_layout_path("../outside", Some(&layout_dir)).is_err());
+        assert!(validate_plugin_layout_path(outside.to_str().unwrap(), Some(&layout_dir)).is_err());
+
+        symlink(&outside, layout_dir.join("escape.kdl")).unwrap();
+        assert!(validate_plugin_layout_path("escape", Some(&layout_dir)).is_err());
+
+        symlink(&outside, layout_dir.join("safe.swap.kdl")).unwrap();
+        assert!(validate_plugin_layout_path("safe", Some(&layout_dir)).is_err());
     }
 
     #[test]

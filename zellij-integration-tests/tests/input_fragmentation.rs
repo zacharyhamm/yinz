@@ -125,3 +125,28 @@ fn a_key_typed_after_a_bare_osc_introducer_is_not_swallowed() {
     unlock_interface(&zellij);
     zellij.quit();
 }
+
+#[test]
+fn a_kitty_key_after_a_plain_key_in_the_same_read_is_not_swallowed() {
+    let mut zellij = start_zellij();
+    let terminal = claim_first_terminal_and_wait_for_prompt(&zellij);
+    terminal.disable_echo();
+
+    // The plain key and Kitty Ctrl-p deliberately share one stdin read. Ctrl-p
+    // must still be decoded independently and switch Zellij into pane mode.
+    zellij.send_stdin(b"x\x1b[112;5u");
+
+    terminal.wait_for_stdin("the leading plain key reached the pane", |stdin_bytes| {
+        stdin_bytes == b"x"
+    });
+    zellij.wait_until(
+        "the trailing Kitty Ctrl-p entered pane mode",
+        |grid_snapshot| {
+            grid_snapshot.contains(" New ")
+                && grid_snapshot.contains(" Move ")
+                && grid_snapshot.contains(" Fullscreen ")
+        },
+    );
+
+    zellij.quit();
+}
