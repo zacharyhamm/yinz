@@ -46,11 +46,16 @@
 //! **Nothing the layout does moves either panel.** A placement is two steps - *choose* a corner,
 //! then *resolve* it against the surface (`corner_for`, then `rect_in_corner`) - and only the
 //! first reads the layout. The corner a press chose is remembered (`State::placed_corner`), so
-//! every later placement is a function of that corner and the screen alone: a pane opening, a
-//! pane closing, a re-tile and a swap layout are not inputs to it. `track_anchor` still reads
+//! every later placement is a function of that corner, the screen and the config: a pane opening,
+//! a pane closing, a re-tile and a swap layout are not inputs to it. `track_anchor` still reads
 //! every `PaneUpdate`, but only to keep the anchor the *next* press ranks against - it places
 //! nothing. What places is a press, a hide, a reveal, a config change, and a terminal resize,
 //! which resolves the same corner against the screen's new size.
+//!
+//! The config is where the *size* comes from, which is the one thing a placement does not carry
+//! over: a press threads the size the manifest reports (`own_rect`, then `reposition`), so it
+//! keeps a pane the user resized, but every other placement passes `None` and gets `panel_size`'s
+//! configured size back.
 //!
 //! **A press always moves the conversation.** Every placement is one of four corners
 //! (`Corner`), so a repeat press is a walk: `pick_anchor` tours the panes nobody has been sent
