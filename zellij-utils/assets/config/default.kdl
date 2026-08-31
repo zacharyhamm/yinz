@@ -339,14 +339,24 @@ plugins {
     //                  does. Useful when the agent only reaches the network via a
     //                  sidecar, e.g. tailscale. Unset sends `web_search` direct.
     //
-    //   api             which wire protocol the endpoint speaks. "chat" (the default)
-    //                   is `/v1/chat/completions`, which every OpenAI-compatible
+    //   api             which wire protocol the endpoint speaks. "chat" is
+    //                   `/v1/chat/completions`, which every OpenAI-compatible
     //                   provider implements. "responses" is OpenAI's `/v1/responses`,
-    //                   which is the only endpoint that accepts `reasoning_effort` and
-    //                   a tool set in the same request - on chat/completions OpenAI's
-    //                   reasoning models reject the pair with a 400, so set this to
-    //                   use hocus's tools and reasoning together. Both are derived
-    //                   from the same `base_url`.
+    //                   the only endpoint that accepts `reasoning_effort` and a tool
+    //                   set in the same request - on chat/completions OpenAI's
+    //                   reasoning models reject the pair with a 400. Defaults to
+    //                   "responses" against OpenAI's own endpoint (base_url
+    //                   api.openai.com) and "chat" against everything else; set it
+    //                   explicitly to override either way. Both are derived from
+    //                   the same `base_url`.
+    //
+    //   reasoning_effort  how hard a reasoning model should think, one of "none",
+    //                     "minimal", "low", "medium", "high", "xhigh", "max" (the
+    //                     union of what OpenAI, DeepSeek and OpenRouter accept).
+    //                     Defaults to "medium" against OpenAI's own endpoint, and
+    //                     to unset - the field is simply omitted - everywhere else,
+    //                     since sending it to an endpoint that does not expect it
+    //                     is the problem this key exists to avoid.
     //
     //   reasoning_echo  "false" stops hocus handing a thinking model its own
     //                   `reasoning_content` back on the tool-calling turns of the
