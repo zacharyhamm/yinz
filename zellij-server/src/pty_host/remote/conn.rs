@@ -375,8 +375,53 @@ impl RemoteConn {
         self.send_control(&ServerToBrokerMsg::SignalChild(signal))
     }
 
-    pub fn terminate(&self) -> Result<()> {
-        self.send_control(&ServerToBrokerMsg::Terminate)
+    /// End the pane and wait until the broker has reaped the child and drained its pty.
+    pub fn terminate(&self, timeout: Duration) -> Result<()> {
+        let mut out = self
+            .outbound
+            .lock()
+            .to_anyhow()
+            .context("failed to lock a remote pane's outbound queue")?;
+        if timeout.is_zero() {
+            return Err(anyhow!("no time was left to terminate this remote pane"));
+        }
+        out.socket
+            .set_nonblocking(false)
+            .context("failed to make a remote pane's socket blocking for termination")?;
+        out.socket.set_write_timeout(Some(timeout))?;
+        Self::flush_locked(&mut out);
+
+        let mut framed = Vec::new();
+        protocol::write_control(&mut framed, &ServerToBrokerMsg::Terminate)
+            .context("failed to frame remote pane termination")?;
+        out.socket
+            .write_all(&framed)
+            .with_context(|| format!("failed to terminate pane on {}", self.display_host()))?;
+        if self.child_exit().is_some() {
+            return Ok(());
+        }
+
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(anyhow!(
+                    "{} did not confirm pane termination within {timeout:?}",
+                    self.display_host()
+                ));
+            }
+            out.socket.set_read_timeout(Some(remaining))?;
+            let frame = protocol::read_frame(&mut out.socket)?
+                .context("the broker closed before confirming pane termination")?;
+            if let Frame::Control(_) = frame {
+                if matches!(
+                    frame.decode_control::<BrokerToServerMsg>(),
+                    Ok(BrokerToServerMsg::ChildExited { .. })
+                ) {
+                    return Ok(());
+                }
+            }
+        }
     }
 
     /// Hand this pane to another session: tell the broker to let it go, and wait

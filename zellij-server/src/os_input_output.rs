@@ -39,7 +39,10 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
     process::Command,
-    sync::{Arc, Condvar, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Condvar, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -545,6 +548,7 @@ pub struct ServerOsInputOutput {
     /// host, shared by every pane there.
     remote_hosts: Arc<RemoteHosts>,
     firecracker: Arc<Mutex<Option<(crate::firecracker::Provider, String)>>>,
+    firecracker_panes_quiesced: Arc<AtomicBool>,
 }
 
 #[cfg(not(windows))]
@@ -1224,7 +1228,7 @@ impl ServerOsApi for ServerOsInputOutput {
             // The pane being re-run is held, not closed, so the broker still
             // holds the session it was held from. Registering over it would drop
             // this side's only handle on it and leave it to the orphan timeout.
-            self.pty_backend.clear_terminal_id(terminal_id);
+            self.clear_terminal_id(terminal_id)?;
             self.pty_backend.reserve_terminal_id(terminal_id);
             let (conn, reader_socket) = self
                 .remote_hosts
@@ -1238,15 +1242,24 @@ impl ServerOsApi for ServerOsInputOutput {
             return Ok((async_reader, None));
         }
 
-        self.pty_backend.clear_terminal_id(terminal_id);
+        self.clear_terminal_id(terminal_id)?;
         let (async_reader, child_fd) =
             self.pty_backend
                 .spawn_terminal(run_command, None, quit_cb, terminal_id)?;
         Ok((async_reader, Some(child_fd as u32)))
     }
     fn clear_terminal_id(&self, terminal_id: u32) -> Result<()> {
-        self.pty_backend.clear_terminal_id(terminal_id);
-        Ok(())
+        let firecracker = self.pty_backend.is_remote(terminal_id)
+            && self
+                .pty_backend
+                .remote_command(terminal_id)
+                .is_some_and(|command| command.firecracker_vm.is_some());
+        let result = self.pty_backend.clear_terminal_id(terminal_id);
+        if firecracker && result.is_err() {
+            self.firecracker_panes_quiesced
+                .store(false, Ordering::SeqCst);
+        }
+        result
     }
     #[cfg(not(windows))]
     fn set_pty_host_enabled(&self, enabled: bool) {
@@ -1267,6 +1280,11 @@ impl ServerOsApi for ServerOsInputOutput {
         Ok(())
     }
     fn stop_firecracker_session(&self) -> Result<()> {
+        if !self.firecracker_panes_quiesced.load(Ordering::SeqCst) {
+            return Err(anyhow!(
+                "not stopping Firecracker VMs because at least one pane did not terminate cleanly"
+            ));
+        }
         let guard = self.firecracker.lock().to_anyhow()?;
         if let Some((provider, session)) = guard.as_ref() {
             provider.stop_session(session)?;
@@ -1389,6 +1407,7 @@ pub fn get_server_os_input() -> Result<ServerOsInputOutput, std::io::Error> {
         pty_backend: PtyBackendImpl::new()?,
         remote_hosts: Arc::new(RemoteHosts::new()),
         firecracker: Arc::new(Mutex::new(None)),
+        firecracker_panes_quiesced: Arc::new(AtomicBool::new(true)),
         client_senders: Arc::new(Mutex::new(HashMap::new())),
         live_writers: Arc::new(LiveWriters::default()),
         cached_resizes: Arc::new(Mutex::new(None)),

@@ -2809,6 +2809,12 @@ pub struct PaneInfo {
     /// and anything keying on the path alone would quietly merge them.
     #[serde(default)]
     pub host: Option<String>,
+    /// Firecracker image backing this pane, when it runs in a VM.
+    #[serde(default)]
+    pub firecracker_image: Option<String>,
+    /// Canonical host worktree mirrored into this pane's VM.
+    #[serde(default)]
+    pub firecracker_worktree: Option<String>,
     /// The agent running in this pane, if the session knows of one. See [`AgentInfo`].
     #[serde(default)]
     pub agent: Option<AgentInfo>,

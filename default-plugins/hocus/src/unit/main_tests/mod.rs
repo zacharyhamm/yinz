@@ -358,6 +358,8 @@ fn agent_in(pane_id: u32, cwd: &str, tab_id: usize) -> agents::AgentPane {
         command: Some("codex".to_owned()),
         cwd: Some(cwd.to_owned()),
         host: None,
+        firecracker_image: None,
+        firecracker_worktree: None,
         status: agents::AgentStatus::Running,
         tab: Some((tab_id, format!("tab {tab_id}"))),
         detected: None,

@@ -36,6 +36,8 @@ pub fn terminal_panes(manifest: &PaneManifest, tabs: &[TabInfo]) -> Vec<agents::
             // once, and never again by anyone who missed it.
             cwd: pane.cwd.clone(),
             host: pane.host.clone(),
+            firecracker_image: pane.firecracker_image.clone(),
+            firecracker_worktree: pane.firecracker_worktree.clone(),
             // Order matters: a held pane has also exited, and "waiting to be re-run"
             // is the more useful of the two things to say.
             status: if pane.is_held {
@@ -119,7 +121,7 @@ mod tests {
     use zellij_tile::prelude::PaneInfo;
 
     #[test]
-    fn terminal_panes_carry_the_folder_the_host_reported() {
+    fn terminal_panes_carry_the_location_and_firecracker_identity_reported() {
         let mut manifest = PaneManifest::default();
         manifest.panes.insert(
             0,
@@ -127,6 +129,8 @@ mod tests {
                 PaneInfo {
                     id: 3,
                     cwd: Some("/work/hocus".to_owned()),
+                    firecracker_image: Some("rust-dev".to_owned()),
+                    firecracker_worktree: Some("/host/hocus".to_owned()),
                     ..PaneInfo::default()
                 },
                 PaneInfo {
@@ -140,6 +144,11 @@ mod tests {
         let panes = terminal_panes(&manifest, &[]);
 
         assert_eq!(panes[0].cwd.as_deref(), Some("/work/hocus"));
+        assert_eq!(panes[0].firecracker_image.as_deref(), Some("rust-dev"));
+        assert_eq!(
+            panes[0].firecracker_worktree.as_deref(),
+            Some("/host/hocus")
+        );
         assert_eq!(panes[1].cwd, None);
     }
 

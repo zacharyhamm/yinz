@@ -63,6 +63,7 @@ struct State {
     plugin_id: u32,
     duplicate_pane_id: Option<u32>,
     path_edited: bool,
+    firecracker_image_edited: bool,
     error: Option<String>,
     /// The `(width, height)` `resize` last asked the host for, so it can decline to ask again.
     ///
@@ -147,6 +148,7 @@ impl Default for State {
             plugin_id: 0,
             duplicate_pane_id: None,
             path_edited: false,
+            firecracker_image_edited: false,
             error: None,
             requested_size: None,
             git_probe: 0,
@@ -564,6 +566,12 @@ fn project_options(projects: &Registry, caller_cwd: &Path) -> (Vec<String>, usiz
 /// Read by index, so a project called `(current directory)` is that project and
 /// not the sentinel.
 fn source_directory(form: &Form, projects: &Registry, caller_cwd: &Path) -> PathBuf {
+    selected_project(form, projects)
+        .map(|project| PathBuf::from(&project.root))
+        .unwrap_or_else(|| caller_cwd.to_path_buf())
+}
+
+fn selected_project<'a>(form: &Form, projects: &'a Registry) -> Option<&'a projects::Project> {
     form.select_by_id(PROJECT)
         .and_then(|select| select.selected_index())
         // Option 0 is the sentinel; each later option is the project at that
@@ -571,8 +579,6 @@ fn source_directory(form: &Form, projects: &Registry, caller_cwd: &Path) -> Path
         // were built in.
         .and_then(|index| index.checked_sub(1))
         .and_then(|nth| projects.values().nth(nth))
-        .map(|project| PathBuf::from(&project.root))
-        .unwrap_or_else(|| caller_cwd.to_path_buf())
 }
 
 fn duplicate_command(
@@ -599,6 +605,8 @@ fn duplicate_command(
         cwd,
         remote_host,
         firecracker_vm,
+        firecracker_image: pane.firecracker_image.clone(),
+        firecracker_worktree: pane.firecracker_worktree.clone().map(Into::into),
         ..Default::default()
     })
 }
@@ -628,6 +636,13 @@ impl State {
         // different project means a different list.
         if id == PROJECT {
             self.refresh_git_suggestions();
+            self.fill_firecracker_image_default();
+        }
+        if id == FIRECRACKER && !self.dialog.form().text(FIRECRACKER).trim().is_empty() {
+            self.fill_firecracker_image_default();
+        }
+        if id == FIRECRACKER_IMAGE {
+            self.firecracker_image_edited = true;
         }
         if id == CREATE_BRANCH && !self.dialog.form().checked(CREATE_BRANCH) {
             self.set_checked(WORKTREE, false);
@@ -646,7 +661,6 @@ impl State {
         }
     }
 
-    #[cfg(test)]
     fn set_text(&mut self, id: &str, text: &str) {
         if let Some(input) = self
             .dialog
@@ -662,6 +676,16 @@ impl State {
         if let Some(checkbox) = self.dialog.form_mut().checkbox_by_id_mut(id) {
             checkbox.set_checked(checked);
         }
+    }
+
+    fn fill_firecracker_image_default(&mut self) {
+        if self.firecracker_image_edited {
+            return;
+        }
+        let image = selected_project(self.dialog.form(), &self.projects)
+            .and_then(|project| project.firecracker_image.clone())
+            .unwrap_or_default();
+        self.set_text(FIRECRACKER_IMAGE, &image);
     }
 
     fn submit(&mut self) -> bool {
@@ -1117,6 +1141,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn firecracker_image_defaults_follow_the_project_until_edited() {
+        let mut projects = registry();
+        projects.get_mut("zellij").unwrap().firecracker_image = Some("rust".to_owned());
+        projects.get_mut("dobbs").unwrap().firecracker_image = Some("ruby".to_owned());
+        let mut state = State {
+            projects,
+            source_directory: PathBuf::from("/work/zellij"),
+            ..Default::default()
+        };
+        state.fill_projects();
+        state.set_text(FIRECRACKER, "review");
+        state.changed(FIRECRACKER);
+        assert_eq!(state.dialog.form().text(FIRECRACKER_IMAGE), "rust");
+
+        state
+            .dialog
+            .form_mut()
+            .select_by_id_mut(PROJECT)
+            .unwrap()
+            .select_option("dobbs");
+        state.changed(PROJECT);
+        assert_eq!(state.dialog.form().text(FIRECRACKER_IMAGE), "ruby");
+
+        state.set_text(FIRECRACKER_IMAGE, "");
+        state.changed(FIRECRACKER_IMAGE);
+        state
+            .dialog
+            .form_mut()
+            .select_by_id_mut(PROJECT)
+            .unwrap()
+            .select_option("zellij");
+        state.changed(PROJECT);
+        assert_eq!(state.dialog.form().text(FIRECRACKER_IMAGE), "");
+    }
+
     /// The primary checkout is not a worktree path anyone can ask for - leaving
     /// the "use worktree" box unticked is what running there means - and the
     /// rest are written the way the field is labelled.
@@ -1208,6 +1268,8 @@ mod tests {
             command: Some("git status".to_owned()),
             cwd: Some("/tmp/repo".to_owned()),
             host: Some("builder".to_owned()),
+            firecracker_image: None,
+            firecracker_worktree: None,
             status: agents::AgentStatus::Running,
             tab: Some((1, "work".to_owned())),
             detected: Some("cursor".to_owned()),
@@ -1222,12 +1284,16 @@ mod tests {
 
         let firecracker_pane = AgentPane {
             host: Some("firecracker:review".to_owned()),
+            firecracker_image: Some("rust-dev".to_owned()),
+            firecracker_worktree: Some("/host/repo".to_owned()),
             ..pane.clone()
         };
         let command = duplicate_command(&firecracker_pane, &BTreeMap::new()).unwrap();
         assert_eq!(command.cwd, Some("/tmp/repo".into()));
         assert_eq!(command.remote_host, None);
         assert_eq!(command.firecracker_vm.as_deref(), Some("review"));
+        assert_eq!(command.firecracker_image.as_deref(), Some("rust-dev"));
+        assert_eq!(command.firecracker_worktree, Some("/host/repo".into()));
 
         let ordinary_pane = AgentPane {
             command: Some("bash".to_owned()),

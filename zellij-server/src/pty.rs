@@ -23,7 +23,10 @@ use crate::{
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
 
 use crate::pty_host::client::{ChildRunState, ReleasedPane};
 use crate::pty_host::remote::protocol::ChildSignal;
@@ -2301,8 +2304,16 @@ impl Pty {
         let err_context = || format!("failed to close for pane {id:?}");
         match id {
             PaneId::Terminal(id) => {
+                let is_remote = self
+                    .bus
+                    .os_input
+                    .as_ref()
+                    .is_some_and(|os_input| os_input.is_remote_pane(id));
                 if let Some(handle) = self.task_handles.remove(&id) {
                     handle.abort();
+                    if is_remote {
+                        wait_for_reader_to_stop(id, handle);
+                    }
                 }
                 // Signal before forgetting the pid: the helper needs it, and for
                 // a remote pane there is no pid to forget in the first place.
@@ -3398,11 +3409,22 @@ impl Pty {
 
 impl Drop for Pty {
     fn drop(&mut self) {
-        let child_ids: Vec<u32> = self.id_to_child_pid.keys().copied().collect();
+        let child_ids: HashSet<u32> = self
+            .id_to_child_pid
+            .keys()
+            .copied()
+            .chain(
+                self.bus
+                    .os_input
+                    .as_ref()
+                    .map(|os_input| os_input.remote_pane_ids())
+                    .unwrap_or_default(),
+            )
+            .collect();
         for id in child_ids {
             self.close_pane(PaneId::Terminal(id))
-                .with_context(|| format!("failed to close pane for pid {id}"))
-                .fatal();
+                .with_context(|| format!("failed to close pane {id}"))
+                .non_fatal();
         }
     }
 }
@@ -3500,7 +3522,7 @@ const GIVE_BACK_BUDGET: Duration = Duration::from_secs(1);
 const READER_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Wait for an already-cancelled reader to actually be gone, before its
-/// connection is handed to anyone else.
+/// connection is handed to anyone else or used for synchronous teardown.
 ///
 /// `JoinHandle::abort` asks; it does not deliver. The task keeps running until
 /// it reaches an await point, and for a remote pane that window is long enough
@@ -3523,7 +3545,7 @@ fn wait_for_reader_to_stop(terminal_id: u32, handle: JoinHandle<()>) {
     if joined.is_err() {
         log::warn!(
             "pane {terminal_id}'s reader did not stop within {READER_SHUTDOWN_TIMEOUT:?} of \
-             being cancelled; releasing it anyway"
+             being cancelled; continuing teardown anyway"
         );
     }
 }

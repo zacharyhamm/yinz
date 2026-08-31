@@ -254,6 +254,57 @@ fn an_explicit_terminate_is_distinguished_from_a_disconnect() {
 }
 
 #[test]
+fn termination_is_acknowledged_only_after_output_is_drained() {
+    use crate::pty_host::client::PtyHostHandle;
+    use crate::pty_host::protocol::{read_msg, ServerToHostMsg};
+
+    let pty = nix::pty::openpty(None, None).expect("openpty failed");
+    let (control, mut control_peer) = UnixStream::pair().expect("socketpair failed");
+    let (mut ours, theirs) = UnixStream::pair().expect("socketpair failed");
+    let wire: Wire = Arc::new(Mutex::new(theirs));
+    let session = Arc::new(PaneSession::new(
+        "token".to_owned(),
+        "/bin/sh".to_owned(),
+        PtyHostHandle::for_test(control),
+        pty.master,
+        std::process::id(),
+    ));
+    let registry = Arc::new(PaneRegistry::new());
+    registry.insert(session.clone());
+
+    let broker_session = session.clone();
+    let broker_registry = registry.clone();
+    let broker_wire = wire.clone();
+    let broker = std::thread::spawn(move || {
+        terminate_session(&broker_session, &broker_registry, &broker_wire)
+    });
+
+    assert!(matches!(
+        read_msg::<ServerToHostMsg, _>(&mut control_peer).expect("termination read failed"),
+        Some(ServerToHostMsg::Terminate)
+    ));
+    ours.set_read_timeout(Some(std::time::Duration::from_millis(50)))
+        .expect("timeout failed");
+    assert!(
+        protocol::read_frame(&mut ours).is_err(),
+        "the broker acknowledged before output was drained"
+    );
+
+    session.mark_output_drained();
+    ours.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+        .expect("timeout failed");
+    assert!(matches!(
+        protocol::read_frame(&mut ours)
+            .expect("ack read failed")
+            .expect("broker closed before the ack")
+            .decode_control::<BrokerToServerMsg>(),
+        Ok(BrokerToServerMsg::ChildExited { status: None })
+    ));
+    broker.join().expect("broker panicked").expect("ack failed");
+    drop(pty.slave);
+}
+
+#[test]
 fn a_connection_that_just_ends_is_not_a_terminate() {
     let (ours, pump) = pump_on_a_pair();
     drop(ours);

@@ -447,10 +447,10 @@ impl Pane {
         self.stop_pump();
     }
 
-    /// Tell the far side the pane is over, then stop reading.
+    /// Stop reading, then tell the far side the pane is over and wait for it.
     fn close(mut self) {
-        let _ = self.conn.terminate();
         self.stop_pump();
+        let _ = self.conn.terminate(Duration::from_secs(5));
     }
 
     fn stop_pump(&mut self) {

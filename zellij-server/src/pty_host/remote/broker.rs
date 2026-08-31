@@ -45,6 +45,7 @@ pub type Wire = Arc<Mutex<UnixStream>>;
 
 /// How often to look for panes nobody has come back for.
 const REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+const TERMINATION_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How often to look, given how long a pane is allowed to sit unclaimed.
 ///
@@ -163,8 +164,7 @@ pub fn serve_connection(
         // the supervisor handle deliberately does not. Without this every closed
         // remote pane would leave its supervisor and its child running here.
         Ok(Outcome::Terminated) => {
-            session.terminate();
-            registry.remove(&session.token);
+            terminate_session(&session, registry, &wire)?;
         },
         // A connection that merely ended is not a teardown. The pane keeps
         // running and keeps buffering, so a reconnect can continue the stream;
@@ -183,6 +183,27 @@ pub fn serve_connection(
         Ok(Outcome::Disconnected) | Err(_) => session.detach_if(generation),
     }
     outcome.map(|_| ())
+}
+
+fn terminate_session(
+    session: &Arc<PaneSession>,
+    registry: &Arc<PaneRegistry>,
+    wire: &Wire,
+) -> Result<()> {
+    session.terminate();
+    let drained = session.wait_for_output_drained(TERMINATION_DRAIN_TIMEOUT);
+    registry.remove(&session.token);
+    if !drained {
+        return Err(anyhow!(
+            "remote pane output did not drain within {TERMINATION_DRAIN_TIMEOUT:?} after termination"
+        ));
+    }
+    send(
+        wire,
+        &BrokerToServerMsg::ChildExited {
+            status: session.child_exit().unwrap_or(None),
+        },
+    )
 }
 
 fn handshake(reader: &mut UnixStream, wire: &Wire) -> Result<()> {
