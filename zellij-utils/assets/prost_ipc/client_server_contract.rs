@@ -1823,6 +1823,10 @@ pub struct RunCommandAction {
     /// Named Firecracker VM owned by this session
     #[prost(string, optional, tag="11")]
     pub firecracker_vm: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="12")]
+    pub firecracker_image: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="13")]
+    pub firecracker_worktree: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

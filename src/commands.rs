@@ -82,6 +82,16 @@ pub(crate) fn firecracker(
                 .context("no session selected; pass --session SESSION")?;
             provider.stop(&session, &name)?;
         },
+        Firecracker::Sync { name, session } => {
+            let session = session
+                .or_else(|| envs::get_session_name().ok())
+                .or_else(|| match get_active_session() {
+                    ActiveSession::One(name) => Some(name),
+                    _ => None,
+                })
+                .context("no session selected; pass --session SESSION")?;
+            provider.sync(&session, &name)?;
+        },
     }
     Ok(())
 }

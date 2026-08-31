@@ -85,6 +85,12 @@ pub struct RunCommand {
     /// Named Firecracker VM owned by this session.
     #[serde(default)]
     pub firecracker_vm: Option<String>,
+    /// Immutable image selected for a Firecracker VM.
+    #[serde(default)]
+    pub firecracker_image: Option<String>,
+    /// Canonical host worktree mirrored into a Firecracker VM.
+    #[serde(default)]
+    pub firecracker_worktree: Option<PathBuf>,
     /// Run the default login shell of the machine this pane runs on, and ignore
     /// `command`.
     ///
@@ -152,6 +158,12 @@ pub struct RunCommandAction {
     /// See `RunCommand::firecracker_vm`.
     #[serde(default)]
     pub firecracker_vm: Option<String>,
+    /// See `RunCommand::firecracker_image`.
+    #[serde(default)]
+    pub firecracker_image: Option<String>,
+    /// See `RunCommand::firecracker_worktree`.
+    #[serde(default)]
+    pub firecracker_worktree: Option<PathBuf>,
     /// See `RunCommand::remote_default_shell`.
     #[serde(default)]
     pub remote_default_shell: bool,
@@ -169,6 +181,8 @@ impl From<RunCommandAction> for RunCommand {
             use_terminal_title: action.use_terminal_title,
             remote_host: action.remote_host,
             firecracker_vm: action.firecracker_vm,
+            firecracker_image: action.firecracker_image,
+            firecracker_worktree: action.firecracker_worktree,
             remote_default_shell: action.remote_default_shell,
         }
     }
@@ -187,6 +201,8 @@ impl From<RunCommand> for RunCommandAction {
             use_terminal_title: run_command.use_terminal_title,
             remote_host: run_command.remote_host,
             firecracker_vm: run_command.firecracker_vm,
+            firecracker_image: run_command.firecracker_image,
+            firecracker_worktree: run_command.firecracker_worktree,
             remote_default_shell: run_command.remote_default_shell,
         }
     }

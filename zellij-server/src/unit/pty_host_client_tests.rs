@@ -34,6 +34,8 @@ fn sh(script: &str) -> RunCommand {
         use_terminal_title: false,
         remote_host: None,
         firecracker_vm: None,
+        firecracker_image: None,
+        firecracker_worktree: None,
         remote_default_shell: false,
     }
 }

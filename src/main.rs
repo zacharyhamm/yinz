@@ -37,8 +37,9 @@ fn main() {
         let result = match mode.as_str() {
             "ensure" => zellij_server::pty_host::remote::broker::ensure(),
             "serve" => zellij_server::pty_host::remote::broker::serve_forever(),
+            "report" => zellij_server::pty_host::remote::broker::report_agent_hook(),
             other => Err(zellij_utils::errors::prelude::anyhow!(
-                "unknown --pty-broker mode {other:?}, expected 'ensure' or 'serve'"
+                "unknown --pty-broker mode {other:?}, expected 'ensure', 'serve' or 'report'"
             )),
         };
         match result {

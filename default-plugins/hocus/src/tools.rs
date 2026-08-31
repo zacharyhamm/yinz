@@ -1116,6 +1116,7 @@ pub fn specs() -> Value {
                 "properties": {
                     "name": { "type": "string" },
                     "root": { "type": "string", "description": "Absolute; required when new." },
+                    "firecracker_image": { "type": "string", "description": "Default named Firecracker image for this project." },
                     "tab_name": { "type": "string", "description": "Defaults to the project name." },
                 },
                 "required": ["name"],
@@ -1450,7 +1451,11 @@ pub fn specs() -> Value {
                     },
                     "firecracker": {
                         "type": "string",
-                        "description": "Session-scoped Firecracker VM name. Host branch/worktree setup and hooks are unavailable.",
+                        "description": "Firecracker VM name. With a project, its worktree is mirrored into /workspace.",
+                    },
+                    "firecracker_image": {
+                        "type": "string",
+                        "description": "Named immutable image built with zellij-firecracker image build --name.",
                     },
                 },
             }),
@@ -2022,7 +2027,7 @@ fn adjacent_direction(first: &PanePosition, second: &PanePosition) -> Option<Pan
 
 /// Every field any tool takes. One struct rather than one per tool: serde ignores the
 /// ones a given tool doesn't use, and dispatch checks what it needs.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Args {
     pub pane_id: Option<u32>,
@@ -2041,6 +2046,7 @@ pub struct Args {
     pub cwd: Option<String>,
     pub remote_host: Option<String>,
     pub firecracker: Option<String>,
+    pub firecracker_image: Option<String>,
     pub command: Option<Value>,
     pub args: Vec<String>,
     pub floating: bool,
@@ -2300,6 +2306,7 @@ impl Args {
             resume: self.resume.clone(),
             hooks: self.hooks,
             firecracker: self.firecracker.clone(),
+            firecracker_image: self.firecracker_image.clone(),
         }
     }
 
@@ -3783,6 +3790,7 @@ mod host {
                     args: rest,
                     cwd: cwd.clone(),
                     firecracker_vm: args.firecracker.clone(),
+                    firecracker_image: args.firecracker_image.clone(),
                     ..Default::default()
                 };
                 if args.in_new_tab {
@@ -3840,6 +3848,8 @@ mod host {
                 cwd: args.cwd.clone().map(PathBuf::from),
                 remote_host: Some(remote_host),
                 firecracker_vm: None,
+                firecracker_image: None,
+                firecracker_worktree: None,
                 remote_default_shell: false,
             },
             None => CommandToRun {
@@ -3850,6 +3860,8 @@ mod host {
                 cwd: args.cwd.clone().map(PathBuf::from),
                 remote_host: Some(remote_host),
                 firecracker_vm: None,
+                firecracker_image: None,
+                firecracker_worktree: None,
                 remote_default_shell: true,
             },
         };

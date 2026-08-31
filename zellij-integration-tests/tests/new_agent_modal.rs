@@ -99,7 +99,7 @@ fn opening_a_dropdown_leaves_the_rest_of_the_form_where_it_was() {
 
     zellij.send_stdin(&keys::ctrl('b'));
     let snapshot = zellij.wait_until("the new agent modal is up", |snapshot| {
-        snapshot.contains("Use worktree") && snapshot.contains("[x]")
+        snapshot.contains("Create and switch branch") && snapshot.contains("[x]")
     });
     let title = position_of(&snapshot, "New agent");
     let project = position_of(&snapshot, "Project");
@@ -144,7 +144,7 @@ fn a_click_on_a_form_widget_acts_on_the_widget_under_the_pointer() {
 
     zellij.send_stdin(&keys::ctrl('b'));
     let snapshot = zellij.wait_until("the new agent modal is up", |snapshot| {
-        snapshot.contains("Use worktree") && snapshot.contains("[x]")
+        snapshot.contains("Create and switch branch") && snapshot.contains("[x]")
     });
     // The dialog's own title, on the row that used to be scrolled off the top.
     assert!(
@@ -153,7 +153,7 @@ fn a_click_on_a_form_widget_acts_on_the_widget_under_the_pointer() {
         snapshot.text
     );
 
-    let (column, row) = position_of(&snapshot, "Use worktree");
+    let (column, row) = position_of(&snapshot, "Create and switch branch");
     zellij.send_stdin(&sgr_press(column + 1, row + 1));
     zellij.send_stdin(&sgr_release(column + 1, row + 1));
 
@@ -161,7 +161,7 @@ fn a_click_on_a_form_widget_acts_on_the_widget_under_the_pointer() {
         snapshot
             .text
             .lines()
-            .any(|line| line.contains("Use worktree") && line.contains("[ ]"))
+            .any(|line| line.contains("Create and switch branch") && line.contains("[ ]"))
     });
     assert!(
         snapshot.contains("New agent"),

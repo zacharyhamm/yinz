@@ -13,7 +13,7 @@ fn firecracker_resolution_keeps_an_unresolved_command_for_reruns() {
     let path = dir.path().join("provider");
     fs::write(
         &path,
-        "#!/bin/sh\nprintf '{\"version\":1,\"ssh_host\":\"build-box\",\"cwd\":\"/workspace\"}'\n",
+        "#!/bin/sh\nprintf '{\"version\":2,\"ssh_host\":\"build-box\",\"cwd\":\"/workspace\"}'\n",
     )
     .unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();

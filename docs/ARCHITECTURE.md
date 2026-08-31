@@ -79,7 +79,8 @@ A **remote pane** warps too, by the same shape but not the same primitive: its s
 The one thing that had to be added is `Release`. The broker frees a pane when the old connection's blocking read returns, which is not a moment the releasing side can name — the adopting session's `Resume` races it and is refused as a double attach. `Release` makes the detach happen before the acknowledgement, exactly as `ServerToHostMsg::Release` does for a local supervisor, so the token can be handed over the instant the release returns. Recovering a remote pane stranded by a failed handoff is `zellij pty-host list --host <machine>` and `zellij pty-host adopt --host <machine> <token>`: the token only ever existed in the releasing server's memory and the broker's registry, so the broker is the only thing that can still answer.
 
 A **Firecracker pane** is a remote pane whose SSH endpoint comes from a configured provider.
-Zellij keeps the VM name on `RunCommand`, calls the provider's idempotent `ensure` operation for
-each launch, then feeds the returned endpoint into the same remote broker path. VM ownership and
-shutdown stay session-scoped, so these panes deliberately cannot warp between sessions. See
-[`FIRECRACKER.md`](FIRECRACKER.md) for the provider contract and lifecycle.
+Zellij keeps the VM name, image, and host worktree on `RunCommand`. It calls the provider's
+idempotent `ensure` operation for each launch. It then feeds the returned endpoint into the remote
+broker path. A canonical host worktree identifies a VM. Sessions hold leases on that VM, and the
+provider stops it after the last lease ends. See [`FIRECRACKER.md`](FIRECRACKER.md) for the
+provider contract and lifecycle.

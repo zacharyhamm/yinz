@@ -567,7 +567,12 @@ impl ServerOsInputOutput {
         let (provider, session) = guard.as_ref().context(
             "Firecracker is not configured; set firecracker_provider in the session config",
         )?;
-        let ensured = provider.ensure(session, name)?;
+        let ensured = provider.ensure(
+            session,
+            name,
+            cmd.firecracker_image.as_deref(),
+            cmd.firecracker_worktree.as_deref(),
+        )?;
         cmd.remote_host = Some(ensured.ssh_host);
         if cmd.cwd.is_none() {
             cmd.cwd = ensured.cwd;

@@ -64,7 +64,7 @@ use crate::{
     os_input_output::ServerOsApi,
     output::{CharacterChunk, FloatingPanesStack, KittyImageChunk, Output, SixelImageChunk},
     panes::floating_panes::floating_pane_grid::half_size_middle_geom,
-    panes::grid::PendingNotification,
+    panes::grid::{PendingAgentReport, PendingNotification},
     panes::kitty_graphics::{KittyHostSupport, KittyImageStore},
     panes::nested_session_modal::GuestModalShortcuts,
     panes::sixel::SixelImageStore,
@@ -684,6 +684,9 @@ pub trait Pane {
         None
     }
     fn drain_desktop_notifications(&mut self) -> Vec<PendingNotification> {
+        vec![]
+    }
+    fn drain_agent_reports(&mut self) -> Vec<PendingAgentReport> {
         vec![]
     }
     fn drain_osc7_cwd(&mut self) -> Option<std::path::PathBuf> {
@@ -4808,6 +4811,7 @@ impl Tab {
             let nested_session_messages = terminal_output.drain_nested_session_messages();
             let clipboard_update = terminal_output.drain_clipboard_update();
             let desktop_notifications = terminal_output.drain_desktop_notifications();
+            let agent_reports = terminal_output.drain_agent_reports();
             let osc7_cwd = terminal_output.drain_osc7_cwd();
             for message in messages_to_pty {
                 self.write_to_pane_id_without_preprocessing(message, PaneId::Terminal(pid))
@@ -4839,6 +4843,75 @@ impl Tab {
                     .send_to_screen(ScreenInstruction::ForwardDesktopNotifications {
                         pane_id: pid,
                         notifications: desktop_notifications,
+                    })
+                    .with_context(err_context)?;
+            }
+            for report in agent_reports {
+                let event: zellij_utils::agent::HookEvent = match serde_json::from_str(&report.json)
+                {
+                    Ok(event) => event,
+                    Err(error) => {
+                        log::warn!("ignored invalid remote agent report: {error}");
+                        continue;
+                    },
+                };
+                match zellij_utils::agent::hook_outcome(&report.kind, &event) {
+                    zellij_utils::agent::HookOutcome::Ended => self
+                        .senders
+                        .send_to_screen(ScreenInstruction::SetPaneAgent(
+                            PaneId::Terminal(pid),
+                            None,
+                            None,
+                        ))
+                        .with_context(err_context)?,
+                    zellij_utils::agent::HookOutcome::Reported(agent) => self
+                        .senders
+                        .send_to_screen(ScreenInstruction::SetPaneAgent(
+                            PaneId::Terminal(pid),
+                            Some(agent),
+                            None,
+                        ))
+                        .with_context(err_context)?,
+                    zellij_utils::agent::HookOutcome::Nothing => {},
+                }
+                let payload = if report.json.len() <= zellij_utils::agent::HOOK_BROADCAST_MAX_BYTES
+                {
+                    report.json
+                } else {
+                    serde_json::to_string(&event.pruned()).unwrap_or(report.json)
+                };
+                let args = BTreeMap::from([
+                    (
+                        zellij_utils::agent::AGENT_HOOK_KIND_ARG.to_owned(),
+                        report.kind,
+                    ),
+                    (
+                        zellij_utils::agent::AGENT_HOOK_PANE_ID_ARG.to_owned(),
+                        pid.to_string(),
+                    ),
+                ]);
+                let client_id = self
+                    .connected_clients
+                    .borrow()
+                    .iter()
+                    .copied()
+                    .next()
+                    .unwrap_or_default();
+                self.senders
+                    .send_to_plugin(PluginInstruction::KeybindPipe {
+                        name: zellij_utils::agent::AGENT_HOOK_PIPE.to_owned(),
+                        payload: Some(payload),
+                        plugin: None,
+                        args: Some(args),
+                        configuration: None,
+                        floating: None,
+                        pane_id_to_replace: None,
+                        pane_title: None,
+                        cwd: None,
+                        skip_cache: false,
+                        cli_client_id: client_id,
+                        plugin_and_client_id: None,
+                        notification_end: None,
                     })
                     .with_context(err_context)?;
             }

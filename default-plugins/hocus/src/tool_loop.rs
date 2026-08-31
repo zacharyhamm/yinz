@@ -1266,7 +1266,16 @@ impl State {
             .filter(|name| !name.is_empty())
             .ok_or_else(|| "name is required".to_owned())?;
         if let Some(root) = args.root.as_deref() {
-            let project = projects::validate(name, root)?;
+            let mut project = projects::validate(name, root)?;
+            if let Some(image) = args
+                .firecracker_image
+                .as_deref()
+                .map(str::trim)
+                .filter(|image| !image.is_empty())
+            {
+                validate_firecracker_vm_name(image)?;
+                project.firecracker_image = Some(image.to_owned());
+            }
             let before = self.projects.clone();
             // The user just gave this folder a better name than a poll could.
             if let Some(gone) = projects::adopt(&mut self.projects, project.clone()) {
@@ -1308,6 +1317,7 @@ impl State {
                 serde_json::json!({
                     "name": project.name,
                     "root": project.root,
+                    "firecracker_image": project.firecracker_image,
                     "remote": project.remote,
                     "worktree_status": project.worktree_status,
                     "discovered": project.discovered,
@@ -2472,20 +2482,23 @@ impl State {
     ///   resolves the repository root, so `command=zsh cwd=/tmp` would start
     ///   failing, and `floating`/`in_new_tab` would quietly stop working.
     pub(crate) fn agent_spawn(&mut self, args: &tools::Args) -> String {
-        let spec = args.launch_spec();
+        let mut spec = args.launch_spec();
+        if spec
+            .firecracker_image
+            .as_deref()
+            .is_none_or(|image| image.trim().is_empty())
+        {
+            spec.firecracker_image = args
+                .project
+                .as_deref()
+                .or(self.active_project.as_deref())
+                .and_then(|name| self.projects.get(name))
+                .and_then(|project| project.firecracker_image.clone());
+        }
         let firecracker = spec
             .firecracker
             .as_deref()
             .is_some_and(|name| !name.trim().is_empty());
-        if firecracker
-            && (args.project.is_some()
-                || args.branch.is_some()
-                || args.base.is_some()
-                || args.worktree == Some(true)
-                || args.worktree_path.is_some())
-        {
-            return "Firecracker agents cannot use host projects, branches or worktrees; use cwd for a guest path".to_owned();
-        }
         // What to run *and* which route to take are both `launch`'s to say — down to
         // which of `agent` and `command` is missing when both are. Routing on the
         // checkout rather than on `args.branch` is what keeps the two in step: a
@@ -2504,7 +2517,9 @@ impl State {
             Ok(cwd) => cwd,
             Err(error) => return error,
         };
-        let result = if matches!(checkout, GitCheckout::Current) {
+        let project_firecracker =
+            firecracker && (args.project.is_some() || self.active_project.is_some());
+        let result = if matches!(checkout, GitCheckout::Current) && !project_firecracker {
             // From the plan, not from `args`: `agent`, `model` and `prompt` are all in
             // `command`, and none of them is a key `new_pane` knows. Nothing else of `args`
             // comes along - that was true of the `new_pane` call this replaces, and carrying
@@ -2516,6 +2531,7 @@ impl State {
                 args: command.args,
                 cwd,
                 firecracker: command.firecracker_vm,
+                firecracker_image: command.firecracker_image,
                 ..tools::Args::default()
             };
             // The one thing this route did not do. `spawn_in_checkout` goes through a host
@@ -2524,19 +2540,14 @@ impl State {
             // hook will never fire for it.
             tools::new_pane_with_context(&pane, launch::agent_pane_context())
         } else {
-            tools::spawn_in_checkout(args, cwd)
+            let mut configured = args.clone();
+            configured.firecracker_image = spec.firecracker_image;
+            tools::spawn_in_checkout(&configured, cwd)
         };
         self.register_spawned(args.kind.as_deref(), &result)
     }
 
     pub(crate) fn agent_cwd(&self, args: &tools::Args) -> Result<Option<String>, String> {
-        if args
-            .firecracker
-            .as_deref()
-            .is_some_and(|name| !name.trim().is_empty())
-        {
-            return Ok(args.cwd.clone());
-        }
         let selected = args.project.as_deref().or(self.active_project.as_deref());
         let project = match selected {
             Some(name) => match self.projects.get(name) {

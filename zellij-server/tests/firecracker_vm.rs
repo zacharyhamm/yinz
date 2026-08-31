@@ -60,7 +60,7 @@ fn a_provider_boots_a_real_firecracker_remote_pane() {
     let provider = Provider::new(provider_path, Duration::from_secs(120)).unwrap();
     let session = "firecracker-test";
     let name = "pane";
-    let ensured = provider.ensure(session, name).unwrap();
+    let ensured = provider.ensure(session, name, None, None).unwrap();
     let _vm = VmGuard {
         provider: provider.clone(),
         session,
