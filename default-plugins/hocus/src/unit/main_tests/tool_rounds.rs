@@ -38,14 +38,28 @@ fn sealed_reasoning_survives_onto_the_tool_call_message_and_the_wire() {
     );
     state.on_chunk(
         "hocus-1",
-        br#"data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"call_1","name":"list_session"}}
+        br#"data: {"type":"response.output_item.added","output_index":1,"item":{"type":"message","role":"assistant"}}
 "#,
         false,
         None,
     );
     state.on_chunk(
         "hocus-1",
-        br#"data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"{}"}
+        br#"data: {"type":"response.output_text.delta","output_index":1,"delta":"I'll inspect it."}
+"#,
+        false,
+        None,
+    );
+    state.on_chunk(
+        "hocus-1",
+        br#"data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","call_id":"call_1","name":"list_session"}}
+"#,
+        false,
+        None,
+    );
+    state.on_chunk(
+        "hocus-1",
+        br#"data: {"type":"response.function_call_arguments.delta","output_index":2,"delta":"{}"}
 "#,
         false,
         None,
@@ -65,24 +79,32 @@ fn sealed_reasoning_survives_onto_the_tool_call_message_and_the_wire() {
             before: 0,
         }]
     );
+    assert_eq!(asked.prose_before, Some(0));
 
     let mut cfg = state.cfg.clone().expect("configured");
     // The default model does not reason, so nothing would ask for the seal.
     cfg.reasoning_effort = Some("medium".into());
-    let body = String::from_utf8(api::request_body_with_project(
-        &cfg,
-        &state.messages,
-        None,
-        false,
-    ))
-    .unwrap();
+    let body = api::request_body_with_project(&cfg, &state.messages, None, false);
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(
-        body.contains(r#""include":["reasoning.encrypted_content"]"#),
+        body["include"] == serde_json::json!(["reasoning.encrypted_content"]),
         "the next round has to ask for the seal again: {body}"
     );
-    assert!(
-        body.contains(r#""type":"reasoning","id":"rs_1","encrypted_content":"sealed""#),
-        "and hand back the one it already has: {body}"
+    let replay: Vec<_> = body["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| {
+            item["type"] == "reasoning"
+                || item["type"] == "function_call"
+                || item["role"] == "assistant"
+        })
+        .map(|item| item["type"].as_str().unwrap_or("message"))
+        .collect();
+    assert_eq!(
+        replay,
+        ["reasoning", "message", "function_call"],
+        "the original output order must survive: {body}"
     );
 }
 

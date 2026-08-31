@@ -279,6 +279,7 @@ pub fn load(backend: &impl Backend, id: u64) -> Option<Vec<Message>> {
                     // a message that is deliberately unreadable - storing it would
                     // put an opaque blob in a chat that is otherwise greppable.
                     reasoning_items: Vec::new(),
+                    prose_before: None,
                     full_output: matches!(
                         rows.get(row, "full_output"),
                         Some(DataValue::Bool(true))

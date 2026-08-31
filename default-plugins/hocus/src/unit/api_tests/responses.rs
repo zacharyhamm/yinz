@@ -380,30 +380,31 @@ fn include_is_sent_only_with_reasoning_and_only_when_echoed() {
         .is_none());
 }
 
-/// A reasoning item completes before the call it produced is announced, so the
-/// number of calls seen so far is its position - which is what the request needs
-/// to put it back where the model emitted it.
+/// Reasoning is positioned against every replayable output item, including the
+/// assistant message rather than only calls.
 #[test]
 fn captures_sealed_reasoning_items_in_position() {
     let mut parser = SseParser::default();
     let mut accumulator = ToolCallAccumulator::default();
     for line in [
         r#"data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","encrypted_content":"sealed-1"}}"#,
-        r#"data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"a","name":"close_pane"}}"#,
+        r#"data: {"type":"response.output_item.added","output_index":1,"item":{"type":"message","role":"assistant"}}"#,
         r#"data: {"type":"response.output_item.done","output_index":2,"item":{"type":"reasoning","id":"rs_2","encrypted_content":"sealed-2"}}"#,
-        r#"data: {"type":"response.output_item.added","output_index":3,"item":{"type":"function_call","call_id":"b","name":"close_tab"}}"#,
+        r#"data: {"type":"response.output_item.added","output_index":3,"item":{"type":"function_call","call_id":"a","name":"close_pane"}}"#,
     ] {
         for item in parser.feed(format!("{line}\n").as_bytes()) {
             accumulator.feed(&item);
         }
     }
 
+    let (reasoning, prose_before) = accumulator.take_replay();
     assert_eq!(
-        accumulator.take_reasoning_items(),
+        reasoning,
         vec![sealed("rs_1", "sealed-1", 0), sealed("rs_2", "sealed-2", 1)]
     );
+    assert_eq!(prose_before, Some(0));
     // And the items are not also mistaken for calls.
-    assert_eq!(accumulator.take().len(), 2);
+    assert_eq!(accumulator.take().len(), 1);
 }
 
 /// An item with no sealed content is not one that can be handed back - echoing a
@@ -421,7 +422,7 @@ fn ignores_a_reasoning_item_with_nothing_sealed() {
             accumulator.feed(&item);
         }
     }
-    assert!(accumulator.take_reasoning_items().is_empty());
+    assert_eq!(accumulator.take_replay(), (Vec::new(), None));
 }
 
 /// The correctness requirement: each item back in the position it came in. The
@@ -461,6 +462,28 @@ fn request_body_interleaves_reasoning_items_with_the_calls() {
     cfg.reasoning_echo = false;
     let body = responses_body(&cfg, &[asked]);
     assert_eq!(body["input"].as_array().map(Vec::len), Some(2));
+}
+
+/// A Responses turn may put prose between its sealed reasoning and function
+/// calls. Stateless replay must keep all three in the emitted order.
+#[test]
+fn request_body_keeps_reasoning_before_assistant_prose() {
+    let mut cfg = responses_config();
+    cfg.reasoning_effort = Some("medium".into());
+    let mut asked = Message::tool_calls(vec![call("call_1", "close_pane", "{}")]);
+    asked.content = "I'll inspect it.".into();
+    asked.prose_before = Some(0);
+    asked.reasoning_items = vec![sealed("rs_1", "sealed-1", 0), sealed("rs_2", "sealed-2", 1)];
+
+    assert_eq!(
+        responses_body(&cfg, &[asked])["input"],
+        json!([
+            {"type": "reasoning", "id": "rs_1", "encrypted_content": "sealed-1", "summary": []},
+            {"type": "message", "role": "assistant", "content": "I'll inspect it."},
+            {"type": "reasoning", "id": "rs_2", "encrypted_content": "sealed-2", "summary": []},
+            {"type": "function_call", "call_id": "call_1", "name": "close_pane", "arguments": "{}"},
+        ])
+    );
 }
 
 // -- config -------------------------------------------------------------
