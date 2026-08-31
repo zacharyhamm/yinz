@@ -4,8 +4,8 @@
 //! gives plugins no scrollback of their own, so everything on screen is
 //! recomputed here from `State` each time and all scroll state is ours.
 
-use hocus_proto::text::{sanitize, wrap, wrap_input, WrappedLine};
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use hocus_proto::markdown::{self, MdLine, MdStyle, StyledChar};
+use hocus_proto::text::{wrap, wrap_input, WrappedLine};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use zellij_tile::prelude::*;
 
@@ -65,305 +65,18 @@ impl VLine {
             styles: Vec::new(),
         }
     }
-}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-struct MdStyle {
-    bold: bool,
-    dim: bool,
-    color: Option<usize>,
-    /// Painted in the theme's error colour. A run rather than a whole line,
-    /// because a framed line carries its border and its body together: the
-    /// border must stay dim while the one sentence saying what a mutating call
-    /// will do is the part that goes red.
-    error: bool,
-}
-
-#[derive(Debug, Clone)]
-struct StyledChar {
-    ch: char,
-    style: MdStyle,
-}
-
-#[derive(Default)]
-struct MdBlock {
-    chars: Vec<StyledChar>,
-    prefix: String,
-    continuation: String,
-    compact: bool,
-    hard_wrap: bool,
-}
-
-struct ListState {
-    next: Option<u64>,
-}
-
-struct LinkState {
-    start: usize,
-    destination: String,
-}
-
-#[derive(Default)]
-struct MarkdownRenderer {
-    blocks: Vec<MdBlock>,
-    current: Option<MdBlock>,
-    styles: Vec<MdStyle>,
-    lists: Vec<ListState>,
-    links: Vec<LinkState>,
-    quote_depth: usize,
-}
-
-impl MarkdownRenderer {
-    fn start_block(&mut self, prefix: String, continuation: String, compact: bool, style: MdStyle) {
-        if self.current.is_some() {
-            self.finish_block();
-        }
-        self.current = Some(MdBlock {
-            prefix,
-            continuation,
-            compact,
-            ..MdBlock::default()
-        });
-        self.styles.clear();
-        self.styles.push(style);
-    }
-
-    fn start_paragraph(&mut self) {
-        if self.current.is_some() {
-            return;
-        }
-        let prefix = "│ ".repeat(self.quote_depth);
-        self.start_block(
-            prefix.clone(),
-            prefix,
-            !self.lists.is_empty(),
-            MdStyle::default(),
-        );
-    }
-
-    fn finish_block(&mut self) {
-        if let Some(block) = self.current.take() {
-            self.blocks.push(block);
-        }
-        self.styles.clear();
-        self.links.clear();
-    }
-
-    fn style(&self) -> MdStyle {
-        self.styles.last().copied().unwrap_or_default()
-    }
-
-    fn push_style(&mut self, update: impl FnOnce(&mut MdStyle)) {
-        let mut style = self.style();
-        update(&mut style);
-        self.styles.push(style);
-    }
-
-    fn pop_style(&mut self) {
-        if self.styles.len() > 1 {
-            self.styles.pop();
-        }
-    }
-
-    fn append(&mut self, text: &str) {
-        if self.current.is_none() {
-            self.start_paragraph();
-        }
-        let style = self.style();
-        self.current
-            .as_mut()
-            .expect("started above")
-            .chars
-            .extend(text.chars().map(|ch| StyledChar { ch, style }));
-    }
-
-    fn append_with_style(&mut self, text: &str, style: MdStyle) {
-        if self.current.is_none() {
-            self.start_paragraph();
-        }
-        self.current
-            .as_mut()
-            .expect("started above")
-            .chars
-            .extend(text.chars().map(|ch| StyledChar { ch, style }));
-    }
-
-    fn start_item(&mut self) {
-        self.finish_block();
-        let depth = self.lists.len().max(1);
-        let list = self.lists.last_mut().expect("item belongs to a list");
-        let marker = match &mut list.next {
-            Some(next) => {
-                let marker = format!("{next}. ");
-                *next += 1;
-                marker
-            },
-            None => "• ".to_owned(),
-        };
-        let prefix = format!(
-            "{}{}{}",
-            "│ ".repeat(self.quote_depth),
-            "  ".repeat(depth - 1),
-            marker
-        );
-        self.start_block(
-            prefix.clone(),
-            " ".repeat(prefix.width()),
-            true,
-            MdStyle::default(),
-        );
-    }
-
-    fn start_link(&mut self, destination: &str) {
-        if self.current.is_none() {
-            self.start_paragraph();
-        }
-        let start = self.current.as_ref().expect("started above").chars.len();
-        self.links.push(LinkState {
-            start,
-            destination: destination.to_owned(),
-        });
-        self.push_style(|style| style.color = Some(2));
-    }
-
-    fn end_link(&mut self) {
-        self.pop_style();
-        let Some(link) = self.links.pop() else {
-            return;
-        };
-        let label: String = self
-            .current
-            .as_ref()
-            .map(|block| {
-                block.chars[link.start..]
-                    .iter()
-                    .map(|styled| styled.ch)
-                    .collect()
-            })
-            .unwrap_or_default();
-        if label != link.destination {
-            let suffix = if label.is_empty() {
-                link.destination
-            } else {
-                format!(" ({})", link.destination)
-            };
-            self.append_with_style(
-                &suffix,
-                MdStyle {
-                    color: Some(2),
-                    ..MdStyle::default()
-                },
-            );
-        }
-    }
-
-    fn event(&mut self, event: Event<'_>, cols: usize) {
-        match event {
-            Event::Start(Tag::Paragraph) => self.start_paragraph(),
-            Event::End(TagEnd::Paragraph) => self.finish_block(),
-            Event::Start(Tag::Heading { .. }) => self.start_block(
-                "│ ".repeat(self.quote_depth),
-                "│ ".repeat(self.quote_depth),
-                false,
-                MdStyle {
-                    bold: true,
-                    color: Some(0),
-                    ..MdStyle::default()
-                },
-            ),
-            Event::End(TagEnd::Heading(_)) => self.finish_block(),
-            Event::Start(Tag::BlockQuote(_)) => {
-                self.finish_block();
-                self.quote_depth += 1;
-            },
-            Event::End(TagEnd::BlockQuote(_)) => {
-                self.finish_block();
-                self.quote_depth = self.quote_depth.saturating_sub(1);
-            },
-            Event::Start(Tag::List(start)) => {
-                if self
-                    .current
-                    .as_ref()
-                    .is_some_and(|block| !block.chars.is_empty())
-                {
-                    self.finish_block();
-                }
-                self.lists.push(ListState { next: start });
-            },
-            Event::End(TagEnd::List(_)) => {
-                self.finish_block();
-                self.lists.pop();
-            },
-            Event::Start(Tag::Item) => self.start_item(),
-            Event::End(TagEnd::Item) => self.finish_block(),
-            Event::Start(Tag::CodeBlock(_)) => {
-                self.finish_block();
-                let prefix = "│ ".repeat(self.quote_depth);
-                self.start_block(
-                    prefix.clone(),
-                    prefix,
-                    false,
-                    MdStyle {
-                        color: Some(3),
-                        ..MdStyle::default()
-                    },
-                );
-                self.current.as_mut().expect("just started").hard_wrap = true;
-            },
-            Event::End(TagEnd::CodeBlock) => {
-                if self
-                    .current
-                    .as_mut()
-                    .and_then(|block| block.chars.last())
-                    .is_some_and(|styled| styled.ch == '\n')
-                {
-                    self.current.as_mut().expect("checked above").chars.pop();
-                }
-                self.finish_block();
-            },
-            Event::Start(Tag::HtmlBlock) => self.start_paragraph(),
-            Event::End(TagEnd::HtmlBlock) => {
-                if self
-                    .current
-                    .as_mut()
-                    .and_then(|block| block.chars.last())
-                    .is_some_and(|styled| styled.ch == '\n')
-                {
-                    self.current.as_mut().expect("checked above").chars.pop();
-                }
-                self.finish_block();
-            },
-            Event::Start(Tag::Emphasis) => self.push_style(|style| style.color = Some(1)),
-            Event::End(TagEnd::Emphasis) => self.pop_style(),
-            Event::Start(Tag::Strong) => self.push_style(|style| style.bold = true),
-            Event::End(TagEnd::Strong) => self.pop_style(),
-            Event::Start(Tag::Link { dest_url, .. })
-            | Event::Start(Tag::Image { dest_url, .. }) => self.start_link(&dest_url),
-            Event::End(TagEnd::Link) | Event::End(TagEnd::Image) => self.end_link(),
-            Event::Text(text) | Event::Html(text) | Event::InlineHtml(text) => self.append(&text),
-            Event::Code(text) => self.append_with_style(
-                &text,
-                MdStyle {
-                    color: Some(3),
-                    ..MdStyle::default()
-                },
-            ),
-            Event::SoftBreak => self.append(" "),
-            Event::HardBreak => self.append("\n"),
-            Event::Rule => {
-                self.finish_block();
-                self.start_block(String::new(), String::new(), false, MdStyle::default());
-                self.append_with_style(
-                    &"─".repeat(cols),
-                    MdStyle {
-                        dim: true,
-                        ..MdStyle::default()
-                    },
-                );
-                self.current.as_mut().expect("just started").hard_wrap = true;
-                self.finish_block();
-            },
-            _ => {},
+    /// A rendered markdown line, given the voice it was spoken in.
+    ///
+    /// The role rides on every line rather than being patched on afterwards, because
+    /// `ends_with_empty_reply` reads it: an empty `Role::Assistant` line at the tail *is* the
+    /// streaming placeholder, so a presented result that rendered to nothing would otherwise
+    /// be given a spinner.
+    fn from_md(line: MdLine, role: Role) -> Self {
+        VLine {
+            text: line.text,
+            role,
+            styles: line.styles,
         }
     }
 }
@@ -388,124 +101,6 @@ fn prefix_for(role: Role) -> &'static str {
 /// typed was run *for* its output, so eliding it would defeat the command.
 const TOOL_RESULT_ROWS: usize = 3;
 
-fn styled_width(chars: &[StyledChar]) -> usize {
-    chars
-        .iter()
-        .map(|styled| styled.ch.width().unwrap_or(0))
-        .sum()
-}
-
-fn hard_wrap_styled(chars: &[StyledChar], width: usize) -> Vec<Vec<StyledChar>> {
-    if width == 0 {
-        return vec![Vec::new()];
-    }
-    let mut lines = Vec::new();
-    let mut line = Vec::new();
-    let mut line_width = 0;
-    for styled in chars {
-        if styled.ch == '\n' {
-            lines.push(std::mem::take(&mut line));
-            line_width = 0;
-            continue;
-        }
-        let ch_width = styled.ch.width().unwrap_or(0);
-        if line_width + ch_width > width && !line.is_empty() {
-            lines.push(std::mem::take(&mut line));
-            line_width = 0;
-        }
-        line.push(styled.clone());
-        line_width += ch_width;
-    }
-    lines.push(line);
-    lines
-}
-
-fn word_wrap_styled(chars: &[StyledChar], width: usize) -> Vec<Vec<StyledChar>> {
-    if width == 0 {
-        return vec![Vec::new()];
-    }
-    let mut source_lines = vec![Vec::new()];
-    for styled in chars {
-        if styled.ch == '\n' {
-            source_lines.push(Vec::new());
-        } else {
-            source_lines
-                .last_mut()
-                .expect("seeded above")
-                .push(styled.clone());
-        }
-    }
-
-    let mut lines = Vec::new();
-    for source in source_lines {
-        let mut line = Vec::new();
-        let mut pending_spaces = Vec::new();
-        let mut index = 0;
-        while index < source.len() {
-            let spaces = source[index].ch == ' ';
-            let end = (index + 1..source.len())
-                .find(|next| (source[*next].ch == ' ') != spaces)
-                .unwrap_or(source.len());
-            let token = &source[index..end];
-            index = end;
-            if spaces {
-                pending_spaces.extend_from_slice(token);
-                continue;
-            }
-
-            let word_width = styled_width(token);
-            if styled_width(&line) + styled_width(&pending_spaces) + word_width <= width {
-                line.append(&mut pending_spaces);
-                line.extend_from_slice(token);
-            } else if word_width <= width {
-                lines.push(std::mem::take(&mut line));
-                pending_spaces.clear();
-                line.extend_from_slice(token);
-            } else {
-                if !line.is_empty() {
-                    lines.push(std::mem::take(&mut line));
-                }
-                pending_spaces.clear();
-                let mut pieces = hard_wrap_styled(token, width);
-                line = pieces.pop().unwrap_or_default();
-                lines.extend(pieces);
-            }
-        }
-        lines.push(line);
-    }
-    lines
-}
-
-fn render_markdown_block(block: &MdBlock, cols: usize, role: Role) -> Vec<VLine> {
-    let body_width = cols.saturating_sub(block.prefix.width()).max(1);
-    let bodies = if block.hard_wrap {
-        hard_wrap_styled(&block.chars, body_width)
-    } else {
-        word_wrap_styled(&block.chars, body_width)
-    };
-
-    bodies
-        .into_iter()
-        .enumerate()
-        .map(|(index, body)| {
-            let prefix = if index == 0 {
-                &block.prefix
-            } else {
-                &block.continuation
-            };
-            let prefix_style = MdStyle {
-                dim: true,
-                ..MdStyle::default()
-            };
-            let mut text = prefix.clone();
-            let mut styles = vec![prefix_style; prefix.chars().count()];
-            text.extend(body.iter().map(|styled| styled.ch));
-            styles.extend(body.into_iter().map(|styled| styled.style));
-            VLine { text, role, styles }
-        })
-        .collect()
-}
-
 fn markdown_lines(text: &str, cols: usize) -> Vec<VLine> {
     markdown_lines_as(text, cols, Role::Assistant)
 }
@@ -517,31 +112,12 @@ fn markdown_lines(text: &str, cols: usize) -> Vec<VLine> {
 /// `Role::Assistant` line at the tail *is* the streaming placeholder, so a
 /// presented result that rendered to nothing would otherwise be given a spinner.
 fn markdown_lines_as(text: &str, cols: usize, role: Role) -> Vec<VLine> {
-    let sanitized = sanitize(text);
-    let mut renderer = MarkdownRenderer::default();
-    for event in Parser::new_ext(&sanitized, Options::empty()) {
-        renderer.event(event, cols);
-    }
-    renderer.finish_block();
-
-    if renderer.blocks.is_empty() {
-        return vec![VLine {
-            text: String::new(),
-            role,
-            styles: Vec::new(),
-        }];
-    }
-
-    // ponytail: style metadata is one tiny Copy value per displayed character.
-    // Replace it with ranges only if transcript memory shows up in a profile.
-    let mut lines = Vec::new();
-    for (index, block) in renderer.blocks.iter().enumerate() {
-        if index > 0 && !(renderer.blocks[index - 1].compact && block.compact) {
-            lines.push(VLine::blank());
-        }
-        lines.extend(render_markdown_block(block, cols, role));
-    }
-    lines
+    // The conversation has the whole pane, so it keeps the blank line between blocks; the
+    // agents pane's history half, which asks the same renderer for the same prose, does not.
+    markdown::render(text, cols, markdown::Options::default())
+        .into_iter()
+        .map(|line| VLine::from_md(line, role))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -681,7 +257,7 @@ fn lines_from_runs(runs: &[Run], width: usize, role: Role) -> Vec<VLine> {
                 .collect::<Vec<_>>()
         })
         .collect();
-    word_wrap_styled(&chars, width.max(1))
+    markdown::word_wrap_styled(&chars, width.max(1))
         .into_iter()
         .map(|line| VLine {
             text: line.iter().map(|styled| styled.ch).collect(),
@@ -1077,7 +653,8 @@ fn ends_with_empty_reply(lines: &[VLine]) -> bool {
 
 fn styled(line: &VLine) -> Text {
     let text = Text::new(&line.text);
-    let mut text = match line.role {
+    // The role's own colour first, then the per-character styles over it.
+    let text = match line.role {
         Role::Error => text.error_color_range(..),
         Role::Notice => text.dim_range(..),
         // A presented result carries its own styling, one entry per character;
@@ -1092,27 +669,7 @@ fn styled(line: &VLine) -> Text {
         Role::User => text.color_range(2, ..),
         Role::Assistant => text,
     };
-    let mut start = 0;
-    while start < line.styles.len() {
-        let style = line.styles[start];
-        let end = (start + 1..line.styles.len())
-            .find(|index| line.styles[*index] != style)
-            .unwrap_or(line.styles.len());
-        if !style.bold {
-            text = text.unbold_range(start..end);
-        }
-        if let Some(color) = style.color {
-            text = text.color_range(color, start..end);
-        }
-        if style.dim {
-            text = text.dim_range(start..end);
-        }
-        if style.error {
-            text = text.error_color_range(start..end);
-        }
-        start = end;
-    }
-    text
+    markdown::style_over(text, &line.styles, false)
 }
 
 // ---------------------------------------------------------------------------
