@@ -74,6 +74,13 @@ pub const AGENT_STRIP_OPEN: &str = "agent_strip_open";
 /// the agent list's *plugin id*, which is how hocus finds the pane it has to place beside
 /// itself. A pane url cannot tell two instances apart, so there is no other way to learn it.
 pub const AGENT_SELECTION: &str = "agent_selection";
+/// hocus-agents → hocus: "move me out of the way" - Ctrl-o pressed in the list.
+///
+/// The list has no geometry of its own: hocus places both overlay panes, because the
+/// arithmetic for one of them depends on the other. So the key is a request rather than a move -
+/// the pane says it was pressed and hocus answers by walking the list clear of a tiled pane,
+/// exactly as the same key does for the conversation.
+pub const AGENT_STRIP_REPOSITION: &str = "agent_strip_reposition";
 /// hocus → hocus-agents: the full history of the selected run.
 pub const AGENT_RUN_DETAIL: &str = "agent_run_detail";
 /// hocus-agents → hocus: fetch the next page of completed run headers.

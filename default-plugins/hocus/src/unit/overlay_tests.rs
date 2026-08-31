@@ -1,4 +1,4 @@
-//! `overlay_geometry` is a pure function of (config, display area, whether the chat is on
+//! `overlay_rects` is a pure function of (config, display area, whether the chat is on
 //! screen), so it is tested as one.
 
 use super::*;
@@ -11,7 +11,7 @@ fn config(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
 }
 
 /// `(x, y, width, height)` as plain numbers. Every coordinate this module produces is `Fixed`,
-/// which is the point - see the note in `overlay_geometry`.
+/// which is the point - see the note in `fixed_rect`.
 fn rect(coordinates: &FloatingPaneCoordinates) -> (usize, usize, usize, usize) {
     let fixed = |value: &Option<PercentOrFixed>| match value {
         Some(PercentOrFixed::Fixed(n)) => *n,
@@ -25,13 +25,27 @@ fn rect(coordinates: &FloatingPaneCoordinates) -> (usize, usize, usize, usize) {
     )
 }
 
+/// Both panels at home - neither moved by a press - as the coordinates the host takes.
+///
+/// `overlay_rects` is the production arithmetic and `fixed_rect` the conversion `place_one` makes
+/// per panel; this does both at once, so a test can compare the pair.
+fn home_geometry(
+    config: &BTreeMap<String, String>,
+    rows: usize,
+    cols: usize,
+    chat_visible: bool,
+) -> Option<(FloatingPaneCoordinates, FloatingPaneCoordinates)> {
+    let (chat, agents) = overlay_rects(config, rows, cols, chat_visible)?;
+    Some((fixed_rect(chat), fixed_rect(agents)))
+}
+
 /// The geometry with the conversation on screen, which is the ordinary case.
 fn beside(
     config: &BTreeMap<String, String>,
     rows: usize,
     cols: usize,
 ) -> (FloatingPaneCoordinates, FloatingPaneCoordinates) {
-    overlay_geometry(config, rows, cols, true).expect("some geometry")
+    home_geometry(config, rows, cols, true).expect("some geometry")
 }
 
 #[test]
@@ -92,7 +106,7 @@ fn the_gap_between_the_panels_is_the_configured_padding() {
 /// belongs in the corner, not floating in the middle of the screen with nothing beside it.
 #[test]
 fn the_agent_list_takes_the_left_hand_slot_when_the_conversation_is_hidden() {
-    let (_, alone) = overlay_geometry(&BTreeMap::new(), 50, 200, false).expect("some geometry");
+    let (_, alone) = home_geometry(&BTreeMap::new(), 50, 200, false).expect("some geometry");
     let (chat, _) = beside(&BTreeMap::new(), 50, 200);
     let (chat_x, chat_y, _, chat_h) = rect(&chat);
     let (alone_x, alone_y, _, alone_h) = rect(&alone);
@@ -222,7 +236,7 @@ fn a_width_too_wide_for_two_panes_is_halved_rather_than_overflowed() {
          added to it"
     );
 
-    let (_, alone) = overlay_geometry(&config, 50, cols, false).expect("some geometry");
+    let (_, alone) = home_geometry(&config, 50, cols, false).expect("some geometry");
     assert_eq!(
         rect(&alone).2,
         80,
@@ -236,9 +250,8 @@ fn a_fat_pad_on_a_narrow_screen_still_leaves_the_panes_on_screen() {
     // only at the rows lets a tall, narrow display push a pane off the right-hand edge.
     for cols in [20, 40, 80] {
         for chat_visible in [true, false] {
-            let (chat, agents) =
-                overlay_geometry(&config(&[("pad", "50")]), 200, cols, chat_visible)
-                    .unwrap_or_else(|| panic!("some geometry at {cols} columns"));
+            let (chat, agents) = home_geometry(&config(&[("pad", "50")]), 200, cols, chat_visible)
+                .unwrap_or_else(|| panic!("some geometry at {cols} columns"));
             let panes: &[(&str, &FloatingPaneCoordinates)] = match chat_visible {
                 true => &[("conversation", &chat), ("agent list", &agents)],
                 // the conversation's rectangle is not drawn while it is hidden, so only the
@@ -269,10 +282,10 @@ fn a_fat_pad_on_a_narrow_screen_still_leaves_the_panes_on_screen() {
 #[test]
 fn no_geometry_before_the_first_tab_update() {
     assert!(
-        overlay_geometry(&BTreeMap::new(), 0, 0, true).is_none(),
+        home_geometry(&BTreeMap::new(), 0, 0, true).is_none(),
         "nothing to compute against yet, and a guess would be seen to move"
     );
-    assert!(overlay_geometry(&BTreeMap::new(), 50, 0, true).is_none());
+    assert!(home_geometry(&BTreeMap::new(), 50, 0, true).is_none());
 }
 
 // ---- hide / reveal transitions ---------------------------------------------------------------
@@ -563,7 +576,7 @@ fn a_resize_while_both_halves_are_hidden_is_still_placed() {
 #[test]
 fn a_pane_never_collapses_to_nothing_on_a_tiny_screen() {
     for rows in 6..=14 {
-        let (chat, agents) = overlay_geometry(&BTreeMap::new(), rows, 80, true)
+        let (chat, agents) = home_geometry(&BTreeMap::new(), rows, 80, true)
             .unwrap_or_else(|| panic!("some geometry at {rows} rows"));
         for (name, rectangle) in [("conversation", &chat), ("agent list", &agents)] {
             let (_, y, _, h) = rect(rectangle);
@@ -587,7 +600,7 @@ fn a_pane_never_collapses_to_nothing_on_a_tiny_screen() {
 
 /// Both rectangles on one surface, as `(x, y, width, height)`.
 fn both(rows: usize, cols: usize, chat_visible: bool) -> [(usize, usize, usize, usize); 2] {
-    let (chat, agents) = overlay_geometry(&BTreeMap::new(), rows, cols, chat_visible)
+    let (chat, agents) = home_geometry(&BTreeMap::new(), rows, cols, chat_visible)
         .unwrap_or_else(|| panic!("some geometry at {rows}x{cols}"));
     [rect(&chat), rect(&agents)]
 }
@@ -678,7 +691,7 @@ fn the_clear_placement_is_the_same_size_as_the_corner_one() {
         (6, 40),
     ] {
         for chat_visible in [true, false] {
-            let (chat, _) = overlay_geometry(&BTreeMap::new(), rows, cols, chat_visible)
+            let (chat, _) = home_geometry(&BTreeMap::new(), rows, cols, chat_visible)
                 .unwrap_or_else(|| panic!("some geometry at {rows}x{cols}"));
             let (_, _, w, h) = rect(&chat);
             for alone in [true, false] {
@@ -1398,7 +1411,7 @@ fn the_first_corner_of_the_order_is_where_the_placement_goes() {
         (at(0, 0, 200, 50), false),
         (at(0, 46, 10, 4), false),
     ] {
-        let order = corner_order(Some(anchor), alone, 50, 200, pad, size);
+        let order = corner_order(Some(anchor), None, alone, 50, 200, pad, size);
         let first = corner_rect(order[0], 50, 200, pad, size);
         assert_eq!(
             (first.x, first.y, first.cols, first.rows),
@@ -1445,7 +1458,7 @@ fn ctrl_o_moves_the_conversation_clear_of_the_largest_unfocused_pane() {
 
     assert!(!state.on_key(ctrl_o()));
 
-    assert_eq!(state.anchor, Some(PaneId::Terminal(2)));
+    assert_eq!(state.chat.anchor, Some(PaneId::Terminal(2)));
     let (_, is_the_users) = state.last_placement.as_ref().expect("a placement");
     assert!(
         is_the_users,
@@ -1481,7 +1494,11 @@ fn ctrl_o_walks_off_whatever_the_conversation_is_covering() {
     state.on_panes(manifest(0, panes.clone()));
 
     state.on_key(ctrl_o());
-    assert_eq!(state.anchor, Some(PaneId::Terminal(2)), "the pane it is on");
+    assert_eq!(
+        state.chat.anchor,
+        Some(PaneId::Terminal(2)),
+        "the pane it is on"
+    );
     let (x, _, w, _) = placed_chat(&state);
     assert!(x >= 100, "moved off pane 2, onto pane 3: {x} {w}");
 
@@ -1495,7 +1512,7 @@ fn ctrl_o_walks_off_whatever_the_conversation_is_covering() {
 
     state.on_key(ctrl_o());
     assert_eq!(
-        state.anchor,
+        state.chat.anchor,
         Some(PaneId::Terminal(3)),
         "now it is on pane 3"
     );
@@ -1518,7 +1535,7 @@ fn ctrl_o_with_one_tiled_pane_moves_to_the_top_right() {
     state.on_key(ctrl_o());
 
     assert_eq!(
-        state.anchor,
+        state.chat.anchor,
         Some(PaneId::Terminal(1)),
         "the focused pane is admitted when it is the only one"
     );
@@ -1564,7 +1581,11 @@ fn ctrl_o_twice_on_the_same_pane_moves_to_the_next_corner() {
 
     state.on_key(ctrl_o());
 
-    assert_eq!(state.anchor, Some(PaneId::Terminal(2)), "the same anchor");
+    assert_eq!(
+        state.chat.anchor,
+        Some(PaneId::Terminal(2)),
+        "the same anchor"
+    );
     let second = placed_chat(&state);
     assert_ne!(second, first, "and a different place to be");
     assert_eq!(
@@ -1652,7 +1673,7 @@ fn ctrl_o_tours_every_pane_before_it_cycles_corners() {
     let mut anchored = Vec::new();
     for _ in 0..3 {
         state.on_key(ctrl_o());
-        anchored.push(state.anchor.expect("an anchor"));
+        anchored.push(state.chat.anchor.expect("an anchor"));
     }
 
     assert_eq!(anchored.len(), 3);
@@ -1700,7 +1721,7 @@ fn ctrl_o_moves_with_no_tiled_panes_at_all() {
 
     let walked = walk(&mut state, 4);
 
-    assert_eq!(state.anchor, None, "there was nothing to anchor to");
+    assert_eq!(state.chat.anchor, None, "there was nothing to anchor to");
     let mut corners = walked.clone();
     corners.sort();
     corners.dedup();
@@ -1758,10 +1779,10 @@ fn a_closed_pane_does_not_hold_a_slot_in_the_tour() {
     state.on_key(ctrl_o());
     state.on_key(ctrl_o());
     assert_eq!(
-        state.warp_visited.len(),
+        state.chat.warp_visited.len(),
         2,
         "two panes toured: {:?}",
-        state.warp_visited
+        state.chat.warp_visited
     );
 
     // pane 2 closed, and pane 3 took its room
@@ -1775,13 +1796,13 @@ fn a_closed_pane_does_not_hold_a_slot_in_the_tour() {
     ));
 
     assert_eq!(
-        state.warp_visited,
+        state.chat.warp_visited,
         vec![PaneId::Terminal(3)],
         "the pane that is gone is out of the tour"
     );
     state.on_key(ctrl_o());
     assert_eq!(
-        state.anchor,
+        state.chat.anchor,
         Some(PaneId::Terminal(3)),
         "and it is not offered again"
     );
@@ -1794,7 +1815,7 @@ fn a_closed_pane_does_not_hold_a_slot_in_the_tour() {
 fn a_re_tile_does_not_move_the_conversation() {
     let mut state = two_pane_state();
     state.on_key(ctrl_o());
-    let parked = state.placed_rect.expect("a placement");
+    let parked = state.chat.placed_rect.expect("a placement");
     state.last_placement = None;
 
     // the same manifest again: nothing moved, nothing to say
@@ -1818,9 +1839,9 @@ fn a_re_tile_does_not_move_the_conversation() {
         state.last_placement, None,
         "a re-tile is not a request to move anything"
     );
-    assert_eq!(state.placed_rect, Some(parked), "and nothing moved");
+    assert_eq!(state.chat.placed_rect, Some(parked), "and nothing moved");
     assert_eq!(
-        state.anchor_rect,
+        state.chat.anchor_rect,
         Some(at(150, 0, 50, 50)),
         "the anchor is still tracked - the next press ranks against it"
     );
@@ -1833,7 +1854,7 @@ fn a_re_tile_does_not_move_the_conversation() {
 fn closing_the_anchor_pane_leaves_the_conversation_where_it_is() {
     let mut state = two_pane_state();
     state.on_key(ctrl_o());
-    let parked = state.placed_rect.expect("a placement");
+    let parked = state.chat.placed_rect.expect("a placement");
     state.last_placement = None;
 
     state.on_panes(manifest(
@@ -1844,9 +1865,9 @@ fn closing_the_anchor_pane_leaves_the_conversation_where_it_is() {
         ],
     ));
 
-    assert_eq!((state.anchor, state.anchor_rect), (None, None));
+    assert_eq!((state.chat.anchor, state.chat.anchor_rect), (None, None));
     assert_eq!(state.last_placement, None, "a pane closing places nothing");
-    assert_eq!(state.placed_rect, Some(parked), "and moves nothing");
+    assert_eq!(state.chat.placed_rect, Some(parked), "and moves nothing");
 }
 
 /// The corner survives the anchor that chose it, which is what makes the guarantee hold through
@@ -1856,7 +1877,7 @@ fn closing_the_anchor_pane_leaves_the_conversation_where_it_is() {
 fn a_resize_keeps_the_corner_the_last_press_chose() {
     let mut state = two_pane_state();
     state.on_key(ctrl_o());
-    let corner = state.placed_corner.expect("a corner");
+    let corner = state.chat.placed_corner.expect("a corner");
     assert_ne!(corner, CORNERS[0], "the press left the default corner");
 
     // the anchor closes, and then the terminal is made smaller
@@ -1875,7 +1896,7 @@ fn a_resize_keeps_the_corner_the_last_press_chose() {
     }]);
 
     let expected = rect_in_corner(&state.kdl, 40, 160, true, corner, None).expect("a rectangle");
-    assert_eq!(state.placed_corner, Some(corner), "the same corner");
+    assert_eq!(state.chat.placed_corner, Some(corner), "the same corner");
     assert_eq!(
         placed_chat(&state),
         (expected.x, expected.y, expected.cols, expected.rows),
@@ -1927,7 +1948,7 @@ fn a_pane_closing_does_not_move_the_agent_list() {
 fn arriving_on_another_tab_drops_the_anchor() {
     let mut state = two_pane_state();
     state.on_key(ctrl_o());
-    let parked = state.placed_rect.expect("a placement");
+    let parked = state.chat.placed_rect.expect("a placement");
     state.last_placement = None;
 
     state.on_panes(manifest(
@@ -1939,9 +1960,9 @@ fn arriving_on_another_tab_drops_the_anchor() {
     ));
 
     assert_eq!(state.own_tab_index, Some(1));
-    assert_eq!((state.anchor, state.anchor_rect), (None, None));
+    assert_eq!((state.chat.anchor, state.chat.anchor_rect), (None, None));
     assert_eq!(state.last_placement, None, "the move carried the geometry");
-    assert_eq!(state.placed_rect, Some(parked));
+    assert_eq!(state.chat.placed_rect, Some(parked));
 }
 
 #[test]
@@ -1951,15 +1972,15 @@ fn a_hidden_conversation_keeps_its_anchor() {
     let anchored = placed_chat(&state);
 
     state.hide_self_only();
-    assert_eq!(state.anchor, Some(PaneId::Terminal(2)));
+    assert_eq!(state.chat.anchor, Some(PaneId::Terminal(2)));
     state.reveal_self();
 
-    assert_eq!(state.anchor, Some(PaneId::Terminal(2)));
+    assert_eq!(state.chat.anchor, Some(PaneId::Terminal(2)));
     assert_eq!(placed_chat(&state), anchored, "revealed where it was");
 }
 
-#[test]
-fn the_agent_list_keeps_its_corner_arithmetic_while_the_conversation_is_anchored() {
+/// A hocus over the two-pane tab with an agent list open beside it, both panels at home.
+fn agents_beside_state() -> State {
     let mut state = two_pane_state();
     state.pipe(selection(9));
     state.on_panes(manifest(
@@ -1969,18 +1990,213 @@ fn the_agent_list_keeps_its_corner_arithmetic_while_the_conversation_is_anchored
             .chain(std::iter::once(overlay_pane(9, 66, 14, 60, 33)))
             .collect(),
     ));
+    state.last_placement = None;
+    state
+}
+
+/// Ctrl-o in the agent list, as `hocus-agents` sends it: the pane has no geometry of its own, so
+/// the key is a request rather than a move.
+fn list_reposition() -> PipeMessage {
+    PipeMessage {
+        source: PipeSource::Plugin(9),
+        name: hocus_proto::wire::AGENT_STRIP_REPOSITION.to_owned(),
+        payload: None,
+        args: BTreeMap::new(),
+        is_private: true,
+        pane_id: None,
+    }
+}
+
+/// One panel's rect from the last placement, and `None` when that placement did not name it.
+fn placed_pane(state: &State, plugin_id: u32) -> Option<(usize, usize, usize, usize)> {
+    let (placements, _) = state.last_placement.as_ref()?;
+    placements
+        .iter()
+        .find(|(id, _)| *id == PaneId::Plugin(plugin_id))
+        .map(|(_, coordinates)| rect(coordinates))
+}
+
+/// The list's own Ctrl-o, and the whole of what it is for: it walks off the pane it was covering.
+#[test]
+fn ctrl_o_in_the_list_moves_it_clear_of_the_largest_unfocused_pane() {
+    let mut state = agents_beside_state();
+
+    state.pipe(list_reposition());
+
+    assert_eq!(
+        state.agents.anchor,
+        Some(PaneId::Terminal(2)),
+        "the largest pane the user is not working in"
+    );
+    let (_, is_the_users) = state.last_placement.as_ref().expect("a placement");
+    assert!(
+        is_the_users,
+        "sent as the user's own placement, over any drag"
+    );
+    let (x, _, w, _) = placed_pane(&state, 9).expect("the list is placed");
+    assert!(
+        x + w <= 100,
+        "clear of pane 2, which starts at 100: {x} {w}"
+    );
+}
+
+/// The panels move separately: a press in one pane names one pane in the placement, and the other
+/// keeps whatever position the user had given it.
+#[test]
+fn a_press_places_only_the_pane_it_was_pressed_in() {
+    let mut state = agents_beside_state();
+
+    state.pipe(list_reposition());
+    let (placements, _) = state.last_placement.clone().expect("a placement");
+    assert_eq!(
+        placements.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        vec![PaneId::Plugin(9)],
+        "the list alone"
+    );
+
+    state.last_placement = None;
+    state.on_key(ctrl_o());
+    let (placements, _) = state.last_placement.clone().expect("a placement");
+    assert_eq!(
+        placements.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        vec![PaneId::Plugin(7)],
+        "and the conversation alone"
+    );
+}
+
+/// The conversation's press is not the list's: the list stays at home, which is where the
+/// ordinary geometry keeps putting it.
+#[test]
+fn the_agent_list_keeps_its_corner_arithmetic_while_the_conversation_is_anchored() {
+    let mut state = agents_beside_state();
 
     state.on_key(ctrl_o());
+    assert_eq!(
+        placed_pane(&state, 9),
+        None,
+        "the press did not name the list"
+    );
 
-    let (placements, _) = state.last_placement.clone().expect("a placement");
-    let (_, list) = placements
-        .iter()
-        .find(|(id, _)| *id == PaneId::Plugin(9))
-        .expect("the list is placed too");
+    state.apply_overlay_geometry();
     let (_, beside_the_corner) = beside(&BTreeMap::new(), 50, 200);
     assert_eq!(
-        rect(list),
-        rect(&beside_the_corner),
+        placed_pane(&state, 9),
+        Some(rect(&beside_the_corner)),
         "exactly where it would be with the conversation in the corner"
+    );
+}
+
+/// A press moves, every time - the same guarantee the conversation's has, walked pane to pane and
+/// then round the corners.
+#[test]
+fn ctrl_o_in_the_list_always_moves_it() {
+    let mut state = agents_beside_state();
+    // Home, as `agents_beside_state` leaves it: the slot beside the conversation.
+    let mut was = (66, 14, 60, 33);
+    let mut corners = std::collections::BTreeSet::new();
+
+    for press in 0..5 {
+        state.last_placement = None;
+        state.pipe(list_reposition());
+        let placed = placed_pane(&state, 9).expect("a placement");
+        assert_ne!(placed, was, "press {press} moved the list nowhere");
+        corners.insert(placed);
+        was = placed;
+        // The manifest the server would send back, so the next press ranks against where the list
+        // actually is rather than where it started.
+        let (x, y, cols, rows) = placed;
+        state.on_panes(manifest(
+            0,
+            two_panes()
+                .into_iter()
+                .chain(std::iter::once(overlay_pane(9, x, y, cols, rows)))
+                .collect(),
+        ));
+    }
+    assert_eq!(
+        corners.len(),
+        4,
+        "the four corners and nothing outside them - the fifth press re-opens the tour"
+    );
+}
+
+/// A user who resized the list keeps that size through a move, exactly as the conversation does.
+#[test]
+fn ctrl_o_in_the_list_keeps_its_current_size() {
+    let mut state = two_pane_state();
+    state.pipe(selection(9));
+    state.on_panes(manifest(
+        0,
+        two_panes()
+            .into_iter()
+            .chain(std::iter::once(overlay_pane(9, 66, 27, 80, 20)))
+            .collect(),
+    ));
+    state.last_placement = None;
+
+    state.pipe(list_reposition());
+
+    let (_, _, w, h) = placed_pane(&state, 9).expect("a placement");
+    assert_eq!(
+        (w, h),
+        (80, 20),
+        "the size the manifest reports, not the configured one"
+    );
+}
+
+/// Nothing to move, so nothing is placed: a list nobody has opened, and one that has been left
+/// behind on another tab - where the panes a press ranks against are not the panes it is sitting
+/// among.
+#[test]
+fn a_list_that_is_not_here_is_not_repositioned() {
+    let mut state = two_pane_state();
+
+    state.pipe(list_reposition());
+    assert_eq!(state.last_placement, None, "there is no list to move");
+
+    let mut state = agents_beside_state();
+    state.agents_tab_index = Some(1);
+    state.pipe(list_reposition());
+    assert_eq!(
+        state.last_placement, None,
+        "the list is on another tab, and our manifest says nothing about the panes there"
+    );
+}
+
+/// The sibling is the *last* key of the sort, which is exactly two claims: a corner the other
+/// panel is sitting in loses to one that clears the anchor just as well, and it is still reached
+/// by a cycle that has run out of anywhere better.
+#[test]
+fn a_corner_the_other_panel_is_in_sorts_last_among_equals() {
+    let size = corner_size();
+    // A pane down the right-hand side: both left-hand corners clear it outright, so the anchor
+    // ranks them equal and the sibling is all there is left to choose on.
+    let anchor = at(100, 0, 100, 50);
+    let occupied = corner_rect(Corner::BottomLeft, 50, 200, DEFAULT_PAD, size);
+
+    let alone = corner_order(Some(anchor), None, false, 50, 200, DEFAULT_PAD, size);
+    let beside = corner_order(
+        Some(anchor),
+        Some(occupied),
+        false,
+        50,
+        200,
+        DEFAULT_PAD,
+        size,
+    );
+
+    assert_eq!(
+        alone[0],
+        Corner::BottomLeft,
+        "with nothing to avoid, the near left corner as always"
+    );
+    assert_ne!(
+        beside[0],
+        Corner::BottomLeft,
+        "not the corner the other panel is in"
+    );
+    assert!(
+        beside.contains(&Corner::BottomLeft),
+        "still in the ordering - a full cycle is a full cycle"
     );
 }
