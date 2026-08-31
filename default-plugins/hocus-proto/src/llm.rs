@@ -46,6 +46,22 @@ pub fn completions_url(base: &str) -> String {
     }
 }
 
+/// The Responses endpoint, for the same `base_url` and the same four shapes.
+///
+/// ```text
+/// https://api.openai.com/v1         -> https://api.openai.com/v1/responses
+/// https://api.openai.com/v1/        -> https://api.openai.com/v1/responses
+/// https://host/v1/chat/completions  -> https://host/v1/responses
+/// http://localhost:11434            -> http://localhost:11434/v1/responses
+/// ```
+///
+/// A base already pointing at one of the two endpoints is re-pointed rather than left
+/// alone: `base_url` names the API root for everything hocus does, and switching
+/// transports must not depend on the user having spelled it one particular way.
+pub fn responses_url(base: &str) -> String {
+    format!("{}/responses", api_root(base))
+}
+
 /// The model list that sits beside the completions endpoint. Same four shapes of base URL
 /// as [`completions_url`], since it is the same `base_url` setting.
 ///
@@ -53,16 +69,25 @@ pub fn completions_url(base: &str) -> String {
 /// https://api.openai.com/v1         -> https://api.openai.com/v1/models
 /// https://api.openai.com/v1/        -> https://api.openai.com/v1/models
 /// https://host/v1/chat/completions  -> https://host/v1/models
+/// https://host/v1/responses         -> https://host/v1/models
 /// http://localhost:11434            -> http://localhost:11434/v1/models
 /// ```
 pub fn models_url(base: &str) -> String {
+    format!("{}/models", api_root(base))
+}
+
+/// The `/v1` root a configured `base_url` names, whichever endpoint it was written as.
+fn api_root(base: &str) -> String {
     let base = base.trim().trim_end_matches('/');
-    let base = base.strip_suffix("/chat/completions").unwrap_or(base);
+    let base = base
+        .strip_suffix("/chat/completions")
+        .or_else(|| base.strip_suffix("/responses"))
+        .unwrap_or(base);
     let base = base.trim_end_matches('/');
     if base.ends_with("/v1") {
-        format!("{base}/models")
+        base.to_owned()
     } else {
-        format!("{base}/v1/models")
+        format!("{base}/v1")
     }
 }
 

@@ -1,13 +1,18 @@
-//! Everything that talks to an OpenAI-compatible `/v1/chat/completions`
-//! endpoint: config resolution, request construction, and SSE stream framing.
+//! Everything that talks to an OpenAI-compatible endpoint: config resolution,
+//! request construction, and SSE stream framing.
+//!
+//! Two transports, chosen by the `api` config key and modelled by [`Api`]:
+//! `/v1/chat/completions`, which every OpenAI-compatible provider speaks, and
+//! OpenAI's own `/v1/responses`, which is the only endpoint that accepts
+//! `reasoning_effort` and `tools` in the same request. They differ in the
+//! request shape and in the event stream, and in nothing else: both are parsed
+//! down to the same [`SseItem`]s, so no caller knows which one is in use.
 //!
 //! Nothing in this module calls the Zellij host, so it is all unit-testable on
 //! the host triple (see `make test`).
 
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
-use serde_json::json;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
@@ -19,7 +24,7 @@ use crate::{Message, Reasoning, ReasoningKey, Role};
 // summarise an idle agent, cannot disagree with us about where it is. Re-exported rather
 // than re-implemented: every call site here already spells them unqualified.
 pub use hocus_proto::llm::{
-    api_error_message, completions_url, models_url, non_empty, DEFAULT_API_KEY_ENV,
+    api_error_message, completions_url, models_url, non_empty, responses_url, DEFAULT_API_KEY_ENV,
     DEFAULT_BASE_URL, DEFAULT_MODEL,
 };
 /// SearxNG's own docker-compose default port.
@@ -48,15 +53,30 @@ end by asking permission; the user is asked for you.";
 // Configuration
 // ---------------------------------------------------------------------------
 
+/// Which of the two wire protocols an endpoint is spoken to with.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Api {
+    /// `/v1/chat/completions`. The default, because it is the only one every
+    /// OpenAI-compatible provider implements.
+    #[default]
+    Chat,
+    /// OpenAI's `/v1/responses`. Opt-in: OpenAI's reasoning models refuse
+    /// `reasoning_effort` alongside `tools` on chat/completions, and this is the
+    /// endpoint that takes both.
+    Responses,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
-    /// Fully resolved completions endpoint, derived from `base_url`.
+    /// Fully resolved endpoint, derived from `base_url` and `api`.
     pub url: String,
     pub api_key: String,
     pub model: String,
     /// Kept verbatim so the "not configured" banner can show what we resolved.
     pub base_url: String,
     pub api_key_env: String,
+    /// Which wire protocol `url` speaks. See [`Api`].
+    pub api: Api,
     /// Base URL of the SearxNG that backs `web_search`. Any instance on the
     /// network will do; it is a plain HTTP GET against its JSON API.
     pub search_url: String,
@@ -137,6 +157,18 @@ impl Config {
             .unwrap_or_else(|| DEFAULT_MODEL.to_owned());
         let api_key_env =
             non_empty(kdl, "api_key_env").unwrap_or_else(|| DEFAULT_API_KEY_ENV.to_owned());
+        let api = match enum_setting(kdl, "api", &["chat", "responses"]) {
+            Ok(Some(value)) if value == "responses" => Api::Responses,
+            Ok(_) => Api::Chat,
+            Err(message) => {
+                return Err(ConfigError {
+                    message,
+                    base_url,
+                    model,
+                    api_key_env,
+                })
+            },
+        };
         let search_url = non_empty(kdl, "search_url")
             .or_else(|| non_empty(env, "SEARXNG_URL"))
             .unwrap_or_else(|| DEFAULT_SEARCH_URL.to_owned());
@@ -165,10 +197,14 @@ impl Config {
                     api_key_env: api_key_env.clone(),
                 }
             })?;
+        // The union of what the endpoints accept: `none` and `minimal` are
+        // OpenAI's, the rest DeepSeek's and OpenRouter's. `none` is also the
+        // documented way to keep tools working on chat/completions against a
+        // reasoning model, which refuses any other effort beside a `tools` array.
         let reasoning_effort = enum_setting(
             kdl,
             "reasoning_effort",
-            &["low", "medium", "high", "xhigh", "max"],
+            &["none", "minimal", "low", "medium", "high", "xhigh", "max"],
         )
         .map_err(|message| ConfigError {
             message,
@@ -199,11 +235,15 @@ impl Config {
 
         match non_empty(env, &api_key_env) {
             Some(api_key) => Ok(Config {
-                url: completions_url(&base_url),
+                url: match api {
+                    Api::Chat => completions_url(&base_url),
+                    Api::Responses => responses_url(&base_url),
+                },
                 api_key,
                 model,
                 base_url,
                 api_key_env,
+                api,
                 search_url,
                 search_proxy,
                 dobbs,
@@ -417,7 +457,22 @@ pub fn request_body_with_project_and_tools(
     plan: bool,
     extension_tools: &[Value],
 ) -> Vec<u8> {
-    let mut messages: Vec<WireMessage> = Vec::with_capacity(transcript.len() + 1);
+    let system = system_text(cfg, project, plan);
+    let tools = tool_specs(cfg, plan, extension_tools);
+    match cfg.api {
+        Api::Chat => chat_request_body(cfg, transcript, system, tools),
+        Api::Responses => responses_request_body(cfg, transcript, system, tools),
+    }
+}
+
+/// The system prompt as it goes out, whichever transport carries it: the
+/// tool-first preamble, the user's own prompt, the planning-mode sentence and the
+/// active project, in that order.
+///
+/// The order matters. A custom `system_prompt` sits after the tool preamble but
+/// before the planning sentence, so it can never displace the explanation of why
+/// half the tools are missing.
+fn system_text(cfg: &Config, project: Option<(&str, &str)>, plan: bool) -> Option<String> {
     let mut system = if cfg.tools {
         Some(match &cfg.system_prompt {
             Some(custom) => format!("{TOOL_FIRST_PROMPT}\n\n{custom}"),
@@ -426,9 +481,6 @@ pub fn request_body_with_project_and_tools(
     } else {
         cfg.system_prompt.clone()
     };
-    // After the configured prompt and before the project line: a custom
-    // `system_prompt` must not be able to displace the sentence explaining why
-    // half the tools are missing.
     if plan {
         match system.as_mut() {
             Some(system) => {
@@ -448,6 +500,33 @@ pub fn request_body_with_project_and_tools(
             None => system = Some(context),
         }
     }
+    system
+}
+
+/// The advertised tool set: the builtins for this mode plus whatever extensions
+/// contribute. `None` when `tools` is off, which keeps the key off the wire for
+/// the local models that reject the array outright.
+fn tool_specs(cfg: &Config, plan: bool, extension_tools: &[Value]) -> Option<Value> {
+    cfg.tools.then(|| {
+        let mut specs = if plan {
+            tools::read_only_specs()
+        } else {
+            tools::specs()
+        };
+        if let Value::Array(specs) = &mut specs {
+            specs.extend_from_slice(extension_tools);
+        }
+        specs
+    })
+}
+
+fn chat_request_body(
+    cfg: &Config,
+    transcript: &[Message],
+    system: Option<String>,
+    tools: Option<Value>,
+) -> Vec<u8> {
+    let mut messages: Vec<WireMessage> = Vec::with_capacity(transcript.len() + 1);
     if let Some(system) = system {
         messages.push(WireMessage::text("system", system));
     }
@@ -499,20 +578,190 @@ pub fn request_body_with_project_and_tools(
             include_usage: true,
         }),
         messages,
-        tools: cfg.tools.then(|| {
-            let mut specs = if plan {
-                tools::read_only_specs()
-            } else {
-                tools::specs()
-            };
-            if let Value::Array(specs) = &mut specs {
-                specs.extend_from_slice(extension_tools);
-            }
-            specs
-        }),
+        tools,
     };
 
     serde_json::to_vec(&body).expect("serializing a chat request cannot fail")
+}
+
+// ---------------------------------------------------------------------------
+// Responses
+// ---------------------------------------------------------------------------
+
+/// The Responses request, borrowed for the same reason [`ChatRequest`] is.
+///
+/// The differences from chat/completions are all here: the system prompt is
+/// `instructions` rather than a message, the transcript is `input` rather than
+/// `messages`, the effort is an object rather than a bare string, and there is no
+/// `stream_options` — usage arrives on the terminal `response.completed` event
+/// whether or not it was asked for.
+#[derive(Serialize)]
+struct ResponsesRequest<'a> {
+    model: &'a str,
+    stream: bool,
+    /// Nothing is kept server-side. hocus sends the whole transcript every turn
+    /// and never uses `previous_response_id`, so a stored copy would be a
+    /// 30-day retention of the user's conversation bought for nothing.
+    store: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<ReasoningConfig<'a>>,
+    input: Vec<InputItem<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Value>,
+}
+
+#[derive(Serialize)]
+struct ReasoningConfig<'a> {
+    effort: &'a str,
+    /// Asked for unconditionally: without it a reasoning model streams no
+    /// thinking at all and hocus has nothing to show for the seconds it spends.
+    /// The raw chain-of-thought is never on offer here — only this summary.
+    summary: &'static str,
+}
+
+/// One `input` item. The three shapes [`WireMessage`] has, spelled the way this
+/// endpoint spells them — and, unlike there, a tool call is its own item rather
+/// than a field on the assistant message it came with.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum InputItem<'a> {
+    Message {
+        #[serde(rename = "type")]
+        kind: &'static str,
+        role: &'static str,
+        content: Cow<'a, str>,
+    },
+    FunctionCall {
+        #[serde(rename = "type")]
+        kind: &'static str,
+        call_id: &'a str,
+        name: &'a str,
+        arguments: &'a str,
+    },
+    FunctionCallOutput {
+        #[serde(rename = "type")]
+        kind: &'static str,
+        call_id: &'a str,
+        output: &'a str,
+    },
+}
+
+impl<'a> InputItem<'a> {
+    fn message(role: &'static str, content: impl Into<Cow<'a, str>>) -> Self {
+        InputItem::Message {
+            kind: "message",
+            role,
+            content: content.into(),
+        }
+    }
+}
+
+// ponytail: reasoning items are not carried across tool rounds on this transport,
+// so the model re-derives its thinking on each round of a tool loop — the same
+// ceiling chat/completions already has, and why `reasoning_echo` is a chat-only
+// setting. Upgrade path: `include: ["reasoning.encrypted_content"]` on the
+// request, then echoing every reasoning item back immediately before the
+// function_call it produced. The API rejects the request outright if that
+// pairing is ever broken, which is a good deal more machinery than a summary.
+fn responses_request_body(
+    cfg: &Config,
+    transcript: &[Message],
+    system: Option<String>,
+    tools: Option<Value>,
+) -> Vec<u8> {
+    let mut input: Vec<InputItem> = Vec::with_capacity(transcript.len());
+    for message in transcript {
+        match message.role {
+            Role::User => input.push(InputItem::message("user", &message.content)),
+            // Unlike chat/completions, the prose and the calls are separate
+            // items. Same rule for the prose either way: old archived calls kept
+            // their display summary in `content`, so it goes out only when the
+            // call carries a `display` override.
+            Role::Assistant if !message.tool_calls.is_empty() => {
+                let prose = message
+                    .display
+                    .as_ref()
+                    .map_or("", |_| message.content.as_str());
+                if !prose.is_empty() {
+                    input.push(InputItem::message("assistant", prose));
+                }
+                for call in &message.tool_calls {
+                    input.push(InputItem::FunctionCall {
+                        kind: "function_call",
+                        call_id: &call.id,
+                        name: &call.name,
+                        arguments: wire_arguments(call),
+                    });
+                }
+            },
+            Role::Assistant if !message.content.is_empty() => {
+                input.push(InputItem::message("assistant", &message.content))
+            },
+            Role::Tool => input.push(InputItem::FunctionCallOutput {
+                kind: "function_call_output",
+                // The call this answers, by the `call_id` the stream reported.
+                // Empty is malformed, but so is dropping the item: leaving a
+                // call unanswered fails the next request either way, and this
+                // one at least says which tool it was.
+                call_id: message.tool_call_id.as_deref().unwrap_or_default(),
+                output: &message.content,
+            }),
+            // Error and Notice lines are our own UI, as on the other transport.
+            _ => continue,
+        }
+    }
+
+    let body = ResponsesRequest {
+        model: &cfg.model,
+        stream: true,
+        store: false,
+        instructions: system,
+        reasoning: cfg
+            .reasoning_effort
+            .as_deref()
+            .map(|effort| ReasoningConfig {
+                effort,
+                summary: "auto",
+            }),
+        input,
+        tools: tools.map(flatten_tools),
+    };
+
+    serde_json::to_vec(&body).expect("serializing a responses request cannot fail")
+}
+
+/// Rewrite chat/completions tool specs into the flat shape this endpoint wants.
+///
+/// `tools::specs()` emits `{type, function: {name, description, parameters}}`;
+/// here those three fields sit at the top level. Rewritten rather than generated
+/// twice, so the tool set has one definition and extension tools
+/// (`Registry::spec`, which copies the same shape) come along for free.
+///
+/// `strict` is off deliberately: our schemas have optional parameters and no
+/// `additionalProperties: false`, both of which structured mode rejects.
+fn flatten_tools(specs: Value) -> Value {
+    let Value::Array(specs) = specs else {
+        return specs;
+    };
+    Value::Array(
+        specs
+            .into_iter()
+            .map(|mut spec| match spec.get_mut("function").map(Value::take) {
+                Some(Value::Object(mut function)) => json!({
+                    "type": "function",
+                    "name": function.remove("name").unwrap_or(Value::Null),
+                    "description": function.remove("description").unwrap_or(Value::Null),
+                    "parameters": function.remove("parameters").unwrap_or(Value::Null),
+                    "strict": false,
+                }),
+                // Not a shape we produce. Pass it through rather than mangle it:
+                // an endpoint's own error names the offending tool, we would not.
+                _ => spec,
+            })
+            .collect(),
+    )
 }
 
 fn enum_setting(
@@ -888,7 +1137,9 @@ impl ToolCallAccumulator {
 ///
 /// Blank lines are frame separators and `:`-prefixed lines are keep-alive
 /// comments; both are dropped by the `data:` prefix check, as are the `id:`,
-/// `event:` and `retry:` fields, which no chat/completions implementation uses.
+/// `event:` and `retry:` fields. chat/completions uses none of them, and the
+/// Responses API's `event:` line only repeats the `type` its payload already
+/// carries — which is what lets both streams share this one framing.
 ///
 /// ponytail: this is line-based rather than blank-line-frame-based. Multi-line
 /// `data:` fields are legal SSE but nothing in this ecosystem emits them. If one
@@ -897,15 +1148,36 @@ fn parse_line(line: &str) -> Vec<SseItem> {
     let Some(payload) = line.strip_prefix("data:").map(str::trim) else {
         return Vec::new();
     };
+    // Only chat/completions sends this. The Responses stream simply ends after
+    // `response.completed`; either way the authoritative end is the host's
+    // `done: true`, so nothing downstream depends on the sentinel.
     if payload == "[DONE]" {
         return vec![SseItem::Done];
     }
 
     // Anything that isn't JSON is proxy noise; drop it rather than surfacing a
     // parse error to the user mid-conversation.
-    let Ok(chunk) = serde_json::from_str::<StreamChunk>(payload) else {
-        return Vec::new();
-    };
+    match serde_json::from_str::<StreamPayload>(payload) {
+        Ok(StreamPayload::Response(event)) => parse_response_event(event),
+        Ok(StreamPayload::Chat(chunk)) => parse_chat_chunk(chunk),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Which shape a `data:` payload is in.
+///
+/// Untagged, tried in order: a Responses event is recognised by its `type`, whose
+/// enum refuses anything that is not one, so a chat chunk — which has no `type`
+/// at all — falls through to the second arm. The reverse could not work:
+/// [`StreamChunk`]'s fields all default, so it matches every JSON object there is.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StreamPayload {
+    Response(ResponseEvent),
+    Chat(StreamChunk),
+}
+
+fn parse_chat_chunk(chunk: StreamChunk) -> Vec<SseItem> {
     if let Some(error) = chunk.error {
         return vec![SseItem::ApiError(error.message)];
     }
@@ -1037,6 +1309,162 @@ struct FunctionDelta {
 #[derive(Deserialize)]
 struct ApiError {
     message: String,
+}
+
+/// One event off the Responses stream, in the shape of whichever of its ~40
+/// event types this is.
+///
+/// Only the handful that carry something [`SseItem`] can express are named; the
+/// rest — every `.added`/`.done` bookend, the item-level lifecycle, the
+/// `response.created` echo of the request — deserialize to `Other` and produce
+/// nothing. Their fields are all optional here for the same reason: which ones
+/// are present is a property of the type, and the type is what decides what to
+/// read.
+#[derive(Deserialize)]
+struct ResponseEvent {
+    #[serde(rename = "type")]
+    kind: ResponseEventKind,
+    /// Which output item this belongs to. The Responses API's answer to
+    /// chat/completions' `index`, and used as such: it is what tells two
+    /// parallel tool calls apart.
+    #[serde(default)]
+    output_index: usize,
+    /// The text of a `*.delta` event, whatever it is a delta of.
+    #[serde(default)]
+    delta: Option<String>,
+    /// The item a `response.output_item.added` announces.
+    #[serde(default)]
+    item: Option<OutputItem>,
+    /// The whole response, on the terminal events.
+    #[serde(default)]
+    response: Option<ResponseBody>,
+    /// A transport-level `error` event, which carries the error at the top level
+    /// rather than inside a response.
+    #[serde(default)]
+    error: Option<ApiError>,
+}
+
+#[derive(Deserialize, PartialEq)]
+enum ResponseEventKind {
+    #[serde(rename = "response.output_text.delta")]
+    OutputTextDelta,
+    #[serde(rename = "response.reasoning_summary_text.delta")]
+    ReasoningSummaryTextDelta,
+    #[serde(rename = "response.output_item.added")]
+    OutputItemAdded,
+    #[serde(rename = "response.function_call_arguments.delta")]
+    FunctionCallArgumentsDelta,
+    #[serde(rename = "response.completed")]
+    Completed,
+    #[serde(rename = "response.failed")]
+    Failed,
+    #[serde(rename = "response.incomplete")]
+    Incomplete,
+    #[serde(rename = "error")]
+    Error,
+    /// Every other event type. Present so an unrecognised `response.*` still
+    /// parses as a Responses event rather than falling through to the
+    /// chat/completions arm, which would read it as an empty chunk.
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+struct OutputItem {
+    #[serde(rename = "type", default)]
+    kind: String,
+    /// The id a `function_call_output` must quote to answer this call. Not the
+    /// item's own `id`, which is a different identifier and is not accepted
+    /// there.
+    #[serde(default)]
+    call_id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ResponseBody {
+    #[serde(default)]
+    usage: Option<ResponseUsage>,
+    #[serde(default)]
+    error: Option<ApiError>,
+}
+
+/// The Responses API's spelling of `prompt_tokens`/`completion_tokens`. Reported
+/// on the terminal event without being asked for, so there is no `stream_options`
+/// equivalent to switch off.
+#[derive(Deserialize)]
+struct ResponseUsage {
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+}
+
+fn parse_response_event(event: ResponseEvent) -> Vec<SseItem> {
+    match event.kind {
+        ResponseEventKind::OutputTextDelta => event
+            .delta
+            .filter(|text| !text.is_empty())
+            .map(SseItem::Delta)
+            .into_iter()
+            .collect(),
+        // Only the summary is ever on offer here — the raw chain-of-thought is
+        // not streamed — so it goes out under the `reasoning` key, which is the
+        // one for providers that summarise rather than think out loud.
+        ResponseEventKind::ReasoningSummaryTextDelta => event
+            .delta
+            .filter(|text| !text.is_empty())
+            .map(|text| SseItem::Reasoning {
+                text,
+                key: ReasoningKey::Reasoning,
+            })
+            .into_iter()
+            .collect(),
+        // The one event that names a call. Its arguments arrive afterwards, one
+        // `.delta` at a time, keyed by the same `output_index`.
+        ResponseEventKind::OutputItemAdded => match event.item {
+            Some(item) if item.kind == "function_call" => vec![SseItem::ToolCallFragment {
+                index: event.output_index,
+                id: item.call_id,
+                name: item.name,
+                arguments: None,
+            }],
+            _ => Vec::new(),
+        },
+        ResponseEventKind::FunctionCallArgumentsDelta => vec![SseItem::ToolCallFragment {
+            index: event.output_index,
+            id: None,
+            name: None,
+            arguments: event.delta,
+        }],
+        ResponseEventKind::Completed => {
+            let mut items = Vec::new();
+            if let Some(ResponseUsage {
+                input_tokens: prompt,
+                output_tokens: completion,
+            }) = event.response.and_then(|response| response.usage)
+            {
+                if prompt.is_some() || completion.is_some() {
+                    items.push(SseItem::Usage {
+                        prompt: prompt.unwrap_or(0),
+                        completion: completion.unwrap_or(0),
+                    });
+                }
+            }
+            items.push(SseItem::Done);
+            items
+        },
+        // A failure mid-stream. The message is on the response for the two
+        // response-level events and at the top level for a transport `error`.
+        ResponseEventKind::Failed | ResponseEventKind::Incomplete | ResponseEventKind::Error => {
+            event
+                .response
+                .and_then(|response| response.error)
+                .or(event.error)
+                .map(|error| vec![SseItem::ApiError(error.message)])
+                .unwrap_or_default()
+        },
+        ResponseEventKind::Other => Vec::new(),
+    }
 }
 
 // ---------------------------------------------------------------------------
