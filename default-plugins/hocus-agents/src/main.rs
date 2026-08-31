@@ -36,9 +36,10 @@
 //! and nothing else, and hocus's Esc hides hocus. Ctrl-o moves this pane out of
 //! the way of a tiled pane and leaves the conversation where it is — hocus does
 //! the arithmetic, since it places both overlays, so the key is a request
-//! (`wire::AGENT_STRIP_REPOSITION`) rather than a move. Enter keeps that same
-//! line: having sent you to an agent, the list puts itself away and leaves an
-//! open conversation open. Neither opens the other for the user. The exception is
+//! (`wire::AGENT_STRIP_REPOSITION`) rather than a move. Enter walks you to the
+//! selected agent and leaves the panel exactly where it is: the history half is
+//! worth reading beside the pane it is about, and dismissing is what Esc and
+//! Ctrl-` are for. Neither pane opens the other for the user. The exception is
 //! `say_hello_to_hocus`, which does carry hocus's url: this pane is a view over
 //! rows only hocus can compute, so a list with no hocus to ask has nothing to
 //! draw. The hocus that greeting launches starts **hidden** — `wire::OPENED_BY`
@@ -428,12 +429,11 @@ impl State {
                 if !matches!(self.rows.get(self.selected), Some(StripRow::Agent { .. })) {
                     return false;
                 }
+                // Exactly what a click on the row does, and for the same reason it
+                // leaves the panel up: the history half under the list is about the
+                // agent you just walked into, so putting the panel away is the one
+                // thing Enter must not do. Esc and Ctrl-` are the dismissals.
                 self.activate();
-                // Walking to an agent is the end of what this list is for, so
-                // put it away - the same gesture as Esc, and this pane only: a
-                // conversation open beside it stays open. Focus first, then
-                // hide, so the focus call lands while this pane is still up.
-                hide_self();
                 false
             },
             _ => false,
@@ -464,7 +464,6 @@ impl State {
     /// the whole reason for having two halves rather than one. In the list it also selects the
     /// row it lands on and focuses it the way `Enter` does: clicking an agent row is meant to
     /// feel like navigating to it and pressing Enter, whether or not it was already selected.
-    /// Short of the dismissal: see `activate`.
     fn on_click(&mut self, line: usize) -> bool {
         if self.last_history_rows > 0 && line >= self.last_list_rows {
             // The divider and everything under it. Nothing down there is selectable, so the
@@ -498,10 +497,10 @@ impl State {
         moved
     }
 
-    /// The half of `Enter` a click on the selected row shares: focus the
-    /// selected agent's pane, if there is one. The dismissal that follows a
-    /// keypress is not part of it - a click leaves the list up, because the
-    /// pointer is already where the next click would go.
+    /// The whole of what `Enter` and a click on a list row do: focus the selected
+    /// agent's pane, if there is one. Neither of them puts the panel away - the
+    /// pointer is already where the next click would go, and the keys are already
+    /// where the next Tab into the history would want them.
     fn activate(&self) {
         if let Some(StripRow::Agent { pane_id, .. }) = self.rows.get(self.selected) {
             // the host resolves which tab holds the pane, so this works across

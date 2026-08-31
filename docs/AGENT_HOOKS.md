@@ -248,7 +248,8 @@ timeline, and the rule names the run and says how far it is wound back.
 `Tab` moves the keyboard between the halves, and so does a click — the rule is where the focus
 shows. `j`/`k` do whatever the half they are in does with a line: walk the selection, or scroll
 the history. The arrows always walk the list, and PageUp/PageDown and the mouse wheel always
-scroll the history, from either half. Enter focuses a live agent's pane and hides the panel. An
+scroll the history, from either half. Enter focuses a live agent's pane and leaves the panel up,
+so the history stays beside the pane it is about; `Esc` or ``Ctrl-` `` puts the panel away. An
 archived row has no pane to focus.
 
 ### A waiting agent interrupts
