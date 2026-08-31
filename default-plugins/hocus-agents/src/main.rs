@@ -589,39 +589,42 @@ impl State {
     /// never moves under the pointer, and an empty history is a sentence rather than an
     /// absence.
     fn render_history(&mut self, top: usize, rows: usize, cols: usize) {
-        let history = self.cached_history_lines(cols);
+        self.fill_history_cache(cols);
         // `rows` is the body alone: `split` takes the divider off the list's share, and it is
         // drawn on the row above the body at `top`.
         //
         // The summary is pinned above the timeline, and never takes more than half the half:
-        // a talkative model must not leave the timeline it is summarising with no room.
+        // a talkative model must not leave the timeline it is summarising with no room. A row
+        // the label has to itself is not part of that half - it carries none of the summary,
+        // and spending the whole cap on the word `summary:` would pin nothing at all.
         let body_rows = rows;
-        let mut pinned = history.pinned;
-        pinned.truncate(body_rows / 2);
-        let room = body_rows - pinned.len();
+        let (pinned_rows, entries_len) = {
+            let history = self.history();
+            let cap = body_rows / 2 + usize::from(history.pinned_label_row);
+            (history.pinned.len().min(cap), history.entries.len())
+        };
+        let room = body_rows - pinned_rows;
         // `history_scroll` counts backward from the newest entry, which is the end the half is
         // anchored to: an entry arriving pushes the window along rather than leaving the user
         // reading a stale top.
-        let max_scroll = history.entries.len().saturating_sub(room);
+        let max_scroll = entries_len.saturating_sub(room);
         self.last_history_max_scroll = max_scroll;
         self.history_scroll = self.history_scroll.min(max_scroll);
-        let end = history.entries.len() - self.history_scroll;
+        let end = entries_len - self.history_scroll;
         let start = end.saturating_sub(room);
+        let focused = self.focus == Focus::History;
+        let placeholder = match self.selection_key() {
+            Some(_) => "  nothing to show yet",
+            None => "  select an agent",
+        };
+        // Everything the half is drawn from is settled now, so the lines can be borrowed
+        // rather than copied.
+        let history = self.history();
+        let pinned = &history.pinned[..pinned_rows];
 
-        render_divider(
-            &history.label,
-            start,
-            history.entries.len() - end,
-            self.focus == Focus::History,
-            top,
-            cols,
-        );
+        render_divider(&history.label, start, entries_len - end, focused, top, cols);
         let body = top + 1;
         if pinned.is_empty() && history.entries.is_empty() {
-            let placeholder = match self.selection_key() {
-                Some(_) => "  nothing to show yet",
-                None => "  select an agent",
-            };
             print_text_with_coordinates(
                 Text::new(placeholder).dim_range(..),
                 0,
@@ -631,18 +634,18 @@ impl State {
             );
             return;
         }
-        let pinned_rows = pinned.len();
         for (index, line) in pinned
-            .into_iter()
-            .chain(history.entries[start..end].iter().cloned())
+            .iter()
+            .chain(history.entries[start..end].iter())
             .enumerate()
         {
             // The margin is part of the string rather than an `x` offset, so a style range
             // covers the row as it reads rather than the text alone - which is why the styles
             // are shifted along with it. Nothing has to be padded out to the pane's width: the
             // host deletes the viewport before every render, so there is no frame underneath
-            // for a short line to leave showing.
-            let line = line.indent(1);
+            // for a short line to leave showing. Only the rows on their way to the screen are
+            // copied: the cache behind them holds every line of the run.
+            let line = line.clone().indent(1);
             // The pinned summary is the model's conclusion and the timeline is the record;
             // dimming the record is what keeps the eye on the first. Dimmed *under* whatever
             // the markdown asked for rather than instead of it, so a bulleted result still
@@ -662,23 +665,38 @@ impl State {
     /// resizing the pane, or a run gaining an entry all miss, and scrolling the half - the one
     /// gesture that redraws fastest - always hits.
     ///
-    /// A hit still clones what it hands back, which a borrow would not - but the caller wants
-    /// the lines by value and a page of them is a few dozen small strings, against a parse of
-    /// up to six thousand characters.
-    fn cached_history_lines(&mut self, width: usize) -> agents::HistoryLines {
+    /// Nothing is copied on a hit. What is cached is every rendered line of the run rather than
+    /// the page being drawn - each carrying a style per character of it - so handing it back by
+    /// value would have put a deep copy of the whole timeline on the path this exists to make
+    /// cheap. The drawing loop clones the rows it actually prints, one at a time.
+    fn fill_history_cache(&mut self, width: usize) {
         let key = HistoryKey {
             selection: self.selection_key(),
             width,
             generation: self.generation,
         };
-        if let Some((cached, lines)) = &self.history_cache {
-            if *cached == key {
-                return lines.clone();
-            }
+        if self.history_cache.as_ref().is_some_and(|(c, _)| *c == key) {
+            return;
         }
         let lines = self.history_lines(width);
-        self.history_cache = Some((key, lines.clone()));
-        lines
+        self.history_cache = Some((key, lines));
+    }
+
+    /// Whatever [`Self::fill_history_cache`] last put there, or nothing to draw.
+    fn history(&self) -> &agents::HistoryLines {
+        self.history_cache
+            .as_ref()
+            .map(|(_, lines)| lines)
+            .unwrap_or(&agents::NO_HISTORY)
+    }
+
+    /// [`Self::fill_history_cache`] and then [`Self::history`] in one call. `render_history`
+    /// has the scroll to settle in between and so does the two itself; this is for the tests
+    /// that only want the answer.
+    #[cfg(test)]
+    fn cached_history_lines(&mut self, width: usize) -> &agents::HistoryLines {
+        self.fill_history_cache(width);
+        self.history()
     }
 
     /// What the history half has to draw for the row under the cursor, for a half `width`
@@ -1391,6 +1409,35 @@ mod tests {
         assert!(!state.on_mouse(Mouse::ScrollDown(1)));
     }
 
+    /// A summary opening with a marker spends its first pinned row on the label alone, and that
+    /// row carries none of the summary - so it is not part of the half the pinned rows are
+    /// capped at, or a small pane would pin the word `summary:` and nothing else.
+    #[test]
+    fn a_label_row_does_not_count_against_the_pinned_summary_s_half() {
+        let mut state = State::default();
+        state.set_rows(unfocused(vec![
+            StripRow::Project("archive".to_owned()),
+            StripRow::Run {
+                run_id: "claude:session-1".to_owned(),
+                text: "claude · hook history".to_owned(),
+                kind: "claude".to_owned(),
+            },
+        ]));
+        let mut run = a_run();
+        run.summary = Some(agents::Summary {
+            text: "- history is stored and rendered".to_owned(),
+            ..run.summary.take().unwrap()
+        });
+        state.run = Some(run);
+
+        // Three rows below the divider: without the allowance the cap is one and the pinned
+        // area is the bare label, leaving two rows of timeline; with it the summary itself is
+        // pinned too and one row of timeline is left.
+        state.render(7, 50);
+        assert_eq!(state.last_history_rows, 3);
+        assert_eq!(state.last_history_max_scroll, 1);
+    }
+
     /// `Tab` moves the keys, `j`/`k` do whatever the half they are in does with a line, and
     /// the arrows walk the list from either half.
     #[test]
@@ -1614,12 +1661,12 @@ mod tests {
 
         assert_eq!(
             state.cached_history_lines(50),
-            poison,
+            &poison,
             "same row, same width, same run - nothing to parse again"
         );
         assert_ne!(
             state.cached_history_lines(40),
-            poison,
+            &poison,
             "a resize rewraps every line"
         );
 
@@ -1639,7 +1686,7 @@ mod tests {
             &None,
             false,
         ));
-        assert_ne!(state.cached_history_lines(40), poison);
+        assert_ne!(state.cached_history_lines(40), &poison);
     }
 
     /// Better nothing than a column of single words: a half too narrow to wrap into says so
