@@ -29,10 +29,11 @@ fn firecracker_resolution_keeps_an_unresolved_command_for_reruns() {
         ..Default::default()
     };
 
-    let (resolved, rerun) = server.resolve_firecracker(requested.clone()).unwrap();
+    let (resolved, rerun, ssh_options) = server.resolve_firecracker(requested.clone()).unwrap();
     assert_eq!(resolved.remote_host.as_deref(), Some("build-box"));
     assert_eq!(resolved.cwd, Some(PathBuf::from("/workspace")));
     assert_eq!(rerun, requested);
+    assert_eq!(ssh_options, SshOptions::default());
     assert!(server.resolve_firecracker(rerun).is_ok());
 }
 

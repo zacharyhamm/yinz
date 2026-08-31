@@ -105,6 +105,9 @@ PREFIX=/usr cargo x install /usr/bin/zellij     # as root, with `sudo -E` to kee
 `--builtins-dir <dir>` puts the plugins somewhere else (and prunes nothing there);
 `--no-builtins` installs the binary only.
 
+On Linux, the same command installs `zellij-firecracker` beside `zellij`. See
+[`docs/FIRECRACKER.md`](docs/FIRECRACKER.md) for the image and host network setup.
+
 Distributions that package the plugins themselves can build them from source and put them
 in the unversioned system folder (lookup step 6):
 
@@ -280,6 +283,20 @@ Two things about the setup are worth knowing before you change it:
   the suite puts it first on `PATH`. Nothing else about the invocation is touched.
 - **The tests share one far machine and set process-wide environment**, so they must run
   single-threaded. `cargo x remote-test --test` passes `--test-threads 1`.
+
+## Running the Firecracker tests
+
+The Firecracker suite boots a real VM and opens a remote pane through SSH. It requires x86_64
+Linux, Firecracker, `/dev/kvm`, and the image-builder tools listed in `docs/FIRECRACKER.md`.
+
+Run these commands from the repository root:
+
+1. `cargo x firecracker-test --build` builds the static guest binary and pinned image.
+2. `cargo x firecracker-test --test` runs the ignored test in an isolated network namespace.
+3. `cargo x firecracker-test --clean` removes the generated image and test state.
+
+The first build can take several minutes. The test does not change the host network and does not
+require `sudo`.
 
 ## Debugging / Troubleshooting while developing
 Zellij uses the excellent [`log`](https://crates.io/crates/log) crate to handle its internal logging. The output of these logs will go to `/$temp_dir/zellij-<UID>/zellij-log/zellij.log` which `$temp_dir` refers to [std::env::temp_dir()](https://doc.rust-lang.org/std/env/fn.temp_dir.html). On most of operating systems it points to `/tmp`, but there are exceptions, such as `/var/folders/dr/xxxxxxxxxxxxxx/T/` for Mac.

@@ -151,8 +151,11 @@ fn blake3_short(input: &str) -> String {
 /// rebinds it, and `ControlMaster=auto` is built for exactly this — several
 /// processes sharing one authenticated connection. Making it per-server would
 /// cost a full handshake per host per reconnect and buy nothing.
-fn control_path(host: &str) -> PathBuf {
-    local_socket_dir().join(format!("{}.ctl", blake3_short(host)))
+fn control_path(host: &str, options: &SshOptions) -> PathBuf {
+    local_socket_dir().join(format!(
+        "{}.ctl",
+        blake3_short(&format!("{host}\0{options:?}"))
+    ))
 }
 
 /// How long a socket nobody answers on has to have been there before it is
@@ -218,6 +221,7 @@ impl Drop for HostForward {
 /// Every host this session has panes on.
 pub struct RemoteHosts {
     forwards: Mutex<HashMap<String, Arc<HostForward>>>,
+    ssh_options: Mutex<HashMap<String, SshOptions>>,
     /// What makes this server's forward sockets its own. See
     /// `local_socket_path`.
     instance: String,
@@ -230,8 +234,38 @@ impl Default for RemoteHosts {
     fn default() -> Self {
         Self {
             forwards: Mutex::new(HashMap::new()),
+            ssh_options: Mutex::new(HashMap::new()),
             instance: new_host_id(),
         }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SshOptions {
+    pub identity_file: Option<PathBuf>,
+    pub known_hosts_file: Option<PathBuf>,
+}
+
+impl SshOptions {
+    fn args(&self) -> Vec<String> {
+        let mut args = vec![];
+        if let Some(path) = &self.identity_file {
+            args.extend([
+                "-o".to_owned(),
+                "IdentitiesOnly=yes".to_owned(),
+                "-i".to_owned(),
+                path.display().to_string(),
+            ]);
+        }
+        if let Some(path) = &self.known_hosts_file {
+            args.extend([
+                "-o".to_owned(),
+                format!("UserKnownHostsFile={}", path.display()),
+                "-o".to_owned(),
+                "StrictHostKeyChecking=yes".to_owned(),
+            ]);
+        }
+        args
     }
 }
 
@@ -263,6 +297,18 @@ impl RemoteHosts {
         initial_size: Option<WireWinsize>,
         terminal_id: u32,
     ) -> Result<(Arc<RemoteConn>, UnixStream)> {
+        self.open_pane_with_ssh_options(host, cmd, initial_size, terminal_id, SshOptions::default())
+    }
+
+    pub fn open_pane_with_ssh_options(
+        self: &Arc<Self>,
+        host: &str,
+        cmd: &RunCommand,
+        initial_size: Option<WireWinsize>,
+        terminal_id: u32,
+        ssh_options: SshOptions,
+    ) -> Result<(Arc<RemoteConn>, UnixStream)> {
+        self.set_ssh_options(host, ssh_options)?;
         // Sampled here, per pane, rather than once when the host table was built:
         // sampling it once would freeze this side's terminal and locale for the
         // life of the session, which is the far side's bug seen from this end.
@@ -273,6 +319,33 @@ impl RemoteHosts {
             terminal_id,
             env::carry_from_local(),
         )
+    }
+
+    fn set_ssh_options(&self, host: &str, options: SshOptions) -> Result<()> {
+        let changed = {
+            let mut configured = self
+                .ssh_options
+                .lock()
+                .to_anyhow()
+                .context("failed to lock remote SSH options")?;
+            let changed = configured
+                .get(host)
+                .is_some_and(|existing| existing != &options);
+            configured.insert(host.to_owned(), options);
+            changed
+        };
+        if changed {
+            self.forget_forward(host);
+        }
+        Ok(())
+    }
+
+    fn ssh_options(&self, host: &str) -> SshOptions {
+        self.ssh_options
+            .lock()
+            .ok()
+            .and_then(|options| options.get(host).cloned())
+            .unwrap_or_default()
     }
 
     /// `open_pane` with the carried environment supplied rather than sampled, so
@@ -363,7 +436,11 @@ impl RemoteHosts {
             }
             forwards.remove(host);
         }
-        let forward = Arc::new(start_forward(&self.instance, host)?);
+        let forward = Arc::new(start_forward(
+            &self.instance,
+            host,
+            &self.ssh_options(host),
+        )?);
         forwards.insert(host.to_owned(), forward.clone());
         Ok(forward)
     }
@@ -550,14 +627,18 @@ fn validate_ssh_host(host: &str) -> Result<()> {
 
 /// Ask the remote where its broker listens, starting one if needed.
 pub fn bootstrap(host: &str) -> Result<BrokerEndpoint> {
+    bootstrap_with_options(host, &SshOptions::default())
+}
+
+fn bootstrap_with_options(host: &str, options: &SshOptions) -> Result<BrokerEndpoint> {
     validate_ssh_host(host)?;
     ensure_local_socket_dir()?;
     // ssh's ControlPath is bound as a unix socket too, and overflowing
     // `sun_path` there fails deep inside ssh with a message about multiplexing
     // rather than about the length.
-    check_socket_path_length(&control_path(host), SSH_CONTROL_PATH_RENAME_MARGIN)?;
+    check_socket_path_length(&control_path(host, options), SSH_CONTROL_PATH_RENAME_MARGIN)?;
     let mut child = Command::new("ssh")
-        .args(ssh_common_args(host))
+        .args(ssh_common_args(host, options))
         // End of options: see `validate_ssh_host`.
         .arg("--")
         .arg(host)
@@ -631,17 +712,19 @@ pub fn bootstrap(host: &str) -> Result<BrokerEndpoint> {
 /// Multiplexed, because bootstrapping happens once per host per session and
 /// again on every reconnect, and a persistent master turns each repeat into a
 /// channel on an existing connection rather than a fresh handshake.
-fn ssh_common_args(host: &str) -> Vec<String> {
-    vec![
+fn ssh_common_args(host: &str, options: &SshOptions) -> Vec<String> {
+    let mut args = vec![
         "-o".to_owned(),
         "BatchMode=yes".to_owned(),
         "-o".to_owned(),
         "ControlMaster=auto".to_owned(),
         "-o".to_owned(),
-        format!("ControlPath={}", control_path(host).display()),
+        format!("ControlPath={}", control_path(host, options).display()),
         "-o".to_owned(),
         "ControlPersist=60".to_owned(),
-    ]
+    ];
+    args.extend(options.args());
+    args
 }
 
 /// Options for the ssh that owns the forward.
@@ -656,20 +739,22 @@ fn ssh_common_args(host: &str) -> Vec<String> {
 ///
 /// Its own connection means the forward really does belong to the process that
 /// owns it, which is what the rest of this file assumes.
-fn ssh_forward_args() -> Vec<String> {
-    vec![
+fn ssh_forward_args(options: &SshOptions) -> Vec<String> {
+    let mut args = vec![
         "-o".to_owned(),
         "BatchMode=yes".to_owned(),
         "-o".to_owned(),
         "ControlMaster=no".to_owned(),
         "-o".to_owned(),
         "ControlPath=none".to_owned(),
-    ]
+    ];
+    args.extend(options.args());
+    args
 }
 
-fn start_forward(instance: &str, host: &str) -> Result<HostForward> {
+fn start_forward(instance: &str, host: &str, options: &SshOptions) -> Result<HostForward> {
     // `bootstrap` validates the host before anything is spawned.
-    let endpoint = bootstrap(host)?;
+    let endpoint = bootstrap_with_options(host, options)?;
 
     let dir = ensure_local_socket_dir()?;
     let local_socket = local_socket_path(instance, host);
@@ -681,7 +766,7 @@ fn start_forward(instance: &str, host: &str) -> Result<HostForward> {
     let _ = std::fs::remove_file(&local_socket);
 
     let ssh = Command::new("ssh")
-        .args(ssh_forward_args())
+        .args(ssh_forward_args(options))
         .arg("-N")
         .arg("-T")
         .arg("-L")

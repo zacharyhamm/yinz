@@ -11,6 +11,9 @@ use std::{
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::command::validate_firecracker_vm_name;
 
+#[cfg(target_os = "linux")]
+pub mod provider;
+
 const PROTOCOL_VERSION: u32 = 1;
 const MAX_OUTPUT: usize = 1024 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
@@ -44,11 +47,15 @@ enum Request<'a> {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct EnsureResponse {
     pub version: u32,
     pub ssh_host: String,
     pub cwd: Option<PathBuf>,
+    #[serde(default)]
+    pub ssh_identity_file: Option<PathBuf>,
+    #[serde(default)]
+    pub ssh_known_hosts_file: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -96,6 +103,17 @@ impl Provider {
         self.check_version(response.version)?;
         if response.ssh_host.trim().is_empty() {
             return Err(anyhow!("firecracker provider returned an empty ssh_host"));
+        }
+        for (field, path) in [
+            ("ssh_identity_file", response.ssh_identity_file.as_deref()),
+            (
+                "ssh_known_hosts_file",
+                response.ssh_known_hosts_file.as_deref(),
+            ),
+        ] {
+            if path.is_some_and(|path| !path.is_absolute()) {
+                return Err(anyhow!("firecracker provider returned a relative {field}"));
+            }
         }
         Ok(response)
     }
@@ -327,6 +345,8 @@ esac
         assert_eq!(first, second);
         assert_eq!(first.ssh_host, "ssh://zellij@127.0.0.1:2201");
         assert_eq!(first.cwd, Some(PathBuf::from("/workspace")));
+        assert_eq!(first.ssh_identity_file, None);
+        assert_eq!(first.ssh_known_hosts_file, None);
         assert_eq!(
             provider.list(None).unwrap(),
             vec![VmEntry {

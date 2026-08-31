@@ -8,7 +8,7 @@ use crate::os_input_output_unix::UnixPtyBackend as PtyBackendImpl;
 use crate::pty_host::remote::{
     conn::{Reconnector, RemoteGitProbe},
     protocol::ChildSignal,
-    ssh::RemoteHosts,
+    ssh::{RemoteHosts, SshOptions},
     RemoteConn, RemoteStatus,
 };
 // Re-exported: it is what `ServerOsApi::adopt_terminal` returns, so anything
@@ -550,10 +550,13 @@ pub struct ServerOsInputOutput {
 #[cfg(not(windows))]
 impl ServerOsInputOutput {
     /// Resolve transport-only provider fields while retaining a command that can call it again.
-    fn resolve_firecracker(&self, mut cmd: RunCommand) -> Result<(RunCommand, RunCommand)> {
+    fn resolve_firecracker(
+        &self,
+        mut cmd: RunCommand,
+    ) -> Result<(RunCommand, RunCommand, SshOptions)> {
         let rerun_cmd = cmd.clone();
         let Some(name) = cmd.firecracker_vm.as_deref() else {
-            return Ok((cmd, rerun_cmd));
+            return Ok((cmd, rerun_cmd, SshOptions::default()));
         };
         if cmd.remote_host.is_some() {
             return Err(anyhow!(
@@ -569,7 +572,14 @@ impl ServerOsInputOutput {
         if cmd.cwd.is_none() {
             cmd.cwd = ensured.cwd;
         }
-        Ok((cmd, rerun_cmd))
+        Ok((
+            cmd,
+            rerun_cmd,
+            SshOptions {
+                identity_file: ensured.ssh_identity_file,
+                known_hosts_file: ensured.ssh_known_hosts_file,
+            },
+        ))
     }
 
     /// Resume a warped-in remote pane on the broker holding it, and give this
@@ -926,7 +936,7 @@ impl ServerOsApi for ServerOsInputOutput {
 
         let (cmd, failover_cmd) = build_command(terminal_action, default_editor);
         let display_host = cmd.display_host();
-        let (cmd, rerun_cmd) = self.resolve_firecracker(cmd).map_err(|e| {
+        let (cmd, rerun_cmd, ssh_options) = self.resolve_firecracker(cmd).map_err(|e| {
             pane_start_failed(
                 terminal_id,
                 display_host.as_deref().unwrap_or("firecracker"),
@@ -937,7 +947,7 @@ impl ServerOsApi for ServerOsInputOutput {
         if let Some(host) = cmd.remote_host.clone() {
             let (conn, reader_socket) = self
                 .remote_hosts
-                .open_pane(&host, &cmd, None, terminal_id)
+                .open_pane_with_ssh_options(&host, &cmd, None, terminal_id, ssh_options)
                 .map_err(|e| pane_start_failed(terminal_id, &host, e))?;
             let async_reader = self
                 .pty_backend
@@ -1197,13 +1207,14 @@ impl ServerOsApi for ServerOsInputOutput {
         // the command would quietly run *here* under the same pane, and the pane
         // still open on the far machine would be left to the orphan timeout.
         let display_host = run_command.display_host();
-        let (run_command, rerun_command) = self.resolve_firecracker(run_command).map_err(|e| {
-            pane_start_failed(
-                terminal_id,
-                display_host.as_deref().unwrap_or("firecracker"),
-                e,
-            )
-        })?;
+        let (run_command, rerun_command, ssh_options) =
+            self.resolve_firecracker(run_command).map_err(|e| {
+                pane_start_failed(
+                    terminal_id,
+                    display_host.as_deref().unwrap_or("firecracker"),
+                    e,
+                )
+            })?;
         if let Some(host) = run_command.remote_host.clone() {
             // The pane being re-run is held, not closed, so the broker still
             // holds the session it was held from. Registering over it would drop
@@ -1212,7 +1223,7 @@ impl ServerOsApi for ServerOsInputOutput {
             self.pty_backend.reserve_terminal_id(terminal_id);
             let (conn, reader_socket) = self
                 .remote_hosts
-                .open_pane(&host, &run_command, None, terminal_id)
+                .open_pane_with_ssh_options(&host, &run_command, None, terminal_id, ssh_options)
                 .map_err(|e| pane_start_failed(terminal_id, &host, e))?;
             let async_reader = self
                 .pty_backend
