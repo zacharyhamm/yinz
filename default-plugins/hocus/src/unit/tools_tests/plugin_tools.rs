@@ -218,6 +218,9 @@ fn a_load_report_names_the_outcome_before_the_pane_text() {
         "{fine}"
     );
     assert!(fine.ends_with("hello - 0 keys"), "{fine}");
+    // A frame is the weakest evidence there is, and the report says so - but only when there is
+    // a plugin to drive, never over the top of a load error.
+    assert!(fine.contains("only proves it loads"), "{fine}");
 
     for error in [
         "failed to load the Lua plugin at '/x/keys.lua'. A plugin must return a table",
@@ -231,6 +234,7 @@ fn a_load_report_names_the_outcome_before_the_pane_text() {
             }),
         );
         assert!(failed.contains("FAILED to load"), "{failed}");
+        assert!(!failed.contains("only proves it loads"), "{failed}");
         assert!(failed.contains(error.lines().last().unwrap()), "{failed}");
     }
 }
@@ -318,13 +322,57 @@ fn a_listing_is_names_one_folder_deep() {
 /// model does not go looking for a prompt that will never come.
 #[test]
 fn a_write_report_names_the_next_step_and_what_it_granted() {
-    let plain = write_report("probe", &[]);
+    let plain = write_report("probe", &[], None);
     assert!(plain.contains("plugin_reload"), "{plain}");
     assert!(!plain.contains("granted"), "{plain}");
-    let granted = write_report("probe.lua", &[PermissionType::ReadFiles]);
+    let granted = write_report("probe.lua", &[PermissionType::ReadFiles], None);
     assert!(granted.contains("wrote probe.lua"), "{granted}");
     assert!(granted.contains("granted it read_files"), "{granted}");
     assert!(exists_report("probe").contains("overwrite=true"));
+    // A rewrite that lost something is recoverable, and only a report that names the copy
+    // makes that true for the model rather than only for the disk.
+    let replaced = write_report("probe", &[], Some(&backup_name("probe")));
+    assert!(replaced.contains("probe.bak"), "{replaced}");
+    let edited = edit_report("probe", &[], Some(&backup_name("probe")));
+    assert!(edited.contains("edited probe.lua"), "{edited}");
+    assert!(edited.contains("probe.bak"), "{edited}");
+}
+
+/// An edit is the alternative to re-sending a file from memory, so it has to be exact: the two
+/// ways it can be ambiguous are refusals, not guesses.
+#[test]
+fn an_edit_applies_once_or_says_why_it_cannot() {
+    let source = "local M = {}\nM.tick = 1\nreturn M\n";
+    assert_eq!(
+        apply_edit(source, "M.tick = 1", "M.tick = 5", false).unwrap(),
+        "local M = {}\nM.tick = 5\nreturn M\n"
+    );
+    let missing = apply_edit(source, "M.tock = 1", "x", false).unwrap_err();
+    assert!(missing.contains("plugin_read"), "{missing}");
+    let twice = "a\na\n";
+    let ambiguous = apply_edit(twice, "a", "b", false).unwrap_err();
+    assert!(ambiguous.contains("appears 2 times"), "{ambiguous}");
+    assert_eq!(apply_edit(twice, "a", "b", true).unwrap(), "b\nb\n");
+    assert!(apply_edit(source, "", "x", false).is_err());
+    assert!(apply_edit(source, "M.tick = 1", "M.tick = 1", false).is_err());
+}
+
+/// The findings ride under the verdict, never over it, and a source with nothing wrong with it
+/// adds nothing to the answer.
+#[test]
+fn the_lint_qualifies_a_report_without_displacing_it() {
+    let clean = with_lint("probe.lua compiles".to_owned(), "probe", "return {}\n");
+    assert_eq!(clean, "probe.lua compiles");
+    let trap = r#"
+zellij.request_permission { "plugin_data" }
+zellij.on("permission_request_result", function()
+  zellij.data.define { name = "todo", version = 1, namespace = "todo", attrs = { { "title", "text" } } }
+end)
+"#;
+    let warned = with_lint("probe.lua compiles".to_owned(), "probe", trap);
+    assert!(warned.starts_with("probe.lua compiles"), "{warned}");
+    assert!(warned.contains("shared:"), "{warned}");
+    assert!(warned.contains("not blocked"), "{warned}");
 }
 
 /// `summarize` is what the transcript shows, and a whole Lua file on that line would bury the

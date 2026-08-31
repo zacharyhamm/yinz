@@ -5,17 +5,29 @@
 
 use std::path::{Path, PathBuf};
 
+/// A plugin written, and the copy kept of whatever it replaced.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Written {
+    pub path: PathBuf,
+    /// Where the previous version went, when this write replaced one.
+    pub replaced: Option<PathBuf>,
+}
+
 /// Write `source` as `<dir>/<name>.lua` with exactly one trailing newline, creating the
 /// module folder if the name has one. Refuses a name that is not a plugin name, an existing
 /// file unless `overwrite`, a symlink in place of the file or its folder, and - when `check`
 /// - a source that does not compile.
+///
+/// An overwrite keeps the version it replaced as `<name>.bak.lua`, which is the same thing
+/// hocus's `plugin_write` does: a rewrite that dropped a feature is then one read away from
+/// the file it dropped it from, whichever surface did the rewriting.
 pub fn write(
     dir: &Path,
     name: &str,
     source: &str,
     overwrite: bool,
     check: bool,
-) -> anyhow::Result<PathBuf> {
+) -> anyhow::Result<Written> {
     let path = zellij_utils::plugin_authoring::resolve_plugin_file(dir, name)
         .map_err(|e| anyhow::anyhow!(e))?;
     if source.trim().is_empty() {
@@ -47,10 +59,20 @@ pub fn write(
     }
     std::fs::create_dir_all(parent)
         .map_err(|e| anyhow::anyhow!("failed to create {}: {e}", parent.display()))?;
+    // Best effort, and before the write rather than after it: a backup that cannot be made is
+    // not a reason to refuse a write, but a write that happened without one would be.
+    let replaced = path
+        .is_file()
+        .then(|| {
+            let backup = zellij_utils::plugin_authoring::backup_name(name);
+            let backup = zellij_utils::plugin_authoring::resolve_plugin_file(dir, &backup).ok()?;
+            (!backup.is_symlink() && std::fs::copy(&path, &backup).is_ok()).then_some(backup)
+        })
+        .flatten();
     let contents = format!("{}\n", source.trim_end_matches('\n'));
     std::fs::write(&path, contents)
         .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))?;
-    Ok(path)
+    Ok(Written { path, replaced })
 }
 
 /// The last `lines` lines of `log_file` about the plugin at `path`: the runtime tags a
@@ -95,11 +117,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let plugins = dir.path().join("plugins");
         let written = write(&plugins, "keys", "return {}\n\n", false, true).unwrap();
-        assert_eq!(written, plugins.join("keys.lua"));
-        assert_eq!(std::fs::read_to_string(&written).unwrap(), "return {}\n");
+        assert_eq!(written.path, plugins.join("keys.lua"));
+        assert!(written.replaced.is_none(), "nothing was there to replace");
+        assert_eq!(
+            std::fs::read_to_string(&written.path).unwrap(),
+            "return {}\n"
+        );
         let refused = write(&plugins, "keys", "return {}", false, true).unwrap_err();
         assert!(refused.to_string().contains("--overwrite"), "{refused}");
-        write(&plugins, "keys", "return { x = 1 }", true, true).unwrap();
+        let replaced = write(&plugins, "keys", "return { x = 1 }", true, true).unwrap();
+        assert_eq!(
+            replaced.replaced,
+            Some(plugins.join("keys.bak.lua")),
+            "an overwrite keeps what it replaced"
+        );
+        assert_eq!(
+            std::fs::read_to_string(plugins.join("keys.bak.lua")).unwrap(),
+            "return {}\n"
+        );
         let refused = write(&plugins, "broken", "return {", false, true).unwrap_err();
         assert!(
             refused.to_string().contains("does not compile"),
@@ -108,7 +143,7 @@ mod tests {
         assert!(!plugins.join("broken.lua").exists());
         write(&plugins, "broken", "return {", false, false).unwrap();
         let module = write(&plugins, "app/ui", "return {}", false, true).unwrap();
-        assert_eq!(module, plugins.join("app").join("ui.lua"));
+        assert_eq!(module.path, plugins.join("app").join("ui.lua"));
         assert!(write(&plugins, "../escape", "return {}", false, true).is_err());
         #[cfg(unix)]
         {

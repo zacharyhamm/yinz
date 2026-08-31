@@ -29,7 +29,9 @@ use zellij_utils::data::{CommandType, Event, PermissionStatus, PipeMessage};
 use zellij_utils::errors::prelude::*;
 
 use crate::plugins::plugin_map::{PluginEnv, ResponseSink};
-use crate::plugins::zellij_exports::{check_command_permission, run_plugin_command};
+use crate::plugins::zellij_exports::{
+    check_command_permission, permissions_answered, run_plugin_command,
+};
 use command::plugin_command_from_lua;
 
 /// The Lua source shipped with zellij and run before every plugin. See the module docs.
@@ -165,6 +167,21 @@ fn dispatch(
     // guest is mid-call and cannot be handed a refusal, but a Lua plugin's command is an ordinary
     // function call, and silently doing nothing is the worst answer it could get.
     if let (PermissionStatus::Denied, Some(permission)) = check_command_permission(&env, &command) {
+        // Two different failures wear the same denial, and they have opposite fixes. A plugin
+        // whose permissions have not been *answered* yet - which is every plugin for the whole
+        // of `load`, even one whose permissions were granted long ago, because the grant is
+        // carried by an event that has not arrived - is refused everything. Telling that author
+        // to ask in `load` names what they already did; what they need is to wait for the
+        // answer. See `permissions_answered`.
+        if !permissions_answered(&env) {
+            return Err(mlua::Error::runtime(format!(
+                "'{spelling}' needs the '{permission}' permission, and no permission has been \
+                 answered for this plugin yet - a grant arrives as an event, so nothing gated \
+                 works during `load`. Ask in `load` with zellij.request_permission {{ \
+                 \"{permission}\" }}, and do this from a \
+                 zellij.on(\"permission_request_result\", ...) handler"
+            )));
+        }
         return Err(mlua::Error::runtime(format!(
             "'{spelling}' needs the '{permission}' permission, which this plugin has not been \
              granted - ask for it in `load` with zellij.request_permission {{ \"{permission}\" }}"

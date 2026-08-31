@@ -905,8 +905,11 @@ impl State {
             let result = match (args.name.as_deref(), args.source.as_deref()) {
                 (None, _) => "name is required".to_owned(),
                 (_, None) => "source is required: send the complete plugin file".to_owned(),
+                // The lint rides along with the compile result, which is the whole point of
+                // checking before writing: a source that compiles can still be spelling a
+                // namespace or a permission the store will refuse at run time.
                 (Some(name), Some(source)) => match tools::compile_report(name, source) {
-                    Ok(report) | Err(report) => report,
+                    Ok(report) | Err(report) => tools::with_lint(report, name, source),
                 },
             };
             self.finish_head(result);
@@ -973,6 +976,13 @@ impl State {
                         return true;
                     },
                 };
+                // Read before the write, kept after it: a backup of a write that then failed
+                // would be a file nobody asked for, and one written before the read would be
+                // a copy of the new source rather than of the version being replaced.
+                let replaced = match args.overwrite {
+                    true => tools::plugin_fs_read(&fs_path).ok(),
+                    false => None,
+                };
                 let result = match tools::plugin_fs_write(&fs_path, &source, args.overwrite) {
                     Ok(true) => {
                         // The user approved this source, and with it the permissions it asks
@@ -982,9 +992,60 @@ impl State {
                         if !granted.is_empty() {
                             tools::grant_permissions(&target, &granted);
                         }
-                        tools::write_report(&name, &granted)
+                        let backup = tools::keep_replaced(&name, replaced.as_deref());
+                        tools::with_lint(
+                            tools::write_report(&name, &granted, backup.as_deref()),
+                            &name,
+                            &source,
+                        )
                     },
                     Ok(false) => tools::exists_report(&name),
+                    Err(error) => error,
+                };
+                self.finish_head(result);
+                true
+            },
+            "plugin_edit" => {
+                let previous = match tools::plugin_fs_read(&fs_path) {
+                    Ok(previous) => previous,
+                    Err(error) => {
+                        self.finish_head(error);
+                        return true;
+                    },
+                };
+                let edited = tools::apply_edit(
+                    &previous,
+                    args.old_string.as_deref().unwrap_or_default(),
+                    args.new_string.as_deref().unwrap_or_default(),
+                    args.replace_all,
+                );
+                let edited = match edited {
+                    Ok(edited) => edited,
+                    Err(error) => {
+                        self.finish_head(error);
+                        return true;
+                    },
+                };
+                // The same gate a write goes through, and for the same reason: an edit that
+                // breaks the file must not be what the next reload finds.
+                if let Err(error) = tools::compile_report(&name, &edited) {
+                    self.finish_head(error);
+                    return true;
+                }
+                let result = match tools::plugin_fs_write(&fs_path, &edited, true) {
+                    Ok(_) => {
+                        // An edit may add a `request_permission` the write never granted.
+                        let granted = tools::requested_permissions(&edited);
+                        if !granted.is_empty() {
+                            tools::grant_permissions(&target, &granted);
+                        }
+                        let backup = tools::keep_replaced(&name, Some(&previous));
+                        tools::with_lint(
+                            tools::edit_report(&name, &granted, backup.as_deref()),
+                            &name,
+                            &edited,
+                        )
+                    },
                     Err(error) => error,
                 };
                 self.finish_head(result);

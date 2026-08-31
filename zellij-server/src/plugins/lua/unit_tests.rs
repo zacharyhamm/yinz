@@ -1011,6 +1011,123 @@ fn the_playground_plugin_loads_and_runs_every_key_it_advertises() {
     );
 }
 
+/// The denial every plugin meets first, and the one whose message used to point away from the
+/// fix: during `load` nothing has answered the permissions yet - not even for a plugin whose
+/// grant is already on disk - so "ask for it in `load`" is advice the author has already taken.
+/// What zellij's own text components actually say in a frame.
+///
+/// `ui.text` is emitted as `\u{1b}Pztext;<styles>$<char codes>\u{1b}\\`, so a test that cares
+/// about the words rather than the escapes has to read the codes back.
+fn component_text(rendered: &str) -> String {
+    let mut out = String::new();
+    for part in rendered.split("Pztext;").skip(1) {
+        let body = part.split('\u{1b}').next().unwrap_or("");
+        let codes = body.trim_start_matches(['x', 'o', 'd', 'e', 'u', 'i', 's']);
+        let codes = codes.rsplit('$').next().unwrap_or("");
+        for code in codes.split(',') {
+            if let Some(c) = code.trim().parse::<u32>().ok().and_then(char::from_u32) {
+                out.push(c);
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// The shared-data pair the guide points at for a plugin that keeps rows: an extension that owns
+/// the namespace and a pane that reads it. Both are `plugin_docs` sections, so both rot the
+/// moment the API moves under them.
+#[test]
+fn the_todo_examples_load_and_the_pane_renders_its_keys() {
+    let mut env = test_env();
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+    let extension = example_plugin("todo-extension.lua");
+    let mut plugin = load_lua_plugin(&extension, "todo.lua", env).unwrap();
+    plugin
+        .load(&BTreeMap::from([
+            ("hocus_extension_name".to_owned(), "todo".to_owned()),
+            (
+                "hocus_extension_path".to_owned(),
+                "/plugins/hocus/todo.lua".to_owned(),
+            ),
+        ]))
+        .unwrap();
+    // The discover broadcast is how a hocus reload finds an extension that is already running,
+    // and re-registering marshals the whole tool list.
+    let discover = zellij_utils::data::PipeMessage::new(
+        zellij_utils::data::PipeSource::Plugin(1),
+        "hocus_extension_discover",
+        &None,
+        &None,
+        true,
+    );
+    plugin.pipe(&discover).unwrap();
+
+    let mut env = test_env();
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+    let pane = example_plugin("todo-pane.lua");
+    let mut plugin = load_lua_plugin(&pane, "todo-pane.lua", env).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    let rendered = component_text(&String::from_utf8(plugin.render(10, 80).unwrap()).unwrap());
+    assert!(rendered.contains("nothing yet"), "got: {rendered}");
+
+    // The input mode is the part a rewrite is most likely to drop, so it is the part pressed
+    // here: `a` opens it, and every key after that is text until Esc.
+    for key in ["a", "h", "i"] {
+        let key = BareKey::Char(key.chars().next().unwrap());
+        plugin
+            .update(&Event::Key(KeyWithModifier::new(key)))
+            .unwrap();
+    }
+    let rendered = component_text(&String::from_utf8(plugin.render(10, 80).unwrap()).unwrap());
+    assert!(rendered.contains("new: hi_"), "got: {rendered}");
+    plugin
+        .update(&Event::Key(KeyWithModifier::new(BareKey::Esc)))
+        .unwrap();
+    let rendered = component_text(&String::from_utf8(plugin.render(10, 80).unwrap()).unwrap());
+    assert!(rendered.contains("a add"), "got: {rendered}");
+}
+
+#[test]
+fn a_denial_before_any_answer_says_to_wait_for_the_answer() {
+    let source = r#"
+        local zellij = require("zellij")
+        local M = {}
+        function M.load()
+          zellij.request_permission { "plugin_data" }
+          M.err = tostring(select(2, pcall(function()
+            zellij.data.fetch { entity = "note" }
+          end)))
+        end
+        function M.render() return M.err end
+        return M
+    "#;
+    let load_with = |permissions| {
+        let mut env = test_env();
+        env.permissions = Arc::new(Mutex::new(permissions));
+        load_lua_plugin(source, "test.lua", env).unwrap()
+    };
+    // `None`: the state every plugin loads in, whatever is already granted on disk.
+    let mut plugin = load_with(None);
+    plugin.load(&BTreeMap::new()).unwrap();
+    let rendered = String::from_utf8(plugin.render(10, 200).unwrap()).unwrap();
+    assert!(rendered.contains("PluginData"), "got: {rendered}");
+    assert!(
+        rendered.contains("permission_request_result"),
+        "the denial has to name the handler the work belongs in, got: {rendered}"
+    );
+
+    // Answered, and still missing this one: the ordinary denial, which says to ask for it.
+    let mut plugin = load_with(Some(HashSet::new()));
+    plugin.load(&BTreeMap::new()).unwrap();
+    let rendered = String::from_utf8(plugin.render(10, 200).unwrap()).unwrap();
+    assert!(rendered.contains("request_permission"), "got: {rendered}");
+    assert!(
+        !rendered.contains("permission_request_result"),
+        "an answered plugin is not waiting for anything, got: {rendered}"
+    );
+}
+
 #[test]
 fn a_command_cannot_be_called_re_entrantly() {
     // The dispatch function borrows `PluginEnv` for the duration of one call. A re-entrant call

@@ -561,7 +561,9 @@ end
 --- what outlives a reload and a session; `zellij.fs` into `/cache` is the other option, for a
 --- plugin that just wants a file.
 ---
----     zellij.request_permission { "plugin_data" }
+---     zellij.request_permission { "plugin_data" }            -- in `load`
+---     -- ...and the rest from a `zellij.on("permission_request_result", ...)` handler, since a
+---     -- permission is not in force while `load` runs:
 ---     zellij.data.define { name = "note", version = 1, attrs = { { "text", "text", full_text = true } } }
 ---     zellij.data.apply(zellij.data.put("note", { text = "hello" }))
 ---     local notes = zellij.data.fetch { entity = "note", sort = { "id desc" }, limit = 10 }
@@ -648,6 +650,12 @@ local ATTR_KINDS = { text = "Text", int = "Int", real = "Real", bool = "Bool", b
 --- namespace = , allow_destructive = }`. Each attribute is `{ name, kind, indexed = , full_text = ,
 --- unique = , required = , default = }` - `{ "title", "text" }` at its shortest, and kinds are
 --- `text`, `int`, `real`, `bool`, `blob` and `json`. Answers with what the store did.
+---
+--- `id`, `uid`, `created_at`, `updated_at`, `rowid` and `oid` are on every row already and may
+--- not be declared: a define that names one fails whole. `namespace` is omitted for the
+--- plugin's own store, or is `"shared:<name>"` for one shared with other plugins, which needs
+--- `shared_plugin_data` on top of `plugin_data`; nothing else is a namespace. One plugin should
+--- own the define - it is a migration - and the others only fetch, watch and apply.
 function zellij.data.define(spec)
   local attrs = {}
   for i, attr in ipairs(spec.attrs or {}) do
@@ -698,7 +706,8 @@ function zellij.data.delete(entity, filter)
 end
 
 --- Apply one mutation or a list of them in one transaction, all or nothing. Answers with
---- `rows_written`, `rows_deleted` and the `ids` of the rows a `put` made.
+--- `rows_written`, `rows_deleted` and the `ids` of the rows a `put` made. `namespace` is the
+--- plugin's own when omitted, or a `"shared:"` one - see `zellij.data.define`.
 function zellij.data.apply(mutations, namespace)
   if mutations.Put or mutations.Update or mutations.Delete then
     mutations = { mutations }
@@ -760,7 +769,8 @@ end
 
 --- A fetch, from a plain table (or just the entity name): `{ entity = , filter = , search = ,
 --- sort = { "updated_at desc", "title" }, select = { ... }, limit = , offset = , after_id = ,
---- namespace = }`.
+--- namespace = }`. `namespace` is the plugin's own when omitted, or a `"shared:"` one - see
+--- `zellij.data.define`. `fetch`, `count` and `watch` all take one.
 local function fetch_request(spec)
   if type(spec) == "string" then
     spec = { entity = spec }

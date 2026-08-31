@@ -195,3 +195,56 @@ fn a_scan_waits_before_loading_files_that_did_not_reregister() {
     state.on_timer((PLUGIN_LOAD_MS as f64) / 1000.0);
     assert!(state.extension_scan_due_ms.is_none());
 }
+
+/// The answer a `plugin_reload` of an extension gets. Registration is the extension saying what
+/// it offers, and the churned todo session read exactly this line as proof its tools worked - so
+/// the line has to ask for them to be called.
+#[test]
+fn a_registration_report_names_the_tools_and_asks_for_them_to_be_called() {
+    let path = "/plugins/hocus/weather.lua";
+    let mut state = State {
+        user_plugin_dir: "/plugins".to_owned(),
+        ..State::default()
+    };
+    state
+        .extension_files
+        .insert("weather".to_owned(), path.to_owned());
+    state
+        .extension_instances
+        .insert(7, ("weather".to_owned(), path.to_owned()));
+    state.pending.push_back(call(
+        "call_1",
+        "plugin_reload",
+        r#"{"name":"hocus/weather"}"#,
+    ));
+    state.status = Status::AwaitingPluginLoad;
+    state.plugin_load = Some(PluginLoadWatch {
+        target: path.to_owned(),
+        started_ms: 0,
+        extension: true,
+    });
+
+    let payload = serde_json::json!({
+        "version": crate::extensions::VERSION,
+        "namespace": "weather",
+        "path": path,
+        "tools": [{
+            "name": "forecast",
+            "description": "Read the forecast.",
+            "parameters": { "type": "object", "properties": {} },
+            "safety": "read_only",
+        }],
+    })
+    .to_string();
+    assert!(state.on_extension_registration(7, Some(&payload)));
+
+    let results = tool_results(&state);
+    let answer = results
+        .last()
+        .expect("the reload was answered")
+        .content
+        .clone();
+    assert!(answer.contains("weather_forecast"), "{answer}");
+    assert!(answer.contains("Call each one once"), "{answer}");
+    assert!(matches!(state.status, Status::Idle));
+}
