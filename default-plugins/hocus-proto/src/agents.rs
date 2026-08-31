@@ -1287,7 +1287,9 @@ pub fn run_box(run: &AgentRun, width: usize, height: usize, scroll: usize) -> Op
             matches!(
                 entry.kind,
                 RunEntryKind::Prompt | RunEntryKind::Plan | RunEntryKind::Question
-            )
+            ) || (run.outcome != RunOutcome::Active
+                && entry.kind == RunEntryKind::Result
+                && entry.revision > run.summarized_revision)
         })
         .flat_map(|entry| {
             crate::text::wrap(&format!("{}: {}", entry.kind.label(), entry.text), inner)
@@ -2917,6 +2919,48 @@ mod tests {
         run.entries.truncate(1);
         let short = run_box(&run, 40, 6, usize::MAX).expect("a short run remains visible");
         assert!(short.iter().any(|line| line.contains("oldest")));
+    }
+
+    #[test]
+    fn an_archived_run_shows_only_unsummarized_results() {
+        let mut run = AgentRun {
+            id: "claude:session-1".to_owned(),
+            pane_id: 7,
+            zellij_session_name: "zellij".to_owned(),
+            session_id: "session-1".to_owned(),
+            kind: "claude".to_owned(),
+            cwd: None,
+            started_at_ms: 10,
+            ended_at_ms: None,
+            outcome: RunOutcome::Active,
+            revision: 1,
+            summarized_revision: 0,
+            summary: None,
+            entries: vec![RunEntry {
+                revision: 1,
+                event_id: None,
+                kind: RunEntryKind::Result,
+                text: "Implemented and tested.".to_owned(),
+            }],
+        };
+
+        assert!(run_box(&run, 40, 6, 0).is_none());
+
+        run.outcome = RunOutcome::Completed;
+        let archived = run_box(&run, 40, 6, 0).expect("the result is the archived fallback");
+        assert!(archived
+            .iter()
+            .any(|line| line.contains("result: Implemented and tested.")));
+
+        run.summarized_revision = run.revision;
+        run.summary = Some(Summary {
+            text: "The implementation is complete.".to_owned(),
+            title: String::new(),
+            awaiting: false,
+            hash: 0,
+        });
+        let summarized = run_box(&run, 40, 6, 0).expect("the summary remains visible");
+        assert!(!summarized.iter().any(|line| line.contains("result:")));
     }
 
     #[test]
