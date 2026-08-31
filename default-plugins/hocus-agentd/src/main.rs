@@ -1042,21 +1042,28 @@ impl State {
         let Some(run) = self.runs.get(&pane_id) else {
             return agents::tail(fallback, agents::SUMMARY_LINES, agents::SUMMARY_CHARS);
         };
-        let delta = run
+        let mut delta = run
             .entries
             .iter()
             .filter(|entry| {
                 entry.revision > run.summarized_revision
-                    && entry.kind != agents::RunEntryKind::Prompt
+                    && matches!(
+                        entry.kind,
+                        agents::RunEntryKind::Plan | agents::RunEntryKind::Question
+                    )
             })
             .map(|entry| format!("{}: {}", entry.kind.label(), entry.text))
             .collect::<Vec<_>>()
             .join("\n");
+        if !delta.is_empty() {
+            delta.push('\n');
+        }
+        delta.push_str("result: ");
+        delta.push_str(fallback);
         let delta = agents::tail(&delta, agents::SUMMARY_LINES, agents::SUMMARY_CHARS);
         match run.summary.as_ref().filter(|_| run.summarized_revision > 0) {
             Some(summary) => format!("previous summary: {}\n\n{delta}", summary.text),
-            None if !delta.is_empty() => delta,
-            None => agents::tail(fallback, agents::SUMMARY_LINES, agents::SUMMARY_CHARS),
+            None => delta,
         }
     }
 
@@ -4911,6 +4918,16 @@ mod tests {
             ),
             None,
         );
+        feed(
+            &mut state,
+            7,
+            &tool_hook(
+                "PreToolUse",
+                "AskUserQuestion",
+                serde_json::json!({"questions": [{"question": "Keep old runs?"}]}),
+            ),
+            None,
+        );
         let (_, first) = feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
         assert_eq!(first.len(), 1);
         finish(
@@ -4929,7 +4946,7 @@ mod tests {
             [
                 agents::RunEntryKind::Prompt,
                 agents::RunEntryKind::Plan,
-                agents::RunEntryKind::Result,
+                agents::RunEntryKind::Question,
             ]
         );
         assert_eq!(
@@ -4965,11 +4982,15 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_delivery_is_dropped_but_repeated_tool_calls_are_kept() {
+    fn duplicate_delivery_is_dropped_but_repeated_questions_are_kept() {
         let mut state = State::default();
         let call = |id: &str, event: &str| wire::HookEvent {
             tool_use_id: Some(id.to_owned()),
-            ..tool_hook(event, "Bash", serde_json::json!({"command": "cargo test"}))
+            ..tool_hook(
+                event,
+                "AskUserQuestion",
+                serde_json::json!({"questions": [{"question": "Which library?"}]}),
+            )
         };
 
         feed(&mut state, 7, &call("tool-1", "PreToolUse"), None);
@@ -4979,8 +5000,8 @@ mod tests {
 
         let run = &state.runs[&7];
         assert_eq!(run.entries.len(), 2);
-        assert_eq!(run.entries[0].text, "Bash cargo");
-        assert_eq!(run.entries[1].text, "Bash cargo");
+        assert_eq!(run.entries[0].text, "Which library?");
+        assert_eq!(run.entries[1].text, "Which library?");
         assert_ne!(run.entries[0].event_id, run.entries[1].event_id);
     }
 

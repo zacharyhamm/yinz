@@ -761,7 +761,7 @@ pub type Summaries = BTreeMap<u32, Summary>;
 // Hook-backed run history
 // ---------------------------------------------------------------------------
 
-/// One retained item in an agent run. Hooks are deliberately reduced to these four kinds:
+/// One retained item in an agent run. Hooks are deliberately reduced to conversation history:
 /// the raw event stream is noisy, large, and often contains tool output that has no business
 /// being persisted or drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -769,7 +769,10 @@ pub type Summaries = BTreeMap<u32, Summary>;
 pub enum RunEntryKind {
     Prompt,
     Plan,
+    Question,
+    /// Kept only so histories written before questions had their own kind still deserialize.
     Step,
+    /// Kept only so histories written before results were dropped still deserialize.
     Result,
 }
 
@@ -778,6 +781,7 @@ impl RunEntryKind {
         match self {
             RunEntryKind::Prompt => "prompt",
             RunEntryKind::Plan => "plan",
+            RunEntryKind::Question => "question",
             RunEntryKind::Step => "step",
             RunEntryKind::Result => "result",
         }
@@ -914,55 +918,17 @@ pub fn run_entry(event: &zellij_tile::agent::HookEvent) -> Option<(RunEntryKind,
         "PreToolUse"
             if matches!(
                 event.tool_name.as_deref(),
-                Some(
-                    "Bash"
-                        | "Edit"
-                        | "Write"
-                        | "MultiEdit"
-                        | "NotebookEdit"
-                        | "exec_command"
-                        | "write_stdin"
-                        | "apply_patch"
-                )
+                Some("AskUserQuestion" | "request_user_input")
             ) =>
         {
-            (RunEntryKind::Step, hook_detail(event)?)
+            (RunEntryKind::Question, waiting_detail(event)?)
         },
-        "PreToolUse" if waiting_detail(event).is_some() => {
-            (RunEntryKind::Step, waiting_detail(event)?)
-        },
-        "PermissionRequest" | "Elicitation" | "Notification" if waiting_detail(event).is_some() => {
-            (RunEntryKind::Step, waiting_detail(event)?)
-        },
-        "PermissionDenied" => (RunEntryKind::Step, "Permission denied".to_owned()),
-        "PostToolUseFailure" => (
-            RunEntryKind::Step,
-            format!("{} failed", event.tool_name.as_deref().unwrap_or("Tool")),
-        ),
-        "SubagentStart" | "SubagentStop" => {
-            let boundary = if event.hook_event_name == "SubagentStart" {
-                "started"
-            } else {
-                "finished"
-            };
-            let name = event.agent_id.as_deref().unwrap_or("subagent");
-            (RunEntryKind::Step, format!("Subagent {name} {boundary}"))
-        },
-        "Stop" => (RunEntryKind::Result, event.last_assistant_message.clone()?),
-        "StopFailure" => (
-            RunEntryKind::Result,
-            event
-                .last_assistant_message
-                .clone()
-                .unwrap_or_else(|| "Turn failed".to_owned()),
-        ),
-        "Interrupt" => (RunEntryKind::Result, "Interrupted by user".to_owned()),
         _ => return None,
     };
     let cap = match kind {
         RunEntryKind::Prompt => 600,
         RunEntryKind::Plan | RunEntryKind::Result => SUMMARY_CHARS,
-        RunEntryKind::Step => WAITING_DETAIL_CHARS,
+        RunEntryKind::Question | RunEntryKind::Step => WAITING_DETAIL_CHARS,
     };
     let text = crate::text::sanitize(&text);
     let text: String = text.trim().chars().take(cap).collect();
@@ -1309,6 +1275,12 @@ pub fn run_box(run: &AgentRun, width: usize, height: usize, scroll: usize) -> Op
     let history: Vec<String> = run
         .entries
         .iter()
+        .filter(|entry| {
+            matches!(
+                entry.kind,
+                RunEntryKind::Prompt | RunEntryKind::Plan | RunEntryKind::Question
+            )
+        })
         .flat_map(|entry| {
             crate::text::wrap(&format!("{}: {}", entry.kind.label(), entry.text), inner)
         })
@@ -2869,24 +2841,30 @@ mod tests {
         };
         assert_eq!(
             run_entry(&ask),
-            Some((RunEntryKind::Step, "Which library?".to_owned()))
+            Some((RunEntryKind::Question, "Which library?".to_owned()))
         );
         let codex_ask = crate::wire::HookEvent {
             tool_name: Some("request_user_input".to_owned()),
+            tool_input: Some(json!({"questions": [{"question": "Which history?"}]})),
             ..event("PreToolUse")
         };
         assert_eq!(
             run_entry(&codex_ask),
-            Some((RunEntryKind::Step, "a question".to_owned()))
+            Some((RunEntryKind::Question, "Which history?".to_owned()))
         );
         let result = crate::wire::HookEvent {
             last_assistant_message: Some("Implemented and tested.".to_owned()),
             ..event("Stop")
         };
+        assert_eq!(run_entry(&result), None);
         assert_eq!(
-            run_entry(&result),
-            Some((RunEntryKind::Result, "Implemented and tested.".to_owned()))
+            run_entry(&crate::wire::HookEvent {
+                tool_name: Some("Bash".to_owned()),
+                ..event("PreToolUse")
+            }),
+            None
         );
+        assert_eq!(run_entry(&event("PermissionRequest")), None);
     }
 
     #[test]
@@ -2910,7 +2888,7 @@ mod tests {
                 .map(|(index, text)| RunEntry {
                     revision: index as u64 + 1,
                     event_id: None,
-                    kind: RunEntryKind::Step,
+                    kind: RunEntryKind::Question,
                     text: text.to_owned(),
                 })
                 .collect(),
