@@ -178,6 +178,7 @@ fn an_agent_report_is_carried_on_the_pane() {
         cwd: None,
         hook_json: false,
         clear: false,
+        run_id: None,
     });
     assert_eq!(exit_code, 0);
     let (_, listed) = zellij.run_cli_action_reporting(list_panes());
@@ -202,6 +203,7 @@ fn an_agent_report_is_carried_on_the_pane() {
         cwd: None,
         hook_json: false,
         clear: true,
+        run_id: None,
     });
     let (_, listed) = zellij.run_cli_action_reporting(list_panes());
     let panes: serde_json::Value = serde_json::from_str(&listed).unwrap();

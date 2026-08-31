@@ -1240,6 +1240,7 @@ mod tests {
             cwd: None,
             hook_json: false,
             clear: false,
+            run_id: None,
         }
     }
 

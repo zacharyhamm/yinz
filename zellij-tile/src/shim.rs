@@ -3616,6 +3616,19 @@ pub fn set_pane_agent(pane_id: PaneId, agent: Option<AgentInfo>) {
     unsafe { host_run_plugin_command() };
 }
 
+/// Set the id of the run record this plugin keeps for `pane_id`'s agent, or clear it with
+/// `None`.
+///
+/// Additive where [`set_pane_agent`] is wholesale: this touches one field and leaves the rest
+/// of the record as the agent last reported it. A pane with no record has nothing for a run id
+/// to name, so one sent for it is dropped.
+pub fn set_pane_agent_run(pane_id: PaneId, run_id: Option<String>) {
+    let plugin_command = PluginCommand::SetPaneAgentRun { pane_id, run_id };
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
 /// Set the default foreground and/or background color of a pane
 ///
 /// # Arguments

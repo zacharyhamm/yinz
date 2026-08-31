@@ -351,6 +351,7 @@ fn a_written_hook_is_bound_and_fired_by_a_reporting_agent_end_to_end() {
         cwd: None,
         hook_json: false,
         clear: false,
+        run_id: None,
     };
     assert_eq!(zellij.run_cli_action(report("busy", None)), 0);
     assert_eq!(zellij.run_cli_action(report("waiting", Some("y/n"))), 0);

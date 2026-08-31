@@ -217,6 +217,16 @@ struct State {
     zellij_session_name: Option<String>,
     runs: BTreeMap<u32, agents::AgentRun>,
     dirty_runs: BTreeMap<String, agents::AgentRun>,
+    /// Runs whose pane is gone from this session, so their write has to be guarded: a warped
+    /// pane's run has been claimed by the session that took it, and our last word about the
+    /// pane we lost must not overwrite theirs. See `agents::rows::run_owned_mutation`.
+    ///
+    /// Keyed like `dirty_runs` and drained with it. A run that is in both is guarded, because
+    /// once its pane is gone nothing here can add to it.
+    released_runs: BTreeSet<String>,
+    /// Panes we have already looked for a stored run for, so a pane that genuinely has none
+    /// costs one fetch rather than one per manifest. Pruned with the panes.
+    run_lookups: BTreeSet<u32>,
     /// What each Claude Code pane has said about *itself*, over its own hooks.
     ///
     /// The one thing in this daemon that is reported rather than inferred. Where a
@@ -580,7 +590,19 @@ impl State {
             .fetch(&agents::rows::active_runs_request(&session_name).limit(MAX_FETCH_ROWS))
         {
             for run in agents::rows::runs_from_rows(&rows) {
-                self.runs.entry(run.pane_id).or_insert(run);
+                let (pane_id, run_id) = (run.pane_id, run.id.clone());
+                // Kept, not replaced: a run this daemon is already holding is the live one,
+                // and the stored copy is behind it.
+                if self.runs.contains_key(&pane_id) {
+                    continue;
+                }
+                self.runs.insert(pane_id, run);
+                // Ordinarily a no-op: the record belongs to the server and outlived this
+                // plugin, so it still names the run. It is not a no-op for a run that predates
+                // the field, and a pane that cannot say which run it is in cannot be warped
+                // without losing it.
+                self.publish_run_id(pane_id, Some(run_id));
+                self.run_lookups.insert(pane_id);
             }
         }
         self.focused = focused;
@@ -953,8 +975,15 @@ impl State {
             self.finish_run(pane_id, agents::RunOutcome::Completed, now_ms);
             return;
         }
-        let new_run = !self.runs.contains_key(&pane_id);
         let zellij_session_name = self.zellij_session_name.clone().unwrap_or_default();
+        if !self.runs.contains_key(&pane_id) {
+            // The manifest usually gets here first, but a hook can beat it: the pane arrives
+            // and the agent speaks before the next `PaneUpdate`. Looking again costs one fetch
+            // on the first event of a run and nothing after.
+            self.adopt_stored_run(pane_id, kind, &event.session_id, &zellij_session_name);
+        }
+        // Read after the adoption above: a run it picked up is not a new one.
+        let new_run = !self.runs.contains_key(&pane_id);
         let run = self
             .runs
             .entry(pane_id)
@@ -1008,30 +1037,106 @@ impl State {
             }
         }
         if changed {
-            self.dirty_runs.insert(run.id.clone(), run.clone());
+            let run = run.clone();
+            self.dirty_runs.insert(run.id.clone(), run);
+            if new_run {
+                // Only on the first event of a run: the id does not change under it, and the
+                // session drops a report that repeats what the pane already says.
+                let run_id = self.runs[&pane_id].id.clone();
+                self.publish_run_id(pane_id, Some(run_id));
+            }
         }
     }
 
+    /// Look for a stored run this pane's agent already has, from what the event itself says.
+    ///
+    /// The hook-side twin of `adopt_arrived_runs`. It has no record to read, so it builds the
+    /// candidate id from the event: the same derivation, from the same session id the record
+    /// would have carried.
+    fn adopt_stored_run(&mut self, pane_id: u32, kind: &str, session_id: &str, owner: &str) {
+        if session_id.trim().is_empty() || owner.is_empty() {
+            return;
+        }
+        if !self.run_lookups.insert(pane_id) {
+            return;
+        }
+        let run_id = agents::run_id(kind, pane_id, session_id, 0);
+        let Ok(rows) = store::Host::shared().fetch(&agents::rows::run_by_id_request(&run_id))
+        else {
+            return;
+        };
+        let Some(run) = agents::rows::runs_from_rows(&rows).into_iter().next() else {
+            return;
+        };
+        self.adopt_run(pane_id, run.adopted_by(pane_id, owner));
+    }
+
     fn finish_run(&mut self, pane_id: u32, outcome: agents::RunOutcome, now_ms: i64) {
+        self.finish_run_as(pane_id, outcome, now_ms, false);
+    }
+
+    /// Close a run whose pane has left this session for one we cannot see.
+    ///
+    /// The same close, written under a guard. A pane vanishing from the manifest is a warp and
+    /// a `kill -9` alike from here — there is no signal that separates them — so this is
+    /// written as the weaker claim of the two: *if nobody else has taken this run, it is over*.
+    /// Where the pane really was warped, the session that adopted it has already reopened the
+    /// row under its own name, the guard matches nothing, and the entries the agent has
+    /// produced since the move survive.
+    fn release_run(&mut self, pane_id: u32, now_ms: i64) {
+        self.finish_run_as(pane_id, agents::RunOutcome::Closed, now_ms, true);
+    }
+
+    fn finish_run_as(
+        &mut self,
+        pane_id: u32,
+        outcome: agents::RunOutcome,
+        now_ms: i64,
+        released: bool,
+    ) {
         let Some(mut run) = self.runs.remove(&pane_id) else {
             return;
         };
         run.outcome = outcome;
         run.ended_at_ms = Some(now_ms);
+        if released {
+            self.released_runs.insert(run.id.clone());
+        }
         self.dirty_runs.insert(run.id.clone(), run.clone());
+        // The pane is no longer keeping this run, so it should no longer say it is. Harmless
+        // where the pane has closed; load-bearing where it has not - a re-run in the same pane
+        // starts a new run, and the old id left on the record would send the next session
+        // looking for the wrong one.
+        self.publish_run_id(pane_id, None);
+    }
+
+    /// Tell the session which run this pane's agent is in, so a session that adopts the pane
+    /// can find it. See `AgentInfo::run_id`.
+    fn publish_run_id(&self, pane_id: u32, run_id: Option<String>) {
+        set_pane_agent_run(PaneId::Terminal(pane_id), run_id);
     }
 
     fn persist_dirty_runs(&mut self) {
-        if self.dirty_runs.is_empty() || self.zellij_session_name.is_none() {
+        let Some(owner) = self.zellij_session_name.clone() else {
+            return;
+        };
+        if self.dirty_runs.is_empty() {
             return;
         }
         let mutations = self
             .dirty_runs
             .values()
-            .map(agents::rows::run_mutation)
+            .map(|run| {
+                if self.released_runs.contains(&run.id) {
+                    agents::rows::run_owned_mutation(run, &owner)
+                } else {
+                    agents::rows::run_mutation(run)
+                }
+            })
             .collect();
         if store::Host::shared().apply(mutations).is_ok() {
             self.dirty_runs.clear();
+            self.released_runs.clear();
         }
     }
 
@@ -1369,7 +1474,10 @@ impl State {
             .copied()
             .collect();
         for pane_id in closed_runs {
-            self.finish_run(pane_id, agents::RunOutcome::Closed, now_ms());
+            // Released rather than closed outright: a pane leaving the manifest is a warp and a
+            // dead process alike from here, and only one of those ends the run. See
+            // `release_run`.
+            self.release_run(pane_id, now_ms());
         }
         self.commands.retain(|id, _| live.contains(id));
         self.cwds.retain(|id, _| live.contains(id));
@@ -1391,6 +1499,7 @@ impl State {
         // disagreeing with `hooks` about which road the pane is read from.
         self.event_fed.retain(|id| live.contains(id));
         self.suppressed_waits.retain(|id| live.contains(id));
+        self.run_lookups.retain(|id| live.contains(id));
         // A pane that has come back to life is running a new process, and has to
         // earn its latch again rather than inherit the dead one's. `settle_latches`
         // below re-earns it in the same breath if it really is running an agent.
@@ -1466,12 +1575,74 @@ impl State {
                 self.hooks.insert(pane.pane_id, feed);
             }
         }
+        self.adopt_arrived_runs();
         for (pane_id, cwd) in reported {
             self.record_cwd(pane_id, &cwd);
         }
         self.rejoin_cwds();
         self.settle_latches();
         self.resolve_repositories();
+    }
+
+    /// Pick up the run of any agent pane that arrived carrying one.
+    ///
+    /// The other half of a warp. `AgentInfo` travels with the pane, so the record is right the
+    /// moment it lands — but the run behind it is a row in a store shared by every session on
+    /// this machine, under an id that means nothing to a pane id or a session name. This is
+    /// where that id is looked up.
+    ///
+    /// Driven off the manifest rather than off the next hook, because an agent that arrives
+    /// mid-think may say nothing for minutes, and until it does the run would sit in the
+    /// archive marked closed while the pane it belongs to is plainly working.
+    fn adopt_arrived_runs(&mut self) {
+        let Some(owner) = self.zellij_session_name.clone() else {
+            return;
+        };
+        let candidates: Vec<(u32, String)> = self
+            .panes
+            .iter()
+            .flatten()
+            .filter(|pane| !self.runs.contains_key(&pane.pane_id))
+            .filter(|pane| !self.run_lookups.contains(&pane.pane_id))
+            .filter_map(|pane| {
+                Some((
+                    pane.pane_id,
+                    agents::stored_run_id(pane.agent.as_ref()?, pane.pane_id)?,
+                ))
+            })
+            .collect();
+        for (pane_id, run_id) in candidates {
+            // Asked once per pane. A pane that has no stored run is the common case by far, and
+            // the answer does not change until the pane does.
+            self.run_lookups.insert(pane_id);
+            let Ok(rows) = store::Host::shared().fetch(&agents::rows::run_by_id_request(&run_id))
+            else {
+                continue;
+            };
+            let Some(run) = agents::rows::runs_from_rows(&rows).into_iter().next() else {
+                continue;
+            };
+            self.adopt_run(pane_id, run.adopted_by(pane_id, &owner));
+        }
+    }
+
+    /// Take a stored run as this pane's live one.
+    ///
+    /// Split from the fetch above so the tests can reach it: this plugin's tests run natively,
+    /// where `store::Host` is a stub that errors on every call, so nothing that reads the store
+    /// can be exercised there.
+    fn adopt_run(&mut self, pane_id: u32, run: agents::AgentRun) {
+        // The row is claimed with an unguarded write - see `run_owned_mutation` for why this
+        // one may not be guarded.
+        self.released_runs.remove(&run.id);
+        self.dirty_runs.insert(run.id.clone(), run.clone());
+        self.publish_run_id(pane_id, Some(run.id.clone()));
+        // The summary is part of the run and travels inside it. The `agent_summary` row does
+        // not: it is keyed by the pane, and this pane is a different one.
+        if let Some(summary) = run.summary.clone() {
+            self.summaries.insert(pane_id, summary);
+        }
+        self.runs.insert(pane_id, run);
     }
 
     /// Ask the host directly for the folder of any agent pane nothing has named.
@@ -2576,6 +2747,7 @@ impl State {
             panes: self.panes.clone(),
             activity: self.activity.clone(),
             manual_kinds: self.manual_kinds.clone(),
+            zellij_session_name: self.zellij_session_name.clone().unwrap_or_default(),
             repositories: self.repositories.clone(),
             focused: self.focused,
             focused_plugin: self.focused_plugin,
@@ -2894,6 +3066,107 @@ mod tests {
     /// then the one thing that says the session is over. Skipping that for a pane fed by its
     /// events leaves the row on `waiting · …` for the life of the session, with the screen
     /// heuristic disabled behind the feed that will not go.
+    /// A run whose pane arrived from another session picks up where it left off.
+    ///
+    /// The fetch is the daemon's; what is checked here is everything around it, which is where
+    /// the work is: the run becomes this pane's live one, it is queued for a write that claims
+    /// the row, the pane is told which run it is in so the *next* session can do the same, and
+    /// the summary that came inside the run is put back on the pane it now describes.
+    #[test]
+    fn an_adopted_run_becomes_this_sessions_and_brings_its_summary() {
+        let mut state = State {
+            zellij_session_name: Some("there".to_owned()),
+            panes: Some(vec![pane(2, "claude", "/work")]),
+            ..State::default()
+        };
+        let mut run = agents::AgentRun {
+            id: "claude:cc-session-1".to_owned(),
+            pane_id: 7,
+            zellij_session_name: "here".to_owned(),
+            session_id: "cc-session-1".to_owned(),
+            kind: CLAUDE.to_owned(),
+            cwd: Some("/work".to_owned()),
+            started_at_ms: 10,
+            ended_at_ms: Some(20),
+            outcome: agents::RunOutcome::Closed,
+            revision: 1,
+            summarized_revision: 1,
+            summary: Some(agents::Summary {
+                text: "rebasing".to_owned(),
+                title: "rebase".to_owned(),
+                awaiting: false,
+                hash: 0,
+            }),
+            entries: vec![agents::RunEntry {
+                revision: 1,
+                event_id: None,
+                kind: agents::RunEntryKind::Prompt,
+                text: "ship it".to_owned(),
+            }],
+        };
+        run = run.adopted_by(2, "there");
+        state.adopt_run(2, run.clone());
+
+        let live = state.runs.get(&2).expect("the run is this pane's now");
+        assert_eq!(live.entries.len(), 1, "with the history it arrived with");
+        assert_eq!(live.started_at_ms, 10);
+        assert_eq!(live.outcome, agents::RunOutcome::Active);
+        assert_eq!(live.zellij_session_name, "there");
+        assert!(
+            state.dirty_runs.contains_key(&run.id),
+            "and queued for the write that claims the row"
+        );
+        assert!(
+            !state.released_runs.contains(&run.id),
+            "claimed unguarded: this is the write that changes the owner"
+        );
+        assert_eq!(
+            state.summaries.get(&2).map(|summary| summary.text.as_str()),
+            Some("rebasing"),
+            "the summary travels inside the run; the row it used to live in was the old pane's"
+        );
+    }
+
+    /// A pane leaving the manifest ends its run - but as the weaker of the two claims it could
+    /// be making. The daemon cannot tell a warp from a `kill -9`, so it writes "if nobody else
+    /// has taken this, it is over" and lets the store settle it.
+    #[test]
+    fn a_pane_that_leaves_releases_its_run_rather_than_closing_it_outright() {
+        let mut state = State {
+            zellij_session_name: Some("here".to_owned()),
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            latched: BTreeMap::from([(7, CLAUDE.to_owned())]),
+            ..State::default()
+        };
+        state.manifest.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                title: "claude".to_owned(),
+                ..PaneInfo::default()
+            }],
+        );
+        state.rebuild_panes();
+        state.on_hook(7, &hook("UserPromptSubmit"));
+        let run_id = state.runs[&7].id.clone();
+        assert_eq!(run_id, "claude:cc-session-1");
+
+        state.manifest.panes.insert(0, vec![]);
+        state.rebuild_panes();
+
+        assert!(
+            state.runs.is_empty(),
+            "the pane is gone, so the run is not live"
+        );
+        assert!(
+            state.released_runs.contains(&run_id),
+            "and its write is guarded, in case the pane was warped rather than killed"
+        );
+        let released = &state.dirty_runs[&run_id];
+        assert_eq!(released.outcome, agents::RunOutcome::Closed);
+        assert!(released.ended_at_ms.is_some());
+    }
+
     #[test]
     fn a_killed_agent_loses_its_feed_even_though_it_never_said_goodbye() {
         let mut state = State {
@@ -2924,6 +3197,7 @@ mod tests {
                     waiting_on: None,
                     cwd: Some("/work".to_owned()),
                     session_id: Some("cc-session-1".to_owned()),
+                    run_id: None,
                 }),
                 ..PaneInfo::default()
             }],
@@ -2965,6 +3239,7 @@ mod tests {
                     waiting_on: Some("approve the plan".to_owned()),
                     cwd: Some("/work".to_owned()),
                     session_id: Some("cc-session-1".to_owned()),
+                    run_id: None,
                 }),
                 ..PaneInfo::default()
             }],

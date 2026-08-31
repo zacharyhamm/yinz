@@ -1575,6 +1575,9 @@ fn agent_from_run(invoked_with: Option<&Run>) -> Option<AgentInfo> {
             .as_ref()
             .map(|cwd| cwd.display().to_string()),
         session_id: None,
+        // Nothing is keeping this agent's history yet; a plugin that starts to says so with
+        // `SetPaneAgentRun`.
+        run_id: None,
     })
 }
 

@@ -139,6 +139,8 @@ mod thread_main;
 mod warp_ops;
 
 pub use instruction::ScreenInstruction;
+#[cfg(test)]
+pub(crate) use thread_main::apply_pane_agent_report;
 pub(crate) use thread_main::screen_thread_main;
 
 /// What the screen does with a host terminal's answer to a forwarded OSC 99 notification.
