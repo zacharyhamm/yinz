@@ -1,6 +1,8 @@
+use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use serde::{Deserialize, Serialize};
 use std::{
     io::{Read, Write},
+    os::fd::AsFd,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
@@ -162,52 +164,66 @@ impl Provider {
             .write_all(&request_json)
             .context("failed to write the firecracker provider request")?;
 
-        let stdout = child
+        let mut stdout = child
             .stdout
             .take()
             .context("firecracker provider stdout was unavailable")?;
-        let stderr = child
+        let mut stderr = child
             .stderr
             .take()
             .context("firecracker provider stderr was unavailable")?;
-        let stdout = thread::spawn(move || read_bounded(stdout));
-        let stderr = thread::spawn(move || read_bounded(stderr));
+        set_nonblocking(&stdout).context("failed to make provider stdout nonblocking")?;
+        set_nonblocking(&stderr).context("failed to make provider stderr nonblocking")?;
 
         let deadline = Instant::now() + self.timeout;
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) if Instant::now() < deadline => thread::sleep(POLL_INTERVAL),
-                Ok(None) => {
+        let mut status = None;
+        let mut stdout_bytes = Vec::new();
+        let mut stderr_bytes = Vec::new();
+        let mut stdout_oversized = false;
+        let mut stderr_oversized = false;
+        loop {
+            if status.is_none() {
+                match child.try_wait() {
+                    Ok(Some(exit_status)) => status = Some(exit_status),
+                    Ok(None) => {},
+                    Err(error) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(error).context("failed waiting for the firecracker provider");
+                    },
+                }
+            }
+
+            let read_any = read_available(&mut stdout, &mut stdout_bytes, &mut stdout_oversized)
+                .context("failed reading firecracker provider stdout")?
+                | read_available(&mut stderr, &mut stderr_bytes, &mut stderr_oversized)
+                    .context("failed reading firecracker provider stderr")?;
+            if status.is_some() && !read_any {
+                break;
+            }
+            if Instant::now() >= deadline {
+                if status.is_none() {
                     let _ = child.kill();
                     let _ = child.wait();
-                    let _ = stdout.join();
-                    let _ = stderr.join();
-                    return Err(anyhow!(
-                        "firecracker provider timed out after {:?}",
-                        self.timeout
-                    ));
-                },
-                Err(error) => {
-                    let _ = child.kill();
-                    return Err(error).context("failed waiting for the firecracker provider");
-                },
+                }
+                return Err(anyhow!(
+                    "firecracker provider timed out after {:?}",
+                    self.timeout
+                ));
             }
-        };
+            if !read_any {
+                thread::sleep(POLL_INTERVAL);
+            }
+        }
 
-        let (stdout, stdout_oversized) = stdout
-            .join()
-            .map_err(|_| anyhow!("firecracker provider stdout reader panicked"))??;
-        let (stderr, stderr_oversized) = stderr
-            .join()
-            .map_err(|_| anyhow!("firecracker provider stderr reader panicked"))??;
         if stdout_oversized || stderr_oversized {
             return Err(anyhow!(
                 "firecracker provider output exceeded {MAX_OUTPUT} bytes"
             ));
         }
+        let status = status.context("the provider output loop ended before the provider exited")?;
         if !status.success() {
-            let message = String::from_utf8_lossy(&stderr).trim().to_owned();
+            let message = String::from_utf8_lossy(&stderr_bytes).trim().to_owned();
             return Err(anyhow!(
                 "firecracker provider exited with {status}: {}",
                 if message.is_empty() {
@@ -217,27 +233,42 @@ impl Provider {
                 }
             ));
         }
-        serde_json::from_slice(&stdout).with_context(|| {
+        serde_json::from_slice(&stdout_bytes).with_context(|| {
             format!(
                 "firecracker provider returned invalid JSON: {}",
-                String::from_utf8_lossy(&stdout).trim()
+                String::from_utf8_lossy(&stdout_bytes).trim()
             )
         })
     }
 }
 
-fn read_bounded(mut pipe: impl Read) -> std::io::Result<(Vec<u8>, bool)> {
-    let mut kept = Vec::new();
-    let mut oversized = false;
+fn set_nonblocking(pipe: &impl AsFd) -> Result<()> {
+    let flags = fcntl(pipe.as_fd(), FcntlArg::F_GETFL)?;
+    let mut flags = OFlag::from_bits_truncate(flags);
+    flags.insert(OFlag::O_NONBLOCK);
+    fcntl(pipe.as_fd(), FcntlArg::F_SETFL(flags))?;
+    Ok(())
+}
+
+fn read_available(
+    pipe: &mut impl Read,
+    kept: &mut Vec<u8>,
+    oversized: &mut bool,
+) -> std::io::Result<bool> {
     let mut chunk = [0; 8192];
     loop {
-        let read = pipe.read(&mut chunk)?;
-        if read == 0 {
-            return Ok((kept, oversized));
+        match pipe.read(&mut chunk) {
+            Ok(0) => return Ok(false),
+            Ok(read) => {
+                let remaining = MAX_OUTPUT.saturating_sub(kept.len());
+                kept.extend_from_slice(&chunk[..read.min(remaining)]);
+                *oversized |= read > remaining;
+                return Ok(true);
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(false),
+            Err(error) => return Err(error),
         }
-        let remaining = MAX_OUTPUT.saturating_sub(kept.len());
-        kept.extend_from_slice(&chunk[..read.min(remaining)]);
-        oversized |= read > remaining;
     }
 }
 
@@ -344,9 +375,27 @@ esac
 
     #[test]
     fn provider_timeout_is_enforced() {
-        let (_dir, provider) = provider_script("while :; do :; done", Duration::from_millis(200));
+        let (_dir, provider) =
+            provider_script("sleep 2 & while :; do :; done", Duration::from_millis(200));
+        let started = Instant::now();
         let error = provider.ensure("work", "review").unwrap_err().to_string();
         assert!(error.contains("timed out"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn provider_does_not_wait_for_pipes_inherited_by_a_background_child() {
+        let (_dir, provider) = provider_script(
+            "sleep 2 & printf '{\"version\":1,\"ssh_host\":\"build-box\"}'",
+            Duration::from_secs(1),
+        );
+        let started = Instant::now();
+
+        assert_eq!(
+            provider.ensure("work", "review").unwrap().ssh_host,
+            "build-box"
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

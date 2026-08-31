@@ -549,9 +549,11 @@ pub struct ServerOsInputOutput {
 
 #[cfg(not(windows))]
 impl ServerOsInputOutput {
-    fn resolve_firecracker(&self, mut cmd: RunCommand) -> Result<RunCommand> {
+    /// Resolve transport-only provider fields while retaining a command that can call it again.
+    fn resolve_firecracker(&self, mut cmd: RunCommand) -> Result<(RunCommand, RunCommand)> {
+        let rerun_cmd = cmd.clone();
         let Some(name) = cmd.firecracker_vm.as_deref() else {
-            return Ok(cmd);
+            return Ok((cmd, rerun_cmd));
         };
         if cmd.remote_host.is_some() {
             return Err(anyhow!(
@@ -567,7 +569,7 @@ impl ServerOsInputOutput {
         if cmd.cwd.is_none() {
             cmd.cwd = ensured.cwd;
         }
-        Ok(cmd)
+        Ok((cmd, rerun_cmd))
     }
 
     /// Resume a warped-in remote pane on the broker holding it, and give this
@@ -924,7 +926,7 @@ impl ServerOsApi for ServerOsInputOutput {
 
         let (cmd, failover_cmd) = build_command(terminal_action, default_editor);
         let display_host = cmd.display_host();
-        let cmd = self.resolve_firecracker(cmd).map_err(|e| {
+        let (cmd, rerun_cmd) = self.resolve_firecracker(cmd).map_err(|e| {
             pane_start_failed(
                 terminal_id,
                 display_host.as_deref().unwrap_or("firecracker"),
@@ -939,7 +941,7 @@ impl ServerOsApi for ServerOsInputOutput {
                 .map_err(|e| pane_start_failed(terminal_id, &host, e))?;
             let async_reader = self
                 .pty_backend
-                .register_remote_terminal(terminal_id, conn, reader_socket, quit_cb, cmd)
+                .register_remote_terminal(terminal_id, conn, reader_socket, quit_cb, rerun_cmd)
                 .with_context(err_context)?;
             // Deliberately no pid. The child's pid is meaningful only on its own
             // machine, and handing one back here would put it in
@@ -1195,7 +1197,7 @@ impl ServerOsApi for ServerOsInputOutput {
         // the command would quietly run *here* under the same pane, and the pane
         // still open on the far machine would be left to the orphan timeout.
         let display_host = run_command.display_host();
-        let run_command = self.resolve_firecracker(run_command).map_err(|e| {
+        let (run_command, rerun_command) = self.resolve_firecracker(run_command).map_err(|e| {
             pane_start_failed(
                 terminal_id,
                 display_host.as_deref().unwrap_or("firecracker"),
@@ -1214,7 +1216,7 @@ impl ServerOsApi for ServerOsInputOutput {
                 .map_err(|e| pane_start_failed(terminal_id, &host, e))?;
             let async_reader = self
                 .pty_backend
-                .register_remote_terminal(terminal_id, conn, reader_socket, quit_cb, run_command)
+                .register_remote_terminal(terminal_id, conn, reader_socket, quit_cb, rerun_command)
                 .context("failed to re-run a command in a remote terminal")?;
             // No pid, for the same reason `spawn_terminal` gives none.
             return Ok((async_reader, None));
