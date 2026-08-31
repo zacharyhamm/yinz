@@ -253,6 +253,7 @@ enum CommandName {
   ReloadPluginByUrl = 274;
   ReadPluginLog = 275;
   RunCommandInPane = 276;
+  SetPaneAgentRun = 277;
 }
 
 message PluginCommand {
@@ -453,6 +454,7 @@ message PluginCommand {
     string reload_plugin_by_url_payload = 215;
     ReadPluginLogPayload read_plugin_log_payload = 216;
     RunCommandInPanePayload run_command_in_pane_payload = 217;
+    SetPaneAgentRunPayload set_pane_agent_run_payload = 218;
   }
 }
 
@@ -1477,6 +1479,12 @@ message GetUserPluginDirResponse {
 message CheckLuaPluginPayload {
   string name = 1;
   string source = 2;
+}
+
+message SetPaneAgentRunPayload {
+  PaneId pane_id = 1;
+  // Absent clears the run id, leaving the rest of the record alone.
+  optional string run_id = 2;
 }
 
 message SetPaneAgentPayload {

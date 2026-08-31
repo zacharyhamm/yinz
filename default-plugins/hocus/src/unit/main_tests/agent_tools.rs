@@ -402,10 +402,20 @@ fn a_registered_kind_survives_open_store() {
         BTreeMap::from([(4, "reviewer".to_owned())])
     );
 
-    let mut restarted = State::default();
+    // Named, because a latch belongs to a session as well as a pane - see
+    // `store::agent_latch_def`. A hocus that has not heard a snapshot yet reads none, and
+    // restores them when the first one names the session.
+    let mut restarted = State {
+        zellij_session_name: "test-session".to_owned(),
+        ..State::default()
+    };
     restarted
         .store()
-        .apply(vec![agents::rows::latch_mutation(4, "reviewer")])
+        .apply(vec![agents::rows::latch_mutation(
+            "test-session",
+            4,
+            "reviewer",
+        )])
         .expect("copied");
     restarted.open_store();
     assert_eq!(

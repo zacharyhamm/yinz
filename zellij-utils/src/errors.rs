@@ -420,6 +420,7 @@ pub enum ScreenContext {
     Paste,
     SetPaneColor,
     SetPaneAgent,
+    SetPaneAgentRun,
     WriteKeyToPaneId,
     CopyTextToClipboard,
     MovePaneWithPaneId,

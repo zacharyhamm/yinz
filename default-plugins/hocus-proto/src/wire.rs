@@ -151,6 +151,13 @@ pub struct PollReply {
     /// registered agent looks like an ordinary shell to everyone downstream.
     #[serde(default)]
     pub manual_kinds: BTreeMap<u32, String>,
+    /// The zellij session these panes belong to.
+    ///
+    /// Here because the store is shared by every session on the machine, so anything hocus
+    /// writes about a *pane* has to say which session's pane it means — and hocus has no other
+    /// route to the name. The daemon holds it already.
+    #[serde(default)]
+    pub zellij_session_name: String,
     /// Resolved agent folder to its repository or plain-folder definition.
     ///
     /// Keyed by folder *and machine*: a remote pane's path names a place on

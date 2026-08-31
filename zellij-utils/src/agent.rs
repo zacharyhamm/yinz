@@ -718,6 +718,10 @@ pub fn hook_outcome(kind: &str, event: &HookEvent) -> HookOutcome {
                 .flatten(),
             cwd: event.cwd.clone(),
             session_id: (!event.session_id.is_empty()).then(|| event.session_id.clone()),
+            // A hook says everything the agent knows about itself, and the agent does not
+            // know whose books it is being kept in. The pane's own run id is carried forward
+            // over this — see `AgentInfo::run_id`.
+            run_id: None,
         }),
         None => HookOutcome::Nothing,
     }
@@ -1053,6 +1057,7 @@ mod tests {
                 waiting_on: None,
                 cwd: Some("/work".to_owned()),
                 session_id: Some("s1".to_owned()),
+                run_id: None,
             })
         );
         // A wait carries the question as well as the tool: the record is what a row draws

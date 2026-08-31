@@ -43,7 +43,7 @@ use zellij_utils::nested_session;
 use zellij_utils::nested_session::NestedSessionMessage;
 use zellij_utils::pane_size::Size;
 
-fn apply_pane_agent_report(
+pub(crate) fn apply_pane_agent_report(
     screen: &mut Screen,
     pane_id: PaneId,
     agent: Option<AgentInfo>,
@@ -56,6 +56,19 @@ fn apply_pane_agent_report(
     else {
         return Ok(false);
     };
+    // The one field of a record the reporter does not know. A hook says everything the agent
+    // knows about itself and nothing about whose books it is being kept in, so a report that
+    // leaves the run id unset inherits the pane's rather than erasing it. Only clearing the
+    // record clears the run id with it. Done before the comparison below, so a report that is
+    // identical apart from the id it did not supply still costs no hook and no manifest.
+    let agent = agent.map(|mut agent| {
+        if agent.run_id.is_none() {
+            agent.run_id = previous
+                .as_ref()
+                .and_then(|previous| previous.run_id.clone());
+        }
+        agent
+    });
     let changed = screen
         .tab_containing_pane_mut(pane_id)
         .map(|tab| tab.set_pane_agent(pane_id, agent.clone()))
@@ -4188,6 +4201,25 @@ pub(crate) fn screen_thread_main(
                         _completion,
                     ));
                     continue;
+                }
+            },
+            ScreenInstruction::SetPaneAgentRun(pane_id, run_id, _completion) => {
+                // Unlike a record, this waits for nothing: a run id names a record, and a pane
+                // with no record has nothing for it to name. Dropping it is the answer, not
+                // queueing it — the plugin that sent this re-sends on its next pass anyway.
+                let updated = screen
+                    .tab_containing_pane(pane_id)
+                    .and_then(|tab| tab.pane_agent_info(pane_id))
+                    .filter(|agent| agent.run_id != run_id)
+                    .map(|mut agent| {
+                        agent.run_id = run_id;
+                        agent
+                    });
+                if let Some(agent) = updated {
+                    if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
+                        tab.set_pane_agent(pane_id, Some(agent));
+                    }
+                    screen.report_pane_state()?;
                 }
             },
             ScreenInstruction::SetPaneColor(pane_id, fg, bg, _completion) => {

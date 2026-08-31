@@ -3662,6 +3662,7 @@ fn agent_info_to_proto(
         waiting_on: agent.waiting_on,
         cwd: agent.cwd,
         session_id: agent.session_id,
+        run_id: agent.run_id,
     }
 }
 
@@ -3693,6 +3694,7 @@ fn agent_info_from_proto(
         waiting_on: proto.waiting_on,
         cwd: proto.cwd,
         session_id: proto.session_id,
+        run_id: proto.run_id,
     })
 }
 

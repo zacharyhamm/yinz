@@ -283,6 +283,7 @@ fn poll_reply_round_trips_through_json() {
         }]),
         activity,
         manual_kinds: BTreeMap::new(),
+        zellij_session_name: "test-session".to_owned(),
         repositories: BTreeMap::from([(
             Location::local("/tmp/work"),
             projects::Repository {

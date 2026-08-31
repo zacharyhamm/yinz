@@ -142,12 +142,14 @@ hook change: `cargo x integration-test -- -j 16 -E 'test(a_written_hook)'`.
 
 ## Notes for the next session
 
-**Proto numbers in use** (next free): plugin `CommandName` 275 / payload field 216 (next 276 /
-217); plugin `EventType` 57 (`Hook`), event payload field 51; IPC `Action` oneof 159
-(`set_pane_agent`) and 160 (`reconfigure`; `main` holds 155–158; next 161); IPC
+**Proto numbers in use** (next free): plugin `CommandName` 277 (`SetPaneAgentRun`) / payload
+field 218 (next 278 / 219); plugin `EventType` 57 (`Hook`), event payload field 51; IPC `Action`
+oneof 159 (`set_pane_agent`) and 160 (`reconfigure`; `main` holds 155–158; next 161); IPC
 `ClientToServerMsg` 28 (`subscribe_to_events`; `main`'s `host_terminal_focus_changed` is 27),
 `ServerToClientMsg` 20 (`event_update`); `PermissionType` 21 (`AuthorPlugins`); `PaneInfo` field
-30 (`agent`); `PipeMessage` field 8 (`pane_id`); `AgentSource` 2 / IPC `AGENT_SOURCE_REGISTERED` 3.
+30 (`agent`); `AgentInfo` field 8 (`run_id`, in *both* `plugin_api/event.proto` and
+`client_server_contract/common_types.proto`); `PipeMessage` field 8 (`pane_id`); `AgentSource` 2
+/ IPC `AGENT_SOURCE_REGISTERED` 3.
 
 **Two things learned about plugin loading**, for anyone touching hooks:
 

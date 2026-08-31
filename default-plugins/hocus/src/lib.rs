@@ -481,6 +481,16 @@ pub struct State {
     /// over detection, and are dropped when their pane leaves the snapshot. Mirrored
     /// as `agent_latch` rows in the store, so a reload keeps them.
     manual_kinds: BTreeMap<u32, String>,
+    /// The session these panes are in, from the daemon's snapshot.
+    ///
+    /// Half the key of every per-pane row this plugin writes. The store is one file per
+    /// machine rather than per session, so a row about "pane 5" is meaningless without it —
+    /// see `store::agent_latch_def`. Empty until the first snapshot, and nothing per-pane is
+    /// written while it is.
+    zellij_session_name: String,
+    /// Whether `restore_pane_rows` has run. It waits for the session name, so it cannot ride
+    /// on `restore_persisted`'s single call at load.
+    restored_pane_rows: bool,
     /// Spawned panes whose ids are allocated but have not reached a pane snapshot yet.
     /// Their manual kinds survive early snapshots and are pruned normally once seen.
     pending_agent_panes: BTreeSet<u32>,
@@ -788,6 +798,8 @@ impl Default for State {
             panes: Vec::new(),
             repositories: BTreeMap::new(),
             manual_kinds: BTreeMap::new(),
+            zellij_session_name: String::new(),
+            restored_pane_rows: false,
             pending_agent_panes: BTreeSet::new(),
             activity: BTreeMap::new(),
             summaries: agents::Summaries::new(),
@@ -1037,6 +1049,10 @@ impl ZellijPlugin for State {
             return false;
         };
         self.agent_seq = seq;
+        self.zellij_session_name = reply.zellij_session_name;
+        // The first snapshot is the first thing that says which session's panes these are, and
+        // so the first moment the per-pane rows can be read. See `restore_pane_rows`.
+        self.restore_pane_rows();
         self.repositories = reply.repositories;
         self.merge_run_headers(reply.runs);
 

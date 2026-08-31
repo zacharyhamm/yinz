@@ -59,7 +59,40 @@ non-detachable and remote panes keep the existing environment route. The pane's 
 record travels in both `AdoptPane` and `AdoptTab`, so the receiving session has it before the next
 hook fires. Every reader of the pane manifest then sees the same answer: plugins on `PaneUpdate`,
 `zellij events`, `zellij action list-panes --json`, and hocus's agents list. The record is complete
-every time it is set; nothing merges.
+every time it is set; nothing merges — with one stated exception, below.
+
+### The run id, and why it is the one field that is kept
+
+A record has a seventh field, `run_id`, and it is the only one the agent does not say. A hook
+event says everything the agent knows about itself; it has no idea whose books it is being kept
+in. So `run_id` is written by whoever *is* keeping them — hocus-agentd, through
+`PluginCommand::SetPaneAgentRun` / `zellij.set_pane_agent_run`, which sets that field and leaves
+the rest of the record as the agent last reported it — and the session carries it across every
+subsequent report rather than making each one re-supply it. A report that leaves it unset
+inherits the pane's; only clearing the record clears it too.
+
+That exists for the warp. **A pane's agent history is not in its record**: the record is a few
+fields on a manifest handed to every plugin on every pane update, and a history is a growing
+list of prompts, plans, questions and results. History lives in `agent_run` rows in the shared
+plugin data store — one SQLite file per *machine*, not per session, so a run written in one
+session is legible in another. What a warped pane needs is not the history but its *name*, and
+that is what travels.
+
+For a claude or a codex the name needs no help: a run is `"{kind}:{the agent's own session
+id}"`, and the session id does not change when the pane moves, so the adopting session derives
+the same id the losing one used. `run_id` is for everything else — a hand-rolled
+`agent-report` script, or a legacy hook that reports no session id, whose run would otherwise
+be keyed by a pane id and a timestamp that mean nothing in the session it arrives in. Such a
+script names its run once with `zellij action agent-report --run-id <id>` and need not repeat
+it.
+
+The other half is in hocus-agentd. The session that *loses* a warped pane cannot tell a warp
+from a `kill -9` — a pane simply stops being in the manifest — so it writes the weaker of the
+two claims: *if nobody else has taken this run, it is over*, as a store update predicated on
+the run still being under its own session name. The session that *gains* the pane looks the run
+up by id the moment the pane appears, and reopens it under its own name. Whichever of those two
+writes lands second, the history survives: the guard matches nothing once the row has moved,
+and adoption keeps every entry, the summary and the original start time.
 
 **The same command also broadcasts the event itself**, whole, on the `agent_hook` pipe. A
 record is deliberately smaller than an event: the agent's own final message on a `Stop`, the
