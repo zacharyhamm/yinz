@@ -7,7 +7,7 @@
 //! record. These check each moment fires what it should, and nothing else.
 
 use super::*;
-use crate::screen::agent_hook_edges;
+use crate::screen::{agent_hook_edges, apply_pane_agent_report};
 use std::collections::BTreeMap;
 use zellij_utils::data::OriginatingPlugin;
 use zellij_utils::data::HOCUS_AGENT_PANE_CONTEXT;
@@ -49,6 +49,7 @@ fn report(state: AgentState, session_id: Option<&str>) -> AgentInfo {
         waiting_on: None,
         cwd: Some("/work".to_owned()),
         session_id: session_id.map(str::to_owned),
+        run_id: None,
     }
 }
 
@@ -195,6 +196,43 @@ fn a_changed_agent_record_reports_pane_and_session_state() {
         })
         .expect("session subscribers are updated");
     assert_eq!(session.panes, cached.panes);
+}
+
+/// The run id is the one field of a record its reporter does not know: a hook says everything
+/// the agent knows about itself, and the agent has no idea whose books it is being kept in. So
+/// it is carried forward across reports, and only clearing the record clears it — otherwise the
+/// next `PreToolUse` would undo the plugin that set it, and a warped pane would arrive naming
+/// no run.
+#[test]
+fn a_report_that_names_no_run_keeps_the_panes() {
+    let (mut screen, background_jobs) = screen_with_background_jobs(Size { cols: 80, rows: 20 });
+    new_tab(&mut screen, 1, 0);
+    drain_background_jobs(&background_jobs);
+    let pane_id = PaneId::Terminal(1);
+    let record_of = |screen: &Screen| {
+        screen
+            .tab_containing_pane(pane_id)
+            .and_then(|tab| tab.pane_agent_info(pane_id))
+    };
+
+    let mut named = report(AgentState::Busy, Some("s1"));
+    named.run_id = Some("claude:s1".to_owned());
+    assert!(apply_pane_agent_report(&mut screen, pane_id, Some(named)).unwrap());
+    assert_eq!(
+        record_of(&screen).and_then(|agent| agent.run_id),
+        Some("claude:s1".to_owned())
+    );
+
+    // A hook's own record, which never names a run.
+    let waiting = report(AgentState::Waiting, Some("s1"));
+    assert!(apply_pane_agent_report(&mut screen, pane_id, Some(waiting)).unwrap());
+    let carried = record_of(&screen).expect("the record is still there");
+    assert_eq!(carried.state, AgentState::Waiting, "the report still lands");
+    assert_eq!(carried.run_id, Some("claude:s1".to_owned()));
+
+    // Clearing the record clears the run with it: there is no agent left to keep books for.
+    assert!(apply_pane_agent_report(&mut screen, pane_id, None).unwrap());
+    assert_eq!(record_of(&screen), None);
 }
 
 #[test]

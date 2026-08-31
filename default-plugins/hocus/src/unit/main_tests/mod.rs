@@ -50,6 +50,9 @@ fn finishing(id: &str) -> Option<StreamState> {
 fn ready_state() -> State {
     State {
         perms: true,
+        // Every per-pane row this plugin writes is keyed by session as well as pane id, so a
+        // state that has never heard a snapshot writes none. Standing in for the first one.
+        zellij_session_name: "test-session".to_owned(),
         cfg: Config::resolve(
             &BTreeMap::new(),
             &BTreeMap::from([("OPENAI_API_KEY".to_owned(), "sk-test".to_owned())]),
@@ -254,6 +257,7 @@ fn worktree_snapshot(seq: u64, branch: &str) -> PipeMessage {
                 ]),
                 activity: agents::Activity::new(),
                 manual_kinds: BTreeMap::new(),
+                zellij_session_name: "test-session".to_owned(),
                 repositories: BTreeMap::from([
                     (
                         Location::local("/work/hocus"),
@@ -574,6 +578,7 @@ fn agent_snapshot_with(seq: u64, panes: Vec<agents::AgentPane>) -> PipeMessage {
                 panes: Some(panes),
                 activity: agents::Activity::new(),
                 manual_kinds: BTreeMap::new(),
+                zellij_session_name: "test-session".to_owned(),
                 repositories: BTreeMap::new(),
                 focused: None,
                 focused_plugin: None,
@@ -605,6 +610,7 @@ fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
                 ]),
                 activity: agents::Activity::new(),
                 manual_kinds: BTreeMap::new(),
+                zellij_session_name: "test-session".to_owned(),
                 repositories: BTreeMap::from([
                     (
                         Location::local("/work/hocus"),

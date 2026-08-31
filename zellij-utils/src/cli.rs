@@ -1786,6 +1786,12 @@ tail -f /tmp/my-live-logfile | zellij action pipe --name logs --plugin https://e
         /// The pane no longer runs an agent.
         #[clap(long)]
         clear: bool,
+        /// The id of the run record you are keeping for this agent, so a warp to another
+        /// session can find it again. Agents that report a session id of their own need
+        /// nothing here; a script keeping its own history does. Omitting it leaves whatever
+        /// the pane already carries alone.
+        #[clap(long, value_parser, conflicts_with = "clear")]
+        run_id: Option<String>,
     },
     /// Set the default foreground/background color of a pane
     SetPaneColor {

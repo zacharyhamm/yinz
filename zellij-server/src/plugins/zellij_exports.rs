@@ -226,6 +226,9 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::ParseLayout(layout_string) => parse_layout(env, layout_string),
             PluginCommand::CheckLuaPlugin { name, source } => check_lua_plugin(env, name, source),
             PluginCommand::SetPaneAgent { pane_id, agent } => set_pane_agent(env, pane_id, agent),
+            PluginCommand::SetPaneAgentRun { pane_id, run_id } => {
+                set_pane_agent_run(env, pane_id, run_id)
+            },
             PluginCommand::ReloadPluginByUrl(url) => reload_plugin_by_url(env, url)?,
             PluginCommand::ReadPluginLog { name, lines } => read_plugin_log(env, name, lines),
             PluginCommand::GetLayoutDir => get_layout_dir(env),
@@ -5405,6 +5408,20 @@ fn set_pane_agent(env: &PluginEnv, pane_id: zellij_utils::data::PaneId, agent: O
             .send_to_screen(ScreenInstruction::SetPaneAgent(pane_id.into(), agent, None));
 }
 
+fn set_pane_agent_run(
+    env: &PluginEnv,
+    pane_id: zellij_utils::data::PaneId,
+    run_id: Option<String>,
+) {
+    let _ = env
+        .senders
+        .send_to_screen(ScreenInstruction::SetPaneAgentRun(
+            pane_id.into(),
+            run_id,
+            None,
+        ));
+}
+
 fn set_pane_color(env: &PluginEnv, pane_id: PaneId, fg: Option<String>, bg: Option<String>) {
     let _ = env
         .senders
@@ -7284,6 +7301,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::SetPaneBorderless
         | CommandType::SetPaneColor
         | CommandType::SetPaneAgent
+        | CommandType::SetPaneAgentRun
         | CommandType::GroupAndUngroupPanes
         | CommandType::HighlightAndUnhighlightPanes
         | CommandType::RevealPaneWithId

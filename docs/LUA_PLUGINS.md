@@ -310,9 +310,9 @@ next appearance.
 
 What the session knows about an agent pane rides on the pane itself: every `PaneInfo` in a
 `pane_update` has an `agent` field — `nil` for an ordinary pane, otherwise `{ kind, state, source,
-detail, cwd, session_id }` with `state` one of `Busy`, `Waiting`, `Idle`, `Exited`. The spawn
-path writes it, and so does Claude Code itself through its hooks (`docs/AGENT_HOOKS.md`). A plugin
-speaking for an agent writes it too:
+detail, cwd, session_id, run_id }` with `state` one of `Busy`, `Waiting`, `Idle`, `Exited`. The
+spawn path writes it, and so does Claude Code itself through its hooks (`docs/AGENT_HOOKS.md`). A
+plugin speaking for an agent writes it too:
 
 ```lua
 zellij.set_pane_agent {
@@ -322,7 +322,20 @@ zellij.set_pane_agent {
 zellij.set_pane_agent { pane_id = zellij.terminal_pane(3) }   -- no agent here any more
 ```
 
-It needs `change_application_state`. A pane with a record fires `agent_exit` when its command
+`run_id` is the one field to set on its own, because it is the one field the agent never
+reports: it names whatever record a plugin is keeping of the agent's work, so that a pane warped
+into another session can be matched back to it. Setting it wholesale would mean restating a
+record you are not the authority on, so there is an additive command for it:
+
+```lua
+zellij.set_pane_agent_run { pane_id = zellij.terminal_pane(3), run_id = "codex:s1" }
+zellij.set_pane_agent_run { pane_id = zellij.terminal_pane(3) }   -- not keeping one any more
+```
+
+A record written without a `run_id` inherits the pane's rather than clearing it; only clearing
+the whole record clears it. A run id sent for a pane with no record is dropped.
+
+Both need `change_application_state`. A pane with a record fires `agent_exit` when its command
 exits, whoever wrote the record.
 
 ### Pane workflows

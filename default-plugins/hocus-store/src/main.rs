@@ -313,6 +313,9 @@ mod tests {
             panes: Some(vec![pane]),
             activity: agents::Activity::new(),
             manual_kinds,
+            // Nor which session the panes are in: a project is a folder on a machine, and
+            // discovery is the same answer whoever asks.
+            zellij_session_name: String::new(),
             repositories: BTreeMap::from([(location, repository)]),
             // Discovery does not read it; which pane has focus says nothing
             // about which folders are projects.

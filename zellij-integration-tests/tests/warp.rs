@@ -144,7 +144,18 @@ fn warp_focused_pane_expecting_success(
     assert_eq!(exit_code, 0, "the warp was refused: {reported}");
 }
 
+/// The run id a reported agent carries here.
+///
+/// A codex or a claude derives one from its own session id, but the pane in these tests is a
+/// shell being reported *for*, so it names the run itself - which is precisely the case that
+/// has nothing but this field to be found by after a warp.
+const AGENT_RUN_ID: &str = "codex:warped-run";
+
 fn report_waiting_agent(zellij: &TestSession, terminal_id: u32) {
+    report_waiting_agent_with_run_id(zellij, terminal_id, Some(AGENT_RUN_ID));
+}
+
+fn report_waiting_agent_with_run_id(zellij: &TestSession, terminal_id: u32, run_id: Option<&str>) {
     let (exit_code, reported) = zellij.run_cli_action_reporting(CliAction::AgentReport {
         pane_id: Some(format!("terminal_{terminal_id}")),
         kind: Some("codex".to_owned()),
@@ -153,6 +164,7 @@ fn report_waiting_agent(zellij: &TestSession, terminal_id: u32) {
         cwd: None,
         hook_json: false,
         clear: false,
+        run_id: run_id.map(str::to_owned),
     });
     assert_eq!(exit_code, 0, "the agent report was refused: {reported}");
 }
@@ -187,6 +199,10 @@ fn assert_waiting_agent(zellij: &TestSession, terminal_id: Option<u32>) {
     assert_eq!(pane["agent"]["state"], "Waiting", "{pane}");
     assert_eq!(pane["agent"]["source"], "Reported", "{pane}");
     assert_eq!(pane["agent"]["detail"], "permission prompt", "{pane}");
+    // The run id travels with the record, which is what lets the adopting session find the
+    // history the pane's agent has been building. Without it a warped run is unrecoverable
+    // for an agent that supplies no session id of its own.
+    assert_eq!(pane["agent"]["run_id"], AGENT_RUN_ID, "{pane}");
 }
 
 /// The stacked pane list's entries, top to bottom, as they are drawn.
@@ -210,6 +226,11 @@ fn a_pane_keeps_its_process_when_it_moves_between_sessions() {
     let ((sender, _sender_shell), (receiver, _receiver_shell)) = sender_and_receiver();
     let travelling = split_off_a_pane(&sender, "here before the warp");
     report_waiting_agent(&sender, travelling.terminal_id());
+    assert_waiting_agent(&sender, Some(travelling.terminal_id()));
+    // A hook says everything the agent knows about itself, and the agent does not know its
+    // run id. So a report that does not name one leaves the pane's alone rather than erasing
+    // it - otherwise the very next `PreToolUse` would undo the plugin that set it.
+    report_waiting_agent_with_run_id(&sender, travelling.terminal_id(), None);
     assert_waiting_agent(&sender, Some(travelling.terminal_id()));
 
     warp_focused_pane_expecting_success(&sender, &receiver, false);

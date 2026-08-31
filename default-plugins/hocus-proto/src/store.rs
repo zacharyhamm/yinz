@@ -166,20 +166,38 @@ pub fn job_def() -> EntityDef {
         .attr(AttrDef::boolean("auto_confirm").required().default(false))
 }
 
-/// A kind the user set on a pane by hand with `agent_register`, keyed by pane
-/// id. Pruned as panes go, so a stale row names a pane id that has since been
-/// reused only until the next snapshot.
+/// A kind the user set on a pane by hand with `agent_register`, keyed by session *and* pane
+/// id. Pruned as panes go, so a stale row names a pane id that has since been reused only
+/// until the next snapshot.
+///
+/// The session is half the key because this namespace is not one: every zellij server on the
+/// machine shares one store file, so a bare pane id made session A's pane 5 and session B's
+/// pane 5 into one row — each overwriting the other's kind, and A's prune deleting B's rows
+/// outright. `pane_id` stays indexed for the prune, but no longer unique.
 pub fn agent_latch_def() -> EntityDef {
-    EntityDef::new("agent_latch", 1)
-        .attr(AttrDef::int("pane_id").unique().required())
+    EntityDef::new("agent_latch", 2)
+        .attr(AttrDef::int("pane_id").indexed().required())
+        .attr(
+            AttrDef::text("zellij_session_name")
+                .indexed()
+                .required()
+                .default(""),
+        )
         .attr(AttrDef::text("kind").required())
 }
 
-/// What the daemon's model last said about an idle agent's pane, keyed by pane
-/// id. The activity hash is deliberately not here: it is not stable across runs.
+/// What the daemon's model last said about an idle agent's pane, keyed by session and pane id
+/// for the same reason [`agent_latch_def`] is. The activity hash is deliberately not here: it
+/// is not stable across runs.
 pub fn agent_summary_def() -> EntityDef {
-    EntityDef::new("agent_summary", 1)
-        .attr(AttrDef::int("pane_id").unique().required())
+    EntityDef::new("agent_summary", 2)
+        .attr(AttrDef::int("pane_id").indexed().required())
+        .attr(
+            AttrDef::text("zellij_session_name")
+                .indexed()
+                .required()
+                .default(""),
+        )
         .attr(AttrDef::text("text").required())
         .attr(AttrDef::text("title").required().default(""))
         .attr(AttrDef::boolean("awaiting").required().default(false))
