@@ -105,8 +105,9 @@ PREFIX=/usr cargo x install /usr/bin/zellij     # as root, with `sudo -E` to kee
 `--builtins-dir <dir>` puts the plugins somewhere else (and prunes nothing there);
 `--no-builtins` installs the binary only.
 
-On Linux, the same command installs `zellij-firecracker` beside `zellij`. See
-[`docs/FIRECRACKER.md`](docs/FIRECRACKER.md) for the image and host network setup.
+On Linux, the same command installs `zellij-firecracker` beside `zellij`. On x86_64, it also runs
+setup when Firecracker is on `PATH` and `/dev/kvm` is usable. See
+[`docs/FIRECRACKER.md`](docs/FIRECRACKER.md) for details.
 
 Distributions that package the plugins themselves can build them from source and put them
 in the unversioned system folder (lookup step 6):

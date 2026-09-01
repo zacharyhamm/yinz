@@ -20,9 +20,12 @@ The included provider supports x86_64 Linux. It requires:
 From a Zellij checkout, build the binaries and run the interactive setup:
 
 ```sh
-cargo x build
-target/debug/zellij-firecracker setup
+cargo x install /path/to/zellij
 ```
+
+On x86_64 Linux, `cargo x install` runs the interactive setup automatically when Firecracker is
+on `PATH` and `/dev/kvm` is readable and writable. Otherwise, build and run it explicitly with
+`cargo x build` and `target/debug/zellij-firecracker setup`.
 
 `setup` uses the current directory as the project, installs the provider at
 `/usr/local/bin/zellij-firecracker` when needed, configures the host network, and builds the
