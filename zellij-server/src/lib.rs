@@ -43,7 +43,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, RwLock},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, RwLock,
+    },
     thread,
     time::Duration,
 };
@@ -64,6 +67,42 @@ const FIRST_CLIENT_TIMEOUT: Duration = Duration::from_secs(60);
 /// session's process open indefinitely, with every hook client that connected piling up
 /// behind the join. Past this the thread is abandoned and the exit goes on.
 const PLUGIN_THREAD_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How many client connections the server will serve at once.
+///
+/// Every accepted connection costs two threads — the router that reads it and
+/// the writer that answers it — and nothing in the accept path could ever say
+/// no: `SessionState::new_client` hands out an id unconditionally. A server
+/// that leaked connections therefore leaked threads without bound, and one
+/// observed here reached 65,538 of them, at which point its listen backlog was
+/// permanently full and a blocking `connect` to it never returned. That hung
+/// every `zellij`, `zellij ls` and `zellij attach` on the machine, for every
+/// unrelated session, because they all sweep the socket directory.
+///
+/// Far above any real load — a session has a handful of clients, plus the
+/// short-lived `zellij action` and hook invocations passing through — so
+/// reaching it means something is wrong, and refusing is strictly better than
+/// the alternative of taking the whole machine's zellij down with it.
+const MAX_CONCURRENT_CLIENT_CONNECTIONS: usize = 512;
+
+/// How long the accept loop pauses after an error before trying again, so that
+/// a persistent failure (`EMFILE`, typically) does not become a spin.
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
+
+/// Holds one of the `MAX_CONCURRENT_CLIENT_CONNECTIONS` slots for as long as a
+/// router thread lives.
+///
+/// A guard rather than a decrement at the end of the router, so that a router
+/// which panics still gives its slot back — the panic hook turns a router panic
+/// into a server error rather than an unwind that skips cleanup, but a leaked
+/// slot would be permanent either way.
+struct ConnectionSlot(Arc<AtomicUsize>);
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 use zellij_utils::envs;
 use zellij_utils::pane_size::Size;
 
@@ -877,6 +916,7 @@ pub fn start_server_impl(
             let session_state = session_state.clone();
             let to_server = to_server.clone();
             let socket_path = socket_path.clone();
+            let live_connections = Arc::new(AtomicUsize::new(0));
             move || {
                 drop(std::fs::remove_file(&socket_path));
                 let listener = ipc_bind(&socket_path).unwrap();
@@ -891,10 +931,29 @@ pub fn start_server_impl(
                         Ok(stream) => {
                             let mut os_input = os_input.clone();
                             let accepted_at = std::time::Instant::now();
-                            log::info!(
-                                "attach trace: server pid={} listener accepted socket; waiting for session_state write lock",
-                                std::process::id()
-                            );
+                            // Claim a slot before anything is allocated for this
+                            // connection. Over the cap the stream is dropped
+                            // unserved, which the peer sees as an immediate EOF —
+                            // the same thing it would see from a server that had
+                            // gone away, and far better than being accepted into a
+                            // process that is already past saving.
+                            let in_flight =
+                                live_connections.fetch_add(1, Ordering::SeqCst) + 1;
+                            let slot = ConnectionSlot(live_connections.clone());
+                            if in_flight > MAX_CONCURRENT_CLIENT_CONNECTIONS {
+                                if in_flight == MAX_CONCURRENT_CLIENT_CONNECTIONS + 1 {
+                                    // Once per crossing, not once per refusal: a
+                                    // peer hammering the socket must not also
+                                    // flood the log.
+                                    log::error!(
+                                        "refusing client connections: {MAX_CONCURRENT_CLIENT_CONNECTIONS} already open. \
+                                         Something is opening connections without closing them."
+                                    );
+                                }
+                                drop(slot);
+                                drop(stream);
+                                continue;
+                            }
                             let client_id = session_state.write().unwrap().new_client();
                             log::info!(
                                 "attach trace: server listener allocated client_id={client_id} after {:?}; registering IPC client",
@@ -913,6 +972,9 @@ pub fn start_server_impl(
                             thread::Builder::new()
                                 .name("server_router".to_string())
                                 .spawn(move || {
+                                    // Held for the life of the router, released
+                                    // however it ends.
+                                    let _slot = slot;
                                     route_thread_main(
                                         session_data,
                                         session_state,
@@ -930,7 +992,14 @@ pub fn start_server_impl(
                             );
                         },
                         Err(err) => {
-                            panic!("err {:?}", err);
+                            // Not fatal. This used to panic, which killed the
+                            // listener thread outright and left the session
+                            // running but unreachable, with nothing in the log
+                            // to say why. The realistic cause is `EMFILE` from
+                            // connections piling up, which is transient once
+                            // the cap above starts refusing them.
+                            log::error!("failed to accept a client connection: {err:?}");
+                            thread::sleep(ACCEPT_ERROR_BACKOFF);
                         },
                     }
                 }

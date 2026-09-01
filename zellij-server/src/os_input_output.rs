@@ -404,6 +404,34 @@ impl LiveWriters {
 struct ClientSender {
     client_id: ClientId,
     queue: Arc<CoalescingSendQueue>,
+    /// The connection's socket, kept only so that `remove_client` can shut its
+    /// read half down. See `shutdown_reads`.
+    stream_fd: std::os::fd::OwnedFd,
+}
+
+impl ClientSender {
+    /// Stop the router thread reading this connection.
+    ///
+    /// Dropping a `ClientSender` unregisters the write half, but the router
+    /// thread is blocked in `recv_client_msg` on a `dup` of the same socket with
+    /// no read deadline, and it only leaves on EOF. Nothing else produced that
+    /// EOF: a peer that connected and then held its fd open — which every
+    /// liveness probe does for the moment between `ConnStatus` and the reply,
+    /// and which a buggy or killed one does forever — left the router and its
+    /// socket alive for the life of the process. That is what let one server
+    /// here reach 131,085 threads and 65,538 open connections.
+    ///
+    /// `shutdown(2)` acts on the socket rather than on the file descriptor, so
+    /// shutting it down here unblocks the router's `dup` too. Only the read
+    /// half: the writer thread still has a final `Exit { Disconnect }` to
+    /// deliver, and closing writes here would lose it.
+    fn shutdown_reads(&self) {
+        // Safety: a plain syscall on a fd this struct owns for its whole life.
+        // A failure means the peer already went away, which is the outcome we
+        // wanted anyway.
+        use std::os::fd::AsRawFd;
+        let _ = unsafe { libc::shutdown(self.stream_fd.as_raw_fd(), libc::SHUT_RD) };
+    }
 }
 
 impl ClientSender {
@@ -411,6 +439,7 @@ impl ClientSender {
         client_id: ClientId,
         mut sender: IpcSenderWithContext<ServerToClientMsg>,
         live_writers: Arc<LiveWriters>,
+        stream_fd: std::os::fd::OwnedFd,
     ) -> Self {
         let queue = Arc::new(CoalescingSendQueue::new());
         let writer_queue = queue.clone();
@@ -458,7 +487,11 @@ impl ClientSender {
             // everything it was ever going to get.
             live_writers.deregister();
         });
-        ClientSender { client_id, queue }
+        ClientSender {
+            client_id,
+            queue,
+            stream_fd,
+        }
     }
     pub fn send_or_buffer(&self, msg: ServerToClientMsg) -> Result<()> {
         let err_context = || {
@@ -954,8 +987,22 @@ impl ServerOsApi for ServerOsInputOutput {
         client_id: ClientId,
         stream: LocalSocketStream,
     ) -> Result<IpcReceiverWithContext<ClientToServerMsg>> {
+        let stream_fd = {
+            use std::os::fd::AsFd;
+            // The enum has no fd accessor of its own; the unix variant is the
+            // only one that exists on this platform, and it does.
+            match &stream {
+                LocalSocketStream::UdSocket(uds) => uds.as_fd().try_clone_to_owned(),
+            }
+        }
+        .context("failed to duplicate client socket for cleanup")?;
         let receiver = IpcReceiverWithContext::new(stream);
-        let sender = ClientSender::new(client_id, receiver.get_sender(), self.live_writers.clone());
+        let sender = ClientSender::new(
+            client_id,
+            receiver.get_sender(),
+            self.live_writers.clone(),
+            stream_fd,
+        );
         self.client_senders
             .lock()
             .to_anyhow()
@@ -970,8 +1017,13 @@ impl ServerOsApi for ServerOsInputOutput {
             .lock()
             .to_anyhow()
             .with_context(|| format!("failed to remove client {client_id}"))?;
-        if client_senders.contains_key(&client_id) {
-            client_senders.remove(&client_id);
+        if let Some(sender) = client_senders.remove(&client_id) {
+            // Order matters: dropping `sender` closes the queue so the writer
+            // thread drains and sends its final `Exit`, and `shutdown_reads`
+            // touches only the read half, so that write still lands. What it
+            // does end is the router's blocked read, which nothing else here
+            // could reach.
+            sender.shutdown_reads();
         }
         Ok(())
     }

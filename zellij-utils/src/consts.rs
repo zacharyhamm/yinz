@@ -189,11 +189,158 @@ pub fn is_ipc_socket(file_type: &std::fs::FileType) -> bool {
     file_type.is_file()
 }
 
+/// How long to keep trying to connect to a session socket.
+///
+/// A server whose listen backlog is full accepts no new connection and refuses
+/// none either: a blocking `connect` to it never returns, and a non-blocking
+/// one reports `EAGAIN` for as long as the condition lasts. That is how a
+/// single wedged session hung `zellij`, `zellij ls`, `zellij attach` and even
+/// `zellij kill-session` — for every unrelated session on the machine, since
+/// all of them sweep the socket directory. One server observed here had leaked
+/// 65,538 connections and 131,085 threads over three days, and its backlog had
+/// been full ever since.
+///
+/// Long enough that a healthy server briefly behind on `accept` — a burst of
+/// hook clients, say — is waited for rather than declared wedged, and short
+/// enough that a genuinely wedged one costs a person half a second once.
+pub const IPC_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// How long to wait between connect attempts while the backlog is full.
+#[cfg(unix)]
+const IPC_CONNECT_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Fill in a `sockaddr_un` for `path`.
+#[cfg(unix)]
+pub(crate) fn unix_socket_address(
+    path: &std::path::Path,
+) -> std::io::Result<(libc::sockaddr_un, libc::socklen_t)> {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = path.as_os_str().as_bytes();
+    // Safety: `sockaddr_un` is a plain C struct, valid all-zero.
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    // One byte reserved for the terminating nul the zeroing already provides.
+    if bytes.len() >= addr.sun_path.len() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "socket path is too long for a unix socket: {}",
+                path.display()
+            ),
+        ));
+    }
+    for (slot, byte) in addr.sun_path.iter_mut().zip(bytes) {
+        *slot = *byte as libc::c_char;
+    }
+    let addr_len =
+        (std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1) as libc::socklen_t;
+    #[cfg(any(
+        target_vendor = "apple",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+    ))]
+    {
+        addr.sun_len = addr_len as u8;
+    }
+    Ok((addr, addr_len))
+}
+
+/// Connect to an IPC socket, giving up after `IPC_CONNECT_TIMEOUT` if the peer
+/// never accepts.
+///
+/// Done with raw syscalls rather than through `interprocess`, which cannot
+/// express this case. Its `ConnectWaitMode::Timeout` connects non-blocking and
+/// then polls for `POLLOUT` — but a unix socket that answered `EAGAIN` was
+/// never queued at all, and polling an unconnected one returns `POLLOUT` (with
+/// `POLLHUP`, and `SO_ERROR` clear) straight away. So it reports success and
+/// hands back a stream that is not connected to anything, which is a worse
+/// failure than the hang: it moves the error to whoever writes to it first.
+///
+/// `EAGAIN` here means precisely "the backlog is full", and for a unix socket
+/// retrying it on the same descriptor is fine — nothing is queued to conflict
+/// with. So the retry loop below waits out a server that is briefly behind on
+/// `accept`, and gives up on one that is never coming back.
+///
+/// The deadline lives here rather than at the probe call site so that *every*
+/// connect is bounded, `kill_session` included — the remedy a person is told to
+/// run for a wedged session must not itself hang on it. The probe's own
+/// `PROBE_TIMEOUT` covers only the reply, because it is applied to the stream
+/// this function returns: it can do nothing about a connect that never returns
+/// one.
 #[cfg(unix)]
 pub fn ipc_connect(path: &std::path::Path) -> std::io::Result<interprocess::local_socket::Stream> {
-    use interprocess::local_socket::{prelude::*, GenericFilePath, Stream as LocalSocketStream};
-    let fs_name = path.to_fs_name::<GenericFilePath>()?;
-    LocalSocketStream::connect(fs_name)
+    use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
+    use std::os::unix::net::UnixStream;
+
+    let (addr, addr_len) = unix_socket_address(path)?;
+    // Safety: a socket(2) call with constant arguments; the descriptor it
+    // returns is handed to `OwnedFd` before anything can go wrong with it.
+    let raw = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_NONBLOCK, 0) };
+    if raw < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // Safety: `raw` is a fresh descriptor this function just created and has
+    // not shared; `OwnedFd` becomes its sole owner and will close it.
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+
+    let deadline = std::time::Instant::now() + IPC_CONNECT_TIMEOUT;
+    loop {
+        // Safety: `fd` is a live unix stream socket and `addr` is a
+        // `sockaddr_un` of the length given alongside it.
+        let rc = unsafe {
+            libc::connect(
+                fd.as_raw_fd(),
+                &addr as *const _ as *const libc::sockaddr,
+                addr_len,
+            )
+        };
+        if rc == 0 {
+            break;
+        }
+        let err = std::io::Error::last_os_error();
+        match err.kind() {
+            std::io::ErrorKind::Interrupted => continue,
+            std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    // Deliberately surfaced as `TimedOut` rather than
+                    // `WouldBlock`: to a caller this is a server that did not
+                    // answer in time, and `sessions::classify_probe_connect_error`
+                    // must read it as unresponsive — never as absent, which is
+                    // the answer that would let a new server unlink a live
+                    // server's socket.
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!(
+                            "the server at {} did not accept the connection within \
+                             {IPC_CONNECT_TIMEOUT:?}; its backlog is full",
+                            path.display()
+                        ),
+                    ));
+                }
+                std::thread::sleep(IPC_CONNECT_RETRY_INTERVAL);
+            },
+            _ => return Err(err),
+        }
+    }
+
+    // Every caller expects blocking reads and writes; the socket was only made
+    // non-blocking so that the connect above could be bounded.
+    // Safety: `fd` is a live descriptor owned here.
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // Safety: as above; clearing the flag this function itself set.
+    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags & !libc::O_NONBLOCK) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    // Safety: `fd` is a connected unix stream socket, and ownership of the
+    // descriptor moves to the `UnixStream` here.
+    let stream = unsafe { UnixStream::from_raw_fd(fd.into_raw_fd()) };
+    Ok(interprocess::os::unix::uds_local_socket::Stream::from(stream).into())
 }
 
 #[cfg(unix)]

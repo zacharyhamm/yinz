@@ -32,19 +32,33 @@ use suggest::Suggest;
 ///
 /// Order is not preserved; both callers below impose their own.
 fn probe_sockets<T: Send + 'static>(candidates: Vec<(String, T)>) -> Vec<(String, T)> {
+    // Only a server that answers is listed. An unresponsive one is not offered
+    // for attaching — attaching to it would hang — but it is not forgotten
+    // either: `session_status` still reports it, so nothing creates a new
+    // session over its socket, and `probe_sockets_with_status` below still
+    // shows it to a person running `zellij ls`.
+    probe_sockets_with_status(candidates)
+        .into_iter()
+        .filter(|(_, _, status)| matches!(status, SessionProbe::Alive))
+        .map(|(name, extra, _)| (name, extra))
+        .collect()
+}
+
+/// The same sweep, keeping what each probe found instead of discarding it.
+///
+/// `zellij ls` and `zellij kill-all-sessions` want this: listing must show a
+/// wedged session, and killing must still attempt it. Other callers are choosing
+/// a session to attach to or a name to create, where "answered" is the only
+/// useful answer.
+fn probe_sockets_with_status<T: Send + 'static>(
+    candidates: Vec<(String, T)>,
+) -> Vec<(String, T, SessionProbe)> {
     let probes: Vec<_> = candidates
         .into_iter()
         .map(|(name, extra)| {
             std::thread::spawn(move || {
-                // Only a server that answers is listed. An unresponsive one is
-                // not offered for attaching — attaching to it would hang — but
-                // it is not forgotten either: `session_status` still reports it,
-                // so nothing creates a new session over its socket.
-                if matches!(assert_socket(&name), Ok(SessionProbe::Alive)) {
-                    Some((name, extra))
-                } else {
-                    None
-                }
+                let status = assert_socket(&name).unwrap_or(SessionProbe::Unresponsive);
+                (name, extra, status)
             })
         })
         .collect();
@@ -52,11 +66,15 @@ fn probe_sockets<T: Send + 'static>(candidates: Vec<(String, T)>) -> Vec<(String
         .into_iter()
         // A panicking probe is treated as a session that did not answer, which
         // is the same conclusion by a worse route: never let it poison the rest.
-        .filter_map(|probe| probe.join().ok().flatten())
+        .filter_map(|probe| probe.join().ok())
         .collect()
 }
 
-pub fn get_sessions() -> Result<Vec<(String, Duration)>, io::ErrorKind> {
+/// Every socket in the session directory, paired with its session's age.
+///
+/// Unprobed: this is the candidate list the probe sweeps, shared by the two
+/// entry points below so that they cannot disagree about what a session is.
+fn session_socket_candidates() -> Result<Vec<(String, Duration)>, io::ErrorKind> {
     match fs::read_dir(&*ZELLIJ_SOCK_DIR) {
         Ok(files) => {
             let mut candidates = Vec::new();
@@ -77,11 +95,26 @@ pub fn get_sessions() -> Result<Vec<(String, Duration)>, io::ErrorKind> {
                     }
                 }
             });
-            Ok(probe_sockets(candidates))
+            Ok(candidates)
         },
         Err(err) if io::ErrorKind::NotFound != err.kind() => Err(err.kind()),
         Err(_) => Ok(Vec::with_capacity(0)),
     }
+}
+
+pub fn get_sessions() -> Result<Vec<(String, Duration)>, io::ErrorKind> {
+    Ok(probe_sockets(session_socket_candidates()?))
+}
+
+/// Every session with a socket, answering or not.
+///
+/// Deliberately separate from `get_sessions` rather than a widening of it: the
+/// callers of that one are picking a session to attach to or a name to create
+/// over, and handing them a wedged session would have them hang on it or build
+/// on top of a live server. Listing and kill-all are the callers that need the
+/// whole picture.
+pub fn get_sessions_with_status() -> Result<Vec<(String, Duration, SessionProbe)>, io::ErrorKind> {
+    Ok(probe_sockets_with_status(session_socket_candidates()?))
 }
 
 pub fn get_resurrectable_sessions() -> Vec<(String, Duration)> {
@@ -268,11 +301,24 @@ fn assert_socket(name: &str) -> Result<SessionProbe, io::ErrorKind> {
     }
 }
 
+/// The connect itself failed; this is what that means about the session.
+///
+/// The distinction that carries weight is timeout versus refusal. Nothing is
+/// listening behind a refusal, so the socket is stale and its name is free. A
+/// timeout is the opposite: a server whose listen backlog is full is *running*
+/// — it is simply too far gone to accept anyone — and treating it as absent
+/// would unlink the socket of a live process, stranding it where no client
+/// could ever reach it again.
 pub(crate) fn classify_probe_connect_error(
     kind: io::ErrorKind,
 ) -> Result<SessionProbe, io::ErrorKind> {
     match kind {
         io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => Ok(SessionProbe::Absent),
+        // `IPC_CONNECT_TIMEOUT` elapsed with the connection still unaccepted.
+        // `WouldBlock` is the same condition reported under its other name: the
+        // wait-mode docs name `TimedOut` in prose but link `WouldBlock`, and the
+        // unix path returns `TimedOut`, so accept both rather than depend on it.
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => Ok(SessionProbe::Unresponsive),
         kind => Err(kind),
     }
 }
@@ -322,13 +368,29 @@ pub fn unresponsive_session_message(name: &str) -> String {
     )
 }
 
+/// How a session should be described in a listing.
+///
+/// Three states rather than the running/exited pair this used to be, because
+/// `Unresponsive` is the one a person can do nothing about until they are told
+/// it exists: a wedged server holds its name and its socket but answers
+/// nothing, and listing it as absent is what let one of them sit for days
+/// hanging every other zellij command on the machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionListing {
+    /// A server that answered.
+    Running,
+    /// No server, but a layout on disk to resurrect from.
+    Exited,
+    /// A server that holds the socket but does not answer.
+    Unresponsive,
+}
+
 pub fn print_sessions(
-    mut sessions: Vec<(String, Duration, bool)>,
+    mut sessions: Vec<(String, Duration, SessionListing)>,
     no_formatting: bool,
     short: bool,
     reverse: bool,
 ) {
-    // (session_name, timestamp, is_dead)
     let curr_session = envs::get_session_name().unwrap_or_else(|_| "".into());
     sessions.sort_by(|a, b| {
         if reverse {
@@ -338,39 +400,49 @@ pub fn print_sessions(
             b.1.cmp(&a.1)
         }
     });
-    sessions
-        .iter()
-        .for_each(|(session_name, timestamp, is_dead)| {
-            if short {
-                println!("{}", session_name);
-                return;
-            }
-            if no_formatting {
-                let suffix = if curr_session == *session_name {
-                    "(current)".to_string()
-                } else if *is_dead {
-                    "(EXITED - attach to resurrect)".to_string()
-                } else {
-                    String::new()
-                };
-                let timestamp = format!("[Created {} ago]", format_duration(*timestamp));
-                println!("{} {} {}", session_name, timestamp, suffix);
+    sessions.iter().for_each(|(session_name, timestamp, kind)| {
+        if short {
+            println!("{}", session_name);
+            return;
+        }
+        if no_formatting {
+            let suffix = if curr_session == *session_name {
+                "(current)".to_string()
             } else {
-                let formatted_session_name = format!("\u{1b}[32;1m{}\u{1b}[m", session_name);
-                let suffix = if curr_session == *session_name {
-                    "(current)".to_string()
-                } else if *is_dead {
-                    "(\u{1b}[31;1mEXITED\u{1b}[m - attach to resurrect)".to_string()
-                } else {
-                    String::new()
-                };
-                let timestamp = format!(
-                    "[Created \u{1b}[35;1m{}\u{1b}[m ago]",
-                    format_duration(*timestamp)
-                );
-                println!("{} {} {}", formatted_session_name, timestamp, suffix);
-            }
-        })
+                match kind {
+                    SessionListing::Exited => "(EXITED - attach to resurrect)".to_string(),
+                    SessionListing::Unresponsive => format!(
+                        "(UNRESPONSIVE - run `zellij kill-session {}`)",
+                        session_name
+                    ),
+                    SessionListing::Running => String::new(),
+                }
+            };
+            let timestamp = format!("[Created {} ago]", format_duration(*timestamp));
+            println!("{} {} {}", session_name, timestamp, suffix);
+        } else {
+            let formatted_session_name = format!("\u{1b}[32;1m{}\u{1b}[m", session_name);
+            let suffix = if curr_session == *session_name {
+                "(current)".to_string()
+            } else {
+                match kind {
+                    SessionListing::Exited => {
+                        "(\u{1b}[31;1mEXITED\u{1b}[m - attach to resurrect)".to_string()
+                    },
+                    SessionListing::Unresponsive => format!(
+                        "(\u{1b}[31;1mUNRESPONSIVE\u{1b}[m - run `zellij kill-session {}`)",
+                        session_name
+                    ),
+                    SessionListing::Running => String::new(),
+                }
+            };
+            let timestamp = format!(
+                "[Created \u{1b}[35;1m{}\u{1b}[m ago]",
+                format_duration(*timestamp)
+            );
+            println!("{} {} {}", formatted_session_name, timestamp, suffix);
+        }
+    })
 }
 
 pub fn print_sessions_with_index(sessions: Vec<String>) {
@@ -403,19 +475,33 @@ pub fn get_active_session() -> ActiveSession {
     }
 }
 
-pub fn kill_session(name: &str) {
+/// Ask a session's server to shut itself down.
+///
+/// Returns whether the request was delivered. It can fail for the reason that
+/// makes killing worth doing in the first place: a server too wedged to accept
+/// a connection cannot be told anything, and `ipc_connect` gives up on it after
+/// `IPC_CONNECT_TIMEOUT`. Reporting that rather than exiting here lets the
+/// caller say something useful about a server that has to be killed from
+/// outside.
+pub fn kill_session(name: &str) -> io::Result<()> {
     use crate::consts::ipc_connect;
     let path = &*ZELLIJ_SOCK_DIR.join(name);
-    match ipc_connect(path) {
-        Ok(stream) => {
-            let _ = IpcSenderWithContext::<ClientToServerMsg>::new(stream)
-                .send_client_msg(ClientToServerMsg::KillSession);
-        },
-        Err(e) => {
-            eprintln!("Error occurred: {:?}", e);
-            process::exit(1);
-        },
-    };
+    let stream = ipc_connect(path)?;
+    IpcSenderWithContext::<ClientToServerMsg>::new(stream)
+        .send_client_msg(ClientToServerMsg::KillSession)
+        .map_err(|e| io::Error::other(format!("{e:?}")))
+}
+
+/// What to tell a person whose `kill-session` could not reach the server.
+pub fn undeliverable_kill_message(name: &str) -> String {
+    format!(
+        "Could not reach the server for session {name:?} to ask it to shut down: \
+         it is not accepting connections.\n\n\
+         It has to be stopped from outside. Find it with:\n  \
+         pgrep -af 'zellij --server .*{name}'\n\
+         and kill that process id, then `zellij delete-session --force {name}` \
+         to clear the name."
+    )
 }
 
 pub fn delete_session(name: &str, force: bool) {
@@ -441,18 +527,28 @@ pub fn delete_session(name: &str, force: bool) {
 }
 
 pub fn list_sessions(no_formatting: bool, short: bool, reverse: bool, exited: bool) {
-    let exit_code = match get_sessions() {
-        Ok(running_sessions) => {
-            let mut all_sessions: HashMap<String, (Duration, bool)> = if exited {
+    let exit_code = match get_sessions_with_status() {
+        Ok(sessions_with_status) => {
+            let mut all_sessions: HashMap<String, (Duration, SessionListing)> = if exited {
                 get_resurrectable_sessions()
                     .into_iter()
-                    .map(|(name, timestamp)| (name, (timestamp, true)))
+                    .map(|(name, timestamp)| (name, (timestamp, SessionListing::Exited)))
                     .collect()
             } else {
                 HashMap::new()
             };
-            for (session_name, duration) in running_sessions {
-                all_sessions.insert(session_name.clone(), (duration, false));
+            // A session with a socket overrides a resurrectable one of the same
+            // name either way: it is the live thing, answering or not.
+            for (session_name, duration, status) in sessions_with_status {
+                let listing = match status {
+                    SessionProbe::Alive => SessionListing::Running,
+                    SessionProbe::Unresponsive => SessionListing::Unresponsive,
+                    // Nothing behind the socket by the time it was probed —
+                    // `assert_socket` has already unlinked it, so there is no
+                    // session here to list.
+                    SessionProbe::Absent => continue,
+                };
+                all_sessions.insert(session_name.clone(), (duration, listing));
             }
             if all_sessions.is_empty() {
                 eprintln!("No active zellij sessions found.");
@@ -461,7 +557,7 @@ pub fn list_sessions(no_formatting: bool, short: bool, reverse: bool, exited: bo
                 print_sessions(
                     all_sessions
                         .iter()
-                        .map(|(name, (timestamp, is_dead))| (name.clone(), *timestamp, *is_dead))
+                        .map(|(name, (timestamp, listing))| (name.clone(), *timestamp, *listing))
                         .collect(),
                     no_formatting,
                     short,
