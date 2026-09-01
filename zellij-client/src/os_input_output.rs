@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use zellij_utils::pane_size::Size;
 
 use crate::os_input_output_unix::{
-    disable_mouse_support, enable_mouse_support, setup_ipc, AsyncSignalListener,
+    disable_mouse_support, enable_mouse_support, set_signal_keys, setup_ipc, AsyncSignalListener,
     BlockingSignalIterator,
 };
 use std::io::prelude::*;
@@ -105,6 +105,14 @@ pub trait TtyControl {
     /// Set the terminal to
     /// [raw mode](https://en.wikipedia.org/wiki/Terminal_mode).
     fn set_raw_mode(&mut self);
+    /// Raw mode, except that the signal keys (Ctrl-C and friends) keep working.
+    ///
+    /// Used for the startup window, where the terminal must stop echoing before we query the host
+    /// but nothing is reading stdin yet, so Ctrl-C has to reach us as a signal or not at all. The
+    /// default is plain raw mode, for the fake terminals under test that have no signals to keep.
+    fn set_raw_mode_keeping_signals(&mut self) {
+        self.set_raw_mode();
+    }
     /// Set the terminal to
     /// [cooked mode](https://en.wikipedia.org/wiki/Terminal_mode).
     fn unset_raw_mode(&self) -> Result<(), std::io::Error>;
@@ -284,6 +292,15 @@ impl TtyControl for ClientOsInputOutput {
     }
     fn set_raw_mode(&mut self) {
         crossterm::terminal::enable_raw_mode().expect("could not enable raw mode");
+        // Explicitly, rather than leaning on `enable_raw_mode`: it early-returns once it has
+        // stashed the terminal's original attributes, so the call above is a no-op when we are
+        // being promoted from `set_raw_mode_keeping_signals` - which is exactly the case that
+        // needs ISIG cleared.
+        set_signal_keys(false);
+    }
+    fn set_raw_mode_keeping_signals(&mut self) {
+        crossterm::terminal::enable_raw_mode().expect("could not enable raw mode");
+        set_signal_keys(true);
     }
     fn unset_raw_mode(&self) -> Result<(), std::io::Error> {
         crossterm::terminal::disable_raw_mode()

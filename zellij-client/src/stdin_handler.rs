@@ -30,10 +30,16 @@ pub(crate) fn stdin_loop(
     let mut kitty_probe_deadline: Option<Instant> = None;
     {
         let query_string = build_startup_query_string(support_kitty_graphics_protocol);
-        let _ = os_input
-            .get_stdout_writer()
-            .write(query_string.as_bytes())
-            .unwrap();
+        // `write_all` + `flush`, not `write`: the query holds no newline, and stdout is a
+        // `LineWriter`, so a bare write would sit in the buffer until some other thread flushed
+        // it - and a short write would cut a query in half mid-escape-sequence.
+        let mut stdout = os_input.get_stdout_writer();
+        if let Err(e) = stdout
+            .write_all(query_string.as_bytes())
+            .and_then(|_| stdout.flush())
+        {
+            log::error!("failed to write the startup host query: {e}");
+        }
         if support_kitty_graphics_protocol {
             stdin_ansi_parser.lock().unwrap().expect_kitty_probe_reply();
             // A host that answers neither the probe nor the Primary-DA barrier would otherwise

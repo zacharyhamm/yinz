@@ -15,6 +15,7 @@ mod keyboard_parser;
 mod nested_reannounce;
 mod router;
 mod startup;
+mod startup_signals;
 mod stdin_ansi_parser;
 mod stdin_handler;
 mod terminal_escapes;
@@ -29,10 +30,11 @@ use std::thread;
 use zellij_utils::errors::FatalError;
 
 use crate::terminal_escapes::{
-    announce_nested, enter_terminal, say_bye, write_seqs, ClientTeardown, CLEAR_SCREEN,
+    announce_nested, claim_terminal, say_bye, write_seqs, ClientTeardown, CLEAR_SCREEN,
     ENABLE_BRACKETED_PASTE, ENABLE_FOCUS_REPORTING,
 };
 
+use crate::startup_signals::StartupSignalGuard;
 use crate::stdin_ansi_parser::{AnsiStdinInstruction, StdinAnsiParser, SyncOutput};
 use crate::{
     command_is_executing::CommandIsExecuting, input_handler::input_loop,
@@ -146,20 +148,40 @@ impl ErrorInstruction for ClientInstruction {
     }
 }
 
-fn check_ipc_pipe_length(ipc_pipe: &Path) {
+/// Hand the terminal back before the default panic handler prints.
+///
+/// The terminal is now claimed - raw mode, alternate screen, kitty keyboard - before the server is
+/// spawned and the socket connected, so the stretch before the real panic hook (which needs the
+/// client's channels) is long enough to be worth guarding. It restores all of it and then defers to
+/// whatever hook was already installed, so the panic message and backtrace land on the screen the
+/// user is left looking at rather than on an alternate screen that is never popped.
+fn install_early_terminal_panic_guard(teardown: ClientTeardown) {
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = crossterm::terminal::disable_raw_mode();
+        let mut stdout = io::stdout();
+        let _ = stdout.write_all(teardown.restore_sequences().as_bytes());
+        let _ = stdout.flush();
+        previous_hook(info);
+    }));
+}
+
+fn check_ipc_pipe_length(ipc_pipe: &Path, teardown: Option<ClientTeardown>) {
     use zellij_utils::consts::ZELLIJ_SOCK_MAX_LENGTH;
     let path_len = ipc_pipe.as_os_str().len();
     if path_len >= ZELLIJ_SOCK_MAX_LENGTH {
-        eprintln!(
-            "Error: the IPC socket path is too long ({} bytes, max {}):\n  {}\n\n\
-             This is usually caused by a long $TMPDIR path.\n\
-             To fix this, set a shorter socket directory, eg.:\n  \
-             ZELLIJ_SOCKET_DIR=/tmp/zellij zellij",
-            path_len,
-            ZELLIJ_SOCK_MAX_LENGTH - 1,
-            ipc_pipe.display()
+        ClientTeardown::exit_after_startup_error(
+            teardown,
+            format!(
+                "Error: the IPC socket path is too long ({} bytes, max {}):\n  {}\n\n\
+                 This is usually caused by a long $TMPDIR path.\n\
+                 To fix this, set a shorter socket directory, eg.:\n  \
+                 ZELLIJ_SOCKET_DIR=/tmp/zellij zellij",
+                path_len,
+                ZELLIJ_SOCK_MAX_LENGTH - 1,
+                ipc_pipe.display()
+            ),
         );
-        std::process::exit(1);
     }
 }
 
@@ -209,8 +231,29 @@ fn create_ipc_pipe(teardown: Option<ClientTeardown>) -> PathBuf {
         );
     }
     sock_dir.push(envs::get_session_name().unwrap());
-    check_ipc_pipe_length(&sock_dir);
+    check_ipc_pipe_length(&sock_dir, teardown);
     sock_dir
+}
+
+/// Restores output post-processing for as long as it is held, and clears it again on the way out.
+///
+/// The child spawned inside this window inherits our terminal, and can print setup errors to it
+/// before it daemonizes; without `ONLCR` those staircase down the screen. Only the output side is
+/// touched - dropping back to cooked mode here would let the host's replies to the queries we have
+/// already written echo onto the alternate screen, which is the very thing raw mode is on for.
+struct OutputProcessingRestored;
+
+impl OutputProcessingRestored {
+    fn around_a_child() -> Self {
+        crate::os_input_output_unix::set_output_processing(true);
+        Self
+    }
+}
+
+impl Drop for OutputProcessingRestored {
+    fn drop(&mut self) {
+        crate::os_input_output_unix::set_output_processing(false);
+    }
 }
 
 /// Spawn the Zellij server process.
@@ -223,7 +266,10 @@ pub fn spawn_server(socket_path: &Path, debug: bool) -> io::Result<()> {
     if debug {
         cmd.arg("--debug");
     }
-    let status = cmd.status()?;
+    let status = {
+        let _output_processing = OutputProcessingRestored::around_a_child();
+        cmd.status()?
+    };
     if status.success() {
         Ok(())
     } else {
@@ -329,13 +375,21 @@ pub fn start_client(
             std::process::id()
         );
     }
-    os_input.unset_raw_mode().unwrap();
-
-    if !is_a_reconnect {
-        // we don't do this for a reconnect because our controlling terminal already has the
-        // attributes we want from it, and some terminals don't treat these atomically.
-        enter_terminal(&*os_input, !explicitly_disable_kitty_keyboard_protocol);
+    let terminal_teardown = ClientTeardown::at_startup(!explicitly_disable_kitty_keyboard_protocol);
+    // Both of these cover the same stretch: the terminal is claimed before the server is spawned
+    // and the socket connected, while the real panic hook (which needs channels that do not exist
+    // yet) and the real signal listener are still some way off. A panic or a Ctrl-C in between
+    // would otherwise hand the shell back raw, on an alternate screen.
+    let mut startup_signal_guard = None;
+    if os_input.should_install_panic_hook() {
+        install_early_terminal_panic_guard(terminal_teardown);
+        startup_signal_guard = StartupSignalGuard::arm(terminal_teardown);
     }
+    claim_terminal(
+        &mut *os_input,
+        !explicitly_disable_kitty_keyboard_protocol,
+        is_a_reconnect,
+    );
     if tracing_attach {
         log::info!(
             "attach trace: client pid={} terminal preparation complete",
@@ -346,8 +400,6 @@ pub fn start_client(
     config.env.set_vars();
 
     let full_screen_ws = os_input.get_terminal_size();
-
-    let terminal_teardown = ClientTeardown::at_startup(!explicitly_disable_kitty_keyboard_protocol);
 
     let startup = crate::startup::StartupContext::attached(
         &cli_args,
@@ -402,6 +454,9 @@ pub fn start_client(
 
     let mut command_is_executing = CommandIsExecuting::new();
 
+    // The socket is up and we are about to start reading the keyboard, so take the signal keys
+    // too: from here on Ctrl-C is a keystroke to forward to a pane, not a way out of a stuck
+    // startup. `claim_terminal` left them working for exactly that window.
     os_input.set_raw_mode();
     write_seqs(
         &*os_input,
@@ -501,6 +556,10 @@ pub fn start_client(
             }
         });
 
+    // Handing quit signals over from the startup guard to the real listener.
+    if let Some(guard) = startup_signal_guard.take() {
+        guard.disarm();
+    }
     let _signal_thread = thread::Builder::new()
         .name("signal_listener".to_string())
         .spawn({
@@ -513,9 +572,15 @@ pub fn start_client(
                             os_api.send_to_server(ClientToServerMsg::TerminalResize {
                                 new_size: os_api.get_terminal_size(),
                             });
-                            let _ = os_api
-                                .get_stdout_writer()
-                                .write(crate::stdin_handler::PIXEL_SIZE_QUERY.as_bytes());
+                            // Same reason as the startup query: no newline in it, so a bare
+                            // `write` on the line-buffered stdout would not reach the terminal
+                            // until something else flushed. Errors are swallowed rather than
+                            // fatal - this runs on the signal thread, where a lost resize query
+                            // is not worth taking the client down for.
+                            let mut stdout = os_api.get_stdout_writer();
+                            let _ = stdout
+                                .write_all(crate::stdin_handler::PIXEL_SIZE_QUERY.as_bytes())
+                                .and_then(|_| stdout.flush());
                         }
                     }),
                     Box::new({

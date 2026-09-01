@@ -28,7 +28,7 @@ pub fn start_cli_client(
         sock_dir.push(session_name);
         sock_dir
     };
-    crate::check_ipc_pipe_length(&zellij_ipc_pipe);
+    crate::check_ipc_pipe_length(&zellij_ipc_pipe, None);
     if let Err(e) = os_input.connect_to_server(&zellij_ipc_pipe) {
         eprintln!("{e}");
         std::process::exit(1);
@@ -279,7 +279,7 @@ pub fn start_subscribe_client(
         sock_dir.push(session_name);
         sock_dir
     };
-    crate::check_ipc_pipe_length(&zellij_ipc_pipe);
+    crate::check_ipc_pipe_length(&zellij_ipc_pipe, None);
     if let Err(e) = os_input.connect_to_server(&zellij_ipc_pipe) {
         eprintln!("{e}");
         std::process::exit(1);
@@ -391,7 +391,7 @@ pub fn start_events_client(
         sock_dir.push(session_name);
         sock_dir
     };
-    crate::check_ipc_pipe_length(&zellij_ipc_pipe);
+    crate::check_ipc_pipe_length(&zellij_ipc_pipe, None);
 
     // Refused here, before connecting, so a typo costs nothing but the message.
     let event_types: Vec<String> = events_cli
