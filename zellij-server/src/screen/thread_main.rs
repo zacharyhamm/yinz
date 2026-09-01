@@ -4098,6 +4098,9 @@ pub(crate) fn screen_thread_main(
 
                     // set the env variable
                     set_session_name(name.clone());
+                    if let Some(os_input) = &screen.bus.os_input {
+                        os_input.rename_firecracker_session(name.clone());
+                    }
                     let connected_client_ids: Vec<ClientId> =
                         screen.active_tab_ids.keys().copied().collect();
                     for client_id in connected_client_ids {

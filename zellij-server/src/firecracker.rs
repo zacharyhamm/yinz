@@ -2,7 +2,7 @@ use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use serde::{Deserialize, Serialize};
 use std::{
     io::{ErrorKind, Read, Write},
-    os::fd::AsFd,
+    os::{fd::AsFd, unix::process::CommandExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Arc, Mutex},
@@ -18,6 +18,10 @@ pub mod provider;
 const PROTOCOL_VERSION: u32 = 2;
 const MAX_OUTPUT: usize = 1024 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
+/// A stderr line the provider writes to say what it is doing. Any output resets
+/// the inactivity timeout; lines with this prefix are also kept out of error
+/// messages, and the last one names the phase a silent provider was in.
+pub const PROGRESS_PREFIX: &str = "progress: ";
 
 #[derive(Clone, Debug)]
 pub struct Provider {
@@ -54,6 +58,11 @@ enum Request<'a> {
         session: &'a str,
         name: &'a str,
     },
+    RenameSession {
+        version: u32,
+        from: &'a str,
+        to: &'a str,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -74,16 +83,44 @@ pub struct VmEntry {
     pub state: String,
 }
 
+/// A guest disk the provider kept instead of deleting: a VM that crashed, failed to
+/// provision, or could not be merged back into its worktree when it was released.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RecoveryEntry {
+    pub path: PathBuf,
+    pub reason: String,
+    /// Unix seconds.
+    pub retained_at: u64,
+    #[serde(default)]
+    pub session: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub worktree: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Listing {
+    pub vms: Vec<VmEntry>,
+    pub recoveries: Vec<RecoveryEntry>,
+}
+
 #[derive(Debug, Deserialize)]
 struct ListResponse {
     version: u32,
     #[serde(alias = "entries")]
     vms: Vec<VmEntry>,
+    #[serde(default)]
+    recoveries: Vec<RecoveryEntry>,
 }
 
+/// `stop`, `stop_session` and `sync` answer with the version and, since the worktree merge,
+/// one line per file the merge could not decide. A provider without merges sends none.
 #[derive(Debug, Deserialize)]
-struct EmptyResponse {
+struct WarningsResponse {
     version: u32,
+    #[serde(default)]
+    warnings: Vec<String>,
 }
 
 impl Provider {
@@ -145,25 +182,43 @@ impl Provider {
         Ok(response)
     }
 
-    pub fn stop(&self, session: &str, name: &str) -> Result<()> {
+    /// Release one VM. The returned warnings describe files the worktree merge kept the host
+    /// copy of; the VM is stopped either way.
+    pub fn stop(&self, session: &str, name: &str) -> Result<Vec<String>> {
         validate_firecracker_vm_name(name).map_err(|e| anyhow!(e))?;
-        let response: EmptyResponse = self.invoke(Request::Stop {
+        let response: WarningsResponse = self.invoke(Request::Stop {
             version: PROTOCOL_VERSION,
             session,
             name,
         })?;
-        self.check_version(response.version)
+        self.check_version(response.version)?;
+        Ok(response.warnings)
     }
 
-    pub fn stop_session(&self, session: &str) -> Result<()> {
-        let response: EmptyResponse = self.invoke(Request::StopSession {
+    /// Release every VM the session holds; see `stop` for the warnings.
+    pub fn stop_session(&self, session: &str) -> Result<Vec<String>> {
+        let response: WarningsResponse = self.invoke(Request::StopSession {
             version: PROTOCOL_VERSION,
             session,
+        })?;
+        self.check_version(response.version)?;
+        Ok(response.warnings)
+    }
+
+    /// Move every VM `from` owns or leases to `to`, after the Zellij session was renamed.
+    ///
+    /// Additive to protocol version 2: a provider that does not know the request
+    /// fails it, and the caller keeps its VMs under the old name.
+    pub fn rename_session(&self, from: &str, to: &str) -> Result<()> {
+        let response: WarningsResponse = self.invoke(Request::RenameSession {
+            version: PROTOCOL_VERSION,
+            from,
+            to,
         })?;
         self.check_version(response.version)
     }
 
-    pub fn list(&self, session: Option<&str>) -> Result<Vec<VmEntry>> {
+    pub fn list(&self, session: Option<&str>) -> Result<Listing> {
         let response: ListResponse = self.invoke(Request::List {
             version: PROTOCOL_VERSION,
             session,
@@ -174,17 +229,23 @@ impl Provider {
                 .map_err(|e| anyhow!(e))
                 .context("firecracker provider returned an invalid VM name")?;
         }
-        Ok(response.vms)
+        Ok(Listing {
+            vms: response.vms,
+            recoveries: response.recoveries,
+        })
     }
 
-    pub fn sync(&self, session: &str, name: &str) -> Result<()> {
+    /// Merge the guest into the host worktree while the VM keeps running; see `stop` for the
+    /// warnings.
+    pub fn sync(&self, session: &str, name: &str) -> Result<Vec<String>> {
         validate_firecracker_vm_name(name).map_err(|e| anyhow!(e))?;
-        let response: EmptyResponse = self.invoke(Request::Sync {
+        let response: WarningsResponse = self.invoke(Request::Sync {
             version: PROTOCOL_VERSION,
             session,
             name,
         })?;
-        self.check_version(response.version)
+        self.check_version(response.version)?;
+        Ok(response.warnings)
     }
 
     fn check_version(&self, version: u32) -> Result<()> {
@@ -201,10 +262,15 @@ impl Provider {
         let request_json = serde_json::to_vec(&request)
             .context("failed to encode the firecracker provider request")?;
         let _invocation = self.invocation_lock.lock().to_anyhow()?;
+        // Its own process group, so a timeout takes the provider's helpers - an
+        // rsync, an ssh, a git clone - down with it rather than leaving them to
+        // race the next attempt. The VM itself is started in a group of its own
+        // by the provider and is meant to outlive this.
         let mut child = Command::new(&self.path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .process_group(0)
             .spawn()
             .with_context(|| {
                 format!(
@@ -235,7 +301,11 @@ impl Provider {
         set_nonblocking(&stdout).context("failed to make provider stdout nonblocking")?;
         set_nonblocking(&stderr).context("failed to make provider stderr nonblocking")?;
 
-        let deadline = Instant::now() + self.timeout;
+        // The timeout is one of inactivity: booting a guest and copying a large
+        // worktree into it take as long as they take, and the provider reports
+        // each phase on stderr while it works. Only a provider that has gone
+        // silent for the whole timeout is killed.
+        let mut deadline = Instant::now() + self.timeout;
         let mut status = None;
         let mut stdout_bytes = Vec::new();
         let mut stderr_bytes = Vec::new();
@@ -247,8 +317,7 @@ impl Provider {
                     Ok(Some(exit_status)) => status = Some(exit_status),
                     Ok(None) => {},
                     Err(error) => {
-                        let _ = child.kill();
-                        let _ = child.wait();
+                        kill_group(&mut child);
                         return Err(error).context("failed waiting for the firecracker provider");
                     },
                 }
@@ -261,17 +330,21 @@ impl Provider {
             if status.is_some() && !read_any {
                 break;
             }
-            if Instant::now() >= deadline {
+            if read_any {
+                deadline = Instant::now() + self.timeout;
+            } else if Instant::now() >= deadline {
                 if status.is_none() {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    kill_group(&mut child);
                 }
+                let (last_progress, _) = split_progress(&stderr_bytes);
                 return Err(anyhow!(
-                    "firecracker provider timed out after {:?}",
-                    self.timeout
+                    "firecracker provider was silent for {:?}{}",
+                    self.timeout,
+                    last_progress
+                        .map(|phase| format!(" (last: {phase})"))
+                        .unwrap_or_default()
                 ));
-            }
-            if !read_any {
+            } else {
                 thread::sleep(POLL_INTERVAL);
             }
         }
@@ -283,7 +356,7 @@ impl Provider {
         }
         let status = status.context("the provider output loop ended before the provider exited")?;
         if !status.success() {
-            let message = String::from_utf8_lossy(&stderr_bytes).trim().to_owned();
+            let (_, message) = split_progress(&stderr_bytes);
             return Err(anyhow!(
                 "firecracker provider exited with {status}: {}",
                 if message.is_empty() {
@@ -300,6 +373,29 @@ impl Provider {
             )
         })
     }
+}
+
+/// Kill the provider and everything it started, then reap it.
+fn kill_group(child: &mut std::process::Child) {
+    // The provider was spawned as the leader of its own process group.
+    unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Separate the provider's progress reports from what else it wrote to stderr:
+/// the phase it last reported, and the rest as an error message.
+fn split_progress(stderr: &[u8]) -> (Option<String>, String) {
+    let mut last_progress = None;
+    let mut message = Vec::new();
+    let stderr = String::from_utf8_lossy(stderr);
+    for line in stderr.lines() {
+        match line.strip_prefix(PROGRESS_PREFIX) {
+            Some(phase) => last_progress = Some(phase.trim().to_owned()),
+            None => message.push(line),
+        }
+    }
+    (last_progress, message.join("\n").trim().to_owned())
 }
 
 fn set_nonblocking(pipe: &impl AsFd) -> Result<()> {
@@ -346,20 +442,40 @@ pub fn provider_from_options(path: Option<&Path>, timeout_secs: Option<u64>) -> 
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::fs;
     use tempfile::TempDir;
+
+    /// Written by a child process rather than with `fs::write`. Under `cargo test`
+    /// these tests share one process, and a child another test forks in the
+    /// meantime inherits every open descriptor until it execs - a script still
+    /// open for writing here then fails that exec with `Text file busy`. A
+    /// writer in its own process leaves nothing to inherit.
+    fn write_script(path: &Path, contents: &str) {
+        let mut writer = Command::new("sh")
+            .args(["-c", r#"cat > "$1" && chmod 755 "$1""#, "sh"])
+            .arg(path)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        writer
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(contents.as_bytes())
+            .unwrap();
+        assert!(writer.wait().unwrap().success());
+    }
 
     fn provider_script(body: &str, timeout: Duration) -> (TempDir, Provider) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("provider");
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&path, &format!("#!/bin/sh\n{body}\n"));
         let provider = Provider::new(path, timeout).unwrap();
         (dir, provider)
     }
 
     #[test]
-    fn provider_default_timeout_leaves_room_after_boot() {
+    fn provider_default_inactivity_timeout_is_90s() {
         let provider = provider_from_options(Some(Path::new("/provider")), None).unwrap();
         assert_eq!(provider.timeout, Duration::from_secs(90));
     }
@@ -369,23 +485,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("provider");
         let log = dir.path().join("requests");
-        fs::write(
+        write_script(
             &path,
-            format!(
+            &format!(
                 r#"#!/bin/sh
 request=$(cat)
 printf '%s\n' "$request" >> '{}'
 case "$request" in
   *'"action":"ensure"'*) printf '%s' '{{"version":2,"ssh_host":"ssh://zellij@127.0.0.1:2201","cwd":"/workspace"}}' ;;
-  *'"action":"list"'*) printf '%s' '{{"version":2,"vms":[{{"session":"work","name":"review","state":"running"}}]}}' ;;
+  *'"action":"list"'*) printf '%s' '{{"version":2,"vms":[{{"session":"work","name":"review","state":"running"}}],"recoveries":[{{"path":"/state/recovery/abc-1-sync-failed","reason":"sync-failed","retained_at":1,"session":"work","name":"review","worktree":"/repo"}}]}}' ;;
+  *'"action":"sync"'*) printf '%s' '{{"version":2,"warnings":["/repo/a.rs: changed on both sides; kept the host copy, the guest copy is /repo/a.rs.guest"]}}' ;;
   *) printf '%s' '{{"version":2}}' ;;
 esac
 "#,
                 log.display()
             ),
-        )
-        .unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let provider = Provider::new(path, Duration::from_secs(1)).unwrap();
 
         let first = provider
@@ -401,15 +516,32 @@ esac
         assert_eq!(first.ssh_known_hosts_file, None);
         assert_eq!(
             provider.list(None).unwrap(),
-            vec![VmEntry {
-                session: "work".to_owned(),
-                name: "review".to_owned(),
-                state: "running".to_owned(),
-            }]
+            Listing {
+                vms: vec![VmEntry {
+                    session: "work".to_owned(),
+                    name: "review".to_owned(),
+                    state: "running".to_owned(),
+                }],
+                recoveries: vec![RecoveryEntry {
+                    path: PathBuf::from("/state/recovery/abc-1-sync-failed"),
+                    reason: "sync-failed".to_owned(),
+                    retained_at: 1,
+                    session: Some("work".to_owned()),
+                    name: Some("review".to_owned()),
+                    worktree: Some(PathBuf::from("/repo")),
+                }],
+            }
         );
-        provider.stop("work", "review").unwrap();
-        provider.sync("work", "review").unwrap();
-        provider.stop_session("work").unwrap();
+        // A response without the additive fields is the older contract, still accepted.
+        assert_eq!(
+            provider.stop("work", "review").unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            provider.sync("work", "review").unwrap(),
+            ["/repo/a.rs: changed on both sides; kept the host copy, the guest copy is /repo/a.rs.guest"]
+        );
+        assert_eq!(provider.stop_session("work").unwrap(), Vec::<String>::new());
 
         let requests: Vec<serde_json::Value> = fs::read_to_string(log)
             .unwrap()
@@ -462,7 +594,7 @@ esac
             .ensure("work", "review", None, None)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("timed out"), "{error}");
+        assert!(error.contains("silent for"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(1));
     }
 
@@ -496,6 +628,72 @@ printf '{"version":2}'"#,
         }
         assert!(started.elapsed() > Duration::from_secs(1));
         assert!(!dir.path().join("overlap").exists());
+    }
+
+    /// Booting a guest and copying a worktree into it take as long as they take.
+    /// A provider that keeps saying what it is doing is not timed out, however
+    /// long the whole request runs.
+    #[test]
+    fn progress_output_keeps_a_working_provider_alive() {
+        let (_dir, provider) = provider_script(
+            "for i in 1 2 3 4; do echo 'progress: copying' >&2; sleep 0.3; done\n\
+             printf '{\"version\":2}'",
+            Duration::from_millis(500),
+        );
+        provider.stop_session("work").unwrap();
+    }
+
+    #[test]
+    fn a_silent_provider_is_reported_with_its_last_phase() {
+        let (_dir, provider) = provider_script(
+            "echo 'progress: booting the guest' >&2\n\
+             echo 'progress: copying the worktree into the guest' >&2\n\
+             sleep 5",
+            Duration::from_millis(300),
+        );
+        let error = provider.stop_session("work").unwrap_err().to_string();
+        assert!(error.contains("silent for 300ms"), "{error}");
+        assert!(
+            error.ends_with("(last: copying the worktree into the guest)"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn progress_lines_are_kept_out_of_provider_errors() {
+        let (_dir, provider) = provider_script(
+            "echo 'progress: booting the guest' >&2\necho 'no free TAP devices' >&2\nexit 1",
+            Duration::from_secs(1),
+        );
+        let error = provider.stop_session("work").unwrap_err().to_string();
+        assert!(error.ends_with(": no free TAP devices"), "{error}");
+        assert!(!error.contains("progress"), "{error}");
+    }
+
+    /// The helpers a provider runs - rsync, ssh, git - must not outlive it: a
+    /// copy still running after the kill would race the attempt that resumes it.
+    #[test]
+    fn a_timed_out_provider_takes_its_children_with_it() {
+        let (dir, provider) = provider_script(
+            r#"sleep 60 & echo $! > "$(dirname "$0")/child"; wait"#,
+            Duration::from_millis(200),
+        );
+        let error = provider.stop_session("work").unwrap_err().to_string();
+        assert!(error.contains("silent for"), "{error}");
+        let pid: i32 = fs::read_to_string(dir.path().join("child"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while unsafe { libc::kill(pid, 0) } == 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_ne!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "the provider's child survived the timeout"
+        );
     }
 
     #[test]

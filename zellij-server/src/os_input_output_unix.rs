@@ -817,6 +817,21 @@ impl UnixPtyBackend {
             .unwrap_or(false)
     }
 
+    /// Whether a pane runs in a Firecracker guest rather than on an ordinary
+    /// remote host. Takes the transport lock, so ask only when the answer is
+    /// needed, not on every chunk of output.
+    pub fn is_firecracker(&self, terminal_id: u32) -> bool {
+        self.terminal_id_to_transport
+            .lock()
+            .ok()
+            .and_then(|t| {
+                t.get(&terminal_id)
+                    .and_then(|t| t.remote())
+                    .map(|conn| conn.cmd().firecracker_vm.is_some())
+            })
+            .unwrap_or(false)
+    }
+
     /// The last thing the broker reported about a remote pane, or `None` for a
     /// local one.
     ///

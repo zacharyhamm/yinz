@@ -342,6 +342,33 @@ fn a_branch_is_what_sends_a_spawn_through_the_git_route() {
     );
 }
 
+/// Outside a project, `cwd` is the caller's own directory, and the `new_pane` route
+/// would pass it into the guest untranslated. The refusal comes before the host
+/// call; the same spawn without a cwd reaches it.
+#[test]
+fn a_firecracker_spawn_outside_a_project_refuses_a_host_cwd() {
+    let mut state = idle_state();
+    assert_eq!(
+        state.run_local(&agent_call(
+            "agent_spawn",
+            r#"{"agent":"claude","firecracker":"review","cwd":"/home/me/src"}"#
+        )),
+        Some(
+            "cwd is a path on this machine, and a Firecracker agent starts in the VM's \
+             workspace; leave cwd unset or name a project"
+                .into()
+        ),
+    );
+    assert!(state.manual_kinds.is_empty());
+    assert_eq!(
+        state.run_local(&agent_call(
+            "agent_spawn",
+            r#"{"agent":"claude","firecracker":"review"}"#
+        )),
+        Some("tools are unavailable outside zellij".into()),
+    );
+}
+
 #[test]
 fn project_images_apply_only_to_firecracker_spawns_and_explicit_images_win() {
     let mut local = launch::Spec {

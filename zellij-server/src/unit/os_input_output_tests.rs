@@ -49,6 +49,81 @@ fn firecracker_resolution_keeps_an_unresolved_command_for_reruns() {
 }
 
 #[test]
+fn rename_firecracker_session_updates_the_session_key() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("provider");
+    fs::write(
+        &path,
+        "#!/bin/sh\ncat >> \"$(dirname \"$0\")/requests\"\nprintf '{\"version\":2}'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    let server = make_server();
+    *server.firecracker.lock().unwrap() = Some((
+        crate::firecracker::Provider::new(path, Duration::from_secs(1)).unwrap(),
+        "work".to_owned(),
+    ));
+
+    server.rename_firecracker_session_now("renamed").unwrap();
+
+    let requests = fs::read_to_string(dir.path().join("requests")).unwrap();
+    assert_eq!(
+        requests,
+        r#"{"action":"rename_session","version":2,"from":"work","to":"renamed"}"#
+    );
+    let key = server
+        .firecracker
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .1
+        .clone();
+    assert_eq!(key, "renamed");
+
+    // The same name again is not a request.
+    server.rename_firecracker_session_now("renamed").unwrap();
+    assert_eq!(
+        fs::read_to_string(dir.path().join("requests")).unwrap(),
+        requests
+    );
+}
+
+/// A provider that refuses the rename leaves the server on the old name too, so the two
+/// still agree on which session owns the VMs.
+#[test]
+fn a_refused_rename_keeps_the_old_firecracker_session_key() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("provider");
+    fs::write(&path, "#!/bin/sh\necho 'unknown action' >&2\nexit 1\n").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    let server = make_server();
+    *server.firecracker.lock().unwrap() = Some((
+        crate::firecracker::Provider::new(path, Duration::from_secs(1)).unwrap(),
+        "work".to_owned(),
+    ));
+
+    let error = server
+        .rename_firecracker_session_now("renamed")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("stay under \"work\""), "{error}");
+    let key = server
+        .firecracker
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .1
+        .clone();
+    assert_eq!(key, "work");
+}
+
+#[test]
 fn failed_firecracker_pane_termination_does_not_skip_provider_shutdown() {
     use crate::pty_host::remote::RemoteConn;
     use std::os::unix::net::UnixStream;

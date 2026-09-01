@@ -422,3 +422,82 @@ fn keybinds_to_string_with_multiple_multiline_actions() {
     );
     insta::assert_snapshot!(serialized.to_string());
 }
+
+/// The `firecracker_*` children of a `Run` action survive a serialize/parse cycle.
+#[test]
+fn run_action_firecracker_children_round_trip() {
+    use crate::input::actions::Action;
+    let fake_config = r#"
+        keybinds clear-defaults=true {
+            normal {
+                bind "Ctrl f" {
+                    Run "cargo" "test" {
+                        cwd "/workspace"
+                        firecracker_vm "review"
+                        firecracker_image "rust-dev"
+                        firecracker_worktree "/home/me/src/project"
+                    }
+                }
+            }
+        }"#;
+    let document: KdlDocument = fake_config.parse().unwrap();
+    let deserialized = Keybinds::from_kdl(
+        document.get("keybinds").unwrap(),
+        Default::default(),
+        &Default::default(),
+    )
+    .unwrap();
+    let action = deserialized
+        .0
+        .get(&InputMode::Normal)
+        .unwrap()
+        .values()
+        .flatten()
+        .find_map(|action| match action {
+            Action::NewTiledPane { command, .. } => command.clone(),
+            _ => None,
+        })
+        .expect("the Run action was not parsed");
+    assert_eq!(action.firecracker_vm.as_deref(), Some("review"));
+    assert_eq!(action.firecracker_image.as_deref(), Some("rust-dev"));
+    assert_eq!(
+        action.firecracker_worktree,
+        Some(PathBuf::from("/home/me/src/project"))
+    );
+
+    let serialized = Keybinds::to_kdl(&deserialized, true);
+    let reparsed = Keybinds::from_kdl(
+        serialized
+            .to_string()
+            .parse::<KdlDocument>()
+            .unwrap()
+            .get("keybinds")
+            .unwrap(),
+        Default::default(),
+        &Default::default(),
+    )
+    .unwrap();
+    assert_eq!(deserialized, reparsed);
+
+    for (config, why) in [
+        (
+            r#"keybinds { normal { bind "Ctrl f" { Run "cargo" { firecracker_image "rust-dev"; }; }; }; }"#,
+            "an image without a vm",
+        ),
+        (
+            r#"keybinds { normal { bind "Ctrl f" { Run "cargo" { firecracker_vm "no/slashes"; }; }; }; }"#,
+            "an invalid vm name",
+        ),
+    ] {
+        let document: KdlDocument = config.parse().unwrap();
+        assert!(
+            Keybinds::from_kdl(
+                document.get("keybinds").unwrap(),
+                Default::default(),
+                &Default::default(),
+            )
+            .is_err(),
+            "{why} should be a config error"
+        );
+    }
+}

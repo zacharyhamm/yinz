@@ -586,23 +586,19 @@ fn duplicate_command(
     manual_kinds: &BTreeMap<u32, String>,
 ) -> Option<CommandToRun> {
     let (kind, _) = agents::classify(pane, manual_kinds)?;
-    let (remote_host, firecracker_vm, cwd) = match pane
-        .host
-        .as_deref()
-        .and_then(|host| host.strip_prefix("firecracker:"))
-    {
-        Some(name) => (
-            None,
-            Some(name.to_owned()),
-            pane.cwd.clone().map(Into::into),
-        ),
-        None => (pane.host.clone(), None, Some("/host".into())),
+    // A pane on another machine, ssh or Firecracker, already reports a cwd on
+    // that machine, and the server hands a remote cwd over untranslated. Only a
+    // local pane gets `/host`, which the server maps to the caller's cwd.
+    let (remote_host, firecracker_vm, cwd) = match pane.host.as_deref() {
+        Some(host) => match host.strip_prefix("firecracker:") {
+            Some(name) => (None, Some(name.to_owned()), pane.cwd.clone()),
+            None => (Some(host.to_owned()), None, pane.cwd.clone()),
+        },
+        None => (None, None, Some("/host".to_owned())),
     };
     Some(CommandToRun {
         path: launch::binary_for(kind).into(),
-        // Local `/host` is translated to the caller CWD; Firecracker keeps the
-        // pane's already-remote guest CWD.
-        cwd,
+        cwd: cwd.map(Into::into),
         remote_host,
         firecracker_vm,
         firecracker_image: pane.firecracker_image.clone(),
@@ -1290,8 +1286,17 @@ mod tests {
 
         assert_eq!(command.path, PathBuf::from("cursor-agent"));
         assert!(command.args.is_empty());
-        assert_eq!(command.cwd, Some("/host".into()));
+        // The cwd of an ssh pane is a path on `builder`, so it is sent as-is.
+        assert_eq!(command.cwd, Some("/tmp/repo".into()));
         assert_eq!(command.remote_host.as_deref(), Some("builder"));
+
+        let local_pane = AgentPane {
+            host: None,
+            ..pane.clone()
+        };
+        let command = duplicate_command(&local_pane, &BTreeMap::new()).unwrap();
+        assert_eq!(command.cwd, Some("/host".into()));
+        assert_eq!(command.remote_host, None);
 
         let firecracker_pane = AgentPane {
             host: Some("firecracker:review".to_owned()),

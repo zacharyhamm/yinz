@@ -61,14 +61,27 @@ pub(crate) fn firecracker(
     )?;
     match command {
         Firecracker::List { session, json } => {
-            let entries = provider.list(session.as_deref())?;
+            let listing = provider.list(session.as_deref())?;
             if json {
-                println!("{}", serde_json::to_string(&entries)?);
-            } else if entries.is_empty() {
-                println!("No Firecracker VMs found.");
+                println!("{}", serde_json::to_string(&listing)?);
             } else {
-                for entry in entries {
+                if listing.vms.is_empty() {
+                    println!("No Firecracker VMs found.");
+                }
+                for entry in &listing.vms {
                     println!("{}\t{}\t{}", entry.session, entry.name, entry.state);
+                }
+                if !listing.recoveries.is_empty() {
+                    println!("Retained disks:");
+                }
+                for recovery in &listing.recoveries {
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        recovery.session.as_deref().unwrap_or("-"),
+                        recovery.name.as_deref().unwrap_or("-"),
+                        recovery.reason,
+                        recovery.path.display()
+                    );
                 }
             }
         },
@@ -80,7 +93,9 @@ pub(crate) fn firecracker(
                     _ => None,
                 })
                 .context("no session selected; pass --session SESSION")?;
-            provider.stop(&session, &name)?;
+            for warning in provider.stop(&session, &name)? {
+                eprintln!("warning: {warning}");
+            }
         },
         Firecracker::Sync { name, session } => {
             let session = session
@@ -90,7 +105,9 @@ pub(crate) fn firecracker(
                     _ => None,
                 })
                 .context("no session selected; pass --session SESSION")?;
-            provider.sync(&session, &name)?;
+            for warning in provider.sync(&session, &name)? {
+                eprintln!("warning: {warning}");
+            }
         },
     }
     Ok(())

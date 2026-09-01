@@ -2516,6 +2516,16 @@ impl State {
         let project_firecracker =
             firecracker && (args.project.is_some() || self.active_project.is_some());
         let result = if matches!(checkout, GitCheckout::Current) && !project_firecracker {
+            // With no project, `cwd` can only be the caller's: a path on this machine.
+            // `new_pane` would hand it to the guest as its working directory, where it
+            // does not exist, and the agent would start wherever the broker happens to
+            // be. The git route never has this problem - there `cwd` is the host
+            // checkout to mirror, and the provider supplies the guest directory.
+            if command.firecracker_vm.is_some() && cwd.is_some() {
+                return "cwd is a path on this machine, and a Firecracker agent starts in the \
+                        VM's workspace; leave cwd unset or name a project"
+                    .to_owned();
+            }
             // From the plan, not from `args`: `agent`, `model` and `prompt` are all in
             // `command`, and none of them is a key `new_pane` knows. Nothing else of `args`
             // comes along - that was true of the `new_pane` call this replaces, and carrying

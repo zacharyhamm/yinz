@@ -4,16 +4,16 @@
 //! small state directory, and leaves the Firecracker process running on its
 //! own. The privileged part is a one-time pool of user-owned TAP devices.
 
-use super::{EnsureResponse, VmEntry, PROTOCOL_VERSION};
+use super::{EnsureResponse, RecoveryEntry, VmEntry, PROGRESS_PREFIX, PROTOCOL_VERSION};
+use crate::pty_host::remote::ssh::ssh_option_value;
 use highway::{HighwayHash, Key, PortableHash};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
-    collections::{hash_map::DefaultHasher, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     env,
     ffi::{CString, OsStr},
     fs::{self, File, OpenOptions},
-    hash::{Hash, Hasher},
     io::{Read, Write},
     net::{Ipv4Addr, SocketAddrV4, TcpStream},
     os::{
@@ -27,6 +27,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     str::FromStr,
+    sync::{Arc, Condvar, Mutex},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -42,6 +43,16 @@ const DEFAULT_SETUP_DISK_GIB: u64 = 64;
 const INSTALLED_PROVIDER: &str = "/usr/local/bin/zellij-firecracker";
 const GITIGNORE_FILTER: &str = ":- .gitignore";
 const RECOVERY_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// Beside the disk in a VM's directory: the per-path content hashes of the host worktree as
+/// it was last known to match the guest. See `merge_worktrees`.
+const BASELINE_FILE: &str = "baseline.json";
+/// Scratch space beside the disk for copies in and out of the guest; see `Staging`.
+const STAGING_DIR: &str = "staging";
+/// Written into a recovery directory beside `state.json`, so `list` can say why a disk was
+/// kept without parsing the directory name.
+const RECOVERY_NOTE_FILE: &str = "recovery.json";
+/// The guest copy of a file both sides changed is written beside the host copy with this suffix.
+const GUEST_COPY_SUFFIX: &str = ".guest";
 const KERNEL_URL: &str = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260826-761f88fbb951-0/x86_64/vmlinux-6.1.182";
 const KERNEL_SHA256: &str = "90f6c45a719c76c08f09ba5e80b4a7f1044e33152c92b9e45a22e87c0021bac5";
 const ROOTFS_URL: &str = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260826-761f88fbb951-0/x86_64/ubuntu-24.04.squashfs";
@@ -96,6 +107,11 @@ enum Request {
         session: String,
         name: String,
     },
+    RenameSession {
+        version: u32,
+        from: String,
+        to: String,
+    },
 }
 
 impl Request {
@@ -105,7 +121,8 @@ impl Request {
             | Self::Stop { version, .. }
             | Self::StopSession { version, .. }
             | Self::List { version, .. }
-            | Self::Sync { version, .. } => *version,
+            | Self::Sync { version, .. }
+            | Self::RenameSession { version, .. } => *version,
         }
     }
 }
@@ -178,7 +195,7 @@ fn default_images_dir() -> PathBuf {
     data_dir().join("images")
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 struct VmState {
     ready: bool,
     session: String,
@@ -189,8 +206,6 @@ struct VmState {
     image: Option<String>,
     #[serde(default)]
     worktree: Option<PathBuf>,
-    #[serde(default)]
-    host_fingerprint: Option<u64>,
     pid: i32,
     start_time: u64,
     slot: u8,
@@ -330,21 +345,26 @@ fn serve_request() -> Result<()> {
             image.as_deref(),
             worktree.as_deref(),
         )?)?,
-        Request::Stop { session, name, .. } => {
-            stop_one(&state, &config, &session, &name)?;
-            json!({"version": PROTOCOL_VERSION})
-        },
-        Request::StopSession { session, .. } => {
-            stop_session(&state, &config, &session)?;
-            json!({"version": PROTOCOL_VERSION})
-        },
+        Request::Stop { session, name, .. } => json!({
+            "version": PROTOCOL_VERSION,
+            "warnings": stop_one(&state, &config, &session, &name)?,
+        }),
+        Request::StopSession { session, .. } => json!({
+            "version": PROTOCOL_VERSION,
+            "warnings": stop_session(&state, &config, &session)?,
+        }),
         Request::List { session, .. } => json!({
             "version": PROTOCOL_VERSION,
             "vms": list(&state, session.as_deref())?,
+            "recoveries": list_recoveries(&state, session.as_deref())?,
         }),
-        Request::Sync { session, name, .. } => {
-            sync_one(&state, &config, &session, &name)?;
-            json!({"version": PROTOCOL_VERSION})
+        Request::Sync { session, name, .. } => json!({
+            "version": PROTOCOL_VERSION,
+            "warnings": sync_one(&state, &config, &session, &name)?,
+        }),
+        Request::RenameSession { from, to, .. } => {
+            rename_session(&state, &from, &to)?;
+            json!({ "version": PROTOCOL_VERSION })
         },
     };
     serde_json::to_writer(std::io::stdout(), &response).context("failed to write response")
@@ -377,29 +397,35 @@ fn ensure(
     ensure_vm_identity_available(&entries, &state_path, session, name)?;
     if let Ok(mut existing) = read_state(&state_path) {
         if vm_is_running(&existing) {
-            if !existing.ready {
-                terminate(&existing, None);
-                retain_recovery(locked, &state_path, &existing, "unready")?;
-                let _ = fs::remove_file(&state_path);
-            } else {
-                if existing.name != name {
-                    return Err(anyhow!(
-                        "worktree VM is already running as {:?}, not {name:?}",
-                        existing.name
-                    ));
-                }
-                if existing.image.as_deref() != image {
-                    return Err(anyhow!(
-                        "worktree VM is already running with image {:?}, not {:?}",
-                        existing.image,
-                        image
-                    ));
-                }
-                if !existing.leases.iter().any(|lease| lease == session) {
-                    existing.leases.push(session.to_owned());
+            match existing_vm_disposition(&existing, name, image) {
+                Disposition::Join => {
+                    if !existing.leases.iter().any(|lease| lease == session) {
+                        existing.leases.push(session.to_owned());
+                        write_state(&state_path, &existing)?;
+                    }
+                    return Ok(response(config, &existing));
+                },
+                Disposition::Resume => {
+                    // The lease goes on record before another attempt at provisioning,
+                    // so a session that asked for the VM releases it however that ends.
+                    if !existing.leases.iter().any(|lease| lease == session) {
+                        existing.leases.push(session.to_owned());
+                    }
                     write_state(&state_path, &existing)?;
-                }
-                return Ok(response(config, &existing));
+                    if let Some(worktree) = existing.worktree.as_deref() {
+                        // The baseline has to describe what the guest is about to get,
+                        // and the host may have moved on since the interrupted attempt.
+                        let _progress = Progress::start("hashing the worktree");
+                        write_baseline(&baseline_path(&existing)?, &worktree_baseline(worktree)?)?;
+                    }
+                    return finish_provisioning(locked, config, &state_path, existing, None);
+                },
+                Disposition::Refuse(why) => return Err(anyhow!(why)),
+                Disposition::Replace => {
+                    terminate(&existing, None);
+                    retain_recovery(locked, &state_path, &existing, "unready")?;
+                    let _ = fs::remove_file(&state_path);
+                },
             }
         } else {
             retain_recovery(locked, &state_path, &existing, "crashed")?;
@@ -407,7 +433,10 @@ fn ensure(
         }
     }
 
-    let host_fingerprint = worktree.as_deref().map(tree_fingerprint).transpose()?;
+    let baseline = {
+        let _progress = Progress::start("hashing the worktree");
+        worktree.as_deref().map(worktree_baseline).transpose()?
+    };
 
     let slot = (0..network.taps)
         .find(|slot| {
@@ -437,14 +466,23 @@ fn ensure(
         .to_owned();
     let vm_dir = locked.dir.join(&id);
     secure_dir(&vm_dir)?;
+    if let Some(baseline) = &baseline {
+        if let Err(error) = write_baseline(&vm_dir.join(BASELINE_FILE), baseline) {
+            let _ = fs::remove_dir_all(&vm_dir);
+            return Err(error);
+        }
+    }
     let rootfs = vm_dir.join("rootfs.ext4");
-    run(
-        Command::new("cp")
-            .args(["--reflink=auto", "--sparse=always"])
-            .arg(image_path(config, image)?.as_path())
-            .arg(&rootfs),
-        "failed to clone the Firecracker rootfs",
-    )?;
+    {
+        let _progress = Progress::start("cloning the rootfs image");
+        run(
+            Command::new("cp")
+                .args(["--reflink=auto", "--sparse=always"])
+                .arg(image_path(config, image)?.as_path())
+                .arg(&rootfs),
+            "failed to clone the Firecracker rootfs",
+        )?;
+    }
     let api_socket = runtime_dir().join(format!("{id}.sock"));
     secure_dir(api_socket.parent().unwrap_or(Path::new("/tmp")))?;
     let log = vm_dir.join("firecracker.log");
@@ -536,14 +574,13 @@ fn ensure(
         },
         None => None,
     };
-    let mut vm = VmState {
+    let vm = VmState {
         ready: false,
         session: session.to_owned(),
         leases: vec![session.to_owned()],
         name: name.to_owned(),
         image: image.map(str::to_owned),
         worktree: worktree.clone(),
-        host_fingerprint,
         pid,
         start_time,
         slot,
@@ -559,26 +596,83 @@ fn ensure(
         cleanup_files(&vm);
         return Err(error);
     }
-    if let Err(error) = wait_for_ssh(&mut child, &vm, config.boot_timeout_secs) {
+    finish_provisioning(locked, config, &state_path, vm, Some(&mut child))
+}
+
+/// What to do about a VM already on record for the identity an `ensure` names.
+#[derive(Debug, PartialEq, Eq)]
+enum Disposition {
+    /// Ready and the same VM: add the lease and hand it over.
+    Join,
+    /// The same VM, but an earlier attempt never finished provisioning it - the provider
+    /// was killed part-way, most likely - so it is picked up where that left off. The
+    /// copy into the guest is incremental, which is what lets a large worktree converge
+    /// over attempts that each run out of time.
+    Resume,
+    /// Ready, but not the VM that was asked for; a running VM is not replaced.
+    Refuse(String),
+    /// Unready and not the VM that was asked for: nothing in it is worth keeping.
+    Replace,
+}
+
+fn existing_vm_disposition(existing: &VmState, name: &str, image: Option<&str>) -> Disposition {
+    let mismatch = if existing.name != name {
+        Some(format!(
+            "worktree VM is already running as {:?}, not {name:?}",
+            existing.name
+        ))
+    } else if existing.image.as_deref() != image {
+        Some(format!(
+            "worktree VM is already running with image {:?}, not {:?}",
+            existing.image, image
+        ))
+    } else {
+        None
+    };
+    match (existing.ready, mismatch) {
+        (true, None) => Disposition::Join,
+        (true, Some(why)) => Disposition::Refuse(why),
+        (false, None) => Disposition::Resume,
+        (false, Some(_)) => Disposition::Replace,
+    }
+}
+
+/// Wait for the guest and provision it, then mark the VM ready. Shared by a VM started
+/// just now, whose `Child` is still in hand, and one resumed from an interrupted attempt.
+/// A failure here is a real one - the guest never answered, or a copy failed - and the VM is
+/// torn down and its disk retained; only an attempt cut short by the provider being killed
+/// leaves a VM to resume.
+fn finish_provisioning(
+    locked: &LockedState,
+    config: &Config,
+    state_path: &Path,
+    mut vm: VmState,
+    mut child: Option<&mut Child>,
+) -> Result<EnsureResponse> {
+    let booted = {
+        let _progress = Progress::start("waiting for the guest's ssh");
+        wait_for_ssh(child.as_deref_mut(), &vm, config.boot_timeout_secs)
+    };
+    if let Err(error) = booted {
         let log = fs::read_to_string(&vm.log).unwrap_or_else(|read_error| {
             format!("<failed to read {}: {read_error}>", vm.log.display())
         });
-        terminate(&vm, Some(&mut child));
+        terminate(&vm, child.as_deref_mut());
         cleanup_files(&vm);
-        let _ = fs::remove_file(&state_path);
+        let _ = fs::remove_file(state_path);
         return Err(error).context(format!("Firecracker log:\n{log}"));
     }
     if let Err(error) = provision_guest(&vm, config) {
-        terminate(&vm, Some(&mut child));
-        retain_recovery(locked, &state_path, &vm, "provision-failed")?;
-        let _ = fs::remove_file(&state_path);
+        terminate(&vm, child.as_deref_mut());
+        retain_recovery(locked, state_path, &vm, "provision-failed")?;
+        let _ = fs::remove_file(state_path);
         return Err(error);
     }
     vm.ready = true;
-    if let Err(error) = write_state(&state_path, &vm) {
-        terminate(&vm, Some(&mut child));
-        retain_recovery(locked, &state_path, &vm, "state-commit-failed")?;
-        let _ = fs::remove_file(&state_path);
+    if let Err(error) = write_state(state_path, &vm) {
+        terminate(&vm, child);
+        retain_recovery(locked, state_path, &vm, "state-commit-failed")?;
+        let _ = fs::remove_file(state_path);
         return Err(error);
     }
     Ok(response(config, &vm))
@@ -594,14 +688,28 @@ fn response(config: &Config, state: &VmState) -> EnsureResponse {
     }
 }
 
-fn wait_for_ssh(child: &mut std::process::Child, state: &VmState, timeout_secs: u64) -> Result<()> {
+/// Wait for the guest's sshd and record its host key. `child` is the Firecracker process
+/// when this provider started it; a resumed VM is watched through its pid instead.
+fn wait_for_ssh(mut child: Option<&mut Child>, state: &VmState, timeout_secs: u64) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     loop {
-        if let Some(status) = child.try_wait().context("failed waiting for Firecracker")? {
-            return Err(anyhow!(
-                "Firecracker exited before SSH was ready ({status}); log: {}",
-                state.log.display()
-            ));
+        match child.as_deref_mut() {
+            Some(child) => {
+                if let Some(status) = child.try_wait().context("failed waiting for Firecracker")? {
+                    return Err(anyhow!(
+                        "Firecracker exited before SSH was ready ({status}); log: {}",
+                        state.log.display()
+                    ));
+                }
+            },
+            None => {
+                if !vm_is_running(state) {
+                    return Err(anyhow!(
+                        "Firecracker exited before SSH was ready; log: {}",
+                        state.log.display()
+                    ));
+                }
+            },
         }
         if TcpStream::connect_timeout(
             &SocketAddrV4::new(state.guest_ip, 22).into(),
@@ -653,10 +761,28 @@ fn provision_guest(state: &VmState, config: &Config) -> Result<()> {
     Ok(())
 }
 
+/// The rsync spelling of the guest directory the worktree is mirrored into, with the trailing
+/// slash that makes rsync copy the directory's contents rather than the directory itself.
+fn guest_workspace(state: &VmState, config: &Config) -> String {
+    format!("root@{}:{}/", state.guest_ip, config.guest_cwd.display())
+}
+
+fn ensure_guest_dir(state: &VmState, config: &Config, path: &Path) -> Result<()> {
+    run(
+        ssh_command(state, config)
+            .arg("mkdir")
+            .arg("-p")
+            .arg("--")
+            .arg(path),
+        "failed to create a directory in the guest",
+    )
+}
+
 fn sync_to_guest(state: &VmState, config: &Config, worktree: &Path) -> Result<()> {
-    let staging = tempfile::tempdir().context("failed to stage the Firecracker worktree")?;
+    let staging = Staging::fresh(state)?;
     let staged = staging.path().join("workspace");
     if worktree.join(".git").exists() {
+        let _progress = Progress::start("cloning the worktree");
         run(
             Command::new("git")
                 .args(["clone", "--no-hardlinks", "--quiet", "--"])
@@ -667,40 +793,107 @@ fn sync_to_guest(state: &VmState, config: &Config, worktree: &Path) -> Result<()
     } else {
         fs::create_dir(&staged)?;
     }
-    stage_filtered_worktree(worktree, &staged)?;
+    {
+        let _progress = Progress::start("staging the worktree");
+        stage_filtered_worktree(worktree, &staged)?;
+    }
+    let _progress = Progress::start("copying the worktree into the guest");
+    // The image only pre-creates the default `/workspace`; a configured `guest_cwd` may not
+    // exist yet, and rsync does not create the parents of its destination.
+    ensure_guest_dir(state, config, &config.guest_cwd)?;
     run(
         filtered_rsync()
-            .args(["-a", "--delete", "-e", &rsync_remote_shell(state, config)])
+            .args(["-a", "--delete"])
+            .args(guest_rsync_args(state, config))
             .arg(with_trailing_slash(&staged))
-            .arg(format!("root@{}:/workspace/", state.guest_ip)),
+            .arg(guest_workspace(state, config)),
         "failed to copy the worktree into the guest",
     )
 }
 
-fn sync_from_guest(state: &VmState, config: &Config) -> Result<()> {
-    let Some(worktree) = state.worktree.as_deref() else {
-        return Ok(());
-    };
-    let expected = state
-        .host_fingerprint
-        .context("VM has no host worktree baseline")?;
-    ensure_host_unchanged(worktree, expected)?;
-    let staging = tempfile::tempdir().context("failed to stage guest changes")?;
+/// Bring the guest back in line with the host after a merge. Everything but the guest's own
+/// `.git`, which `sync_to_guest` made as a standalone clone and which nothing on the host
+/// mirrors.
+fn push_to_guest(state: &VmState, config: &Config, worktree: &Path) -> Result<()> {
+    let staging = Staging::fresh(state)?;
+    {
+        let _progress = Progress::start("staging the worktree");
+        stage_filtered_worktree(worktree, staging.path())?;
+    }
+    let _progress = Progress::start("copying the merged worktree into the guest");
     run(
         filtered_rsync()
-            .args([
-                "-a",
-                "--delay-updates",
-                "--delete-delay",
-                "-e",
-                &rsync_remote_shell(state, config),
-            ])
-            .arg(format!("root@{}:/workspace/", state.guest_ip))
-            .arg(with_trailing_slash(staging.path())),
-        "failed to copy changes out of the guest",
-    )?;
-    ensure_host_unchanged(worktree, expected)?;
-    apply_filtered_worktree(staging.path(), worktree)
+            .args(["-a", "--delete", "--exclude=.git"])
+            .args(guest_rsync_args(state, config))
+            .arg(with_trailing_slash(staging.path()))
+            .arg(guest_workspace(state, config)),
+        "failed to copy the merged worktree into the guest",
+    )
+}
+
+/// Pull the guest's copy of the worktree and merge it into the host's.
+fn sync_from_guest(state: &VmState, config: &Config) -> Result<MergeReport> {
+    let Some(worktree) = state.worktree.as_deref() else {
+        return Ok(MergeReport::default());
+    };
+    let baseline = read_baseline(state)?;
+    let staging = Staging::fresh(state)?;
+    {
+        let _progress = Progress::start("copying changes out of the guest");
+        // The guest's `.git` is its own standalone clone; nothing on the host mirrors it,
+        // and pulling it would cost the whole repository on every release.
+        run(
+            filtered_rsync()
+                .args(["-a", "--exclude=.git"])
+                .args(guest_rsync_args(state, config))
+                .arg(guest_workspace(state, config))
+                .arg(with_trailing_slash(staging.path())),
+            "failed to copy changes out of the guest",
+        )?;
+    }
+    let _progress = Progress::start("merging the guest's changes");
+    merge_worktrees(&baseline, worktree, staging.path())
+}
+
+/// A scratch directory beside the VM's disk for the copies in and out of the guest.
+///
+/// Beside the disk rather than under `TMPDIR` so that nothing is left behind when the
+/// provider is killed mid-copy: the next attempt clears it, and removing the VM removes it.
+struct Staging(PathBuf);
+
+impl Staging {
+    fn fresh(state: &VmState) -> Result<Self> {
+        let path = staging_path(state)?;
+        remove_staging(&path)?;
+        fs::create_dir(&path).with_context(|| format!("failed to create {}", path.display()))?;
+        Ok(Self(path))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn staging_path(state: &VmState) -> Result<PathBuf> {
+    Ok(state
+        .rootfs
+        .parent()
+        .context("VM rootfs has no parent directory")?
+        .join(STAGING_DIR))
+}
+
+fn remove_staging(path: &Path) -> Result<()> {
+    match fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("failed to clear {}", path.display())),
+    }
 }
 
 fn stage_filtered_worktree(source: &Path, destination: &Path) -> Result<()> {
@@ -713,31 +906,238 @@ fn stage_filtered_worktree(source: &Path, destination: &Path) -> Result<()> {
     )
 }
 
-fn apply_filtered_worktree(source: &Path, destination: &Path) -> Result<()> {
-    run(
-        filtered_rsync()
-            .args(["-a", "--delay-updates", "--delete-delay", "--exclude=.git"])
-            .arg(with_trailing_slash(source))
-            .arg(with_trailing_slash(destination)),
-        "failed to apply guest changes to the host worktree",
-    )
-}
-
 fn filtered_rsync() -> Command {
     let mut command = Command::new("rsync");
     command.arg(format!("--filter={GITIGNORE_FILTER}"));
     command
 }
 
-fn ensure_host_unchanged(worktree: &Path, expected: u64) -> Result<()> {
-    (tree_fingerprint(worktree)? == expected)
-        .then_some(())
-        .with_context(|| {
-            format!(
-                "refusing to overwrite host changes in {}; the guest disk was retained for recovery",
-                worktree.display()
-            )
-        })
+/// One content hash per path in the filtered view of a worktree, keyed by the path relative
+/// to its root. Equal maps mean the same files with the same contents and modes. Timestamps
+/// are deliberately not part of it: a save that changes nothing is not a change.
+type Baseline = BTreeMap<String, u64>;
+
+fn baseline_path(state: &VmState) -> Result<PathBuf> {
+    Ok(state
+        .rootfs
+        .parent()
+        .context("VM rootfs has no parent directory")?
+        .join(BASELINE_FILE))
+}
+
+fn read_baseline(state: &VmState) -> Result<Baseline> {
+    let path = baseline_path(state)?;
+    let bytes = fs::read(&path)
+        .with_context(|| format!("failed to read the worktree baseline {}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .with_context(|| format!("invalid worktree baseline {}", path.display()))
+}
+
+fn write_baseline(path: &Path, baseline: &Baseline) -> Result<()> {
+    fs::write(path, serde_json::to_vec(baseline)?)
+        .with_context(|| format!("failed to write the worktree baseline {}", path.display()))
+}
+
+/// The baseline of a worktree as the guest sees it: staged through the gitignore filter
+/// first, so ignored outputs and `.git` are not part of it.
+fn worktree_baseline(worktree: &Path) -> Result<Baseline> {
+    let staging = tempfile::tempdir().context("failed to stage the worktree baseline")?;
+    stage_filtered_worktree(worktree, staging.path())?;
+    tree_entries(staging.path())
+}
+
+fn tree_entries(root: &Path) -> Result<Baseline> {
+    fn visit(root: &Path, path: &Path, entries: &mut Baseline) -> Result<()> {
+        let mut children = fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
+        children.sort_by_key(|entry| entry.file_name());
+        for entry in children {
+            if path == root && entry.file_name() == ".git" {
+                continue;
+            }
+            let path = entry.path();
+            let relative = path.strip_prefix(root)?.to_string_lossy().into_owned();
+            let metadata = fs::symlink_metadata(&path)?;
+            entries.insert(relative, entry_hash(&path, &metadata)?);
+            if metadata.is_dir() {
+                visit(root, &path, entries)?;
+            }
+        }
+        Ok(())
+    }
+    let mut entries = Baseline::new();
+    visit(root, root, &mut entries)?;
+    Ok(entries)
+}
+
+/// Kind, mode and content (or link target) of one entry, with a portable hash so a baseline
+/// written by one build of the provider reads back the same in the next.
+fn entry_hash(path: &Path, metadata: &fs::Metadata) -> Result<u64> {
+    let mut hasher = PortableHash::new(Key::default());
+    let kind = metadata.file_type();
+    hasher.append(&[
+        u8::from(kind.is_dir()),
+        u8::from(kind.is_symlink()),
+        u8::from(kind.is_file()),
+    ]);
+    hasher.append(&metadata.permissions().mode().to_le_bytes());
+    if kind.is_symlink() {
+        hasher.append(fs::read_link(path)?.as_os_str().as_bytes());
+    } else if kind.is_file() {
+        hasher.append(&metadata.len().to_le_bytes());
+        let mut file = File::open(path)?;
+        let mut buffer = [0; 64 * 1024];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.append(&buffer[..read]);
+        }
+    }
+    Ok(hasher.finalize64())
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct MergeReport {
+    /// Paths whose guest change was copied into the host worktree, deletions included.
+    applied: Vec<String>,
+    conflicts: Vec<Conflict>,
+}
+
+/// A path both sides changed since the baseline. The host copy stays; the guest copy, when
+/// the guest still has one, is written beside it.
+#[derive(Debug, PartialEq, Eq)]
+struct Conflict {
+    path: String,
+    guest_copy: Option<String>,
+}
+
+impl MergeReport {
+    fn warnings(&self, worktree: &Path) -> Vec<String> {
+        self.conflicts
+            .iter()
+            .map(|conflict| {
+                let path = worktree.join(&conflict.path);
+                match &conflict.guest_copy {
+                    Some(copy) => format!(
+                        "{}: changed on both sides; kept the host copy, the guest copy is {}",
+                        path.display(),
+                        worktree.join(copy).display()
+                    ),
+                    None => format!(
+                        "{}: changed on the host and deleted in the guest; kept the host copy",
+                        path.display()
+                    ),
+                }
+            })
+            .collect()
+    }
+}
+
+/// Three-way merge of the guest's copy of a worktree into the host's, against the baseline
+/// both started from. Per path: agreement needs nothing; a change on one side only wins; a
+/// change on both sides keeps the host copy and is reported. Both trees are read through the
+/// gitignore filter and deletions are decided from that view, so ignored host outputs are
+/// neither compared nor touched.
+fn merge_worktrees(baseline: &Baseline, worktree: &Path, guest: &Path) -> Result<MergeReport> {
+    let host = worktree_baseline(worktree)?;
+    let guest_entries = worktree_baseline(guest)?;
+    let mut report = MergeReport::default();
+    let mut copies = vec![];
+    let mut deletions = vec![];
+    let paths: BTreeSet<&String> = baseline
+        .keys()
+        .chain(host.keys())
+        .chain(guest_entries.keys())
+        .collect();
+    for path in paths {
+        let before = baseline.get(path);
+        let on_host = host.get(path);
+        let on_guest = guest_entries.get(path);
+        if on_guest == on_host || on_guest == before {
+            continue;
+        }
+        if on_host == before {
+            match on_guest {
+                Some(_) => copies.push(path.clone()),
+                None => deletions.push(path.clone()),
+            }
+            report.applied.push(path.clone());
+            continue;
+        }
+        let guest_copy = on_guest.map(|_| format!("{path}{GUEST_COPY_SUFFIX}"));
+        if let Some(copy) = &guest_copy {
+            copy_entry(&guest.join(path), &worktree.join(copy))?;
+        }
+        report.conflicts.push(Conflict {
+            path: path.clone(),
+            guest_copy,
+        });
+    }
+    // Deepest first, so a directory is only removed once everything the guest deleted under
+    // it is gone; one that still holds something — a host-only addition, an ignored output —
+    // stays. Copies go parents first, which is the order the set handed them out in.
+    deletions.sort_by(|a, b| b.cmp(a));
+    for path in &deletions {
+        remove_entry(&worktree.join(path))?;
+    }
+    for path in &copies {
+        copy_entry(&guest.join(path), &worktree.join(path))?;
+    }
+    Ok(report)
+}
+
+fn copy_entry(source: &Path, destination: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(source)
+        .with_context(|| format!("failed to read {}", source.display()))?;
+    let context = || {
+        format!(
+            "failed to copy {} to {}",
+            source.display(),
+            destination.display()
+        )
+    };
+    if let Ok(existing) = fs::symlink_metadata(destination) {
+        if existing.is_dir() && metadata.is_dir() {
+            fs::set_permissions(destination, metadata.permissions()).with_context(context)?;
+            return Ok(());
+        }
+        // A directory here is one the guest replaced with a file or link; whatever it still
+        // holds was kept on purpose, so refuse rather than remove it recursively.
+        if existing.is_dir() {
+            fs::remove_dir(destination).with_context(context)?;
+        } else {
+            fs::remove_file(destination).with_context(context)?;
+        }
+    }
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).with_context(context)?;
+    }
+    if metadata.is_dir() {
+        fs::create_dir(destination).with_context(context)?;
+        fs::set_permissions(destination, metadata.permissions()).with_context(context)?;
+    } else if metadata.file_type().is_symlink() {
+        let target = fs::read_link(source).with_context(context)?;
+        std::os::unix::fs::symlink(target, destination).with_context(context)?;
+    } else {
+        fs::copy(source, destination).with_context(context)?;
+    }
+    Ok(())
+}
+
+fn remove_entry(path: &Path) -> Result<()> {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    let context = || format!("failed to remove {}", path.display());
+    if metadata.is_dir() {
+        if fs::read_dir(path).with_context(context)?.next().is_none() {
+            fs::remove_dir(path).with_context(context)?;
+        }
+    } else {
+        fs::remove_file(path).with_context(context)?;
+    }
+    Ok(())
 }
 
 fn copy_credential(state: &VmState, config: &Config, credential: &CredentialFile) -> Result<()> {
@@ -745,7 +1145,7 @@ fn copy_credential(state: &VmState, config: &Config, credential: &CredentialFile
     if !host.is_file() {
         return Err(anyhow!("credential file {} does not exist", host.display()));
     }
-    validate_guest_path(&credential.guest)?;
+    validate_guest_path(&credential.guest, "credential guest path")?;
     let parent = credential
         .guest
         .parent()
@@ -758,14 +1158,11 @@ fn copy_credential(state: &VmState, config: &Config, credential: &CredentialFile
             .arg(parent),
         "failed to create the guest credential directory",
     )?;
+    let _progress = Progress::start("copying credentials into the guest");
     run(
         Command::new("rsync")
-            .args([
-                "-a",
-                "--chmod=F600",
-                "-e",
-                &rsync_remote_shell(state, config),
-            ])
+            .args(["-a", "--chmod=F600"])
+            .args(guest_rsync_args(state, config))
             .arg(&host)
             .arg(format!(
                 "root@{}:{}",
@@ -785,10 +1182,12 @@ fn ssh_command(state: &VmState, config: &Config) -> Command {
             "-o",
             "StrictHostKeyChecking=yes",
             "-o",
+            "ConnectTimeout=10",
+            "-o",
         ])
         .arg(format!(
             "UserKnownHostsFile={}",
-            state.known_hosts.display()
+            ssh_option_value(&state.known_hosts)
         ))
         .arg("-i")
         .arg(&config.ssh_private_key)
@@ -796,16 +1195,34 @@ fn ssh_command(state: &VmState, config: &Config) -> Command {
     command
 }
 
+/// The `-e` remote shell for rsync. rsync splits it on whitespace honouring
+/// shell-style quotes and strips them, so each token is single-quoted for
+/// rsync's benefit, and the known_hosts value is double-quoted inside that for
+/// ssh's own option tokenizer.
 fn rsync_remote_shell(state: &VmState, config: &Config) -> String {
     format!(
-        "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile={} -i {}",
-        shell_quote(&state.known_hosts),
-        shell_quote(&config.ssh_private_key)
+        "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 -o {} -i {}",
+        shell_quote(&format!(
+            "UserKnownHostsFile={}",
+            ssh_option_value(&state.known_hosts)
+        )),
+        shell_quote(&config.ssh_private_key.to_string_lossy())
     )
 }
 
-fn shell_quote(path: &Path) -> String {
-    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+/// What every rsync that crosses into the guest takes: the ssh to cross with, and an I/O
+/// timeout so a guest that stops answering fails the copy rather than hanging it - the
+/// progress reports would otherwise keep a stuck copy alive indefinitely.
+fn guest_rsync_args(state: &VmState, config: &Config) -> [String; 3] {
+    [
+        "--timeout=60".to_owned(),
+        "-e".to_owned(),
+        rsync_remote_shell(state, config),
+    ]
+}
+
+fn shell_quote(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
 }
 
 fn with_trailing_slash(path: &Path) -> PathBuf {
@@ -817,7 +1234,7 @@ fn expand_home(path: &Path) -> Result<PathBuf> {
     expand_home_from(path, Path::new(&home))
 }
 
-fn validate_guest_path(path: &Path) -> Result<()> {
+fn validate_guest_path(path: &Path, what: &str) -> Result<()> {
     let valid = path.is_absolute()
         && path
             .as_os_str()
@@ -829,56 +1246,7 @@ fn validate_guest_path(path: &Path) -> Result<()> {
             .any(|component| matches!(component, std::path::Component::ParentDir));
     valid
         .then_some(())
-        .with_context(|| format!("unsafe credential guest path {}", path.display()))
-}
-
-fn tree_fingerprint(root: &Path) -> Result<u64> {
-    let staging = tempfile::tempdir().context("failed to stage the worktree fingerprint")?;
-    stage_filtered_worktree(root, staging.path())?;
-
-    fn visit(root: &Path, path: &Path, hasher: &mut DefaultHasher) -> Result<()> {
-        let mut entries = fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
-        entries.sort_by_key(|entry| entry.file_name());
-        for entry in entries {
-            if path == root && entry.file_name() == ".git" {
-                continue;
-            }
-            let path = entry.path();
-            path.strip_prefix(root)?.hash(hasher);
-            let metadata = fs::symlink_metadata(&path)?;
-            metadata.file_type().is_dir().hash(hasher);
-            metadata.file_type().is_symlink().hash(hasher);
-            metadata.permissions().mode().hash(hasher);
-            metadata.len().hash(hasher);
-            if !metadata.is_dir() {
-                metadata
-                    .modified()
-                    .ok()
-                    .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-                    .map(|duration| duration.as_nanos())
-                    .hash(hasher);
-            }
-            if metadata.file_type().is_symlink() {
-                fs::read_link(&path)?.hash(hasher);
-            } else if metadata.is_dir() {
-                visit(root, &path, hasher)?;
-            } else if metadata.is_file() {
-                let mut file = File::open(&path)?;
-                let mut buffer = [0; 64 * 1024];
-                loop {
-                    let read = file.read(&mut buffer)?;
-                    if read == 0 {
-                        break;
-                    }
-                    buffer[..read].hash(hasher);
-                }
-            }
-        }
-        Ok(())
-    }
-    let mut hasher = DefaultHasher::new();
-    visit(staging.path(), staging.path(), &mut hasher)?;
-    Ok(hasher.finish())
+        .with_context(|| format!("unsafe {what} {}", path.display()))
 }
 
 fn list(locked: &LockedState, session: Option<&str>) -> Result<Vec<VmEntry>> {
@@ -896,12 +1264,76 @@ fn list(locked: &LockedState, session: Option<&str>) -> Result<Vec<VmEntry>> {
             vms.push(VmEntry {
                 session: lease,
                 name: state.name.clone(),
-                state: "running".to_owned(),
+                state: if state.ready {
+                    "running".to_owned()
+                } else {
+                    "provisioning".to_owned()
+                },
             });
         }
     }
     vms.sort_by(|a, b| (&a.session, &a.name).cmp(&(&b.session, &b.name)));
     Ok(vms)
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct RecoveryNote {
+    reason: String,
+    retained_at: u64,
+}
+
+/// The disks kept under `recovery/`, oldest first. A directory from before the note was
+/// written is still listed, with what its `state.json` and mtime can say.
+fn list_recoveries(locked: &LockedState, session: Option<&str>) -> Result<Vec<RecoveryEntry>> {
+    let recovery = locked.dir.join("recovery");
+    let mut entries = vec![];
+    for entry in fs::read_dir(&recovery).context("failed to read Firecracker recoveries")? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let state: Option<VmState> = fs::read(path.join("state.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        if let Some(wanted) = session {
+            let leased = state.as_ref().is_some_and(|state| {
+                state.session == wanted || state.leases.iter().any(|lease| lease == wanted)
+            });
+            if !leased {
+                continue;
+            }
+        }
+        let note: Option<RecoveryNote> = fs::read(path.join(RECOVERY_NOTE_FILE))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        let retained_at = note
+            .as_ref()
+            .map(|note| note.retained_at)
+            .or_else(|| {
+                entry
+                    .metadata()
+                    .ok()?
+                    .modified()
+                    .ok()?
+                    .duration_since(UNIX_EPOCH)
+                    .ok()
+                    .map(|age| age.as_secs())
+            })
+            .unwrap_or(0);
+        entries.push(RecoveryEntry {
+            path,
+            reason: note
+                .map(|note| note.reason)
+                .unwrap_or_else(|| "unknown".to_owned()),
+            retained_at,
+            session: state.as_ref().map(|state| state.session.clone()),
+            name: state.as_ref().map(|state| state.name.clone()),
+            worktree: state.and_then(|state| state.worktree),
+        });
+    }
+    entries.sort_by(|a, b| (a.retained_at, &a.path).cmp(&(b.retained_at, &b.path)));
+    Ok(entries)
 }
 
 fn find_vm(
@@ -937,12 +1369,14 @@ fn ensure_vm_identity_available(
     Ok(())
 }
 
+/// Retain the disks of VMs whose process has gone. A live VM is left alone whether or not
+/// it is ready: an unready one is either being provisioned right now or waiting for the
+/// `ensure` that resumes it, and its session's release covers it either way.
 fn recover_unusable_vms(locked: &LockedState) -> Result<()> {
     for (path, state) in locked.entries()? {
-        if state.ready && vm_is_running(&state) {
+        if vm_is_running(&state) {
             continue;
         }
-        terminate(&state, None);
         retain_recovery(
             locked,
             &path,
@@ -954,52 +1388,149 @@ fn recover_unusable_vms(locked: &LockedState) -> Result<()> {
     Ok(())
 }
 
-fn stop_one(locked: &LockedState, config: &Config, session: &str, name: &str) -> Result<()> {
+fn stop_one(
+    locked: &LockedState,
+    config: &Config,
+    session: &str,
+    name: &str,
+) -> Result<Vec<String>> {
     validate_firecracker_vm_name(name).map_err(|error| anyhow!(error))?;
     let Some((path, state)) = find_vm(&locked.entries()?, session, name)? else {
-        return Ok(());
+        return Ok(vec![]);
     };
     release(locked, config, path, state, session)
 }
 
-fn stop_session(locked: &LockedState, config: &Config, session: &str) -> Result<()> {
+/// Move every VM `from` owns or leases to `to`: the Zellij session was renamed, and the
+/// management commands resolve the session by its current name.
+///
+/// A VM identified by session and name lives at `path(session, name)`, so its state file
+/// moves; one identified by its worktree keeps its path and only its fields change. Every
+/// conflict is found before anything is written, so a refused rename changes nothing. The
+/// VM directory, disk and cgroup stay where they are - the state records them by absolute
+/// path and nothing derives them from the state file's name after creation.
+fn rename_session(locked: &LockedState, from: &str, to: &str) -> Result<()> {
+    if from == to {
+        return Ok(());
+    }
+    let entries = locked.entries()?;
+    let mut moves = vec![];
+    for (path, state) in &entries {
+        let owned = state.session == from;
+        let leased = state.leases.iter().any(|lease| lease == from);
+        if !owned && !leased {
+            continue;
+        }
+        let destination = if *path == locked.path(from, &state.name) {
+            let destination = locked.path(to, &state.name);
+            ensure_vm_identity_available(&entries, &destination, to, &state.name)?;
+            if destination.exists() {
+                return Err(anyhow!(
+                    "Firecracker VM {:?} already has state for session {to:?}",
+                    state.name
+                ));
+            }
+            Some(destination)
+        } else {
+            None
+        };
+        moves.push((path, state, destination));
+    }
+    for (path, state, destination) in moves {
+        let mut state = state.clone();
+        if state.session == from {
+            state.session = to.to_owned();
+        }
+        for lease in &mut state.leases {
+            if lease == from {
+                *lease = to.to_owned();
+            }
+        }
+        let mut seen = HashSet::new();
+        state.leases.retain(|lease| seen.insert(lease.clone()));
+        match destination {
+            Some(destination) => {
+                write_state(&destination, &state)?;
+                fs::remove_file(path).with_context(|| {
+                    format!("failed to remove the old state file {}", path.display())
+                })?;
+            },
+            None => write_state(path, &state)?,
+        }
+    }
+    Ok(())
+}
+
+/// Releases every VM the session holds, returning the merge warnings of all of them. One
+/// VM's failure does not stop the others from being released; the first error is reported.
+fn stop_session(locked: &LockedState, config: &Config, session: &str) -> Result<Vec<String>> {
     let mut first_error = None;
+    let mut warnings = vec![];
     for (path, state) in locked.entries()? {
         if state.session == session || state.leases.iter().any(|lease| lease == session) {
-            if let Err(error) = release(locked, config, path, state, session) {
-                first_error.get_or_insert(error);
+            match release(locked, config, path, state, session) {
+                Ok(released) => warnings.extend(released),
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                },
             }
         }
     }
-    first_error.map_or(Ok(()), Err)
+    first_error.map_or(Ok(warnings), Err)
 }
 
+/// Gives a session's lease back and, when it was the last one, merges the guest's changes into
+/// the host worktree and shuts the VM down. Returns the merge warnings. A merge that could not
+/// be attempted at all — the guest unreachable, rsync failing — keeps the disk for recovery.
 fn release(
     locked: &LockedState,
     config: &Config,
     path: PathBuf,
     mut state: VmState,
     session: &str,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     state.leases.retain(|lease| lease != session);
     if !state.leases.is_empty() {
-        return write_state(&path, &state);
+        write_state(&path, &state)?;
+        return Ok(vec![]);
     }
-    if let Err(error) = sync_from_guest(&state, config) {
+    if !state.ready {
+        // A guest that was never fully provisioned holds a partial copy of the worktree,
+        // and merging that back would read every file it is missing as a deletion.
         terminate(&state, None);
-        retain_recovery(locked, &path, &state, "sync-conflict")?;
+        retain_recovery(locked, &path, &state, "unready")?;
         let _ = fs::remove_file(path);
-        return Err(error);
+        return Ok(vec![]);
     }
+    let report = match sync_from_guest(&state, config) {
+        Ok(report) => report,
+        Err(error) => {
+            terminate(&state, None);
+            retain_recovery(locked, &path, &state, "sync-failed")?;
+            let _ = fs::remove_file(path);
+            return Err(error);
+        },
+    };
     terminate(&state, None);
     cleanup_files(&state);
     let _ = fs::remove_file(path);
-    Ok(())
+    Ok(state
+        .worktree
+        .as_deref()
+        .map(|worktree| report.warnings(worktree))
+        .unwrap_or_default())
 }
 
-fn sync_one(locked: &LockedState, config: &Config, session: &str, name: &str) -> Result<()> {
+/// A manual sync while the VM keeps running: merge the guest into the host, then bring the
+/// guest up to the merged tree and record it as the new baseline, so both sides agree again.
+fn sync_one(
+    locked: &LockedState,
+    config: &Config,
+    session: &str,
+    name: &str,
+) -> Result<Vec<String>> {
     validate_firecracker_vm_name(name).map_err(|error| anyhow!(error))?;
-    let Some((path, mut state)) = find_vm(&locked.entries()?, session, name)? else {
+    let Some((_, state)) = find_vm(&locked.entries()?, session, name)? else {
         return Err(anyhow!(
             "Firecracker VM {name:?} is not running for session {session:?}"
         ));
@@ -1007,13 +1538,18 @@ fn sync_one(locked: &LockedState, config: &Config, session: &str, name: &str) ->
     if !vm_is_running(&state) {
         return Err(anyhow!("Firecracker VM {name:?} is not running"));
     }
-    sync_from_guest(&state, config)?;
-    state.host_fingerprint = state
-        .worktree
-        .as_deref()
-        .map(tree_fingerprint)
-        .transpose()?;
-    write_state(&path, &state)
+    if !state.ready {
+        return Err(anyhow!(
+            "Firecracker VM {name:?} is still being provisioned; open a pane in it first"
+        ));
+    }
+    let report = sync_from_guest(&state, config)?;
+    let Some(worktree) = state.worktree.as_deref() else {
+        return Ok(vec![]);
+    };
+    push_to_guest(&state, config, worktree)?;
+    write_baseline(&baseline_path(&state)?, &worktree_baseline(worktree)?)?;
+    Ok(report.warnings(worktree))
 }
 
 fn terminate(state: &VmState, mut child: Option<&mut Child>) {
@@ -1106,6 +1642,8 @@ fn retain_recovery(
     reason: &str,
 ) -> Result<()> {
     if let Some(vm_dir) = state.rootfs.parent().filter(|dir| dir.exists()) {
+        // A copy the provider was killed in the middle of has nothing to say about the disk.
+        remove_staging(&vm_dir.join(STAGING_DIR))?;
         let recovery = locked.dir.join("recovery");
         secure_dir(&recovery)?;
         let id = state_path
@@ -1123,6 +1661,13 @@ fn retain_recovery(
         fs::write(
             destination.join("state.json"),
             serde_json::to_vec_pretty(state)?,
+        )?;
+        fs::write(
+            destination.join(RECOVERY_NOTE_FILE),
+            serde_json::to_vec_pretty(&RecoveryNote {
+                reason: reason.to_owned(),
+                retained_at: timestamp,
+            })?,
         )?;
     }
     cleanup_recovery_resources(state);
@@ -1220,9 +1765,10 @@ fn load_config() -> Result<Config> {
     if !config.images_dir.is_absolute() {
         return Err(anyhow!("provider config images_dir must be absolute"));
     }
+    validate_guest_path(&config.guest_cwd, "provider config guest_cwd")?;
     for credential in &config.credential_files {
         expand_home(&credential.host)?;
-        validate_guest_path(&credential.guest)?;
+        validate_guest_path(&credential.guest, "credential guest path")?;
     }
     Ok(config)
 }
@@ -2888,6 +3434,59 @@ fn run(command: &mut Command, context: &str) -> Result<()> {
     }
 }
 
+/// Says what the provider is doing, for the server's inactivity timeout.
+///
+/// One line on stderr as the phase starts and another every few seconds until the guard is
+/// dropped, so a slow boot or a large copy is never mistaken for a hung provider. Anything
+/// else the provider writes to stderr is an error message; the prefix keeps the two apart on
+/// the other side.
+struct Progress {
+    stopped: Arc<(Mutex<bool>, Condvar)>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Progress {
+    const INTERVAL: Duration = Duration::from_secs(5);
+
+    fn start(phase: &str) -> Self {
+        Self::start_into(phase, Box::new(std::io::stderr()), Self::INTERVAL)
+    }
+
+    fn start_into(phase: &str, mut sink: Box<dyn Write + Send>, interval: Duration) -> Self {
+        let line = format!("{PROGRESS_PREFIX}{phase}\n");
+        let stopped = Arc::new((Mutex::new(false), Condvar::new()));
+        let thread = thread::spawn({
+            let stopped = stopped.clone();
+            move || {
+                let (flag, wake) = &*stopped;
+                let mut done = flag.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                while !*done {
+                    let _ = sink.write_all(line.as_bytes()).and_then(|_| sink.flush());
+                    done = wake
+                        .wait_timeout_while(done, interval, |done| !*done)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .0;
+                }
+            }
+        });
+        Self {
+            stopped,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for Progress {
+    fn drop(&mut self) {
+        let (flag, wake) = &*self.stopped;
+        *flag.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+        wake.notify_all();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 fn find_in_path(program: &Path) -> Option<PathBuf> {
     find_in_path_from(program, env::var_os("PATH").as_deref())
 }
@@ -2982,7 +3581,6 @@ mod tests {
             name: "review".to_owned(),
             image: None,
             worktree: None,
-            host_fingerprint: None,
             pid: i32::MAX,
             start_time: 0,
             slot: 0,
@@ -3453,6 +4051,74 @@ mod tests {
         assert!(child.try_wait().unwrap().is_some());
     }
 
+    fn locked_state_in(root: &Path) -> LockedState {
+        LockedState {
+            dir: root.to_owned(),
+            _lock: File::create(root.join("lock")).unwrap(),
+        }
+    }
+
+    /// A session-identified VM moves to its new path; a worktree-identified one keeps its
+    /// path and only its lease changes, with other sessions' leases untouched.
+    #[test]
+    fn rename_session_moves_state_files_and_leases() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let owned = vm_state(root.path().join("a/rootfs.ext4"), PathBuf::new(), None);
+        write_state(&locked.path("work", "review"), &owned).unwrap();
+        let mut shared = vm_state(root.path().join("b/rootfs.ext4"), PathBuf::new(), None);
+        shared.name = "shared".to_owned();
+        shared.worktree = Some(PathBuf::from("/repo"));
+        shared.leases = vec!["other".to_owned(), "work".to_owned()];
+        let shared_path = locked.identity_path("work", "shared", Some(Path::new("/repo")));
+        write_state(&shared_path, &shared).unwrap();
+
+        rename_session(&locked, "work", "renamed").unwrap();
+
+        assert!(!locked.path("work", "review").exists());
+        let moved = read_state(&locked.path("renamed", "review")).unwrap();
+        assert_eq!(moved.session, "renamed");
+        assert_eq!(moved.leases, vec!["renamed".to_owned()]);
+        assert_eq!(moved.rootfs, owned.rootfs, "the disk stays where it is");
+        let leased = read_state(&shared_path).unwrap();
+        assert_eq!(leased.session, "renamed");
+        assert_eq!(
+            leased.leases,
+            vec!["other".to_owned(), "renamed".to_owned()]
+        );
+
+        rename_session(&locked, "renamed", "renamed").unwrap();
+        assert!(locked.path("renamed", "review").exists());
+    }
+
+    /// The new name already owning a VM of the same name refuses the whole rename before
+    /// any file is touched.
+    #[test]
+    fn rename_session_refuses_a_name_collision_without_writing() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let ours = vm_state(PathBuf::from("a/rootfs.ext4"), PathBuf::new(), None);
+        write_state(&locked.path("work", "review"), &ours).unwrap();
+        let mut theirs = ours.clone();
+        theirs.session = "renamed".to_owned();
+        theirs.leases = vec!["renamed".to_owned()];
+        write_state(&locked.path("renamed", "review"), &theirs).unwrap();
+        let mut leased = ours.clone();
+        leased.name = "shared".to_owned();
+        leased.worktree = Some(PathBuf::from("/repo"));
+        let leased_path = locked.identity_path("work", "shared", Some(Path::new("/repo")));
+        write_state(&leased_path, &leased).unwrap();
+
+        assert!(rename_session(&locked, "work", "renamed").is_err());
+
+        assert_eq!(read_state(&locked.path("work", "review")).unwrap(), ours);
+        assert_eq!(
+            read_state(&locked.path("renamed", "review")).unwrap(),
+            theirs
+        );
+        assert_eq!(read_state(&leased_path).unwrap(), leased);
+    }
+
     #[test]
     fn vm_identity_rejects_ambiguous_session_names() {
         let mut state = vm_state(PathBuf::from("rootfs.ext4"), PathBuf::from("vm.sock"), None);
@@ -3481,63 +4147,345 @@ mod tests {
     }
 
     #[test]
-    fn worktree_fingerprint_ignores_root_outputs() {
+    fn worktree_baseline_ignores_root_outputs() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join(".gitignore"), "target/\n").unwrap();
         fs::write(root.path().join("source.rs"), "one").unwrap();
         fs::create_dir(root.path().join("target")).unwrap();
         fs::write(root.path().join("target/output"), "one").unwrap();
-        let original = tree_fingerprint(root.path()).unwrap();
+        let original = worktree_baseline(root.path()).unwrap();
+        assert!(original.contains_key("source.rs"));
+        assert!(!original.contains_key("target/output"));
 
         fs::write(root.path().join("target/output"), "two").unwrap();
-        assert_eq!(tree_fingerprint(root.path()).unwrap(), original);
+        assert_eq!(worktree_baseline(root.path()).unwrap(), original);
     }
 
     #[test]
-    fn worktree_fingerprint_ignores_nested_outputs() {
+    fn worktree_baseline_ignores_nested_outputs() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("source.rs"), "one").unwrap();
         fs::create_dir(root.path().join("nested")).unwrap();
         fs::write(root.path().join("nested/.gitignore"), "generated/\n").unwrap();
         fs::create_dir(root.path().join("nested/generated")).unwrap();
         fs::write(root.path().join("nested/generated/output"), "one").unwrap();
-        let original = tree_fingerprint(root.path()).unwrap();
+        let original = worktree_baseline(root.path()).unwrap();
 
         fs::write(root.path().join("nested/generated/output"), "two").unwrap();
-        assert_eq!(tree_fingerprint(root.path()).unwrap(), original);
+        assert_eq!(worktree_baseline(root.path()).unwrap(), original);
     }
 
     #[test]
-    fn worktree_fingerprint_detects_non_ignored_host_changes() {
+    fn worktree_baseline_detects_non_ignored_host_changes() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("source.rs"), "one").unwrap();
-        let original = tree_fingerprint(root.path()).unwrap();
+        let original = worktree_baseline(root.path()).unwrap();
 
         fs::write(root.path().join("source.rs"), "two").unwrap();
-        assert_ne!(tree_fingerprint(root.path()).unwrap(), original);
-        assert!(ensure_host_unchanged(root.path(), original).is_err());
+        assert_ne!(worktree_baseline(root.path()).unwrap(), original);
     }
 
     #[test]
-    fn worktree_fingerprint_detects_permission_changes() {
+    fn worktree_baseline_detects_permission_changes() {
         let root = tempfile::tempdir().unwrap();
         let script = root.path().join("script.sh");
         fs::write(&script, "#!/bin/sh\n").unwrap();
-        let original = tree_fingerprint(root.path()).unwrap();
+        let original = worktree_baseline(root.path()).unwrap();
 
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-        assert_ne!(tree_fingerprint(root.path()).unwrap(), original);
-        assert!(ensure_host_unchanged(root.path(), original).is_err());
+        assert_ne!(worktree_baseline(root.path()).unwrap(), original);
     }
 
     #[test]
-    fn worktree_fingerprint_ignores_git_metadata() {
+    fn worktree_baseline_ignores_git_metadata() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("source.rs"), "one").unwrap();
-        let without_git = tree_fingerprint(root.path()).unwrap();
+        let without_git = worktree_baseline(root.path()).unwrap();
         fs::create_dir(root.path().join(".git")).unwrap();
         fs::write(root.path().join(".git/HEAD"), "ref: changed").unwrap();
-        assert_eq!(tree_fingerprint(root.path()).unwrap(), without_git);
+        assert_eq!(worktree_baseline(root.path()).unwrap(), without_git);
+    }
+
+    /// An editor save that writes the same bytes, a `touch`, a checkout that restores a file:
+    /// none of them is a change worth refusing a merge over.
+    #[test]
+    fn worktree_baseline_ignores_timestamps() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.rs");
+        fs::write(&source, "one").unwrap();
+        let original = worktree_baseline(root.path()).unwrap();
+
+        File::options()
+            .write(true)
+            .open(&source)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000))
+            .unwrap();
+        assert_eq!(worktree_baseline(root.path()).unwrap(), original);
+    }
+
+    #[test]
+    fn baseline_round_trips_through_its_file() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("source.rs"), "one").unwrap();
+        fs::create_dir(root.path().join("dir")).unwrap();
+        std::os::unix::fs::symlink("source.rs", root.path().join("link")).unwrap();
+        let baseline = worktree_baseline(root.path()).unwrap();
+        assert_eq!(
+            baseline.keys().collect::<Vec<_>>(),
+            ["dir", "link", "source.rs"]
+        );
+
+        let vm_dir = root.path().join("vm");
+        fs::create_dir(&vm_dir).unwrap();
+        let state = vm_state(vm_dir.join("rootfs.ext4"), PathBuf::from("vm.sock"), None);
+        write_baseline(&baseline_path(&state).unwrap(), &baseline).unwrap();
+        assert_eq!(read_baseline(&state).unwrap(), baseline);
+    }
+
+    /// A host worktree and the guest's copy of it, both starting from the same baseline.
+    struct MergeFixture {
+        host: tempfile::TempDir,
+        guest: tempfile::TempDir,
+        baseline: Baseline,
+    }
+
+    impl MergeFixture {
+        fn new(files: &[(&str, &str)]) -> Self {
+            let host = tempfile::tempdir().unwrap();
+            let guest = tempfile::tempdir().unwrap();
+            for (path, content) in files {
+                for root in [host.path(), guest.path()] {
+                    let path = root.join(path);
+                    fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    fs::write(path, content).unwrap();
+                }
+            }
+            let baseline = worktree_baseline(host.path()).unwrap();
+            assert_eq!(worktree_baseline(guest.path()).unwrap(), baseline);
+            Self {
+                host,
+                guest,
+                baseline,
+            }
+        }
+
+        fn merge(&self) -> MergeReport {
+            merge_worktrees(&self.baseline, self.host.path(), self.guest.path()).unwrap()
+        }
+
+        fn host_file(&self, path: &str) -> Option<String> {
+            fs::read_to_string(self.host.path().join(path)).ok()
+        }
+    }
+
+    #[test]
+    fn merge_applies_guest_only_changes_and_deletions() {
+        let fixture = MergeFixture::new(&[
+            ("kept.rs", "same"),
+            ("edited.rs", "before"),
+            ("removed.rs", "gone"),
+            ("dir/removed.rs", "gone"),
+        ]);
+        fs::write(fixture.guest.path().join("edited.rs"), "after").unwrap();
+        fs::write(fixture.guest.path().join("added.rs"), "new").unwrap();
+        fs::create_dir(fixture.guest.path().join("new-dir")).unwrap();
+        fs::write(fixture.guest.path().join("new-dir/inner.rs"), "new").unwrap();
+        fs::remove_file(fixture.guest.path().join("removed.rs")).unwrap();
+        fs::remove_dir_all(fixture.guest.path().join("dir")).unwrap();
+
+        let report = fixture.merge();
+
+        assert_eq!(
+            report.applied,
+            [
+                "added.rs",
+                "dir",
+                "dir/removed.rs",
+                "edited.rs",
+                "new-dir",
+                "new-dir/inner.rs",
+                "removed.rs"
+            ]
+        );
+        assert!(report.conflicts.is_empty());
+        assert_eq!(fixture.host_file("kept.rs").as_deref(), Some("same"));
+        assert_eq!(fixture.host_file("edited.rs").as_deref(), Some("after"));
+        assert_eq!(fixture.host_file("added.rs").as_deref(), Some("new"));
+        assert_eq!(
+            fixture.host_file("new-dir/inner.rs").as_deref(),
+            Some("new")
+        );
+        assert!(!fixture.host.path().join("removed.rs").exists());
+        assert!(!fixture.host.path().join("dir").exists());
+        assert_eq!(
+            worktree_baseline(fixture.host.path()).unwrap(),
+            worktree_baseline(fixture.guest.path()).unwrap()
+        );
+    }
+
+    #[test]
+    fn merge_keeps_host_only_changes() {
+        let fixture = MergeFixture::new(&[("edited.rs", "before"), ("removed.rs", "gone")]);
+        fs::write(fixture.host.path().join("edited.rs"), "host").unwrap();
+        fs::write(fixture.host.path().join("added.rs"), "host").unwrap();
+        fs::remove_file(fixture.host.path().join("removed.rs")).unwrap();
+
+        let report = fixture.merge();
+
+        assert_eq!(report, MergeReport::default());
+        assert_eq!(fixture.host_file("edited.rs").as_deref(), Some("host"));
+        assert_eq!(fixture.host_file("added.rs").as_deref(), Some("host"));
+        assert!(!fixture.host.path().join("removed.rs").exists());
+    }
+
+    #[test]
+    fn merge_keeps_the_host_copy_of_a_conflict_and_writes_the_guest_copy_beside_it() {
+        let fixture = MergeFixture::new(&[("both.rs", "before"), ("src/deep.rs", "before")]);
+        fs::write(fixture.host.path().join("both.rs"), "host").unwrap();
+        fs::write(fixture.guest.path().join("both.rs"), "guest").unwrap();
+        fs::write(fixture.host.path().join("src/deep.rs"), "host").unwrap();
+        fs::write(fixture.guest.path().join("src/deep.rs"), "guest").unwrap();
+        // Added on both sides with different contents is a conflict too.
+        fs::write(fixture.host.path().join("new.rs"), "host").unwrap();
+        fs::write(fixture.guest.path().join("new.rs"), "guest").unwrap();
+        // Added on both sides with the same contents is not.
+        fs::write(fixture.host.path().join("agreed.rs"), "same").unwrap();
+        fs::write(fixture.guest.path().join("agreed.rs"), "same").unwrap();
+
+        let report = fixture.merge();
+
+        assert!(report.applied.is_empty());
+        assert_eq!(
+            report.conflicts,
+            [
+                Conflict {
+                    path: "both.rs".to_owned(),
+                    guest_copy: Some("both.rs.guest".to_owned()),
+                },
+                Conflict {
+                    path: "new.rs".to_owned(),
+                    guest_copy: Some("new.rs.guest".to_owned()),
+                },
+                Conflict {
+                    path: "src/deep.rs".to_owned(),
+                    guest_copy: Some("src/deep.rs.guest".to_owned()),
+                },
+            ]
+        );
+        assert_eq!(fixture.host_file("both.rs").as_deref(), Some("host"));
+        assert_eq!(fixture.host_file("both.rs.guest").as_deref(), Some("guest"));
+        assert_eq!(fixture.host_file("new.rs").as_deref(), Some("host"));
+        assert_eq!(fixture.host_file("new.rs.guest").as_deref(), Some("guest"));
+        assert_eq!(fixture.host_file("src/deep.rs").as_deref(), Some("host"));
+        assert_eq!(
+            fixture.host_file("src/deep.rs.guest").as_deref(),
+            Some("guest")
+        );
+        assert_eq!(fixture.host_file("agreed.rs").as_deref(), Some("same"));
+        assert!(!fixture.host.path().join("agreed.rs.guest").exists());
+
+        let warnings = report.warnings(Path::new("/repo"));
+        assert_eq!(warnings.len(), 3);
+        assert_eq!(
+            warnings[0],
+            "/repo/both.rs: changed on both sides; kept the host copy, the guest copy is /repo/both.rs.guest"
+        );
+    }
+
+    #[test]
+    fn merge_reports_a_guest_deletion_of_a_host_edit_and_keeps_the_host_copy() {
+        let fixture = MergeFixture::new(&[("edited.rs", "before")]);
+        fs::write(fixture.host.path().join("edited.rs"), "host").unwrap();
+        fs::remove_file(fixture.guest.path().join("edited.rs")).unwrap();
+
+        let report = fixture.merge();
+
+        assert_eq!(
+            report.conflicts,
+            [Conflict {
+                path: "edited.rs".to_owned(),
+                guest_copy: None,
+            }]
+        );
+        assert_eq!(fixture.host_file("edited.rs").as_deref(), Some("host"));
+        assert_eq!(
+            report.warnings(Path::new("/repo")),
+            ["/repo/edited.rs: changed on the host and deleted in the guest; kept the host copy"]
+        );
+    }
+
+    #[test]
+    fn merge_keeps_a_directory_the_guest_deleted_while_the_host_added_to_it() {
+        let fixture = MergeFixture::new(&[("dir/old.rs", "old")]);
+        fs::write(fixture.host.path().join("dir/new.rs"), "host").unwrap();
+        fs::remove_dir_all(fixture.guest.path().join("dir")).unwrap();
+
+        let report = fixture.merge();
+
+        assert_eq!(report.applied, ["dir", "dir/old.rs"]);
+        assert!(!fixture.host.path().join("dir/old.rs").exists());
+        assert_eq!(fixture.host_file("dir/new.rs").as_deref(), Some("host"));
+    }
+
+    #[test]
+    fn merge_replaces_a_file_with_a_directory_and_back() {
+        let fixture = MergeFixture::new(&[("was-file", "file"), ("was-dir/inner", "inner")]);
+        fs::remove_file(fixture.guest.path().join("was-file")).unwrap();
+        fs::create_dir(fixture.guest.path().join("was-file")).unwrap();
+        fs::write(fixture.guest.path().join("was-file/inner"), "now a dir").unwrap();
+        fs::remove_dir_all(fixture.guest.path().join("was-dir")).unwrap();
+        fs::write(fixture.guest.path().join("was-dir"), "now a file").unwrap();
+
+        fixture.merge();
+
+        assert_eq!(
+            fixture.host_file("was-file/inner").as_deref(),
+            Some("now a dir")
+        );
+        assert_eq!(fixture.host_file("was-dir").as_deref(), Some("now a file"));
+    }
+
+    #[test]
+    fn merge_copies_symlinks_and_modes() {
+        let fixture = MergeFixture::new(&[("script.sh", "#!/bin/sh\n"), ("target.rs", "t")]);
+        fs::set_permissions(
+            fixture.guest.path().join("script.sh"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("target.rs", fixture.guest.path().join("link")).unwrap();
+
+        fixture.merge();
+
+        assert_eq!(
+            fs::metadata(fixture.host.path().join("script.sh"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        assert_eq!(
+            fs::read_link(fixture.host.path().join("link")).unwrap(),
+            PathBuf::from("target.rs")
+        );
+    }
+
+    #[test]
+    fn guest_workspace_follows_the_configured_cwd() {
+        let root = tempfile::tempdir().unwrap();
+        let state = vm_state(PathBuf::from("rootfs.ext4"), PathBuf::from("vm.sock"), None);
+        let mut config = provider_config(root.path());
+        assert_eq!(
+            guest_workspace(&state, &config),
+            "root@172.31.0.2:/workspace/"
+        );
+        config.guest_cwd = PathBuf::from("/srv/work");
+        assert_eq!(
+            guest_workspace(&state, &config),
+            "root@172.31.0.2:/srv/work/"
+        );
     }
 
     #[test]
@@ -3558,6 +4506,7 @@ mod tests {
         .unwrap();
 
         stage_filtered_worktree(host.path(), staged.path()).unwrap();
+        let baseline = worktree_baseline(host.path()).unwrap();
         assert_eq!(
             fs::read_to_string(staged.path().join("source.rs")).unwrap(),
             "host"
@@ -3579,7 +4528,9 @@ mod tests {
             "guest output",
         )
         .unwrap();
-        apply_filtered_worktree(staged.path(), host.path()).unwrap();
+        let report = merge_worktrees(&baseline, host.path(), staged.path()).unwrap();
+        assert_eq!(report.applied, ["source.rs"]);
+        assert!(report.conflicts.is_empty());
         assert_eq!(
             fs::read_to_string(host.path().join("source.rs")).unwrap(),
             "guest"
@@ -3619,6 +4570,127 @@ mod tests {
         assert!(!vm_is_running(&state));
     }
 
+    /// The state dir follows `$XDG_STATE_HOME` or `$HOME`, either of which may
+    /// contain a space. ssh's option tokenizer would cut an unquoted
+    /// `UserKnownHostsFile=` there, and rsync's `-e` splitter strips one layer
+    /// of quotes before ssh sees the string at all.
+    #[test]
+    fn guest_ssh_commands_quote_the_known_hosts_path() {
+        let root = tempfile::tempdir().unwrap();
+        let mut state = vm_state(
+            root.path().join("rootfs"),
+            root.path().join("api.sock"),
+            None,
+        );
+        state.known_hosts = PathBuf::from("/home/a user/state/known_hosts");
+        let mut config = provider_config(root.path());
+        config.ssh_private_key = PathBuf::from("/home/a user/id_ed25519");
+
+        let command = ssh_command(&state, &config);
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.contains(&r#"UserKnownHostsFile="/home/a user/state/known_hosts""#.to_owned()),
+            "{args:?}"
+        );
+        assert!(args.contains(&"/home/a user/id_ed25519".to_owned()));
+
+        let shell = rsync_remote_shell(&state, &config);
+        assert!(
+            shell.contains(r#"-o 'UserKnownHostsFile="/home/a user/state/known_hosts"'"#),
+            "{shell}"
+        );
+        assert!(shell.ends_with("-i '/home/a user/id_ed25519'"), "{shell}");
+    }
+
+    /// A VM the last attempt left unready is the same VM: provisioning picks up where it
+    /// stopped rather than starting a new disk, which is what lets a worktree too large for
+    /// one attempt converge. Only a VM of a different name or image is replaced.
+    #[test]
+    fn an_unready_vm_of_the_same_identity_is_resumed_not_replaced() {
+        let root = tempfile::tempdir().unwrap();
+        let mut state = vm_state(
+            root.path().join("rootfs"),
+            root.path().join("api.sock"),
+            None,
+        );
+        assert_eq!(
+            existing_vm_disposition(&state, "review", None),
+            Disposition::Resume
+        );
+        assert_eq!(
+            existing_vm_disposition(&state, "other", None),
+            Disposition::Replace
+        );
+        assert_eq!(
+            existing_vm_disposition(&state, "review", Some("rust")),
+            Disposition::Replace
+        );
+
+        state.ready = true;
+        assert_eq!(
+            existing_vm_disposition(&state, "review", None),
+            Disposition::Join
+        );
+        assert!(matches!(
+            existing_vm_disposition(&state, "other", None),
+            Disposition::Refuse(why) if why.contains("\"other\"")
+        ));
+        state.image = Some("rust".to_owned());
+        assert!(matches!(
+            existing_vm_disposition(&state, "review", None),
+            Disposition::Refuse(why) if why.contains("image")
+        ));
+        assert_eq!(
+            existing_vm_disposition(&state, "review", Some("rust")),
+            Disposition::Join
+        );
+    }
+
+    /// The server times a provider out for silence, so a phase that takes a while has to
+    /// keep saying so - and stop saying so the moment it ends.
+    #[test]
+    fn progress_is_reported_until_the_phase_ends() {
+        #[derive(Clone)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl Write for Sink {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let sink = Sink(Arc::new(Mutex::new(vec![])));
+        let progress = Progress::start_into(
+            "copying the worktree into the guest",
+            Box::new(sink.clone()),
+            Duration::from_millis(20),
+        );
+        thread::sleep(Duration::from_millis(100));
+        drop(progress);
+
+        let written = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+        let lines: Vec<_> = written.lines().collect();
+        assert!(lines.len() >= 2, "{written:?}");
+        assert!(
+            lines
+                .iter()
+                .all(|line| *line == "progress: copying the worktree into the guest"),
+            "{written:?}"
+        );
+        let after = sink.0.lock().unwrap().len();
+        thread::sleep(Duration::from_millis(60));
+        assert_eq!(
+            sink.0.lock().unwrap().len(),
+            after,
+            "progress kept reporting after the phase ended"
+        );
+    }
+
     #[test]
     fn retaining_a_vm_removes_its_socket_and_cgroup() {
         let root = tempfile::tempdir().unwrap();
@@ -3630,6 +4702,9 @@ mod tests {
         fs::write(&rootfs, "disk").unwrap();
         fs::write(&api_socket, "socket").unwrap();
         fs::create_dir(&cgroup).unwrap();
+        // A copy the provider was killed in the middle of.
+        fs::create_dir(vm_dir.join(STAGING_DIR)).unwrap();
+        fs::write(vm_dir.join(STAGING_DIR).join("half"), "copied").unwrap();
         let lock = File::create(root.path().join("lock")).unwrap();
         let locked = LockedState {
             dir: root.path().to_owned(),
@@ -3648,14 +4723,31 @@ mod tests {
             .unwrap()
             .path();
         assert!(recovered.join("rootfs.ext4").exists());
+        assert!(
+            !recovered.join(STAGING_DIR).exists(),
+            "the staging scratch space was retained with the disk"
+        );
         assert!(recovered.join("state.json").exists());
+        let note: RecoveryNote =
+            serde_json::from_slice(&fs::read(recovered.join(RECOVERY_NOTE_FILE)).unwrap()).unwrap();
+        assert_eq!(note.reason, "unready");
+        let listed = list_recoveries(&locked, None).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].path, recovered);
+        assert_eq!(listed[0].reason, "unready");
+        assert_eq!(listed[0].retained_at, note.retained_at);
+        assert_eq!(listed[0].session.as_deref(), Some("work"));
+        assert_eq!(listed[0].name.as_deref(), Some("review"));
+        assert!(list_recoveries(&locked, Some("other")).unwrap().is_empty());
+        assert_eq!(list_recoveries(&locked, Some("work")).unwrap().len(), 1);
     }
 
     #[test]
     fn provider_security_boundaries_reject_unsafe_credentials_and_protect_private_networks() {
-        assert!(validate_guest_path(Path::new("/root/.config/codex/auth.json")).is_ok());
-        assert!(validate_guest_path(Path::new("/root/../etc/shadow")).is_err());
-        assert!(validate_guest_path(Path::new("/root/key;touch-pwned")).is_err());
+        assert!(validate_guest_path(Path::new("/root/.config/codex/auth.json"), "path").is_ok());
+        assert!(validate_guest_path(Path::new("/root/../etc/shadow"), "path").is_err());
+        assert!(validate_guest_path(Path::new("/root/key;touch-pwned"), "path").is_err());
+        assert!(validate_guest_path(Path::new("workspace"), "guest_cwd").is_err());
 
         let config = NetworkConfig {
             bridge: "zfc1000".to_owned(),

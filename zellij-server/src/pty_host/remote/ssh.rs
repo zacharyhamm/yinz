@@ -266,9 +266,10 @@ struct SshReconnector {
 }
 
 impl SshOptions {
-    fn args(&self) -> Vec<String> {
+    pub(crate) fn args(&self) -> Vec<String> {
         let mut args = vec![];
         if let Some(path) = &self.identity_file {
+            // `-i` takes its whole argument as the path, so it needs no quoting.
             args.extend([
                 "-o".to_owned(),
                 "IdentitiesOnly=yes".to_owned(),
@@ -279,13 +280,28 @@ impl SshOptions {
         if let Some(path) = &self.known_hosts_file {
             args.extend([
                 "-o".to_owned(),
-                format!("UserKnownHostsFile={}", path.display()),
+                format!("UserKnownHostsFile={}", ssh_option_value(path)),
                 "-o".to_owned(),
                 "StrictHostKeyChecking=yes".to_owned(),
             ]);
         }
         args
     }
+}
+
+/// A path as the value of an `-o Name=value` ssh option.
+///
+/// ssh reads the option string with its config-file tokenizer, which splits on
+/// whitespace even when the whole `Name=value` arrived as one argv entry, so an
+/// unquoted path with a space in it is silently cut at the space. Double quotes
+/// keep the value whole; a quote or backslash inside the path is escaped, which
+/// OpenSSH 8.7 and later understand.
+pub(crate) fn ssh_option_value(path: &Path) -> String {
+    let escaped = path
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    format!("\"{escaped}\"")
 }
 
 impl RemoteHosts {
@@ -760,7 +776,10 @@ fn ssh_common_args(host: &str, options: &SshOptions) -> Vec<String> {
         "-o".to_owned(),
         "ControlMaster=auto".to_owned(),
         "-o".to_owned(),
-        format!("ControlPath={}", control_path(host, options).display()),
+        format!(
+            "ControlPath={}",
+            ssh_option_value(&control_path(host, options))
+        ),
         "-o".to_owned(),
         "ControlPersist=60".to_owned(),
     ];

@@ -55,6 +55,9 @@ struct MockOsApi {
     rerun_commands: Arc<Mutex<Vec<RunCommand>>>,
     rerun_failures: Arc<Mutex<std::collections::HashSet<u32>>>,
     clear_failures: Arc<Mutex<std::collections::HashSet<u32>>>,
+    /// Every id handed to `clear_terminal_id`, the teardown funnel, so a test can assert a
+    /// pane that was closed out from under a worker still went through it.
+    cleared_terminal_ids: Arc<Mutex<Vec<u32>>>,
     firecracker_started: Arc<Barrier>,
     firecracker_release: Arc<Barrier>,
     firecracker_transport_started: Arc<Barrier>,
@@ -83,6 +86,7 @@ impl MockOsApi {
             rerun_commands: Arc::new(Mutex::new(Vec::new())),
             rerun_failures: Arc::new(Mutex::new(std::collections::HashSet::new())),
             clear_failures: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            cleared_terminal_ids: Arc::new(Mutex::new(Vec::new())),
             firecracker_started: Arc::new(Barrier::new(1)),
             firecracker_release: Arc::new(Barrier::new(1)),
             firecracker_transport_started: Arc::new(Barrier::new(1)),
@@ -389,6 +393,7 @@ impl ServerOsApi for MockOsApi {
         Ok((Box::new(crate::os_input_output::NullAsyncReader), None))
     }
     fn clear_terminal_id(&self, terminal_id: u32) -> anyhow::Result<()> {
+        self.cleared_terminal_ids.lock().unwrap().push(terminal_id);
         (!self.clear_failures.lock().unwrap().contains(&terminal_id))
             .then_some(())
             .context("injected clear failure")
@@ -1195,6 +1200,105 @@ fn a_firecracker_rerun_does_not_block_the_pty_during_transport() {
             .0,
         PtyInstruction::FirecrackerReRunSpawned(..)
     ));
+}
+
+/// The worker has already registered the remote transport and started the guest command by
+/// the time `FirecrackerReRunSpawned` is sent, so a pane closed in the meantime still has to
+/// go through `clear_terminal_id` when that message lands — otherwise the guest command and
+/// the transport entry outlive the pane, and the id stays marked as in transport forever.
+#[test]
+fn closing_a_pane_mid_transport_tears_down_the_late_spawn() {
+    let mut os_api = MockOsApi::new();
+    os_api.firecracker_transport_started = Arc::new(Barrier::new(2));
+    os_api.firecracker_transport_release = Arc::new(Barrier::new(2));
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let (pty_tx, pty_rx) = channels::unbounded();
+    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    let command = RunCommand {
+        command: PathBuf::from("claude"),
+        firecracker_vm: Some("review".to_owned()),
+        ..Default::default()
+    };
+
+    pty.defer_firecracker_rerun(PaneId::Terminal(41), command, None)
+        .unwrap();
+    let (instruction, _) = pty_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .unwrap();
+    let PtyInstruction::FirecrackerReRunResolved(
+        pane_id,
+        command,
+        completion_tx,
+        generation,
+        resolution,
+    ) = instruction
+    else {
+        panic!("expected resolved Firecracker rerun")
+    };
+    pty.firecracker_reruns_in_transport.insert(41);
+    pty.defer_resolved_firecracker_rerun(
+        pane_id,
+        command,
+        completion_tx,
+        generation,
+        resolution.unwrap(),
+    )
+    .unwrap();
+    os_api.firecracker_transport_started.wait();
+    // A rerun asked for while the spawn is in transport is parked behind it; it must go
+    // with the pane rather than being started against a closed one.
+    pty.queued_firecracker_reruns.insert(
+        41,
+        (
+            RunCommand {
+                command: PathBuf::from("claude"),
+                firecracker_vm: Some("review".to_owned()),
+                ..Default::default()
+            },
+            None,
+        ),
+    );
+    assert!(pty.close_pane(PaneId::Terminal(41)).is_ok());
+    let closed_at = os_api.cleared_terminal_ids.lock().unwrap().len();
+    os_api.firecracker_transport_release.wait();
+
+    let (instruction, _) = pty_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .unwrap();
+    let PtyInstruction::FirecrackerReRunSpawned(
+        pane_id,
+        command,
+        _completion_tx,
+        generation,
+        previous_host,
+        requested_cwd,
+        spawned,
+    ) = instruction
+    else {
+        panic!("expected spawned Firecracker rerun")
+    };
+    pty.handle_firecracker_rerun_spawned(
+        pane_id,
+        command,
+        generation,
+        previous_host,
+        requested_cwd,
+        spawned,
+    )
+    .unwrap();
+
+    assert_eq!(
+        os_api.cleared_terminal_ids.lock().unwrap()[closed_at..],
+        [41],
+        "the late spawn must be torn down through the funnel"
+    );
+    assert!(!pty.firecracker_reruns_in_transport.contains(&41));
+    assert!(!pty.queued_firecracker_reruns.contains_key(&41));
+    assert!(!pty.pending_firecracker_reruns.contains_key(&41));
+    assert!(
+        pty_rx.try_recv().is_err(),
+        "no rerun may be started for a closed pane"
+    );
 }
 
 #[test]
