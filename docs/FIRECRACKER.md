@@ -15,7 +15,7 @@ The included provider supports x86_64 Linux. It requires:
 - Firecracker on `PATH`
 - `curl`, `git`, `rsync`, `sha256sum`, `ssh`, `ssh-keygen`, `ssh-keyscan`, `unshare`,
   `unsquashfs`, and `mkfs.ext4`
-- `ip`, `nft`, and `systemd` for the one-time host network setup
+- `ip`, `iptables`, and `systemd` for the one-time host network setup
 
 From a Zellij checkout, build the binaries and run the interactive setup:
 

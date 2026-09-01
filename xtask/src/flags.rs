@@ -131,7 +131,7 @@ xflags::xflags! {
         cmd firecracker-test {
             /// Build the guest image and provider
             optional --build
-            /// Run the tests in an isolated network namespace
+            /// Run the tests with a temporary sudo-managed host network
             optional --test
             /// Remove generated images and test state
             optional --clean

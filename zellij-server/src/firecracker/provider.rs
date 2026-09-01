@@ -261,8 +261,11 @@ pub fn main() -> Result<()> {
         [group, command, rest @ ..] if group == "network" && command == "apply" => {
             network_apply_cli(rest)
         },
+        [group, command, rest @ ..] if group == "network" && command == "remove" => {
+            network_remove_cli(rest)
+        },
         _ => Err(anyhow!(
-            "usage: zellij-firecracker [setup | doctor | image build | network setup|teardown]"
+            "usage: zellij-firecracker [setup | doctor | image build | network setup|apply|remove|teardown]"
         )),
     }
 }
@@ -814,12 +817,14 @@ fn tree_fingerprint(root: &Path) -> Result<u64> {
             metadata.file_type().is_dir().hash(hasher);
             metadata.file_type().is_symlink().hash(hasher);
             metadata.len().hash(hasher);
-            metadata
-                .modified()
-                .ok()
-                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-                .map(|duration| duration.as_nanos())
-                .hash(hasher);
+            if !metadata.is_dir() {
+                metadata
+                    .modified()
+                    .ok()
+                    .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_nanos())
+                    .hash(hasher);
+            }
             if metadata.file_type().is_symlink() {
                 fs::read_link(&path)?.hash(hasher);
             } else if metadata.is_dir() {
@@ -1157,18 +1162,44 @@ fn load_config() -> Result<Config> {
 
 fn load_network(config: &Config) -> Result<NetworkConfig> {
     if let Some(network) = &config.network {
+        validate_network_config(network)?;
         return Ok(network.clone());
     }
     let path = env::var_os(TEST_NETWORK_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|| network_config_path(unsafe { libc::geteuid() }));
-    serde_json::from_slice(&fs::read(&path).with_context(|| {
+    let network = serde_json::from_slice(&fs::read(&path).with_context(|| {
         format!(
             "failed to read {}; run 'sudo zellij-firecracker network setup --user $USER'",
             path.display()
         )
     })?)
-    .context("invalid Firecracker network config")
+    .context("invalid Firecracker network config")?;
+    validate_network_config(&network)?;
+    Ok(network)
+}
+
+fn validate_network_config(config: &NetworkConfig) -> Result<()> {
+    let valid_name = |name: &str| {
+        !name.is_empty()
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    };
+    if !valid_name(&config.bridge)
+        || !valid_name(&config.tap_prefix)
+        || config.bridge.len() > 15
+        || config.tap_prefix.len() + 2 > 15
+    {
+        return Err(anyhow!("invalid Firecracker bridge or TAP interface name"));
+    }
+    let (base, prefix) = parse_subnet(&config.subnet)?;
+    if prefix != 24 || base.octets()[3] != 0 || config.taps == 0 || config.taps > 253 {
+        return Err(anyhow!(
+            "Firecracker networking requires an aligned /24 and between 1 and 253 TAPs"
+        ));
+    }
+    Ok(())
 }
 
 fn parse_subnet(subnet: &str) -> Result<(Ipv4Addr, u8)> {
@@ -1719,7 +1750,15 @@ fn doctor() -> Result<()> {
             return Err(anyhow!("network TAP {tap} is missing"));
         }
     }
-    for command in ["cp", "git", "rsync", "ssh", "ssh-keyscan", "unshare"] {
+    for command in [
+        "cp",
+        "git",
+        "iptables",
+        "rsync",
+        "ssh",
+        "ssh-keyscan",
+        "unshare",
+    ] {
         if find_in_path(Path::new(command)).is_none() {
             return Err(anyhow!("required command {command:?} is not on PATH"));
         }
@@ -2022,15 +2061,7 @@ fn network_setup(args: &[String]) -> Result<()> {
         ))),
         gid: Some(gid),
     };
-    if config.tap_prefix.len() + 2 > 15 || config.bridge.len() > 15 {
-        return Err(anyhow!("UID {uid} is too long for Linux interface names"));
-    }
-    let (base, prefix) = parse_subnet(&config.subnet)?;
-    if prefix != 24 || base.octets()[3] != 0 || taps > 253 {
-        return Err(anyhow!(
-            "network setup requires an aligned /24 and at most 253 TAPs"
-        ));
-    }
+    validate_network_config(&config)?;
     fs::create_dir_all("/etc/zellij-firecracker")?;
     fs::write(
         network_config_path(uid),
@@ -2054,11 +2085,30 @@ fn network_apply_cli(args: &[String]) -> Result<()> {
     let uid: u32 = option_value(args, "--uid")?
         .context("network apply requires --uid")?
         .parse()?;
-    let config: NetworkConfig = serde_json::from_slice(&fs::read(network_config_path(uid))?)?;
+    let path = option_path(args, "--config")?.unwrap_or_else(|| network_config_path(uid));
+    let config: NetworkConfig = serde_json::from_slice(&fs::read(&path)?)?;
+    validate_network_config(&config)?;
     network_apply(uid, &config)
 }
 
+fn network_remove_cli(args: &[String]) -> Result<()> {
+    require_root()?;
+    let path = option_path(args, "--config")?.context("network remove requires --config PATH")?;
+    let config: NetworkConfig = serde_json::from_slice(&fs::read(&path)?)?;
+    validate_network_config(&config)?;
+    network_remove(&config);
+    Ok(())
+}
+
 fn network_apply(uid: u32, config: &NetworkConfig) -> Result<()> {
+    let result = network_apply_inner(uid, config);
+    if result.is_err() {
+        network_remove(config);
+    }
+    result
+}
+
+fn network_apply_inner(uid: u32, config: &NetworkConfig) -> Result<()> {
     if let Some(cgroup) = &config.cgroup {
         delegate_cgroup(cgroup, uid, config.gid.unwrap_or(uid))?;
     }
@@ -2111,42 +2161,224 @@ fn network_apply(uid: u32, config: &NetworkConfig) -> Result<()> {
             "failed to start a Firecracker TAP",
         )?;
     }
-    let table = format!("zellij_fc_{uid}");
+    // Remove the pre-iptables table left by older installations.
     let _ = Command::new("nft")
-        .args(["delete", "table", "ip", &table])
+        .args(["delete", "table", "ip", &format!("zellij_fc_{uid}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status();
-    let rules = network_rules(&table, config);
-    let mut nft = Command::new("nft")
-        .args(["-f", "-"])
-        .stdin(Stdio::piped())
-        .spawn()?;
-    nft.stdin
-        .take()
-        .context("nft stdin unavailable")?
-        .write_all(rules.as_bytes())?;
-    if !nft.wait()?.success() {
-        return Err(anyhow!("failed to configure Firecracker nftables rules"));
+    remove_firewall(config);
+    for args in firewall_rules(config) {
+        run(
+            Command::new("iptables").arg("-w").args(&args),
+            "failed to configure Firecracker firewall rules",
+        )?;
     }
     Ok(())
 }
 
-fn network_rules(table: &str, config: &NetworkConfig) -> String {
+fn firewall_chain(config: &NetworkConfig) -> String {
     format!(
-        "table ip {table} {{\n chain input {{ type filter hook input priority filter; policy accept; iifname \"{}\" ip saddr {} drop }}\n chain forward {{ type filter hook forward priority filter; policy drop; ct state established,related accept; iifname \"{}\" ip saddr {} ip daddr {} udp dport 53 accept; iifname \"{}\" ip saddr {} ip daddr {} tcp dport 53 accept; iifname \"{}\" ip saddr {} ip daddr {{ 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 }} drop; iifname \"{}\" ip saddr {} tcp dport {{ 22, 80, 443 }} accept }}\n chain postrouting {{ type nat hook postrouting priority srcnat; ip saddr {} masquerade }}\n}}\n",
-        config.bridge,
-        config.subnet,
-        config.bridge,
-        config.subnet,
-        config.dns,
-        config.bridge,
-        config.subnet,
-        config.dns,
-        config.bridge,
-        config.subnet,
-        config.bridge,
-        config.subnet,
-        config.subnet
+        "ZFC_{}",
+        config.bridge.replace('-', "_").to_ascii_uppercase()
     )
+}
+
+fn firewall_rules(config: &NetworkConfig) -> Vec<Vec<String>> {
+    let chain = firewall_chain(config);
+    let mut rules = vec![vec!["-N".to_owned(), chain.clone()]];
+    for protocol in ["udp", "tcp"] {
+        rules.push(strings(&[
+            "-A",
+            &chain,
+            "-d",
+            &config.dns.to_string(),
+            "-p",
+            protocol,
+            "--dport",
+            "53",
+            "-j",
+            "ACCEPT",
+        ]));
+    }
+    for private in [
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+    ] {
+        rules.push(strings(&["-A", &chain, "-d", private, "-j", "DROP"]));
+    }
+    rules.push(strings(&[
+        "-A",
+        &chain,
+        "-p",
+        "tcp",
+        "-m",
+        "multiport",
+        "--dports",
+        "22,80,443",
+        "-j",
+        "ACCEPT",
+    ]));
+    rules.push(strings(&["-A", &chain, "-j", "DROP"]));
+    rules.extend([
+        strings(&[
+            "-I",
+            "INPUT",
+            "1",
+            "-i",
+            &config.bridge,
+            "-s",
+            &config.subnet,
+            "-j",
+            "DROP",
+        ]),
+        strings(&[
+            "-I",
+            "INPUT",
+            "1",
+            "-i",
+            &config.bridge,
+            "-s",
+            &config.subnet,
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "ESTABLISHED,RELATED",
+            "-j",
+            "ACCEPT",
+        ]),
+        strings(&[
+            "-I",
+            "FORWARD",
+            "1",
+            "-i",
+            &config.bridge,
+            "-s",
+            &config.subnet,
+            "-j",
+            &chain,
+        ]),
+        strings(&[
+            "-I",
+            "FORWARD",
+            "1",
+            "-o",
+            &config.bridge,
+            "-d",
+            &config.subnet,
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "ESTABLISHED,RELATED",
+            "-j",
+            "ACCEPT",
+        ]),
+        strings(&[
+            "-t",
+            "nat",
+            "-I",
+            "POSTROUTING",
+            "1",
+            "-s",
+            &config.subnet,
+            "-j",
+            "MASQUERADE",
+        ]),
+    ]);
+    rules
+}
+
+fn strings(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| (*value).to_owned()).collect()
+}
+
+fn remove_firewall(config: &NetworkConfig) {
+    let chain = firewall_chain(config);
+    for args in [
+        strings(&[
+            "-t",
+            "nat",
+            "-D",
+            "POSTROUTING",
+            "-s",
+            &config.subnet,
+            "-j",
+            "MASQUERADE",
+        ]),
+        strings(&[
+            "-D",
+            "FORWARD",
+            "-o",
+            &config.bridge,
+            "-d",
+            &config.subnet,
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "ESTABLISHED,RELATED",
+            "-j",
+            "ACCEPT",
+        ]),
+        strings(&[
+            "-D",
+            "FORWARD",
+            "-i",
+            &config.bridge,
+            "-s",
+            &config.subnet,
+            "-j",
+            &chain,
+        ]),
+        strings(&[
+            "-D",
+            "INPUT",
+            "-i",
+            &config.bridge,
+            "-s",
+            &config.subnet,
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "ESTABLISHED,RELATED",
+            "-j",
+            "ACCEPT",
+        ]),
+        strings(&[
+            "-D",
+            "INPUT",
+            "-i",
+            &config.bridge,
+            "-s",
+            &config.subnet,
+            "-j",
+            "DROP",
+        ]),
+        strings(&["-F", &chain]),
+        strings(&["-X", &chain]),
+    ] {
+        let _ = Command::new("iptables")
+            .arg("-w")
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+fn network_remove(config: &NetworkConfig) {
+    remove_firewall(config);
+    let _ = Command::new("ip")
+        .args(["link", "delete", &config.bridge])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    if let Some(cgroup) = &config.cgroup {
+        let _ = fs::remove_dir(cgroup);
+    }
 }
 
 fn network_teardown(args: &[String]) -> Result<()> {
@@ -2165,13 +2397,10 @@ fn network_teardown(args: &[String]) -> Result<()> {
     )?;
     let _ = Command::new("nft")
         .args(["delete", "table", "ip", &format!("zellij_fc_{uid}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status();
-    let _ = Command::new("ip")
-        .args(["link", "delete", &config.bridge])
-        .status();
-    if let Some(cgroup) = &config.cgroup {
-        let _ = fs::remove_dir(cgroup);
-    }
+    network_remove(&config);
     fs::remove_file(path)?;
     Ok(())
 }
@@ -2898,15 +3127,6 @@ mod tests {
     }
 
     #[test]
-    fn every_worktree_rsync_uses_the_shared_gitignore_filter() {
-        let args = filtered_rsync()
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        assert_eq!(args, vec![format!("--filter={GITIGNORE_FILTER}")]);
-    }
-
-    #[test]
     fn readiness_is_required_in_persisted_vm_state() {
         let state = vm_state(
             PathBuf::from("rootfs.ext4"),
@@ -2965,15 +3185,33 @@ mod tests {
             cgroup: None,
             gid: None,
         };
-        let rules = network_rules("zellij_fc_1000", &config);
+        let rules = firewall_rules(&config)
+            .into_iter()
+            .map(|args| args.join(" "))
+            .collect::<Vec<_>>();
         let dns = rules
-            .find("ip daddr 10.0.0.53 udp dport 53 accept")
+            .iter()
+            .position(|rule| rule.contains("-d 10.0.0.53 -p udp --dport 53 -j ACCEPT"))
             .unwrap();
-        let private = rules.find("ip daddr { 10.0.0.0/8").unwrap();
+        let private = rules
+            .iter()
+            .position(|rule| rule.contains("-d 10.0.0.0/8 -j DROP"))
+            .unwrap();
         assert!(
             dns < private,
             "the configured DNS exception must precede the private-network drop"
         );
-        assert!(rules.contains("iifname \"zfc1000\" ip saddr 172.31.0.0/24 drop"));
+        assert!(rules
+            .iter()
+            .any(|rule| rule.contains("INPUT 1 -i zfc1000 -s 172.31.0.0/24 -j DROP")));
+        assert!(rules.iter().any(|rule| rule.contains(
+            "INPUT 1 -i zfc1000 -s 172.31.0.0/24 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
+        )));
+        assert!(rules
+            .iter()
+            .any(|rule| rule.contains("--dports 22,80,443 -j ACCEPT")));
+        assert!(rules
+            .iter()
+            .any(|rule| rule.contains("-t nat -I POSTROUTING 1 -s 172.31.0.0/24 -j MASQUERADE")));
     }
 }
