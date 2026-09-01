@@ -68,6 +68,7 @@ fn summaries_are_mirrored_and_restored_without_their_hash() {
         title: "task".to_owned(),
         awaiting: false,
         hash,
+        created_at_ms: None,
     };
     let stored = |state: &State| {
         let rows = state

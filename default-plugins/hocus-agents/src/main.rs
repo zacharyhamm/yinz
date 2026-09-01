@@ -171,6 +171,13 @@ enum Focus {
     History,
 }
 
+/// How often the pane wakes to redraw its ages, in seconds.
+///
+/// A minute, because that is the finest bucket `agents::short_age` has: a faster tick would
+/// redraw for a number that cannot have changed, and a slower one would leave the column
+/// reading a minute behind.
+const AGE_TICK_SECS: f64 = 60.0;
+
 register_plugin!(State);
 
 impl ZellijPlugin for State {
@@ -179,7 +186,9 @@ impl ZellijPlugin for State {
             EventType::Key,
             EventType::Mouse,
             EventType::PermissionRequestResult,
+            EventType::Timer,
         ]);
+        set_timeout(AGE_TICK_SECS);
         set_selectable(true);
         rename_plugin_pane(get_plugin_ids().plugin_id, "agents");
         // Unconditional, and before there are any rows: what this first one carries
@@ -195,6 +204,14 @@ impl ZellijPlugin for State {
         let rendered = match event {
             Event::Key(key) => self.on_key(key),
             Event::Mouse(mouse_event) => self.on_mouse(mouse_event),
+            // The ages in the history half are drawn from the clock, so nothing the pane
+            // receives can tell it they have moved on. Re-armed whatever the answer, so the
+            // column keeps ticking; a redraw only where an age is actually on screen, so a
+            // pane showing nothing time-dependent still costs nothing to leave open.
+            Event::Timer(_) => {
+                set_timeout(AGE_TICK_SECS);
+                self.shows_an_age()
+            },
             _ => false,
         };
         // Where the cursor moved to is hocus's business, not only this pane's: it
@@ -831,7 +848,32 @@ impl State {
         let Some(StripRow::Agent { kind, .. }) = self.rows.get(self.selected) else {
             return agents::HistoryLines::default();
         };
-        agents::summary_history(pane_id, kind, summary, width)
+        agents::summary_history(pane_id, kind, summary, width, now_ms())
+    }
+
+    /// Whether anything the history half draws is an age - the one thing on this pane that
+    /// goes stale on its own.
+    ///
+    /// Asked of the same two sources `history_lines` draws from, in the same order, so the
+    /// answer cannot claim an age the half is not showing.
+    fn shows_an_age(&self) -> bool {
+        if let Some(run) = self
+            .run
+            .as_ref()
+            .filter(|run| self.selected_run_matches(run))
+        {
+            return run
+                .entries
+                .iter()
+                .any(|entry| entry.created_at_ms.is_some())
+                || run
+                    .summary
+                    .as_ref()
+                    .is_some_and(|summary| summary.created_at_ms.is_some());
+        }
+        self.selection()
+            .and_then(|pane_id| self.summaries.get(&pane_id))
+            .is_some_and(|summary| summary.created_at_ms.is_some())
     }
 
     /// Move the history half by `delta` lines, positive being backward into the past, and say
@@ -1088,9 +1130,83 @@ mod tests {
                     title: "running the tests".to_owned(),
                     awaiting,
                     hash: 1,
+                    created_at_ms: None,
                 },
             )]),
         }
+    }
+
+    /// The ages are drawn from the clock, so the minute tick is the only thing that can
+    /// refresh them - and it redraws only where there is an age on screen, so a pane showing
+    /// nothing time-dependent still costs nothing to leave open.
+    #[test]
+    fn the_minute_tick_redraws_only_where_an_age_is_shown() {
+        let mut state = State::default();
+        state.set_rows(with_summary(
+            strip(),
+            3,
+            "Waiting on a permission prompt.",
+            true,
+        ));
+        assert!(
+            !state.shows_an_age(),
+            "a summary made before there were stamps has no age to move"
+        );
+
+        let mut stamped = with_summary(strip(), 3, "Waiting on a permission prompt.", true);
+        stamped
+            .summaries
+            .get_mut(&3)
+            .expect("the summary just pushed")
+            .created_at_ms = Some(1);
+        state.set_rows(stamped);
+        assert!(state.shows_an_age());
+
+        // And a run, whose entries wear their ages in a column of their own.
+        state.run = Some(a_run());
+        state.set_rows(unfocused(vec![
+            StripRow::Project("hocus".to_owned()),
+            StripRow::Run {
+                run_id: "claude:session-1".to_owned(),
+                text: "claude · hook history".to_owned(),
+                kind: "claude".to_owned(),
+            },
+        ]));
+        assert!(!state.shows_an_age(), "nothing in `a_run` is stamped");
+        state
+            .run
+            .as_mut()
+            .expect("loaded")
+            .entries
+            .first_mut()
+            .expect("a timeline")
+            .created_at_ms = Some(1);
+        assert!(state.shows_an_age());
+    }
+
+    /// The once-a-second push that moves nothing must cost nothing: `generation` is what
+    /// throws the history cache away, and the cache exists to keep a settled pane from
+    /// re-parsing a summary's markdown every second.
+    ///
+    /// A summary carries the time it was made now, and `Summary` derives `PartialEq`, so a
+    /// daemon that re-stamped an unchanged summary would move `generation` on every poll.
+    /// `agents::stamp_summary` is what stops that; this is the pane's half of the same claim.
+    #[test]
+    fn a_summary_that_says_the_same_thing_does_not_bounce_the_history_cache() {
+        let mut state = State::default();
+        let push = || with_summary(strip(), 3, "Waiting on a permission prompt.", true);
+        assert!(state.set_rows(push()));
+        state.fill_history_cache(48);
+        let generation = state.generation;
+        let cached = state.history().clone();
+
+        assert!(
+            !state.set_rows(push()),
+            "the same rows and the same summary said nothing"
+        );
+        assert_eq!(state.generation, generation);
+        state.fill_history_cache(48);
+        assert_eq!(state.history(), &cached, "and the cache survived it");
     }
 
     #[test]
@@ -1531,14 +1647,14 @@ mod tests {
             false,
         ));
         state.fill_history_cache(48);
-        assert_eq!(state.history_label(), "claude · active");
+        assert_eq!(state.history_label(), "claude:session-1");
 
         // And walking away from an answer that never came takes the hint with it. `update`
         // is what clears it, and reaches the host to re-send the selection, so what is
         // driven here is the guard that makes the clearing safe rather than the clearing:
         // a hint left standing by any route still cannot claim the row it is not about.
         state.on_key(KeyWithModifier::new(BareKey::Char('s')));
-        assert_eq!(state.history_label(), "claude · active · summarising…");
+        assert_eq!(state.history_label(), "claude:session-1 · summarising…");
         state.on_key(KeyWithModifier::new(BareKey::Down));
         state.fill_history_cache(48);
         assert_eq!(
@@ -1562,7 +1678,7 @@ mod tests {
         state.run = Some(a_run());
 
         let history = state.history_lines(48);
-        assert_eq!(history.label, "claude · archived");
+        assert_eq!(history.label, "claude:session-1");
         assert!(history
             .entries
             .iter()
@@ -1960,6 +2076,7 @@ mod tests {
                 title: "hook history".to_owned(),
                 awaiting: false,
                 hash: 0,
+                created_at_ms: None,
             }),
             entries: vec![
                 agents::RunEntry {

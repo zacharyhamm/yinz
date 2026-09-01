@@ -769,6 +769,7 @@ the daemon's model last said about an idle agent's pane. Both are keyed `<sessio
 | `kind` | text | `agent_latch` only - `claude`, `codex`, ... |
 | `text`, `title` | text | `agent_summary` only |
 | `awaiting` | bool | `agent_summary` only |
+| `created_at_ms` | int | `agent_summary` only - epoch milliseconds it was made; absent on a summary stored before this attribute existed |
 
 The session is half the key because the store is not per-session: one file serves every zellij
 server on the machine, so a bare pane id would make two sessions' pane 5 into one row. Filter by

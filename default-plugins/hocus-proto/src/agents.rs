@@ -660,6 +660,9 @@ pub fn local_summary(message: &str, hash: u64) -> Option<Summary> {
         title: String::new(),
         awaiting: false,
         hash,
+        // Stamped by whoever stores it: this has no clock, and a summary nobody kept has no
+        // age worth carrying.
+        created_at_ms: None,
     })
 }
 
@@ -739,6 +742,40 @@ pub struct Summary {
     /// is where it comes from.
     #[serde(default)]
     pub hash: u64,
+    /// When this summary was made, epoch milliseconds. `None` for a summary made before the
+    /// field existed, and for one a parser built before anybody stamped it - the daemon sets
+    /// it as it stores the summary, which is the only place with a clock.
+    #[serde(default)]
+    pub created_at_ms: Option<i64>,
+}
+
+/// Whether two summaries say the same thing: the same words, the same title and the same
+/// claim about who the turn is waiting on.
+///
+/// Deliberately not `PartialEq`. The hash is a fact about the pane's screen at the moment the
+/// summary was made, and the stamp is a fact about when it was made; neither is part of what
+/// the summary *says*, and a re-summary that changed no word is the same answer told twice.
+pub fn summary_says_same(a: &Summary, b: &Summary) -> bool {
+    a.text == b.text && a.title == b.title && a.awaiting == b.awaiting
+}
+
+/// Stamp `summary` with the time it was made, keeping `previous`'s stamp where the two say
+/// the same thing.
+///
+/// The daemon re-summarises a settled pane on its own schedule and often gets the same answer
+/// back. Stamping that unconditionally would make the panel show an age counting from the last
+/// poll while the stored row - which [`rows::summary_diff_mutations`] leaves alone, because
+/// nothing it holds changed - keeps counting from the first, so the same summary would read as
+/// minutes old until a restart and hours old after one. The age belongs to what the summary
+/// says, not to the poll that repeated it.
+///
+/// Call it after any fixup to `awaiting`: it is part of what a summary says, so a stamp taken
+/// before the fixup compares the wrong summary.
+pub fn stamp_summary(summary: &mut Summary, previous: Option<&Summary>, now_ms: i64) {
+    summary.created_at_ms = previous
+        .filter(|previous| summary_says_same(previous, summary))
+        .and_then(|previous| previous.created_at_ms)
+        .or(Some(now_ms));
 }
 
 /// The record `agent_register` writes for a pane: the kind a person gave it, `idle` as a
@@ -950,6 +987,42 @@ pub fn run_id(kind: &str, pane_id: u32, session_id: &str, started_at_ms: i64) ->
     }
 }
 
+/// A run id in the width a divider can afford: [`run_id`] read backwards, with the half no
+/// person reads dropped.
+///
+/// Both shapes `run_id` builds are longer than an agents pane is wide - a session id is a
+/// uuid, and the fallback ends in a raw epoch - and `fit_label` cuts from the tail, so the
+/// whole id is no id at all on a narrow half. A uuid is recognised by its first few
+/// characters and nothing else, and the timestamp in the fallback says only that the run
+/// began, which the row it labels already says.
+pub fn short_run_id(id: &str) -> String {
+    let mut parts = id.splitn(4, ':');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        // `kind:pane:<n>:<started at>` - the pane is the name, the epoch is bookkeeping.
+        (Some(kind), Some("pane"), Some(pane_id), Some(_)) => format!("{kind}:pane:{pane_id}"),
+        // `kind:<session id>` - as much of the session id as tells one run from another.
+        (Some(kind), Some(session_id), None, None) => {
+            let short: String = match session_id.chars().count() > KEEP_SESSION_ID_UPTO {
+                true => session_id.chars().take(SHORT_SESSION_ID).collect(),
+                false => session_id.to_owned(),
+            };
+            format!("{kind}:{short}")
+        },
+        // Neither shape: whatever it is, it is not ours to shorten.
+        _ => id.to_owned(),
+    }
+}
+
+/// How much of a long session id [`short_run_id`] keeps. Eight characters of a uuid is the
+/// length git settled on for the same job, and the same reasoning applies: the ids being told
+/// apart are the handful a pane has run, not every id there could be.
+const SHORT_SESSION_ID: usize = 8;
+
+/// A session id at most this long is left whole: it already fits a divider, and cutting an id
+/// that was going to be read in full is a loss for no room gained. Only the uuids are long
+/// enough to be worth [`SHORT_SESSION_ID`].
+const KEEP_SESSION_ID_UPTO: usize = 16;
+
 /// The stored run a pane's record points at, where it points at one.
 ///
 /// Two roads to the same answer, in order of authority. The record may *name* the run
@@ -1105,7 +1178,9 @@ pub fn push_summary_entry(run: &mut AgentRun, text: &str, now_ms: i64) -> bool {
 /// hand, and what the daemon last said about each idle pane, so a hocus reload keeps both.
 /// hocus is the only writer; see `store::agent_latch_def` and `store::agent_summary_def`.
 pub mod rows {
-    use super::{AgentRun, AgentRunHeader, RunEntry, RunEntryKind, Summaries, Summary};
+    use super::{
+        summary_says_same, AgentRun, AgentRunHeader, RunEntry, RunEntryKind, Summaries, Summary,
+    };
     use crate::store::Backend;
     use std::collections::{BTreeMap, BTreeSet};
     use zellij_tile::prelude::{
@@ -1395,14 +1470,17 @@ pub mod rows {
         pane_id: u32,
         summary: &Summary,
     ) -> Mutation {
-        Mutation::put(SUMMARY_ENTITY)
+        let mut put = Mutation::put(SUMMARY_ENTITY)
             .uid(pane_uid(zellij_session_name, pane_id))
             .set("pane_id", pane_id)
             .set("zellij_session_name", zellij_session_name)
             .set("text", summary.text.clone())
             .set("title", summary.title.clone())
-            .set("awaiting", summary.awaiting)
-            .build()
+            .set("awaiting", summary.awaiting);
+        if let Some(created_at_ms) = summary.created_at_ms {
+            put = put.set("created_at_ms", created_at_ms);
+        }
+        put.build()
     }
 
     pub fn summary_delete_mutation(
@@ -1428,25 +1506,28 @@ pub mod rows {
                         title: text_at(rows, row, "title"),
                         awaiting: matches!(rows.get(row, "awaiting"), Some(DataValue::Bool(true))),
                         hash: 0,
+                        created_at_ms: int_at(rows, row, "created_at_ms"),
                     },
                 ))
             })
             .collect()
     }
 
-    /// The writes that turn `before` into `after`, ignoring the hash: an unchanged summary
-    /// produces no write, so a poll that changes nothing is silent.
+    /// The writes that turn `before` into `after`, ignoring the hash and the time it was
+    /// made: an unchanged summary produces no write, so a poll that changes nothing is
+    /// silent - and a summary the daemon re-stamped without changing a word of is unchanged.
     pub fn summary_diff_mutations(
         zellij_session_name: &str,
         before: &Summaries,
         after: &Summaries,
     ) -> Vec<Mutation> {
-        let same = |a: &Summary, b: &Summary| {
-            a.text == b.text && a.title == b.title && a.awaiting == b.awaiting
-        };
         let mut mutations: Vec<Mutation> = after
             .iter()
-            .filter(|(pane_id, summary)| !before.get(pane_id).is_some_and(|b| same(b, summary)))
+            .filter(|(pane_id, summary)| {
+                !before
+                    .get(pane_id)
+                    .is_some_and(|b| summary_says_same(b, summary))
+            })
             .map(|(pane_id, summary)| summary_mutation(zellij_session_name, *pane_id, summary))
             .collect();
         let gone: Vec<u32> = before
@@ -1679,7 +1760,7 @@ pub const HISTORY_MIN_COLS: usize = 20;
 /// `last_assistant_message` - and drawing the asterisks was never what any of it meant.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HistoryLines {
-    /// What the divider says - `"claude · archived"`, `"3 · claude !"`. Empty when there is
+    /// What the divider says - `"claude:9f3c1a7e"`, `"3 · claude !"`. Empty when there is
     /// nothing to name. Uncut: the row it goes on carries the scroll readout too, so only
     /// whoever draws the divider knows the room a label has. See `fit_label`.
     pub label: String,
@@ -1762,17 +1843,18 @@ pub fn run_history(run: &AgentRun, width: usize, now_ms: i64) -> HistoryLines {
                 && entry.revision > run.summarized_revision)
         })
         .flat_map(|entry| {
-            let label = match entry.created_at_ms {
-                Some(then_ms) => {
-                    format!("{} · {}", entry.kind.label(), relative_age(now_ms, then_ms))
-                },
-                None => entry.kind.label().to_owned(),
-            };
             let style = match entry.kind {
                 RunEntryKind::Summary => SUMMARY_LABEL_STYLE,
                 _ => LABEL_STYLE,
             };
-            labelled(&entry.text, &label, inner, style).0
+            labelled(
+                &entry.text,
+                entry.kind.label(),
+                &age_gutter(now_ms, entry.created_at_ms),
+                inner,
+                style,
+            )
+            .0
         })
         .collect();
     if let Some(summary) = run
@@ -1780,14 +1862,24 @@ pub fn run_history(run: &AgentRun, width: usize, now_ms: i64) -> HistoryLines {
         .as_ref()
         .filter(|summary| !repeats_newest(run, summary))
     {
-        entries.extend(labelled(&summary.text, "summary", inner, SUMMARY_LABEL_STYLE).0);
+        entries.extend(
+            labelled(
+                &summary.text,
+                "summary",
+                &age_gutter(now_ms, summary.created_at_ms),
+                inner,
+                SUMMARY_LABEL_STYLE,
+            )
+            .0,
+        );
     }
-    let state = match run.outcome {
-        RunOutcome::Active => "active",
-        _ => "archived",
-    };
     HistoryLines {
-        label: format!("{} · {}", run.kind, state),
+        // The run's own id rather than its kind: the id opens with the kind anyway
+        // (`run_id`), so this says everything the kind said and names *which* run of that
+        // agent the half is drawing - the one thing the pane could not tell you before.
+        // Shortened, because the whole id does not fit a divider (`short_run_id`), and
+        // without the run's state, which the selector row above already carries.
+        label: short_run_id(&run.id),
         entries,
     }
 }
@@ -1807,35 +1899,34 @@ fn repeats_newest(run: &AgentRun, summary: &Summary) -> bool {
 ///
 /// A talkative model is windowed by the caller rather than cut here, which is what the box
 /// had to do with six rows to give.
-pub fn summary_history(pane_id: u32, kind: &str, summary: &Summary, width: usize) -> HistoryLines {
+pub fn summary_history(
+    pane_id: u32,
+    kind: &str,
+    summary: &Summary,
+    width: usize,
+    now_ms: i64,
+) -> HistoryLines {
     let Some(inner) = wrap_width(width) else {
         return HistoryLines::default();
     };
     let mut label = format!("{pane_id} · {kind}");
     if summary.awaiting {
         // The same claim the strip's `!` marker makes, in the one place the user
-        // is already looking.
+        // is already looking. Ahead of the age because `fit_label` cuts from the tail: a
+        // divider too narrow for both should lose how old the answer is rather than that
+        // the agent is waiting on you.
         label.push_str(" !");
+    }
+    // The age goes on the divider rather than in a gutter: there is one thing below it and
+    // no column of rows for the times to line up in.
+    if let Some(then_ms) = summary.created_at_ms {
+        label.push_str(&format!(" · {}", short_age(now_ms, then_ms)));
     }
     HistoryLines {
         label,
         // No label: the divider above it already names the agent this is about, and there is
         // no second kind of row here for one to tell it apart from.
         entries: crate::markdown::render(&summary.text, inner, crate::markdown::Options::compact()),
-    }
-}
-
-/// How long ago `then_ms` was, relative to `now_ms`, in the same coarse buckets
-/// `hocus::present::age` uses for an orphaned pane: `"just now"` under a minute, then whole
-/// minutes, hours or days - truncated, not rounded, since a history row cares that an entry
-/// is roughly this old, not exactly.
-pub fn relative_age(now_ms: i64, then_ms: i64) -> String {
-    let seconds = now_ms.saturating_sub(then_ms).max(0) / 1000;
-    match seconds {
-        s if s < 60 => "just now".to_owned(),
-        s if s < 3600 => format!("{}m", s / 60),
-        s if s < 86400 => format!("{}h", s / 3600),
-        s => format!("{}d", s / 86400),
     }
 }
 
@@ -1856,27 +1947,47 @@ pub fn relative_age(now_ms: i64, then_ms: i64) -> String {
 /// `style` is how the label itself is painted: dim for most kinds, because it is the pane
 /// talking rather than the agent, and bold for a summary, which is the one kind worth picking
 /// out of the timeline now that nothing stands above it.
-fn labelled(text: &str, label: &str, width: usize, style: MdStyle) -> (Vec<MdLine>, bool) {
+fn labelled(
+    text: &str,
+    label: &str,
+    gutter: &str,
+    width: usize,
+    style: MdStyle,
+) -> (Vec<MdLine>, bool) {
     let label = format!("{label}: ");
+    let indent = gutter.width();
     let blocks = crate::markdown::parse(text);
     let inline = blocks
         .first()
         .is_some_and(|block| block.prefix.is_empty() && !block.chars.is_empty());
     if inline {
-        // Wrapped to what is left after the label rather than to the whole half. Only the first
-        // row actually carries it, so the rows below come out a little short of the edge - but
-        // `print_text_with_coordinates` truncates rather than wraps, so wrapping to the full
-        // width and *then* prepending would cut the tail off the first row of every entry.
-        let body = width.saturating_sub(label.width()).max(1);
+        // Wrapped to what is left after the gutter and the label rather than to the whole
+        // half. Only the first row carries the label, so the rows below come out a little
+        // short of the edge - but `print_text_with_coordinates` truncates rather than wraps,
+        // so wrapping to the full width and *then* prepending would cut the tail off the
+        // first row of every entry. The rows below are indented past the gutter instead of
+        // starting at the margin, so the ages have a column of their own to be read down.
+        let body = width
+            .saturating_sub(indent)
+            .saturating_sub(label.width())
+            .max(1);
         let mut lines = crate::markdown::wrap(&blocks, body, crate::markdown::Options::compact());
         let first = lines.remove(0);
-        lines.insert(0, first.prepend(&label, style));
-        return (lines, false);
+        let mut rows = vec![first.prepend(&label, style).prepend(gutter, AGE_STYLE)];
+        rows.extend(lines.into_iter().map(|line| line.indent(indent)));
+        return (rows, false);
     }
-    // Nothing shares the rows in this branch, so they get the width back.
-    let mut lines = crate::markdown::wrap(&blocks, width, crate::markdown::Options::compact());
-    let mut labelled = vec![MdLine::plain("").prepend(label.trim_end(), style)];
-    labelled.append(&mut lines);
+    // Nothing shares the label's row in this branch, so the body gets the width back - all
+    // but the gutter, which every row of an entry leaves clear.
+    let mut lines = crate::markdown::wrap(
+        &blocks,
+        width.saturating_sub(indent).max(1),
+        crate::markdown::Options::compact(),
+    );
+    let mut labelled = vec![MdLine::plain("")
+        .prepend(label.trim_end(), style)
+        .prepend(gutter, AGE_STYLE)];
+    labelled.extend(lines.drain(..).map(|line| line.indent(indent)));
     (labelled, true)
 }
 
@@ -1888,6 +1999,56 @@ const LABEL_STYLE: MdStyle = MdStyle {
     color: None,
     error: false,
 };
+
+/// How wide the age column is: three columns for the age itself and a space after it, so
+/// `now`, `5m`, `3h` and `2d` all line up and every label in the half starts at the same
+/// place whether its entry knows when it was made or not.
+const AGE_WIDTH: usize = 4;
+
+/// How an age is painted: undimmed and in the accent colour, because it is the one piece of
+/// furniture on the row that is meant to be read down the column rather than through the
+/// sentence.
+const AGE_STYLE: MdStyle = MdStyle {
+    bold: false,
+    dim: false,
+    color: Some(2),
+    error: false,
+};
+
+/// The left-hand column of a history row: how long ago the entry was made, right-aligned in
+/// [`AGE_WIDTH`], or that much blank for an entry recorded before there was a time to record
+/// - the space is kept either way so the labels stay in one column.
+fn age_gutter(now_ms: i64, then_ms: Option<i64>) -> String {
+    match then_ms {
+        Some(then_ms) => format!(
+            "{:>width$} ",
+            short_age(now_ms, then_ms),
+            width = AGE_WIDTH - 1
+        ),
+        None => " ".repeat(AGE_WIDTH),
+    }
+}
+
+/// How long ago `then_ms` was, in the width a column can afford: `now` under a minute, then
+/// whole minutes, hours and days - truncated, not rounded, since a history row cares that an
+/// entry is roughly this old, not exactly.
+///
+/// Never wider than `AGE_WIDTH - 1`, which is what lets [`age_gutter`] right-align it and know
+/// every label starts in the same column. That is what caps the day count: past `99d` the
+/// answer is "older than this column can say", and a run three months gone is history, where
+/// the exact day is not what the column is being read for.
+pub fn short_age(now_ms: i64, then_ms: i64) -> String {
+    let seconds = now_ms.saturating_sub(then_ms).max(0) / 1000;
+    match seconds {
+        s if s < 60 => "now".to_owned(),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86400 => format!("{}h", s / 3600),
+        s => format!("{}d", (s / 86400).min(MAX_AGE_DAYS)),
+    }
+}
+
+/// The oldest age [`short_age`] will name, so its answer fits the gutter. See there.
+const MAX_AGE_DAYS: i64 = 99;
 
 /// How a `summary: ` label is painted instead: bold and undimmed. The summary used to be told
 /// apart by standing above the timeline; it is a row of the timeline now, so its label is what
@@ -2009,6 +2170,8 @@ pub fn parse_summary(body: &[u8], hash: u64) -> Option<Summary> {
             .and_then(Value::as_bool)
             .unwrap_or(false),
         hash,
+        // As `local_summary`: the daemon stamps it as it stores it.
+        created_at_ms: None,
     })
 }
 
@@ -2693,6 +2856,7 @@ mod tests {
                         title: "a thing".to_owned(),
                         awaiting: *awaiting,
                         hash: 1,
+                        created_at_ms: None,
                     },
                 )
             })
@@ -3241,6 +3405,7 @@ mod tests {
             title: "running the tests".to_owned(),
             awaiting,
             hash: 1,
+            created_at_ms: None,
         }
     }
 
@@ -3561,7 +3726,7 @@ mod tests {
         };
 
         let history = run_history(&run, 40, 100);
-        assert_eq!(history.label, "claude · active");
+        assert_eq!(history.label, "claude:session-1");
         assert_eq!(history.entries.len(), 6);
         assert!(history.entries[0].text.contains("oldest"));
         assert!(history.entries[5].text.contains("newest"));
@@ -3599,6 +3764,7 @@ mod tests {
                 title: String::new(),
                 awaiting: false,
                 hash: 0,
+                created_at_ms: None,
             }),
             entries: vec![RunEntry {
                 revision: 1,
@@ -3609,7 +3775,7 @@ mod tests {
             }],
         };
 
-        let live = run_history(&run, 40, 100);
+        let live = run_history(&run, 60, 100);
         assert!(
             live.entries
                 .iter()
@@ -3627,7 +3793,7 @@ mod tests {
 
         run.outcome = RunOutcome::Completed;
         assert!(
-            run_history(&run, 40, 100)
+            run_history(&run, 60, 100)
                 .entries
                 .iter()
                 .any(|line| line.text.contains("summary:")),
@@ -3736,13 +3902,13 @@ mod tests {
         };
 
         assert!(
-            run_history(&run, 40, 100).entries.is_empty(),
+            run_history(&run, 60, 100).entries.is_empty(),
             "a running agent's result is not final"
         );
 
         run.outcome = RunOutcome::Completed;
-        let archived = run_history(&run, 40, 100);
-        assert_eq!(archived.label, "claude · archived");
+        let archived = run_history(&run, 60, 100);
+        assert_eq!(archived.label, "claude:session-1");
         assert!(archived
             .entries
             .iter()
@@ -3754,8 +3920,9 @@ mod tests {
             title: String::new(),
             awaiting: false,
             hash: 0,
+            created_at_ms: None,
         });
-        let summarized = run_history(&run, 40, 100);
+        let summarized = run_history(&run, 60, 100);
         assert!(!summarized
             .entries
             .iter()
@@ -3764,7 +3931,11 @@ mod tests {
             summarized
                 .entries
                 .iter()
-                .any(|line| line.text.starts_with("summary: The implementation")),
+                // Past the age gutter, which is blank on an entry with no recorded time.
+                .any(|line| line
+                    .text
+                    .trim_start()
+                    .starts_with("summary: The implementation")),
             "{:?}",
             summarized.entries
         );
@@ -5471,6 +5642,7 @@ mod tests {
             title: "running the tests".to_owned(),
             awaiting,
             hash: 1,
+            created_at_ms: None,
         }
     }
 
@@ -5483,12 +5655,13 @@ mod tests {
             "claude",
             &a_summary("Ran the tests, all green.", false),
             30,
+            0,
         );
         assert_eq!(history.label, "7 · claude");
         assert_eq!(texts(&history.entries), ["Ran the tests, all green."]);
 
         let long = "word ".repeat(200);
-        let long = summary_history(7, "claude", &a_summary(&long, false), 30);
+        let long = summary_history(7, "claude", &a_summary(&long, false), 30, 0);
         assert!(
             long.entries.len() > 6,
             "every line of it, for the half to window, past the box's old ceiling of {}",
@@ -5515,10 +5688,10 @@ mod tests {
         assert_eq!(
             texts(&history.entries),
             [
-                "prompt: Do it:",
-                "• one",
-                "• two",
-                "summary: Ran the tests, all green.",
+                "    prompt: Do it:",
+                "    • one",
+                "    • two",
+                "    summary: Ran the tests, all green.",
             ],
             "the list is a list, the label rides on the prose above it, and the summary is the              newest row rather than a block above them - no asterisks in any of it"
         );
@@ -5537,7 +5710,9 @@ mod tests {
             "the model's emphasis, and the label that marks the row as a summary"
         );
         assert!(
-            summary.styles[..8].iter().all(|style| !style.dim),
+            summary.styles[AGE_WIDTH..AGE_WIDTH + 8]
+                .iter()
+                .all(|style| !style.dim),
             "the summary's label is the one piece of furniture that is not dimmed"
         );
     }
@@ -5569,8 +5744,12 @@ mod tests {
         assert_eq!(
             texts(&run_history(&run, 40, 100).entries),
             [
-                "prompt:", "1. one", "2. two", // the numbering kept, and its column with it
-                "prompt:", "• one", "• two",
+                "    prompt:",
+                "    1. one", // the numbering kept, and its column with it
+                "    2. two",
+                "    prompt:",
+                "    • one",
+                "    • two",
             ],
         );
     }
@@ -5583,11 +5762,14 @@ mod tests {
         let mut run = a_pane_run();
         run.summary = Some(a_summary("- ran the tests", false));
         let history = run_history(&run, 40, 100);
-        assert_eq!(texts(&history.entries), ["summary:", "• ran the tests"]);
+        assert_eq!(
+            texts(&history.entries),
+            ["    summary:", "    • ran the tests"]
+        );
 
         run.summary = Some(a_summary("ran the tests", false));
         let history = run_history(&run, 40, 100);
-        assert_eq!(texts(&history.entries), ["summary: ran the tests"]);
+        assert_eq!(texts(&history.entries), ["    summary: ran the tests"]);
     }
 
     /// The rolling summary is the newest row of the timeline rather than a block above it, and
@@ -5615,9 +5797,9 @@ mod tests {
         assert_eq!(
             texts(&run_history(&run, 40, 100).entries),
             [
-                "prompt: run the tests",
-                "question: which ones?",
-                "summary: Ran the tests.",
+                "    prompt: run the tests",
+                "    question: which ones?",
+                "    summary: Ran the tests.",
             ],
         );
     }
@@ -5637,17 +5819,17 @@ mod tests {
             created_at_ms: None,
         }];
         assert_eq!(
-            texts(&run_history(&run, 40, 100).entries),
-            ["summary: Ran the tests."],
+            texts(&run_history(&run, 60, 100).entries),
+            ["    summary: Ran the tests."],
         );
 
         // A summary that has moved on since is a second row, where it was made.
         run.summary = Some(a_summary("Ran the tests and shipped it.", false));
         assert_eq!(
-            texts(&run_history(&run, 40, 100).entries),
+            texts(&run_history(&run, 60, 100).entries),
             [
-                "summary: Ran the tests.",
-                "summary: Ran the tests and shipped it."
+                "    summary: Ran the tests.",
+                "    summary: Ran the tests and shipped it."
             ],
         );
     }
@@ -5667,7 +5849,7 @@ mod tests {
         }];
         assert_eq!(
             texts(&run_history(&run, 40, 100).entries),
-            ["prompt: first", "second"]
+            ["    prompt: first", "    second"]
         );
     }
 
@@ -5688,7 +5870,7 @@ mod tests {
         }];
         assert_eq!(
             texts(&run_history(&run, 40, 100).entries),
-            ["result:", "• one", "• two"]
+            ["    result:", "    • one", "    • two"]
         );
     }
 
@@ -5723,6 +5905,133 @@ mod tests {
     }
 
     /// One `AgentRun` to vary, the way the pane receives them.
+    /// The age is the first thing on the row, in a column of its own, and an entry with no
+    /// recorded time keeps that column clear rather than closing it up - so every label in
+    /// the half starts at the same place and the times can be read straight down.
+    #[test]
+    fn an_entry_wears_its_age_in_the_left_hand_column() {
+        let mut run = a_pane_run();
+        run.summary = None;
+        let minute = 60_000;
+        run.entries = vec![
+            RunEntry {
+                revision: 1,
+                event_id: None,
+                kind: RunEntryKind::Prompt,
+                text: "run the tests".to_owned(),
+                created_at_ms: Some(100 * minute),
+            },
+            RunEntry {
+                revision: 2,
+                event_id: None,
+                kind: RunEntryKind::Question,
+                text: "which ones?".to_owned(),
+                created_at_ms: Some(105 * minute),
+            },
+            RunEntry {
+                revision: 3,
+                event_id: None,
+                kind: RunEntryKind::Plan,
+                text: "all of them".to_owned(),
+                // Recorded before there was a time to record.
+                created_at_ms: None,
+            },
+        ];
+
+        let history = run_history(&run, 60, 106 * minute);
+        assert_eq!(
+            texts(&history.entries),
+            [
+                " 6m prompt: run the tests",
+                " 1m question: which ones?",
+                "    plan: all of them",
+            ],
+        );
+        assert!(
+            history.entries.iter().all(|line| line
+                .text
+                .char_indices()
+                .nth(AGE_WIDTH)
+                .is_some_and(|(_, ch)| ch.is_alphabetic())),
+            "every label starts in the same column, whether its entry has a time or not"
+        );
+    }
+
+    /// The age is painted to be read as a column rather than as more label: undimmed and in
+    /// the accent colour, against a dim `prompt: `.
+    #[test]
+    fn the_age_is_the_undimmed_part_of_the_furniture() {
+        let mut run = a_pane_run();
+        run.summary = None;
+        run.entries = vec![RunEntry {
+            revision: 1,
+            event_id: None,
+            kind: RunEntryKind::Prompt,
+            text: "run the tests".to_owned(),
+            created_at_ms: Some(0),
+        }];
+
+        let history = run_history(&run, 60, 5 * 60_000);
+        let row = &history.entries[0];
+        assert!(
+            row.styles[..AGE_WIDTH]
+                .iter()
+                .all(|style| !style.dim && style.color == Some(2)),
+            "the age"
+        );
+        assert!(
+            row.styles[AGE_WIDTH..AGE_WIDTH + "prompt:".len()]
+                .iter()
+                .all(|style| style.dim),
+            "and the label it sits beside, still dim"
+        );
+    }
+
+    /// A rolling summary is a row of the timeline like any other, so it says how old it is
+    /// too - and says nothing where the daemon that made it predates the stamp.
+    #[test]
+    fn a_rolling_summary_wears_its_age_as_well() {
+        let mut run = a_pane_run();
+        run.summary = Some(Summary {
+            created_at_ms: Some(0),
+            ..a_summary("Ran the tests.", false)
+        });
+        assert_eq!(
+            texts(&run_history(&run, 60, 3 * 3_600_000).entries),
+            [" 3h summary: Ran the tests."],
+        );
+
+        run.summary = Some(a_summary("Ran the tests.", false));
+        assert_eq!(
+            texts(&run_history(&run, 60, 3 * 3_600_000).entries),
+            ["    summary: Ran the tests."],
+        );
+    }
+
+    /// The buckets, at the edges. Truncated rather than rounded: a row cares that an entry is
+    /// roughly this old, not exactly.
+    #[test]
+    fn short_age_counts_whole_minutes_hours_and_days() {
+        let cases = [
+            (0, "now"),
+            (59_000, "now"),
+            (60_000, "1m"),
+            (3_599_000, "59m"),
+            (3_600_000, "1h"),
+            (86_399_000, "23h"),
+            (86_400_000, "1d"),
+            (10 * 86_400_000, "10d"),
+        ];
+        for (elapsed, expected) in cases {
+            assert_eq!(short_age(elapsed, 0), expected, "{elapsed}ms ago");
+        }
+        assert_eq!(
+            short_age(0, 5_000),
+            "now",
+            "a clock that went backwards is not a negative age"
+        );
+    }
+
     fn a_pane_run() -> AgentRun {
         AgentRun {
             id: "claude:session-1".to_owned(),
@@ -5744,10 +6053,10 @@ mod tests {
     /// The claim the strip's `!` makes, on the divider the user is already reading.
     #[test]
     fn a_blocked_agent_is_marked_on_the_divider() {
-        let waiting = summary_history(7, "claude", &a_summary("Shall I?", true), 30);
+        let waiting = summary_history(7, "claude", &a_summary("Shall I?", true), 30, 0);
         assert_eq!(waiting.label, "7 · claude !");
         // And an agent that merely finished is not.
-        let done = summary_history(7, "claude", &a_summary("Shall I?", false), 30);
+        let done = summary_history(7, "claude", &a_summary("Shall I?", false), 30, 0);
         assert!(!done.label.contains('!'), "{}", done.label);
     }
 
@@ -5755,11 +6064,75 @@ mod tests {
     #[test]
     fn there_is_no_history_where_there_is_no_room_for_one() {
         let one = a_summary("Ran the tests.", false);
-        assert!(summary_history(7, "claude", &one, HISTORY_MIN_COLS + 1).is_empty());
+        assert!(summary_history(7, "claude", &one, HISTORY_MIN_COLS + 1, 0).is_empty());
         assert!(
-            !summary_history(7, "claude", &one, HISTORY_MIN_COLS + 2).is_empty(),
+            !summary_history(7, "claude", &one, HISTORY_MIN_COLS + 2, 0).is_empty(),
             "just enough"
         );
+    }
+
+    /// The divider names *which* run it is drawing, and a real id does not fit one: a hook
+    /// agent's is a uuid and an agent with no session id of its own is named by a raw epoch.
+    /// Both shapes are cut back to the part a person reads, so the divider is not truncated
+    /// into a meaningless prefix by `fit_label`.
+    #[test]
+    fn a_run_divider_names_a_run_a_person_can_read() {
+        assert_eq!(
+            short_run_id("claude:9f3c1a7e-4b21-4d0a-8c55-7e2f6b1d90aa"),
+            "claude:9f3c1a7e",
+        );
+        assert_eq!(short_run_id("claude:pane:7:1764618000000"), "claude:pane:7");
+        // Short enough to be read whole is left whole.
+        assert_eq!(short_run_id("claude:session-1"), "claude:session-1");
+        // Neither shape: not ours to shorten.
+        assert_eq!(short_run_id("whatever"), "whatever");
+
+        let mut run = a_pane_run();
+        run.id = "claude:9f3c1a7e-4b21-4d0a-8c55-7e2f6b1d90aa".to_owned();
+        let label = run_history(&run, 40, 100).label;
+        assert_eq!(label, "claude:9f3c1a7e");
+        assert_eq!(
+            fit_label(label.clone(), 40),
+            label,
+            "and a divider the width of the pane keeps all of it"
+        );
+    }
+
+    /// The `!` outranks the age on a divider too narrow for both: how old the answer is can
+    /// wait, that the agent is blocked on you cannot.
+    #[test]
+    fn a_narrow_summary_divider_loses_the_age_before_the_marker() {
+        let minute = 60_000;
+        let mut summary = a_summary("Shall I?", true);
+        summary.created_at_ms = Some(100 * minute);
+        let label =
+            summary_history(7, "claude", &summary, HISTORY_MIN_COLS + 2, 105 * minute).label;
+        assert_eq!(label, "7 · claude ! · 5m", "uncut where it is built");
+        // A divider with less room than that - the scroll readout shares the row - loses the
+        // age and keeps the marker, where before it kept the age and lost the marker.
+        let cut = fit_label(label, 19);
+        assert!(cut.contains('!'), "{cut}");
+        assert!(!cut.contains("5m"), "{cut}");
+    }
+
+    /// [`age_gutter`] right-aligns into a fixed column and pads without truncating, so an
+    /// age wider than the column would push that row's label one place further in than
+    /// every other row's. `short_age` is what guarantees it cannot.
+    #[test]
+    fn an_age_never_outgrows_the_column_it_is_drawn_in() {
+        let day = 86_400_000;
+        for seconds in [0, 59, 60, 3_599, 3_600, 86_399, 86_400] {
+            let age = short_age(seconds * 1000, 0);
+            assert!(age.width() < AGE_WIDTH, "{age}");
+        }
+        for days in [1, 98, 99, 100, 365, 3_650] {
+            let age = short_age(days * day, 0);
+            assert!(age.width() < AGE_WIDTH, "{days} days: {age}");
+        }
+        // Past the ceiling the column stops counting rather than overflowing.
+        assert_eq!(short_age(98 * day, 0), "98d");
+        assert_eq!(short_age(99 * day, 0), "99d");
+        assert_eq!(short_age(3_650 * day, 0), "99d");
     }
 
     /// A kind is up to 32 characters and this pane is half a panel wide, so the label can
@@ -5769,7 +6142,7 @@ mod tests {
     #[test]
     fn a_label_too_wide_for_its_divider_is_cut_rather_than_burst() {
         let kind = "a-very-long-agent-kind-indeed-xx";
-        let label = summary_history(7, kind, &a_summary("Done.", true), 26).label;
+        let label = summary_history(7, kind, &a_summary("Done.", true), 26, 0).label;
         assert_eq!(label, format!("7 · {kind} !"), "uncut where it is built");
 
         let cut = fit_label(label, 26);

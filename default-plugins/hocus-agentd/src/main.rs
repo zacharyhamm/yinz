@@ -1629,6 +1629,11 @@ impl State {
         if let Some(feed) = self.hooks.get(&pane_id) {
             summary.awaiting = feed.phase == agents::HookPhase::Waiting;
         }
+        // Stamped here rather than in the parser: this is where a summary becomes one the
+        // daemon keeps, and it is the side with a clock. The panel draws the age from it.
+        // Below the `awaiting` fixup, and against what this pane already holds, so a
+        // re-summary that changed no word keeps the age of the answer it repeats.
+        agents::stamp_summary(&mut summary, self.summaries.get(&pane_id), now_ms());
         if self.focused != Some(pane_id) {
             let kind = self.toast_kind(pane_id);
             toast(
@@ -2788,12 +2793,17 @@ impl State {
         if !(200..300).contains(&status) {
             return;
         }
-        let Some(summary) = agents::parse_summary(body, 0) else {
+        let Some(mut summary) = agents::parse_summary(body, 0) else {
             return;
         };
         let Some(mut run) = self.load_run(run_id) else {
             return;
         };
+        // Stamped here rather than in the parser: this is where a summary becomes one the
+        // daemon keeps, and it is the side with a clock. The panel draws the age from it.
+        // Against the run's own summary, which is the one this replaces: a re-summary that
+        // changed no word keeps the age of the answer it repeats.
+        agents::stamp_summary(&mut summary, run.summary.as_ref(), now_ms());
         agents::push_summary_entry(&mut run, &summary.text, now_ms());
         run.summary = Some(summary);
         run.summarized_revision = run.revision;
@@ -3032,6 +3042,11 @@ impl State {
         if let Some(feed) = self.hooks.get(&pane_id) {
             summary.awaiting = feed.phase == agents::HookPhase::Waiting;
         }
+        // Stamped here rather than in the parser: this is where a summary becomes one the
+        // daemon keeps, and it is the side with a clock. The panel draws the age from it.
+        // Below the `awaiting` fixup, and against what this pane already holds, so a
+        // re-summary that changed no word keeps the age of the answer it repeats.
+        agents::stamp_summary(&mut summary, self.summaries.get(&pane_id), now_ms());
         if let Some(title) = agents::rename_title(&summary) {
             if self.title_is_ours_to_take(pane_id) {
                 rename(pane_id, title);
@@ -3664,6 +3679,7 @@ mod tests {
                 title: "rebase".to_owned(),
                 awaiting: false,
                 hash: 0,
+                created_at_ms: None,
             }),
             entries: vec![agents::RunEntry {
                 revision: 1,
@@ -4600,6 +4616,7 @@ mod tests {
                 title: "a thing".to_owned(),
                 awaiting: true,
                 hash: 1,
+                created_at_ms: None,
             },
         );
         state.manifest.panes.insert(
@@ -6215,6 +6232,45 @@ mod tests {
             |_, _| panic!("nothing to say"),
         );
         assert!(state.summaries.is_empty());
+    }
+
+    /// A summary that says what the one already held says is the same summary told twice, so
+    /// it keeps the age of the answer rather than the age of the poll that repeated it. The
+    /// stored `agent_summary` row is left alone by an unchanged summary, so a stamp that moved
+    /// here would disagree with the row the moment anything restarted.
+    #[test]
+    fn a_re_summary_that_changed_no_word_keeps_its_first_stamp() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        // What this path is about to produce, stamped long ago and already held.
+        let mut held = agents::local_summary(REPLY, 0).expect("worth drawing");
+        held.created_at_ms = Some(1);
+        // Not a hash this path can produce, so the stored summary demonstrably *is* the new
+        // one rather than the seeded one left standing.
+        held.hash = u64::MAX;
+        state.summaries.insert(7, held);
+
+        feed(&mut state, 7, &stop_saying(REPLY), None);
+        assert_ne!(state.summaries[&7].hash, u64::MAX, "a summary was stored");
+        assert_eq!(
+            state.summaries[&7].created_at_ms,
+            Some(1),
+            "the same answer, so the same age"
+        );
+
+        // A different answer is a new one, and is stamped now.
+        feed(
+            &mut state,
+            7,
+            &stop_saying("I rebased onto main and pushed the branch. Nothing else changed."),
+            None,
+        );
+        let stamped = state.summaries[&7]
+            .created_at_ms
+            .expect("a new summary is stamped");
+        assert!(stamped > 1, "{stamped}");
     }
 
     /// Summaries begin working with no API key at all. Before the feed there was nothing
@@ -8135,6 +8191,7 @@ mod tests {
             title: String::new(),
             awaiting: false,
             hash: 0,
+            created_at_ms: None,
         });
         state.dirty_runs.insert(run.id.clone(), run.clone());
 
