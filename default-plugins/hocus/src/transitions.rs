@@ -819,17 +819,17 @@ impl State {
     }
 
     pub(crate) fn send_run_detail(&self, plugin_id: u32, run_id: &str) {
-        let Ok(rows) = self.store().fetch(
-            &FetchRequest::entity(agents::rows::RUN_ENTITY)
-                .filter(Pred::eq("uid", run_id))
-                .select(["payload"])
-                .limit(1),
-        ) else {
+        let Ok(rows) = self.store().fetch(&agents::rows::run_by_id_request(run_id)) else {
             return;
         };
-        let Some(run) = agents::rows::runs_from_rows(&rows).into_iter().next() else {
+        let Some(mut run) = agents::rows::runs_from_rows(&rows).into_iter().next() else {
             return;
         };
+        // The timeline is rows of its own, so it is read separately - and only its newest
+        // `RUN_DETAIL_ENTRIES`, within `RUN_DETAIL_BYTES`, since what goes over the pipe is
+        // one JSON string copied into the panel's memory. A run stored before the split still
+        // carries its entries in its payload, and keeps them.
+        agents::rows::hydrate_newest_entries(&self.store(), &mut run);
         let Ok(payload) = serde_json::to_string(&run) else {
             return;
         };

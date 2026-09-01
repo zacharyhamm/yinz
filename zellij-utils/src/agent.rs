@@ -272,16 +272,28 @@ pub const WAITING_DETAIL_CHARS: usize = 80;
 /// verbatim; under it, nothing changes, which is nearly always.
 pub const HOOK_BROADCAST_MAX_BYTES: usize = 64 * 1024;
 
-/// The longest any one string in a pruned event's `tool_input` keeps.
+/// The longest any one string in a pruned event's `tool_input` keeps, unless it sits under one
+/// of [`PRUNED_HISTORY_KEYS`].
 ///
-/// Comfortably above [`WAITING_DETAIL_CHARS`], which is the most any reader here takes from
-/// one of them, so a prune costs nothing that is actually read.
+/// Comfortably above [`WAITING_DETAIL_CHARS`], which is the most a *record* takes from one of
+/// them — a tool name and one argument's worth of hint. The keys a history reads at length are
+/// the exception, and are cut to [`PRUNED_HISTORY_STRING_CHARS`] instead; this was their cap
+/// too until a prune was found to be turning a submitted plan into 256 characters.
 const PRUNED_STRING_CHARS: usize = 256;
+
+/// The longest a pruned event keeps a `tool_input` string that becomes run history.
+///
+/// Matched to [`PRUNED_MESSAGE_CHARS`], because a plan and a final message are the same kind
+/// of thing to the same reader: prose, kept whole, shown in a pane that wraps and scrolls.
+const PRUNED_HISTORY_STRING_CHARS: usize = 8 * 1024;
 
 /// What one pruned event's `tool_input` may spend in total, over which the remaining keys and
 /// elements are dropped. Only a pathological object — thousands of small keys — reaches it,
 /// because every string is cut first.
-const PRUNED_INPUT_BUDGET: usize = 4 * 1024;
+///
+/// Comfortably above [`PRUNED_HISTORY_STRING_CHARS`], so the budget cannot quietly undo the
+/// larger cap by running out inside the plan it was raised for.
+const PRUNED_INPUT_BUDGET: usize = 32 * 1024;
 
 /// The longest prose a pruned event keeps, per field. `last_assistant_message` is the one
 /// genuinely used at length — it is what a turn summary is made of — and its reader cuts it
@@ -379,8 +391,24 @@ impl HookEvent {
     /// all — is gone, because a pruned event travels re-serialized from the fields here.
     /// Nothing in this tree reads those: every reader parses this same struct.
     pub fn pruned(&self) -> HookEvent {
+        self.pruned_to(PRUNED_INPUT_BUDGET)
+    }
+
+    /// [`pruned`](Self::pruned) with the budget named, so a payload that is still too big
+    /// after a prune can be pruned harder rather than sent anyway. See [`broadcast_json`].
+    ///
+    /// `budget` bounds `tool_input` and every prose field alike: each is cut to its char cap
+    /// and then to the budget in *bytes*, which is the unit the cap that matters is in. The
+    /// two disagree by up to four times on text that is not ASCII, and a plan written in
+    /// Japanese is exactly the case where the char cap alone let a "pruned" event out at
+    /// several times the size a prune exists to enforce.
+    ///
+    /// A budget of zero leaves the metadata and nothing else, which is what makes
+    /// [`broadcast_json`]'s descent terminate.
+    pub fn pruned_to(&self, budget: usize) -> HookEvent {
         let cut = |text: &Option<String>, chars: usize| {
-            text.as_deref().map(|text| truncate_chars(text, chars))
+            text.as_deref()
+                .map(|text| truncate_within(text, chars, budget))
         };
         HookEvent {
             hook_event_name: self.hook_event_name.clone(),
@@ -391,8 +419,8 @@ impl HookEvent {
             tool_use_id: self.tool_use_id.clone(),
             tool_name: self.tool_name.clone(),
             tool_input: self.tool_input.as_ref().map(|input| {
-                let mut budget = PRUNED_INPUT_BUDGET;
-                prune_value(input, &mut budget)
+                let mut budget = budget;
+                prune_value(input, None, &mut budget)
             }),
             last_assistant_message: cut(&self.last_assistant_message, PRUNED_MESSAGE_CHARS),
             message: cut(&self.message, PRUNED_MESSAGE_CHARS),
@@ -401,25 +429,84 @@ impl HookEvent {
             agent_id: self.agent_id.clone(),
         }
     }
-}
 
-/// The first `chars` characters of `text`, on a character boundary.
-fn truncate_chars(text: &str, chars: usize) -> String {
-    match text.char_indices().nth(chars) {
-        Some((end, _)) => text[..end].to_owned(),
-        None => text.to_owned(),
+    /// This event as the bytes to broadcast, at or under [`HOOK_BROADCAST_MAX_BYTES`].
+    ///
+    /// `json` is the event exactly as it arrived, which is what goes out whenever it fits —
+    /// nearly always. Over the cap it is re-serialized from a prune, and the prune is repeated
+    /// with a smaller budget until the result fits: a single cap on the input cannot promise
+    /// an output size, because JSON escaping expands what it encodes — six bytes for one
+    /// control character — and there are several fields drawing on the budget. The last step
+    /// spends nothing, leaving the metadata alone, so the descent always ends under the cap.
+    pub fn broadcast_json(&self, json: String) -> String {
+        if json.len() <= HOOK_BROADCAST_MAX_BYTES {
+            return json;
+        }
+        let mut budget = PRUNED_INPUT_BUDGET;
+        loop {
+            if let Ok(candidate) = serde_json::to_string(&self.pruned_to(budget)) {
+                if candidate.len() <= HOOK_BROADCAST_MAX_BYTES || budget == 0 {
+                    return candidate;
+                }
+            } else if budget == 0 {
+                // Unreachable: this struct has no map keys and no non-finite numbers, so it
+                // serializes. Returning the original is still better than looping.
+                return json;
+            }
+            budget /= 8;
+        }
     }
 }
 
+/// The first `chars` characters of `text` that also fit in `bytes`, on a character boundary.
+///
+/// Both units, because the caps are written in characters — a plan is prose, and prose is
+/// counted in characters by everyone who reads it — while the budget that has to hold is a
+/// byte count. One character is up to four bytes, so the two are not interchangeable on any
+/// text that is not ASCII.
+fn truncate_within(text: &str, chars: usize, bytes: usize) -> String {
+    let end = text
+        .char_indices()
+        .take(chars)
+        .map(|(start, ch)| start + ch.len_utf8())
+        .take_while(|end| *end <= bytes)
+        .last()
+        .unwrap_or(0);
+    text[..end].to_owned()
+}
+
+/// The `tool_input` keys whose text is prose somebody reads at length, rather than an argument
+/// a row names in passing.
+///
+/// A plan and a question are the two things a hook event carries that become *history* — see
+/// `run_entry` in hocus-proto — and the history has a wrapping, scrolling half-pane to show
+/// them in. Everything else under `tool_input` is read for a word or two.
+const PRUNED_HISTORY_KEYS: &[&str] = &["plan", "step", "question", "header"];
+
 /// One `tool_input` value with every string cut and `budget` bytes to spend on the rest.
 ///
+/// `key` is the object key this value sits under, because how much of a string is worth
+/// keeping depends on who reads it: see [`PRUNED_HISTORY_KEYS`].
+///
 /// Recursion is bounded by the budget rather than by a depth count: a nested value costs its
-/// parent's budget, so a deep structure runs out the same way a wide one does.
-fn prune_value(value: &serde_json::Value, budget: &mut usize) -> serde_json::Value {
+/// parent's budget, so a deep structure runs out the same way a wide one does. An array's
+/// elements inherit their array's key, so `steps[].step` and `questions[]` are read the same
+/// whether the prose sits in the array or under a key inside each element.
+fn prune_value(
+    value: &serde_json::Value,
+    key: Option<&str>,
+    budget: &mut usize,
+) -> serde_json::Value {
     use serde_json::Value;
     match value {
         Value::String(text) => {
-            let cut = truncate_chars(text, PRUNED_STRING_CHARS);
+            let cap = match key.is_some_and(|key| PRUNED_HISTORY_KEYS.contains(&key)) {
+                true => PRUNED_HISTORY_STRING_CHARS,
+                false => PRUNED_STRING_CHARS,
+            };
+            // The budget as well as the cap, so the last string admitted cannot carry the
+            // total past it — the check above only ever runs *before* a value.
+            let cut = truncate_within(text, cap, *budget);
             *budget = budget.saturating_sub(cut.len());
             Value::String(cut)
         },
@@ -429,7 +516,7 @@ fn prune_value(value: &serde_json::Value, budget: &mut usize) -> serde_json::Val
                 if *budget == 0 {
                     break;
                 }
-                kept.push(prune_value(item, budget));
+                kept.push(prune_value(item, key, budget));
             }
             Value::Array(kept)
         },
@@ -440,7 +527,7 @@ fn prune_value(value: &serde_json::Value, budget: &mut usize) -> serde_json::Val
                     break;
                 }
                 *budget = budget.saturating_sub(key.len());
-                kept.insert(key.clone(), prune_value(field, budget));
+                kept.insert(key.clone(), prune_value(field, Some(key), budget));
             }
             Value::Object(kept)
         },
@@ -622,6 +709,75 @@ pub fn waiting_detail(event: &HookEvent) -> Option<String> {
         // better line than anything reconstructed from the event around it.
         "Elicitation" | "Notification" => event.message.as_deref().and_then(clean_line),
         _ => None,
+    }
+}
+
+/// Everything an `AskUserQuestion` asks, for a reader with room to show it.
+///
+/// [`waiting_detail`]'s counterpart for the run history rather than for a toast: the same
+/// event, read for what it says instead of for what fits on two lines. Every question, not
+/// only the first; each one's header where it adds something the question does not already
+/// say; and the options, so a timeline shows what the choice actually was.
+///
+/// Newlines are kept. The history renders as markdown into a wrapping half-pane, so `- ` in
+/// front of an option is a bullet there — and a question flattened into one line, which is
+/// what `clean_line` would do, is unreadable as soon as there are two of them.
+///
+/// Read as defensively as [`waiting_detail`], and for the same reason: `tool_input` has no
+/// schema we control. A shape this does not recognise falls back to the one-line detail, so a
+/// Claude Code that rearranges the arguments costs the question's *text* rather than the fact
+/// that a question was asked.
+pub fn question_text(event: &HookEvent) -> Option<String> {
+    let questions = event
+        .tool_input
+        .as_ref()
+        .and_then(|input| input.get("questions")?.as_array());
+    let mut blocks: Vec<String> = Vec::new();
+    for question in questions.into_iter().flatten() {
+        let text = question
+            .get("question")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|text| !text.is_empty());
+        let header = question
+            .get("header")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|header| !header.is_empty() && Some(*header) != text);
+        let mut block = match (header, text) {
+            // The header is a chip above the question rather than a sentence, so it goes on
+            // its own line rather than being run into one.
+            (Some(header), Some(text)) => format!("{header}\n{text}"),
+            (None, Some(text)) => text.to_owned(),
+            (Some(header), None) => header.to_owned(),
+            (None, None) => continue,
+        };
+        let options = question
+            .get("options")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|option| match option {
+                // An option is normally `{label, description}`, but a bare string is a shape
+                // worth reading rather than dropping.
+                Value::String(label) => Some(label.trim()),
+                option => option
+                    .get("label")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim),
+            })
+            .filter(|label| !label.is_empty());
+        for label in options {
+            block.push_str("\n- ");
+            block.push_str(label);
+        }
+        blocks.push(block);
+    }
+    match blocks.is_empty() {
+        // Nothing recognisable in the arguments — but an `AskUserQuestion` still happened, and
+        // the toast's reading of it is the best remaining answer.
+        true => waiting_detail(event),
+        false => Some(blocks.join("\n\n")),
     }
 }
 
@@ -1202,6 +1358,148 @@ mod tests {
             ..event("PreToolUse")
         };
         assert_eq!(small.pruned(), small);
+    }
+
+    /// The prune is a cap in bytes, whatever alphabet the agent was speaking.
+    ///
+    /// Every string cap here is in characters, and a character is up to four bytes. A plan or
+    /// a set of questions written in Japanese, beside three prose fields at their own caps,
+    /// is what a single prune could not hold: it went out over the cap the prune exists to
+    /// enforce, into every plugin's memory, which is the whole cost the cap is about.
+    #[test]
+    fn a_broadcast_is_bounded_whatever_alphabet_it_is_in() {
+        // Three bytes a character, and every one of them under a key a history reads at
+        // length or in a prose field with the largest cap.
+        let long = "計".repeat(PRUNED_HISTORY_STRING_CHARS);
+        let questions: Vec<serde_json::Value> = (0..8)
+            .map(|_| serde_json::json!({ "question": long.clone(), "header": long.clone() }))
+            .collect();
+        let asking = HookEvent {
+            tool_name: Some("AskUserQuestion".to_owned()),
+            tool_input: Some(serde_json::json!({ "questions": questions })),
+            last_assistant_message: Some(long.clone()),
+            message: Some(long.clone()),
+            prompt: Some(long.clone()),
+            ..event("PreToolUse")
+        };
+
+        let json = serde_json::to_string(&asking).expect("the event serializes");
+        assert!(json.len() > HOOK_BROADCAST_MAX_BYTES);
+        let payload = asking.broadcast_json(json);
+        assert!(
+            payload.len() <= HOOK_BROADCAST_MAX_BYTES,
+            "the broadcast is bounded, got {}",
+            payload.len()
+        );
+        // Still an event, and still the same event: what a reader takes from it is a name and
+        // a first question, both of which fit whatever the budget came down to.
+        let arrived: HookEvent =
+            serde_json::from_str(&payload).expect("a pruned event is still an event");
+        assert_eq!(hook_state(&arrived), hook_state(&asking));
+        assert_eq!(arrived.tool_name.as_deref(), Some("AskUserQuestion"));
+        assert!(waiting_detail(&arrived).is_some());
+    }
+
+    /// An event that already fits travels exactly as it arrived.
+    #[test]
+    fn a_broadcast_within_the_cap_is_untouched() {
+        let event = HookEvent {
+            tool_name: Some("Read".to_owned()),
+            tool_input: Some(serde_json::json!({ "file_path": "/work/src/main.rs" })),
+            ..event("PreToolUse")
+        };
+        let json = serde_json::to_string(&event).expect("the event serializes");
+        assert_eq!(event.broadcast_json(json.clone()), json);
+    }
+
+    /// A submitted plan survives a prune, where a passing argument does not.
+    ///
+    /// The regression the key-aware cut exists for: a plan is `tool_input.plan`, and cutting
+    /// every string in `tool_input` to a record's budget turned a long plan into 256
+    /// characters on its way to the run history. The prune only runs above
+    /// [`HOOK_BROADCAST_MAX_BYTES`], which a big plan and a big anything-else together reach
+    /// easily.
+    #[test]
+    fn a_prune_keeps_a_plan_at_length_and_still_cuts_an_argument() {
+        let plan = "step. ".repeat(600);
+        let event = HookEvent {
+            tool_name: Some("ExitPlanMode".to_owned()),
+            tool_input: Some(serde_json::json!({
+                "plan": plan,
+                "context": "y".repeat(2 * 1024 * 1024),
+            })),
+            ..event("PreToolUse")
+        };
+        let pruned = event.pruned();
+        let input = pruned.tool_input.expect("the input survives");
+        assert_eq!(
+            input.get("plan").and_then(|plan| plan.as_str()),
+            Some(plan.as_str()),
+            "a plan of this length is kept whole"
+        );
+        assert_eq!(
+            input
+                .get("context")
+                .and_then(|value| value.as_str())
+                .map(|value| value.chars().count()),
+            Some(PRUNED_STRING_CHARS),
+            "an argument nobody reads at length is still cut"
+        );
+    }
+
+    /// Every question, its header and its options, for the reader that has room for them.
+    #[test]
+    fn a_question_reaches_the_history_whole_while_the_toast_keeps_its_line() {
+        let event = HookEvent {
+            tool_name: Some("AskUserQuestion".to_owned()),
+            tool_input: Some(serde_json::json!({
+                "questions": [
+                    {
+                        "header": "Library",
+                        "question": "Which library should we use for parsing the manifest?",
+                        "options": [
+                            { "label": "serde_json", "description": "what everything else uses" },
+                            { "label": "simd-json" },
+                        ],
+                    },
+                    { "question": "Keep the old runs?", "options": ["yes", "no"] },
+                ],
+            })),
+            ..event("PreToolUse")
+        };
+
+        let text = question_text(&event).expect("a question");
+        assert_eq!(
+            text,
+            "Library\nWhich library should we use for parsing the manifest?\n- serde_json\n- \
+             simd-json\n\nKeep the old runs?\n- yes\n- no"
+        );
+
+        // The toast and the sidebar are unchanged: one line, and only the first question.
+        let line = waiting_detail(&event).expect("a wait");
+        assert_eq!(
+            line,
+            "Which library should we use for parsing the manifest?"
+        );
+        assert!(line.chars().count() <= WAITING_DETAIL_CHARS);
+    }
+
+    /// A shape this does not recognise costs the question's text, not the question.
+    #[test]
+    fn an_unreadable_question_falls_back_to_the_one_line_detail() {
+        let reshaped = HookEvent {
+            tool_name: Some("AskUserQuestion".to_owned()),
+            tool_input: Some(serde_json::json!({ "queries": ["which one?"] })),
+            ..event("PreToolUse")
+        };
+        assert_eq!(question_text(&reshaped).as_deref(), Some("a question"));
+
+        let empty = HookEvent {
+            tool_name: Some("AskUserQuestion".to_owned()),
+            tool_input: Some(serde_json::json!({ "questions": [{ "options": [] }] })),
+            ..event("PreToolUse")
+        };
+        assert_eq!(question_text(&empty).as_deref(), Some("a question"));
     }
 
     /// The budget behind the per-string cut, for the shape the cut alone cannot bound: an

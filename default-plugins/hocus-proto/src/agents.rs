@@ -376,8 +376,8 @@ pub fn activity_hash(activity: &Activity, pane_id: u32) -> Option<u64> {
 // ---------------------------------------------------------------------------
 
 pub use zellij_tile::agent::{
-    clean_hint, hook_detail, waiting_detail, waiting_needs_a_person, HOOK_DETAIL_CHARS,
-    HOOK_SESSION_END, WAITING_DETAIL_CHARS,
+    clean_hint, hook_detail, question_text, waiting_detail, waiting_needs_a_person,
+    HOOK_DETAIL_CHARS, HOOK_SESSION_END, WAITING_DETAIL_CHARS,
 };
 use zellij_tile::prelude::{AgentInfo, AgentSource, AgentState};
 
@@ -803,6 +803,23 @@ impl RunEntryKind {
             RunEntryKind::Summary => "summary",
         }
     }
+
+    /// The inverse of [`label`](Self::label), for reading an entry back out of its row.
+    ///
+    /// A `kind` column rather than a serialized enum so the rows stay legible and filterable
+    /// from outside this crate; the two functions are each other's only definition of the
+    /// spelling, and `every_kind_survives_its_label` holds them together.
+    pub fn from_label(label: &str) -> Option<RunEntryKind> {
+        match label {
+            "prompt" => Some(RunEntryKind::Prompt),
+            "plan" => Some(RunEntryKind::Plan),
+            "question" => Some(RunEntryKind::Question),
+            "step" => Some(RunEntryKind::Step),
+            "result" => Some(RunEntryKind::Result),
+            "summary" => Some(RunEntryKind::Summary),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -826,8 +843,12 @@ pub enum RunOutcome {
 
 /// The metadata and selected history for one hook session.
 ///
-/// Stored as one JSON value. `ponytail:` split entries into their own entity if a measured
-/// single-run write size becomes a problem; archive size is already handled by paging rows.
+/// The metadata is stored as one JSON `payload` value; the timeline is not, and has a row per
+/// entry in `agent_run_entry` (`store::agent_run_entry_def`). Splitting them is what lets an
+/// entry keep the whole of what the agent said: a blob has to be rewritten in full every time
+/// the timeline grows, and the cost of that was paid for by cutting each entry's text down.
+/// `rows::hydrate_entries` puts the two halves back together, and a run recorded before the
+/// split still carries its entries inside its payload.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentRun {
     pub id: String,
@@ -947,7 +968,15 @@ pub fn stored_run_id(agent: &AgentInfo, pane_id: u32) -> Option<String> {
     (!session_id.is_empty()).then(|| run_id(&agent.kind, pane_id, session_id, 0))
 }
 
-/// Reduce one hook event to the small history it is worth keeping.
+/// Reduce one hook event to the history it is worth keeping.
+///
+/// *Which* events are kept is the whole of the reduction; how much of one is kept is not.
+/// Nothing here is cut. The history's home is a half-pane that wraps and scrolls, an entry
+/// costs one row of its own, and the event has already been bounded on the way in by
+/// `agent::HOOK_BROADCAST_MAX_BYTES` and the per-field caps its prune applies. The lengths
+/// this used to cut to — `WAITING_DETAIL_CHARS`, and a bare `600` for a prompt — are a toast's
+/// budget and a sidebar cell's, and they were only ever applied here because the timeline was
+/// stored as one blob that grew with every event.
 pub fn run_entry(event: &zellij_tile::agent::HookEvent) -> Option<(RunEntryKind, String)> {
     let (kind, text) = match event.hook_event_name.as_str() {
         "UserPromptSubmit" => (RunEntryKind::Prompt, event.prompt.clone()?),
@@ -980,7 +1009,7 @@ pub fn run_entry(event: &zellij_tile::agent::HookEvent) -> Option<(RunEntryKind,
                 Some("AskUserQuestion" | "request_user_input")
             ) =>
         {
-            (RunEntryKind::Question, waiting_detail(event)?)
+            (RunEntryKind::Question, question_text(event)?)
         },
         "Stop" => (RunEntryKind::Result, event.last_assistant_message.clone()?),
         "StopFailure" => (
@@ -992,18 +1021,9 @@ pub fn run_entry(event: &zellij_tile::agent::HookEvent) -> Option<(RunEntryKind,
         ),
         _ => return None,
     };
-    let cap = match kind {
-        RunEntryKind::Prompt => 600,
-        RunEntryKind::Plan | RunEntryKind::Result => SUMMARY_CHARS,
-        RunEntryKind::Question | RunEntryKind::Step => WAITING_DETAIL_CHARS,
-        // Unreachable from here: no hook event reduces to a summary, which is made by
-        // asking a model rather than by watching one. The cap is the one `parse_summary`
-        // has already applied, so an entry made that way arrives inside it.
-        RunEntryKind::Summary => SUMMARY_TEXT_CHARS,
-    };
     let text = crate::text::sanitize(&text);
-    let text: String = text.trim().chars().take(cap).collect();
-    (!text.is_empty()).then_some((kind, text))
+    let text = text.trim();
+    (!text.is_empty()).then(|| (kind, text.to_owned()))
 }
 
 /// The provider-level identity of a retained hook event. The event name keeps a failed tool's
@@ -1079,13 +1099,40 @@ pub fn push_summary_entry(run: &mut AgentRun, text: &str) -> bool {
 /// hand, and what the daemon last said about each idle pane, so a hocus reload keeps both.
 /// hocus is the only writer; see `store::agent_latch_def` and `store::agent_summary_def`.
 pub mod rows {
-    use super::{AgentRun, AgentRunHeader, Summaries, Summary};
-    use std::collections::BTreeMap;
-    use zellij_tile::prelude::{DataRows, DataValue, FetchRequest, Mutation, Pred};
+    use super::{AgentRun, AgentRunHeader, RunEntry, RunEntryKind, Summaries, Summary};
+    use crate::store::Backend;
+    use std::collections::{BTreeMap, BTreeSet};
+    use zellij_tile::prelude::{
+        DataRows, DataValue, FetchRequest, Mutation, Pred, SortDir, MAX_FETCH_ROWS,
+    };
 
     pub const LATCH_ENTITY: &str = "agent_latch";
     pub const SUMMARY_ENTITY: &str = "agent_summary";
     pub const RUN_ENTITY: &str = "agent_run";
+    pub const ENTRY_ENTITY: &str = "agent_run_entry";
+
+    /// How much of a run's timeline is handed to the panel at once.
+    ///
+    /// The one bound left on a run's size, and it is at the delivery seam rather than at the
+    /// record: an entry costs a row, but the panel is sent its run as a single JSON string
+    /// copied into wasm memory, and that is the only place the length of a long-lived run is
+    /// paid for. The newest end is the one that is kept, because that is the end the history
+    /// half is anchored to and scrolls back from.
+    ///
+    /// `ponytail:` page older entries into the panel when it scrolls past the oldest of these.
+    /// Nothing does that yet, and a run of five hundred prompts, plans and questions is a very
+    /// long day's work.
+    pub const RUN_DETAIL_ENTRIES: u32 = 500;
+
+    /// The other half of that bound, and the half that actually holds.
+    ///
+    /// A row count bounds nothing on its own now that an entry keeps the whole of what the
+    /// agent said: five hundred plans is megabytes, and the only ceiling left under it is the
+    /// store's own `MAX_FETCH_BYTES`. What the panel is sent has to fit in its memory as one
+    /// JSON string, so the entries are taken from the newest end until this much text has been
+    /// gathered. Generous next to any real run — a day of prompts and plans is tens of
+    /// kilobytes — and small next to the two megabytes a fetch may hand back.
+    pub const RUN_DETAIL_BYTES: usize = 256 * 1024;
 
     pub fn active_runs_request(zellij_session_name: &str) -> FetchRequest {
         FetchRequest::entity(RUN_ENTITY)
@@ -1104,6 +1151,156 @@ pub mod rows {
             .filter(Pred::eq("uid", run_id))
             .select(["payload"])
             .limit(1)
+    }
+
+    /// One entry's row key. Run-scoped and revision-keyed, so re-writing an entry the store
+    /// already holds upserts it rather than making a second copy of it — the same shape, and
+    /// for the same reason, as hocus's `message_uid`.
+    fn entry_uid(run_id: &str, revision: u64) -> String {
+        format!("{run_id}#{revision}")
+    }
+
+    pub fn entry_mutation(run_id: &str, entry: &RunEntry) -> Mutation {
+        let mut put = Mutation::put(ENTRY_ENTITY)
+            .uid(entry_uid(run_id, entry.revision))
+            .set("run_id", run_id)
+            .set("revision", entry.revision as i64)
+            .set("kind", entry.kind.label())
+            .set("text", entry.text.clone());
+        if let Some(event_id) = entry.event_id.as_ref() {
+            put = put.set("event_id", event_id.clone());
+        }
+        put.build()
+    }
+
+    /// Every entry of these runs, a page at a time.
+    ///
+    /// Deliberately unsorted. `after_id` is the only paging that does not have to re-scan what
+    /// it has already read, and the store refuses it beside a sort — so the fetch takes the
+    /// default `id` ordering and [`entries_from_rows`] sorts by revision in the guest, exactly
+    /// as hocus's transcript loader does with `seq`. Row order agrees with revision order
+    /// anyway: a row is written when its entry is made.
+    fn entries_request(run_ids: impl IntoIterator<Item = String>) -> FetchRequest {
+        FetchRequest::entity(ENTRY_ENTITY)
+            .filter(Pred::is_in("run_id", run_ids))
+            .limit(MAX_FETCH_ROWS)
+    }
+
+    /// The newest [`RUN_DETAIL_ENTRIES`] entries of one run, for the panel.
+    ///
+    /// Sorted, which rules out a cursor — but one bounded fetch has nothing to page.
+    fn newest_entries_request(run_id: &str) -> FetchRequest {
+        FetchRequest::entity(ENTRY_ENTITY)
+            .filter(Pred::eq("run_id", run_id))
+            .sort_by("revision", SortDir::Desc)
+            .limit(RUN_DETAIL_ENTRIES)
+    }
+
+    fn int_at(rows: &DataRows, row: &[DataValue], column: &str) -> Option<i64> {
+        match rows.get(row, column) {
+            Some(DataValue::Int(value)) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// Every entry in these rows, grouped by run and ordered oldest first.
+    ///
+    /// A row whose `kind` this version does not know is dropped rather than guessed at: a
+    /// newer hocus writing a kind this one cannot draw is a thing to ignore, not to crash on.
+    pub fn entries_from_rows(rows: &DataRows) -> BTreeMap<String, Vec<RunEntry>> {
+        let mut grouped: BTreeMap<String, Vec<RunEntry>> = BTreeMap::new();
+        for row in &rows.rows {
+            let run_id = text_at(rows, row, "run_id");
+            let (Some(revision), Some(kind)) = (
+                int_at(rows, row, "revision").and_then(|value| u64::try_from(value).ok()),
+                RunEntryKind::from_label(&text_at(rows, row, "kind")),
+            ) else {
+                continue;
+            };
+            let event_id = match rows.get(row, "event_id") {
+                Some(DataValue::Text(id)) if !id.is_empty() => Some(id.clone()),
+                _ => None,
+            };
+            grouped.entry(run_id).or_default().push(RunEntry {
+                revision,
+                event_id,
+                kind,
+                text: text_at(rows, row, "text"),
+            });
+        }
+        for entries in grouped.values_mut() {
+            entries.sort_by_key(|entry| entry.revision);
+        }
+        grouped
+    }
+
+    /// Fill in these runs' timelines from their entry rows.
+    ///
+    /// A run's `entries` are only replaced when the store actually holds rows for it. That is
+    /// what makes the split backward compatible without a migration: a run recorded before
+    /// entries had rows of their own still carries them inside its `payload`, deserializes
+    /// with them, and is left alone here.
+    ///
+    /// Returns the ids of the runs that *were* hydrated, which is exactly the question a
+    /// caller has to answer before deciding what still needs writing: a run left holding its
+    /// payload's entries has none of them stored as rows yet, and its next persist has to
+    /// write all of them — the payload it is written with no longer carries a timeline.
+    pub fn hydrate_entries(backend: &impl Backend, runs: &mut [AgentRun]) -> BTreeSet<String> {
+        if runs.is_empty() {
+            return BTreeSet::new();
+        }
+        let mut request = entries_request(runs.iter().map(|run| run.id.clone()));
+        let mut grouped: BTreeMap<String, Vec<RunEntry>> = BTreeMap::new();
+        loop {
+            let Ok(rows) = backend.fetch(&request) else {
+                return BTreeSet::new();
+            };
+            for (run_id, entries) in entries_from_rows(&rows) {
+                grouped.entry(run_id).or_default().extend(entries);
+            }
+            // A run's timeline can outgrow one page, so keep going while the store says there
+            // is more. `next_cursor` is only handed back under the default ordering, which is
+            // why `entries_request` does not sort.
+            match rows.truncated.then_some(rows.next_cursor).flatten() {
+                Some(cursor) => request = request.after_id(cursor),
+                None => break,
+            }
+        }
+        let mut hydrated = BTreeSet::new();
+        for run in runs {
+            if let Some(mut entries) = grouped.remove(&run.id) {
+                entries.sort_by_key(|entry| entry.revision);
+                run.entries = entries;
+                hydrated.insert(run.id.clone());
+            }
+        }
+        hydrated
+    }
+
+    /// Fill in one run's timeline with its newest entries, for the panel. See
+    /// [`RUN_DETAIL_ENTRIES`] and [`RUN_DETAIL_BYTES`].
+    ///
+    /// The budget is spent from the newest end, which is the end the history half is anchored
+    /// to, and the newest entry is kept whatever it costs: a run whose last plan is on its own
+    /// over the budget should show that plan, not an empty history.
+    pub fn hydrate_newest_entries(backend: &impl Backend, run: &mut AgentRun) {
+        let Ok(rows) = backend.fetch(&newest_entries_request(&run.id)) else {
+            return;
+        };
+        let Some(mut entries) = entries_from_rows(&rows).remove(&run.id) else {
+            return;
+        };
+        let mut spent = 0usize;
+        let mut kept = 0;
+        for entry in entries.iter().rev() {
+            if kept > 0 && spent.saturating_add(entry.text.len()) > RUN_DETAIL_BYTES {
+                break;
+            }
+            spent = spent.saturating_add(entry.text.len());
+            kept += 1;
+        }
+        entries.drain(..entries.len() - kept);
+        run.entries = entries;
     }
 
     fn pane_id_at(rows: &DataRows, row: &[DataValue]) -> Option<u32> {
@@ -1272,11 +1469,38 @@ pub mod rows {
                     serde_json::to_string(&run.header()).expect("AgentRunHeader serializes"),
                 ),
             ),
-            (
-                "payload",
-                DataValue::from(serde_json::to_string(run).expect("AgentRun serializes")),
-            ),
+            ("payload", DataValue::from(stored_payload(run))),
         ]
+    }
+
+    /// The run as its `payload` column holds it: everything except the timeline, which lives
+    /// in [`ENTRY_ENTITY`] rows.
+    ///
+    /// Written from a cleared copy rather than by making `entries` a skipped serde field,
+    /// because the same struct is serialized again to reach the panel — where the timeline is
+    /// the whole point of sending it.
+    ///
+    /// Field by field, and deliberately not `..run.clone()`: functional-update syntax builds
+    /// the whole value before overriding, so that spelling deep-clones every entry only to
+    /// drop it — on every hook, for a run that has been going all day. A literal without `..`
+    /// also cannot silently omit a field, since the compiler refuses one that is not listed.
+    fn stored_payload(run: &AgentRun) -> String {
+        let stored = AgentRun {
+            id: run.id.clone(),
+            pane_id: run.pane_id,
+            zellij_session_name: run.zellij_session_name.clone(),
+            session_id: run.session_id.clone(),
+            kind: run.kind.clone(),
+            cwd: run.cwd.clone(),
+            started_at_ms: run.started_at_ms,
+            ended_at_ms: run.ended_at_ms,
+            outcome: run.outcome,
+            revision: run.revision,
+            summarized_revision: run.summarized_revision,
+            summary: run.summary.clone(),
+            entries: Vec::new(),
+        };
+        serde_json::to_string(&stored).expect("AgentRun serializes")
     }
 
     pub fn run_mutation(run: &AgentRun) -> Mutation {
@@ -1285,6 +1509,23 @@ pub mod rows {
             put = put.set(attr, value);
         }
         put.build()
+    }
+
+    /// A run and every entry it holds, as one batch.
+    ///
+    /// The whole-run write: [`run_mutation`] alone stores only the metadata, since the
+    /// timeline has rows of its own. hocus-agentd does not use this — it knows which entries
+    /// the store already has and writes only the new ones — but anything holding a complete
+    /// run and no such bookkeeping wants all of it written.
+    pub fn run_mutations(run: &AgentRun) -> Vec<Mutation> {
+        let mut mutations = Vec::with_capacity(run.entries.len() + 1);
+        mutations.push(run_mutation(run));
+        mutations.extend(
+            run.entries
+                .iter()
+                .map(|entry| entry_mutation(&run.id, entry)),
+        );
+        mutations
     }
 
     /// Write a run *only while it is still ours*.
@@ -3150,6 +3391,79 @@ mod tests {
         assert_eq!(run_entry(&event("PermissionRequest")), None);
     }
 
+    /// Nothing a hook event says is cut on its way into the history.
+    ///
+    /// The regression the split was made for: a prompt used to stop at 600 characters and a
+    /// question at 80, both silently, because the whole timeline was one blob that grew with
+    /// every event. It is rows now, and the panel wraps and scrolls.
+    #[test]
+    fn a_retained_entry_keeps_the_whole_of_what_the_event_said() {
+        let long = "word ".repeat(4000);
+        let prompt = crate::wire::HookEvent {
+            hook_event_name: "UserPromptSubmit".to_owned(),
+            prompt: Some(long.clone()),
+            ..Default::default()
+        };
+        assert_eq!(
+            run_entry(&prompt),
+            Some((RunEntryKind::Prompt, long.trim().to_owned()))
+        );
+
+        let plan = crate::wire::HookEvent {
+            hook_event_name: "PreToolUse".to_owned(),
+            tool_name: Some("ExitPlanMode".to_owned()),
+            tool_input: Some(json!({ "plan": long.clone() })),
+            ..Default::default()
+        };
+        assert_eq!(
+            run_entry(&plan),
+            Some((RunEntryKind::Plan, long.trim().to_owned()))
+        );
+
+        let ask = crate::wire::HookEvent {
+            hook_event_name: "PreToolUse".to_owned(),
+            tool_name: Some("AskUserQuestion".to_owned()),
+            tool_input: Some(json!({
+                "questions": [
+                    {
+                        "header": "Caps",
+                        "question": "Which of these should the history keep whole?",
+                        "options": [{ "label": "all of them" }, { "label": "none of them" }],
+                    },
+                    { "question": "And the second question?" },
+                ],
+            })),
+            ..Default::default()
+        };
+        let (kind, text) = run_entry(&ask).expect("a question");
+        assert_eq!(kind, RunEntryKind::Question);
+        assert!(
+            text.contains("And the second question?"),
+            "every question, not only the first: {text}"
+        );
+        assert!(text.contains("\n- all of them"), "and its options: {text}");
+        assert!(
+            text.chars().count() > WAITING_DETAIL_CHARS,
+            "which is more than a toast's line: {text}"
+        );
+    }
+
+    /// The two spellings of a kind are each other's inverse, so a row round trips.
+    #[test]
+    fn every_kind_survives_its_label() {
+        for kind in [
+            RunEntryKind::Prompt,
+            RunEntryKind::Plan,
+            RunEntryKind::Question,
+            RunEntryKind::Step,
+            RunEntryKind::Result,
+            RunEntryKind::Summary,
+        ] {
+            assert_eq!(RunEntryKind::from_label(kind.label()), Some(kind));
+        }
+        assert_eq!(RunEntryKind::from_label("something-newer"), None);
+    }
+
     /// The whole timeline comes back, oldest first, and the caller windows it. The
     /// windowing itself now lives in the agents pane, which is the only thing that knows
     /// how many rows the history half has.
@@ -3421,18 +3735,30 @@ mod tests {
                 text: "implement history".to_owned(),
             }],
         };
-        local.apply(vec![rows::run_mutation(&run)]).unwrap();
+        local.apply(rows::run_mutations(&run)).unwrap();
         let mut foreign = run.clone();
         foreign.id = "claude:session-2".to_owned();
         foreign.session_id = "session-2".to_owned();
         foreign.zellij_session_name = "another-zellij".to_owned();
-        local.apply(vec![rows::run_mutation(&foreign)]).unwrap();
+        local.apply(rows::run_mutations(&foreign)).unwrap();
         let active = local.fetch(&rows::active_runs_request("zellij")).unwrap();
-        assert_eq!(rows::runs_from_rows(&active), vec![run.clone()]);
+        // The metadata comes back from the run's own row; the timeline is rows of its own, and
+        // arrives only once it is asked for.
+        let mut restored = rows::runs_from_rows(&active);
+        assert_eq!(
+            restored.iter().map(|run| &run.id).collect::<Vec<_>>(),
+            vec![&run.id]
+        );
+        assert!(restored[0].entries.is_empty());
+        assert_eq!(
+            rows::hydrate_entries(&local, &mut restored),
+            std::collections::BTreeSet::from([run.id.clone()])
+        );
+        assert_eq!(restored, vec![run.clone()]);
 
         run.ended_at_ms = Some(20);
         run.outcome = RunOutcome::Completed;
-        local.apply(vec![rows::run_mutation(&run)]).unwrap();
+        local.apply(rows::run_mutations(&run)).unwrap();
         let completed = local
             .fetch(
                 &FetchRequest::entity(rows::RUN_ENTITY)
@@ -3451,7 +3777,123 @@ mod tests {
                     .select(["payload"]),
             )
             .unwrap();
-        assert_eq!(rows::runs_from_rows(&detail), vec![run]);
+        let mut detail = rows::runs_from_rows(&detail);
+        rows::hydrate_entries(&local, &mut detail);
+        assert_eq!(detail, vec![run]);
+    }
+
+    /// A run written before the timeline had rows of its own keeps the entries in its payload.
+    ///
+    /// The whole of the backward compatibility: there is no migration and no backfill, so a
+    /// hydration that finds no rows for a run must leave what the payload carried alone.
+    #[test]
+    fn a_run_stored_before_the_split_keeps_the_entries_in_its_payload() {
+        use crate::store::{self, Backend};
+        use zellij_tile::prelude::Mutation;
+
+        let local = store::Local::shared("hocus-agentd");
+        local.define_all(&store::shared_defs()).unwrap();
+        let run = a_run_with_entries("claude:session-1", "zellij", 7, &["asked", "answered"]);
+        // The old shape: the whole run, timeline included, inside `payload`.
+        local
+            .apply(vec![Mutation::put(rows::RUN_ENTITY)
+                .uid(run.id.clone())
+                .set("pane_id", run.pane_id)
+                .set("session_id", run.session_id.clone())
+                .set("zellij_session_name", run.zellij_session_name.clone())
+                .set("kind", run.kind.clone())
+                .set("active", true)
+                .set("started_at_ms", run.started_at_ms)
+                .set("payload", serde_json::to_string(&run).unwrap())
+                .build()])
+            .unwrap();
+        let mut restored =
+            rows::runs_from_rows(&local.fetch(&rows::active_runs_request("zellij")).unwrap());
+        assert_eq!(
+            restored,
+            vec![run.clone()],
+            "the payload still carries them"
+        );
+        assert!(
+            rows::hydrate_entries(&local, &mut restored).is_empty(),
+            "nothing was hydrated, so the caller knows they are not yet rows"
+        );
+        assert_eq!(restored, vec![run], "and they were not taken away");
+    }
+
+    /// What the panel is sent is bounded by bytes, not only by rows.
+    ///
+    /// An entry keeps the whole of what the agent said, so five hundred of them is not a size:
+    /// only [`rows::RUN_DETAIL_BYTES`] makes the payload the panel is handed a bounded one.
+    #[test]
+    fn a_run_detail_is_cut_to_its_byte_budget_from_the_newest_end() {
+        use crate::store::{self, Backend};
+
+        let local = store::Local::shared("hocus-agentd");
+        local.define_all(&store::shared_defs()).unwrap();
+        // Ten entries of a tenth of the budget each, so half of them fit and the oldest half
+        // is what goes.
+        let each = rows::RUN_DETAIL_BYTES / 10;
+        let texts: Vec<String> = (0..10).map(|n| format!("{n}").repeat(each)).collect();
+        let run = a_run_with_entries(
+            "claude:session-1",
+            "zellij",
+            7,
+            &texts.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        local.apply(rows::run_mutations(&run)).unwrap();
+
+        let mut detail = AgentRun {
+            entries: Vec::new(),
+            ..run.clone()
+        };
+        rows::hydrate_newest_entries(&local, &mut detail);
+        let spent: usize = detail.entries.iter().map(|entry| entry.text.len()).sum();
+        assert!(
+            spent <= rows::RUN_DETAIL_BYTES,
+            "the payload is within the budget, got {spent}"
+        );
+        assert_eq!(
+            detail.entries,
+            run.entries[run.entries.len() - detail.entries.len()..],
+            "and what it kept is the newest end, in order"
+        );
+        assert!(!detail.entries.is_empty());
+
+        // One entry over the budget on its own is still sent: an empty history is worse than
+        // a large one.
+        let huge = "x".repeat(rows::RUN_DETAIL_BYTES * 2);
+        let big = a_run_with_entries("claude:session-2", "zellij", 8, &[huge.as_str()]);
+        local.apply(rows::run_mutations(&big)).unwrap();
+        let mut detail = AgentRun {
+            entries: Vec::new(),
+            ..big.clone()
+        };
+        rows::hydrate_newest_entries(&local, &mut detail);
+        assert_eq!(detail.entries, big.entries);
+    }
+
+    /// A timeline longer than one fetch page still comes back whole.
+    #[test]
+    fn a_long_timeline_is_paged_back_in_full() {
+        use crate::store::{self, Backend};
+
+        let local = store::Local::shared("hocus-agentd");
+        local.define_all(&store::shared_defs()).unwrap();
+        let texts: Vec<String> = (0..zellij_tile::prelude::MAX_FETCH_ROWS + 20)
+            .map(|n| format!("entry {n}"))
+            .collect();
+        let run = a_run_with_entries(
+            "claude:session-1",
+            "zellij",
+            7,
+            &texts.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        local.apply(rows::run_mutations(&run)).unwrap();
+        let mut restored =
+            rows::runs_from_rows(&local.fetch(&rows::active_runs_request("zellij")).unwrap());
+        rows::hydrate_entries(&local, &mut restored);
+        assert_eq!(restored, vec![run]);
     }
 
     fn a_run_with_entries(id: &str, session: &str, pane_id: u32, entries: &[&str]) -> AgentRun {
@@ -3481,12 +3923,12 @@ mod tests {
         }
     }
 
+    /// One stored run, timeline and all — the two fetches a reader of a whole run makes.
     fn stored_run(local: &impl crate::store::Backend, id: &str) -> AgentRun {
         let rows = local.fetch(&rows::run_by_id_request(id)).unwrap();
-        rows::runs_from_rows(&rows)
-            .into_iter()
-            .next()
-            .expect("the run is stored")
+        let mut runs = rows::runs_from_rows(&rows);
+        rows::hydrate_entries(local, &mut runs);
+        runs.into_iter().next().expect("the run is stored")
     }
 
     /// A warped pane's run continues where it left off.
@@ -3504,7 +3946,7 @@ mod tests {
         let gaining = losing.joined(store::SHARED, "hocus-agentd");
 
         let mut run = a_run_with_entries("claude:session-1", "here", 7, &["ship it"]);
-        losing.apply(vec![rows::run_mutation(&run)]).unwrap();
+        losing.apply(rows::run_mutations(&run)).unwrap();
         // The pane leaves the manifest, so the losing session releases the run.
         run.ended_at_ms = Some(20);
         run.outcome = RunOutcome::Closed;
@@ -3521,7 +3963,7 @@ mod tests {
         assert_eq!(adopted.entries.len(), 1, "the history came with it");
         assert_eq!(adopted.started_at_ms, 10, "and so did when it began");
         assert_eq!(adopted.outcome, RunOutcome::Active);
-        gaining.apply(vec![rows::run_mutation(&adopted)]).unwrap();
+        gaining.apply(rows::run_mutations(&adopted)).unwrap();
 
         let stored = stored_run(&losing, "claude:session-1");
         assert_eq!(stored.pane_id, 2);
@@ -3545,7 +3987,7 @@ mod tests {
         let gaining = losing.joined(store::SHARED, "hocus-agentd");
 
         let run = a_run_with_entries("claude:session-1", "here", 7, &["ship it"]);
-        losing.apply(vec![rows::run_mutation(&run)]).unwrap();
+        losing.apply(rows::run_mutations(&run)).unwrap();
 
         // The gaining session gets there first, and the agent keeps working.
         let mut adopted = stored_run(&gaining, "claude:session-1").adopted_by(2, "there");
@@ -3556,7 +3998,7 @@ mod tests {
             kind: RunEntryKind::Result,
             text: "shipped".to_owned(),
         });
-        gaining.apply(vec![rows::run_mutation(&adopted)]).unwrap();
+        gaining.apply(rows::run_mutations(&adopted)).unwrap();
 
         // Only now does the losing session notice the pane is gone.
         let mut released = run.clone();
@@ -3585,7 +4027,7 @@ mod tests {
         let local = store::Local::shared("hocus-agentd");
         local.define_all(&store::shared_defs()).unwrap();
         let mut run = a_run_with_entries("claude:session-1", "here", 7, &["ship it"]);
-        local.apply(vec![rows::run_mutation(&run)]).unwrap();
+        local.apply(rows::run_mutations(&run)).unwrap();
 
         run.ended_at_ms = Some(20);
         run.outcome = RunOutcome::Closed;
@@ -3596,6 +4038,16 @@ mod tests {
         let stored = stored_run(&local, "claude:session-1");
         assert_eq!(stored.outcome, RunOutcome::Closed);
         assert_eq!(stored.ended_at_ms, Some(20));
+        // The write that closed it rewrote the payload without a timeline, which is what the
+        // entry rows are for: closing a run does not cost it its history.
+        assert_eq!(
+            stored
+                .entries
+                .iter()
+                .map(|entry| entry.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ship it"],
+        );
         assert!(
             local
                 .fetch(&rows::active_runs_request("here"))

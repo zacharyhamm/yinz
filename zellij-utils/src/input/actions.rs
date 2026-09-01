@@ -834,12 +834,9 @@ fn hook_report_actions(
     // Whole, unless whole is unreasonable. `tool_input` and `tool_response` have no bound in
     // Claude Code's schema, and this payload is copied into every running plugin's memory —
     // see `agent::HOOK_BROADCAST_MAX_BYTES`. A pruned event is still an event; a two-megabyte
-    // one is a stalled turn.
-    let payload = if json.len() <= crate::agent::HOOK_BROADCAST_MAX_BYTES {
-        json
-    } else {
-        serde_json::to_string(&event.pruned()).unwrap_or(json)
-    };
+    // one is a stalled turn. `broadcast_json` owns the whole rule, cap included, because a
+    // single prune cannot promise a size on its own.
+    let payload = event.broadcast_json(json);
     // A `KeybindPipe` rather than a `CliPipe`: it broadcasts to every running plugin without a
     // pipe id, so nothing waits to be unblocked and a hook cannot stall the turn it fired in.
     // The pane travels as an argument because only a `CliPipe` carries `PipeMessage::pane_id`,

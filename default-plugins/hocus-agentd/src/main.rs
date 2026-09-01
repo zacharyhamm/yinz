@@ -232,6 +232,15 @@ struct State {
     /// Keyed like `dirty_runs` and drained with it. A run that is in both is guarded, because
     /// once its pane is gone nothing here can add to it.
     released_runs: BTreeSet<String>,
+    /// The newest revision of each run whose entry rows the store already holds.
+    ///
+    /// A run's timeline is stored one row per entry, and only the entries above this mark are
+    /// written on the next persist — which is the point of the split: a run that has been going
+    /// all day costs one small insert per hook rather than a rewrite of everything it has said.
+    ///
+    /// Derived from the run rather than recorded at each `entries.push`, so no future caller
+    /// can add an entry and forget to write it.
+    persisted_revision: BTreeMap<String, u64>,
     /// Panes we have already looked for a stored run for, so a pane that genuinely has none
     /// costs one fetch rather than one per manifest. Pruned with the panes.
     run_lookups: BTreeSet<u32>,
@@ -715,7 +724,9 @@ impl State {
         if let Ok(rows) = store::Host::shared()
             .fetch(&agents::rows::active_runs_request(&session_name).limit(MAX_FETCH_ROWS))
         {
-            for run in agents::rows::runs_from_rows(&rows) {
+            let mut runs = agents::rows::runs_from_rows(&rows);
+            self.hydrate_runs(&mut runs);
+            for run in runs {
                 let (pane_id, run_id) = (run.pane_id, run.id.clone());
                 // Kept, not replaced: a run this daemon is already holding is the live one,
                 // and the stored copy is behind it.
@@ -1191,7 +1202,9 @@ impl State {
         else {
             return;
         };
-        let Some(run) = agents::rows::runs_from_rows(&rows).into_iter().next() else {
+        let mut runs = agents::rows::runs_from_rows(&rows);
+        self.hydrate_runs(&mut runs);
+        let Some(run) = runs.into_iter().next() else {
             return;
         };
         self.adopt_run(pane_id, run.adopted_by(pane_id, owner));
@@ -1242,6 +1255,69 @@ impl State {
         set_pane_agent_run(PaneId::Terminal(pane_id), run_id);
     }
 
+    /// Fill in the timelines of runs just read out of the store, and remember how much of
+    /// each one the store already holds.
+    ///
+    /// The mark is set only for a run whose entries really came back as rows. A run recorded
+    /// before the split still carries its timeline inside its payload, and leaving its mark at
+    /// zero is what makes the next persist write those entries out as rows — which it must,
+    /// because the payload it will be rewritten with no longer carries them.
+    fn hydrate_runs(&mut self, runs: &mut [agents::AgentRun]) {
+        let hydrated = agents::rows::hydrate_entries(&store::Host::shared(), runs);
+        for run in runs.iter() {
+            if !hydrated.contains(&run.id) {
+                continue;
+            }
+            if let Some(newest) = run.entries.last().map(|entry| entry.revision) {
+                self.persisted_revision.insert(run.id.clone(), newest);
+            }
+        }
+    }
+
+    /// One run read back out of the store, timeline and all.
+    fn stored_run(&mut self, request: &FetchRequest) -> Option<agents::AgentRun> {
+        let rows = store::Host::shared().fetch(request).ok()?;
+        let mut runs = agents::rows::runs_from_rows(&rows);
+        self.hydrate_runs(&mut runs);
+        runs.into_iter().next()
+    }
+
+    /// The batch a persist writes, and what each run's mark becomes if it lands.
+    ///
+    /// The marks are handed back rather than moved here, because a refused batch writes
+    /// nothing, and a mark advanced anyway would lose every entry it had claimed to store.
+    fn dirty_run_mutations(&self, owner: &str) -> (Vec<Mutation>, Vec<(String, u64)>) {
+        let mut mutations = Vec::with_capacity(self.dirty_runs.len());
+        let mut written: Vec<(String, u64)> = Vec::new();
+        for run in self.dirty_runs.values() {
+            let released = self.released_runs.contains(&run.id);
+            mutations.push(match released {
+                true => agents::rows::run_owned_mutation(run, owner),
+                false => agents::rows::run_mutation(run),
+            });
+            // The guard is on the run's *row*, and only there. Its payload is the thing two
+            // sessions hold conflicting opinions about — a warp means the session that lost
+            // the pane and the one that gained it each have a whole run to write, and the
+            // loser's is stale. An entry is not that: it is addressed by `run_id#revision`,
+            // it is only ever added, and a revision this session holds is a revision no other
+            // session minted. So its entries go out unguarded, released or not.
+            //
+            // They must, too. A released run is exactly the case where entries are most
+            // likely to be behind their mark — a run restored from a payload written before
+            // the split has no rows at all and a mark of zero — and the guarded write
+            // rewrites the payload without a timeline. Skipping the entries here left the run
+            // with neither copy.
+            let from = self.persisted_revision.get(&run.id).copied().unwrap_or(0);
+            for entry in run.entries.iter().filter(|entry| entry.revision > from) {
+                mutations.push(agents::rows::entry_mutation(&run.id, entry));
+            }
+            if let Some(newest) = run.entries.last().map(|entry| entry.revision) {
+                written.push((run.id.clone(), newest.max(from)));
+            }
+        }
+        (mutations, written)
+    }
+
     fn persist_dirty_runs(&mut self) {
         let Some(owner) = self.zellij_session_name.clone() else {
             return;
@@ -1249,18 +1325,15 @@ impl State {
         if self.dirty_runs.is_empty() {
             return;
         }
-        let mutations = self
-            .dirty_runs
-            .values()
-            .map(|run| {
-                if self.released_runs.contains(&run.id) {
-                    agents::rows::run_owned_mutation(run, &owner)
-                } else {
-                    agents::rows::run_mutation(run)
-                }
-            })
-            .collect();
+        let (mutations, written) = self.dirty_run_mutations(&owner);
+        // One batch, so a run's row and the entries it names cannot land apart.
         if store::Host::shared().apply(mutations).is_ok() {
+            self.persisted_revision.extend(written);
+            // Only live runs can gain an entry, so only their marks are worth carrying. A
+            // finished run's would sit here for the rest of the session saying something
+            // nothing will ask.
+            let live: BTreeSet<&String> = self.runs.values().map(|run| &run.id).collect();
+            self.persisted_revision.retain(|id, _| live.contains(id));
             self.dirty_runs.clear();
             self.released_runs.clear();
         }
@@ -1806,11 +1879,7 @@ impl State {
             // Asked once per pane. A pane that has no stored run is the common case by far, and
             // the answer does not change until the pane does.
             self.run_lookups.insert(pane_id);
-            let Ok(rows) = store::Host::shared().fetch(&agents::rows::run_by_id_request(&run_id))
-            else {
-                continue;
-            };
-            let Some(run) = agents::rows::runs_from_rows(&rows).into_iter().next() else {
+            let Some(run) = self.stored_run(&agents::rows::run_by_id_request(&run_id)) else {
                 continue;
             };
             self.adopt_run(pane_id, run.adopted_by(pane_id, &owner));
@@ -2666,17 +2735,14 @@ impl State {
     /// `dirty_runs` first, because a run summarised twice in quick succession has its first
     /// answer sitting there unwritten, and reading past it would build the second request
     /// against a state that is already superseded.
-    fn load_run(&self, run_id: &str) -> Option<agents::AgentRun> {
+    fn load_run(&mut self, run_id: &str) -> Option<agents::AgentRun> {
         if let Some(run) = self.dirty_runs.get(run_id) {
             return Some(run.clone());
         }
         if let Some(run) = self.runs.values().find(|run| run.id == run_id) {
             return Some(run.clone());
         }
-        let rows = store::Host::shared()
-            .fetch(&agents::rows::run_by_id_request(run_id))
-            .ok()?;
-        agents::rows::runs_from_rows(&rows).into_iter().next()
+        self.stored_run(&agents::rows::run_by_id_request(run_id))
     }
 
     /// Take the reply to a summary of an archived run.
@@ -5758,6 +5824,110 @@ mod tests {
             .expect("archived run");
         assert_eq!(completed.outcome, agents::RunOutcome::Completed);
         assert!(state.runs.is_empty());
+    }
+
+    /// A persist writes the run's row and only the entries the store does not have yet.
+    ///
+    /// The point of storing the timeline as rows: a run that has been going all day costs one
+    /// small insert per hook, not a rewrite of everything the agent has ever said.
+    #[test]
+    fn a_persist_writes_only_the_entries_the_store_does_not_have() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            zellij_session_name: Some("zellij".to_owned()),
+            ..State::default()
+        };
+        feed(
+            &mut state,
+            7,
+            &wire::HookEvent {
+                prompt: Some("implement history".to_owned()),
+                ..hook("UserPromptSubmit")
+            },
+            None,
+        );
+        let run_id = state.runs[&7].id.clone();
+        // One run row, one entry row.
+        let (first, written) = state.dirty_run_mutations("zellij");
+        assert_eq!(first.len(), 2);
+        assert_eq!(written, vec![(run_id.clone(), 1)]);
+
+        // The mark the persist would have set, and a second prompt on top of it.
+        state.persisted_revision.extend(written);
+        feed(
+            &mut state,
+            7,
+            &wire::HookEvent {
+                prompt: Some("and the archive".to_owned()),
+                ..hook("UserPromptSubmit")
+            },
+            None,
+        );
+        let (second, written) = state.dirty_run_mutations("zellij");
+        assert_eq!(second.len(), 2, "the run row and the one new entry");
+        assert_eq!(written, vec![(run_id.clone(), 2)]);
+
+        // A run whose pane has left this session still writes its entries. Only the run row
+        // is guarded: the payload is what two sessions disagree about, and it goes out
+        // without a timeline, so an entry skipped here would have no copy left anywhere.
+        state.persisted_revision.extend(written);
+        state.released_runs.insert(run_id.clone());
+        feed(
+            &mut state,
+            7,
+            &wire::HookEvent {
+                prompt: Some("and the release".to_owned()),
+                ..hook("UserPromptSubmit")
+            },
+            None,
+        );
+        let (released, written) = state.dirty_run_mutations("zellij");
+        assert_eq!(
+            released.len(),
+            2,
+            "the guarded run row and the one new entry"
+        );
+        assert_eq!(written, vec![(run_id, 3)]);
+    }
+
+    /// A run restored from a payload written before the split has no entry rows and no mark,
+    /// so its whole timeline is unwritten. Releasing it must still store it: the guarded row
+    /// it goes out as carries no entries, and there would be nothing left to read it from.
+    #[test]
+    fn a_released_run_whose_entries_were_never_rows_still_writes_them() {
+        let mut state = State {
+            zellij_session_name: Some("zellij".to_owned()),
+            ..State::default()
+        };
+        let mut run = agents::AgentRun {
+            id: "claude:session-1".to_owned(),
+            pane_id: 7,
+            zellij_session_name: "zellij".to_owned(),
+            session_id: "session-1".to_owned(),
+            kind: "claude".to_owned(),
+            cwd: None,
+            started_at_ms: 1,
+            ended_at_ms: None,
+            outcome: agents::RunOutcome::Active,
+            revision: 0,
+            summarized_revision: 0,
+            summary: None,
+            entries: Vec::new(),
+        };
+        for text in ["ship it", "and the archive"] {
+            agents::push_summary_entry(&mut run, text);
+        }
+        // Released with no mark at all, exactly as a legacy run arrives from `hydrate_runs`.
+        state.released_runs.insert(run.id.clone());
+        state.dirty_runs.insert(run.id.clone(), run.clone());
+
+        let (mutations, written) = state.dirty_run_mutations("zellij");
+        assert_eq!(
+            mutations.len(),
+            3,
+            "the guarded run row and both of the entries it no longer carries"
+        );
+        assert_eq!(written, vec![(run.id, 2)]);
     }
 
     #[test]
