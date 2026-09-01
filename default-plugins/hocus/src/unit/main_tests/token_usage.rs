@@ -83,6 +83,42 @@ fn repeated_usage_chunks_contribute_once_per_stream() {
     );
 }
 
+/// A provider that reports its rate limit inside the stream can report usage on the
+/// same chunk, and the backoff can elapse before the host delivers that attempt's
+/// `done`. The resend replaces the stream, and the terminator that arrives afterwards
+/// is dropped by the id check in `on_chunk` — so the attempt's cost has to be banked
+/// where it is superseded, or it is never counted at all. It was really spent.
+#[test]
+fn a_resend_banks_what_the_attempt_it_supersedes_cost() {
+    let mut state = ready_state();
+    // `ready_state` hands out "hocus-1" already; the resend takes the next id, which is
+    // what makes the late terminator below belong to a stream nothing is listening for.
+    state.stream_seq = 1;
+
+    state.on_chunk("hocus-1", &usage_frame(400, 25), false, None);
+    state.on_chunk(
+        "hocus-1",
+        b"data: {\"error\":{\"message\":\"Rate limit reached. Please try again in 1s.\"}}\n",
+        false,
+        None,
+    );
+    assert!(state.retry.is_some(), "the refusal armed a retry");
+
+    // The backoff elapses and `poll_retry` resends, with the terminator still owed.
+    state.on_timer(2.0);
+    assert_eq!(state.stream_seq, 2, "the resend went out");
+
+    let spent = Some(TokenUsage {
+        input_tokens: 400,
+        output_tokens: 25,
+    });
+    assert_eq!(state.usage, spent, "the failed attempt's cost was banked");
+
+    // And the terminator, when it finally lands, is still nobody's: it adds nothing.
+    state.on_chunk("hocus-1", b"", true, None);
+    assert_eq!(state.usage, spent);
+}
+
 #[test]
 fn a_usage_only_change_is_archived() {
     let mut state = state_with(vec![Message::user("one")], Status::Idle);

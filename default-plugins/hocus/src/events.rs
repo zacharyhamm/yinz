@@ -1183,6 +1183,13 @@ impl State {
             None,
         );
 
+        // A stream we are superseding — a resend going out before the host
+        // delivered the failed attempt's terminator — still holds what that
+        // attempt cost. Its `done` is dropped by the id check at the top of
+        // `on_chunk`, so bank it here or lose it. Taking the state is exactly
+        // what that terminator would have done, so nothing is counted twice.
+        let carried = self.stream.take().and_then(|stream| stream.usage);
+        self.record_usage(carried);
         self.stream = Some(StreamState {
             id: stream_id,
             finishing: false,
@@ -1273,12 +1280,7 @@ impl State {
         if !self.is_receiving() {
             for item in self.sse.feed(chunk) {
                 if let SseItem::Usage { prompt, completion } = item {
-                    if let Some(stream) = self.stream.as_mut() {
-                        stream.usage = Some(TokenUsage {
-                            input_tokens: prompt,
-                            output_tokens: completion,
-                        });
-                    }
+                    self.note_usage(stream_id, prompt, completion);
                 }
             }
             if done {
@@ -1343,23 +1345,8 @@ impl State {
                 SseItem::ToolCallFragment { .. }
                 | SseItem::ReasoningItem { .. }
                 | SseItem::AssistantMessage => self.tool_calls.feed(&item),
-                // Held on the stream until `done`, so a provider that repeats
-                // usage on more than one chunk still contributes only once.
                 SseItem::Usage { prompt, completion } => {
-                    if let Some(stream) = self.stream.as_mut() {
-                        stream.usage = Some(TokenUsage {
-                            input_tokens: prompt,
-                            output_tokens: completion,
-                        });
-                    }
-                    self.log(
-                        "api_usage",
-                        serde_json::json!({
-                            "stream_id": stream_id,
-                            "prompt_tokens": prompt,
-                            "completion_tokens": completion,
-                        }),
-                    );
+                    self.note_usage(stream_id, prompt, completion)
                 },
                 // Informational: `done: true` below is the authoritative end.
                 SseItem::Done => {},
@@ -1560,6 +1547,29 @@ impl State {
         // action — rendering per chunk freezes the whole session for the length
         // of the reply. The spinner timer repaints the arriving text instead.
         done
+    }
+
+    /// What the provider says this exchange cost.
+    ///
+    /// Held on the stream until `done`, so a provider that repeats usage on more
+    /// than one chunk still contributes only once — and logged where it arrives
+    /// rather than where it is banked, so a request that was cancelled, refused
+    /// mid-stream or superseded by a resend still accounts for what it cost.
+    fn note_usage(&mut self, stream_id: &str, prompt: u64, completion: u64) {
+        if let Some(stream) = self.stream.as_mut() {
+            stream.usage = Some(TokenUsage {
+                input_tokens: prompt,
+                output_tokens: completion,
+            });
+        }
+        self.log(
+            "api_usage",
+            serde_json::json!({
+                "stream_id": stream_id,
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+            }),
+        );
     }
 
     fn record_usage(&mut self, usage: Option<TokenUsage>) {

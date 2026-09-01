@@ -177,11 +177,13 @@ pub fn save(
         None => {
             // No uid: the store allocates the id, and there is nothing to
             // upsert against on a chat that has never been written.
-            let report = backend.apply(vec![Mutation::put("chat")
-                .set("title", title.clone())
-                .set("input_tokens", usage.map(|usage| usage.input_tokens))
-                .set("output_tokens", usage.map(|usage| usage.output_tokens))
-                .build()])?;
+            let mut chat = Mutation::put("chat").set("title", title.clone());
+            if let Some(usage) = usage {
+                chat = chat
+                    .set("input_tokens", usage.input_tokens)
+                    .set("output_tokens", usage.output_tokens);
+            }
+            let report = backend.apply(vec![chat.build()])?;
             let new = report
                 .ids
                 .first()
@@ -190,6 +192,17 @@ pub fn save(
             *id.insert(new as u64)
         },
     };
+
+    // Absent usage means "leave what is stored alone", not "clear it": a chat is
+    // opened before its totals are read back, and `load_usage` answers `None`
+    // for a fetch that failed as well as for a chat that never had any. Writing
+    // that through would erase counts nothing can recover.
+    let mut chat = Mutation::update("chat", Pred::eq("id", chat_id as i64)).set("title", title);
+    if let Some(usage) = usage {
+        chat = chat
+            .set("input_tokens", usage.input_tokens)
+            .set("output_tokens", usage.output_tokens);
+    }
 
     let mut mutations = vec![
         // Unconditional, and almost always matches nothing. It is the answer to
@@ -201,11 +214,7 @@ pub fn save(
             "chat_message",
             Pred::eq("chat_id", chat_id).and(Pred::gte("seq", messages.len())),
         ),
-        Mutation::update("chat", Pred::eq("id", chat_id as i64))
-            .set("title", title)
-            .set("input_tokens", usage.map(|usage| usage.input_tokens))
-            .set("output_tokens", usage.map(|usage| usage.output_tokens))
-            .build(),
+        chat.build(),
     ];
 
     // A transcript that got *shorter* had a message taken out of the middle —
@@ -750,6 +759,29 @@ mod tests {
         let mut id = None;
         save(&backend, &mut id, &messages, 0, None, Some(usage)).expect("saved usage");
         assert_eq!(load_usage(&backend, id.expect("id")), Some(usage));
+    }
+
+    /// `load_usage` answers `None` for a fetch that failed as much as for a chat
+    /// that never had any, and a chat is opened before its totals are read back.
+    /// A save carrying that `None` must leave the stored counts where they are —
+    /// writing it through would erase them for good.
+    #[test]
+    fn a_save_without_usage_leaves_the_archived_totals_alone() {
+        let backend = backend();
+        let messages = [Message::user("one")];
+        let usage = TokenUsage {
+            input_tokens: 1_200,
+            output_tokens: 34,
+        };
+
+        let mut id = None;
+        let saved = save(&backend, &mut id, &messages, 0, None, Some(usage)).expect("saved usage");
+        let id_value = id.expect("an id");
+
+        let messages = [Message::user("one"), Message::assistant("two")];
+        save(&backend, &mut id, &messages, saved, None, None).expect("saved without usage");
+
+        assert_eq!(load_usage(&backend, id_value), Some(usage));
     }
 
     #[test]
