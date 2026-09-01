@@ -777,6 +777,19 @@ pub enum RunEntryKind {
     Step,
     /// Hidden from the timeline but retained as input until a summary accepts this revision.
     Result,
+    /// A summary a person asked for, kept on the timeline at the point they asked.
+    ///
+    /// The automatic summaries do not land here: they replace [`AgentRun::summary`], which
+    /// is drawn pinned above the timeline, because a run that rolls one forward at every
+    /// turn end would otherwise grow a line per turn and the newest of them is the only one
+    /// anybody wanted. A summary somebody pressed a key for is the opposite - it describes
+    /// the run *at that moment*, and the moment is half of what it says - so it stays where
+    /// it was made.
+    ///
+    /// Deliberately absent from the delta `run_summary_text` builds: a summary is the
+    /// model's words about the agent, and feeding it back as though the agent had said it
+    /// would let one paraphrase compound into the next.
+    Summary,
 }
 
 impl RunEntryKind {
@@ -787,6 +800,7 @@ impl RunEntryKind {
             RunEntryKind::Question => "question",
             RunEntryKind::Step => "step",
             RunEntryKind::Result => "result",
+            RunEntryKind::Summary => "summary",
         }
     }
 }
@@ -982,6 +996,10 @@ pub fn run_entry(event: &zellij_tile::agent::HookEvent) -> Option<(RunEntryKind,
         RunEntryKind::Prompt => 600,
         RunEntryKind::Plan | RunEntryKind::Result => SUMMARY_CHARS,
         RunEntryKind::Question | RunEntryKind::Step => WAITING_DETAIL_CHARS,
+        // Unreachable from here: no hook event reduces to a summary, which is made by
+        // asking a model rather than by watching one. The cap is the one `parse_summary`
+        // has already applied, so an entry made that way arrives inside it.
+        RunEntryKind::Summary => SUMMARY_TEXT_CHARS,
     };
     let text = crate::text::sanitize(&text);
     let text: String = text.trim().chars().take(cap).collect();
@@ -1017,6 +1035,44 @@ pub fn run_title(run: &AgentRun) -> String {
         title = "agent run".to_owned();
     }
     title
+}
+
+/// Put a summary somebody asked for onto the run's timeline, and say whether it went on.
+///
+/// `false` when the newest summary already on the timeline says the same thing. Two presses
+/// of the key against an agent that has not moved produce the same sentence twice, and two
+/// identical paragraphs one under the other read as a bug rather than as a history — the
+/// second press bought nothing, and the honest way to show that is to leave the timeline
+/// alone. It is deliberately only the *newest* that is compared: a run that comes back round
+/// to the same state after doing something else really was in that state twice.
+///
+/// Bumps [`AgentRun::revision`], like every other entry. Callers must set
+/// `summarized_revision` *after* this, so the entry it just made is inside the accepted
+/// revision and cannot be read back as unsummarised work.
+pub fn push_summary_entry(run: &mut AgentRun, text: &str) -> bool {
+    let text = text.trim();
+    if text.is_empty() {
+        return false;
+    }
+    let newest = run
+        .entries
+        .iter()
+        .rev()
+        .find(|entry| entry.kind == RunEntryKind::Summary);
+    if newest.is_some_and(|entry| entry.text == text) {
+        return false;
+    }
+    run.revision += 1;
+    run.entries.push(RunEntry {
+        revision: run.revision,
+        // No provider event behind it, so nothing to deduplicate deliveries of. The
+        // comparison above is what stops this kind repeating, and it is a different
+        // question: two deliveries of one event against one event happening twice.
+        event_id: None,
+        kind: RunEntryKind::Summary,
+        text: text.to_owned(),
+    });
+    true
 }
 
 /// The `agent_latch` and `agent_summary` rows in `shared:hocus`: what `agent_register` set by
@@ -1421,6 +1477,12 @@ pub fn fit_label(mut label: String, width: usize) -> String {
 /// only on a run that has stopped and only while the summary has not yet absorbed it. A
 /// finished run whose summary is up to date says what it did once, in the pinned line,
 /// rather than twice.
+///
+/// A [`RunEntryKind::Summary`] is drawn unconditionally, and is the one kind here that
+/// double-counts on purpose: the newest of them is also the pinned line. That is what was
+/// asked for - a summary somebody pressed a key for is a mark on the timeline, and reading
+/// it in the place it was made is the point of having asked - and it costs one repeated
+/// paragraph at the foot of a run, which is where the eye already is.
 pub fn run_history(run: &AgentRun, width: usize) -> HistoryLines {
     let Some(inner) = wrap_width(width) else {
         return HistoryLines::default();
@@ -1436,7 +1498,10 @@ pub fn run_history(run: &AgentRun, width: usize) -> HistoryLines {
         .filter(|entry| {
             matches!(
                 entry.kind,
-                RunEntryKind::Prompt | RunEntryKind::Plan | RunEntryKind::Question
+                RunEntryKind::Prompt
+                    | RunEntryKind::Plan
+                    | RunEntryKind::Question
+                    | RunEntryKind::Summary
             ) || (run.outcome != RunOutcome::Active
                 && entry.kind == RunEntryKind::Result
                 && entry.revision > run.summarized_revision)
@@ -3130,6 +3195,129 @@ mod tests {
         // Too narrow to wrap into anything but a column of single words: better nothing,
         // and the half says so instead.
         assert!(run_history(&run, HISTORY_MIN_COLS + 1).is_empty());
+    }
+
+    /// A summary somebody asked for is drawn wherever it was made, on a run that is still
+    /// going and on one that has ended - unlike a result, which is held back while the run
+    /// is live and hidden once a summary has absorbed it. Nothing gates this one: the
+    /// timeline is where its asker went looking for it.
+    #[test]
+    fn a_summary_somebody_asked_for_is_drawn_on_the_timeline_whatever_the_run_is_doing() {
+        let mut run = AgentRun {
+            id: "claude:session-1".to_owned(),
+            pane_id: 7,
+            zellij_session_name: "zellij".to_owned(),
+            session_id: "session-1".to_owned(),
+            kind: "claude".to_owned(),
+            cwd: None,
+            started_at_ms: 10,
+            ended_at_ms: None,
+            outcome: RunOutcome::Active,
+            revision: 1,
+            summarized_revision: 1,
+            summary: Some(Summary {
+                text: "Rewrote the retry backoff.".to_owned(),
+                title: String::new(),
+                awaiting: false,
+                hash: 0,
+            }),
+            entries: vec![RunEntry {
+                revision: 1,
+                event_id: None,
+                kind: RunEntryKind::Summary,
+                text: "Rewrote the retry backoff.".to_owned(),
+            }],
+        };
+
+        let live = run_history(&run, 40);
+        assert!(
+            live.entries
+                .iter()
+                .any(|line| line.text.contains("summary: Rewrote the retry backoff.")),
+            "filed on the timeline"
+        );
+        assert!(
+            live.pinned
+                .iter()
+                .any(|line| line.text.contains("Rewrote the retry backoff.")),
+            "and pinned above it, which is the newest-first reading of the same sentence"
+        );
+
+        run.outcome = RunOutcome::Completed;
+        assert!(
+            run_history(&run, 40)
+                .entries
+                .iter()
+                .any(|line| line.text.contains("summary:")),
+            "and it survives the run ending, unlike a result the summary absorbed"
+        );
+    }
+
+    /// The kind travels through the shared store as `summary`, which is what an older build
+    /// reading the same file would have to understand. Asserted on the wire spelling rather
+    /// than on a round trip alone, because the spelling is the compatibility surface.
+    #[test]
+    fn a_filed_summary_round_trips_as_its_own_kind() {
+        let entry = RunEntry {
+            revision: 4,
+            event_id: None,
+            kind: RunEntryKind::Summary,
+            text: "Rewrote the retry backoff.".to_owned(),
+        };
+
+        let json = serde_json::to_string(&entry).expect("encoded");
+        assert!(json.contains(r#""kind":"summary""#), "{json}");
+        let back: RunEntry = serde_json::from_str(&json).expect("parsed");
+        assert_eq!(back, entry);
+        assert_eq!(RunEntryKind::Summary.label(), "summary");
+    }
+
+    /// Two presses against an agent that has not moved produce the same sentence twice, and
+    /// two identical paragraphs one under the other read as a bug rather than as a history.
+    /// Only the newest is compared: a run that comes back round to the same state after
+    /// doing something else really was in that state twice.
+    #[test]
+    fn filing_a_summary_skips_one_that_repeats_the_newest() {
+        let mut run = AgentRun {
+            id: "claude:session-1".to_owned(),
+            pane_id: 7,
+            zellij_session_name: "zellij".to_owned(),
+            session_id: "session-1".to_owned(),
+            kind: "claude".to_owned(),
+            cwd: None,
+            started_at_ms: 10,
+            ended_at_ms: None,
+            outcome: RunOutcome::Active,
+            revision: 0,
+            summarized_revision: 0,
+            summary: None,
+            entries: Vec::new(),
+        };
+
+        assert!(push_summary_entry(&mut run, "Rewrote the retry backoff."));
+        assert_eq!(
+            run.revision, 1,
+            "a filed summary is a revision like any other"
+        );
+        assert!(!push_summary_entry(&mut run, "Rewrote the retry backoff."));
+        assert!(
+            !push_summary_entry(&mut run, "  Rewrote the retry backoff.  "),
+            "trimmed before comparing, so whitespace is not a new sentence"
+        );
+        assert_eq!(run.entries.len(), 1);
+        assert_eq!(run.revision, 1, "and a skipped one costs no revision");
+
+        assert!(push_summary_entry(&mut run, "Then rewrote the tests."));
+        assert!(
+            push_summary_entry(&mut run, "Rewrote the retry backoff."),
+            "the run came back round to the same state, which really did happen twice"
+        );
+        assert_eq!(run.entries.len(), 3);
+
+        assert!(
+            !push_summary_entry(&mut run, "   "),
+            "and nothing at all is never filed"
+        );
     }
 
     #[test]

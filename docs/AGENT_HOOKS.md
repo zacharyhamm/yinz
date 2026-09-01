@@ -268,7 +268,9 @@ Final results are retained as hidden summarization input while a run is active, 
 superseded request can carry them into the next summary. If the run is archived first, its
 unsummarized results are drawn as the durable fallback; accepted results remain hidden. Tool
 output is never stored. The retained entries stay in `shared:hocus` for the Zellij session.
-Summarization advances `summarized_revision` but does not replace or delete entries. Legacy hook
+Summarization advances `summarized_revision` but does not replace or delete entries; a summary
+somebody asked for is also kept as a `summary` entry of its own, which is never shown back to
+the model. Legacy hook
 scripts without a session ID get a pane-and-start-time fallback ID.
 
 The agents panel is two permanent halves with a rule between them: the list on top, and the
@@ -283,7 +285,44 @@ shows. `j`/`k` do whatever the half they are in does with a line: walk the selec
 the history. The arrows always walk the list, and PageUp/PageDown and the mouse wheel always
 scroll the history, from either half. Enter focuses a live agent's pane and leaves the panel up,
 so the history stays beside the pane it is about; `Esc` or ``Ctrl-` `` puts the panel away. An
-archived row has no pane to focus.
+archived row has no pane to focus. `s` asks for a summary of the row under the cursor — see
+below.
+
+### A summary you asked for
+
+`s` in the panel describes the selected row now. It works on a live agent and on an archived
+run, and the answer is filed on the timeline where it was asked for as well as replacing the
+sentence pinned above it.
+
+- **It skips the guards that exist to stop the daemon asking too often** — the cooldown, the
+  screen baseline, the settle count. Those are three ways of asking "is this worth a request",
+  and a person pressing a key has answered it. What survives is the guard that is not about
+  the budget: one request per row at a time, since a reply is correlated strictly and a second
+  request would orphan the first.
+- **It reads the whole run, not only what is new.** The automatic summary rolls one sentence
+  forward at each turn end, so it is made from what the last one has not already been shown. A
+  keypress is a different question — "what has this agent been doing" — and answering it with
+  the delta would leave a run whose entries were all absorbed answering with silence, which is
+  indistinguishable from the key not working.
+- **Nothing makes the answer stale.** A screen summary is void the moment the screen moves and
+  a turn summary the moment the agent starts something else, because nobody asked for either.
+  Somebody asked for this one and is still waiting for it, so it lands whatever the pane has
+  done in the meantime.
+- **It takes the path the pane already has.** A hook-fed pane is described from its run; a
+  screen-only one from a fresh reading of its pane, refused if the pane is scrolled back off
+  its live tail or cannot be read. Asking a hook-fed pane's screen would reintroduce the
+  second, worse answer the feed was brought in to retire.
+- **Only manual summaries are filed on the timeline.** An automatic one would grow a long run
+  a line per turn, and the newest of them is pinned above it already. Two presses that produce
+  the same sentence file it once.
+- **A refusal is silent**, and there are several: `summaries "false"`, a pane that has closed
+  or gone back to its shell, a run with nothing retained, a screen-only pane with no API key
+  (there is no honest local fallback — `local_summary` shortens prose the agent wrote, and a
+  screen tail is not that). A hook-fed pane with no API key does get one, made from the newest
+  message its run kept.
+- **An archived run has no pane**, so its lane is keyed by run id end to end: no rename, no
+  toast, no entry in the live summaries map, and the answer written straight back to the store.
+  The pane id the run carries names whoever holds that number today.
 
 ### A waiting agent interrupts
 
@@ -362,6 +401,7 @@ added. `zellij hocus hooks status` says when the installed script is old.
 | What a wait says, and the summary | same (`waiting_toast`, `turn_summary_request_body`, `local_summary`) |
 | Run types, reduction and rendering | same (`AgentRun`, `run_entry`, `run_history`, `rows::run_mutation`) |
 | Receiving the broadcast, persisting, publishing, toasting | `default-plugins/hocus-agentd/src/main.rs` (`on_hook_with`, `record_run_event`, `on_turn_end_with`, `finish_local_summary_with`) |
+| Summaries somebody asked for | `default-plugins/hocus-agentd/src/main.rs` (`summarize_pane_now_with`, `summarize_run_now_with`, `finish_run_summary`, `Origin::Manual`, `Span`), `default-plugins/hocus-proto/src/agents.rs` (`push_summary_entry`, `RunEntryKind::Summary`), `default-plugins/hocus-agents/src/main.rs` (`request_summary`) |
 | Archive paging and selection | `default-plugins/hocus/src/transitions.rs`, `default-plugins/hocus-agents/src/main.rs` |
 
 The pipe's name and its two arguments — the pane, and the kind — are spelled once, in
