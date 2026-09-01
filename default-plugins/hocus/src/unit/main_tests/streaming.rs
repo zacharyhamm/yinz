@@ -9,8 +9,10 @@ fn waiting_on_a_reply_shows_the_loader() {
     assert!(state.loader().is_some());
 }
 
+/// Arriving text only proves the model was alive at the last delta. The wait is
+/// on the stream, so the phrase stays up for as long as it is open.
 #[test]
-fn the_loader_clears_the_moment_a_token_arrives() {
+fn the_loader_stays_up_once_a_token_arrives() {
     let mut state = ready_state();
     state.on_chunk(
         "hocus-1",
@@ -19,7 +21,42 @@ fn the_loader_clears_the_moment_a_token_arrives() {
         None,
     );
 
-    assert!(!state.is_loading(), "text is its own proof of life");
+    assert!(state.is_loading(), "the stream is still open");
+    assert!(state.loader().is_some());
+}
+
+/// A tool typed mid-reply pushes its call and its result behind the placeholder,
+/// so the reply is no longer last and there is no caret to mark the wait. This
+/// used to be a silent stretch with nothing on screen at all.
+#[test]
+fn a_reply_pushed_off_the_end_by_a_tool_still_shows_the_loader() {
+    let mut state = ready_state();
+    state.on_chunk(
+        "hocus-1",
+        b"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n",
+        false,
+        None,
+    );
+    state.messages.push(Message::assistant("a tool ran here"));
+
+    assert!(!state.reply_is_last());
+    assert!(state.is_loading());
+    assert!(state.loader().is_some());
+}
+
+/// The terminator ends the wait even though the text it delivered is still there.
+#[test]
+fn the_loader_clears_when_the_stream_ends() {
+    let mut state = ready_state();
+    state.on_chunk(
+        "hocus-1",
+        b"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n",
+        false,
+        None,
+    );
+    state.on_chunk("hocus-1", b"", true, None);
+
+    assert!(!state.is_loading());
     assert!(state.loader().is_none());
 }
 
@@ -268,18 +305,16 @@ fn a_mid_stream_chunk_accumulates_text_without_asking_for_a_render() {
     );
 }
 
-/// The counterpart to the above: with chunks no longer rendering, the timer
-/// is the only thing repainting a reply. It must outlive the spinner, which
-/// stops at the first token.
+/// The counterpart to the above: with chunks no longer rendering, the timer is
+/// the only thing repainting a reply that already has text in it.
 #[test]
-fn the_frame_timer_outlives_the_spinner() {
+fn the_frame_timer_keeps_running_for_a_reply_with_text() {
     let mut state = state_streaming(
         vec![Message::user("hi"), Message::assistant("some text")],
         "hocus-1",
     );
 
-    assert!(!state.is_loading(), "text is arriving, so no spinner");
-    assert!(state.on_timer(FRAME_SECONDS), "but frames keep coming");
+    assert!(state.on_timer(FRAME_SECONDS), "frames keep coming");
     assert!(state.timer_armed, "and the chain re-armed itself");
 }
 

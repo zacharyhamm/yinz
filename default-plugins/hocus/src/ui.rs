@@ -132,7 +132,7 @@ const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '�
 /// Timer ticks a phrase survives before the next one takes over.
 pub const TICKS_PER_PHRASE: u64 = 30;
 
-const PHRASES: [&str; 18] = [
+const PHRASES: [&str; 32] = [
     "Rummaging through your panes…",
     "Consulting the layout…",
     "Counting your tabs…",
@@ -151,6 +151,20 @@ const PHRASES: [&str; 18] = [
     "Chasing a pointer…",
     "Blaming the terminal…",
     "Herding the panes…",
+    "Escaping the escape codes…",
+    "Repainting the scrollback…",
+    "Counting braille dots…",
+    "Arguing with the parser…",
+    "Rewinding the cursor…",
+    "Auditing the ANSI…",
+    "Shuffling the tab bar…",
+    "Polling an empty socket…",
+    "Feeding the pty…",
+    "Rehearsing the answer…",
+    "Sharpening the diff…",
+    "Checking under the status bar…",
+    "Waiting on a slow token…",
+    "Composing something useful…",
 ];
 
 pub fn spinner(tick: u64) -> char {
@@ -1386,38 +1400,45 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
     // Whether `tail` opens with a decorated copy of the last cached line.
     let mut replaced_last = false;
 
-    match loader {
-        // Waiting on a reply: the transcript already ends with the empty
-        // assistant placeholder, which renders as an empty line. That line is
-        // the loader's home — the spinner sits where the reply will start.
-        // Waiting on a command instead, the last message is the tool-call
-        // summary, so this check fails and the loader gets a line of its own.
+    // Nothing has arrived yet: the transcript ends with the empty assistant
+    // placeholder, which renders as an empty line. That line is the loader's
+    // home — the spinner sits where the reply will start, and there is no text
+    // for a caret to follow. Taking the loader here leaves `None` for the rest,
+    // which is what stops it being drawn a second time on its own line.
+    let loader = match loader {
         Some(loader) if ends_with_empty_reply(lines) => {
             let mut last = lines.last().expect("checked non-empty").clone();
             last.text.push_str(&loader);
             tail.push(last);
             replaced_last = true;
+            None
         },
-        Some(loader) => {
-            tail.push(VLine::blank());
-            tail.push(VLine {
-                text: loader,
-                role: Role::Notice,
-                styles: Vec::new(),
-            });
-        },
-        // Text is arriving, so it is its own proof of life; the caret just marks
-        // where the next token lands.
-        None => {
-            if streaming {
-                if let Some(last) = lines.last() {
-                    let mut last = last.clone();
-                    last.text.push('▌');
-                    tail.push(last);
-                    replaced_last = true;
-                }
-            }
-        },
+        loader => loader,
+    };
+
+    // Otherwise the caret marks where the next token lands. Only while the reply
+    // really is last — which is what `streaming` says — or it would sit on a
+    // line no token is going to extend.
+    if streaming {
+        if let Some(last) = lines.last() {
+            let mut last = last.clone();
+            last.text.push('▌');
+            tail.push(last);
+            replaced_last = true;
+        }
+    }
+
+    // The phrase gets a line of its own below whatever the last line is: a reply
+    // part way in, or a tool-call summary while the tool runs. It is already
+    // gone when a tool waits on a y/n — the confirmation box is what should hold
+    // the eye then — leaving the caret above as the only mark of the wait.
+    if let Some(loader) = loader {
+        tail.push(VLine::blank());
+        tail.push(VLine {
+            text: loader,
+            role: Role::Notice,
+            styles: Vec::new(),
+        });
     }
 
     // What is waiting on an answer, drawn as a box: the title says which call —

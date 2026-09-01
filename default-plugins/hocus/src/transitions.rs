@@ -442,8 +442,8 @@ impl State {
         matches!(self.status, Status::ConfirmingTool)
     }
 
-    /// Whether we are waiting on something *and* nothing is arriving — the one
-    /// predicate the whole waiting indicator keys off.
+    /// Whether we are waiting on something — the one predicate the whole waiting
+    /// indicator keys off.
     pub(crate) fn is_loading(&self) -> bool {
         match self.status {
             Status::AwaitingCommand
@@ -453,19 +453,24 @@ impl State {
             | Status::AwaitingPluginLoad
             | Status::AwaitingRetry => true,
             // A confirmation prompt is waiting on the user rather than on us,
-            // so the only thing left to be waiting on is the reply. Once its
-            // first token lands the arriving text is its own proof of life; a
-            // spinner beside streaming words is just noise. `finishing` has
-            // already recorded its outcome and is waiting on nothing.
-            Status::Idle => self.is_receiving() && self.reply_is_empty(),
+            // so the only thing left to be waiting on is the reply — for as
+            // long as the stream is open, not just until its first token.
+            // Arriving text used to be treated as its own proof of life, but
+            // it only proves the model was alive at the last delta: a reply
+            // that has gone quiet mid-sentence, a long tool-call body
+            // accumulating invisibly, and a tool typed mid-reply that pushed
+            // the placeholder off the end all left a silent wait on screen.
+            // `finishing` has already recorded its outcome and waits on
+            // nothing, which is what `is_receiving` excludes.
+            Status::Idle => self.is_receiving(),
             Status::ConfirmingTool => false,
         }
     }
 
-    /// Whether the timer chain should keep running. Wider than `is_loading`:
-    /// a stream that is already producing text still needs frames, because
-    /// `on_chunk` no longer asks for a render of its own and this is what
-    /// repaints the arriving reply.
+    /// Whether the timer chain should keep running. Wider than `is_loading` in
+    /// two ways: the wand splash animates with nothing outstanding at all, and a
+    /// stream still arriving behind a confirmation prompt needs frames to
+    /// repaint even though `is_loading` calls that a wait on the user.
     pub(crate) fn wants_frames(&self) -> bool {
         // `wand_drawing` is set by the render that drew it, so the splash keeps its own clock
         // running and nothing else has to know the rules for when it is on screen.
