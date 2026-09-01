@@ -5,6 +5,7 @@
 //! own. The privileged part is a one-time pool of user-owned TAP devices.
 
 use super::{EnsureResponse, VmEntry, PROTOCOL_VERSION};
+use highway::{HighwayHash, Key, PortableHash};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
@@ -24,7 +25,7 @@ use std::{
         },
     },
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     str::FromStr,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -35,7 +36,6 @@ use zellij_utils::input::config::Config as ZellijConfig;
 
 const CONFIG_ENV: &str = "ZELLIJ_FIRECRACKER_CONFIG";
 const TEST_NETWORK_ENV: &str = "ZELLIJ_FIRECRACKER_NETWORK_CONFIG";
-const DEFAULT_SUBNET: &str = "172.31.0.0/24";
 const DEFAULT_TAPS: u8 = 16;
 const DEFAULT_SETUP_IMAGE: &str = "zellij-dev";
 const DEFAULT_SETUP_DISK_GIB: u64 = 64;
@@ -378,7 +378,7 @@ fn ensure(
     if let Ok(mut existing) = read_state(&state_path) {
         if vm_is_running(&existing) {
             if !existing.ready {
-                terminate(&existing);
+                terminate(&existing, None);
                 retain_recovery(locked, &state_path, &existing, "unready")?;
                 let _ = fs::remove_file(&state_path);
             } else {
@@ -555,7 +555,7 @@ fn ensure(
         cgroup,
     };
     if let Err(error) = write_state(&state_path, &vm) {
-        terminate(&vm);
+        terminate(&vm, Some(&mut child));
         cleanup_files(&vm);
         return Err(error);
     }
@@ -563,20 +563,20 @@ fn ensure(
         let log = fs::read_to_string(&vm.log).unwrap_or_else(|read_error| {
             format!("<failed to read {}: {read_error}>", vm.log.display())
         });
-        terminate(&vm);
+        terminate(&vm, Some(&mut child));
         cleanup_files(&vm);
         let _ = fs::remove_file(&state_path);
         return Err(error).context(format!("Firecracker log:\n{log}"));
     }
     if let Err(error) = provision_guest(&vm, config) {
-        terminate(&vm);
+        terminate(&vm, Some(&mut child));
         retain_recovery(locked, &state_path, &vm, "provision-failed")?;
         let _ = fs::remove_file(&state_path);
         return Err(error);
     }
     vm.ready = true;
     if let Err(error) = write_state(&state_path, &vm) {
-        terminate(&vm);
+        terminate(&vm, Some(&mut child));
         retain_recovery(locked, &state_path, &vm, "state-commit-failed")?;
         let _ = fs::remove_file(&state_path);
         return Err(error);
@@ -942,7 +942,7 @@ fn recover_unusable_vms(locked: &LockedState) -> Result<()> {
         if state.ready && vm_is_running(&state) {
             continue;
         }
-        terminate(&state);
+        terminate(&state, None);
         retain_recovery(
             locked,
             &path,
@@ -986,12 +986,12 @@ fn release(
         return write_state(&path, &state);
     }
     if let Err(error) = sync_from_guest(&state, config) {
-        terminate(&state);
+        terminate(&state, None);
         retain_recovery(locked, &path, &state, "sync-conflict")?;
         let _ = fs::remove_file(path);
         return Err(error);
     }
-    terminate(&state);
+    terminate(&state, None);
     cleanup_files(&state);
     let _ = fs::remove_file(path);
     Ok(())
@@ -1016,17 +1016,32 @@ fn sync_one(locked: &LockedState, config: &Config, session: &str, name: &str) ->
     write_state(&path, &state)
 }
 
-fn terminate(state: &VmState) {
+fn terminate(state: &VmState, mut child: Option<&mut Child>) {
     if !vm_is_running(state) {
+        if let Some(child) = child.as_mut() {
+            let _ = child.try_wait();
+        }
         return;
     }
     unsafe { libc::kill(state.pid, libc::SIGTERM) };
     let deadline = Instant::now() + Duration::from_secs(5);
-    while process_start_time(state.pid).is_some() && Instant::now() < deadline {
+    while Instant::now() < deadline {
+        if let Some(child) = child.as_mut() {
+            if child.try_wait().ok().flatten().is_some() {
+                return;
+            }
+        } else if !vm_is_running(state) {
+            return;
+        }
         thread::sleep(Duration::from_millis(50));
     }
-    if process_start_time(state.pid).is_some() {
-        unsafe { libc::kill(state.pid, libc::SIGKILL) };
+    if let Some(child) = child.as_mut() {
+        let _ = child.kill();
+        let _ = child.wait();
+    } else if vm_is_running(state) {
+        unsafe {
+            libc::kill(state.pid, libc::SIGKILL);
+        }
     }
 }
 
@@ -1063,7 +1078,7 @@ fn place_in_cgroup(
         ));
     }
     let cgroup = parent.join(id);
-    fs::create_dir(&cgroup)?;
+    fs::create_dir_all(&cgroup)?;
     let configured = (|| -> Result<()> {
         fs::write(
             cgroup.join("memory.max"),
@@ -1174,11 +1189,11 @@ fn write_state(path: &Path, state: &VmState) -> Result<()> {
 }
 
 fn vm_id(session: &str, name: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    session.hash(&mut hasher);
-    0u8.hash(&mut hasher);
-    name.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    let mut hasher = PortableHash::new(Key::default());
+    hasher.append(session.as_bytes());
+    hasher.append(&[0]);
+    hasher.append(name.as_bytes());
+    format!("{:016x}", hasher.finalize64())
 }
 
 fn load_config() -> Result<Config> {
@@ -2417,12 +2432,24 @@ fn option_path(args: &[String], name: &str) -> Result<Option<PathBuf>> {
     Ok(option_value(args, name)?.map(PathBuf::from))
 }
 
+fn network_subnet(uid: u32, explicit: Option<&str>) -> Result<String> {
+    if let Some(subnet) = explicit {
+        return Ok(subnet.to_owned());
+    }
+    if uid > u16::MAX.into() {
+        return Err(anyhow!(
+            "UID {uid} requires an explicit --subnet to avoid address collisions"
+        ));
+    }
+    Ok(format!("10.{}.{}.0/24", uid >> 8, uid & 0xff))
+}
+
 fn network_setup(args: &[String]) -> Result<()> {
     require_root()?;
     let user = option_value(args, "--user")?.context("network setup requires --user USER")?;
     let uid = id_value(user, "-u")?;
     let gid = id_value(user, "-g")?;
-    let subnet = option_value(args, "--subnet")?.unwrap_or(DEFAULT_SUBNET);
+    let subnet = network_subnet(uid, option_value(args, "--subnet")?)?;
     let taps = option_value(args, "--taps")?
         .map(|value| value.parse().context("invalid --taps"))
         .transpose()?
@@ -2434,7 +2461,7 @@ fn network_setup(args: &[String]) -> Result<()> {
     let config = NetworkConfig {
         bridge: format!("zfc{uid}"),
         tap_prefix: format!("zft{uid}-"),
-        subnet: subnet.to_owned(),
+        subnet,
         taps,
         dns,
         cgroup: Some(PathBuf::from(format!(
@@ -3395,12 +3422,35 @@ mod tests {
 
     #[test]
     fn vm_ids_are_stable_and_do_not_expose_session_paths() {
-        assert_eq!(
-            vm_id("work/../../other", "review"),
-            vm_id("work/../../other", "review")
-        );
+        assert_eq!(vm_id("work/../../other", "review"), "9cc0eea7664ed86b");
         assert_ne!(vm_id("work", "review"), vm_id("other", "review"));
         assert!(!vm_id("work/../../other", "review").contains('/'));
+    }
+
+    #[test]
+    fn default_network_subnets_are_uid_specific() {
+        assert_eq!(network_subnet(1, None).unwrap(), "10.0.1.0/24");
+        assert_eq!(network_subnet(256, None).unwrap(), "10.1.0.0/24");
+        assert_eq!(network_subnet(65_535, None).unwrap(), "10.255.255.0/24");
+        assert!(network_subnet(65_536, None).is_err());
+        assert_eq!(
+            network_subnet(65_536, Some("172.31.0.0/24")).unwrap(),
+            "172.31.0.0/24"
+        );
+    }
+
+    #[test]
+    fn terminating_an_owned_child_reaps_it_without_the_grace_period() {
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        let mut state = vm_state(PathBuf::new(), PathBuf::new(), None);
+        state.pid = child.id() as i32;
+        state.start_time = wait_for_process_start(state.pid, Duration::from_secs(1)).unwrap();
+
+        let started = Instant::now();
+        terminate(&state, Some(&mut child));
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(child.try_wait().unwrap().is_some());
     }
 
     #[test]

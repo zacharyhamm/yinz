@@ -17,15 +17,15 @@ The included provider supports x86_64 Linux. It requires:
   `unsquashfs`, and `mkfs.ext4`
 - `ip`, `iptables`, and `systemd` for the one-time host network setup
 
-From a Zellij checkout, build the binaries and run the interactive setup:
+From a Zellij checkout, install the binaries, then run the interactive setup explicitly:
 
 ```sh
 cargo x install /path/to/zellij
+/path/to/zellij-firecracker setup --zellij /path/to/zellij
 ```
 
-On x86_64 Linux, `cargo x install` runs the interactive setup automatically when Firecracker is
-on `PATH` and `/dev/kvm` is readable and writable. Otherwise, build and run it explicitly with
-`cargo x build` and `target/debug/zellij-firecracker setup`.
+For a development build instead, run `cargo x build` and
+`target/debug/zellij-firecracker setup`.
 
 `setup` uses the current directory as the project, installs the provider at
 `/usr/local/bin/zellij-firecracker` when needed, configures the host network, and builds the
@@ -75,8 +75,10 @@ zellij-firecracker doctor
 ```
 
 The network command creates one bridge and 16 user-owned TAP devices, a delegated cgroup,
-restrictive nftables rules, and a systemd unit that restores these resources after boot. Configure
-the provider manually when not using `setup`:
+restrictive nftables rules, and a systemd unit that restores these resources after boot. Its
+default subnet is `10.<uid-high>.<uid-low>.0/24`; UIDs above 65535 must pass `--subnet` to avoid
+collisions. An explicit `--subnet` always takes precedence. Configure the provider manually when
+not using `setup`:
 
 ```kdl
 firecracker_provider "/usr/bin/zellij-firecracker"

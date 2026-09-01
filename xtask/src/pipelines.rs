@@ -5,8 +5,6 @@ use crate::{build, format, test};
 use crate::{flags, WorkspaceMember};
 use anyhow::Context;
 use std::path::{Path, PathBuf};
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-use std::{ffi::OsStr, fs::OpenOptions};
 use xshell::{cmd, Shell};
 
 /// Perform a default build.
@@ -113,23 +111,7 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
         install_builtins(sh, &binary, flags.builtins_dir.as_deref()).with_context(err_context)?;
     }
 
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    {
-        let path = std::env::var_os("PATH");
-        if firecracker_available(path.as_deref(), Path::new("/dev/kvm")) {
-            let provider_destination = destination.with_file_name("zellij-firecracker");
-            cmd!(sh, "{provider_destination} setup --zellij {destination}")
-                .run()
-                .context("failed to set up Firecracker")?;
-        }
-    }
     Ok(())
-}
-
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn firecracker_available(path: Option<&OsStr>, kvm: &Path) -> bool {
-    which::which_in("firecracker", path, crate::project_root()).is_ok()
-        && OpenOptions::new().read(true).write(true).open(kvm).is_ok()
 }
 
 /// Where the binary at `binary` looks for its installed builtins: `(user, system)`.
@@ -618,11 +600,6 @@ mod tests {
     use tempfile::TempDir;
     use xshell::{cmd, Shell};
 
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    use super::firecracker_available;
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    use std::{env, os::unix::fs::PermissionsExt};
-
     fn git_repo() -> (TempDir, Shell) {
         let root = tempfile::tempdir().unwrap();
         let sh = Shell::new().unwrap();
@@ -660,29 +637,6 @@ mod tests {
         assert!(!current.join("share.wasm").exists());
         assert!(current.join("notes.txt").is_file());
         assert!(other.join("share.wasm").is_file());
-    }
-
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    #[test]
-    fn firecracker_setup_requires_the_binary_and_writable_kvm() {
-        let root = tempfile::tempdir().unwrap();
-        let bin = root.path().join("bin");
-        let empty = root.path().join("empty");
-        let kvm = root.path().join("kvm");
-        fs::create_dir_all(&bin).unwrap();
-        fs::create_dir_all(&empty).unwrap();
-        fs::write(bin.join("firecracker"), "").unwrap();
-        fs::set_permissions(bin.join("firecracker"), fs::Permissions::from_mode(0o755)).unwrap();
-        fs::write(&kvm, "").unwrap();
-        let bin = env::join_paths([bin]).unwrap();
-        let empty = env::join_paths([empty]).unwrap();
-
-        assert!(!firecracker_available(Some(&empty), &kvm));
-        assert!(!firecracker_available(
-            Some(&bin),
-            &root.path().join("missing-kvm")
-        ));
-        assert!(firecracker_available(Some(&bin), &kvm));
     }
 
     #[test]

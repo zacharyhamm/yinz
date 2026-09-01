@@ -408,12 +408,128 @@ pub struct PendingLayoutSpawn {
     completion_tx: Option<NotificationEnd>,
 }
 
+#[doc(hidden)]
+#[derive(Clone, Debug)]
+pub struct PendingLayoutOverride {
+    cwd: Option<PathBuf>,
+    default_shell: Option<TerminalAction>,
+    tabs: Vec<(TabLayoutInfo, HashMap<RunPluginOrAlias, Vec<u32>>)>,
+    retain_existing_terminal_panes: bool,
+    retain_existing_plugin_panes: bool,
+    client_id: ClientId,
+    completion_tx: Option<NotificationEnd>,
+}
+
+#[doc(hidden)]
+pub struct SpawnedTerminal {
+    terminal_id: u32,
+    reader: Box<dyn AsyncReader>,
+    child_pid: Option<u32>,
+}
+
+impl std::fmt::Debug for SpawnedTerminal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpawnedTerminal")
+            .field("terminal_id", &self.terminal_id)
+            .field("child_pid", &self.child_pid)
+            .finish_non_exhaustive()
+    }
+}
+
+#[doc(hidden)]
+pub struct SpawnedRerun {
+    reader: Box<dyn AsyncReader>,
+    child_pid: Option<u32>,
+}
+
+impl std::fmt::Debug for SpawnedRerun {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpawnedRerun")
+            .field("child_pid", &self.child_pid)
+            .finish_non_exhaustive()
+    }
+}
+
+#[doc(hidden)]
+pub struct OneShot<T>(Arc<std::sync::Mutex<Option<T>>>);
+
+impl<T> OneShot<T> {
+    fn new(value: T) -> Self {
+        Self(Arc::new(std::sync::Mutex::new(Some(value))))
+    }
+
+    fn take(self) -> Result<T> {
+        self.0
+            .lock()
+            .to_anyhow()?
+            .take()
+            .context("pty worker result was already consumed")
+    }
+}
+
+impl<T> Clone for OneShot<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T> std::fmt::Debug for OneShot<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OneShot(..)")
+    }
+}
+
 fn is_unheld_firecracker_run(run: &Option<Run>) -> bool {
     matches!(
         run,
         Some(Run::Command(command))
             if command.firecracker_vm.is_some() && !command.hold_on_start
     )
+}
+
+fn terminal_quit_callback(
+    senders: ThreadSenders,
+    terminal_action: &TerminalAction,
+) -> Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send> {
+    let (hold_on_close, command_plugin, edit_plugin) = match terminal_action {
+        TerminalAction::RunCommand(command) => (
+            command.hold_on_close,
+            command.originating_plugin.clone(),
+            None,
+        ),
+        TerminalAction::OpenFile(payload) => (false, None, payload.originating_plugin.clone()),
+    };
+    Box::new(move |pane_id, exit_status, command| {
+        if let PaneId::Terminal(terminal_id) = pane_id {
+            if let Some(plugin) = edit_plugin.as_ref() {
+                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
+                    Some(plugin.plugin_id),
+                    Some(plugin.client_id),
+                    Event::EditPaneExited(terminal_id, exit_status, plugin.context.clone()),
+                )]));
+            }
+        }
+        if hold_on_close {
+            let _ =
+                senders.send_to_screen(ScreenInstruction::HoldPane(pane_id, exit_status, command));
+        } else {
+            let _ = senders.send_to_screen(ScreenInstruction::ClosePane(
+                pane_id,
+                None,
+                None,
+                exit_status,
+            ));
+        }
+        if let PaneId::Terminal(terminal_id) = pane_id {
+            if let Some(plugin) = command_plugin.as_ref() {
+                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
+                    Some(plugin.plugin_id),
+                    Some(plugin.client_id),
+                    Event::CommandPaneExited(terminal_id, exit_status, plugin.context.clone()),
+                )]));
+            }
+        }
+    })
 }
 
 /// Instructions related to PTYs (pseudoterminals).
@@ -429,17 +545,15 @@ pub enum PtyInstruction {
         bool,                    // set_blocking
     ), // bool (if Some) is
     // should_float, String is an optional pane name
-    FirecrackerSpawnResolved(
-        Box<PendingTerminalSpawn>,
-        Result<ResolvedFirecracker, Arc<anyhow::Error>>,
-    ),
-    FirecrackerInPlaceSpawnResolved(
-        Box<PendingInPlaceSpawn>,
-        Result<ResolvedFirecracker, Arc<anyhow::Error>>,
-    ),
-    FirecrackerLayoutResolved(
+    FirecrackerSpawned(Box<PendingTerminalSpawn>, OneShot<Result<SpawnedTerminal>>),
+    FirecrackerInPlaceSpawned(Box<PendingInPlaceSpawn>, OneShot<Result<SpawnedTerminal>>),
+    FirecrackerLayoutSpawned(
         Box<PendingLayoutSpawn>,
-        Vec<Option<Result<ResolvedFirecracker, Arc<anyhow::Error>>>>,
+        OneShot<Vec<Option<Result<SpawnedTerminal>>>>,
+    ),
+    FirecrackerLayoutOverrideSpawned(
+        Box<PendingLayoutOverride>,
+        OneShot<Vec<Vec<Option<Result<SpawnedTerminal>>>>>,
     ),
     OpenInPlaceEditor(
         PathBuf,
@@ -552,6 +666,15 @@ pub enum PtyInstruction {
         Option<NotificationEnd>,
         u64,
         Result<ResolvedFirecracker, Arc<anyhow::Error>>,
+    ),
+    FirecrackerReRunSpawned(
+        PaneId,
+        RunCommand,
+        Option<NotificationEnd>,
+        u64,
+        Option<String>,
+        Option<PathBuf>,
+        OneShot<Result<SpawnedRerun>>,
     ),
     DropToShellInPane {
         pane_id: PaneId,
@@ -672,6 +795,8 @@ pub(crate) struct Pty {
     adopted_tabs: HashMap<usize, AdoptedTabTerminals>,
     firecracker_workers: Vec<std::thread::JoinHandle<()>>,
     pending_firecracker_reruns: HashMap<u32, u64>,
+    firecracker_reruns_in_transport: HashSet<u32>,
+    queued_firecracker_reruns: HashMap<u32, (RunCommand, Option<NotificationEnd>)>,
     next_firecracker_rerun: u64,
 }
 
@@ -748,20 +873,15 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 let result = pty.spawn_terminal(terminal_action, client_or_tab_index);
                 finish_terminal_spawn(&mut pty, pending, result)?;
             },
-            PtyInstruction::FirecrackerSpawnResolved(mut pending, resolution) => {
-                let result = match resolution {
-                    Ok(resolved) => pty.spawn_prepared_terminal(
-                        pending
-                            .terminal_action
-                            .take()
-                            .context("missing prepared Firecracker command")?,
-                        pending.client_or_tab_index,
-                        Some(resolved),
-                    ),
-                    Err(error) => {
-                        Err(Arc::try_unwrap(error).unwrap_or_else(|error| anyhow!("{error:#}")))
-                    },
-                };
+            PtyInstruction::FirecrackerSpawned(mut pending, spawned) => {
+                let result = pty.spawn_prepared_terminal(
+                    pending
+                        .terminal_action
+                        .take()
+                        .context("missing prepared Firecracker command")?,
+                    pending.client_or_tab_index,
+                    Some(spawned.take()?),
+                );
                 finish_terminal_spawn(&mut pty, *pending, result)?;
             },
             PtyInstruction::SpawnInPlaceTerminal(
@@ -823,24 +943,22 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 let result = pty.spawn_terminal(terminal_action, client_id_tab_index_or_pane_id);
                 finish_in_place_spawn(&mut pty, pending, result)?;
             },
-            PtyInstruction::FirecrackerInPlaceSpawnResolved(mut pending, resolution) => {
-                let result = match resolution {
-                    Ok(resolved) => pty.spawn_prepared_terminal(
-                        pending
-                            .terminal_action
-                            .take()
-                            .context("missing prepared Firecracker command")?,
-                        pending.client_or_tab_index,
-                        Some(resolved),
-                    ),
-                    Err(error) => {
-                        Err(Arc::try_unwrap(error).unwrap_or_else(|error| anyhow!("{error:#}")))
-                    },
-                };
+            PtyInstruction::FirecrackerInPlaceSpawned(mut pending, spawned) => {
+                let result = pty.spawn_prepared_terminal(
+                    pending
+                        .terminal_action
+                        .take()
+                        .context("missing prepared Firecracker command")?,
+                    pending.client_or_tab_index,
+                    Some(spawned.take()?),
+                );
                 finish_in_place_spawn(&mut pty, *pending, result)?;
             },
-            PtyInstruction::FirecrackerLayoutResolved(pending, resolutions) => {
-                pty.finish_layout_spawn(*pending, resolutions)?;
+            PtyInstruction::FirecrackerLayoutSpawned(pending, spawns) => {
+                pty.finish_layout_spawn(*pending, spawns.take()?)?;
+            },
+            PtyInstruction::FirecrackerLayoutOverrideSpawned(pending, spawns) => {
+                pty.finish_layout_override(*pending, spawns.take()?)?;
             },
             PtyInstruction::OpenInPlaceEditor(
                 temp_file,
@@ -931,49 +1049,31 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 client_id,
                 completion_tx,
             ) => {
-                let err_context = || "failed to override layout";
-
-                let mut all_tab_results = Vec::new();
-
-                // Process each tab
-                for (tab_layout_info, plugin_ids) in tab_layouts_with_plugin_ids {
-                    match pty.spawn_terminals_for_layout_override(
-                        cwd.clone(),
-                        tab_layout_info.tiled_layout,
-                        tab_layout_info.floating_layouts,
-                        default_shell.clone(),
-                        plugin_ids,
-                        tab_layout_info.tab_index,
-                        tab_layout_info.tab_name,
-                        client_id,
-                        tab_layout_info.swap_tiled_layouts,
-                        tab_layout_info.swap_floating_layouts,
-                        retain_existing_terminal_panes,
-                        retain_existing_plugin_panes,
-                    ) {
-                        Ok(tab_result) => all_tab_results.push(tab_result),
-                        Err(e) => {
-                            log::error!(
-                                "Failed to spawn terminals for tab {}: {:?}",
-                                tab_layout_info.tab_index,
-                                e
-                            );
-                            // Continue with other tabs (best-effort approach)
-                        },
-                    }
+                let pending = PendingLayoutOverride {
+                    cwd,
+                    default_shell,
+                    tabs: tab_layouts_with_plugin_ids,
+                    retain_existing_terminal_panes,
+                    retain_existing_plugin_panes,
+                    client_id,
+                    completion_tx,
+                };
+                if pending.tabs.iter().any(|(tab, _)| {
+                    tab.tiled_layout
+                        .extract_run_instructions()
+                        .into_iter()
+                        .chain(
+                            tab.floating_layouts
+                                .iter()
+                                .filter(|pane| !pane.already_running)
+                                .map(|pane| pane.run.clone()),
+                        )
+                        .any(|run| is_unheld_firecracker_run(&run))
+                }) {
+                    pty.defer_firecracker_layout_override(pending)?;
+                    continue;
                 }
-
-                // Send all results back to screen in one message
-                pty.bus
-                    .senders
-                    .send_to_screen(ScreenInstruction::OverrideLayoutComplete(
-                        all_tab_results,
-                        retain_existing_terminal_panes,
-                        retain_existing_plugin_panes,
-                        client_id,
-                        completion_tx,
-                    ))
-                    .with_context(err_context)?;
+                pty.finish_layout_override(pending, vec![])?;
             },
             PtyInstruction::ClosePane(id, _completion_tx) => {
                 pty.close_pane(id)
@@ -1095,6 +1195,14 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
             },
             PtyInstruction::ReRunCommandInPane(pane_id, run_command, completion_tx) => {
                 if matches!(pane_id, PaneId::Terminal(_)) && run_command.firecracker_vm.is_some() {
+                    let PaneId::Terminal(terminal_id) = pane_id else {
+                        unreachable!()
+                    };
+                    if pty.firecracker_reruns_in_transport.contains(&terminal_id) {
+                        pty.queued_firecracker_reruns
+                            .insert(terminal_id, (run_command, completion_tx));
+                        continue;
+                    }
                     pty.defer_firecracker_rerun(pane_id, run_command, completion_tx)?;
                     continue;
                 }
@@ -1114,18 +1222,59 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 if pty.pending_firecracker_reruns.get(&terminal_id) != Some(&generation) {
                     continue;
                 }
-                pty.pending_firecracker_reruns.remove(&terminal_id);
                 let result = match resolution {
-                    Ok(resolved) => pty.rerun_command_in_pane_with_resolution(
-                        pane_id,
-                        run_command.clone(),
-                        Some(resolved),
-                    ),
+                    Ok(resolved) => {
+                        pty.firecracker_reruns_in_transport.insert(terminal_id);
+                        pty.defer_resolved_firecracker_rerun(
+                            pane_id,
+                            run_command,
+                            _completion_tx,
+                            generation,
+                            resolved,
+                        )?;
+                        continue;
+                    },
                     Err(error) => {
+                        pty.pending_firecracker_reruns.remove(&terminal_id);
                         Err(Arc::try_unwrap(error).unwrap_or_else(|error| anyhow!("{error:#}")))
                     },
                 };
                 finish_command_rerun(&mut pty, pane_id, run_command, result)?;
+                if let Some((run_command, completion_tx)) =
+                    pty.queued_firecracker_reruns.remove(&terminal_id)
+                {
+                    pty.defer_firecracker_rerun(pane_id, run_command, completion_tx)?;
+                }
+            },
+            PtyInstruction::FirecrackerReRunSpawned(
+                pane_id,
+                run_command,
+                _completion_tx,
+                generation,
+                previous_host,
+                requested_cwd,
+                spawned,
+            ) => {
+                let PaneId::Terminal(terminal_id) = pane_id else {
+                    continue;
+                };
+                if pty.pending_firecracker_reruns.get(&terminal_id) != Some(&generation) {
+                    continue;
+                }
+                pty.pending_firecracker_reruns.remove(&terminal_id);
+                pty.firecracker_reruns_in_transport.remove(&terminal_id);
+                let result = pty.finish_firecracker_rerun(
+                    pane_id,
+                    previous_host,
+                    requested_cwd,
+                    spawned.take()?,
+                );
+                finish_command_rerun(&mut pty, pane_id, run_command, result)?;
+                if let Some((run_command, completion_tx)) =
+                    pty.queued_firecracker_reruns.remove(&terminal_id)
+                {
+                    pty.defer_firecracker_rerun(pane_id, run_command, completion_tx)?;
+                }
             },
             PtyInstruction::DropToShellInPane {
                 pane_id,
@@ -1424,6 +1573,8 @@ impl Pty {
             adopted_tabs: HashMap::new(),
             firecracker_workers: vec![],
             pending_firecracker_reruns: HashMap::new(),
+            firecracker_reruns_in_transport: HashSet::new(),
+            queued_firecracker_reruns: HashMap::new(),
             next_firecracker_rerun: 0,
         }
     }
@@ -1599,15 +1750,30 @@ impl Pty {
         let senders = self.bus.senders.clone();
         self.reap_firecracker_workers();
         self.firecracker_workers.push(std::thread::spawn(move || {
-            let resolution = os_input
+            let quit_cb = terminal_quit_callback(senders.clone(), &terminal_action);
+            let spawned = os_input
                 .resolve_firecracker_spawn(terminal_action, default_editor)
-                .map_err(Arc::new);
-            senders
-                .send_to_pty(PtyInstruction::FirecrackerSpawnResolved(
+                .and_then(|resolved| os_input.spawn_resolved_firecracker(resolved, quit_cb))
+                .map(|(terminal_id, reader, child_pid)| SpawnedTerminal {
+                    terminal_id,
+                    reader,
+                    child_pid,
+                });
+            let terminal_id = match &spawned {
+                Ok(spawned) => Some(spawned.terminal_id),
+                Err(error) => pane_start_failure(error).map(|(terminal_id, _)| terminal_id),
+            };
+            if senders
+                .send_to_pty(PtyInstruction::FirecrackerSpawned(
                     Box::new(pending),
-                    resolution,
+                    OneShot::new(spawned),
                 ))
-                .non_fatal();
+                .is_err()
+            {
+                if let Some(terminal_id) = terminal_id {
+                    os_input.clear_terminal_id(terminal_id).non_fatal();
+                }
+            }
         }));
         Ok(())
     }
@@ -1627,15 +1793,30 @@ impl Pty {
         let senders = self.bus.senders.clone();
         self.reap_firecracker_workers();
         self.firecracker_workers.push(std::thread::spawn(move || {
-            let resolution = os_input
+            let quit_cb = terminal_quit_callback(senders.clone(), &terminal_action);
+            let spawned = os_input
                 .resolve_firecracker_spawn(terminal_action, default_editor)
-                .map_err(Arc::new);
-            senders
-                .send_to_pty(PtyInstruction::FirecrackerInPlaceSpawnResolved(
+                .and_then(|resolved| os_input.spawn_resolved_firecracker(resolved, quit_cb))
+                .map(|(terminal_id, reader, child_pid)| SpawnedTerminal {
+                    terminal_id,
+                    reader,
+                    child_pid,
+                });
+            let terminal_id = match &spawned {
+                Ok(spawned) => Some(spawned.terminal_id),
+                Err(error) => pane_start_failure(error).map(|(terminal_id, _)| terminal_id),
+            };
+            if senders
+                .send_to_pty(PtyInstruction::FirecrackerInPlaceSpawned(
                     Box::new(pending),
-                    resolution,
+                    OneShot::new(spawned),
                 ))
-                .non_fatal();
+                .is_err()
+            {
+                if let Some(terminal_id) = terminal_id {
+                    os_input.clear_terminal_id(terminal_id).non_fatal();
+                }
+            }
         }));
         Ok(())
     }
@@ -1657,30 +1838,130 @@ impl Pty {
         let senders = self.bus.senders.clone();
         self.reap_firecracker_workers();
         self.firecracker_workers.push(std::thread::spawn(move || {
-            let resolutions = runs
+            let spawns: Vec<Option<Result<SpawnedTerminal>>> = runs
                 .into_iter()
                 .map(|run| match run {
                     Some(Run::Command(command))
                         if command.firecracker_vm.is_some() && !command.hold_on_start =>
                     {
+                        let terminal_action = TerminalAction::RunCommand(command);
+                        let quit_cb = terminal_quit_callback(senders.clone(), &terminal_action);
                         Some(
                             os_input
-                                .resolve_firecracker_spawn(
-                                    TerminalAction::RunCommand(command),
-                                    default_editor.clone(),
-                                )
-                                .map_err(Arc::new),
+                                .resolve_firecracker_spawn(terminal_action, default_editor.clone())
+                                .and_then(|resolved| {
+                                    os_input.spawn_resolved_firecracker(resolved, quit_cb)
+                                })
+                                .map(|(terminal_id, reader, child_pid)| SpawnedTerminal {
+                                    terminal_id,
+                                    reader,
+                                    child_pid,
+                                }),
                         )
                     },
                     _ => None,
                 })
                 .collect();
-            senders
-                .send_to_pty(PtyInstruction::FirecrackerLayoutResolved(
+            let terminal_ids = spawns
+                .iter()
+                .filter_map(|spawned| match spawned.as_ref()? {
+                    Ok(spawned) => Some(spawned.terminal_id),
+                    Err(error) => pane_start_failure(error).map(|(terminal_id, _)| terminal_id),
+                })
+                .collect::<Vec<_>>();
+            if senders
+                .send_to_pty(PtyInstruction::FirecrackerLayoutSpawned(
                     Box::new(pending),
-                    resolutions,
+                    OneShot::new(spawns),
                 ))
-                .non_fatal();
+                .is_err()
+            {
+                for terminal_id in terminal_ids {
+                    os_input.clear_terminal_id(terminal_id).non_fatal();
+                }
+            }
+        }));
+        Ok(())
+    }
+
+    fn defer_firecracker_layout_override(&mut self, pending: PendingLayoutOverride) -> Result<()> {
+        let os_input = self
+            .bus
+            .os_input
+            .as_ref()
+            .context("no OS I/O interface found")?
+            .box_clone();
+        let runs = pending
+            .tabs
+            .iter()
+            .map(|(tab, _)| {
+                tab.tiled_layout
+                    .extract_run_instructions()
+                    .into_iter()
+                    .chain(
+                        tab.floating_layouts
+                            .iter()
+                            .filter(|pane| !pane.already_running)
+                            .map(|pane| pane.run.clone()),
+                    )
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let default_editor = self.default_editor.clone();
+        let senders = self.bus.senders.clone();
+        self.reap_firecracker_workers();
+        self.firecracker_workers.push(std::thread::spawn(move || {
+            let spawns: Vec<Vec<Option<Result<SpawnedTerminal>>>> = runs
+                .into_iter()
+                .map(|runs| {
+                    runs.into_iter()
+                        .map(|run| match run {
+                            Some(Run::Command(command))
+                                if command.firecracker_vm.is_some() && !command.hold_on_start =>
+                            {
+                                let terminal_action = TerminalAction::RunCommand(command);
+                                let quit_cb =
+                                    terminal_quit_callback(senders.clone(), &terminal_action);
+                                Some(
+                                    os_input
+                                        .resolve_firecracker_spawn(
+                                            terminal_action,
+                                            default_editor.clone(),
+                                        )
+                                        .and_then(|resolved| {
+                                            os_input.spawn_resolved_firecracker(resolved, quit_cb)
+                                        })
+                                        .map(|(terminal_id, reader, child_pid)| SpawnedTerminal {
+                                            terminal_id,
+                                            reader,
+                                            child_pid,
+                                        }),
+                                )
+                            },
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .collect();
+            let terminal_ids = spawns
+                .iter()
+                .flatten()
+                .filter_map(|spawned| match spawned.as_ref()? {
+                    Ok(spawned) => Some(spawned.terminal_id),
+                    Err(error) => pane_start_failure(error).map(|(terminal_id, _)| terminal_id),
+                })
+                .collect::<Vec<_>>();
+            if senders
+                .send_to_pty(PtyInstruction::FirecrackerLayoutOverrideSpawned(
+                    Box::new(pending),
+                    OneShot::new(spawns),
+                ))
+                .is_err()
+            {
+                for terminal_id in terminal_ids {
+                    os_input.clear_terminal_id(terminal_id).non_fatal();
+                }
+            }
         }));
         Ok(())
     }
@@ -1723,6 +2004,66 @@ impl Pty {
         Ok(())
     }
 
+    fn defer_resolved_firecracker_rerun(
+        &mut self,
+        pane_id: PaneId,
+        mut run_command: RunCommand,
+        completion_tx: Option<NotificationEnd>,
+        generation: u64,
+        resolved: ResolvedFirecracker,
+    ) -> Result<()> {
+        let PaneId::Terminal(terminal_id) = pane_id else {
+            return Ok(());
+        };
+        match run_command.originating_plugin.as_ref() {
+            Some(plugin) => {
+                self.originating_plugins.insert(terminal_id, plugin.clone());
+            },
+            None => {
+                run_command.originating_plugin =
+                    self.originating_plugins.get(&terminal_id).cloned();
+            },
+        }
+        let _ = self.task_handles.remove(&terminal_id);
+        let _ = self.id_to_child_pid.remove(&terminal_id);
+        let previous_host = self.host_of_pane(&pane_id);
+        let requested_cwd = run_command.cwd.clone();
+        let quit_cb = terminal_quit_callback(
+            self.bus.senders.clone(),
+            &TerminalAction::RunCommand(run_command.clone()),
+        );
+        let os_input = self
+            .bus
+            .os_input
+            .as_ref()
+            .context("no OS I/O interface found")?
+            .box_clone();
+        let senders = self.bus.senders.clone();
+        self.reap_firecracker_workers();
+        self.firecracker_workers.push(std::thread::spawn(move || {
+            let spawned = os_input
+                .rerun_resolved_firecracker(resolved, quit_cb)
+                .map(|(reader, child_pid)| SpawnedRerun { reader, child_pid });
+            if senders
+                .send_to_pty(PtyInstruction::FirecrackerReRunSpawned(
+                    pane_id,
+                    run_command,
+                    completion_tx,
+                    generation,
+                    previous_host,
+                    requested_cwd,
+                    OneShot::new(spawned),
+                ))
+                .is_err()
+            {
+                os_input.clear_terminal_id(terminal_id).non_fatal();
+            }
+        }));
+        self.pending_firecracker_reruns
+            .insert(terminal_id, generation);
+        Ok(())
+    }
+
     fn reap_firecracker_workers(&mut self) {
         let mut pending = vec![];
         for worker in self.firecracker_workers.drain(..) {
@@ -1741,25 +2082,14 @@ impl Pty {
         &mut self,
         terminal_action: TerminalAction,
         client_or_tab_index: ClientTabIndexOrPaneId,
-        resolved_firecracker: Option<ResolvedFirecracker>,
+        spawned_firecracker: Option<Result<SpawnedTerminal>>,
     ) -> Result<(u32, bool)> {
         // bool is starts_held
         let err_context = || format!("failed to spawn terminal for {:?}", client_or_tab_index);
-        let (hold_on_start, hold_on_close, originating_command_plugin, originating_edit_plugin) =
-            match &terminal_action {
-                TerminalAction::RunCommand(run_command) => (
-                    run_command.hold_on_start,
-                    run_command.hold_on_close,
-                    run_command.originating_plugin.clone(),
-                    None,
-                ),
-                TerminalAction::OpenFile(open_file_payload) => (
-                    false,
-                    false,
-                    None,
-                    open_file_payload.originating_plugin.clone(),
-                ),
-            };
+        let hold_on_start = matches!(
+            &terminal_action,
+            TerminalAction::RunCommand(command) if command.hold_on_start
+        );
 
         if hold_on_start {
             // we don't actually open a terminal in this case, just wait for the user to run it
@@ -1774,83 +2104,36 @@ impl Pty {
             return Ok((terminal_id, starts_held));
         }
 
-        let originating_command_plugin = Arc::new(originating_command_plugin.clone());
-        let originating_edit_plugin = Arc::new(originating_edit_plugin.clone());
-        let quit_cb = Box::new({
-            let senders = self.bus.senders.clone();
-            move |pane_id, exit_status, command| {
-                // Edit panes are never held on close, so this always precedes the ClosePane
-                // below: a plugin watching for both EditPaneExited and the pane's own close
-                // broadcast sees the edit result first, rather than racing it against the
-                // screen's own FIFO on a different thread.
-                if let PaneId::Terminal(pane_id) = pane_id {
-                    if let Some(originating_edit_plugin) = originating_edit_plugin.as_ref() {
-                        let update_event = Event::EditPaneExited(
-                            pane_id,
-                            exit_status,
-                            originating_edit_plugin.context.clone(),
-                        );
-                        let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                            Some(originating_edit_plugin.plugin_id),
-                            Some(originating_edit_plugin.client_id),
-                            update_event,
-                        )]));
-                    }
-                }
-
-                // The screen learns of the exit before the originating plugin does: the screen
-                // queue is one FIFO, so anything the plugin sends in reaction to the event - a
-                // `RunCommandInPane` for the next step of a sequence - lands after the pane's
-                // hold.
-                if hold_on_close {
-                    let _ = senders.send_to_screen(ScreenInstruction::HoldPane(
-                        pane_id,
-                        exit_status,
-                        command,
-                    ));
-                } else {
-                    let _ = senders.send_to_screen(ScreenInstruction::ClosePane(
-                        pane_id,
-                        None,
-                        None,
-                        exit_status,
-                    ));
-                }
-
-                // if this command originated in a plugin, we send the plugin an event letting it
-                // know the command exited and some other useful information
-                if let PaneId::Terminal(pane_id) = pane_id {
-                    if let Some(originating_command_plugin) = originating_command_plugin.as_ref() {
-                        let update_event = Event::CommandPaneExited(
-                            pane_id,
-                            exit_status,
-                            originating_command_plugin.context.clone(),
-                        );
-                        let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                            Some(originating_command_plugin.plugin_id),
-                            Some(originating_command_plugin.client_id),
-                            update_event,
-                        )]));
-                    }
-                }
-            }
-        });
         // Taken before the action is spawned and consumed. `fill_cwd` has already
         // resolved it, so it is what the pane is about to start in — and it is
         // the answer when the child has not forked far enough to be asked.
         let requested_cwd = Self::action_cwd(&terminal_action);
-        let (terminal_id, reader, child_pid): (u32, Box<dyn AsyncReader>, Option<u32>) = self
-            .bus
-            .os_input
-            .as_mut()
-            .context("no OS I/O interface found")
-            .and_then(|os_input| match resolved_firecracker {
-                Some(resolved) => os_input.spawn_resolved_firecracker(resolved, quit_cb),
-                None => {
-                    os_input.spawn_terminal(terminal_action, quit_cb, self.default_editor.clone())
-                },
-            })
-            .with_context(err_context)?;
+        let quit_cb = terminal_quit_callback(self.bus.senders.clone(), &terminal_action);
+        let SpawnedTerminal {
+            terminal_id,
+            reader,
+            child_pid,
+        } = match spawned_firecracker {
+            Some(spawned) => spawned,
+            None => self
+                .bus
+                .os_input
+                .as_mut()
+                .context("no OS I/O interface found")
+                .and_then(|os_input| {
+                    os_input.spawn_terminal(
+                        terminal_action.clone(),
+                        quit_cb,
+                        self.default_editor.clone(),
+                    )
+                })
+                .map(|(terminal_id, reader, child_pid)| SpawnedTerminal {
+                    terminal_id,
+                    reader,
+                    child_pid,
+                }),
+        }
+        .with_context(err_context)?;
         let activity_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let terminal_bytes = async_runtime().spawn({
             let err_context =
@@ -1971,7 +2254,7 @@ impl Pty {
     fn finish_layout_spawn(
         &mut self,
         pending: PendingLayoutSpawn,
-        resolutions: Vec<Option<Result<ResolvedFirecracker, Arc<anyhow::Error>>>>,
+        spawns: Vec<Option<Result<SpawnedTerminal>>>,
     ) -> Result<()> {
         let err_context = || "failed to spawn terminals for layout for".to_string();
         let PendingLayoutSpawn {
@@ -1988,7 +2271,7 @@ impl Pty {
             client_id,
             completion_tx,
         } = pending;
-        let mut resolutions = resolutions.into_iter();
+        let mut spawns = spawns.into_iter();
         let mut new_pane_pids: Vec<(u32, bool, Option<RunCommand>, Result<Box<dyn AsyncReader>>)> =
             vec![]; // (terminal_id,
                     // starts_held,
@@ -2018,7 +2301,7 @@ impl Pty {
             if let Some(new_pane_data) = self.apply_run_instruction(
                 run_instruction,
                 default_shell.clone(),
-                resolutions.next().flatten(),
+                spawns.next().flatten(),
             )? {
                 terminal_id = Some(new_pane_data.0);
                 new_pane_pids.push(new_pane_data);
@@ -2040,7 +2323,7 @@ impl Pty {
             if let Some(new_pane_data) = self.apply_run_instruction(
                 run_instruction,
                 default_shell.clone(),
-                resolutions.next().flatten(),
+                spawns.next().flatten(),
             )? {
                 terminal_id = Some(new_pane_data.0);
                 new_floating_panes_pids.push(new_pane_data);
@@ -2221,6 +2504,49 @@ impl Pty {
         }
         Ok(())
     }
+    fn finish_layout_override(
+        &mut self,
+        pending: PendingLayoutOverride,
+        spawns: Vec<Vec<Option<Result<SpawnedTerminal>>>>,
+    ) -> Result<()> {
+        let err_context = || "failed to override layout";
+        let mut spawns = spawns.into_iter();
+        let mut all_tab_results = vec![];
+        for (tab, plugin_ids) in pending.tabs {
+            let tab_index = tab.tab_index;
+            match self.spawn_terminals_for_layout_override(
+                pending.cwd.clone(),
+                tab.tiled_layout,
+                tab.floating_layouts,
+                pending.default_shell.clone(),
+                plugin_ids,
+                tab_index,
+                tab.tab_name,
+                pending.client_id,
+                tab.swap_tiled_layouts,
+                tab.swap_floating_layouts,
+                pending.retain_existing_terminal_panes,
+                pending.retain_existing_plugin_panes,
+                spawns.next().unwrap_or_default(),
+            ) {
+                Ok(tab_result) => all_tab_results.push(tab_result),
+                Err(error) => {
+                    log::error!("Failed to spawn terminals for tab {tab_index}: {error:?}");
+                },
+            }
+        }
+        self.bus
+            .senders
+            .send_to_screen(ScreenInstruction::OverrideLayoutComplete(
+                all_tab_results,
+                pending.retain_existing_terminal_panes,
+                pending.retain_existing_plugin_panes,
+                pending.client_id,
+                pending.completion_tx,
+            ))
+            .with_context(err_context)
+    }
+
     pub fn spawn_terminals_for_layout_override(
         &mut self,
         cwd: Option<PathBuf>,
@@ -2235,6 +2561,7 @@ impl Pty {
         swap_floating_layouts: Option<Vec<SwapFloatingLayout>>,
         _retain_existing_terminal_panes: bool,
         _retain_existing_plugin_panes: bool,
+        spawns: Vec<Option<Result<SpawnedTerminal>>>,
     ) -> Result<TabOverrideResult> {
         let err_context = || "failed to spawn terminals for layout for".to_string();
 
@@ -2263,6 +2590,7 @@ impl Pty {
                      // new_pane_pids
 
         let mut originating_plugins_to_inform = vec![];
+        let mut spawns = spawns.into_iter();
 
         for run_instruction in extracted_run_instructions {
             let originating_plugin = run_instruction.as_ref().and_then(|r| {
@@ -2273,9 +2601,11 @@ impl Pty {
                 }
             });
             let mut terminal_id = None;
-            if let Some(new_pane_data) =
-                self.apply_run_instruction(run_instruction, default_shell.clone(), None)?
-            {
+            if let Some(new_pane_data) = self.apply_run_instruction(
+                run_instruction,
+                default_shell.clone(),
+                spawns.next().flatten(),
+            )? {
                 terminal_id = Some(new_pane_data.0);
                 new_pane_pids.push(new_pane_data);
             }
@@ -2293,9 +2623,11 @@ impl Pty {
                 }
             });
             let mut terminal_id = None;
-            if let Some(new_pane_data) =
-                self.apply_run_instruction(run_instruction, default_shell.clone(), None)?
-            {
+            if let Some(new_pane_data) = self.apply_run_instruction(
+                run_instruction,
+                default_shell.clone(),
+                spawns.next().flatten(),
+            )? {
                 terminal_id = Some(new_pane_data.0);
                 new_floating_panes_pids.push(new_pane_data);
             }
@@ -2426,7 +2758,7 @@ impl Pty {
         &mut self,
         run_instruction: Option<Run>,
         default_shell: TerminalAction,
-        resolved_firecracker: Option<Result<ResolvedFirecracker, Arc<anyhow::Error>>>,
+        spawned_firecracker: Option<Result<SpawnedTerminal>>,
     ) -> Result<Option<(u32, bool, Option<RunCommand>, Result<Box<dyn AsyncReader>>)>> {
         // terminal_id,
         // starts_held,
@@ -2445,52 +2777,9 @@ impl Pty {
             }
         });
 
-        let originating_plugin = run_instruction.as_ref().and_then(|r| {
-            if let Run::Command(run_command) = r {
-                run_command.originating_plugin.clone()
-            } else {
-                None
-            }
-        });
-
         match run_instruction {
             Some(Run::Command(mut command)) => {
                 let starts_held = command.hold_on_start;
-                let hold_on_close = command.hold_on_close;
-                let quit_cb = Box::new({
-                    let senders = self.bus.senders.clone();
-                    move |pane_id, exit_status, command| {
-                        if let PaneId::Terminal(terminal_pane_id) = pane_id {
-                            if let Some(originating_plugin) = originating_plugin.as_ref() {
-                                let update_event = Event::CommandPaneExited(
-                                    terminal_pane_id,
-                                    exit_status,
-                                    originating_plugin.context.clone(),
-                                );
-                                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                                    Some(originating_plugin.plugin_id),
-                                    Some(originating_plugin.client_id),
-                                    update_event,
-                                )]));
-                            }
-                        }
-
-                        if hold_on_close {
-                            let _ = senders.send_to_screen(ScreenInstruction::HoldPane(
-                                pane_id,
-                                exit_status,
-                                command,
-                            ));
-                        } else {
-                            let _ = senders.send_to_screen(ScreenInstruction::ClosePane(
-                                pane_id,
-                                None,
-                                None,
-                                exit_status,
-                            ));
-                        }
-                    }
-                });
                 // The default shell's cwd is a path on *this* machine; a command
                 // that runs elsewhere must not inherit it.
                 if command.cwd.is_none()
@@ -2523,20 +2812,23 @@ impl Pty {
                         Err(e) => Err(e),
                     }
                 } else {
-                    let os_input = self
-                        .bus
-                        .os_input
-                        .as_mut()
-                        .context("no OS I/O interface found")
-                        .with_context(err_context)?;
-                    let spawn_result = match resolved_firecracker {
-                        Some(Ok(resolved)) => {
-                            os_input.spawn_resolved_firecracker(resolved, quit_cb)
-                        },
-                        Some(Err(error)) => {
-                            Err(Arc::try_unwrap(error).unwrap_or_else(|error| anyhow!("{error:#}")))
-                        },
-                        None => os_input.spawn_terminal(cmd, quit_cb, self.default_editor.clone()),
+                    let quit_cb = terminal_quit_callback(self.bus.senders.clone(), &cmd);
+                    let spawn_result = match spawned_firecracker {
+                        Some(spawned) => spawned.map(|spawned| {
+                            (spawned.terminal_id, spawned.reader, spawned.child_pid)
+                        }),
+                        None => self
+                            .bus
+                            .os_input
+                            .as_mut()
+                            .context("no OS I/O interface found")
+                            .and_then(|os_input| {
+                                os_input.spawn_terminal(
+                                    cmd.clone(),
+                                    quit_cb,
+                                    self.default_editor.clone(),
+                                )
+                            }),
                     }
                     .with_context(err_context);
                     match spawn_result {
@@ -3039,19 +3331,9 @@ impl Pty {
     pub fn rerun_command_in_pane(
         &mut self,
         pane_id: PaneId,
-        run_command: RunCommand,
-    ) -> Result<()> {
-        self.rerun_command_in_pane_with_resolution(pane_id, run_command, None)
-    }
-
-    fn rerun_command_in_pane_with_resolution(
-        &mut self,
-        pane_id: PaneId,
         mut run_command: RunCommand,
-        resolved_firecracker: Option<ResolvedFirecracker>,
     ) -> Result<()> {
         let err_context = || format!("failed to rerun command in pane {:?}", pane_id);
-
         match pane_id {
             PaneId::Terminal(id) => {
                 match run_command.originating_plugin.as_ref() {
@@ -3069,46 +3351,6 @@ impl Pty {
                 }
                 let _ = self.task_handles.remove(&id); // if all is well, this shouldn't be here
                 let _ = self.id_to_child_pid.remove(&id); // if all is wlel, this shouldn't be here
-
-                let hold_on_close = run_command.hold_on_close;
-                let originating_plugin = Arc::new(run_command.originating_plugin.clone());
-                let quit_cb = Box::new({
-                    let senders = self.bus.senders.clone();
-                    move |pane_id, exit_status, command| {
-                        // The screen learns of the exit before the originating plugin does: the
-                        // screen queue is one FIFO, so anything the plugin sends in reaction to
-                        // the event - a `RunCommandInPane` for the next step of a sequence -
-                        // lands after the pane's hold.
-                        if hold_on_close {
-                            let _ = senders.send_to_screen(ScreenInstruction::HoldPane(
-                                pane_id,
-                                exit_status,
-                                command,
-                            ));
-                        } else {
-                            let _ = senders.send_to_screen(ScreenInstruction::ClosePane(
-                                pane_id,
-                                None,
-                                None,
-                                exit_status,
-                            ));
-                        }
-                        if let PaneId::Terminal(pane_id) = pane_id {
-                            if let Some(originating_plugin) = originating_plugin.as_ref() {
-                                let update_event = Event::CommandPaneExited(
-                                    pane_id,
-                                    exit_status,
-                                    originating_plugin.context.clone(),
-                                );
-                                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                                    Some(originating_plugin.plugin_id),
-                                    Some(originating_plugin.client_id),
-                                    update_event,
-                                )]));
-                            }
-                        }
-                    }
-                });
                 let previous_host = self.host_of_pane(&PaneId::Terminal(id));
                 let requested_cwd = run_command.cwd.clone();
                 let rerun = self
@@ -3116,54 +3358,68 @@ impl Pty {
                     .os_input
                     .as_mut()
                     .context("no OS I/O interface found")
-                    .and_then(|os_input| match resolved_firecracker {
-                        Some(resolved) => os_input.rerun_resolved_firecracker(resolved, quit_cb),
-                        None => os_input.re_run_command_in_terminal(id, run_command, quit_cb),
-                    });
-                if previous_host != self.host_of_pane(&PaneId::Terminal(id)) {
-                    self.forget_terminal_cwd(id);
-                }
-                // Report the backend's post-attempt state before an error becomes the synthetic
-                // exit that lets an originating workflow advance.
-                self.re_report_terminal_host(id);
-                let (reader, child_pid): (Box<dyn AsyncReader>, Option<u32>) =
-                    rerun.with_context(err_context)?;
-                let activity_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let terminal_bytes = async_runtime().spawn({
-                    let err_context =
-                        |pane_id| format!("failed to run async task for pane {pane_id:?}");
-                    let senders = self.bus.senders.clone();
-                    let debug_to_file = self.debug_to_file;
-                    let activity_flag = activity_flag.clone();
-                    async move {
-                        TerminalBytes::new(id, reader, senders, debug_to_file, activity_flag)
-                            .listen()
-                            .await
-                            .with_context(|| err_context(pane_id))
-                            .fatal();
-                    }
-                });
-
-                self.task_handles.insert(id, terminal_bytes);
-                self.pane_activity_flags.insert(id, activity_flag);
-                if let Some(child_pid) = child_pid {
-                    self.id_to_child_pid.insert(id, child_pid);
-                    self.capture_initial_cwd(id, child_pid, requested_cwd);
-                }
-                if let Some(originating_plugin) = self.originating_plugins.get(&id) {
-                    self.bus
-                        .senders
-                        .send_to_plugin(PluginInstruction::Update(vec![(
-                            Some(originating_plugin.plugin_id),
-                            Some(originating_plugin.client_id),
-                            Event::CommandPaneReRun(id, originating_plugin.context.clone()),
-                        )]))
-                        .with_context(err_context)?;
-                }
-                Ok(())
+                    .and_then(|os_input| {
+                        os_input.re_run_command_in_terminal(
+                            id,
+                            run_command.clone(),
+                            terminal_quit_callback(
+                                self.bus.senders.clone(),
+                                &TerminalAction::RunCommand(run_command),
+                            ),
+                        )
+                    })
+                    .map(|(reader, child_pid)| SpawnedRerun { reader, child_pid });
+                self.finish_firecracker_rerun(pane_id, previous_host, requested_cwd, rerun)
+                    .with_context(err_context)
             },
             _ => Err(anyhow!("cannot respawn plugin panes")).with_context(err_context),
         }
+    }
+
+    fn finish_firecracker_rerun(
+        &mut self,
+        pane_id: PaneId,
+        previous_host: Option<String>,
+        requested_cwd: Option<PathBuf>,
+        spawned: Result<SpawnedRerun>,
+    ) -> Result<()> {
+        let PaneId::Terminal(id) = pane_id else {
+            return Err(anyhow!("cannot respawn plugin panes"));
+        };
+        if previous_host != self.host_of_pane(&pane_id) {
+            self.forget_terminal_cwd(id);
+        }
+        self.re_report_terminal_host(id);
+        let SpawnedRerun { reader, child_pid } = spawned?;
+        let activity_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let terminal_bytes = async_runtime().spawn({
+            let senders = self.bus.senders.clone();
+            let debug_to_file = self.debug_to_file;
+            let activity_flag = activity_flag.clone();
+            async move {
+                TerminalBytes::new(id, reader, senders, debug_to_file, activity_flag)
+                    .listen()
+                    .await
+                    .with_context(|| format!("failed to run async task for pane {pane_id:?}"))
+                    .fatal();
+            }
+        });
+        self.task_handles.insert(id, terminal_bytes);
+        self.pane_activity_flags.insert(id, activity_flag);
+        if let Some(child_pid) = child_pid {
+            self.id_to_child_pid.insert(id, child_pid);
+            self.capture_initial_cwd(id, child_pid, requested_cwd);
+        }
+        if let Some(plugin) = self.originating_plugins.get(&id) {
+            self.bus
+                .senders
+                .send_to_plugin(PluginInstruction::Update(vec![(
+                    Some(plugin.plugin_id),
+                    Some(plugin.client_id),
+                    Event::CommandPaneReRun(id, plugin.context.clone()),
+                )]))?;
+        }
+        Ok(())
     }
     pub fn populate_session_layout_metadata(
         &mut self,
@@ -3822,11 +4078,6 @@ impl Pty {
 
 impl Drop for Pty {
     fn drop(&mut self) {
-        for worker in self.firecracker_workers.drain(..) {
-            if worker.join().is_err() {
-                log::error!("Firecracker provider worker panicked during shutdown");
-            }
-        }
         let child_ids: HashSet<u32> = self
             .id_to_child_pid
             .keys()
