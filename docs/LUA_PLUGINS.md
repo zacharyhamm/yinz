@@ -769,6 +769,7 @@ result, or a summary somebody asked for. `uid` is `<run uid>#<revision>`.
 | `event_id` | text | the provider's id for the event behind it, where it has one |
 | `kind` | text | required; `prompt`, `plan`, `question`, `step`, `result`, `summary` |
 | `text` | text | required; the whole of what the agent said, uncut |
+| `created_at_ms` | int | epoch milliseconds this entry was recorded; absent on an entry recorded before this attribute existed |
 
 A row per event rather than a list inside `payload`, so a long-running agent costs one small
 insert per event instead of a rewrite of its whole history - and so nothing has to be cut down

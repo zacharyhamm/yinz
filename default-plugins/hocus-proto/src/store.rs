@@ -244,6 +244,10 @@ pub fn agent_run_entry_def() -> EntityDef {
         .attr(AttrDef::text("event_id"))
         .attr(AttrDef::text("kind").required())
         .attr(AttrDef::text("text").required())
+        // Epoch milliseconds this entry was recorded. Nullable: an entry written before this
+        // attribute existed has no value for it, and migration only fills new columns in for
+        // rows written after the column exists.
+        .attr(AttrDef::int("created_at_ms"))
 }
 
 /// Every entity in [`SHARED`]. Both plugins declare all of them on load — the

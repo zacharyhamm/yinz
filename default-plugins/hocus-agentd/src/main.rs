@@ -1183,6 +1183,7 @@ impl State {
                     event_id,
                     kind,
                     text,
+                    created_at_ms: Some(now_ms),
                 });
                 changed = true;
             }
@@ -1389,7 +1390,7 @@ impl State {
             return;
         };
         if asked_for {
-            agents::push_summary_entry(run, &summary.text);
+            agents::push_summary_entry(run, &summary.text, now_ms());
         }
         run.summary = Some(summary.clone());
         // After the push, so the entry it just made is inside the accepted revision rather
@@ -2793,7 +2794,7 @@ impl State {
         let Some(mut run) = self.load_run(run_id) else {
             return;
         };
-        agents::push_summary_entry(&mut run, &summary.text);
+        agents::push_summary_entry(&mut run, &summary.text, now_ms());
         run.summary = Some(summary);
         run.summarized_revision = run.revision;
         // Straight to the store rather than through `attach_run_summary`, which writes to
@@ -3669,6 +3670,7 @@ mod tests {
                 event_id: None,
                 kind: agents::RunEntryKind::Prompt,
                 text: "ship it".to_owned(),
+                created_at_ms: Some(10),
             }],
         };
         run = run.adopted_by(2, "there");
@@ -6037,7 +6039,7 @@ mod tests {
             entries: Vec::new(),
         };
         for text in ["ship it", "and the archive"] {
-            agents::push_summary_entry(&mut run, text);
+            agents::push_summary_entry(&mut run, text, 100);
         }
         // Released with no mark at all, exactly as a legacy run arrives from `hydrate_runs`.
         state.released_runs.insert(run.id.clone());
@@ -7963,12 +7965,13 @@ mod tests {
             summary: None,
             entries: Vec::new(),
         };
-        agents::push_summary_entry(&mut run, "a paraphrase of a paraphrase");
+        agents::push_summary_entry(&mut run, "a paraphrase of a paraphrase", 100);
         run.entries.push(agents::RunEntry {
             revision: 2,
             event_id: None,
             kind: agents::RunEntryKind::Question,
             text: "Which library?".to_owned(),
+            created_at_ms: Some(100),
         });
         run.revision = 2;
 
@@ -8003,12 +8006,14 @@ mod tests {
                     event_id: None,
                     kind: agents::RunEntryKind::Prompt,
                     text: "rewrite the retry backoff".to_owned(),
+                    created_at_ms: Some(10),
                 },
                 agents::RunEntry {
                     revision: 2,
                     event_id: None,
                     kind: agents::RunEntryKind::Result,
                     text: REPLY.to_owned(),
+                    created_at_ms: Some(15),
                 },
             ],
         }

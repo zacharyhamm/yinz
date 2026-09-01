@@ -64,6 +64,7 @@
 //! conversation.
 
 use std::collections::BTreeMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use hocus_proto::agents::{self, Strip, StripRow, Summaries};
 use hocus_proto::launch;
@@ -149,6 +150,11 @@ struct HistoryKey {
     width: usize,
     /// [`State::generation`] - the state behind the selection.
     generation: u64,
+    /// The minute the cache was filled in, `now_ms() / 60_000`. Nothing else in the key
+    /// changes with the passage of time alone, so without this the "ago" label on each
+    /// history row would freeze at whatever it read on the last selection change - this
+    /// bounds the staleness to about a minute on any render that already happens to occur.
+    minute: i64,
 }
 
 /// Which half of the pane the keys work.
@@ -387,6 +393,13 @@ fn divider_line(label: &str, above: usize, below: usize, cols: usize) -> String 
     line.push_str(&"─".repeat(rule));
     line.push_str(&position);
     line
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or_default()
 }
 
 /// How the pane divides: `(list_rows, history_rows)`, with the divider on the row between
@@ -772,6 +785,7 @@ impl State {
             selection: self.selection_key(),
             width,
             generation: self.generation,
+            minute: now_ms() / 60_000,
         };
         if self.history_cache.as_ref().is_some_and(|(c, _)| *c == key) {
             return;
@@ -812,7 +826,7 @@ impl State {
             .as_ref()
             .filter(|run| self.selected_run_matches(run))
         {
-            return agents::run_history(run, width);
+            return agents::run_history(run, width, now_ms());
         }
         let Some(pane_id) = self.selection() else {
             return agents::HistoryLines::default();
@@ -1361,6 +1375,7 @@ mod tests {
                 event_id: None,
                 kind: agents::RunEntryKind::Question,
                 text: format!("question {index}"),
+                created_at_ms: None,
             })
             .collect();
         state.run = Some(run);
@@ -1593,6 +1608,7 @@ mod tests {
             event_id: None,
             kind: agents::RunEntryKind::Question,
             text: "Ship it?".to_owned(),
+            created_at_ms: None,
         });
         state.run = Some(run);
         // Three rows of history below the divider: one pinned summary line and two of
@@ -1667,6 +1683,7 @@ mod tests {
             event_id: None,
             kind: agents::RunEntryKind::Question,
             text: "Ship it?".to_owned(),
+            created_at_ms: None,
         });
         state.run = Some(run);
         // two lines of timeline against three entries: exactly one line to scroll
@@ -1730,6 +1747,7 @@ mod tests {
                 event_id: None,
                 kind: agents::RunEntryKind::Question,
                 text: format!("question {index}"),
+                created_at_ms: None,
             })
             .collect();
         state.run = Some(run);
@@ -1883,6 +1901,7 @@ mod tests {
             event_id: None,
             kind: agents::RunEntryKind::Question,
             text: "Ship it?".to_owned(),
+            created_at_ms: None,
         });
         state.pipe(PipeMessage::new(
             PipeSource::Plugin(0),
@@ -1930,24 +1949,28 @@ mod tests {
                     event_id: None,
                     kind: agents::RunEntryKind::Prompt,
                     text: "implement history".to_owned(),
+                    created_at_ms: None,
                 },
                 agents::RunEntry {
                     revision: 2,
                     event_id: None,
                     kind: agents::RunEntryKind::Question,
                     text: "Keep old runs?".to_owned(),
+                    created_at_ms: None,
                 },
                 agents::RunEntry {
                     revision: 3,
                     event_id: None,
                     kind: agents::RunEntryKind::Step,
                     text: "Bash cargo test".to_owned(),
+                    created_at_ms: None,
                 },
                 agents::RunEntry {
                     revision: 4,
                     event_id: None,
                     kind: agents::RunEntryKind::Result,
                     text: "Implemented and tested.".to_owned(),
+                    created_at_ms: None,
                 },
             ],
         }

@@ -829,6 +829,11 @@ pub struct RunEntry {
     pub event_id: Option<String>,
     pub kind: RunEntryKind,
     pub text: String,
+    /// When this entry was recorded, epoch milliseconds. `None` for an entry recorded before
+    /// this field existed - a run resurrected from an old JSON `payload` blob, or a row from
+    /// before the store column was added.
+    #[serde(default)]
+    pub created_at_ms: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1069,7 +1074,7 @@ pub fn run_title(run: &AgentRun) -> String {
 /// Bumps [`AgentRun::revision`], like every other entry. Callers must set
 /// `summarized_revision` *after* this, so the entry it just made is inside the accepted
 /// revision and cannot be read back as unsummarised work.
-pub fn push_summary_entry(run: &mut AgentRun, text: &str) -> bool {
+pub fn push_summary_entry(run: &mut AgentRun, text: &str, now_ms: i64) -> bool {
     let text = text.trim();
     if text.is_empty() {
         return false;
@@ -1091,6 +1096,7 @@ pub fn push_summary_entry(run: &mut AgentRun, text: &str) -> bool {
         event_id: None,
         kind: RunEntryKind::Summary,
         text: text.to_owned(),
+        created_at_ms: Some(now_ms),
     });
     true
 }
@@ -1170,6 +1176,9 @@ pub mod rows {
         if let Some(event_id) = entry.event_id.as_ref() {
             put = put.set("event_id", event_id.clone());
         }
+        if let Some(created_at_ms) = entry.created_at_ms {
+            put = put.set("created_at_ms", created_at_ms);
+        }
         put.build()
     }
 
@@ -1226,6 +1235,7 @@ pub mod rows {
                 event_id,
                 kind,
                 text: text_at(rows, row, "text"),
+                created_at_ms: int_at(rows, row, "created_at_ms"),
             });
         }
         for entries in grouped.values_mut() {
@@ -1740,7 +1750,7 @@ pub fn fit_label(mut label: String, width: usize) -> String {
 /// asked for - a summary somebody pressed a key for is a mark on the timeline, and reading
 /// it in the place it was made is the point of having asked - and it costs one repeated
 /// paragraph at the foot of a run, which is where the eye already is.
-pub fn run_history(run: &AgentRun, width: usize) -> HistoryLines {
+pub fn run_history(run: &AgentRun, width: usize, now_ms: i64) -> HistoryLines {
     let Some(inner) = wrap_width(width) else {
         return HistoryLines::default();
     };
@@ -1763,7 +1773,15 @@ pub fn run_history(run: &AgentRun, width: usize) -> HistoryLines {
                 && entry.kind == RunEntryKind::Result
                 && entry.revision > run.summarized_revision)
         })
-        .flat_map(|entry| labelled(&entry.text, entry.kind.label(), inner).0)
+        .flat_map(|entry| {
+            let label = match entry.created_at_ms {
+                Some(then_ms) => {
+                    format!("{} · {}", entry.kind.label(), relative_age(now_ms, then_ms))
+                },
+                None => entry.kind.label().to_owned(),
+            };
+            labelled(&entry.text, &label, inner).0
+        })
         .collect();
     let state = match run.outcome {
         RunOutcome::Active => "active",
@@ -1799,6 +1817,20 @@ pub fn summary_history(pane_id: u32, kind: &str, summary: &Summary, width: usize
         // no second kind of row here for one to tell it apart from.
         entries: crate::markdown::render(&summary.text, inner, crate::markdown::Options::compact()),
         ..HistoryLines::default()
+    }
+}
+
+/// How long ago `then_ms` was, relative to `now_ms`, in the same coarse buckets
+/// `hocus::present::age` uses for an orphaned pane: `"just now"` under a minute, then whole
+/// minutes, hours or days - truncated, not rounded, since a history row cares that an entry
+/// is roughly this old, not exactly.
+pub fn relative_age(now_ms: i64, then_ms: i64) -> String {
+    let seconds = now_ms.saturating_sub(then_ms).max(0) / 1000;
+    match seconds {
+        s if s < 60 => "just now".to_owned(),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86400),
     }
 }
 
@@ -3506,11 +3538,12 @@ mod tests {
                     event_id: None,
                     kind: RunEntryKind::Question,
                     text: text.to_owned(),
+                    created_at_ms: None,
                 })
                 .collect(),
         };
 
-        let history = run_history(&run, 40);
+        let history = run_history(&run, 40, 100);
         assert_eq!(history.label, "claude · active");
         assert!(history.pinned.is_empty(), "no summary yet, nothing to pin");
         assert_eq!(history.entries.len(), 6);
@@ -3518,13 +3551,13 @@ mod tests {
         assert!(history.entries[5].text.contains("newest"));
 
         run.entries.truncate(1);
-        let short = run_history(&run, 40);
+        let short = run_history(&run, 40, 100);
         assert_eq!(short.entries.len(), 1);
         assert!(short.entries[0].text.contains("oldest"));
 
         // Too narrow to wrap into anything but a column of single words: better nothing,
         // and the half says so instead.
-        assert!(run_history(&run, HISTORY_MIN_COLS + 1).is_empty());
+        assert!(run_history(&run, HISTORY_MIN_COLS + 1, 100).is_empty());
     }
 
     /// A summary somebody asked for is drawn wherever it was made, on a run that is still
@@ -3556,10 +3589,11 @@ mod tests {
                 event_id: None,
                 kind: RunEntryKind::Summary,
                 text: "Rewrote the retry backoff.".to_owned(),
+                created_at_ms: None,
             }],
         };
 
-        let live = run_history(&run, 40);
+        let live = run_history(&run, 40, 100);
         assert!(
             live.entries
                 .iter()
@@ -3575,7 +3609,7 @@ mod tests {
 
         run.outcome = RunOutcome::Completed;
         assert!(
-            run_history(&run, 40)
+            run_history(&run, 40, 100)
                 .entries
                 .iter()
                 .any(|line| line.text.contains("summary:")),
@@ -3593,6 +3627,7 @@ mod tests {
             event_id: None,
             kind: RunEntryKind::Summary,
             text: "Rewrote the retry backoff.".to_owned(),
+            created_at_ms: None,
         };
 
         let json = serde_json::to_string(&entry).expect("encoded");
@@ -3624,28 +3659,36 @@ mod tests {
             entries: Vec::new(),
         };
 
-        assert!(push_summary_entry(&mut run, "Rewrote the retry backoff."));
+        assert!(push_summary_entry(
+            &mut run,
+            "Rewrote the retry backoff.",
+            100
+        ));
         assert_eq!(
             run.revision, 1,
             "a filed summary is a revision like any other"
         );
-        assert!(!push_summary_entry(&mut run, "Rewrote the retry backoff."));
+        assert!(!push_summary_entry(
+            &mut run,
+            "Rewrote the retry backoff.",
+            100
+        ));
         assert!(
-            !push_summary_entry(&mut run, "  Rewrote the retry backoff.  "),
+            !push_summary_entry(&mut run, "  Rewrote the retry backoff.  ", 100),
             "trimmed before comparing, so whitespace is not a new sentence"
         );
         assert_eq!(run.entries.len(), 1);
         assert_eq!(run.revision, 1, "and a skipped one costs no revision");
 
-        assert!(push_summary_entry(&mut run, "Then rewrote the tests."));
+        assert!(push_summary_entry(&mut run, "Then rewrote the tests.", 100));
         assert!(
-            push_summary_entry(&mut run, "Rewrote the retry backoff."),
+            push_summary_entry(&mut run, "Rewrote the retry backoff.", 100),
             "the run came back round to the same state, which really did happen twice"
         );
         assert_eq!(run.entries.len(), 3);
 
         assert!(
-            !push_summary_entry(&mut run, "   "),
+            !push_summary_entry(&mut run, "   ", 100),
             "and nothing at all is never filed"
         );
     }
@@ -3670,16 +3713,17 @@ mod tests {
                 event_id: None,
                 kind: RunEntryKind::Result,
                 text: "Implemented and tested.".to_owned(),
+                created_at_ms: None,
             }],
         };
 
         assert!(
-            run_history(&run, 40).entries.is_empty(),
+            run_history(&run, 40, 100).entries.is_empty(),
             "a running agent's result is not final"
         );
 
         run.outcome = RunOutcome::Completed;
-        let archived = run_history(&run, 40);
+        let archived = run_history(&run, 40, 100);
         assert_eq!(archived.label, "claude · archived");
         assert!(archived
             .entries
@@ -3693,7 +3737,7 @@ mod tests {
             awaiting: false,
             hash: 0,
         });
-        let summarized = run_history(&run, 40);
+        let summarized = run_history(&run, 40, 100);
         assert!(!summarized
             .entries
             .iter()
@@ -3749,6 +3793,7 @@ mod tests {
                 event_id: None,
                 kind: RunEntryKind::Prompt,
                 text: "implement history".to_owned(),
+                created_at_ms: None,
             }],
         };
         local.apply(rows::run_mutations(&run)).unwrap();
@@ -3934,6 +3979,7 @@ mod tests {
                     event_id: None,
                     kind: RunEntryKind::Prompt,
                     text: (*text).to_owned(),
+                    created_at_ms: None,
                 })
                 .collect(),
         }
@@ -4013,6 +4059,7 @@ mod tests {
             event_id: None,
             kind: RunEntryKind::Result,
             text: "shipped".to_owned(),
+            created_at_ms: None,
         });
         gaining.apply(rows::run_mutations(&adopted)).unwrap();
 
@@ -5443,9 +5490,10 @@ mod tests {
             event_id: None,
             kind: RunEntryKind::Prompt,
             text: "Do it:\n\n- one\n- two".to_owned(),
+            created_at_ms: None,
         }];
 
-        let history = run_history(&run, 40);
+        let history = run_history(&run, 40, 100);
         assert_eq!(
             texts(&history.entries),
             ["prompt: Do it:", "• one", "• two"],
@@ -5486,17 +5534,19 @@ mod tests {
                 event_id: None,
                 kind: RunEntryKind::Prompt,
                 text: "1. one\n2. two".to_owned(),
+                created_at_ms: None,
             },
             RunEntry {
                 revision: 2,
                 event_id: None,
                 kind: RunEntryKind::Prompt,
                 text: "- one\n- two".to_owned(),
+                created_at_ms: None,
             },
         ];
 
         assert_eq!(
-            texts(&run_history(&run, 40).entries),
+            texts(&run_history(&run, 40, 100).entries),
             [
                 "prompt:", "1. one", "2. two", // the numbering kept, and its column with it
                 "prompt:", "• one", "• two",
@@ -5511,12 +5561,12 @@ mod tests {
     fn a_summary_that_opens_with_a_marker_says_the_label_took_a_row() {
         let mut run = a_pane_run();
         run.summary = Some(a_summary("- ran the tests", false));
-        let history = run_history(&run, 40);
+        let history = run_history(&run, 40, 100);
         assert_eq!(texts(&history.pinned), ["summary:", "• ran the tests"]);
         assert!(history.pinned_label_row);
 
         run.summary = Some(a_summary("ran the tests", false));
-        let history = run_history(&run, 40);
+        let history = run_history(&run, 40, 100);
         assert_eq!(texts(&history.pinned), ["summary: ran the tests"]);
         assert!(!history.pinned_label_row);
     }
@@ -5532,9 +5582,10 @@ mod tests {
             event_id: None,
             kind: RunEntryKind::Prompt,
             text: "first\n\nsecond".to_owned(),
+            created_at_ms: None,
         }];
         assert_eq!(
-            texts(&run_history(&run, 40).entries),
+            texts(&run_history(&run, 40, 100).entries),
             ["prompt: first", "second"]
         );
     }
@@ -5552,9 +5603,10 @@ mod tests {
             event_id: None,
             kind: RunEntryKind::Result,
             text: "- one\n- two".to_owned(),
+            created_at_ms: None,
         }];
         assert_eq!(
-            texts(&run_history(&run, 40).entries),
+            texts(&run_history(&run, 40, 100).entries),
             ["result:", "• one", "• two"]
         );
     }
@@ -5577,10 +5629,11 @@ mod tests {
             kind: RunEntryKind::Result,
             text: "Every word of this sentence is short enough to fit but the whole of it is not"
                 .to_owned(),
+            created_at_ms: None,
         }];
 
         for width in [HISTORY_MIN_COLS + 2, 30, 46, 80] {
-            let history = run_history(&run, width);
+            let history = run_history(&run, width, 100);
             let inner = width - 2;
             for line in history.pinned.iter().chain(&history.entries) {
                 assert!(line.text.width() <= inner, "{width}: {:?}", line.text);
