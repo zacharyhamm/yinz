@@ -754,10 +754,26 @@ server on the machine, so a bare pane id would make two sessions' pane 5 into on
 | `active` | bool | required, indexed; false once the run ended |
 | `started_at_ms` | int | required |
 | `header` | json | the cheap summary an archive listing reads |
-| `payload` | json | required; the whole run - prompts, plans, questions |
+| `payload` | json | required; the run's metadata |
 
-`payload` is much the largest column here, so `select = { "header" }` a listing and fetch
+`payload` is the larger of the two columns, so `select = { "header" }` a listing and fetch
 `payload` only for the row you are showing. Decode either with `zellij.json.decode`.
+
+**`agent_run_entry`** - one retained event on a run's timeline: a prompt, a plan, a question, a
+result, or a summary somebody asked for. `uid` is `<run uid>#<revision>`.
+
+| Attribute | Kind | |
+|---|---|---|
+| `run_id` | text | required, indexed; the `agent_run` uid this belongs to |
+| `revision` | int | required; the run's own counter, and what orders the timeline |
+| `event_id` | text | the provider's id for the event behind it, where it has one |
+| `kind` | text | required; `prompt`, `plan`, `question`, `step`, `result`, `summary` |
+| `text` | text | required; the whole of what the agent said, uncut |
+
+A row per event rather than a list inside `payload`, so a long-running agent costs one small
+insert per event instead of a rewrite of its whole history - and so nothing has to be cut down
+to keep that rewrite cheap. Filter by `run_id` and sort by `revision`; a run recorded by an
+older hocus has no rows here and keeps its timeline inside `payload` instead.
 
 Pane-level agent state - busy, waiting, idle - does not need this table at all: it is on
 `PaneInfo.agent` in the pane manifest, and the `agent_start` / `agent_waiting` hook points below

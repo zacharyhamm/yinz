@@ -273,6 +273,22 @@ somebody asked for is also kept as a `summary` entry of its own, which is never 
 the model. Legacy hook
 scripts without a session ID get a pane-and-start-time fallback ID.
 
+**An entry keeps the whole of what the event said.** The run's metadata is one `agent_run` row,
+but its timeline is one `agent_run_entry` row per event — so an entry costs a small insert
+rather than a rewrite of everything the agent has said so far, and there is nothing to be
+bought by cutting it. It used to be cut: a prompt stopped at 600 characters and a question at
+80, the latter being `WAITING_DETAIL_CHARS`, which is a *toast's* budget and has no business
+bounding a history. The two surfaces are deliberately different now — the sidebar cell and the
+toast still get one short line from `waiting_detail`, while the panel gets every question the
+agent asked, its header and its options, from `question_text`. The only bound left is at
+delivery: the panel is sent a run's newest `RUN_DETAIL_ENTRIES` entries, and no more than
+`RUN_DETAIL_BYTES` of them, because that travels as one JSON string into its memory. A row
+count alone bounds nothing once an entry can be a whole plan, so both halves are needed.
+
+A run recorded before the split still carries its timeline inside its `payload`, and is read
+back from there; there is no migration, and its entries are written out as rows the next time
+the run is persisted.
+
 The agents panel is two permanent halves with a rule between them: the list on top, and the
 events history of whatever the cursor is on below. The list shows active runs on their live
 agent rows and completed runs under an `archive` header, newest first. It loads 50 archive rows
@@ -399,7 +415,7 @@ added. `zellij hocus hooks status` says when the installed script is old.
 | Carrying it on the pane | `zellij-server/src/panes/terminal_pane.rs` (`agent`, `agent_from_run`), `screen/thread_main.rs` (`SetPaneAgent`), `screen/mod.rs` (`fire_agent_exit_hook`, `fire_agent_state_hooks`, `agent_hook_edges`) |
 | What a row draws | `default-plugins/hocus-proto/src/agents.rs` (`HookFeed::from_agent`, `status_cell`, `waiting_marker`, `kind_cell`, `HOOK_MARKER`) |
 | What a wait says, and the summary | same (`waiting_toast`, `turn_summary_request_body`, `local_summary`) |
-| Run types, reduction and rendering | same (`AgentRun`, `run_entry`, `run_history`, `rows::run_mutation`) |
+| Run types, reduction and rendering | same (`AgentRun`, `run_entry`, `run_history`, `rows::run_mutations`, `rows::hydrate_entries`) |
 | Receiving the broadcast, persisting, publishing, toasting | `default-plugins/hocus-agentd/src/main.rs` (`on_hook_with`, `record_run_event`, `on_turn_end_with`, `finish_local_summary_with`) |
 | Summaries somebody asked for | `default-plugins/hocus-agentd/src/main.rs` (`summarize_pane_now_with`, `summarize_run_now_with`, `finish_run_summary`, `Origin::Manual`, `Span`), `default-plugins/hocus-proto/src/agents.rs` (`push_summary_entry`, `RunEntryKind::Summary`), `default-plugins/hocus-agents/src/main.rs` (`request_summary`) |
 | Archive paging and selection | `default-plugins/hocus/src/transitions.rs`, `default-plugins/hocus-agents/src/main.rs` |

@@ -222,6 +222,28 @@ pub fn agent_run_def() -> EntityDef {
         .attr(AttrDef::json("payload").required())
 }
 
+/// One retained hook event on a run's timeline, addressed by `(run_id, revision)`.
+///
+/// Its own entity rather than a field of [`agent_run_def`]'s `payload`, for the reason
+/// `chat_message` is not a field of `chat`: a run's timeline grows for as long as the agent
+/// works, and a blob has to be rewritten whole every time it does. A row per event costs one
+/// small insert per hook, lets the panel read a run's newest entries without reading all of
+/// them, and — the point of the split — removes the only reason the recorder had to cut an
+/// entry's text down to a size a blob could carry.
+///
+/// `revision` is the run's own monotonic counter, which is what orders the timeline; `id`
+/// order agrees with it, since a row is written when its entry is made.
+pub fn agent_run_entry_def() -> EntityDef {
+    EntityDef::new("agent_run_entry", 1)
+        .attr(AttrDef::text("run_id").indexed().required())
+        .attr(AttrDef::int("revision").required())
+        // The provider's own id for the event behind this entry, where it has one. Nullable:
+        // an entry the daemon made itself — a summary somebody asked for — has no event.
+        .attr(AttrDef::text("event_id"))
+        .attr(AttrDef::text("kind").required())
+        .attr(AttrDef::text("text").required())
+}
+
 /// Every entity in [`SHARED`]. Both plugins declare all of them on load — the
 /// job, latch and summary rows are hocus's alone to write, but a declaration
 /// has to agree wherever it is made.
@@ -234,6 +256,7 @@ pub fn shared_defs() -> Vec<EntityDef> {
         agent_latch_def(),
         agent_summary_def(),
         agent_run_def(),
+        agent_run_entry_def(),
     ]
 }
 
