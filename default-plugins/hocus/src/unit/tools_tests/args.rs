@@ -307,6 +307,66 @@ fn args_parse_reads_the_todo_fields() {
     assert!(args.undo);
 }
 
+/// The one argument each note tool cannot work without. `note_list` needs
+/// none: it falls back to the active project.
+#[test]
+fn the_note_tools_require_their_key_argument() {
+    let specs = specs();
+    let required = |name: &str| -> Vec<String> {
+        specs
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|spec| spec["function"]["name"] == name)
+            .map(|spec| {
+                spec["function"]["parameters"]["required"]
+                    .as_array()
+                    .map(|names| {
+                        names
+                            .iter()
+                            .map(|name| name.as_str().unwrap().to_owned())
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            })
+            .expect("the tool is advertised")
+    };
+    assert_eq!(
+        required("note_add"),
+        vec!["title".to_owned(), "body".to_owned()]
+    );
+    for name in ["note_get", "note_edit", "note_archive", "note_delete"] {
+        assert_eq!(required(name), vec!["id".to_owned()], "{name}");
+    }
+    assert_eq!(
+        required("note_link"),
+        vec!["note_id".to_owned(), "todo_id".to_owned()]
+    );
+    assert_eq!(required("note_search"), vec!["query".to_owned()]);
+    assert!(required("note_list").is_empty());
+}
+
+#[test]
+fn args_parse_reads_the_note_fields() {
+    let args = Args::parse(
+        r#"{"title":"t","body":"b","global":true,"include_archived":true,"tag":"x",
+            "tags":["a","b"],"todo_ids":[1,2],"todo_id":3,"note_id":4,"unlink":true}"#,
+    )
+    .unwrap();
+    assert_eq!(args.title.as_deref(), Some("t"));
+    assert_eq!(args.body.as_deref(), Some("b"));
+    assert!(args.global);
+    assert!(args.include_archived);
+    assert_eq!(args.tag.as_deref(), Some("x"));
+    assert_eq!(args.tags, Some(vec!["a".to_owned(), "b".to_owned()]));
+    assert_eq!(args.todo_ids, vec![1, 2]);
+    assert_eq!(args.todo_id, Some(3));
+    assert_eq!(args.note_id, Some(4));
+    assert!(args.unlink);
+    // Absent tags are not empty tags: the former leaves a note alone.
+    assert_eq!(Args::parse("{}").unwrap().tags, None);
+}
+
 /// The shared parser is also `set_floating_pane_geometry`'s, whose messages several
 /// callers already depend on.
 #[test]

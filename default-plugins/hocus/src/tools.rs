@@ -1190,6 +1190,111 @@ pub fn specs() -> Value {
                 "required": ["id", "text"],
             }),
         ),
+        // The notes. Markdown with a title, kept with a project as a todo list
+        // is, or with none when `global` is set. Descriptions are at the floor:
+        // the schema says what a field is, and the system prompt says the rest.
+        tool(
+            "note_add",
+            "Add a persistent Markdown note, optionally tagged and linked to todo items.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" },
+                    "body": { "type": "string", "description": "Markdown." },
+                    "project": { "type": "string", "description": "Defaults to the active project." },
+                    "global": { "type": "boolean", "description": "Tied to no project." },
+                    "tags": { "type": "array", "items": { "type": "string" } },
+                    "todo_ids": { "type": "array", "items": { "type": "integer" } },
+                },
+                "required": ["title", "body"],
+            }),
+        ),
+        tool(
+            "note_list",
+            "List notes with ids, tags and linked todo ids; no bodies.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "Defaults to the active project." },
+                    "global": { "type": "boolean" },
+                    "all_projects": { "type": "boolean" },
+                    "include_archived": { "type": "boolean" },
+                    "tag": { "type": "string" },
+                    "todo_id": { "type": "integer" },
+                },
+            }),
+        ),
+        tool(
+            "note_get",
+            "Read one note whole, body included.",
+            json!({
+                "type": "object",
+                "properties": { "id": { "type": "integer" } },
+                "required": ["id"],
+            }),
+        ),
+        tool(
+            "note_edit",
+            "Change a note's title, body or tags; what is not given stays.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer" },
+                    "title": { "type": "string" },
+                    "body": { "type": "string" },
+                    "tags": { "type": "array", "items": { "type": "string" } },
+                },
+                "required": ["id"],
+            }),
+        ),
+        tool(
+            "note_archive",
+            "Hide a note from listings, or bring it back with undo.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer" },
+                    "undo": { "type": "boolean" },
+                },
+                "required": ["id"],
+            }),
+        ),
+        tool(
+            "note_delete",
+            "Delete a note for good, with its tags and links.",
+            json!({
+                "type": "object",
+                "properties": { "id": { "type": "integer" } },
+                "required": ["id"],
+            }),
+        ),
+        tool(
+            "note_link",
+            "Link a note to a todo item, or unlink it.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "note_id": { "type": "integer" },
+                    "todo_id": { "type": "integer" },
+                    "unlink": { "type": "boolean" },
+                },
+                "required": ["note_id", "todo_id"],
+            }),
+        ),
+        tool(
+            "note_search",
+            "Search note titles and bodies, archived ones included.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "project": { "type": "string", "description": "Defaults to the active project." },
+                    "global": { "type": "boolean" },
+                    "all_projects": { "type": "boolean" },
+                },
+                "required": ["query"],
+            }),
+        ),
         tool(
             "agent_register",
             "Register an undetected terminal pane as an agent.",
@@ -1638,9 +1743,12 @@ pub const READ_ONLY: &[&str] = &[
     "slack_status",
     "slack_search",
     "slack_read",
-    // Lists and plugin sources, read but not written.
+    // Lists, notes and plugin sources, read but not written.
     "todo_list",
     "todo_search",
+    "note_list",
+    "note_get",
+    "note_search",
     "plugin_docs",
     "plugin_check",
     "plugin_list",
@@ -1925,6 +2033,19 @@ pub struct Args {
     pub all_projects: bool,
     pub undo: bool,
     pub project: Option<String>,
+    // The note tools. `id`, `project`, `query`, `all_projects` and `undo`
+    // above are theirs as well. `tags` is an `Option` because an absent list
+    // leaves a note's tags alone and an empty one clears them.
+    pub title: Option<String>,
+    pub body: Option<String>,
+    pub global: bool,
+    pub include_archived: bool,
+    pub tag: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub todo_ids: Vec<u64>,
+    pub todo_id: Option<u64>,
+    pub note_id: Option<u64>,
+    pub unlink: bool,
     pub root: Option<String>,
     pub tab_name: Option<String>,
     pub action: Option<String>,

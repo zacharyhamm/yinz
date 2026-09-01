@@ -666,7 +666,7 @@ With no argument it lists the plugin's own namespace plus every `shared:` one, o
 
 ## Hocus data
 
-Hocus keeps its projects, todos, scheduled prompts and coding-agent records in the shared
+Hocus keeps its projects, todos, notes, scheduled prompts and coding-agent records in the shared
 namespace `shared:hocus`, and `hocus-store` declares every entity at session start - so the
 tables are there whether or not a hocus pane is open. Any plugin holding `plugin_data` and
 `shared_plugin_data` can read them:
@@ -682,12 +682,13 @@ local todos = data.fetch {
 }
 ```
 
-`example-plugins/hocus-todos.lua` is a working read-only plugin over exactly this.
+`example-plugins/hocus-todos.lua` is a working read-only plugin over exactly this, and
+`example-plugins/hocus-notes.lua` is the same over the notes and their side tables.
 
 **Read these; do not write them.** Nothing blocks a write, but hocus maintains invariants the
-rows do not carry - list caps, tree shape, project discovery - so a plugin that adds a todo row
-by hand can produce a list hocus will not accept. Mutate through hocus's tools (`/todo_add`,
-`/todo_done`) or `zellij pipe` to `hocus-store` instead.
+rows do not carry - list caps, tree shape, project discovery, a note's tags and links - so a
+plugin that adds a row by hand can produce a list hocus will not accept. Mutate through hocus's
+tools (`/todo_add`, `/todo_done`, `/note_add`) or `zellij pipe` to `hocus-store` instead.
 
 `id`, `uid`, `created_at` and `updated_at` are on every row without being declared, here as
 anywhere else.
@@ -715,6 +716,36 @@ anywhere else.
 There is no `position` and no `depth`: siblings are only ever appended, so `id` ascending *is*
 sibling order, and depth follows from the parent chain. One project's whole list fits in a single
 fetch.
+
+**`note`** - one note: a title and a Markdown body, kept with a project the way a todo list is,
+or with none.
+
+| Attribute | Kind | |
+|---|---|---|
+| `root` | text | indexed; the project's `root`, or **null for a global note** - filter with `is_null` |
+| `title` | text | required, full-text searchable |
+| `body` | text | required, full-text searchable; Markdown, up to 16 KB |
+| `author` | text | required; `user`, `hocus` for one the model wrote, or an agent kind |
+| `archived` | bool | required, indexed; hidden from hocus's listings until un-archived |
+
+The note's timestamps are the store's own `created_at` and `updated_at`, in milliseconds. Both
+text columns are in one full-text index, so `search = "word"` finds it in either and answers one
+row per note. A listing should `select` everything *but* `body` - a thousand notes at the cap
+would exceed one fetch's byte limit, and a listing does not show one anyway.
+
+**`note_link`** - a note referencing one todo item, many to many. `uid` is `<note id>:<todo id>`.
+**`note_tag`** - one tag on one note. `uid` is `<note id>:<tag>`.
+
+| Attribute | Kind | |
+|---|---|---|
+| `note_id` | int | required, indexed; both entities |
+| `todo_id` | int | required, indexed; `note_link` only - the store `id` of a `todo` row |
+| `tag` | text | required, indexed; `note_tag` only - lowercase, `[a-z0-9_-]` |
+
+A note's tags and links are the rows naming its id; a todo item's notes are the `note_link` rows
+naming its `todo_id`; and a list's notes are the notes with its `root` plus the ones linked to
+any item in it. Fetch a side table with `is_in("note_id", ids)` for the notes on screen rather
+than the whole table - and not at all when there are none, since an empty `is_in` is refused.
 
 **`job`** - a scheduled prompt.
 

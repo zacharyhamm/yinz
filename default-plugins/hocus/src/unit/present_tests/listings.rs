@@ -112,6 +112,84 @@ fn todo_search_keeps_markdown_in_each_result() {
     assert!(shown.contains("  2. ship it\n  \n      now\n"), "{shown}");
 }
 
+/// An item with notes names them by id on its own line, and one without says
+/// nothing about notes at all.
+#[test]
+fn todo_items_show_the_ids_of_their_notes() {
+    let raw = r#"{"project":"h","open":2,"done":0,
+        "items":[{"id":1,"text":"noted","notes":[3,7]},{"id":2,"text":"bare"}]}"#;
+    let shown = present(&call("todo_list", "{}"), raw).expect("presented");
+    assert!(
+        shown.contains("- [ ] `1` · notes 3, 7\n\n  noted\n"),
+        "{shown}"
+    );
+    assert!(shown.contains("- [ ] `2`\n\n  bare\n"), "{shown}");
+}
+
+/// The shape `note_list` answers with: no bodies, everything else on one line.
+#[test]
+fn notes_are_listed_with_ids_tags_links_and_age_but_no_body() {
+    let raw = r#"{"scope":"hocus","count":2,"notes":[
+        {"id":3,"title":"Why *this*","author":"hocus","archived":false,"tags":["design","rust"],
+         "todo_ids":[4,5],"age_seconds":7200},
+        {"id":4,"title":"Old","author":"user","archived":true,"tags":[],"todo_ids":[],"age_seconds":10}]}"#;
+    let shown = present(&call("note_list", "{}"), raw).expect("presented");
+    assert!(
+        shown.starts_with("## notes — hocus\n\n2 notes\n\n"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("- `3` **Why \\*this\\*** — 2h · #design #rust · todos 4, 5 · by hocus\n"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("- `4` **Old** _(archived)_ — just now\n"),
+        "{shown}"
+    );
+    assert!(
+        !shown.contains("by user"),
+        "the user's own notes need no byline: {shown}"
+    );
+    let empty = present(
+        &call("note_list", "{}"),
+        r#"{"scope":"global","count":0,"notes":[]}"#,
+    );
+    assert_eq!(empty, Some("## notes — global\n\n_none_\n".to_owned()));
+}
+
+#[test]
+fn note_get_shows_the_body_as_markdown_under_a_meta_line() {
+    let raw = r##"{"id":3,"title":"Why","project":"hocus","author":"hocus","archived":false,
+        "tags":["design"],"todo_ids":[4],"age_seconds":90,"body":"# because\n\n- reasons"}"##;
+    let shown = present(&call("note_get", "{}"), raw).expect("presented");
+    assert!(shown.starts_with("## note 3 — Why\n\n"), "{shown}");
+    assert!(
+        shown.contains("_hocus · by hocus · 1m · #design · todos 4_\n"),
+        "{shown}"
+    );
+    assert!(shown.ends_with("\n# because\n\n- reasons\n"), "{shown}");
+    let global = r#"{"id":1,"title":"g","global":true,"author":"user","body":"b","age_seconds":5}"#;
+    let shown = present(&call("note_get", "{}"), global).expect("presented");
+    assert!(shown.contains("_global · by user · just now_\n"), "{shown}");
+}
+
+#[test]
+fn note_search_shows_a_snippet_under_each_hit() {
+    let raw = r#"{"query":"rebase","matches":[
+        {"id":2,"title":"Plan","project":"hocus","author":"user","tags":[],"todo_ids":[],
+         "age_seconds":30,"snippet":"rebase before merging"}],"truncated":true}"#;
+    let shown = present(&call("note_search", "{}"), raw).expect("presented");
+    assert!(shown.starts_with("## note search — rebase\n\n"), "{shown}");
+    assert!(
+        shown.contains("- `2` **Plan** — just now\n  rebase before merging\n"),
+        "{shown}"
+    );
+    assert!(
+        shown.ends_with("_more matches were cut; narrow the query_\n"),
+        "{shown}"
+    );
+}
+
 #[test]
 fn a_project_listing_marks_the_active_one() {
     let raw = r#"{"active":"hocus","projects":[

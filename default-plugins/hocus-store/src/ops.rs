@@ -21,7 +21,7 @@
 //! rewritten as predicates: there would then be two copies of each rule.
 
 use hocus_proto::store::Backend;
-use hocus_proto::{projects, store, todos};
+use hocus_proto::{notes, projects, store, todos};
 use serde_json::{json, Value};
 use zellij_tile::prelude::{ApplyReport, FetchRequest, Mutation};
 
@@ -289,6 +289,9 @@ fn load_view(backend: &impl Backend, op: &str, args: &Value) -> Result<StoreView
 
 /// Load, plan, apply.
 pub fn run_mutate(backend: &impl Backend, op: &str, args: &Value) -> OpResult {
+    if crate::notes_ops::is_note_op(op) {
+        return crate::notes_ops::run_mutate(backend, op, args);
+    }
     let view = load_view(backend, op, args)?;
     let (mutations, reply) = plan_mutate(&view, op, args)?;
     let report = backend.apply(mutations)?;
@@ -297,11 +300,32 @@ pub fn run_mutate(backend: &impl Backend, op: &str, args: &Value) -> OpResult {
 
 /// Load and answer, or search.
 pub fn run_query(backend: &impl Backend, op: &str, args: &Value) -> OpResult {
+    if crate::notes_ops::is_note_op(op) {
+        return crate::notes_ops::run_query(backend, op, args);
+    }
     if op == "todo_search" {
         return run_search(backend, args);
     }
     let view = load_view(backend, op, args)?;
-    answer_query(&view, op, args)
+    let answer = answer_query(&view, op, args)?;
+    if op == "todo_list" {
+        return annotate_with_notes(backend, &answer);
+    }
+    Ok(answer)
+}
+
+/// Put the ids of the notes linked to each item onto a todo listing.
+///
+/// After the view-only answer rather than inside it, because the links are
+/// another fetch and `answer_query` reads nothing but its view.
+fn annotate_with_notes(backend: &impl Backend, answer: &str) -> OpResult {
+    let mut value: Value = serde_json::from_str(answer).map_err(|e| e.to_string())?;
+    let ids = notes::todo_ids_in(&value);
+    if !ids.is_empty() {
+        let links = notes::links_for_todos(backend, &ids)?;
+        notes::annotate_todo_list(&mut value, &links);
+    }
+    Ok(value.to_string())
 }
 
 /// Search the todo text through the store's index.

@@ -2,6 +2,8 @@ use crate::message::{Job, Message, Status};
 use crate::worker::read_pane_text;
 use crate::*;
 use hocus_proto::location::Location;
+use hocus_proto::notes;
+use hocus_proto::store::Backend;
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
@@ -188,6 +190,12 @@ impl State {
         // reply the way a command defers on the host's.
         if matches!(call.name.as_str(), "todo_add" | "todo_done" | "todo_edit") {
             return self.start_todo_write(call);
+        }
+        if matches!(
+            call.name.as_str(),
+            "note_add" | "note_edit" | "note_archive" | "note_delete" | "note_link"
+        ) {
+            return self.start_note_write(call);
         }
         // The scheduling tools live here rather than in tools::dispatch, which
         // is a free function with no access to the state they mutate.
@@ -1206,6 +1214,9 @@ impl State {
                 | "project_forget"
                 | "todo_list"
                 | "todo_search"
+                | "note_list"
+                | "note_get"
+                | "note_search"
                 | "agent_register"
                 | "agent_list"
                 | "agent_send"
@@ -1227,6 +1238,9 @@ impl State {
             "project_forget" => self.project_forget(&args),
             "todo_list" => self.todo_list(&args),
             "todo_search" => self.todo_search(&args),
+            "note_list" => self.note_list(&args),
+            "note_get" => self.note_get(&args),
+            "note_search" => self.note_search(&args),
             "agent_register" => self.agent_register(&args),
             "agent_list" => self.agent_list(&args),
             "agent_spawn" => self.agent_spawn(&args),
@@ -1499,7 +1513,247 @@ impl State {
         one.insert(root.clone(), list);
         let mut value = todos::list_json(&one, &root, args.include_done);
         value["project"] = serde_json::json!(name);
+        // Each item that has notes says which, so the model can read one
+        // before touching the item it is about.
+        let ids = notes::todo_ids_in(&value);
+        if !ids.is_empty() {
+            match notes::links_for_todos(&self.store(), &ids) {
+                Ok(links) => notes::annotate_todo_list(&mut value, &links),
+                Err(error) => return error,
+            }
+        }
         value.to_string()
+    }
+
+    // ------------------------------------------------------------------ notes
+
+    /// Who a write is by: the user for a command they typed, hocus for a call
+    /// the model made. `manual_head` is set for exactly the former and taken
+    /// back when the call finishes, which is after this runs.
+    pub(crate) fn call_author(&self) -> &'static str {
+        if self.manual_head {
+            "user"
+        } else {
+            "hocus"
+        }
+    }
+
+    /// The scope a note tool means. `all_projects` beats `global` beats
+    /// `project`, and a bare call means the active project, as the todo tools
+    /// read it.
+    pub(crate) fn note_where(
+        &self,
+        args: &tools::Args,
+        reading: bool,
+    ) -> Result<notes::Where, String> {
+        if reading && args.all_projects {
+            return Ok(notes::Where::All);
+        }
+        if args.global {
+            return Ok(notes::Where::Global);
+        }
+        let (root, name) = self
+            .todo_target(args)
+            .map_err(|error| format!("{error}, or set global for a note tied to no project"))?;
+        Ok(notes::Where::Project { root, name })
+    }
+
+    /// A note as the model reads it, with its project named.
+    pub(crate) fn note_reply(&self, note: &notes::Note) -> serde_json::Value {
+        let mut value = notes::note_json(note, crate::transitions::now_secs() * 1000);
+        value["project"] =
+            serde_json::json!(notes::project_name(&self.projects, note.root.as_deref()));
+        value
+    }
+
+    /// Change the notes, and answer with what changed.
+    ///
+    /// Synchronous like [`Self::todo_write`]. The one two-step is `note_add`:
+    /// a note's tags and links carry its id, which the store allocates on the
+    /// first apply, so they go in a second — and if that one fails the answer
+    /// says the note is there without them rather than pretending either way.
+    pub(crate) fn note_write(&mut self, call: &ToolCall) -> Result<String, String> {
+        let args = tools::Args::parse(&call.arguments)?;
+        let backend = self.store();
+        match call.name.as_str() {
+            "note_add" => {
+                let title = args.title.as_deref().ok_or("title is required")?;
+                let body = args.body.as_deref().ok_or("body is required")?;
+                let scope = self.note_where(&args, false)?;
+                notes::require_todos(&backend, &args.todo_ids)?;
+                let count = notes::count_in_scope(&backend, scope.scope())?;
+                let tags = args.tags.clone().unwrap_or_default();
+                let (mutations, draft) = notes::plan_add(
+                    count,
+                    scope.root(),
+                    title,
+                    body,
+                    self.call_author(),
+                    &tags,
+                    &args.todo_ids,
+                )?;
+                let report = backend.apply(mutations)?;
+                let id = report.ids.first().copied().unwrap_or_default().max(0) as u64;
+                let attach = notes::plan_attach(id, &draft.tags, &draft.todo_ids);
+                let warning = if attach.is_empty() {
+                    None
+                } else {
+                    backend.apply(attach).err()
+                };
+                let mut value = self.note_reply(&existing_note(&backend, id)?);
+                if let Some(error) = warning {
+                    value["warning"] = serde_json::json!(format!(
+                        "the note was written but its tags and links were not: {error}"
+                    ));
+                }
+                Ok(value.to_string())
+            },
+            "note_edit" => {
+                let id = args.id.ok_or("id is required")?;
+                let note = existing_note(&backend, id)?;
+                let mut mutations = Vec::new();
+                if args.title.is_some() || args.body.is_some() {
+                    mutations.extend(
+                        notes::plan_edit(&note, args.title.as_deref(), args.body.as_deref())?.0,
+                    );
+                }
+                if let Some(tags) = &args.tags {
+                    mutations.extend(notes::plan_set_tags(id, tags)?.0);
+                }
+                if mutations.is_empty() {
+                    return Err("give a title, a body, tags, or some of each".to_owned());
+                }
+                backend.apply(mutations)?;
+                Ok(self.note_reply(&existing_note(&backend, id)?).to_string())
+            },
+            "note_archive" => {
+                let id = args.id.ok_or("id is required")?;
+                let note = existing_note(&backend, id)?;
+                let archived = !args.undo;
+                backend.apply(notes::plan_archive(id, archived))?;
+                Ok(serde_json::json!({
+                    "id": id,
+                    "title": note.title,
+                    "project": notes::project_name(&self.projects, note.root.as_deref()),
+                    "archived": archived,
+                })
+                .to_string())
+            },
+            "note_delete" => {
+                let id = args.id.ok_or("id is required")?;
+                let note = existing_note(&backend, id)?;
+                backend.apply(notes::plan_delete(id))?;
+                Ok(serde_json::json!({
+                    "id": id,
+                    "title": note.title,
+                    "project": notes::project_name(&self.projects, note.root.as_deref()),
+                    "deleted": true,
+                })
+                .to_string())
+            },
+            _ => {
+                let note_id = args.note_id.ok_or("note_id is required")?;
+                let todo_id = args.todo_id.ok_or("todo_id is required")?;
+                existing_note(&backend, note_id)?;
+                if args.unlink {
+                    backend.apply(notes::plan_unlink(note_id, todo_id))?;
+                } else {
+                    notes::require_todos(&backend, &[todo_id])?;
+                    backend.apply(notes::plan_link(note_id, todo_id))?;
+                }
+                Ok(serde_json::json!({
+                    "note_id": note_id,
+                    "todo_id": todo_id,
+                    "linked": !args.unlink,
+                })
+                .to_string())
+            },
+        }
+    }
+
+    /// Run a note change and finish the call with its answer. Always `true`,
+    /// as [`Self::start_todo_write`] is: nothing waits.
+    pub(crate) fn start_note_write(&mut self, call: &ToolCall) -> bool {
+        let answer = match self.note_write(call) {
+            Ok(answer) => answer,
+            Err(error) => error,
+        };
+        self.finish_head(answer);
+        true
+    }
+
+    /// The notes of a scope, without bodies.
+    pub(crate) fn note_list(&self, args: &tools::Args) -> String {
+        let scope = match self.note_where(args, true) {
+            Ok(scope) => scope,
+            Err(error) => return error,
+        };
+        let filter = notes::Filter {
+            scope: Some(scope.scope()),
+            include_archived: args.include_archived,
+            tag: args.tag.as_deref(),
+            todo_id: args.todo_id,
+        };
+        let found = match notes::list_notes(&self.store(), filter) {
+            Ok(found) => found,
+            Err(error) => return error,
+        };
+        let listed: Vec<serde_json::Value> =
+            found.iter().map(|note| self.note_reply(note)).collect();
+        serde_json::json!({
+            "scope": scope.label(),
+            "count": listed.len(),
+            "notes": listed,
+        })
+        .to_string()
+    }
+
+    /// One note, whole.
+    pub(crate) fn note_get(&self, args: &tools::Args) -> String {
+        let Some(id) = args.id else {
+            return "id is required".to_owned();
+        };
+        match existing_note(&self.store(), id) {
+            Ok(note) => self.note_reply(&note).to_string(),
+            Err(error) => error,
+        }
+    }
+
+    pub(crate) fn note_search(&self, args: &tools::Args) -> String {
+        let Some(query) = args
+            .query
+            .as_deref()
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+        else {
+            return "query is required".to_owned();
+        };
+        let scope = match self.note_where(args, true) {
+            Ok(scope) => scope,
+            Err(error) => return error,
+        };
+        let found = match notes::search(&self.store(), scope.scope(), query) {
+            Ok(found) => found,
+            Err(error) => return error,
+        };
+        let matches: Vec<serde_json::Value> = found
+            .iter()
+            .map(|note| {
+                let mut value = self.note_reply(note);
+                value["snippet"] = serde_json::json!(notes::snippet(&note.body));
+                if let Some(object) = value.as_object_mut() {
+                    object.remove("body");
+                }
+                value
+            })
+            .collect();
+        serde_json::json!({
+            "query": query,
+            "scope": scope.label(),
+            "matches": matches,
+            "truncated": found.len() >= notes::MAX_MATCHES,
+        })
+        .to_string()
     }
 
     /// The name of the project that owns a folder, for a search result.
@@ -2539,4 +2793,9 @@ impl State {
         self.pin_to_bottom();
         true
     }
+}
+
+/// The note an id names, or the error that says what to call.
+fn existing_note(backend: &impl Backend, id: u64) -> Result<notes::Note, String> {
+    notes::fetch_note(backend, id)?.ok_or_else(|| format!("no note {id}; call note_list"))
 }

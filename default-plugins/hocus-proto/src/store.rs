@@ -96,6 +96,47 @@ pub fn todo_def() -> EntityDef {
         .attr(AttrDef::boolean("done").indexed().required().default(false))
 }
 
+/// One note. `root` is the normalized project root the note belongs to, as a
+/// todo's is, or null for a note tied to no project at all.
+///
+/// Both `title` and `body` are full-text: a search for a word should find it
+/// whichever of the two it is in, and FTS5 answers one row per note however
+/// many of its columns match. A listing selects everything but `body`, which is
+/// the one attribute with a real size.
+///
+/// The store's own `created_at` and `updated_at` are the note's timestamps;
+/// nothing here duplicates them.
+pub fn note_def() -> EntityDef {
+    EntityDef::new("note", 1)
+        .attr(AttrDef::text("root").indexed())
+        .attr(AttrDef::text("title").full_text().required())
+        .attr(AttrDef::text("body").full_text().required())
+        .attr(AttrDef::text("author").required().default("user"))
+        .attr(
+            AttrDef::boolean("archived")
+                .indexed()
+                .required()
+                .default(false),
+        )
+}
+
+/// A note referencing one todo item. Its uid is `"{note_id}:{todo_id}"`, so
+/// linking the same pair twice is one row. Both sides are indexed: a note's
+/// items and an item's notes are each one lookup.
+pub fn note_link_def() -> EntityDef {
+    EntityDef::new("note_link", 1)
+        .attr(AttrDef::int("note_id").indexed().required())
+        .attr(AttrDef::int("todo_id").indexed().required())
+}
+
+/// One tag on one note, uid `"{note_id}:{tag}"`. A row per tag rather than a
+/// text column of them, so a listing can be narrowed to a tag by the store.
+pub fn note_tag_def() -> EntityDef {
+    EntityDef::new("note_tag", 1)
+        .attr(AttrDef::int("note_id").indexed().required())
+        .attr(AttrDef::text("tag").indexed().required())
+}
+
 /// A note that one of the old JSON files has been read in already.
 ///
 /// Written in the same transaction as the rows it describes, so the import is
@@ -257,6 +298,9 @@ pub fn shared_defs() -> Vec<EntityDef> {
     vec![
         project_def(),
         todo_def(),
+        note_def(),
+        note_link_def(),
+        note_tag_def(),
         import_marker_def(),
         job_def(),
         agent_latch_def(),
@@ -614,10 +658,12 @@ mod tests {
     }
 
     /// Full-text search is only legal on an entity that declares a full-text
-    /// attribute, and two of ours are searched.
+    /// attribute, and three of ours are searched. A note is searched on two
+    /// columns, and one row must come back however many of them match.
     #[test]
     fn the_searched_entities_declare_a_full_text_attribute() {
         assert_eq!(todo_def().full_text_attrs().len(), 1);
+        assert_eq!(note_def().full_text_attrs().len(), 2);
         assert_eq!(chat_message_def().full_text_attrs().len(), 1);
     }
 

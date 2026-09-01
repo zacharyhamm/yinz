@@ -32,6 +32,7 @@ const EXAMPLE_WORKFLOW: &str = include_str!("../../../example-plugins/workflow.l
 const EXAMPLE_TODO_EXTENSION: &str = include_str!("../../../example-plugins/todo-extension.lua");
 const EXAMPLE_TODO_PANE: &str = include_str!("../../../example-plugins/todo-pane.lua");
 const EXAMPLE_HOCUS_TODOS: &str = include_str!("../../../example-plugins/hocus-todos.lua");
+const EXAMPLE_HOCUS_NOTES: &str = include_str!("../../../example-plugins/hocus-notes.lua");
 /// The Lua half of the API, verbatim: the argument sugar and the named wrappers live here, so
 /// a model that has read it does not have to guess how a command is spelled. Served in five
 /// parts, cut at its own section markers, so that none is more than a tool call should cost.
@@ -61,7 +62,7 @@ fn prelude_part(index: usize) -> &'static str {
 ///
 /// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
 /// editing the guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 34] = [
+pub const SECTIONS: [&str; 35] = [
     "index",
     "quickstart",
     "contract",
@@ -91,6 +92,7 @@ pub const SECTIONS: [&str; 34] = [
     "example_todo_extension",
     "example_todo_pane",
     "example_hocus_todos",
+    "example_hocus_notes",
     "prelude",
     "prelude_commands",
     "prelude_data",
@@ -236,6 +238,7 @@ fn index() -> String {
             "example_todo_extension" => "example: a hocus extension owning a shared: data namespace - permissions, schema, registration, tools".to_owned(),
             "example_todo_pane" => "example: the pane half of the same shared data - a watch, keys, and an input mode".to_owned(),
             "example_hocus_todos" => "example: reading hocus's own todo rows out of the shared data store".to_owned(),
+            "example_hocus_notes" => "example: hocus's notes, tags and todo links".to_owned(),
             "prelude" => "the Lua side of the API itself: events, commands, files, and every named wrapper".to_owned(),
             "prelude_commands" => "its host-command wrappers and keybinding helpers".to_owned(),
             "prelude_data" => "its zellij.data part: the persistent store, with every helper".to_owned(),
@@ -279,6 +282,7 @@ pub fn section(name: &str) -> Option<String> {
         "example_todo_extension" => Some(fenced(EXAMPLE_TODO_EXTENSION)),
         "example_todo_pane" => Some(fenced(EXAMPLE_TODO_PANE)),
         "example_hocus_todos" => Some(fenced(EXAMPLE_HOCUS_TODOS)),
+        "example_hocus_notes" => Some(fenced(EXAMPLE_HOCUS_NOTES)),
         "prelude" => Some(fenced(prelude_part(0))),
         "prelude_commands" => Some(fenced(prelude_part(1))),
         "prelude_data" => Some(fenced(prelude_part(2))),

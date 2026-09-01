@@ -30,7 +30,7 @@ fn the_command_list_holds_every_command_exactly_once() {
 #[test]
 fn the_command_list_is_grouped_and_plain() {
     let listed = commands();
-    for family in ["hocus", "panes", "agents", "todos", "slack"] {
+    for family in ["hocus", "panes", "agents", "todos", "notes", "slack"] {
         assert!(listed.contains(family), "{family} missing from {listed}");
     }
     // A notice is not rendered as markdown, so any syntax would be shown

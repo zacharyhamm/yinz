@@ -332,6 +332,8 @@ fn the_tools_that_act_are_withheld_from_planning() {
         "project_assign",
         "project_open",
         "todo_add",
+        "note_add",
+        "note_delete",
         "schedule",
         "unschedule",
         "slack_post",
