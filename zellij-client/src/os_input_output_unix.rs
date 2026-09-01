@@ -1,6 +1,7 @@
 use crate::os_input_output::SignalEvent;
 
 use async_trait::async_trait;
+use nix::sys::termios;
 use signal_hook::consts::signal::*;
 use signal_hook::iterator::Signals;
 use tokio::signal::unix::{signal, SignalKind};
@@ -104,4 +105,45 @@ pub(crate) fn disable_mouse_support(stdout: &mut dyn Write) -> Result<()> {
         .context(err_context)?;
     stdout.flush().context(err_context)?;
     Ok(())
+}
+
+/// Read the controlling terminal's attributes, hand them to `f`, and write them back.
+///
+/// A no-op that reports its error when stdin is not a tty - the client runs that way under test
+/// and in a pipeline, and neither case wants a failure here to be fatal.
+fn tweak_stdin_termios(f: impl FnOnce(&mut termios::Termios)) -> nix::Result<()> {
+    let mut attrs = termios::tcgetattr(io::stdin())?;
+    f(&mut attrs);
+    termios::tcsetattr(io::stdin(), termios::SetArg::TCSANOW, &attrs)
+}
+
+/// Turn the signal keys (`ISIG`: Ctrl-C, Ctrl-\, Ctrl-Z) on or off, independently of raw mode.
+///
+/// Raw mode clears `ISIG` along with everything else, which is right once the client owns the
+/// keyboard and forwards Ctrl-C to a pane. It is wrong during startup: the terminal has to stop
+/// echoing before we query the host, but the client then spends that stretch forking a server and
+/// retrying a socket connect with nothing reading stdin, so a Ctrl-C that does not become a SIGINT
+/// is a Ctrl-C that does nothing at all.
+pub(crate) fn set_signal_keys(enabled: bool) {
+    if let Err(e) = tweak_stdin_termios(|attrs| {
+        attrs.local_flags.set(termios::LocalFlags::ISIG, enabled);
+    }) {
+        log::debug!("could not set ISIG={enabled} on the controlling terminal: {e}");
+    }
+}
+
+/// Turn output post-processing (`OPOST`/`ONLCR`, ie. "\n" means "\r\n") on or off.
+///
+/// Raw mode clears it, which is what we want for our own output - we place the cursor ourselves.
+/// It is restored around forking the server, whose child can print setup errors to the inherited
+/// terminal before it daemonizes; without `ONLCR` those staircase down the screen.
+pub(crate) fn set_output_processing(enabled: bool) {
+    if let Err(e) = tweak_stdin_termios(|attrs| {
+        attrs.output_flags.set(
+            termios::OutputFlags::OPOST | termios::OutputFlags::ONLCR,
+            enabled,
+        );
+    }) {
+        log::debug!("could not set OPOST={enabled} on the controlling terminal: {e}");
+    }
 }

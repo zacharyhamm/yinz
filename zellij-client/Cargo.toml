@@ -30,7 +30,7 @@ tokio-util = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 signal-hook = { workspace = true }
 daemonize = { workspace = true }
-nix = { workspace = true, features = ["fs"] }
+nix = { workspace = true, features = ["fs", "term"] }
 
 [dev-dependencies]
 hegeltest = "0.29.3"

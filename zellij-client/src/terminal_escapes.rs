@@ -10,6 +10,7 @@
 use crate::os_input_output::{StdioAccess, TtyControl};
 use crate::stdin_ansi_parser::SyncOutput;
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use zellij_utils::errors::FatalError;
 use zellij_utils::nested_session;
 
@@ -39,8 +40,12 @@ pub const DISABLE_HOST_THEME_NOTIFY: &str = "\u{1b}[?2031l";
 pub const QUERY_HOST_THEME: &str = "\u{1b}[?996n";
 pub const CLEAR_SCREEN: &str = "\u{1b}[2J";
 
+/// Set by the first thread to tear the terminal down during startup, so a second one does not
+/// write a competing ribbon and message over it.
+static STARTUP_EXIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
 /// Write a run of escape sequences to the controlling terminal and flush.
-pub fn write_seqs(os_input: &dyn StdioAccess, seqs: &[&str]) {
+pub fn write_seqs<O: StdioAccess + ?Sized>(os_input: &O, seqs: &[&str]) {
     let mut stdout = os_input.get_stdout_writer();
     for seq in seqs {
         stdout
@@ -55,7 +60,7 @@ pub fn write_seqs(os_input: &dyn StdioAccess, seqs: &[&str]) {
 /// `ENABLE_HOST_THEME_NOTIFY` and `QUERY_HOST_THEME` are sent directly after
 /// `CLEAR_CLIENT_TERMINAL_ATTRIBUTES` so there is no window in which the host
 /// is unsubscribed. Hosts that don't support CSI 2031 ignore both.
-pub fn enter_terminal(os_input: &dyn StdioAccess, kitty_keyboard: bool) {
+pub fn enter_terminal<O: StdioAccess + ?Sized>(os_input: &O, kitty_keyboard: bool) {
     let mut seqs = vec![ENTER_ALTERNATE_SCREEN, CLEAR_CLIENT_TERMINAL_ATTRIBUTES];
     if kitty_keyboard {
         seqs.push(ENTER_KITTY_KEYBOARD_MODE);
@@ -63,6 +68,38 @@ pub fn enter_terminal(os_input: &dyn StdioAccess, kitty_keyboard: bool) {
     seqs.push(ENABLE_HOST_THEME_NOTIFY);
     seqs.push(QUERY_HOST_THEME);
     write_seqs(os_input, &seqs);
+}
+
+/// Take the controlling terminal for a client, without letting it echo.
+///
+/// Order matters, and it is the whole point of this function. Raw mode goes on *before* the first
+/// byte is written, because [`enter_terminal`] asks the host for its theme and the reply comes
+/// back on a terminal that is still echoing everything it receives. Turning raw mode on later -
+/// after the server has been spawned and the socket connected, which is where it used to happen -
+/// leaves a window long enough on a new session for that reply to be printed at the top-left of
+/// the alternate screen we have just switched to.
+///
+/// The raw mode taken here keeps the signal keys working ([`TtyControl::set_raw_mode_keeping_signals`]).
+/// Echo is what has to stop before we write a query; Ctrl-C is what has to keep working while the
+/// client forks a server and waits on a socket with nothing yet reading stdin. `start_client`
+/// promotes this to full raw mode once it owns the keyboard.
+///
+/// `is_a_reconnect` skips the escape ribbon: the controlling terminal already has the attributes
+/// we want, and some terminals do not treat these atomically. It does not skip the raw-mode
+/// switch, because the previous pass left focus reporting on and those reports echo the same way.
+pub fn claim_terminal<O>(os_input: &mut O, kitty_keyboard: bool, is_a_reconnect: bool)
+where
+    O: TtyControl + StdioAccess + ?Sized,
+{
+    // Normalises the terminal when a reconnect brings us through here a second time; a no-op on
+    // the first pass, where raw mode was never enabled.
+    if let Err(e) = os_input.unset_raw_mode() {
+        log::error!("failed to reset the terminal before claiming it: {e}");
+    }
+    os_input.set_raw_mode_keeping_signals();
+    if !is_a_reconnect {
+        enter_terminal(os_input, kitty_keyboard);
+    }
 }
 
 /// Write terminal output, wrapped in the host's synchronised-output markers
@@ -132,30 +169,36 @@ impl ClientTeardown {
         }
     }
 
-    /// The escape ribbon that restores the terminal, followed by `message`.
-    pub fn message(&self, message: &str) -> String {
+    /// The escape ribbon that restores the terminal, with nothing printed after it.
+    ///
+    /// Safe to write even if the terminal was never fully claimed: popping an alternate screen
+    /// that was never entered, and an empty kitty keyboard stack, are both no-ops.
+    pub fn restore_sequences(&self) -> String {
         let kitty_exit = if self.include_kitty_exit {
             EXIT_KITTY_KEYBOARD_MODE
         } else {
             ""
         };
-        // Without a known row count we can't place the cursor, so break the
-        // line instead to keep the message off the restored screen's content.
-        let position = match self.rows {
-            Some(rows) => format!("\u{1b}[{};{}H", rows, 1),
-            None => "\r\n".to_owned(),
-        };
         format!(
-            "{}{}{}{}{}{}{}{}\n",
+            "{}{}{}{}{}{}",
             kitty_exit,
             DISABLE_HOST_THEME_NOTIFY,
             DISABLE_FOCUS_REPORTING,
             EXIT_ALTERNATE_SCREEN,
             RESET_STYLE,
             SHOW_CURSOR,
-            position,
-            message
         )
+    }
+
+    /// The escape ribbon that restores the terminal, followed by `message`.
+    pub fn message(&self, message: &str) -> String {
+        // Without a known row count we can't place the cursor, so break the
+        // line instead to keep the message off the restored screen's content.
+        let position = match self.rows {
+            Some(rows) => format!("\u{1b}[{};{}H", rows, 1),
+            None => "\r\n".to_owned(),
+        };
+        format!("{}{}{}\n", self.restore_sequences(), position, message)
     }
 
     /// Restore the terminal and exit, for failures during startup.
@@ -165,7 +208,28 @@ impl ClientTeardown {
     /// message goes to stderr. Writes straight to `io::stdout` rather than
     /// through a `ClientOsApi`, since startup can fail before one exists.
     pub fn exit_after_startup_error(teardown: Option<Self>, message: String) -> ! {
+        Self::exit_during_startup(teardown, message, 1)
+    }
+
+    /// As [`Self::exit_after_startup_error`], with the exit status spelled out.
+    ///
+    /// Interrupting startup is not an error, so it exits with the shell's usual 128 + SIGINT
+    /// rather than 1.
+    pub fn exit_during_startup(teardown: Option<Self>, message: String, exit_status: i32) -> ! {
+        if STARTUP_EXIT_IN_PROGRESS.swap(true, Ordering::SeqCst) {
+            // Someone got here first. A Ctrl-C during startup is delivered to the whole process
+            // group, so the startup signal guard and the server child's non-zero exit arrive
+            // together; the first one to arrive owns the terminal, the message and the exit
+            // status, and the second waits here for the process to go away.
+            loop {
+                std::thread::park();
+            }
+        }
         log::error!("{}", message);
+        // Raw mode is enabled before the server is spawned, so every failure from there on has to
+        // hand the terminal back or the shell inherits it. A no-op when raw mode was never
+        // enabled, which is the case on the paths that pass `None`.
+        let _ = crossterm::terminal::disable_raw_mode();
         match teardown {
             Some(teardown) => {
                 let mut stdout = std::io::stdout();
@@ -174,7 +238,7 @@ impl ClientTeardown {
             },
             None => eprintln!("{}", message),
         }
-        std::process::exit(1);
+        std::process::exit(exit_status);
     }
 
     /// Hand the terminal back and print `message`, without exiting.
