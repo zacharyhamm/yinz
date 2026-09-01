@@ -140,7 +140,7 @@ safe to run.
 | Event | Agent | State | Why |
 |---|---|---|---|
 | `SessionStart` | both | idle | Starts the feed, and proves the pane runs an agent |
-| `UserPromptSubmit` | both | busy | Carries `prompt`, kept for the summary at the end of the turn |
+| `UserPromptSubmit` | both | busy | Carries `prompt`: names the pane at once, and is kept for the summary at the end of the turn |
 | `PreToolUse` | both | busy | Names the tool: `busy · Bash cargo` |
 | `PostToolUse` | both | busy | Clears the tool name |
 | `PostToolUseFailure` | claude | busy | A tool that failed is still the agent working |
@@ -221,6 +221,16 @@ Either way a pane with a feed is read off it and nothing else:
   stays a `codex`.
 - The agent's `cwd` comes from the hook, which is the only thing that reports an agent
   told to work in a folder the shell under it never entered.
+- **The prompt names the pane, as it is submitted.** A `UserPromptSubmit` is the question
+  the turn is about, in hand before the agent has done anything about it, so the pane is
+  renamed to it there and then — one line, whitespace collapsed, cut to
+  `agent::WAITING_DETAIL_CHARS`. Before this a pane was named only when the turn *ended*,
+  from the model's summary title, so for the whole time an agent was working the tab bar
+  said `claude`. The summary title replaces the prompt at the end of the turn, when there
+  is something better to say about it. Both renames keep the same guard,
+  `title_is_ours_to_take`: a pane whose kind is anchored only in its title is left alone,
+  because writing over that title would un-detect the pane — a hook-connected pane is
+  anchored in its record instead, which `classify` reads first.
 
 ### The summary is made from what the agent said
 
@@ -248,7 +258,7 @@ the idle summary no longer comes from the screen at all:
   idle again and take the stale answer for a current one.
 - **With no API key it still works.** `local_summary` takes the message's opening
   sentences, drops fenced blocks and markdown markers, and gives no title — so the pane
-  keeps its name. Before the feed there was nothing to fall back *to*: a screen tail is
+  keeps the name its prompt gave it. Before the feed there was nothing to fall back *to*: a screen tail is
   not a summary of anything.
 - **A `Stop` carrying no final message buys nothing, and costs nothing.** The turn still
   lands as `idle` the moment it ends; there is simply no sentence to make one out of. An

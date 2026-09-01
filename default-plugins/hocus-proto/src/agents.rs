@@ -1581,6 +1581,22 @@ pub fn rename_title(summary: &Summary) -> Option<&str> {
     (!title.is_empty()).then_some(title)
 }
 
+/// The name to give the pane of an agent that has just been asked for something.
+///
+/// The other half of [`rename_title`], and the earlier one: a summary title arrives when the
+/// turn ends, and this is what the pane carries while it runs. `zellij_tile::agent::clean_line`
+/// does the whole job — a prompt is several lines of a person's typing, and it collapses the
+/// whitespace runs, drops the control characters a paste carries, and cuts to
+/// [`WAITING_DETAIL_CHARS`] with a `…`. Cutting there rather than to the model title's tighter
+/// budget: nothing else has read this prompt yet, so the pane's name is all the user gets of
+/// what they asked for, and the tab bar shortens what will not fit.
+///
+/// `None` for a prompt with nothing in it, which is the same answer [`rename_title`] gives an
+/// empty title: there is no name in it to take.
+pub fn prompt_title(prompt: &str) -> Option<String> {
+    zellij_tile::agent::clean_line(prompt)
+}
+
 /// One summary as the toast the daemon shows the moment it is made.
 ///
 /// The inset over hocus's transcript only draws while the user is standing in the agents
@@ -4752,6 +4768,26 @@ mod tests {
         assert!(long.chars().count() <= WAITING_DETAIL_CHARS, "{long}");
         assert!(long.ends_with('…'));
         assert!(long.starts_with("word word"), "{long}");
+    }
+
+    /// The prompt names the pane the moment it is submitted, so what a person typed over
+    /// several lines has to become one line a frame can hold.
+    #[test]
+    fn a_prompt_title_is_one_bounded_line_of_what_was_asked_for() {
+        assert_eq!(
+            prompt_title("  fix the flaky\n\treconnect\x1b[2J test  ").as_deref(),
+            Some("fix the flaky reconnect[2J test")
+        );
+
+        // Cut to the same budget a waiting detail has, ellipsis included in it.
+        let long = prompt_title(&"word ".repeat(80)).expect("a title");
+        assert!(long.chars().count() <= WAITING_DETAIL_CHARS, "{long}");
+        assert!(long.ends_with('…'), "{long}");
+
+        // Nothing to name the pane after leaves its name alone, the same answer
+        // `rename_title` gives an empty title.
+        assert_eq!(prompt_title("   \n\t ").as_deref(), None);
+        assert_eq!(prompt_title("").as_deref(), None);
     }
 
     /// Whatever the toast is given, the row gets the short form: a sidebar cell that
