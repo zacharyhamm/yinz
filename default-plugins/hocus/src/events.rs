@@ -598,7 +598,11 @@ impl State {
             }
         }
         // Held for `on_tabs`, which has no manifest of its own and has to know whether there is
-        // anything on screen to carry to the tab the user switched to.
+        // anything on screen to carry to the tab the user switched to. Whether it *changed* is
+        // read too: the list hides and comes back on its own, and this is the only word hocus
+        // gets of it - and the panel has to be cut again either way, since a hidden half gives
+        // its width to the other.
+        let agents_visibility_changed = agents_visible != self.agents_visible;
         self.agents_visible = agents_visible;
         for (tab_index, panes) in &manifest.panes {
             let Some(own) = panes
@@ -619,6 +623,9 @@ impl State {
             // placement retry below, so a manifest that both places and re-anchors does so once.
             self.tab_panes = panes.clone();
             self.track_anchor(panes);
+            // Where the user dragged the divider, if they did: the seam drag happens in the
+            // server and claims nothing, so the manifest is how it reaches the next placement.
+            self.read_split(panes);
             // The manifest is what makes a placement possible at all: it names the tab a pane is
             // on, which is the thing `change_overlay_coordinates` needs to find it. A pane still
             // sitting at the centered default the host gave it is placed here, whichever event
@@ -627,7 +634,7 @@ impl State {
             // Either half, and the list's half is the one that had nowhere else to be caught:
             // `agents_tab_index` was read from this very manifest a few lines up, so this is the
             // first pass that can place a list which announced itself before it was on a tab.
-            if !self.placed || !self.agents_placed {
+            if !self.placed || !self.agents_placed || agents_visibility_changed {
                 self.apply_overlay_geometry();
             }
             if own.is_suppressed {
@@ -717,7 +724,7 @@ impl State {
         // out of the way is wanted whatever is on screen in it, and the input box would swallow
         // the key. Nothing to redraw here - the move is the server's to paint.
         if Self::is_reposition_key(&key) {
-            self.reposition(overlay::Which::Chat);
+            self.reposition();
             return false;
         }
         // The temporary lists are modal while open.

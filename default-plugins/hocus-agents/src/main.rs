@@ -2,9 +2,10 @@
 //!
 //! This used to be the top third of the hocus pane, drawn by hocus itself with
 //! an `agents_focused` flag deciding who owned the keys. Then it was the upper
-//! half of a two-pane column. It is now simply its own pane, sitting beside the
-//! conversation rather than above it, and opening, hiding and being read on its
-//! own.
+//! half of a two-pane column. It is now its own pane: the left half of one
+//! panel whose right half is the conversation, the two butted together with a
+//! divider between them that the mouse can drag. It opens, hides and is read on
+//! its own; only its geometry is shared, and that is hocus's to compute.
 //!
 //! **hocus computes, this pane draws.** Which panes are agents, which project
 //! owns them and what branch they are on takes the agentd snapshot, the project
@@ -55,14 +56,15 @@
 //! nothing else (`wire::AGENT_SUMMARIZE`): which of the two kinds of work that means is the
 //! daemon's to know, the same way the rows themselves are hocus's to compute.
 //!
-//! **The two panes are separate, with one exception.** Esc here hides this pane
-//! and nothing else, and hocus's Esc hides hocus. Ctrl-o moves this pane out of
-//! the way of a tiled pane and leaves the conversation where it is — hocus does
-//! the arithmetic, since it places both overlays, so the key is a request
-//! (`wire::AGENT_STRIP_REPOSITION`) rather than a move. Enter walks you to the
-//! selected agent and leaves the panel exactly where it is: the history half is
-//! worth reading beside the pane it is about, and dismissing is what Esc and
-//! Ctrl-` are for. Neither pane opens the other for the user. The exception is
+//! **The two panes are separate plugins in one panel, with one exception.** Esc
+//! here hides this pane and nothing else, and the conversation widens to take
+//! the whole panel; hocus's Esc hides hocus and this pane widens the same way.
+//! Ctrl-o moves the panel - both halves, split intact - clear of a tiled pane;
+//! hocus does the arithmetic, since it places both overlays, so the key is a
+//! request (`wire::AGENT_STRIP_REPOSITION`) rather than a move. Enter walks you
+//! to the selected agent and leaves the panel exactly where it is: the history
+//! half is worth reading beside the pane it is about, and dismissing is what
+//! Esc and Ctrl-` are for. Neither pane opens the other for the user. The exception is
 //! `say_hello_to_hocus`, which does carry hocus's url: this pane is a view over
 //! rows only hocus can compute, so a list with no hocus to ask has nothing to
 //! draw. The hocus that greeting launches starts **hidden** — `wire::OPENED_BY`

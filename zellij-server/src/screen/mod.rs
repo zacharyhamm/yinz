@@ -3561,10 +3561,33 @@ impl Screen {
         pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
         override_user_placement: bool,
     ) {
+        let pane_ids: Vec<PaneId> = pane_ids_and_coordinates
+            .iter()
+            .map(|(pane_id, _)| *pane_id)
+            .collect();
+        // Each tab gets the part of the batch that is on it, as one placement: two overlays
+        // linked as a panel are placed as that panel (`Tab::change_overlay_coordinates_batch`),
+        // which they cannot be one pane at a time. An id on no tab is silently skipped, as it
+        // always was - a plugin placing a pane that is not on a tab yet is the common case.
+        let mut per_tab: BTreeMap<usize, Vec<(PaneId, FloatingPaneCoordinates)>> = BTreeMap::new();
         for (pane_id, coordinates) in pane_ids_and_coordinates {
             if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
-                tab.change_overlay_coordinates(&pane_id, coordinates, override_user_placement)
+                per_tab
+                    .entry(tab.id)
+                    .or_default()
+                    .push((pane_id, coordinates));
+            }
+        }
+        for (tab_id, batch) in per_tab {
+            if let Some(tab) = self.get_tab_by_id_mut(tab_id) {
+                tab.change_overlay_coordinates_batch(batch, override_user_placement)
                     .non_fatal();
+                // Once the whole batch is applied: a batch that places two overlays together is
+                // what makes them one panel with a draggable seam. Asked of every tab holding
+                // one of them, so a pair parted across two tabs is unlinked on both.
+                if pane_ids.len() >= 2 {
+                    tab.link_touching_overlays(&pane_ids);
+                }
             }
         }
     }

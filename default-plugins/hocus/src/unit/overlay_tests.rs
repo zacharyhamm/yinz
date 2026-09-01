@@ -1,5 +1,5 @@
-//! `overlay_rects` is a pure function of (config, display area, whether the chat is on
-//! screen), so it is tested as one.
+//! `overlay_rects` is a pure function of (config, display area, which halves are on screen,
+//! the split), so it is tested as one.
 
 use super::*;
 
@@ -25,105 +25,202 @@ fn rect(coordinates: &FloatingPaneCoordinates) -> (usize, usize, usize, usize) {
     )
 }
 
-/// Both panels at home - neither moved by a press - as the coordinates the host takes.
+/// The panel at home - never moved by a press - as the coordinates the host takes, in the order
+/// `(chat, agents)`.
 ///
-/// `overlay_rects` is the production arithmetic and `fixed_rect` the conversion `place_one` makes
-/// per panel; this does both at once, so a test can compare the pair.
+/// `overlay_rects` is the production arithmetic and `fixed_rect` the conversion every placement
+/// makes per half; this does both at once, so a test can compare the pair.
 fn home_geometry(
     config: &BTreeMap<String, String>,
     rows: usize,
     cols: usize,
-    chat_visible: bool,
+    shown: Shown,
 ) -> Option<(FloatingPaneCoordinates, FloatingPaneCoordinates)> {
-    let (chat, agents) = overlay_rects(config, rows, cols, chat_visible)?;
+    let (chat, agents) = overlay_rects(config, rows, cols, shown, None)?;
     Some((fixed_rect(chat), fixed_rect(agents)))
 }
 
-/// The geometry with the conversation on screen, which is the ordinary case.
+/// The geometry with both halves on screen, which is the ordinary case.
 fn beside(
     config: &BTreeMap<String, String>,
     rows: usize,
     cols: usize,
 ) -> (FloatingPaneCoordinates, FloatingPaneCoordinates) {
-    home_geometry(config, rows, cols, true).expect("some geometry")
+    home_geometry(config, rows, cols, Shown::BOTH).expect("some geometry")
+}
+
+/// One half on screen.
+fn only_chat() -> Shown {
+    Shown {
+        chat: true,
+        agents: false,
+    }
+}
+fn only_agents() -> Shown {
+    Shown {
+        chat: false,
+        agents: true,
+    }
+}
+
+/// The panel the two halves make: the rectangle round both.
+fn panel_of(
+    chat: &FloatingPaneCoordinates,
+    agents: &FloatingPaneCoordinates,
+) -> (usize, usize, usize, usize) {
+    let (chat_x, chat_y, chat_w, chat_h) = rect(chat);
+    let (agents_x, agents_y, agents_w, agents_h) = rect(agents);
+    let x = chat_x.min(agents_x);
+    let y = chat_y.min(agents_y);
+    (
+        x,
+        y,
+        (chat_x + chat_w).max(agents_x + agents_w) - x,
+        (chat_y + chat_h).max(agents_y + agents_h) - y,
+    )
 }
 
 #[test]
-fn the_conversation_sits_in_the_bottom_left_corner_inset_by_the_padding() {
-    let (chat, _) = beside(&BTreeMap::new(), 50, 200);
-    let (chat_x, chat_y, chat_w, chat_h) = rect(&chat);
+fn the_panel_sits_in_the_bottom_left_corner_inset_by_the_padding() {
+    let (chat, agents) = beside(&BTreeMap::new(), 50, 200);
+    let (x, y, w, h) = panel_of(&chat, &agents);
 
-    assert_eq!(chat_x, DEFAULT_PAD, "left edge is one padding in");
+    assert_eq!(x, DEFAULT_PAD, "left edge is one padding in");
     assert_eq!(
-        chat_y + chat_h,
+        y + h,
         50 - DEFAULT_PAD,
         "the bottom edge is one padding up from the bottom of the screen"
     );
     assert_eq!(
-        chat_y,
+        y,
         50 - DEFAULT_PAD - (50 * DEFAULT_HEIGHT_PERCENT / 100),
-        "and the top is its height up from that bottom edge - the pane is anchored to the \
+        "and the top is its height up from that bottom edge - the panel is anchored to the \
          bottom, not stretched between the paddings"
     );
-    assert_eq!(chat_w, 60, "30% of 200 columns");
+    assert_eq!(w, 120, "60% of 200 columns");
 }
 
-/// The whole of the layout change: the list is beside the conversation, not above it.
+/// The whole of the layout: one panel, the list on the left and the conversation on the right,
+/// with nothing between them - the two touching frames are the divider.
 #[test]
-fn the_agent_list_sits_to_the_right_of_the_conversation() {
+fn the_agent_list_is_the_left_half_and_the_conversation_the_right() {
     let (chat, agents) = beside(&BTreeMap::new(), 50, 200);
     let (chat_x, chat_y, chat_w, chat_h) = rect(&chat);
     let (agents_x, agents_y, agents_w, agents_h) = rect(&agents);
 
-    assert_eq!((agents_y, agents_h), (chat_y, chat_h), "the same slot");
-    assert_eq!(agents_w, chat_w, "and the same width");
+    assert_eq!((agents_y, agents_h), (chat_y, chat_h), "the same rows");
     assert_eq!(
-        agents_x,
-        chat_x + chat_w + DEFAULT_PAD,
-        "to its right, with one padding of clear screen between them - the same padding that \
-         insets the pair from the edges of the screen"
+        agents_x, DEFAULT_PAD,
+        "the list is at the panel's left edge"
     );
+    assert_eq!(
+        chat_x,
+        agents_x + agents_w,
+        "and the conversation starts on the column the list ends on"
+    );
+    assert_eq!((agents_w, chat_w), (60, 60), "cut in half by default");
 }
 
-/// The gap is the padding, so it follows the padding rather than being a second thing to set.
+/// `split` is the list's share, as a percentage of the panel or a column count, and the
+/// conversation gets the rest - the panel's width does not change with it.
 #[test]
-fn the_gap_between_the_panels_is_the_configured_padding() {
-    for pad in ["1", "2", "5"] {
-        let config = config(&[("pad", pad)]);
-        let (chat, agents) = beside(&config, 50, 200);
+fn the_split_is_configurable() {
+    for (split, agents_cols) in [("25%", 30), ("75%", 90), ("40", 40)] {
+        let (chat, agents) = beside(&config(&[("split", split)]), 50, 200);
+        let (agents_x, _, agents_w, _) = rect(&agents);
         let (chat_x, _, chat_w, _) = rect(&chat);
-        let (agents_x, _, _, _) = rect(&agents);
-        let pad: usize = pad.parse().expect("TEST");
+        assert_eq!(agents_w, agents_cols, "split {split}");
+        assert_eq!(chat_x, agents_x + agents_w, "split {split}");
         assert_eq!(
-            agents_x - (chat_x + chat_w),
-            pad,
-            "a pad of {pad} is a gap of {pad}"
+            agents_w + chat_w,
+            120,
+            "split {split}: the panel is still 120 wide"
         );
     }
 }
 
-/// And with the conversation away, the list takes the slot the conversation had: a lone pane
-/// belongs in the corner, not floating in the middle of the screen with nothing beside it.
+/// Each half keeps the minimum, whichever way the split leans: a `split` that would fold one
+/// half to nothing is pulled back to the floor.
 #[test]
-fn the_agent_list_takes_the_left_hand_slot_when_the_conversation_is_hidden() {
-    let (_, alone) = home_geometry(&BTreeMap::new(), 50, 200, false).expect("some geometry");
-    let (chat, _) = beside(&BTreeMap::new(), 50, 200);
-    let (chat_x, chat_y, _, chat_h) = rect(&chat);
-    let (alone_x, alone_y, _, alone_h) = rect(&alone);
+fn the_split_is_floored_on_both_sides() {
+    let (chat, agents) = beside(&config(&[("split", "1")]), 50, 200);
+    assert_eq!(rect(&agents).2, MIN_PANE_COLS);
+    assert_eq!(rect(&chat).2, 120 - MIN_PANE_COLS);
+
+    let (chat, agents) = beside(&config(&[("split", "100%")]), 50, 200);
+    assert_eq!(rect(&chat).2, MIN_PANE_COLS);
+    assert_eq!(rect(&agents).2, 120 - MIN_PANE_COLS);
+}
+
+/// A seam drag reaches the placement as a ratio, and the ratio is what a re-cut honours: the
+/// same panel is cut at the same column, and a wider panel in the same proportion.
+#[test]
+fn a_split_read_off_the_manifest_outranks_the_configured_one() {
+    let config = config(&[("split", "25%")]);
+    let (chat, agents) =
+        overlay_rects(&config, 50, 200, Shown::BOTH, Some((90, 120))).expect("some geometry");
     assert_eq!(
-        (alone_x, alone_y, alone_h),
-        (chat_x, chat_y, chat_h),
-        "exactly where the conversation would have been"
+        (agents.cols, chat.cols),
+        (90, 30),
+        "cut where the user dragged it"
+    );
+    assert_eq!(chat.x, agents.x + agents.cols);
+
+    // the terminal grew: 60% of 300 is a 180-column panel, cut three to one as before
+    let (chat, agents) =
+        overlay_rects(&config, 50, 300, Shown::BOTH, Some((90, 120))).expect("some geometry");
+    assert_eq!(
+        (agents.cols, chat.cols),
+        (135, 45),
+        "the proportion, not the column"
+    );
+}
+
+/// A hidden half gives its width to the other: the panel keeps one footprint, and whichever half
+/// is open fills it. The hidden half keeps the share it would have, so a reveal finds it where
+/// it belongs.
+#[test]
+fn a_hidden_half_gives_its_width_to_the_other() {
+    let (both_chat, both_agents) = beside(&BTreeMap::new(), 50, 200);
+    let panel = panel_of(&both_chat, &both_agents);
+
+    let (chat, agents) =
+        home_geometry(&BTreeMap::new(), 50, 200, only_chat()).expect("some geometry");
+    assert_eq!(
+        rect(&chat),
+        panel,
+        "the conversation alone has the whole panel"
+    );
+    assert_eq!(
+        rect(&agents),
+        rect(&both_agents),
+        "the hidden list keeps its half, ready to come back to it"
+    );
+
+    let (chat, agents) =
+        home_geometry(&BTreeMap::new(), 50, 200, only_agents()).expect("some geometry");
+    assert_eq!(rect(&agents), panel, "the list alone has the whole panel");
+    assert_eq!(rect(&chat), rect(&both_chat));
+
+    // and with neither on screen the panel is placed as it will come back - cut
+    let neither = Shown {
+        chat: false,
+        agents: false,
+    };
+    let (chat, agents) = home_geometry(&BTreeMap::new(), 50, 200, neither).expect("some geometry");
+    assert_eq!(
+        (rect(&chat), rect(&agents)),
+        (rect(&both_chat), rect(&both_agents))
     );
 }
 
 #[test]
-fn the_panes_grow_with_the_screen() {
+fn the_panel_grows_with_the_screen() {
     let (short, _) = beside(&BTreeMap::new(), 30, 100);
     let (tall, _) = beside(&BTreeMap::new(), 60, 100);
     let (_, short_y, _, short_h) = rect(&short);
     let (_, tall_y, _, tall_h) = rect(&tall);
-    assert!(tall_h > short_h, "a taller screen gives a taller pane");
+    assert!(tall_h > short_h, "a taller screen gives a taller panel");
     assert_eq!(short_y + short_h, 30 - DEFAULT_PAD);
     assert_eq!(
         tall_y + tall_h,
@@ -134,42 +231,41 @@ fn the_panes_grow_with_the_screen() {
 
 #[test]
 fn width_and_pad_are_configurable() {
-    let (chat, agents) = beside(&config(&[("width", "40"), ("pad", "1")]), 50, 200);
-    let (chat_x, chat_y, chat_w, chat_h) = rect(&chat);
-    assert_eq!(chat_x, 1, "the configured padding");
-    assert_eq!(chat_w, 40, "a fixed width is taken as written");
-    assert_eq!(chat_y + chat_h, 49, "and the bottom follows the padding");
+    let (chat, agents) = beside(&config(&[("width", "80"), ("pad", "1")]), 50, 200);
+    let (x, y, w, h) = panel_of(&chat, &agents);
+    assert_eq!(x, 1, "the configured padding");
     assert_eq!(
-        rect(&agents).0,
-        42,
-        "the list follows the width across, one padding clear of it"
+        w, 80,
+        "a fixed width is taken as written, and is the whole panel's"
+    );
+    assert_eq!(y + h, 49, "and the bottom follows the padding");
+    assert_eq!(rect(&agents).2, 40, "the list has half of it");
+    assert_eq!(
+        rect(&chat).0,
+        41,
+        "and the conversation starts where it ends"
     );
 }
 
-/// The shape asked for: a panel taller than it is wide, roughly two thirds of the screen's rows
-/// and under a third of its columns - not the full-height quarter-width strip hocus used to be,
-/// which read as a split of the screen rather than something sitting on top of it.
+/// The shape asked for: a panel taller than either half is wide, roughly two thirds of the
+/// screen's rows and just over half its columns.
 #[test]
-fn a_pane_is_two_thirds_of_the_screen_tall_and_under_a_third_of_it_wide() {
+fn the_panel_is_two_thirds_of_the_screen_tall_and_sixty_percent_of_it_wide() {
     for (rows, cols) in [(50, 200), (40, 160), (60, 120)] {
-        let (chat, _) = beside(&BTreeMap::new(), rows, cols);
-        let (_, chat_y, width, height) = rect(&chat);
+        let (chat, agents) = beside(&BTreeMap::new(), rows, cols);
+        let (_, y, width, height) = panel_of(&chat, &agents);
         assert_eq!(
             height,
             rows * DEFAULT_HEIGHT_PERCENT / 100,
             "two thirds of {rows} rows"
         );
-        assert!(
-            width * 3 < cols,
-            "under a third of {cols} columns, got {width}"
-        );
-        assert!(
-            height > width / 2,
-            "and taller than it is wide once a cell's two-to-one aspect is allowed for: \
-             {height} rows against {width} columns"
+        assert_eq!(
+            width,
+            cols * DEFAULT_WIDTH_PERCENT / 100,
+            "60% of {cols} columns"
         );
         assert_eq!(
-            chat_y,
+            y,
             rows - DEFAULT_PAD - height,
             "the top floats; the bottom is what is anchored"
         );
@@ -204,60 +300,47 @@ fn the_height_is_configurable_and_kept_on_the_screen() {
 
 #[test]
 fn an_unparseable_value_falls_back_rather_than_crashing() {
-    let (chat, _) = beside(&config(&[("width", "wide")]), 50, 200);
-    let (default_chat, _) = beside(&BTreeMap::new(), 50, 200);
+    let (chat, agents) = beside(&config(&[("width", "wide"), ("split", "half")]), 50, 200);
+    let (default_chat, default_agents) = beside(&BTreeMap::new(), 50, 200);
     assert_eq!(
-        rect(&chat),
-        rect(&default_chat),
-        "a typo in the KDL costs a default-sized pane, not a panic"
+        (rect(&chat), rect(&agents)),
+        (rect(&default_chat), rect(&default_agents)),
+        "a typo in the KDL costs a default-sized panel, not a panic"
     );
 }
 
-/// A `width` wide enough for one pane is not wide enough for two, and the pair must not run off
-/// the right-hand edge. Alone, the same `width` is allowed the whole of the screen.
+/// A `width` wider than the screen leaves is clamped to what the padding leaves, and the halves
+/// share whatever the panel gets.
 #[test]
-fn a_width_too_wide_for_two_panes_is_halved_rather_than_overflowed() {
+fn a_width_too_wide_for_the_screen_is_clamped_rather_than_overflowed() {
     let cols = 100;
-    let config = config(&[("width", "80"), ("pad", "2")]);
+    let config = config(&[("width", "300"), ("pad", "2")]);
     let (chat, agents) = beside(&config, 50, cols);
-    let (chat_x, _, chat_w, _) = rect(&chat);
-    let (agents_x, _, agents_w, _) = rect(&agents);
+    let (x, _, w, _) = panel_of(&chat, &agents);
+    assert_eq!(x + w, cols - 2, "the panel ends exactly at the far padding");
+    assert_eq!(x, 2);
     assert_eq!(
-        agents_x + agents_w,
-        cols - 2,
-        "the pair ends exactly at the far padding"
-    );
-    assert_eq!(chat_x, 2);
-    assert_eq!(chat_w, agents_w, "and they split what there is evenly");
-    assert_eq!(
-        agents_x - (chat_x + chat_w),
-        2,
-        "the gap between them is the padding, taken out of the pair's width rather than \
-         added to it"
-    );
-
-    let (_, alone) = home_geometry(&config, 50, cols, false).expect("some geometry");
-    assert_eq!(
-        rect(&alone).2,
-        80,
-        "a lone pane may have the width it asked for"
+        rect(&chat).2,
+        rect(&agents).2,
+        "and the halves split what there is evenly"
     );
 }
 
 #[test]
-fn a_fat_pad_on_a_narrow_screen_still_leaves_the_panes_on_screen() {
+fn a_fat_pad_on_a_narrow_screen_still_leaves_the_panel_on_screen() {
     // `pad` is the x coordinate as well as the inset off the top and bottom, so a cap that looks
-    // only at the rows lets a tall, narrow display push a pane off the right-hand edge.
+    // only at the rows lets a tall, narrow display push a panel off the right-hand edge.
     for cols in [20, 40, 80] {
-        for chat_visible in [true, false] {
-            let (chat, agents) = home_geometry(&config(&[("pad", "50")]), 200, cols, chat_visible)
+        for shown in [Shown::BOTH, only_chat(), only_agents()] {
+            let (chat, agents) = home_geometry(&config(&[("pad", "50")]), 200, cols, shown)
                 .unwrap_or_else(|| panic!("some geometry at {cols} columns"));
-            let panes: &[(&str, &FloatingPaneCoordinates)] = match chat_visible {
-                true => &[("conversation", &chat), ("agent list", &agents)],
-                // the conversation's rectangle is not drawn while it is hidden, so only the
-                // list's has to be on screen
-                false => &[("agent list", &agents)],
-            };
+            let mut panes: Vec<(&str, &FloatingPaneCoordinates)> = vec![];
+            if shown.chat {
+                panes.push(("conversation", &chat));
+            }
+            if shown.agents {
+                panes.push(("agent list", &agents));
+            }
             for (name, rectangle) in panes {
                 let (x, y, w, h) = rect(rectangle);
                 assert!(
@@ -282,10 +365,10 @@ fn a_fat_pad_on_a_narrow_screen_still_leaves_the_panes_on_screen() {
 #[test]
 fn no_geometry_before_the_first_tab_update() {
     assert!(
-        home_geometry(&BTreeMap::new(), 0, 0, true).is_none(),
+        home_geometry(&BTreeMap::new(), 0, 0, Shown::BOTH).is_none(),
         "nothing to compute against yet, and a guess would be seen to move"
     );
-    assert!(home_geometry(&BTreeMap::new(), 50, 0, true).is_none());
+    assert!(home_geometry(&BTreeMap::new(), 50, 0, Shown::BOTH).is_none());
 }
 
 // ---- hide / reveal transitions ---------------------------------------------------------------
@@ -432,6 +515,7 @@ fn selection(plugin_id: u32) -> PipeMessage {
 fn placed_state() -> State {
     let mut state = State {
         own_plugin_id: 7,
+        kdl: state_config(),
         ..Default::default()
     };
     state.on_tabs(vec![TabInfo {
@@ -445,6 +529,14 @@ fn placed_state() -> State {
     state.on_panes(manifest(0, vec![pane(7, false)]));
     assert!(state.placed && state.agents_placed);
     state
+}
+
+/// The config every state-level test runs under: a 60-column panel on the standard 50x200
+/// surface. Narrower than the default so that a panel can be clear of a pane that has half the
+/// screen, which is what the Ctrl-o fixtures below are about; two 30-column halves when the list
+/// is open, which is above the floor.
+fn state_config() -> BTreeMap<String, String> {
+    config(&[("width", "60")])
 }
 
 #[test]
@@ -576,7 +668,7 @@ fn a_resize_while_both_halves_are_hidden_is_still_placed() {
 #[test]
 fn a_pane_never_collapses_to_nothing_on_a_tiny_screen() {
     for rows in 6..=14 {
-        let (chat, agents) = home_geometry(&BTreeMap::new(), rows, 80, true)
+        let (chat, agents) = home_geometry(&BTreeMap::new(), rows, 80, Shown::BOTH)
             .unwrap_or_else(|| panic!("some geometry at {rows} rows"));
         for (name, rectangle) in [("conversation", &chat), ("agent list", &agents)] {
             let (_, y, _, h) = rect(rectangle);
@@ -593,14 +685,14 @@ fn a_pane_never_collapses_to_nothing_on_a_tiny_screen() {
 // The minimum size, which is a guarantee rather than a request
 // ---------------------------------------------------------------------------
 //
-// Every surface gets a pane hocus can draw a conversation in: the padding gives way first, then
-// the configured size, and what is left is the whole of the screen. Below the minimum the pane is
+// Every surface gets a panel hocus can draw a conversation in: the padding gives way first, then
+// the configured size, and what is left is the whole of the screen. Below the minimum the panel is
 // as big as the screen allows and `ui::render` drops chrome to fit - what must never happen is a
 // pane off the edge of the screen, a pane of nothing, or a pane the server has to clip back.
 
 /// Both rectangles on one surface, as `(x, y, width, height)`.
-fn both(rows: usize, cols: usize, chat_visible: bool) -> [(usize, usize, usize, usize); 2] {
-    let (chat, agents) = home_geometry(&BTreeMap::new(), rows, cols, chat_visible)
+fn both(rows: usize, cols: usize, shown: Shown) -> [(usize, usize, usize, usize); 2] {
+    let (chat, agents) = home_geometry(&BTreeMap::new(), rows, cols, shown)
         .unwrap_or_else(|| panic!("some geometry at {rows}x{cols}"));
     [rect(&chat), rect(&agents)]
 }
@@ -609,16 +701,18 @@ fn both(rows: usize, cols: usize, chat_visible: bool) -> [(usize, usize, usize, 
 fn every_surface_gets_a_pane_that_meets_the_minimum() {
     for rows in 1..=40 {
         for cols in 1..=120 {
-            for chat_visible in [true, false] {
-                // what one pane may have of this screen, which is all the minimum can ask for
-                let budget = match chat_visible {
-                    true => cols / 2,
-                    false => cols,
+            for shown in [Shown::BOTH, only_chat(), only_agents()] {
+                // what one half may have of this screen, which is all the minimum can ask for
+                let budget = match shown {
+                    Shown::BOTH => cols / 2,
+                    _ => cols,
                 }
                 .max(1);
                 let (min_w, min_h) = (MIN_PANE_COLS.min(budget), MIN_PANE_ROWS.min(rows));
-                for (x, y, w, h) in both(rows, cols, chat_visible) {
-                    let at = format!("{rows}x{cols} chat_visible={chat_visible}: {x},{y} {w}x{h}");
+                let [chat, agents] = both(rows, cols, shown);
+                let drawn = [(shown.chat, chat), (shown.agents, agents)];
+                for (x, y, w, h) in drawn.into_iter().filter(|(on, _)| *on).map(|(_, r)| r) {
+                    let at = format!("{rows}x{cols} {shown:?}: {x},{y} {w}x{h}");
                     assert!(w > 0 && h > 0, "a pane of nothing at {at}");
                     assert!(x + w <= cols, "off the right-hand edge at {at}");
                     assert!(y + h <= rows, "off the bottom at {at}");
@@ -630,51 +724,62 @@ fn every_surface_gets_a_pane_that_meets_the_minimum() {
     }
 }
 
-/// The pair are two panes side by side, at every size. A single column cannot hold two of
-/// anything, which is the one surface where they are allowed to share.
+/// The two halves are one panel at every size: the conversation starts on the column the list
+/// ends on. A single column cannot hold two of anything, which is the one surface where they are
+/// allowed to share.
 #[test]
-fn the_two_panes_never_overlap() {
+fn the_two_halves_always_meet() {
     for rows in 1..=40 {
         for cols in 2..=120 {
-            let [(chat_x, _, chat_w, _), (agents_x, _, _, _)] = both(rows, cols, true);
-            assert!(
-                chat_x + chat_w <= agents_x,
-                "the panes overlap at {rows}x{cols}: {chat_x}+{chat_w} into {agents_x}"
+            let [(chat_x, _, _, _), (agents_x, _, agents_w, _)] = both(rows, cols, Shown::BOTH);
+            assert_eq!(
+                agents_x + agents_w,
+                chat_x,
+                "the halves are apart at {rows}x{cols}: {agents_x}+{agents_w} against {chat_x}"
             );
         }
     }
 }
 
 /// Which of the three gives way first, stated as the test: the padding is an inset, and an inset
-/// is worth less than a pane anybody can read.
+/// is worth less than a panel anybody can read.
 #[test]
-fn the_pad_shrinks_before_the_panes_do() {
-    let [(x, _, w, _), (agents_x, _, agents_w, _)] = both(24, 60, true);
+fn the_pad_shrinks_before_the_panel_does() {
+    let [(chat_x, _, chat_w, _), (x, _, agents_w, _)] = both(24, 56, Shown::BOTH);
     assert!(
         x < DEFAULT_PAD,
-        "the configured padding does not fit two panes across 60 columns, so it gave way: {x}"
+        "the configured padding does not fit two halves across 56 columns, so it gave way: {x}"
     );
     assert!(
-        w >= MIN_PANE_COLS && agents_w >= MIN_PANE_COLS,
-        "{w} {agents_w}"
+        chat_w >= MIN_PANE_COLS && agents_w >= MIN_PANE_COLS,
+        "{chat_w} {agents_w}"
     );
-    assert!(agents_x + agents_w <= 60, "and the pair is still on screen");
+    assert!(chat_x + chat_w <= 56, "and the panel is still on screen");
 
     assert_eq!(
-        both(50, 200, true)[0].0,
+        both(50, 200, Shown::BOTH)[1].0,
         DEFAULT_PAD,
         "a screen with room for both keeps the padding it was given"
     );
 }
 
-/// The one deliberate behaviour change: a configured size under the minimum is raised to it. A
-/// `width` under 26 already was; a `height` under 8 is now, because three rows of pane is one row
-/// of conversation and nothing can be said in it.
+/// A configured size under the minimum is raised to it: a `width` under two halves' worth with
+/// both on screen, one half's worth alone, and a `height` under 8 rows, because three rows of
+/// pane is one row of conversation and nothing can be said in it.
 #[test]
 fn a_configured_size_below_the_minimum_is_raised() {
-    let (chat, _) = beside(&config(&[("height", "2"), ("width", "5")]), 50, 200);
-    let (_, _, w, h) = rect(&chat);
-    assert_eq!((w, h), (MIN_PANE_COLS, MIN_PANE_ROWS));
+    let (chat, agents) = beside(&config(&[("height", "2"), ("width", "5")]), 50, 200);
+    let (_, _, w, h) = panel_of(&chat, &agents);
+    assert_eq!((w, h), (2 * MIN_PANE_COLS, MIN_PANE_ROWS));
+    assert_eq!(rect(&agents).2, MIN_PANE_COLS);
+
+    let (chat, _) =
+        home_geometry(&config(&[("width", "5")]), 50, 200, only_chat()).expect("some geometry");
+    assert_eq!(
+        rect(&chat).2,
+        MIN_PANE_COLS,
+        "alone, a half needs only its own floor"
+    );
 }
 
 /// The two placements must never disagree about the size, at any surface - it is the same
@@ -690,17 +795,17 @@ fn the_clear_placement_is_the_same_size_as_the_corner_one() {
         (8, 80),
         (6, 40),
     ] {
-        for chat_visible in [true, false] {
-            let (chat, _) = home_geometry(&BTreeMap::new(), rows, cols, chat_visible)
+        for shown in [Shown::BOTH, only_chat(), only_agents()] {
+            let (chat, agents) = home_geometry(&BTreeMap::new(), rows, cols, shown)
                 .unwrap_or_else(|| panic!("some geometry at {rows}x{cols}"));
-            let (_, _, w, h) = rect(&chat);
+            let (_, _, w, h) = panel_of(&chat, &agents);
             for alone in [true, false] {
                 for step in 0..4 {
-                    let clear = chat_placement(
+                    let clear = panel_placement(
                         &BTreeMap::new(),
                         rows,
                         cols,
-                        chat_visible,
+                        shown,
                         Some(at(0, 0, cols, rows / 2)),
                         alone,
                         step,
@@ -709,7 +814,7 @@ fn the_clear_placement_is_the_same_size_as_the_corner_one() {
                     assert_eq!(
                         (clear.cols, clear.rows),
                         (w, h),
-                        "{rows}x{cols} alone={alone} step={step}"
+                        "{rows}x{cols} {shown:?} alone={alone} step={step}"
                     );
                     assert!(clear.x + clear.cols <= cols && clear.y + clear.rows <= rows);
                 }
@@ -1274,17 +1379,26 @@ fn sole_tiled_pane_counts_only_the_layout() {
     assert!(!sole_tiled_pane(&[]));
 }
 
-/// The clear placement on the standard 50x200 surface, with the conversation on screen: the first
-/// corner of the order the anchor implies.
+/// The clear placement on the standard 50x200 surface under `state_config`, with the conversation
+/// alone on screen: the first corner of the order the anchor implies.
 fn clear_of(anchor: Rect, alone: bool) -> (usize, usize, usize, usize) {
-    let placed = chat_placement(&BTreeMap::new(), 50, 200, true, Some(anchor), alone, 0)
-        .expect("some geometry");
+    let placed = panel_placement(
+        &state_config(),
+        50,
+        200,
+        only_chat(),
+        Some(anchor),
+        alone,
+        0,
+    )
+    .expect("some geometry");
     (placed.x, placed.y, placed.cols, placed.rows)
 }
 
-/// The corner placement's `(width, height)`, which the clear placement must never depart from.
+/// The corner placement's `(width, height)` under `state_config`, which the clear placement must
+/// never depart from.
 fn corner_size() -> (usize, usize) {
-    let (corner, _) = beside(&BTreeMap::new(), 50, 200);
+    let (corner, _) = home_geometry(&state_config(), 50, 200, only_chat()).expect("some geometry");
     let (_, _, w, h) = rect(&corner);
     (w, h)
 }
@@ -1376,11 +1490,11 @@ fn the_clear_placement_is_never_clamped_to_the_pane() {
 #[test]
 fn the_clear_placement_has_nothing_to_say_without_a_surface() {
     assert_eq!(
-        chat_placement(
+        panel_placement(
             &BTreeMap::new(),
             0,
             200,
-            true,
+            only_chat(),
             Some(at(0, 0, 100, 50)),
             false,
             0
@@ -1411,7 +1525,7 @@ fn the_first_corner_of_the_order_is_where_the_placement_goes() {
         (at(0, 0, 200, 50), false),
         (at(0, 46, 10, 4), false),
     ] {
-        let order = corner_order(Some(anchor), None, alone, 50, 200, pad, size);
+        let order = corner_order(Some(anchor), alone, 50, 200, pad, size);
         let first = corner_rect(order[0], 50, 200, pad, size);
         assert_eq!(
             (first.x, first.y, first.cols, first.rows),
@@ -1458,7 +1572,7 @@ fn ctrl_o_moves_the_conversation_clear_of_the_largest_unfocused_pane() {
 
     assert!(!state.on_key(ctrl_o()));
 
-    assert_eq!(state.chat.anchor, Some(PaneId::Terminal(2)));
+    assert_eq!(state.panel.anchor, Some(PaneId::Terminal(2)));
     let (_, is_the_users) = state.last_placement.as_ref().expect("a placement");
     assert!(
         is_the_users,
@@ -1495,7 +1609,7 @@ fn ctrl_o_walks_off_whatever_the_conversation_is_covering() {
 
     state.on_key(ctrl_o());
     assert_eq!(
-        state.chat.anchor,
+        state.panel.anchor,
         Some(PaneId::Terminal(2)),
         "the pane it is on"
     );
@@ -1512,7 +1626,7 @@ fn ctrl_o_walks_off_whatever_the_conversation_is_covering() {
 
     state.on_key(ctrl_o());
     assert_eq!(
-        state.chat.anchor,
+        state.panel.anchor,
         Some(PaneId::Terminal(3)),
         "now it is on pane 3"
     );
@@ -1535,7 +1649,7 @@ fn ctrl_o_with_one_tiled_pane_moves_to_the_top_right() {
     state.on_key(ctrl_o());
 
     assert_eq!(
-        state.chat.anchor,
+        state.panel.anchor,
         Some(PaneId::Terminal(1)),
         "the focused pane is admitted when it is the only one"
     );
@@ -1582,7 +1696,7 @@ fn ctrl_o_twice_on_the_same_pane_moves_to_the_next_corner() {
     state.on_key(ctrl_o());
 
     assert_eq!(
-        state.chat.anchor,
+        state.panel.anchor,
         Some(PaneId::Terminal(2)),
         "the same anchor"
     );
@@ -1673,7 +1787,7 @@ fn ctrl_o_tours_every_pane_before_it_cycles_corners() {
     let mut anchored = Vec::new();
     for _ in 0..3 {
         state.on_key(ctrl_o());
-        anchored.push(state.chat.anchor.expect("an anchor"));
+        anchored.push(state.panel.anchor.expect("an anchor"));
     }
 
     assert_eq!(anchored.len(), 3);
@@ -1721,7 +1835,7 @@ fn ctrl_o_moves_with_no_tiled_panes_at_all() {
 
     let walked = walk(&mut state, 4);
 
-    assert_eq!(state.chat.anchor, None, "there was nothing to anchor to");
+    assert_eq!(state.panel.anchor, None, "there was nothing to anchor to");
     let mut corners = walked.clone();
     corners.sort();
     corners.dedup();
@@ -1745,10 +1859,11 @@ fn ctrl_o_does_nothing_when_every_corner_is_the_same_rectangle() {
         ..TabInfo::default()
     }]);
     state.on_panes(manifest(0, vec![overlay_pane(7, 0, 0, 1, 8)]));
-    let filling = chat_placement(&state.kdl, 8, 1, true, None, false, 0).expect("a rectangle");
+    let filling =
+        panel_placement(&state.kdl, 8, 1, only_chat(), None, false, 0).expect("a rectangle");
     for step in 0..4 {
         assert_eq!(
-            chat_placement(&state.kdl, 8, 1, true, None, false, step),
+            panel_placement(&state.kdl, 8, 1, only_chat(), None, false, step),
             Some(filling),
             "every corner is the whole of the screen"
         );
@@ -1779,10 +1894,10 @@ fn a_closed_pane_does_not_hold_a_slot_in_the_tour() {
     state.on_key(ctrl_o());
     state.on_key(ctrl_o());
     assert_eq!(
-        state.chat.warp_visited.len(),
+        state.panel.warp_visited.len(),
         2,
         "two panes toured: {:?}",
-        state.chat.warp_visited
+        state.panel.warp_visited
     );
 
     // pane 2 closed, and pane 3 took its room
@@ -1796,13 +1911,13 @@ fn a_closed_pane_does_not_hold_a_slot_in_the_tour() {
     ));
 
     assert_eq!(
-        state.chat.warp_visited,
+        state.panel.warp_visited,
         vec![PaneId::Terminal(3)],
         "the pane that is gone is out of the tour"
     );
     state.on_key(ctrl_o());
     assert_eq!(
-        state.chat.anchor,
+        state.panel.anchor,
         Some(PaneId::Terminal(3)),
         "and it is not offered again"
     );
@@ -1815,7 +1930,7 @@ fn a_closed_pane_does_not_hold_a_slot_in_the_tour() {
 fn a_re_tile_does_not_move_the_conversation() {
     let mut state = two_pane_state();
     state.on_key(ctrl_o());
-    let parked = state.chat.placed_rect.expect("a placement");
+    let parked = state.panel.placed_rect.expect("a placement");
     state.last_placement = None;
 
     // the same manifest again: nothing moved, nothing to say
@@ -1839,9 +1954,9 @@ fn a_re_tile_does_not_move_the_conversation() {
         state.last_placement, None,
         "a re-tile is not a request to move anything"
     );
-    assert_eq!(state.chat.placed_rect, Some(parked), "and nothing moved");
+    assert_eq!(state.panel.placed_rect, Some(parked), "and nothing moved");
     assert_eq!(
-        state.chat.anchor_rect,
+        state.panel.anchor_rect,
         Some(at(150, 0, 50, 50)),
         "the anchor is still tracked - the next press ranks against it"
     );
@@ -1854,7 +1969,7 @@ fn a_re_tile_does_not_move_the_conversation() {
 fn closing_the_anchor_pane_leaves_the_conversation_where_it_is() {
     let mut state = two_pane_state();
     state.on_key(ctrl_o());
-    let parked = state.chat.placed_rect.expect("a placement");
+    let parked = state.panel.placed_rect.expect("a placement");
     state.last_placement = None;
 
     state.on_panes(manifest(
@@ -1865,9 +1980,9 @@ fn closing_the_anchor_pane_leaves_the_conversation_where_it_is() {
         ],
     ));
 
-    assert_eq!((state.chat.anchor, state.chat.anchor_rect), (None, None));
+    assert_eq!((state.panel.anchor, state.panel.anchor_rect), (None, None));
     assert_eq!(state.last_placement, None, "a pane closing places nothing");
-    assert_eq!(state.chat.placed_rect, Some(parked), "and moves nothing");
+    assert_eq!(state.panel.placed_rect, Some(parked), "and moves nothing");
 }
 
 /// The corner survives the anchor that chose it, which is what makes the guarantee hold through
@@ -1877,7 +1992,7 @@ fn closing_the_anchor_pane_leaves_the_conversation_where_it_is() {
 fn a_resize_keeps_the_corner_the_last_press_chose() {
     let mut state = two_pane_state();
     state.on_key(ctrl_o());
-    let corner = state.chat.placed_corner.expect("a corner");
+    let corner = state.panel.placed_corner.expect("a corner");
     assert_ne!(corner, CORNERS[0], "the press left the default corner");
 
     // the anchor closes, and then the terminal is made smaller
@@ -1895,8 +2010,9 @@ fn a_resize_keeps_the_corner_the_last_press_chose() {
         ..a_tab()
     }]);
 
-    let expected = rect_in_corner(&state.kdl, 40, 160, true, corner, None).expect("a rectangle");
-    assert_eq!(state.chat.placed_corner, Some(corner), "the same corner");
+    let expected =
+        rect_in_corner(&state.kdl, 40, 160, state.shown(), corner, None).expect("a rectangle");
+    assert_eq!(state.panel.placed_corner, Some(corner), "the same corner");
     assert_eq!(
         placed_chat(&state),
         (expected.x, expected.y, expected.cols, expected.rows),
@@ -1910,13 +2026,7 @@ fn a_resize_keeps_the_corner_the_last_press_chose() {
 fn a_pane_closing_does_not_move_the_agent_list() {
     let mut state = two_pane_state();
     state.pipe(selection(9));
-    state.on_panes(manifest(
-        0,
-        two_panes()
-            .into_iter()
-            .chain(std::iter::once(overlay_pane(9, 66, 14, 60, 33)))
-            .collect(),
-    ));
+    state.on_panes(manifest(0, list_beside()));
     // The press is what gives `track_anchor` an anchor to lose: with none, it returns at its
     // first guard and the assertion below holds however the placement arms are written.
     state.on_key(ctrl_o());
@@ -1925,15 +2035,15 @@ fn a_pane_closing_does_not_move_the_agent_list() {
     state.on_panes(manifest(
         0,
         vec![
-            overlay_pane(7, 3, 14, 60, 33),
-            overlay_pane(9, 66, 14, 60, 33),
+            overlay_pane(9, 3, 14, 30, 33),
+            overlay_pane(7, 33, 14, 30, 33),
             tiled(1, 0, 0, 200, 50, true),
         ],
     ));
 
     assert_eq!(
         state.last_placement, None,
-        "neither panel is placed by a pane closing"
+        "neither half is placed by a pane closing"
     );
 }
 
@@ -1948,7 +2058,7 @@ fn a_pane_closing_does_not_move_the_agent_list() {
 fn arriving_on_another_tab_drops_the_anchor() {
     let mut state = two_pane_state();
     state.on_key(ctrl_o());
-    let parked = state.chat.placed_rect.expect("a placement");
+    let parked = state.panel.placed_rect.expect("a placement");
     state.last_placement = None;
 
     state.on_panes(manifest(
@@ -1960,9 +2070,9 @@ fn arriving_on_another_tab_drops_the_anchor() {
     ));
 
     assert_eq!(state.own_tab_index, Some(1));
-    assert_eq!((state.chat.anchor, state.chat.anchor_rect), (None, None));
+    assert_eq!((state.panel.anchor, state.panel.anchor_rect), (None, None));
     assert_eq!(state.last_placement, None, "the move carried the geometry");
-    assert_eq!(state.chat.placed_rect, Some(parked));
+    assert_eq!(state.panel.placed_rect, Some(parked));
 }
 
 #[test]
@@ -1972,24 +2082,33 @@ fn a_hidden_conversation_keeps_its_anchor() {
     let anchored = placed_chat(&state);
 
     state.hide_self_only();
-    assert_eq!(state.chat.anchor, Some(PaneId::Terminal(2)));
+    assert_eq!(state.panel.anchor, Some(PaneId::Terminal(2)));
     state.reveal_self();
 
-    assert_eq!(state.chat.anchor, Some(PaneId::Terminal(2)));
+    assert_eq!(state.panel.anchor, Some(PaneId::Terminal(2)));
     assert_eq!(placed_chat(&state), anchored, "revealed where it was");
 }
 
-/// A hocus over the two-pane tab with an agent list open beside it, both panels at home.
+// ---------------------------------------------------------------------------------------------
+// The agent list is the other half of the panel: it is placed with the conversation, cut at the
+// split, and a press in either half moves the whole thing.
+
+/// The manifest with the list open beside the conversation, both halves at home under
+/// `state_config`: the list on the left, the conversation from the divider to the right.
+fn list_beside() -> Vec<PaneInfo> {
+    vec![
+        overlay_pane(9, 3, 14, 30, 33),
+        overlay_pane(7, 33, 14, 30, 33),
+        tiled(1, 0, 0, 100, 50, true),
+        tiled(2, 100, 0, 100, 50, false),
+    ]
+}
+
+/// A hocus over the two-pane tab with an agent list open beside it, the panel at home.
 fn agents_beside_state() -> State {
     let mut state = two_pane_state();
     state.pipe(selection(9));
-    state.on_panes(manifest(
-        0,
-        two_panes()
-            .into_iter()
-            .chain(std::iter::once(overlay_pane(9, 66, 14, 60, 33)))
-            .collect(),
-    ));
+    state.on_panes(manifest(0, list_beside()));
     state.last_placement = None;
     state
 }
@@ -2007,7 +2126,7 @@ fn list_reposition() -> PipeMessage {
     }
 }
 
-/// One panel's rect from the last placement, and `None` when that placement did not name it.
+/// One half's rect from the last placement, and `None` when that placement did not name it.
 fn placed_pane(state: &State, plugin_id: u32) -> Option<(usize, usize, usize, usize)> {
     let (placements, _) = state.last_placement.as_ref()?;
     placements
@@ -2016,137 +2135,179 @@ fn placed_pane(state: &State, plugin_id: u32) -> Option<(usize, usize, usize, us
         .map(|(_, coordinates)| rect(coordinates))
 }
 
-/// The list's own Ctrl-o, and the whole of what it is for: it walks off the pane it was covering.
+/// A list announcing itself is placed as the left half of the panel, and the conversation is
+/// cut down to the right half in the same call - one batch, which is what links the two.
 #[test]
-fn ctrl_o_in_the_list_moves_it_clear_of_the_largest_unfocused_pane() {
-    let mut state = agents_beside_state();
-
-    state.pipe(list_reposition());
-
-    assert_eq!(
-        state.agents.anchor,
-        Some(PaneId::Terminal(2)),
-        "the largest pane the user is not working in"
-    );
-    let (_, is_the_users) = state.last_placement.as_ref().expect("a placement");
-    assert!(
-        is_the_users,
-        "sent as the user's own placement, over any drag"
-    );
-    let (x, _, w, _) = placed_pane(&state, 9).expect("the list is placed");
-    assert!(
-        x + w <= 100,
-        "clear of pane 2, which starts at 100: {x} {w}"
-    );
-}
-
-/// The panels move separately: a press in one pane names one pane in the placement, and the other
-/// keeps whatever position the user had given it.
-#[test]
-fn a_press_places_only_the_pane_it_was_pressed_in() {
-    let mut state = agents_beside_state();
-
-    state.pipe(list_reposition());
-    let (placements, _) = state.last_placement.clone().expect("a placement");
-    assert_eq!(
-        placements.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-        vec![PaneId::Plugin(9)],
-        "the list alone"
-    );
-
-    state.last_placement = None;
-    state.on_key(ctrl_o());
-    let (placements, _) = state.last_placement.clone().expect("a placement");
-    assert_eq!(
-        placements.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-        vec![PaneId::Plugin(7)],
-        "and the conversation alone"
-    );
-}
-
-/// The conversation's press is not the list's: the list stays at home, which is where the
-/// ordinary geometry keeps putting it.
-#[test]
-fn the_agent_list_keeps_its_corner_arithmetic_while_the_conversation_is_anchored() {
-    let mut state = agents_beside_state();
-
-    state.on_key(ctrl_o());
-    assert_eq!(
-        placed_pane(&state, 9),
-        None,
-        "the press did not name the list"
-    );
-
-    state.apply_overlay_geometry();
-    let (_, beside_the_corner) = beside(&BTreeMap::new(), 50, 200);
-    assert_eq!(
-        placed_pane(&state, 9),
-        Some(rect(&beside_the_corner)),
-        "exactly where it would be with the conversation in the corner"
-    );
-}
-
-/// A press moves, every time - the same guarantee the conversation's has, walked pane to pane and
-/// then round the corners.
-#[test]
-fn ctrl_o_in_the_list_always_moves_it() {
-    let mut state = agents_beside_state();
-    // Home, as `agents_beside_state` leaves it: the slot beside the conversation.
-    let mut was = (66, 14, 60, 33);
-    let mut corners = std::collections::BTreeSet::new();
-
-    for press in 0..5 {
-        state.last_placement = None;
-        state.pipe(list_reposition());
-        let placed = placed_pane(&state, 9).expect("a placement");
-        assert_ne!(placed, was, "press {press} moved the list nowhere");
-        corners.insert(placed);
-        was = placed;
-        // The manifest the server would send back, so the next press ranks against where the list
-        // actually is rather than where it started.
-        let (x, y, cols, rows) = placed;
-        state.on_panes(manifest(
-            0,
-            two_panes()
-                .into_iter()
-                .chain(std::iter::once(overlay_pane(9, x, y, cols, rows)))
-                .collect(),
-        ));
-    }
-    assert_eq!(
-        corners.len(),
-        4,
-        "the four corners and nothing outside them - the fifth press re-opens the tour"
-    );
-}
-
-/// A user who resized the list keeps that size through a move, exactly as the conversation does.
-#[test]
-fn ctrl_o_in_the_list_keeps_its_current_size() {
+fn a_list_that_opens_is_placed_as_the_left_half_of_the_panel() {
     let mut state = two_pane_state();
+    assert_eq!(
+        state.shown(),
+        only_chat(),
+        "no list yet, so the conversation has the whole panel"
+    );
+
     state.pipe(selection(9));
+    assert_eq!(
+        state.shown(),
+        Shown::BOTH,
+        "a list that announces itself is on screen"
+    );
+    let (placements, _) = state.last_placement.clone().expect("a placement");
+    assert_eq!(
+        placements.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        vec![PaneId::Plugin(7), PaneId::Plugin(9)],
+        "both halves, in one call"
+    );
+    assert_eq!(
+        placed_pane(&state, 9),
+        Some((3, 14, 30, 33)),
+        "the list on the left"
+    );
+    assert_eq!(
+        placed_pane(&state, 7),
+        Some((33, 14, 30, 33)),
+        "the conversation from the divider"
+    );
+}
+
+/// The list hiding on its own reaches hocus through the manifest, and the conversation takes the
+/// whole panel; the list coming back cuts it again.
+#[test]
+fn the_list_hiding_gives_its_width_to_the_conversation() {
+    let mut state = agents_beside_state();
+
     state.on_panes(manifest(
         0,
-        two_panes()
-            .into_iter()
-            .chain(std::iter::once(overlay_pane(9, 66, 27, 80, 20)))
-            .collect(),
+        vec![
+            PaneInfo {
+                is_suppressed: true,
+                ..overlay_pane(9, 3, 14, 30, 33)
+            },
+            overlay_pane(7, 33, 14, 30, 33),
+            tiled(1, 0, 0, 100, 50, true),
+            tiled(2, 100, 0, 100, 50, false),
+        ],
     ));
-    state.last_placement = None;
-
-    state.pipe(list_reposition());
-
-    let (_, _, w, h) = placed_pane(&state, 9).expect("a placement");
+    assert!(!state.agents_visible);
     assert_eq!(
-        (w, h),
-        (80, 20),
-        "the size the manifest reports, not the configured one"
+        placed_pane(&state, 7),
+        Some((3, 14, 60, 33)),
+        "the conversation fills the panel"
+    );
+    assert_eq!(
+        placed_pane(&state, 9),
+        Some((3, 14, 30, 33)),
+        "and the hidden list keeps its half, for when it comes back"
+    );
+
+    state.last_placement = None;
+    state.on_panes(manifest(
+        0,
+        vec![
+            overlay_pane(9, 3, 14, 30, 33),
+            overlay_pane(7, 3, 14, 60, 33),
+            tiled(1, 0, 0, 100, 50, true),
+            tiled(2, 100, 0, 100, 50, false),
+        ],
+    ));
+    assert!(state.agents_visible);
+    assert_eq!(placed_pane(&state, 7), Some((33, 14, 30, 33)), "cut again");
+    assert_eq!(placed_pane(&state, 9), Some((3, 14, 30, 33)));
+
+    state.last_placement = None;
+    state.on_panes(manifest(0, list_beside()));
+    assert_eq!(
+        state.last_placement, None,
+        "and a manifest that changes nothing places nothing"
     );
 }
 
-/// Nothing to move, so nothing is placed: a list nobody has opened, and one that has been left
-/// behind on another tab - where the panes a press ranks against are not the panes it is sitting
-/// among.
+/// The conversation's own hide does the same the other way round, and the reveal restores the
+/// split.
+#[test]
+fn the_conversation_hiding_gives_its_width_to_the_list() {
+    let mut state = agents_beside_state();
+
+    state.hide_self_only();
+    assert_eq!(
+        placed_pane(&state, 9),
+        Some((3, 14, 60, 33)),
+        "the list fills the panel"
+    );
+    assert_eq!(
+        placed_pane(&state, 7),
+        Some((33, 14, 30, 33)),
+        "the hidden half keeps its share"
+    );
+
+    state.reveal_self();
+    assert_eq!(placed_pane(&state, 9), Some((3, 14, 30, 33)));
+    assert_eq!(placed_pane(&state, 7), Some((33, 14, 30, 33)));
+}
+
+/// A seam drag happens in the server and claims nothing; the manifest is how it reaches the next
+/// placement, as the list's share of the two halves' joint width.
+#[test]
+fn a_dragged_divider_is_read_back_off_the_manifest_and_kept() {
+    let mut state = agents_beside_state();
+
+    // the user dragged the divider two columns right
+    state.on_panes(manifest(
+        0,
+        vec![
+            overlay_pane(9, 3, 14, 32, 33),
+            overlay_pane(7, 35, 14, 28, 33),
+            tiled(1, 0, 0, 100, 50, true),
+            tiled(2, 100, 0, 100, 50, false),
+        ],
+    ));
+    assert_eq!(state.split, Some((32, 60)));
+    assert_eq!(
+        state.last_placement, None,
+        "reading the split places nothing"
+    );
+
+    // a placement for any other reason cuts the panel where the user left the divider - here the
+    // conversation hiding and coming back
+    state.hide_self_only();
+    state.reveal_self();
+    assert_eq!(placed_pane(&state, 9), Some((3, 14, 32, 33)));
+    assert_eq!(placed_pane(&state, 7), Some((35, 14, 28, 33)));
+
+    // a wider panel is cut in the same proportion: 32 of 60 is 48 of 90
+    state.kdl = config(&[("width", "90")]);
+    state.apply_overlay_geometry();
+    assert_eq!(placed_pane(&state, 9), Some((3, 14, 48, 33)));
+    assert_eq!(placed_pane(&state, 7), Some((51, 14, 42, 33)));
+}
+
+/// The server's floor for a seam drag is lower than hocus's, and the user's divider wins: a
+/// split dragged past what a half can draw a conversation in is read back and kept, rather than
+/// pulled to the floor on the next placement - which would move a divider the user just placed.
+#[test]
+fn a_split_dragged_below_the_floor_is_kept() {
+    let mut state = agents_beside_state();
+    state.on_panes(manifest(
+        0,
+        vec![
+            overlay_pane(9, 3, 14, 50, 33),
+            overlay_pane(7, 53, 14, 10, 33),
+            tiled(1, 0, 0, 100, 50, true),
+            tiled(2, 100, 0, 100, 50, false),
+        ],
+    ));
+    // a ten-column half is well under `MIN_PANE_COLS`
+    assert_eq!(state.split, Some((50, 60)), "read as dragged");
+
+    state.apply_overlay_geometry();
+    assert_eq!(placed_pane(&state, 9), Some((3, 14, 50, 33)));
+    assert_eq!(placed_pane(&state, 7), Some((53, 14, 10, 33)));
+}
+
+/// Ctrl-o in the list moves the panel only when the list is here to move: with no list, or with
+/// the list on another tab, the request does nothing. A press ranks the corners against the
+/// panes of *our* tab, and placing a parted list against those would put it clear of nothing -
+/// and mark it placed while it is still elsewhere.
 #[test]
 fn a_list_that_is_not_here_is_not_repositioned() {
     let mut state = two_pane_state();
@@ -2161,42 +2322,177 @@ fn a_list_that_is_not_here_is_not_repositioned() {
         state.last_placement, None,
         "the list is on another tab, and our manifest says nothing about the panes there"
     );
+
+    // Ctrl-o in the conversation is not gated: it is on our tab by definition
+    state.reposition();
+    assert!(state.last_placement.is_some());
 }
 
-/// The sibling is the *last* key of the sort, which is exactly two claims: a corner the other
-/// panel is sitting in loses to one that clears the anchor just as well, and it is still reached
-/// by a cycle that has run out of anywhere better.
+/// Only two halves side by side say anything about the split: a manifest with one half filling
+/// the panel, or the two not yet redrawn beside each other, leaves it alone.
 #[test]
-fn a_corner_the_other_panel_is_in_sorts_last_among_equals() {
-    let size = corner_size();
-    // A pane down the right-hand side: both left-hand corners clear it outright, so the anchor
-    // ranks them equal and the sibling is all there is left to choose on.
-    let anchor = at(100, 0, 100, 50);
-    let occupied = corner_rect(Corner::BottomLeft, 50, 200, DEFAULT_PAD, size);
+fn a_manifest_without_the_halves_side_by_side_leaves_the_split_alone() {
+    let mut state = agents_beside_state();
+    state.split = Some((20, 60));
 
-    let alone = corner_order(Some(anchor), None, false, 50, 200, DEFAULT_PAD, size);
-    let beside = corner_order(
-        Some(anchor),
-        Some(occupied),
-        false,
-        50,
-        200,
-        DEFAULT_PAD,
-        size,
+    state.on_panes(manifest(
+        0,
+        vec![
+            PaneInfo {
+                is_suppressed: true,
+                ..overlay_pane(9, 3, 14, 30, 33)
+            },
+            overlay_pane(7, 3, 14, 60, 33),
+            tiled(1, 0, 0, 200, 50, true),
+        ],
+    ));
+    assert_eq!(state.split, Some((20, 60)), "the list is hidden");
+
+    state.on_panes(manifest(
+        0,
+        vec![
+            overlay_pane(9, 3, 14, 30, 33),
+            overlay_pane(7, 3, 3, 60, 33),
+            tiled(1, 0, 0, 200, 50, true),
+        ],
+    ));
+    assert_eq!(
+        state.split,
+        Some((20, 60)),
+        "the two are not beside each other"
     );
+}
+
+/// The list's own Ctrl-o, and the whole of what it is for: it walks the panel off the pane it was
+/// covering.
+#[test]
+fn ctrl_o_in_the_list_moves_the_panel_clear_of_the_largest_unfocused_pane() {
+    let mut state = agents_beside_state();
+
+    state.pipe(list_reposition());
 
     assert_eq!(
-        alone[0],
-        Corner::BottomLeft,
-        "with nothing to avoid, the near left corner as always"
+        state.panel.anchor,
+        Some(PaneId::Terminal(2)),
+        "the largest pane the user is not working in"
     );
-    assert_ne!(
-        beside[0],
-        Corner::BottomLeft,
-        "not the corner the other panel is in"
-    );
+    let (_, is_the_users) = state.last_placement.as_ref().expect("a placement");
     assert!(
-        beside.contains(&Corner::BottomLeft),
-        "still in the ordering - a full cycle is a full cycle"
+        is_the_users,
+        "sent as the user's own placement, over any drag"
+    );
+    let (agents_x, _, agents_w, _) = placed_pane(&state, 9).expect("the list is placed");
+    let (chat_x, _, chat_w, _) = placed_pane(&state, 7).expect("and the conversation");
+    assert!(
+        chat_x + chat_w <= 100 && agents_x + agents_w <= 100,
+        "clear of pane 2, which starts at 100: {agents_x} {agents_w} / {chat_x} {chat_w}"
+    );
+    assert_eq!(chat_x, agents_x + agents_w, "still one panel");
+}
+
+/// A press in either half moves the whole panel: both ids in the placement, the split intact.
+#[test]
+fn a_press_in_either_half_places_the_whole_panel() {
+    let mut state = agents_beside_state();
+
+    state.pipe(list_reposition());
+    let (placements, _) = state.last_placement.clone().expect("a placement");
+    assert_eq!(
+        placements.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        vec![PaneId::Plugin(7), PaneId::Plugin(9)],
+        "both halves, from the list's press"
+    );
+    let from_the_list = (placed_pane(&state, 7), placed_pane(&state, 9));
+
+    let mut state = agents_beside_state();
+    state.on_key(ctrl_o());
+    let (placements, _) = state.last_placement.clone().expect("a placement");
+    assert_eq!(
+        placements.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        vec![PaneId::Plugin(7), PaneId::Plugin(9)],
+        "and both halves from the conversation's"
+    );
+    assert_eq!(
+        (placed_pane(&state, 7), placed_pane(&state, 9)),
+        from_the_list,
+        "to the same place: it is one panel and one tour"
+    );
+    let (agents_x, _, agents_w, _) = placed_pane(&state, 9).expect("the list");
+    assert_eq!(
+        placed_pane(&state, 7).map(|(x, ..)| x),
+        Some(agents_x + agents_w),
+        "cut at the split"
+    );
+}
+
+/// A press moves, every time - the same guarantee the conversation's has, walked pane to pane and
+/// then round the corners.
+#[test]
+fn ctrl_o_in_the_list_always_moves_it() {
+    let mut state = agents_beside_state();
+    // Home, as `agents_beside_state` leaves it.
+    let mut was = (3, 14, 30, 33);
+    let mut corners = std::collections::BTreeSet::new();
+
+    for press in 0..5 {
+        state.last_placement = None;
+        state.pipe(list_reposition());
+        let placed = placed_pane(&state, 9).expect("a placement");
+        assert_ne!(placed, was, "press {press} moved the list nowhere");
+        corners.insert(placed);
+        was = placed;
+        // The manifest the server would send back, so the next press ranks against where the
+        // panel actually is rather than where it started.
+        let (x, y, cols, rows) = placed;
+        let (chat_x, chat_y, chat_cols, chat_rows) = placed_pane(&state, 7).expect("a placement");
+        state.on_panes(manifest(
+            0,
+            vec![
+                overlay_pane(9, x, y, cols, rows),
+                overlay_pane(7, chat_x, chat_y, chat_cols, chat_rows),
+                tiled(1, 0, 0, 100, 50, true),
+                tiled(2, 100, 0, 100, 50, false),
+            ],
+        ));
+    }
+    assert_eq!(
+        corners.len(),
+        4,
+        "the four corners and nothing outside them - the fifth press re-opens the tour"
+    );
+}
+
+/// A user who resized the panel keeps that size through a move: the panel is read back as the
+/// rectangle round both halves.
+#[test]
+fn ctrl_o_keeps_the_panels_current_size() {
+    let mut state = two_pane_state();
+    state.pipe(selection(9));
+    // the user ctrl-dragged the panel's top edge up, and the divider across
+    state.on_panes(manifest(
+        0,
+        vec![
+            overlay_pane(9, 3, 7, 45, 40),
+            overlay_pane(7, 48, 7, 35, 40),
+            tiled(1, 0, 0, 100, 50, true),
+            tiled(2, 100, 0, 100, 50, false),
+        ],
+    ));
+    state.last_placement = None;
+
+    state.pipe(list_reposition());
+
+    let (agents_x, _, agents_w, agents_h) = placed_pane(&state, 9).expect("a placement");
+    let (chat_x, _, chat_w, chat_h) = placed_pane(&state, 7).expect("a placement");
+    assert_eq!(
+        (agents_w + chat_w, agents_h, chat_h),
+        (80, 40, 40),
+        "the size the manifest reports, not the configured one"
+    );
+    assert_eq!(chat_x, agents_x + agents_w);
+    assert_eq!(
+        (agents_w, chat_w),
+        (45, 35),
+        "and the split the user dragged"
     );
 }

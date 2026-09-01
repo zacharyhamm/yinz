@@ -2047,3 +2047,517 @@ fn awaiting_placement_survives_a_move_between_collections() {
         "and a placed overlay carries that across rather than going blank on the next move"
     );
 }
+
+// ---- linked panels and the seam between them ---------------------------------------------------
+//
+// hocus draws its agent list and its conversation as two overlays that butt together, and the two
+// touching frame columns are the divider. What these pin: only a pair placed *together* is a
+// panel, the seam drag moves the divider and nothing else and claims nothing, and a frame drag
+// carries both halves.
+
+/// A 30-column half at `x`, both halves along row 2 of an 80x20 surface.
+fn half(x: usize) -> FloatingPaneCoordinates {
+    placed_coordinates(&x.to_string(), "2", "30", "10")
+}
+
+/// Two overlays placed edge to edge in one batch, as hocus places its panel: 1 on the left, 2 on
+/// the right, linked.
+fn linked_panel() -> OverlayPanes {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+    add(&mut panes, 2, OverlayKind::Dismissible, half(32));
+    panes.link_touching(&[PaneId::Terminal(1), PaneId::Terminal(2)]);
+    panes
+}
+
+fn geom(panes: &OverlayPanes, id: u32) -> (usize, usize, usize, usize) {
+    let geom = panes
+        .get(&PaneId::Terminal(id))
+        .unwrap()
+        .position_and_size();
+    (geom.x, geom.y, geom.cols.as_usize(), geom.rows.as_usize())
+}
+
+/// A cell on the left half's right-hand frame column, which is the seam.
+fn seam_cell(panes: &OverlayPanes) -> Position {
+    let (x, y, cols, _) = geom(panes, 1);
+    Position::new(y as i32 + 3, (x + cols - 1) as u16)
+}
+
+#[test]
+fn a_batch_that_lands_two_overlays_edge_to_edge_links_them() {
+    let panes = linked_panel();
+
+    assert_eq!(
+        panes.seam_at(&seam_cell(&panes)),
+        Some((PaneId::Terminal(1), PaneId::Terminal(2))),
+        "the left half's right frame column is the seam"
+    );
+    let (right_x, y, ..) = geom(&panes, 2);
+    assert_eq!(
+        panes.seam_at(&Position::new(y as i32 + 3, right_x as u16)),
+        Some((PaneId::Terminal(1), PaneId::Terminal(2))),
+        "and so is the right half's left frame column"
+    );
+    assert_eq!(
+        panes.seam_at(&frame_corner(&panes, 1)),
+        None,
+        "the left half's own left frame is not"
+    );
+    assert_eq!(
+        panes.seam_at(&Position::new(y as i32 + 3, (right_x + 5) as u16)),
+        None,
+        "nor is a cell inside either half"
+    );
+    assert_eq!(
+        panes.linked_partner(&PaneId::Terminal(1)),
+        Some(PaneId::Terminal(2))
+    );
+}
+
+/// Adjacency is not linkage: two unrelated overlays the user dragged next to each other must keep
+/// moving on a frame drag rather than start resizing each other.
+#[test]
+fn two_overlays_that_merely_touch_are_not_linked() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+    add(&mut panes, 2, OverlayKind::Dismissible, half(32));
+
+    assert_eq!(panes.seam_at(&seam_cell(&panes)), None);
+    assert_eq!(panes.linked_partner(&PaneId::Terminal(1)), None);
+
+    // a batch naming one pane leaves links alone, however the panes sit
+    panes.link_touching(&[PaneId::Terminal(1)]);
+    assert_eq!(panes.seam_at(&seam_cell(&panes)), None);
+
+    let before = geom(&panes, 2);
+    drag_by(&mut panes, 1, 4, 2);
+    assert_eq!(geom(&panes, 1), (6, 4, 30, 10), "the dragged one moved");
+    assert_eq!(geom(&panes, 2), before, "and its neighbour did not");
+}
+
+#[test]
+fn dragging_the_seam_moves_the_divider_and_nothing_else() {
+    let mut panes = linked_panel();
+    let press = seam_cell(&panes);
+    panes.start_seam_drag(PaneId::Terminal(1), PaneId::Terminal(2), press);
+    assert!(panes.seam_is_being_dragged());
+
+    let moved = panes.drag_seam_to(&Position::new(
+        press.line() as i32,
+        press.column() as u16 + 4,
+    ));
+    assert!(moved);
+
+    assert_eq!(
+        geom(&panes, 1),
+        (2, 2, 34, 10),
+        "the left half grew by four"
+    );
+    assert_eq!(
+        geom(&panes, 2),
+        (36, 2, 26, 10),
+        "the right half started four columns later and gave up the same four"
+    );
+    assert_eq!(
+        panes.seam_at(&Position::new(5, 35)),
+        Some((PaneId::Terminal(1), PaneId::Terminal(2))),
+        "the seam is where the divider is now"
+    );
+
+    let carry = panes.carry_of(&PaneId::Terminal(1));
+    assert!(
+        !carry.size_is_user_stated && !carry.position_is_user_stated,
+        "a seam drag is not a claim: the split is the owning plugin's to re-derive"
+    );
+    let carry = panes.carry_of(&PaneId::Terminal(2));
+    assert!(!carry.size_is_user_stated && !carry.position_is_user_stated);
+
+    // the split is written back as fixed coordinates, so a re-resolution keeps it
+    let placement = panes.placement_of(&PaneId::Terminal(2)).unwrap();
+    let coordinates = placement.coordinates.unwrap();
+    assert_eq!(coordinates.x, Some(PercentOrFixed::Fixed(36)));
+    assert_eq!(coordinates.width, Some(PercentOrFixed::Fixed(26)));
+    panes.reapply_coordinates();
+    assert_eq!(geom(&panes, 1), (2, 2, 34, 10));
+    assert_eq!(geom(&panes, 2), (36, 2, 26, 10));
+
+    panes.stop_seam_drag(Position::new(
+        press.line() as i32,
+        press.column() as u16 + 4,
+    ));
+    assert!(!panes.seam_is_being_dragged());
+}
+
+/// A drag that goes nowhere - the same column again, or a drag with no seam held - reports so,
+/// so the caller can skip the render.
+#[test]
+fn a_seam_drag_that_changes_nothing_reports_so() {
+    let mut panes = linked_panel();
+    let press = seam_cell(&panes);
+    assert!(!panes.drag_seam_to(&press), "nothing is being dragged");
+    panes.start_seam_drag(PaneId::Terminal(1), PaneId::Terminal(2), press);
+    assert!(!panes.drag_seam_to(&press), "the pointer has not moved");
+    assert!(
+        !panes.drag_seam_to(&Position::new(
+            press.line() as i32 + 3,
+            press.column() as u16
+        )),
+        "and a vertical move is not a seam move"
+    );
+}
+
+/// Each half keeps the floor a resize keeps, and the panel's outer edges never move.
+#[test]
+fn a_seam_drag_clamps_at_the_floor() {
+    let mut panes = linked_panel();
+    let press = seam_cell(&panes);
+    panes.start_seam_drag(PaneId::Terminal(1), PaneId::Terminal(2), press);
+
+    panes.drag_seam_to(&Position::new(press.line() as i32, 0));
+    assert_eq!(
+        geom(&panes, 1),
+        (2, 2, MIN_TERMINAL_WIDTH, 10),
+        "the left half stops at the floor"
+    );
+    assert_eq!(
+        geom(&panes, 2),
+        (2 + MIN_TERMINAL_WIDTH, 2, 60 - MIN_TERMINAL_WIDTH, 10),
+        "and the right half has the rest, ending where the panel always ended"
+    );
+
+    panes.drag_seam_to(&Position::new(press.line() as i32, 400));
+    assert_eq!(
+        geom(&panes, 2),
+        (62 - MIN_TERMINAL_WIDTH, 2, MIN_TERMINAL_WIDTH, 10)
+    );
+    assert_eq!(geom(&panes, 1), (2, 2, 60 - MIN_TERMINAL_WIDTH, 10));
+}
+
+/// A hidden half has no seam to drag: the drag holding it is released with it. The link stays -
+/// the hidden half is still half of its panel, and the placement that reveals it needs the pair
+/// to map the panel's layout onto - so the seam is back the moment the half is shown.
+#[test]
+fn hiding_a_half_ends_the_seam_drag_and_keeps_the_link() {
+    let mut panes = linked_panel();
+    let press = seam_cell(&panes);
+    panes.start_seam_drag(PaneId::Terminal(1), PaneId::Terminal(2), press);
+
+    assert!(panes.hide_pane(PaneId::Terminal(1)));
+    assert!(!panes.seam_is_being_dragged());
+    assert_eq!(
+        panes.linked_partner(&PaneId::Terminal(2)),
+        Some(PaneId::Terminal(1)),
+        "still a panel"
+    );
+    assert_eq!(
+        panes.seam_at(&seam_cell(&panes)),
+        None,
+        "but with nothing to divide while one half is away"
+    );
+
+    panes.show_pane(PaneId::Terminal(1));
+    assert!(
+        panes.seam_at(&seam_cell(&panes)).is_some(),
+        "shown again, the seam is where it was, with no placement needed"
+    );
+}
+
+#[test]
+fn closing_a_half_ends_the_seam_drag_and_the_link() {
+    let mut panes = linked_panel();
+    panes.start_seam_drag(PaneId::Terminal(1), PaneId::Terminal(2), seam_cell(&panes));
+    panes.remove_pane(PaneId::Terminal(2));
+    assert!(!panes.seam_is_being_dragged());
+    assert_eq!(panes.linked_partner(&PaneId::Terminal(1)), None);
+}
+
+/// A batch that places the halves apart - one hidden, the other given the whole panel, or the
+/// two put in different corners - is the end of the panel.
+#[test]
+fn a_batch_that_places_the_halves_apart_unlinks_them() {
+    let mut panes = linked_panel();
+    panes
+        .change_pane_coordinates(PaneId::Terminal(2), half(40), false)
+        .unwrap();
+    panes.link_touching(&[PaneId::Terminal(1), PaneId::Terminal(2)]);
+    assert_eq!(panes.linked_partner(&PaneId::Terminal(1)), None);
+
+    // and back together again
+    panes
+        .change_pane_coordinates(PaneId::Terminal(2), half(32), false)
+        .unwrap();
+    panes.link_touching(&[PaneId::Terminal(1), PaneId::Terminal(2)]);
+    assert_eq!(
+        panes.linked_partner(&PaneId::Terminal(1)),
+        Some(PaneId::Terminal(2))
+    );
+}
+
+/// The panel moves as one: a frame drag on either half carries the other by the same delta,
+/// clamped so that neither half leaves the surface.
+#[test]
+fn a_frame_drag_moves_both_halves_of_a_linked_panel() {
+    let mut panes = linked_panel();
+
+    drag_by(&mut panes, 2, 4, 3);
+    assert_eq!(geom(&panes, 1), (6, 5, 30, 10), "the other half came along");
+    assert_eq!(geom(&panes, 2), (36, 5, 30, 10));
+    assert!(
+        panes.carry_of(&PaneId::Terminal(1)).position_is_user_stated
+            && panes.carry_of(&PaneId::Terminal(2)).position_is_user_stated,
+        "both positions are the user's, as a single dragged overlay's is"
+    );
+    assert!(
+        panes.seam_at(&seam_cell(&panes)).is_some(),
+        "and the seam moved with them"
+    );
+
+    // far past the right-hand edge: the *panel* stops at the edge, so the left half stops short
+    // of it by the right half's width rather than being carried under it
+    drag_by(&mut panes, 1, 400, 0);
+    assert_eq!(
+        geom(&panes, 2),
+        (50, 5, 30, 10),
+        "the right half is flush with the edge"
+    );
+    assert_eq!(
+        geom(&panes, 1),
+        (20, 5, 30, 10),
+        "and the left half is still beside it"
+    );
+}
+
+/// A placement batch naming both halves: `(id, x, width)` along row 2, 10 rows tall.
+fn batch(halves: &[(u32, usize, usize)]) -> Vec<(PaneId, FloatingPaneCoordinates)> {
+    halves
+        .iter()
+        .map(|(id, x, width)| {
+            (
+                PaneId::Terminal(*id),
+                placed_coordinates(&x.to_string(), "2", &width.to_string(), "10"),
+            )
+        })
+        .collect()
+}
+
+/// A batch is applied as a batch and then linked, as `Screen::change_overlay_coordinates` does.
+fn place(
+    panes: &mut OverlayPanes,
+    batch: Vec<(PaneId, FloatingPaneCoordinates)>,
+    overriding: bool,
+) {
+    let ids: Vec<PaneId> = batch.iter().map(|(id, _)| *id).collect();
+    panes
+        .change_pane_coordinates_batch(batch, overriding)
+        .unwrap();
+    panes.link_touching(&ids);
+}
+
+/// The plugin computes both halves from one panel rectangle and never learns where the user
+/// dragged it to, so a batch after a drag names the home corner: the batch's layout - here a
+/// different split - is mapped onto the panel where the user left it, and the halves still abut.
+/// Only the position was claimed, so the batch's *size* is taken.
+#[test]
+fn a_dragged_panel_is_re_placed_where_the_user_left_it() {
+    let mut panes = linked_panel();
+    drag_by(&mut panes, 2, 4, 3);
+    assert_eq!(geom(&panes, 1), (6, 5, 30, 10));
+
+    place(&mut panes, batch(&[(2, 22, 40), (1, 2, 20)]), false);
+    assert_eq!(
+        geom(&panes, 1),
+        (6, 5, 20, 10),
+        "the new split, at the dragged origin"
+    );
+    assert_eq!(
+        geom(&panes, 2),
+        (26, 5, 40, 10),
+        "and the right half still abuts"
+    );
+    assert!(panes.seam_at(&seam_cell(&panes)).is_some());
+    assert!(panes.carry_of(&PaneId::Terminal(2)).position_is_user_stated);
+    assert!(!panes.carry_of(&PaneId::Terminal(2)).size_is_user_stated);
+
+    // a panel that was only dragged still takes a plugin's size, as a single overlay does
+    let taller = vec![
+        (
+            PaneId::Terminal(1),
+            placed_coordinates("2", "2", "25", "12"),
+        ),
+        (
+            PaneId::Terminal(2),
+            placed_coordinates("27", "2", "25", "12"),
+        ),
+    ];
+    place(&mut panes, taller, false);
+    assert_eq!(geom(&panes, 1), (6, 5, 25, 12));
+    assert_eq!(geom(&panes, 2), (31, 5, 25, 12));
+}
+
+/// Hiding a half after a drag: the plugin asks for the shown half to have the whole panel and
+/// keeps the hidden one at its share, and both land inside the dragged panel. The reveal then
+/// cuts that same panel at whatever split the plugin asks for.
+#[test]
+fn a_hidden_half_of_a_dragged_panel_gives_its_width_up_and_the_reveal_cuts_it_again() {
+    let mut panes = linked_panel();
+    drag_by(&mut panes, 2, 4, 3);
+
+    panes.hide_pane(PaneId::Terminal(1));
+    place(&mut panes, batch(&[(2, 2, 60), (1, 2, 30)]), false);
+    assert_eq!(
+        geom(&panes, 2),
+        (6, 5, 60, 10),
+        "the shown half has the dragged panel"
+    );
+    assert_eq!(
+        geom(&panes, 1),
+        (6, 5, 30, 10),
+        "the hidden one keeps its share inside it"
+    );
+    assert_eq!(
+        panes.linked_partner(&PaneId::Terminal(2)),
+        Some(PaneId::Terminal(1)),
+        "a hidden share inside the shown half is still the panel"
+    );
+
+    panes.show_pane(PaneId::Terminal(1));
+    place(&mut panes, batch(&[(2, 22, 40), (1, 2, 20)]), false);
+    assert_eq!(geom(&panes, 1), (6, 5, 20, 10));
+    assert_eq!(geom(&panes, 2), (26, 5, 40, 10));
+    assert!(panes.seam_at(&seam_cell(&panes)).is_some());
+}
+
+/// A pair carried to another tab with one half hidden arrives without its link and is relinked
+/// by shape alone: the hidden share inside the shown half, the one starting further left first.
+#[test]
+fn a_hidden_share_inside_the_shown_half_links_as_a_panel() {
+    let mut panes = overlay_panes(80, 20);
+    add(
+        &mut panes,
+        2,
+        OverlayKind::Dismissible,
+        placed_coordinates("2", "2", "60", "10"),
+    );
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+    panes.hide_pane(PaneId::Terminal(1));
+
+    panes.link_touching(&[PaneId::Terminal(2), PaneId::Terminal(1)]);
+    assert_eq!(
+        panes.link_of(&PaneId::Terminal(2)),
+        Some((PaneId::Terminal(1), PaneId::Terminal(2)))
+    );
+
+    // a hidden overlay that merely overlaps is not a share of anything
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+    add(&mut panes, 2, OverlayKind::Dismissible, half(20));
+    panes.hide_pane(PaneId::Terminal(1));
+    panes.link_touching(&[PaneId::Terminal(1), PaneId::Terminal(2)]);
+    assert_eq!(panes.link_of(&PaneId::Terminal(2)), None);
+}
+
+/// A surface that shrank pulls each half's fixed coordinates back onto it one at a time, which
+/// can leave the two overlapping; the next batch re-cuts the panel inside the surface, whole.
+#[test]
+fn a_dragged_panel_re_resolved_onto_a_smaller_surface_is_re_cut_whole() {
+    let (mut panes, display_area) = overlay_panes_with(
+        80,
+        20,
+        Viewport {
+            x: 0,
+            y: 0,
+            cols: 80,
+            rows: 20,
+        },
+    );
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+    add(&mut panes, 2, OverlayKind::Dismissible, half(32));
+    panes.link_touching(&[PaneId::Terminal(1), PaneId::Terminal(2)]);
+    drag_by(&mut panes, 2, 10, 3);
+    assert_eq!(geom(&panes, 2), (42, 5, 30, 10));
+
+    *display_area.borrow_mut() = Size { cols: 60, rows: 20 };
+    panes.reapply_coordinates();
+    assert_eq!(
+        geom(&panes, 2),
+        (42, 5, 18, 10),
+        "cut down to the surface on its own, with the seam still where it was"
+    );
+
+    place(&mut panes, batch(&[(2, 32, 30), (1, 2, 30)]), false);
+    let (left_x, _, left_cols, _) = geom(&panes, 1);
+    let (right_x, _, right_cols, _) = geom(&panes, 2);
+    assert_eq!(left_x + left_cols, right_x, "abutting");
+    assert!(right_x + right_cols <= 60, "and on the surface");
+    assert!(panes.seam_at(&seam_cell(&panes)).is_some());
+}
+
+/// A ctrl-resize of one half is a resize of the panel: the other half's rows follow, and the
+/// size becomes the user's on both, so the next placement keeps it.
+#[test]
+fn a_resize_of_one_half_sizes_the_panel() {
+    let mut panes = linked_panel();
+    assert!(panes
+        .resize_pane_with_strategies(PaneId::Terminal(1), &[grow(Direction::Up)], (5, 2))
+        .unwrap());
+    assert_eq!(geom(&panes, 1), (2, 0, 30, 12));
+    assert_eq!(
+        geom(&panes, 2),
+        (32, 0, 30, 12),
+        "the other half's rows came along"
+    );
+    for id in [1, 2] {
+        let carry = panes.carry_of(&PaneId::Terminal(id));
+        assert!(carry.size_is_user_stated && carry.position_is_user_stated);
+    }
+
+    place(&mut panes, batch(&[(2, 32, 30), (1, 2, 30)]), false);
+    assert_eq!(
+        geom(&panes, 1),
+        (2, 0, 30, 12),
+        "the user's size outranks the plugin's"
+    );
+    assert_eq!(geom(&panes, 2), (32, 0, 30, 12));
+
+    // an overriding placement - the user's own key - takes the position and keeps the size
+    place(&mut panes, batch(&[(2, 40, 30), (1, 10, 30)]), true);
+    assert_eq!(geom(&panes, 1), (10, 2, 30, 12));
+    assert_eq!(geom(&panes, 2), (40, 2, 30, 12));
+    let carry = panes.carry_of(&PaneId::Terminal(1));
+    assert!(!carry.position_is_user_stated && carry.size_is_user_stated);
+}
+
+/// The seam is placed from where the pointer is, not moved by where it went: past the floor the
+/// seam waits at the floor, and on the way back it is only picked up again where it was left.
+#[test]
+fn a_seam_dragged_past_the_floor_comes_back_under_the_pointer() {
+    let mut panes = linked_panel();
+    let press = seam_cell(&panes);
+    panes.start_seam_drag(PaneId::Terminal(1), PaneId::Terminal(2), press);
+
+    panes.drag_seam_to(&Position::new(press.line() as i32, 0));
+    assert_eq!(geom(&panes, 1).2, MIN_TERMINAL_WIDTH);
+
+    panes.drag_seam_to(&Position::new(press.line() as i32, 20));
+    assert_eq!(
+        geom(&panes, 1),
+        (2, 2, 19, 10),
+        "the seam is on column 20, where the pointer is"
+    );
+    assert_eq!(geom(&panes, 2), (21, 2, 41, 10));
+}
+
+/// A placement batch arriving mid-drag - a terminal resize, a half's visibility changing - that
+/// keeps the pair together leaves the drag in flight; one that parts them ends it.
+#[test]
+fn a_placement_that_keeps_the_pair_leaves_a_seam_drag_in_flight() {
+    let mut panes = linked_panel();
+    panes.start_seam_drag(PaneId::Terminal(1), PaneId::Terminal(2), seam_cell(&panes));
+
+    place(&mut panes, batch(&[(1, 2, 30), (2, 32, 30)]), false);
+    assert!(panes.seam_is_being_dragged());
+
+    place(&mut panes, batch(&[(1, 2, 30), (2, 40, 30)]), false);
+    assert!(!panes.seam_is_being_dragged());
+}

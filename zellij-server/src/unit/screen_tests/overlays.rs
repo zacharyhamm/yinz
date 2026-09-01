@@ -199,7 +199,7 @@ fn an_overlay_that_awaits_placement_is_not_painted_until_it_is_placed() {
         "nothing is painted for it until somebody places it"
     );
 
-    tab.change_overlay_coordinates(&pane_id, popup_coordinates(), false)
+    tab.change_overlay_coordinates_batch(vec![(pane_id, popup_coordinates())], false)
         .expect("TEST");
     assert!(
         !tab.overlay_carry_for(pane_id).awaiting_placement
@@ -638,7 +638,7 @@ fn an_overlay_terminal_is_not_told_it_lost_focus_when_the_layer_goes_down() {
     tab.handle_pty_bytes(2, b"\x1b[?1004h".to_vec())
         .expect("TEST");
 
-    tab.change_overlay_coordinates(&PaneId::Terminal(2), overlay_coordinates(), false)
+    tab.change_overlay_coordinates_batch(vec![(PaneId::Terminal(2), overlay_coordinates())], false)
         .expect("TEST");
 
     assert!(!tab.are_floating_panes_visible());

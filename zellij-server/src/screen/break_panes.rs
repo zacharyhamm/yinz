@@ -438,6 +438,16 @@ impl Screen {
                         AcceptedPane::LostInAdd => outcome.closed.push(pane_id),
                     }
                 }
+                // A batch carried over as one arrives as one: two overlays moved together and
+                // landing edge to edge are the panel they were on the tab they left, seam
+                // included. A move of a single pane links nothing.
+                let together: Vec<PaneId> = outcome
+                    .moved
+                    .iter()
+                    .chain(outcome.already_in_destination.iter())
+                    .copied()
+                    .collect();
+                destination.link_touching_overlays(&together);
             },
             // Unreachable: the destination was found by this same key above, and
             // nothing since has removed a tab. Handled as a refusal anyway rather than

@@ -80,6 +80,43 @@
 //! (`Tab::resize`), a ctrl-drag of a corner, and ctrl+MouseScroll - which the frame has always
 //! advertised, since an overlay's frame is drawn as a floating one.
 //!
+//! **Two overlays placed together as one panel are linked**, and the seam between them is a
+//! fourth gesture that is deliberately *not* a claim. hocus draws its agent list and its
+//! conversation as two panes that butt together, and the two touching frame columns read as a
+//! divider; a plain left drag on that divider (`seam_at`, `drag_seam_to`) moves it, growing one
+//! half by exactly what the other gives up and leaving the panel's outer edges alone. Which
+//! pairs count is stated explicitly rather than inferred from adjacency: a pair is linked when
+//! one `change_overlay_coordinates` batch places both panes and they land edge to edge
+//! (`link_touching`, called by `Tab` once the batch is applied), and the link is dropped when
+//! either pane is removed or the two are placed apart again. Two unrelated overlays the user
+//! dragged next to each other keep moving on a frame drag, because nothing placed them together.
+//!
+//! **A linked pair is one panel to every gesture and every placement.** A frame drag on either
+//! half carries the other with it (`move_pane_to_position`), a ctrl-resize of either half keeps
+//! the other's rows in step (`resize_pane_with_strategies`), and the claims those gestures make -
+//! `position_is_user_stated`, `size_is_user_stated` - are made on both halves, because they are
+//! claims about the panel. A placement batch that names both halves is then applied to the panel
+//! rather than to each half (`place_linked_pair`): the batch's two rectangles describe a
+//! *layout* (which half has which share, where the divider is, whether one half has the whole
+//! panel), and that layout is mapped onto the rectangle the user's gestures left the panel in,
+//! axis by axis, as a single overlay keeps a dragged `x`/`y` and a resized width/height. This is what
+//! lets the owning plugin keep computing both halves from one panel rectangle: it never has to
+//! know where the user dragged the panel to, and a claimed `x` on one half can never disagree
+//! with a fresh width on the other.
+//!
+//! A link survives a half being hidden. The hidden half is still placed by every batch (the
+//! owning plugin keeps it at the share it will come back to), the pair's bounding box is still
+//! the panel, and the reveal has to find the pair to map its layout onto that panel; only
+//! `seam_at` refuses a hidden half, since a divider needs two panes to divide. A batch that
+//! places a pair with one half hidden links them when the hidden share lies inside the shown
+//! half, which is the one shape that placement has.
+//!
+//! The seam drag writes both halves' `x`/`width` back as `Fixed`, as a resize does, but sets
+//! neither `position_is_user_stated` nor `size_is_user_stated`. The split is the owning plugin's
+//! to interpret - hocus reads it back off the manifest and re-derives the panel from it on the
+//! next placement - and a claim here would make the next placement keep the panel's size where
+//! the plugin was asking for a re-cut of it.
+//!
 //! A **modal is not resizable** (`is_resizable`). It is drawn because something needs an answer
 //! now, its content is sized to that question, and there is no case of it sitting over something
 //! the user is trying to read. It is still draggable, like any other overlay. Because it cannot be
@@ -127,7 +164,7 @@ use zellij_utils::{
 
 use crate::panes::kitty_graphics::KittyHostSupport;
 use crate::resize_pty;
-use crate::tab::{pane_info_for_pane, Pane};
+use crate::tab::{pane_info_for_pane, Pane, MIN_TERMINAL_WIDTH};
 use crate::ui::damage::CellRect;
 use crate::{
     os_input_output::ServerOsApi,
@@ -218,6 +255,15 @@ pub struct OverlayPanes {
     /// `(pane id, where the press started, where the pointer was last seen)`, while a frame drag
     /// is in flight. Per-collection rather than per-client, as the floating layer's twin is.
     pane_being_moved_with_mouse: Option<(PaneId, Position, Position)>,
+    /// Pairs of overlays placed together as one panel, `(left, right)` - the right one starting
+    /// on the column where the left one ends. See the module doc; `link_touching` is the only
+    /// way in, and hiding, removing or placing a member apart again is the way out.
+    linked: Vec<(PaneId, PaneId)>,
+    /// `(left, right, seam column − pointer column at the press)` while a seam drag is in flight.
+    /// The seam twin of `pane_being_moved_with_mouse`, and exclusive with it: the pointer is one
+    /// pointer. The offset rather than the last pointer position, so the seam is placed from
+    /// where the pointer *is* and never drifts from it past a clamp.
+    seam_being_dragged: Option<(PaneId, PaneId, isize)>,
     display_area: Rc<RefCell<Size>>,
     /// The tab's own viewport, needed only to answer whether an overlay owns cells outside it -
     /// which, drawn over the session, it almost always does.
@@ -270,6 +316,8 @@ impl OverlayPanes {
             window_title: None,
             dimmed_clients: HashSet::new(),
             pane_being_moved_with_mouse: None,
+            linked: vec![],
+            seam_being_dragged: None,
         }
     }
 
@@ -319,6 +367,20 @@ impl OverlayPanes {
         geom
     }
 
+    /// `coordinates` resolved against `surface`, for a pane whose geometry is `current` now -
+    /// the one resolution `add_pane`, `change_pane_coordinates` and `reapply_coordinates` all
+    /// make. Pure: nothing is written back, so a caller can ask what a placement *would* give
+    /// before deciding how to apply it, which is what `place_linked_pair` does.
+    fn resolved(
+        surface: &Viewport,
+        current: PaneGeom,
+        coordinates: &FloatingPaneCoordinates,
+    ) -> PaneGeom {
+        let mut geom = Self::base_geom(surface, current);
+        geom.adjust_coordinates(coordinates.clone(), *surface);
+        geom
+    }
+
     // ---- membership -----------------------------------------------------------------------
 
     /// Put `pane` on the surface as an overlay of `kind`, resolving `coordinates` against the
@@ -343,8 +405,7 @@ impl OverlayPanes {
         if let Some(borderless) = coordinates.borderless {
             pane.set_borderless(borderless);
         }
-        let mut geom = Self::base_geom(&surface, pane.position_and_size());
-        geom.adjust_coordinates(coordinates.clone(), surface);
+        let geom = Self::resolved(&surface, pane.position_and_size(), &coordinates);
         pane.set_geom(geom);
         pane.set_should_render(true);
         self.panes.insert(
@@ -380,6 +441,9 @@ impl OverlayPanes {
         if matches!(self.pane_being_moved_with_mouse, Some((dragged, ..)) if dragged == pane_id) {
             self.pane_being_moved_with_mouse = None;
         }
+        // a hidden half has no seam to drag, but it is still half of its panel: the link stays,
+        // so the placement that reveals it finds the pair - see the module doc
+        self.release_seam_drag_of(pane_id);
         if self.is_modal(&pane_id) {
             // A modal's clients may not simply fall to whatever is underneath. While this modal
             // was on screen `may_be_focused` refused every non-modal overlay the keyboard, and
@@ -473,6 +537,7 @@ impl OverlayPanes {
         if matches!(self.pane_being_moved_with_mouse, Some((dragged, ..)) if dragged == pane_id) {
             self.pane_being_moved_with_mouse = None;
         }
+        self.unlink(pane_id);
         self.panes.remove(&pane_id).map(|overlay| overlay.pane)
     }
 
@@ -518,6 +583,16 @@ impl OverlayPanes {
             self.z_indices[index] = with_pane_id;
         } else {
             self.z_indices.push(with_pane_id);
+        }
+        // the slot's place in a panel travels with the slot too: a pane swapped into the left
+        // half of a panel is the left half of that panel
+        for (left, right) in &mut self.linked {
+            if *left == pane_id {
+                *left = with_pane_id;
+            }
+            if *right == pane_id {
+                *right = with_pane_id;
+            }
         }
         self.move_clients_between_panes(pane_id, with_pane_id);
         self.set_pane_frames().non_fatal();
@@ -1004,8 +1079,7 @@ impl OverlayPanes {
             new_coordinates.width = overlay.coordinates.width;
             new_coordinates.height = overlay.coordinates.height;
         }
-        let mut geom = Self::base_geom(&surface, overlay.pane.position_and_size());
-        geom.adjust_coordinates(new_coordinates.clone(), surface);
+        let geom = Self::resolved(&surface, overlay.pane.position_and_size(), &new_coordinates);
         overlay.pane.set_geom(geom);
         overlay.pane.set_should_render(true);
         overlay.coordinates = new_coordinates;
@@ -1014,6 +1088,188 @@ impl OverlayPanes {
         overlay.carry.awaiting_placement = false;
 
         self.set_pane_frames().non_fatal();
+        Ok(())
+    }
+
+    /// Apply one placement batch: every pane named, each once.
+    ///
+    /// A pane whose linked partner is also in the batch is placed with it as one panel
+    /// (`place_linked_pair`); every other pane goes through `change_pane_coordinates` on its own.
+    /// The pair is looked up on the links as they are *before* the batch - which is the whole
+    /// point, since the batch is what may be moving the halves relative to each other - and
+    /// `link_touching`, which the caller runs once the batch is applied, decides the links after.
+    pub fn change_pane_coordinates_batch(
+        &mut self,
+        batch: Vec<(PaneId, FloatingPaneCoordinates)>,
+        override_user_placement: bool,
+    ) -> Result<()> {
+        let named = |pane_id: &PaneId| batch.iter().any(|(id, _)| id == pane_id);
+        let mut placed: HashSet<PaneId> = HashSet::new();
+        for (pane_id, coordinates) in &batch {
+            if placed.contains(pane_id) {
+                continue;
+            }
+            let pair = self
+                .link_of(pane_id)
+                .filter(|(left, right)| named(left) && named(right));
+            match pair {
+                Some((left, right)) => {
+                    let request_of = |pane_id: PaneId| {
+                        batch
+                            .iter()
+                            .find(|(id, _)| *id == pane_id)
+                            .map(|(_, coordinates)| coordinates.clone())
+                            .unwrap_or_default()
+                    };
+                    self.place_linked_pair(
+                        (left, request_of(left)),
+                        (right, request_of(right)),
+                        override_user_placement,
+                    )?;
+                    placed.insert(left);
+                    placed.insert(right);
+                },
+                None => {
+                    self.change_pane_coordinates(
+                        *pane_id,
+                        coordinates.clone(),
+                        override_user_placement,
+                    )?;
+                    placed.insert(*pane_id);
+                },
+            }
+        }
+        Ok(())
+    }
+
+    /// Place a linked pair as one panel: the batch's two rectangles are a layout, and the layout
+    /// is mapped onto the rectangle the user's gestures have left the panel in.
+    ///
+    /// `R` is the bounding box of the two requests as they would resolve on their own, `C` the
+    /// bounding box of the pair as it sits now - which is where a frame drag or a ctrl-resize put
+    /// it, since both gestures move the pair. The target `T` takes each axis from the claim on
+    /// it, exactly as `change_pane_coordinates` does for one pane: a claimed position keeps `C`'s
+    /// origin, a claimed size keeps `C`'s extent, and an unclaimed axis is the request's - so a
+    /// panel that was only dragged still grows with the screen. Each request's edges are then
+    /// carried from `R` onto `T` in proportion, which keeps two abutting requests abutting and
+    /// gives a request that spans `R` the whole of `T`. Both halves come out with the pair's
+    /// claims, since a claim about a panel is a claim about both of its halves.
+    fn place_linked_pair(
+        &mut self,
+        left: (PaneId, FloatingPaneCoordinates),
+        right: (PaneId, FloatingPaneCoordinates),
+        override_user_placement: bool,
+    ) -> Result<()> {
+        let surface = self.surface();
+        let (left_id, left_coordinates) = left;
+        let (right_id, right_coordinates) = right;
+        let err_context =
+            || format!("failed to place linked overlays {left_id:?} and {right_id:?}");
+        let current_of = |panes: &Self, pane_id: &PaneId| {
+            panes
+                .get(pane_id)
+                .map(|pane| pane.position_and_size())
+                .with_context(|| format!("no overlay pane with ID {pane_id:?}"))
+                .with_context(err_context)
+        };
+        let left_now = current_of(self, &left_id)?;
+        let right_now = current_of(self, &right_id)?;
+        let (left_carry, right_carry) = (self.carry_of(&left_id), self.carry_of(&right_id));
+        let position_claimed = !override_user_placement
+            && (left_carry.position_is_user_stated || right_carry.position_is_user_stated);
+        let size_claimed = left_carry.size_is_user_stated || right_carry.size_is_user_stated;
+
+        let left_request = Self::resolved(&surface, left_now, &left_coordinates);
+        let right_request = Self::resolved(&surface, right_now, &right_coordinates);
+        let requested = union_of(left_request, right_request);
+        let current = union_of(left_now, right_now);
+        let mut target = requested;
+        if position_claimed {
+            target.x = current.x;
+            target.y = current.y;
+        }
+        if size_claimed {
+            target.cols.set_inner(current.cols.as_usize());
+            target.rows.set_inner(current.rows.as_usize());
+        }
+        // kept on the surface the way `adjust_coordinates` keeps a single pane: pulled back
+        // first, then cut down if it still does not fit
+        let max_x = surface.x.saturating_add(surface.cols);
+        let max_y = surface.y.saturating_add(surface.rows);
+        target.x = target
+            .x
+            .min(max_x.saturating_sub(target.cols.as_usize()))
+            .max(surface.x);
+        target.y = target
+            .y
+            .min(max_y.saturating_sub(target.rows.as_usize()))
+            .max(surface.y);
+        target
+            .cols
+            .set_inner(target.cols.as_usize().min(max_x.saturating_sub(target.x)));
+        target
+            .rows
+            .set_inner(target.rows.as_usize().min(max_y.saturating_sub(target.y)));
+
+        for (pane_id, request, coordinates) in [
+            (left_id, left_request, left_coordinates),
+            (right_id, right_request, right_coordinates),
+        ] {
+            let mut geom = request;
+            let x = map_edge(
+                request.x,
+                requested.x,
+                requested.cols.as_usize(),
+                target.x,
+                target.cols.as_usize(),
+            );
+            let right_edge = map_edge(
+                request.x + request.cols.as_usize(),
+                requested.x,
+                requested.cols.as_usize(),
+                target.x,
+                target.cols.as_usize(),
+            );
+            let y = map_edge(
+                request.y,
+                requested.y,
+                requested.rows.as_usize(),
+                target.y,
+                target.rows.as_usize(),
+            );
+            let bottom_edge = map_edge(
+                request.y + request.rows.as_usize(),
+                requested.y,
+                requested.rows.as_usize(),
+                target.y,
+                target.rows.as_usize(),
+            );
+            geom.x = x;
+            geom.y = y;
+            geom.cols.set_inner(right_edge.saturating_sub(x).max(1));
+            geom.rows.set_inner(bottom_edge.saturating_sub(y).max(1));
+            let Some(overlay) = self.panes.get_mut(&pane_id) else {
+                continue;
+            };
+            if let Some(borderless) = coordinates.borderless {
+                overlay.pane.set_borderless(borderless);
+            }
+            overlay.pane.set_geom(geom);
+            overlay.pane.set_should_render(true);
+            overlay.coordinates = FloatingPaneCoordinates {
+                x: Some(PercentOrFixed::Fixed(geom.x)),
+                y: Some(PercentOrFixed::Fixed(geom.y)),
+                width: Some(PercentOrFixed::Fixed(geom.cols.as_usize())),
+                height: Some(PercentOrFixed::Fixed(geom.rows.as_usize())),
+                pinned: coordinates.pinned,
+                borderless: coordinates.borderless,
+            };
+            overlay.carry.position_is_user_stated = position_claimed;
+            overlay.carry.size_is_user_stated = size_claimed;
+            overlay.carry.awaiting_placement = false;
+        }
+        self.set_pane_frames().non_fatal();
+        self.set_force_render();
         Ok(())
     }
 
@@ -1050,8 +1306,11 @@ impl OverlayPanes {
         }
         let surface = self.surface();
         for overlay in self.panes.values_mut() {
-            let mut geom = Self::base_geom(&surface, overlay.pane.position_and_size());
-            geom.adjust_coordinates(overlay.coordinates.clone(), surface);
+            let geom = Self::resolved(
+                &surface,
+                overlay.pane.position_and_size(),
+                &overlay.coordinates,
+            );
             overlay.pane.set_geom(geom);
             // The safety valve for `awaiting_placement`: an overlay nobody ever placed would
             // otherwise be invisible for as long as it lived. A resize shows it where it was born,
@@ -1140,24 +1399,49 @@ impl OverlayPanes {
         if geom == before {
             return Ok(false);
         }
-        overlay.pane.set_geom(geom);
-        overlay.pane.set_should_render(true);
+        let moved = geom.x != before.x || geom.y != before.y;
+        Self::claim_geom(overlay, geom, moved);
 
-        overlay.coordinates.width = Some(PercentOrFixed::Fixed(geom.cols.as_usize()));
-        overlay.coordinates.height = Some(PercentOrFixed::Fixed(geom.rows.as_usize()));
-        overlay.carry.size_is_user_stated = true;
-        if geom.x != before.x || geom.y != before.y {
-            // `PaneGeom::apply_floating_pane_position` reads `Fixed(n)` as a screen coordinate,
-            // so the position round-trips exactly - the same arithmetic `move_pane_to_position` does
-            overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x));
-            overlay.coordinates.y = Some(PercentOrFixed::Fixed(geom.y));
-            overlay.carry.position_is_user_stated = true;
+        // A linked partner is the other half of the same panel: its rows follow, since the
+        // panel has one top and one bottom, and the claim is made on it too, since the claim is
+        // the panel's (module doc). A hidden partner takes the whole resized rectangle - it is
+        // placed at its share again on the reveal, and until then it must not stretch the pair's
+        // bounding box beyond what the user sized.
+        if let Some(partner) = self.linked_partner(&pane_id) {
+            let partner_is_hidden = self.is_hidden(&partner);
+            if let Some(overlay) = self.panes.get_mut(&partner) {
+                let mut partner_geom = overlay.pane.position_and_size();
+                if partner_is_hidden {
+                    partner_geom.x = geom.x;
+                    partner_geom.cols.set_inner(geom.cols.as_usize());
+                }
+                partner_geom.y = geom.y;
+                partner_geom.rows.set_inner(geom.rows.as_usize());
+                Self::claim_geom(overlay, partner_geom, moved);
+            }
         }
 
         // this is also what resizes the pane's pty to the new geometry
         self.set_pane_frames().non_fatal();
         self.set_force_render();
         Ok(true)
+    }
+
+    /// Give `overlay` the geometry a user resize produced, and write it back as the user's:
+    /// the size always, the position when the resize moved it.
+    fn claim_geom(overlay: &mut OverlayPane, geom: PaneGeom, moved: bool) {
+        overlay.pane.set_geom(geom);
+        overlay.pane.set_should_render(true);
+        overlay.coordinates.width = Some(PercentOrFixed::Fixed(geom.cols.as_usize()));
+        overlay.coordinates.height = Some(PercentOrFixed::Fixed(geom.rows.as_usize()));
+        overlay.carry.size_is_user_stated = true;
+        if moved {
+            // `PaneGeom::apply_floating_pane_position` reads `Fixed(n)` as a screen coordinate,
+            // so the position round-trips exactly - the same arithmetic `move_pane_to_position` does
+            overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x));
+            overlay.coordinates.y = Some(PercentOrFixed::Fixed(geom.y));
+            overlay.carry.position_is_user_stated = true;
+        }
     }
 
     // ---- being dragged with the mouse -------------------------------------------------------
@@ -1207,20 +1491,37 @@ impl OverlayPanes {
         }
         let move_x_by = click_position.column() as isize - previous_position.column() as isize;
         let move_y_by = click_position.line() - previous_position.line();
-        let Some(overlay) = self.panes.get_mut(&pane_id) else {
+        let Some(geom) = self.get(&pane_id).map(|pane| pane.position_and_size()) else {
             return false;
         };
-        let geom = geom_moved_within(
-            overlay.pane.position_and_size(),
-            surface,
-            move_x_by,
-            move_y_by,
+        // A linked partner moves by the same delta, so the panel moves as one - and the delta is
+        // clamped against the pair's bounding rectangle rather than against the dragged half
+        // alone, so neither half is carried off the surface. A hidden partner comes too: it is
+        // placed at the share it will come back to, inside the panel, and the reveal maps the
+        // panel's layout onto the pair's bounding box - which a half left behind would stretch.
+        let partner = self.linked_partner(&pane_id);
+        let bounds = match partner.and_then(|partner| self.get(&partner)) {
+            Some(partner_pane) => union_of(geom, partner_pane.position_and_size()),
+            None => geom,
+        };
+        let moved_bounds = geom_moved_within(bounds, surface, move_x_by, move_y_by);
+        let (move_x_by, move_y_by) = (
+            moved_bounds.x as isize - bounds.x as isize,
+            moved_bounds.y as isize - bounds.y as isize,
         );
-        overlay.pane.set_geom(geom);
-        overlay.pane.set_should_render(true);
-        overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x));
-        overlay.coordinates.y = Some(PercentOrFixed::Fixed(geom.y));
-        overlay.carry.position_is_user_stated = true;
+        for moved_id in std::iter::once(pane_id).chain(partner) {
+            let Some(overlay) = self.panes.get_mut(&moved_id) else {
+                continue;
+            };
+            let mut geom = overlay.pane.position_and_size();
+            geom.x = (geom.x as isize + move_x_by).max(0) as usize;
+            geom.y = (geom.y as isize + move_y_by).max(0) as usize;
+            overlay.pane.set_geom(geom);
+            overlay.pane.set_should_render(true);
+            overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x));
+            overlay.coordinates.y = Some(PercentOrFixed::Fixed(geom.y));
+            overlay.carry.position_is_user_stated = true;
+        }
         self.set_pane_being_moved_with_mouse(pane_id, *click_position);
         self.set_force_render();
         true
@@ -1278,6 +1579,246 @@ impl OverlayPanes {
         }
         self.pane_being_moved_with_mouse = None;
         never_moved
+    }
+
+    // ---- linked panels and the seam between them ---------------------------------------------
+
+    /// Link every pair among `pane_ids` that a placement has put together - edge to edge, the
+    /// right one starting on the column where the left one ends, or with one half hidden and its
+    /// share lying inside the other (`placed_together`) - and forget any earlier link naming one
+    /// of them.
+    ///
+    /// Called by `Tab` once a `change_overlay_coordinates` batch has been applied, and by the
+    /// cross-tab move, which carries a batch of panes at once: "placed together" is the whole
+    /// of the test, so a batch naming one pane leaves every link alone, and a batch that places
+    /// two visible panes apart unlinks them. A seam drag in flight on a pair the batch keeps
+    /// together is left in flight: re-placing the panel under the pointer is no reason to drop
+    /// the divider.
+    pub fn link_touching(&mut self, pane_ids: &[PaneId]) {
+        if pane_ids.len() < 2 {
+            return;
+        }
+        for pane_id in pane_ids {
+            self.forget_links_of(*pane_id);
+        }
+        for (index, a) in pane_ids.iter().enumerate() {
+            for b in &pane_ids[index + 1..] {
+                if let Some(pair) = self.placed_together(a, b) {
+                    self.linked.push(pair);
+                }
+            }
+        }
+        if let Some((left, right, _)) = self.seam_being_dragged {
+            if !self.linked.contains(&(left, right)) {
+                self.seam_being_dragged = None;
+            }
+        }
+    }
+
+    /// Whether `a` and `b` form a panel, and in which order: `Some((left, right))` when they sit
+    /// edge to edge, or when one is hidden and lies inside the other - the shape a placement
+    /// with one half put away has, the hidden half kept at the share it will come back to. In
+    /// that shape the left half is the one starting further left, and among two starting on the
+    /// same column the one ending first, which is the hidden share at the panel's left edge.
+    fn placed_together(&self, a: &PaneId, b: &PaneId) -> Option<(PaneId, PaneId)> {
+        if self.touch_edge_to_edge(a, b) {
+            return Some((*a, *b));
+        }
+        if self.touch_edge_to_edge(b, a) {
+            return Some((*b, *a));
+        }
+        if !(self.is_hidden(a) || self.is_hidden(b)) {
+            return None;
+        }
+        let (Some(geom_a), Some(geom_b)) = (
+            self.get(a).map(|pane| pane.position_and_size()),
+            self.get(b).map(|pane| pane.position_and_size()),
+        ) else {
+            return None;
+        };
+        let (hidden, shown) = match self.is_hidden(a) {
+            true => (geom_a, geom_b),
+            false => (geom_b, geom_a),
+        };
+        let inside = hidden.x >= shown.x
+            && hidden.y >= shown.y
+            && hidden.x + hidden.cols.as_usize() <= shown.x + shown.cols.as_usize()
+            && hidden.y + hidden.rows.as_usize() <= shown.y + shown.rows.as_usize();
+        if !inside {
+            return None;
+        }
+        let key = |geom: PaneGeom| (geom.x, geom.x + geom.cols.as_usize());
+        match key(geom_a) <= key(geom_b) {
+            true => Some((*a, *b)),
+            false => Some((*b, *a)),
+        }
+    }
+
+    /// Drop every link naming `pane_id`, and a seam drag holding it: a seam is drawn between two
+    /// panes, and one of them going away leaves nothing to drag.
+    fn unlink(&mut self, pane_id: PaneId) {
+        self.forget_links_of(pane_id);
+        self.release_seam_drag_of(pane_id);
+    }
+
+    /// Drop every link naming `pane_id`. The seam drag, if any, is the caller's to settle:
+    /// `link_touching` may be about to make the same link again.
+    fn forget_links_of(&mut self, pane_id: PaneId) {
+        self.linked
+            .retain(|(left, right)| *left != pane_id && *right != pane_id);
+    }
+
+    /// End a seam drag holding `pane_id`, if one is in flight.
+    fn release_seam_drag_of(&mut self, pane_id: PaneId) {
+        if matches!(self.seam_being_dragged, Some((left, right, _)) if left == pane_id || right == pane_id)
+        {
+            self.seam_being_dragged = None;
+        }
+    }
+
+    /// The `(left, right)` pair `pane_id` is a member of, if any.
+    pub fn link_of(&self, pane_id: &PaneId) -> Option<(PaneId, PaneId)> {
+        self.linked
+            .iter()
+            .find(|(left, right)| left == pane_id || right == pane_id)
+            .copied()
+    }
+
+    /// The other half of the panel `pane_id` is in, if it is in one.
+    pub fn linked_partner(&self, pane_id: &PaneId) -> Option<PaneId> {
+        self.link_of(pane_id)
+            .map(|(left, right)| if left == *pane_id { right } else { left })
+    }
+
+    /// Whether `right` starts on the column `left` ends on, with their rows overlapping.
+    fn touch_edge_to_edge(&self, left: &PaneId, right: &PaneId) -> bool {
+        let (Some(left), Some(right)) = (self.get(left), self.get(right)) else {
+            return false;
+        };
+        let (left, right) = (left.position_and_size(), right.position_and_size());
+        left.x + left.cols.as_usize() == right.x
+            && left.y < right.y + right.rows.as_usize()
+            && right.y < left.y + left.rows.as_usize()
+    }
+
+    /// The linked pair whose seam is under `position`: the right frame column of the left pane
+    /// or the left frame column of the right pane, both panes visible and still touching.
+    ///
+    /// Resolved through this collection's own hit test, as the frame drag is, so a seam is
+    /// never found underneath an overlay covering it.
+    pub fn seam_at(&self, position: &Position) -> Option<(PaneId, PaneId)> {
+        let pane_id = self.visible_pane_id_at(position)?;
+        if !self.get(&pane_id)?.position_is_on_frame(position) {
+            return None;
+        }
+        let (left, right) = self.link_of(&pane_id)?;
+        if self.is_hidden(&left)
+            || self.is_hidden(&right)
+            || !self.touch_edge_to_edge(&left, &right)
+        {
+            return None;
+        }
+        let left_geom = self.get(&left)?.position_and_size();
+        let right_geom = self.get(&right)?.position_and_size();
+        let column = position.column();
+        let on_seam =
+            column + 1 == left_geom.x + left_geom.cols.as_usize() || column == right_geom.x;
+        on_seam.then_some((left, right))
+    }
+
+    /// Note that the seam between `left` and `right` is being dragged, from `position`.
+    ///
+    /// What is remembered is where the pointer took hold of the seam *relative to it* - the seam
+    /// is two frame columns wide and the press may be on either - so that every later step can
+    /// put the seam back under the pointer rather than move it by the pointer's last delta.
+    pub fn start_seam_drag(&mut self, left: PaneId, right: PaneId, position: Position) {
+        let Some(left_geom) = self.get(&left).map(|pane| pane.position_and_size()) else {
+            return;
+        };
+        let seam_column = (left_geom.x + left_geom.cols.as_usize()) as isize - 1;
+        let grab_offset = seam_column - position.column() as isize;
+        self.seam_being_dragged = Some((left, right, grab_offset));
+    }
+    pub fn seam_is_being_dragged(&self) -> bool {
+        self.seam_being_dragged.is_some()
+    }
+
+    /// Move the dragged seam to where the pointer is now; `true` => the split changed.
+    ///
+    /// The left half grows by what the right half gives up, or the other way round, and the
+    /// panel's outer edges never move. Each half keeps the floor a resize keeps
+    /// (`MIN_TERMINAL_WIDTH`), so the pointer running past it leaves the seam at the floor rather
+    /// than folding one half to nothing - and because the seam is placed from the pointer's
+    /// absolute column, it stays at the floor until the pointer comes back to it, rather than
+    /// pulling away the moment the pointer turns round.
+    ///
+    /// Both halves' `x`/`width` are written back as `Fixed`, so `reapply_coordinates` keeps the
+    /// split through a terminal resize - and **no claim is set**: see the module doc.
+    pub fn drag_seam_to(&mut self, position: &Position) -> bool {
+        let Some((left, right, grab_offset)) = self.seam_being_dragged else {
+            return false;
+        };
+        let (Some(left_geom), Some(right_geom)) = (
+            self.get(&left).map(|pane| pane.position_and_size()),
+            self.get(&right).map(|pane| pane.position_and_size()),
+        ) else {
+            return false;
+        };
+        let left_cols = left_geom.cols.as_usize();
+        let total = left_cols + right_geom.cols.as_usize();
+        let floor = MIN_TERMINAL_WIDTH;
+        if total < floor * 2 {
+            return false;
+        }
+        // the seam column is the left half's last column, so the left half is one wider than
+        // the seam's offset from its own first column
+        let seam_column = position.column() as isize + grab_offset;
+        let new_left_cols = (seam_column - left_geom.x as isize + 1)
+            .clamp(floor as isize, (total - floor) as isize) as usize;
+        if new_left_cols == left_cols {
+            return false;
+        }
+        if let Some(overlay) = self.panes.get_mut(&left) {
+            let mut geom = overlay.pane.position_and_size();
+            geom.cols.set_inner(new_left_cols);
+            overlay.pane.set_geom(geom);
+            overlay.pane.set_should_render(true);
+            overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x));
+            overlay.coordinates.width = Some(PercentOrFixed::Fixed(new_left_cols));
+        }
+        if let Some(overlay) = self.panes.get_mut(&right) {
+            let mut geom = overlay.pane.position_and_size();
+            geom.x = left_geom.x + new_left_cols;
+            geom.cols.set_inner(total - new_left_cols);
+            overlay.pane.set_geom(geom);
+            overlay.pane.set_should_render(true);
+            overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x));
+            overlay.coordinates.width = Some(PercentOrFixed::Fixed(total - new_left_cols));
+        }
+        // Only the two halves changed size, so only their ptys are told - a drag is one event
+        // per pointer cell, and `set_pane_frames` would resize every overlay on the tab for each.
+        self.resize_ptys_of(&[left, right]).non_fatal();
+        self.set_force_render();
+        true
+    }
+
+    /// Tell the ptys of `pane_ids` their panes' current sizes.
+    fn resize_ptys_of(&mut self, pane_ids: &[PaneId]) -> Result<()> {
+        for pane_id in pane_ids {
+            let Some(overlay) = self.panes.get_mut(pane_id) else {
+                continue;
+            };
+            let pane = &mut overlay.pane;
+            resize_pty!(pane, os_api, self.senders, self.character_cell_size)
+                .with_context(|| format!("failed to resize overlay {pane_id:?}"))?;
+        }
+        Ok(())
+    }
+
+    /// End the seam drag, landing the final step at the release position.
+    pub fn stop_seam_drag(&mut self, position: Position) {
+        self.drag_seam_to(&position);
+        self.seam_being_dragged = None;
     }
 
     /// The absolute geometries of the overlays owning cells outside the tab's own viewport - which,
@@ -1607,6 +2148,32 @@ impl OverlayPanes {
         }
         Ok(())
     }
+}
+
+/// `edge`, a coordinate inside the span `from .. from + from_len`, carried in proportion into the
+/// span `to .. to + to_len` - how `place_linked_pair` maps a requested layout onto the panel the
+/// user left. A span of no length maps everything onto `to`.
+fn map_edge(edge: usize, from: usize, from_len: usize, to: usize, to_len: usize) -> usize {
+    if from_len == 0 {
+        return to;
+    }
+    to + edge.saturating_sub(from) * to_len / from_len
+}
+
+/// The smallest rectangle holding both geometries - what a linked pair is clamped against when
+/// it is dragged as one, and the panel a linked pair is placed into. Everything but position and
+/// size is `a`'s.
+fn union_of(a: PaneGeom, b: PaneGeom) -> PaneGeom {
+    let mut bounds = a;
+    let x = a.x.min(b.x);
+    let y = a.y.min(b.y);
+    let right = (a.x + a.cols.as_usize()).max(b.x + b.cols.as_usize());
+    let bottom = (a.y + a.rows.as_usize()).max(b.y + b.rows.as_usize());
+    bounds.x = x;
+    bounds.y = y;
+    bounds.cols.set_inner(right - x);
+    bounds.rows.set_inner(bottom - y);
+    bounds
 }
 
 #[cfg(test)]

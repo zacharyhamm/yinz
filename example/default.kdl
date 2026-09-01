@@ -180,9 +180,10 @@ keybinds {
             SwitchToMode "Normal"
         }
         // Land on the agent list, without going through the conversation
-        // first. The list is its own pane: this reveals it if it was hidden and
-        // opens one if there is none, and leaves the conversation exactly as it
-        // was — hidden if it was hidden, where it is if it is on screen.
+        // first. The list is its own pane, the left half of the panel: this
+        // reveals it if it was hidden and opens one if there is none, and
+        // leaves the conversation as it was — hidden if it was hidden, cut
+        // back to its half of the panel if it is on screen.
         //
         // `awaits_placement` says hocus puts this pane where it goes, so don't
         // paint it at the centered default it is born with in the meantime —
@@ -198,8 +199,9 @@ keybinds {
             };
             SwitchToMode "Normal"
         }
-        // The conversation, in the corner. Its own pane too: opening it pushes
-        // an open agent list one width to the right rather than replacing it.
+        // The conversation, the right half of the panel. Its own pane too:
+        // opening it cuts an open agent list back to its half rather than
+        // replacing it, and hidden, it leaves the list the whole panel.
         bind "c" {
             LaunchOrFocusPlugin "hocus" {
                 floating true
@@ -333,30 +335,34 @@ plugins {
     //                       Unset, the `linear_*` tools stay advertised and answer with a
     //                       sentence saying which variable to set; nothing else changes.
     //
-    // hocus draws itself as an overlay panel in the bottom-left corner of the
+    // hocus draws itself as one overlay panel in the bottom-left corner of the
     // screen — over a tab rather than beside it, so no tab is shrunk to make
-    // room. The agent list is a second pane the same size, sitting to its right;
-    // with the conversation hidden the list takes the corner instead. Three keys
-    // size both, and hocus re-places them whenever the terminal is resized:
+    // room. The panel is two panes butted together: the agent list on the left,
+    // the conversation on the right, with a divider between them that you can
+    // drag with the mouse. Four keys size the panel, and hocus re-places it
+    // whenever the terminal is resized:
     //
-    //   width   a pane's width. A percentage of the screen ("30%", the default)
-    //           or a fixed number of columns ("60"). With both panes on screen
-    //           neither may exceed half of what the padding leaves.
-    //   height  a pane's height. A percentage of the screen ("66%", the
-    //           default) or a fixed number of rows ("30"). A pane is anchored
+    //   width   the whole panel's width. A percentage of the screen ("60%",
+    //           the default) or a fixed number of columns ("120"). Never less
+    //           than 26 columns per half on screen.
+    //   height  the panel's height. A percentage of the screen ("66%", the
+    //           default) or a fixed number of rows ("30"). The panel is anchored
     //           to the bottom, so this grows upward.
+    //   split   the agent list's share of the width, "50%" or a column count.
+    //           Dragging the divider overrides it for the session.
     //   pad     cells of clear screen left around the panel on every side.
     //           Default 3, capped at a quarter of the screen.
     //
-    // Esc hides the pane you are in without unloading it — the conversation, the
-    // parked chats and anything still streaming are all still there. The two
-    // panes hide and open separately: `Ctrl e c` brings the conversation back,
-    // `Ctrl e a` the agent list.
+    // Esc hides the half you are in without unloading it — the conversation, the
+    // parked chats and anything still streaming are all still there — and the
+    // other half widens to fill the panel. `Ctrl e c` brings the conversation
+    // back, `Ctrl e a` the agent list, and either restores the split.
     //
-    // Ctrl o, in the conversation, jumps it over a different tiled pane — the
-    // largest one you are not working in — and it stays inside that pane through
-    // resizes until the pane closes or hocus follows you to another tab, when it
-    // returns to the corner. It works on a pane you have dragged, too.
+    // Ctrl o, in either half, moves the whole panel clear of a different tiled
+    // pane — the largest one you are not working in — and it stays clear of that
+    // pane through resizes until the pane closes or hocus follows you to another
+    // tab, when it returns to the corner. Dragging either half's frame moves the
+    // whole panel too.
     hocus location="zellij:hocus" {
         shared true
         // DeepSeek v4 defaults to high-effort thinking. Disable it for shorter,
@@ -377,8 +383,9 @@ plugins {
         // override. Uncomment to force chat/completions against OpenAI instead:
         // api "chat"
     }
-    // The agent list, bound to Ctrl e a above — its own overlay pane, beside the
-    // conversation or in its place. Sized by hocus's `width` and `height`, above.
+    // The agent list, bound to Ctrl e a above — the left half of the panel, or
+    // the whole of it while the conversation is hidden. Sized by hocus's `width`,
+    // `height` and `split`, above.
     hocus-agents location="zellij:hocus-agents" {
         shared true
     }

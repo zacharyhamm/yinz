@@ -2329,6 +2329,11 @@ impl State {
             // would say this pane was already placed, and the retry that exists for exactly this
             // case would never run.
             self.agents_tab_index = None;
+            // A list announcing itself is on screen - it was just launched, or just reloaded -
+            // so the placement below cuts the panel for two halves rather than handing the
+            // conversation the whole of it for the one frame until the manifest says so. The
+            // manifest corrects this if it is ever wrong.
+            self.agents_visible = true;
         }
         // This is the only word hocus gets of the list's id, and it can arrive after the
         // `TabUpdate` that placed the conversation - in which case that pass placed this pane
