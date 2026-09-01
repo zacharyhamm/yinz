@@ -14,3 +14,4 @@ workspace = true
 
 [dependencies]
 ansi_term = { workspace = true }
+unicode-width = { workspace = true }

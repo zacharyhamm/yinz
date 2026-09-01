@@ -4612,6 +4612,7 @@ dependencies = [
  "wasmi_wasi",
  "zellij-test-support",
  "zellij-tile",
+ "zellij-tile-utils",
  "zellij-utils",
 ]
 
@@ -4640,6 +4641,7 @@ name = "zellij-tile-utils"
 version = "0.45.0"
 dependencies = [
  "ansi_term",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
