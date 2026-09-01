@@ -9,6 +9,7 @@ compile_error!("Zellij does not support Windows");
 pub mod cli_client;
 mod client_loop;
 mod command_is_executing;
+mod host_transport;
 mod input_handler;
 mod keyboard_parser;
 mod nested_reannounce;
@@ -316,9 +317,12 @@ pub fn start_client(
         .support_kitty_keyboard_protocol
         .map(|e| !e)
         .unwrap_or(false);
+    // An explicit setting is the user's call either way - among other things it is the escape
+    // hatch for a mosh fork that does pass graphics through. Unset, the default is "yes, unless
+    // we can see we are behind something that would only mangle it".
     let support_kitty_graphics_protocol = config_options
         .support_kitty_graphics_protocol
-        .unwrap_or(true);
+        .unwrap_or_else(|| !host_transport::host_swallows_kitty_graphics());
     if tracing_attach {
         log::info!(
             "attach trace: client pid={} terminal preparation begin",

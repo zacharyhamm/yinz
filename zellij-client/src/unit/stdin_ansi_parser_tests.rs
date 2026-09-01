@@ -1461,6 +1461,90 @@ fn kitty_probe_error_reply_classifies_false() {
     }
 }
 
+/// The deadline exists for a transport that answers neither the probe nor the barrier that
+/// backstops it - mosh's emulator swallows the APC, and a proxy may swallow both - which would
+/// otherwise leave the capability unknown for the life of the session.
+#[test]
+fn a_probe_that_is_never_answered_resolves_false_on_the_deadline() {
+    let mut parser = StdinAnsiParser::new();
+    parser.expect_kitty_probe_reply();
+    match parser.resolve_kitty_probe_by_timeout() {
+        Some(HostReply::KittyGraphicsSupport(supported)) => assert!(!supported),
+        other => panic!("unexpected reply: {:?}", other),
+    }
+}
+
+#[test]
+fn the_probe_deadline_only_reports_once() {
+    let mut parser = StdinAnsiParser::new();
+    parser.expect_kitty_probe_reply();
+    assert!(parser.resolve_kitty_probe_by_timeout().is_some());
+    assert!(parser.resolve_kitty_probe_by_timeout().is_none());
+}
+
+#[test]
+fn the_probe_deadline_is_inert_before_the_probe_is_armed() {
+    let mut parser = StdinAnsiParser::new();
+    assert!(parser.resolve_kitty_probe_by_timeout().is_none());
+}
+
+/// A slow host is not an incapable one: the deadline reports "no graphics" to get a working
+/// answer out, but a reply arriving afterwards still turns the capability on.
+#[test]
+fn a_late_ok_after_the_deadline_still_reports_support() {
+    let mut parser = StdinAnsiParser::new();
+    parser.expect_kitty_probe_reply();
+    assert!(parser.resolve_kitty_probe_by_timeout().is_some());
+    let (replies, residue) = feed_once(&mut parser, b"\x1b_Gi=31;OK\x1b\\");
+    assert!(residue.is_empty(), "probe reply must be fully consumed");
+    let kitty_replies: Vec<bool> = replies
+        .iter()
+        .filter_map(|r| match r {
+            HostReply::KittyGraphicsSupport(supported) => Some(*supported),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(kitty_replies, vec![true]);
+}
+
+/// Saying `false` twice would cost the server a whole `ModeUpdate` fan-out to every plugin for a
+/// value that did not change.
+#[test]
+fn a_barrier_after_the_deadline_does_not_repeat_the_answer() {
+    let mut parser = StdinAnsiParser::new();
+    parser.expect_kitty_probe_reply();
+    assert!(parser.resolve_kitty_probe_by_timeout().is_some());
+    let (replies, residue) = feed_once(&mut parser, b"\x1b[?62;4;52c");
+    assert!(residue.is_empty());
+    assert!(
+        !replies
+            .iter()
+            .any(|r| matches!(r, HostReply::KittyGraphicsSupport(_))),
+        "{replies:?}"
+    );
+    // The barrier's other job is unaffected.
+    assert!(replies
+        .iter()
+        .any(|r| matches!(r, HostReply::SixelSupport(true))));
+}
+
+/// Same reasoning as the barrier case above: the deadline already said `false`, and a late
+/// refusal only repeats it.
+#[test]
+fn a_late_refusal_after_the_deadline_does_not_repeat_the_answer() {
+    let mut parser = StdinAnsiParser::new();
+    parser.expect_kitty_probe_reply();
+    assert!(parser.resolve_kitty_probe_by_timeout().is_some());
+    let (replies, residue) = feed_once(&mut parser, b"\x1b_Gi=31;ENOENT:no such file\x1b\\");
+    assert!(residue.is_empty(), "probe reply must be fully consumed");
+    assert!(
+        !replies
+            .iter()
+            .any(|r| matches!(r, HostReply::KittyGraphicsSupport(_))),
+        "{replies:?}"
+    );
+}
+
 #[test]
 fn kitty_probe_absence_resolves_false_on_barrier() {
     let mut parser = StdinAnsiParser::new();

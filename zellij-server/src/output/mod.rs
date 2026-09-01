@@ -22,6 +22,7 @@ use std::{
 };
 use zellij_utils::data::{HighlightLayer, PaneContents, PaneRenderReport};
 use zellij_utils::errors::prelude::*;
+use zellij_utils::kitty_placeholders::PLACEHOLDER;
 use zellij_utils::pane_size::SizeInPixels;
 use zellij_utils::pane_size::{PaneGeom, Size};
 
@@ -213,6 +214,12 @@ fn serialize_chunks(
 
     let mut vte_output = String::new();
     let mut sixel_vte: Option<String> = None;
+    // A unicode placeholder is grid text that only means anything beside the image bytes that
+    // accompany it. `kitty_input` is `None` in exactly the cases where those bytes are being
+    // withheld - the client's host terminal cannot show them, or the client is a watcher - so the
+    // cells would land on a terminal that renders U+10EEEE as garbage, which is what a mosh
+    // client sees. Blank them instead; the placeholder is width 1, so the row still lines up.
+    let suppress_kitty_placeholders = kitty_input.is_none();
     let link_handler = link_handler.map(|l_h| l_h.borrow());
     for character_chunk in character_chunks {
         // Skip chunks that are completely outside the size bounds
@@ -260,7 +267,11 @@ fn serialize_chunks(
             )
             .with_context(err_context)?;
             chunk_width += t_character.width();
-            vte_output.push(t_character.character);
+            if suppress_kitty_placeholders && t_character.character == PLACEHOLDER {
+                vte_output.push(' ');
+            } else {
+                vte_output.push(t_character.character);
+            }
         }
     }
     if let Some(sixel_image_store) = sixel_image_store {

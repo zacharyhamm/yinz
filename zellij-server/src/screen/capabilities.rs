@@ -48,6 +48,13 @@ impl Screen {
     }
 
     pub fn update_kitty_graphics_support(&mut self, client_id: ClientId, supported: bool) {
+        // The probe reply can outlive its client. `remove_client` drops both this entry and the
+        // `mode_info` one because client ids are recycled; re-creating them here would put the
+        // departed terminal's capability back into the tab aggregate, and into every tab
+        // created afterwards.
+        if !self.connected_clients_contains(&client_id) {
+            return;
+        }
         let supported = supported && self.support_kitty_graphics_protocol;
         self.kitty_host_capabilities
             .borrow_mut()

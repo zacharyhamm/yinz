@@ -13,6 +13,7 @@ use crate::ClientId;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
+use zellij_utils::kitty_placeholders::PLACEHOLDER;
 use zellij_utils::pane_size::{Dimension, PaneGeom, Size, SizeInPixels};
 
 /// Helper to create a simple Output instance for testing
@@ -31,6 +32,29 @@ fn create_test_output() -> Output {
         osc8_hyperlinks,
         Rc::new(RefCell::new(KittyImageStore::default())),
         Rc::new(RefCell::new(HashMap::new())),
+        Rc::new(RefCell::new(HashMap::new())),
+        Rc::new(RefCell::new(HashMap::new())),
+    )
+}
+
+/// The same, but with the kitty host capability already known for `client_id`. `Output` reads
+/// that map to decide whether a client gets image bytes at all, and therefore whether its
+/// placeholder cells mean anything.
+fn create_test_output_with_kitty_support(client_id: ClientId, supported: bool) -> Output {
+    let kitty_host_capabilities = Rc::new(RefCell::new(HashMap::new()));
+    kitty_host_capabilities
+        .borrow_mut()
+        .insert(client_id, supported);
+    Output::new(
+        Rc::new(RefCell::new(SixelImageStore::default())),
+        Rc::new(RefCell::new(Some(SizeInPixels {
+            height: 20,
+            width: 10,
+        }))),
+        true,
+        true,
+        Rc::new(RefCell::new(KittyImageStore::default())),
+        kitty_host_capabilities,
         Rc::new(RefCell::new(HashMap::new())),
         Rc::new(RefCell::new(HashMap::new())),
     )
@@ -2007,4 +2031,73 @@ fn kitty_host_ids_stay_within_signed_32_bit_range() {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Unicode placeholders never reach a client that gets no image
+// ---------------------------------------------------------------------------
+
+/// A chunk of kitty unicode placeholders, the cells a virtual placement is drawn through.
+fn create_placeholder_chunk(cells: usize, x: usize, y: usize) -> CharacterChunk {
+    let terminal_chars: Vec<TerminalCharacter> = std::iter::repeat_n(PLACEHOLDER, cells)
+        .map(TerminalCharacter::new)
+        .collect();
+    CharacterChunk::new(terminal_chars, x, y)
+}
+
+/// The property that actually protects a mosh client: it is told it cannot show images, so no
+/// image bytes are serialized for it, and the placeholder cells that would refer to them must not
+/// be serialized either - `U+10EEEE` is unassigned, and a terminal that renders it as a glyph of
+/// its own choosing ends up with a screen that no longer matches its own model of it.
+#[test]
+fn a_client_without_kitty_support_never_receives_placeholder_cells() {
+    let mut output = create_test_output_with_kitty_support(1, false);
+    let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
+    output.add_clients(&create_test_clients(1), link_handler, None);
+    output
+        .add_character_chunks_to_client(1, vec![create_placeholder_chunk(4, 0, 0)], None)
+        .unwrap();
+
+    let rendered = output.serialize().unwrap().remove(&1).unwrap();
+    assert!(
+        !rendered.contains(PLACEHOLDER),
+        "placeholder reached a client with no image: {rendered:?}"
+    );
+    // Blanked rather than dropped: the placeholder is one cell wide, so anything drawn to its
+    // right on the same row would shift left if the cell simply vanished.
+    assert!(rendered.ends_with("    "), "{rendered:?}");
+}
+
+#[test]
+fn a_kitty_capable_client_still_receives_placeholder_cells() {
+    let mut output = create_test_output_with_kitty_support(1, true);
+    let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
+    output.add_clients(&create_test_clients(1), link_handler, None);
+    output
+        .add_character_chunks_to_client(1, vec![create_placeholder_chunk(4, 0, 0)], None)
+        .unwrap();
+
+    let rendered = output.serialize().unwrap().remove(&1).unwrap();
+    assert_eq!(rendered.matches(PLACEHOLDER).count(), 4, "{rendered:?}");
+}
+
+/// An unknown capability is not a capable one - a client whose probe has not answered yet, which
+/// is every client for the first moments after it attaches.
+#[test]
+fn a_client_whose_capability_is_unknown_never_receives_placeholder_cells() {
+    let mut output = create_test_output();
+    let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
+    output.add_clients(&create_test_clients(1), link_handler, None);
+    output
+        .add_character_chunks_to_client(1, vec![create_placeholder_chunk(4, 0, 0)], None)
+        .unwrap();
+
+    let rendered = output.serialize().unwrap().remove(&1).unwrap();
+    assert!(!rendered.contains(PLACEHOLDER), "{rendered:?}");
+}
+
+/// The placeholder must stay one cell wide for the blanking above to be width-preserving.
+#[test]
+fn the_placeholder_is_one_cell_wide() {
+    assert_eq!(TerminalCharacter::new(PLACEHOLDER).width(), 1);
 }

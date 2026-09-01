@@ -430,6 +430,17 @@ fn wand_height(state: &State, height: usize, cols: usize) -> usize {
 fn render_wand(state: &mut State, y: usize, height: usize, cols: usize) {
     let form = wand_form(state, height, cols);
     state.wand_drawing = form.is_some();
+    if form != Some(Wand::Image) {
+        // The picture is not being drawn any more - the host turned out not to speak the
+        // protocol, or the pane shrank below `MIN_ROWS`. The pixels are kept alive only by the
+        // placeholder cells that refer to them, and there are none now, so release this client's
+        // copies. This is also what keeps `wand_transmitted` meaning "clients currently showing
+        // the image": without it a later flip back to `Image` would skip the transmit and print
+        // placeholders that refer to nothing.
+        if state.wand_transmitted.remove(&state.client) {
+            print!("{}", wand::delete_bytes());
+        }
+    }
     let Some(form) = form else {
         return;
     };
@@ -2780,6 +2791,37 @@ mod tests {
             wand_height(&state, WAND_HEIGHT, WAND_COLS),
             wand::fallback_lines(0).len() + 1
         );
+    }
+
+    /// The capability arrives after the first render and can go either way - a client attaching
+    /// over mosh onto a recycled id is told `true` and then corrected. The image has to be
+    /// released when that happens, or `wand_transmitted` stops meaning "clients currently showing
+    /// the image" and a later flip back would print placeholders that refer to nothing.
+    #[test]
+    fn a_capability_that_turns_off_mid_session_releases_the_image() {
+        let mut state = empty_state(true);
+        render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
+        assert!(state.wand_transmitted.contains(&state.client));
+
+        state.kitty_graphics.remove(&state.client);
+        render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
+        assert_eq!(wand_form(&state, WAND_HEIGHT, WAND_COLS), Some(Wand::Text));
+        assert!(state.wand_transmitted.is_empty());
+
+        // And turning back on re-transmits rather than referring to images it no longer holds.
+        state.kitty_graphics.insert(state.client);
+        render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
+        assert!(state.wand_transmitted.contains(&state.client));
+    }
+
+    #[test]
+    fn a_pane_that_shrinks_below_the_image_releases_it() {
+        let mut state = empty_state(true);
+        render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
+        assert!(state.wand_transmitted.contains(&state.client));
+
+        render_transcript(&mut state, 0, wand::MIN_ROWS - 1, WAND_COLS);
+        assert!(state.wand_transmitted.is_empty());
     }
 
     #[test]

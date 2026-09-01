@@ -137,6 +137,83 @@ fn plugins_receive_kitty_support_after_a_client_id_is_reused() {
     ));
 }
 
+/// The probe reply can outlive its client: the deadline that resolves it fires on the client's
+/// own thread, so a `KittyGraphicsSupport` can reach Screen after `RemoveClient`. Recording it
+/// would resurrect exactly the per-client entries `remove_client` deletes.
+#[test]
+fn a_capability_reply_for_a_departed_client_is_ignored() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let mut screen = create_new_screen(size, true, true);
+    new_tab(&mut screen, 1, 0);
+    screen.add_client(2).expect("TEST");
+    screen.update_kitty_graphics_support(1, false);
+    screen.remove_client(2).expect("TEST");
+
+    screen.update_kitty_graphics_support(2, true);
+
+    assert_eq!(
+        screen.kitty_host_capabilities.borrow().get(&2),
+        None,
+        "a departed client must not be recorded"
+    );
+    assert!(
+        !screen.mode_info.contains_key(&2),
+        "a departed client must not come back as a phantom in the mode_info map"
+    );
+    // ...and the aggregate still reflects only the client that is actually here.
+    let active_tab = screen.get_active_tab_mut(1).unwrap();
+    let active_pane = active_tab.get_active_pane_mut(1).unwrap();
+    active_pane.handle_pty_bytes(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec());
+    let replies = active_pane.drain_messages_to_pty();
+    assert_eq!(replies.len(), 1);
+    let reply = String::from_utf8(replies[0].clone()).unwrap();
+    assert!(reply.starts_with("\x1b_Gi=31;ENOTSUPPORTED"), "{reply:?}");
+}
+
+/// Client ids are recycled. The kitty capability describes the terminal on the other end, not the
+/// id, so a client attaching over a transport that cannot show images must not be told it can by
+/// the kitty terminal that held the id before it - which is what put the hall-of-mirrors wand on
+/// a mosh client's screen.
+#[test]
+fn a_reused_client_id_does_not_inherit_the_previous_clients_kitty_capability() {
+    let size = Size { cols: 80, rows: 20 };
+    let (mut screen, capture) = create_new_screen_with_theme_capture(size);
+    new_tab(&mut screen, 1, 0);
+    add_pane_to_tab(&mut screen, 0, PaneId::Plugin(77), false);
+
+    screen.update_kitty_graphics_support(1, true);
+    screen.remove_client(1).expect("TEST");
+    screen.add_client(1).expect("TEST");
+    capture.drain_plugin_updates();
+
+    // What the server enqueues right after `AddClient`, and the point at which a stale entry
+    // would be cloned and fanned out to every plugin.
+    screen
+        .change_mode(InputMode::Normal, None, 1)
+        .expect("TEST");
+
+    let reported: Vec<bool> = capture
+        .drain_plugin_updates()
+        .into_iter()
+        .filter_map(
+            |(plugin_id, client_id, event)| match (plugin_id, client_id, event) {
+                (Some(77), Some(1), Event::ModeUpdate(mode_info)) => {
+                    Some(mode_info.capabilities.kitty_graphics)
+                },
+                _ => None,
+            },
+        )
+        .collect();
+    assert!(!reported.is_empty(), "the new client was told nothing");
+    assert!(
+        reported.iter().all(|supported| !supported),
+        "a recycled id inherited the last holder's capability: {reported:?}"
+    );
+}
+
 #[test]
 fn primary_da_advertises_sixel_when_capable_client_connected() {
     let size = Size {
