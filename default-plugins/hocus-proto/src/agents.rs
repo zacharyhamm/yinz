@@ -780,11 +780,11 @@ pub enum RunEntryKind {
     /// A summary a person asked for, kept on the timeline at the point they asked.
     ///
     /// The automatic summaries do not land here: they replace [`AgentRun::summary`], which
-    /// is drawn pinned above the timeline, because a run that rolls one forward at every
-    /// turn end would otherwise grow a line per turn and the newest of them is the only one
-    /// anybody wanted. A summary somebody pressed a key for is the opposite - it describes
-    /// the run *at that moment*, and the moment is half of what it says - so it stays where
-    /// it was made.
+    /// the history half draws as the newest row of the timeline, because a run that rolls one
+    /// forward at every turn end would otherwise grow a line per turn and the newest of them
+    /// is the only one anybody wanted. A summary somebody pressed a key for is the opposite -
+    /// it describes the run *at that moment*, and the moment is half of what it says - so it
+    /// stays where it was made.
     ///
     /// Deliberately absent from the delta `run_summary_text` builds: a summary is the
     /// model's words about the agent, and feeding it back as though the agent had said it
@@ -1683,13 +1683,8 @@ pub struct HistoryLines {
     /// nothing to name. Uncut: the row it goes on carries the scroll readout too, so only
     /// whoever draws the divider knows the room a label has. See `fit_label`.
     pub label: String,
-    /// Rows that stay at the top of the half whatever the scroll.
-    pub pinned: Vec<MdLine>,
-    /// Whether the first of those rows is the `summary:` label on its own, carrying no text of
-    /// the summary. A caller capping how much of the half the pinned rows may have has to allow
-    /// for it, or a summary opening with a bullet can spend the whole cap saying `summary:`.
-    pub pinned_label_row: bool,
-    /// The timeline, oldest first. The caller windows this against the room it has.
+    /// The timeline, oldest first - summaries among the rest of the events rather than above
+    /// them. The caller windows this against the room it has.
     pub entries: Vec<MdLine>,
 }
 
@@ -1697,15 +1692,13 @@ pub struct HistoryLines {
 /// empty.
 pub static NO_HISTORY: HistoryLines = HistoryLines {
     label: String::new(),
-    pinned: Vec::new(),
-    pinned_label_row: false,
     entries: Vec::new(),
 };
 
 impl HistoryLines {
-    /// Nothing to draw at all - no label, no summary, no timeline.
+    /// Nothing to draw at all - no label, no timeline.
     pub fn is_empty(&self) -> bool {
-        self.pinned.is_empty() && self.entries.is_empty()
+        self.entries.is_empty()
     }
 }
 
@@ -1737,29 +1730,24 @@ pub fn fit_label(mut label: String, width: usize) -> String {
     label
 }
 
-/// The selected run as the history half draws it: the rolling summary pinned, then the
-/// timeline.
+/// The selected run as the history half draws it: one timeline, summaries among the events
+/// rather than above them.
 ///
 /// The filter is the one the box drew: prompts, plans and questions always, and a result
 /// only on a run that has stopped and only while the summary has not yet absorbed it. A
-/// finished run whose summary is up to date says what it did once, in the pinned line,
+/// finished run whose summary is up to date says what it did once, in the summary row,
 /// rather than twice.
 ///
-/// A [`RunEntryKind::Summary`] is drawn unconditionally, and is the one kind here that
-/// double-counts on purpose: the newest of them is also the pinned line. That is what was
-/// asked for - a summary somebody pressed a key for is a mark on the timeline, and reading
-/// it in the place it was made is the point of having asked - and it costs one repeated
-/// paragraph at the foot of a run, which is where the eye already is.
+/// The rolling [`AgentRun::summary`] is appended as the newest row, which is where in time it
+/// was made. It is dropped when the newest [`RunEntryKind::Summary`] already on the timeline
+/// says the same thing - a summary somebody pressed a key for both stays where it was asked
+/// for and is the current one, and two identical paragraphs one under the other read as a bug
+/// rather than as a history.
 pub fn run_history(run: &AgentRun, width: usize, now_ms: i64) -> HistoryLines {
     let Some(inner) = wrap_width(width) else {
         return HistoryLines::default();
     };
-    let (pinned, pinned_label_row) = run
-        .summary
-        .as_ref()
-        .map(|summary| labelled(&summary.text, "summary", inner))
-        .unwrap_or_default();
-    let entries = run
+    let mut entries: Vec<MdLine> = run
         .entries
         .iter()
         .filter(|entry| {
@@ -1780,26 +1768,45 @@ pub fn run_history(run: &AgentRun, width: usize, now_ms: i64) -> HistoryLines {
                 },
                 None => entry.kind.label().to_owned(),
             };
-            labelled(&entry.text, &label, inner).0
+            let style = match entry.kind {
+                RunEntryKind::Summary => SUMMARY_LABEL_STYLE,
+                _ => LABEL_STYLE,
+            };
+            labelled(&entry.text, &label, inner, style).0
         })
         .collect();
+    if let Some(summary) = run
+        .summary
+        .as_ref()
+        .filter(|summary| !repeats_newest(run, summary))
+    {
+        entries.extend(labelled(&summary.text, "summary", inner, SUMMARY_LABEL_STYLE).0);
+    }
     let state = match run.outcome {
         RunOutcome::Active => "active",
         _ => "archived",
     };
     HistoryLines {
         label: format!("{} · {}", run.kind, state),
-        pinned,
-        pinned_label_row,
         entries,
     }
 }
 
+/// Whether the newest summary already on the run's timeline says what `summary` says - the
+/// same comparison [`push_summary_entry`] makes, asked of the rolling summary before it is
+/// drawn under the entry it duplicates.
+fn repeats_newest(run: &AgentRun, summary: &Summary) -> bool {
+    run.entries
+        .iter()
+        .rev()
+        .find(|entry| entry.kind == RunEntryKind::Summary)
+        .is_some_and(|entry| entry.text == summary.text.trim())
+}
+
 /// The idle summary as the history half draws it, for a selected agent with no run loaded.
 ///
-/// All of it scrolls: nothing is pinned, because there is no timeline for a pinned line to
-/// stay above. A talkative model is windowed by the caller rather than cut here, which is
-/// what the box had to do with six rows to give.
+/// A talkative model is windowed by the caller rather than cut here, which is what the box
+/// had to do with six rows to give.
 pub fn summary_history(pane_id: u32, kind: &str, summary: &Summary, width: usize) -> HistoryLines {
     let Some(inner) = wrap_width(width) else {
         return HistoryLines::default();
@@ -1812,11 +1819,9 @@ pub fn summary_history(pane_id: u32, kind: &str, summary: &Summary, width: usize
     }
     HistoryLines {
         label,
-        pinned: Vec::new(),
         // No label: the divider above it already names the agent this is about, and there is
         // no second kind of row here for one to tell it apart from.
         entries: crate::markdown::render(&summary.text, inner, crate::markdown::Options::compact()),
-        ..HistoryLines::default()
     }
 }
 
@@ -1848,8 +1853,10 @@ pub fn relative_age(now_ms: i64, then_ms: i64) -> String {
 /// is parsed into blocks here and wrapped once afterwards rather than rendered twice: the parse
 /// is by far the most expensive thing this does.
 ///
-/// Dim, because it is the pane talking rather than the agent.
-fn labelled(text: &str, label: &str, width: usize) -> (Vec<MdLine>, bool) {
+/// `style` is how the label itself is painted: dim for most kinds, because it is the pane
+/// talking rather than the agent, and bold for a summary, which is the one kind worth picking
+/// out of the timeline now that nothing stands above it.
+fn labelled(text: &str, label: &str, width: usize, style: MdStyle) -> (Vec<MdLine>, bool) {
     let label = format!("{label}: ");
     let blocks = crate::markdown::parse(text);
     let inline = blocks
@@ -1863,21 +1870,31 @@ fn labelled(text: &str, label: &str, width: usize) -> (Vec<MdLine>, bool) {
         let body = width.saturating_sub(label.width()).max(1);
         let mut lines = crate::markdown::wrap(&blocks, body, crate::markdown::Options::compact());
         let first = lines.remove(0);
-        lines.insert(0, first.prepend(&label, LABEL_STYLE));
+        lines.insert(0, first.prepend(&label, style));
         return (lines, false);
     }
     // Nothing shares the rows in this branch, so they get the width back.
     let mut lines = crate::markdown::wrap(&blocks, width, crate::markdown::Options::compact());
-    let mut labelled = vec![MdLine::plain("").prepend(label.trim_end(), LABEL_STYLE)];
+    let mut labelled = vec![MdLine::plain("").prepend(label.trim_end(), style)];
     labelled.append(&mut lines);
     (labelled, true)
 }
 
-/// How a history row's `prompt: ` / `summary: ` label is painted: dim, the way every other
-/// piece of pane furniture is.
+/// How a history row's `prompt: ` label is painted: dim, the way every other piece of pane
+/// furniture is.
 const LABEL_STYLE: MdStyle = MdStyle {
     bold: false,
     dim: true,
+    color: None,
+    error: false,
+};
+
+/// How a `summary: ` label is painted instead: bold and undimmed. The summary used to be told
+/// apart by standing above the timeline; it is a row of the timeline now, so its label is what
+/// marks it.
+const SUMMARY_LABEL_STYLE: MdStyle = MdStyle {
+    bold: true,
+    dim: false,
     color: None,
     error: false,
 };
@@ -3545,7 +3562,6 @@ mod tests {
 
         let history = run_history(&run, 40, 100);
         assert_eq!(history.label, "claude · active");
-        assert!(history.pinned.is_empty(), "no summary yet, nothing to pin");
         assert_eq!(history.entries.len(), 6);
         assert!(history.entries[0].text.contains("oldest"));
         assert!(history.entries[5].text.contains("newest"));
@@ -3600,11 +3616,13 @@ mod tests {
                 .any(|line| line.text.contains("summary: Rewrote the retry backoff.")),
             "filed on the timeline"
         );
-        assert!(
-            live.pinned
+        assert_eq!(
+            live.entries
                 .iter()
-                .any(|line| line.text.contains("Rewrote the retry backoff.")),
-            "and pinned above it, which is the newest-first reading of the same sentence"
+                .filter(|line| line.text.contains("Rewrote the retry backoff."))
+                .count(),
+            1,
+            "once: the rolling summary says the same thing, and is dropped rather than              repeated under the entry"
         );
 
         run.outcome = RunOutcome::Completed;
@@ -3743,11 +3761,12 @@ mod tests {
             .iter()
             .any(|line| line.text.contains("result:")));
         assert!(
-            summarized.pinned[0]
-                .text
-                .starts_with("summary: The implementation"),
+            summarized
+                .entries
+                .iter()
+                .any(|line| line.text.starts_with("summary: The implementation")),
             "{:?}",
-            summarized.pinned
+            summarized.entries
         );
     }
 
@@ -5466,7 +5485,6 @@ mod tests {
             30,
         );
         assert_eq!(history.label, "7 · claude");
-        assert!(history.pinned.is_empty(), "nothing to pin above nothing");
         assert_eq!(texts(&history.entries), ["Ran the tests, all green."]);
 
         let long = "word ".repeat(200);
@@ -5496,28 +5514,31 @@ mod tests {
         let history = run_history(&run, 40, 100);
         assert_eq!(
             texts(&history.entries),
-            ["prompt: Do it:", "• one", "• two"],
-            "the list is a list, and the label rides on the prose above it"
-        );
-        assert_eq!(
-            texts(&history.pinned),
-            ["summary: Ran the tests, all green."],
-            "no asterisks"
+            [
+                "prompt: Do it:",
+                "• one",
+                "• two",
+                "summary: Ran the tests, all green.",
+            ],
+            "the list is a list, the label rides on the prose above it, and the summary is the              newest row rather than a block above them - no asterisks in any of it"
         );
 
         // and the emphasis landed on the word rather than on the whole line
-        let pinned = &history.pinned[0];
-        let bold: String = pinned
+        let summary = history.entries.last().unwrap();
+        let emphasised: String = summary
             .text
             .chars()
-            .zip(&pinned.styles)
+            .zip(&summary.styles)
             .filter(|(_, style)| style.bold)
             .map(|(ch, _)| ch)
             .collect();
-        assert_eq!(bold, "tests");
+        assert_eq!(
+            emphasised, "summary: tests",
+            "the model's emphasis, and the label that marks the row as a summary"
+        );
         assert!(
-            pinned.styles[..8].iter().all(|style| style.dim),
-            "and the label is the pane talking, not the model"
+            summary.styles[..8].iter().all(|style| !style.dim),
+            "the summary's label is the one piece of furniture that is not dimmed"
         );
     }
 
@@ -5554,21 +5575,81 @@ mod tests {
         );
     }
 
-    /// The pinned summary is capped at half the half, and a row the label has to itself carries
-    /// none of the summary - so a half with one row to pin must not spend it on the word
-    /// `summary:` and pin nothing.
+    /// A summary opening with a marker gives the label a row of its own, the same as any other
+    /// entry: `summary: - ran the tests` is not a bullet, and gluing the label onto the marker
+    /// would take the column its continuation rows are indented to.
     #[test]
-    fn a_summary_that_opens_with_a_marker_says_the_label_took_a_row() {
+    fn a_summary_that_opens_with_a_marker_gives_the_label_a_row() {
         let mut run = a_pane_run();
         run.summary = Some(a_summary("- ran the tests", false));
         let history = run_history(&run, 40, 100);
-        assert_eq!(texts(&history.pinned), ["summary:", "• ran the tests"]);
-        assert!(history.pinned_label_row);
+        assert_eq!(texts(&history.entries), ["summary:", "• ran the tests"]);
 
         run.summary = Some(a_summary("ran the tests", false));
         let history = run_history(&run, 40, 100);
-        assert_eq!(texts(&history.pinned), ["summary: ran the tests"]);
-        assert!(!history.pinned_label_row);
+        assert_eq!(texts(&history.entries), ["summary: ran the tests"]);
+    }
+
+    /// The rolling summary is the newest row of the timeline rather than a block above it, and
+    /// it scrolls away with everything else - which is the whole point of unpinning it.
+    #[test]
+    fn the_rolling_summary_is_the_newest_row_of_the_timeline() {
+        let mut run = a_pane_run();
+        run.summary = Some(a_summary("Ran the tests.", false));
+        run.entries = vec![
+            RunEntry {
+                revision: 1,
+                event_id: None,
+                kind: RunEntryKind::Prompt,
+                text: "run the tests".to_owned(),
+                created_at_ms: None,
+            },
+            RunEntry {
+                revision: 2,
+                event_id: None,
+                kind: RunEntryKind::Question,
+                text: "which ones?".to_owned(),
+                created_at_ms: None,
+            },
+        ];
+        assert_eq!(
+            texts(&run_history(&run, 40, 100).entries),
+            [
+                "prompt: run the tests",
+                "question: which ones?",
+                "summary: Ran the tests.",
+            ],
+        );
+    }
+
+    /// A summary somebody asked for is both the newest entry and the rolling one, and saying it
+    /// twice under itself reads as a bug rather than as a history.
+    #[test]
+    fn a_rolling_summary_that_repeats_the_newest_filed_one_is_drawn_once() {
+        let mut run = a_pane_run();
+        run.summary = Some(a_summary("  Ran the tests.  ", false));
+        run.entries = vec![RunEntry {
+            revision: 1,
+            event_id: None,
+            kind: RunEntryKind::Summary,
+            // What `push_summary_entry` files: the trimmed text of the same summary.
+            text: "Ran the tests.".to_owned(),
+            created_at_ms: None,
+        }];
+        assert_eq!(
+            texts(&run_history(&run, 40, 100).entries),
+            ["summary: Ran the tests."],
+        );
+
+        // A summary that has moved on since is a second row, where it was made.
+        run.summary = Some(a_summary("Ran the tests and shipped it.", false));
+        assert_eq!(
+            texts(&run_history(&run, 40, 100).entries),
+            [
+                "summary: Ran the tests.",
+                "summary: Ran the tests and shipped it."
+            ],
+        );
     }
 
     /// The half has eight rows on a normal pane, so a paragraph break costs an eighth of what
@@ -5635,7 +5716,7 @@ mod tests {
         for width in [HISTORY_MIN_COLS + 2, 30, 46, 80] {
             let history = run_history(&run, width, 100);
             let inner = width - 2;
-            for line in history.pinned.iter().chain(&history.entries) {
+            for line in &history.entries {
                 assert!(line.text.width() <= inner, "{width}: {:?}", line.text);
             }
         }
