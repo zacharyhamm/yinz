@@ -869,6 +869,7 @@ impl State {
             kind,
             event,
             |pane_id, text| notify_with_pane_id(text, PaneId::Terminal(pane_id)),
+            |pane_id, title| rename_pane_with_id(PaneId::Terminal(pane_id), title),
             Self::on_turn_end,
         );
         self.persist_dirty_runs();
@@ -890,6 +891,7 @@ impl State {
         kind: &str,
         event: &wire::HookEvent,
         toast: impl FnOnce(u32, &str),
+        rename: impl FnOnce(u32, &str),
         turn: impl FnOnce(&mut Self, u32, &wire::HookEvent),
     ) {
         // The session carries the record, and `zellij action agent-report --hook-json` sets it
@@ -973,6 +975,18 @@ impl State {
                 Some(prompt) => {
                     self.prompts
                         .insert(pane_id, prompt.chars().take(PROMPT_CHARS).collect());
+                    // And the pane is named after it, now rather than at the end of the
+                    // turn. Until this, a pane got a name only when `finish_summary_with`
+                    // renamed it to the model's title — so the whole time an agent was
+                    // working, the tab bar said `claude`. The question the turn is about is
+                    // in hand the moment it is asked, and the summary title replaces it when
+                    // there is something better to say. Same guard as that rename, for the
+                    // same reason.
+                    if let Some(title) = agents::prompt_title(prompt) {
+                        if self.title_is_ours_to_take(pane_id) {
+                            rename(pane_id, &title);
+                        }
+                    }
                 },
                 None => {
                     self.prompts.remove(&pane_id);
@@ -3107,8 +3121,13 @@ impl State {
     /// what its title says — a `zsh` running an agent we have never seen the command for —
     /// would stop being an agent the moment we wrote a task name over it, and stop being
     /// polled with it. Rename only where the kind is anchored somewhere the title cannot
-    /// reach: the user's own registration, or the command latch (`settle_latches`), which
-    /// is the memory of a command we demonstrably saw run.
+    /// reach: the user's own registration, the session's own agent record, or the command
+    /// latch (`settle_latches`), which is the memory of a command we demonstrably saw run.
+    ///
+    /// The record is the anchor that matters for a prompt title: `classify` consults
+    /// `pane.agent` *before* it reads the title, so a pane the session holds a record for
+    /// cannot be un-detected by a rename — and every hook-connected pane has one, written by
+    /// `agent-report` in the same breath as the broadcast this reacts to.
     fn title_is_ours_to_take(&self, pane_id: u32) -> bool {
         if self.manual_kinds.contains_key(&pane_id) {
             return true;
@@ -3118,7 +3137,8 @@ impl State {
             .flatten()
             .find(|pane| pane.pane_id == pane_id)
             .is_some_and(|pane| {
-                pane.detected.is_some()
+                pane.agent.is_some()
+                    || pane.detected.is_some()
                     || pane
                         .command
                         .as_deref()
@@ -3224,9 +3244,9 @@ impl State {
     /// that are no longer agents.
     ///
     /// Deliberately not a rename. `set_pane_title_prefix` composes in front of
-    /// whatever title a pane has, so this never competes with the three writers
-    /// of a pane's *name* — the user, the pane's own OSC title, and
-    /// `finish_summary_with` below. That is also why it needs no
+    /// whatever title a pane has, so this never competes with the four writers
+    /// of a pane's *name* — the user, the pane's own OSC title, the prompt an
+    /// agent reports in `on_hook_with`, and `finish_summary_with` below. That is also why it needs no
     /// `title_is_ours_to_take` guard: the prefix stays out of the title
     /// `classify` reads, so it cannot un-detect the pane it decorates.
     ///
@@ -5097,6 +5117,88 @@ mod tests {
         assert_eq!(state.seq, seq, "an ignored event publishes nothing");
     }
 
+    /// The question a turn is about names the pane it was typed in, the moment it is asked.
+    ///
+    /// Before this a pane got a name only at the end of the turn, from the model's summary
+    /// title — so for the whole time an agent was actually working the tab bar said `claude`.
+    #[test]
+    fn a_prompt_names_the_pane_it_was_typed_in() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+
+        let named = feed_naming(&mut state, 7, &prompt("  fix the flaky\n reconnect test  "));
+
+        assert_eq!(named, vec![(7, "fix the flaky reconnect test".to_owned())]);
+        // And the prompt is still kept for the summary made at the end of the turn: naming
+        // the pane is a second reader of it, not a replacement for the first.
+        assert_eq!(
+            state.prompts.get(&7).map(String::as_str),
+            Some("fix the flaky\n reconnect test")
+        );
+    }
+
+    /// A `UserPromptSubmit` with nothing in it says nothing to name a pane after, and
+    /// clearing a name it did not write is not this path's business.
+    #[test]
+    fn a_prompt_with_nothing_in_it_leaves_the_panes_name_alone() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+
+        assert!(feed_naming(&mut state, 7, &prompt("   \n\t ")).is_empty());
+        assert!(feed_naming(&mut state, 7, &hook("UserPromptSubmit")).is_empty());
+        // And no other event names a pane either: the turn's end has the summary title,
+        // which `finish_summary_with` writes with its own reading of what is worth saying.
+        assert!(feed_naming(&mut state, 7, &hook("Stop")).is_empty());
+    }
+
+    /// The same gate every other half of `on_hook_with` sits behind: an event from a pane
+    /// the snapshot does not call an agent is not acted on at all.
+    #[test]
+    fn a_prompt_from_a_pane_that_is_not_an_agent_names_nothing() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "zsh", "/work")]),
+            ..State::default()
+        };
+
+        assert!(feed_naming(&mut state, 7, &prompt("fix the test")).is_empty());
+    }
+
+    /// `title_is_ours_to_take`, on the road that made it worth widening. A pane recognised
+    /// only by what its title says would stop being an agent the moment a prompt was written
+    /// over it — but a pane the session holds a *record* for is anchored where a rename
+    /// cannot reach, and every hook-connected pane has one.
+    #[test]
+    fn a_prompt_takes_the_name_of_a_pane_whose_record_anchors_it() {
+        let unanchored = agents::AgentPane {
+            command: Some("ssh box".to_owned()),
+            ..pane(7, "claude", "/work")
+        };
+        let mut state = State {
+            panes: Some(vec![unanchored.clone()]),
+            ..State::default()
+        };
+        assert!(
+            feed_naming(&mut state, 7, &prompt("fix the test")).is_empty(),
+            "a pane known only by its title keeps the title that makes it an agent"
+        );
+
+        let mut state = State {
+            panes: Some(vec![agents::AgentPane {
+                agent: Some(agents::registered_agent(CLAUDE, None)),
+                ..unanchored
+            }]),
+            ..State::default()
+        };
+        assert_eq!(
+            feed_naming(&mut state, 7, &prompt("fix the test")),
+            vec![(7, "fix the test".to_owned())]
+        );
+    }
+
     /// A pane that is not a `claude`, said by the broadcast rather than guessed at.
     ///
     /// The payload is the agent's own JSON and names no agent, so without the `kind=`
@@ -5370,6 +5472,9 @@ mod tests {
             CLAUDE,
             event,
             |pane_id, text| toasts.borrow_mut().push((pane_id, text.to_owned())),
+            // Dropped: the renames are what `feed_naming` is for, and every caller here is
+            // asking about the toasts or the request instead.
+            |_, _| {},
             |state, pane_id, event| {
                 state.on_turn_end_with(
                     pane_id,
@@ -5384,6 +5489,23 @@ mod tests {
             },
         );
         (toasts.into_inner(), sent)
+    }
+
+    /// `on_hook` with the rename handed back instead: what the pane would have been named,
+    /// which for a `UserPromptSubmit` is the question the turn is about.
+    fn feed_naming(state: &mut State, pane_id: u32, event: &wire::HookEvent) -> Vec<(u32, String)> {
+        let mut named = Vec::new();
+        state.on_hook_with(
+            pane_id,
+            CLAUDE,
+            event,
+            |_, _| {},
+            |pane_id, title| named.push((pane_id, title.to_owned())),
+            // No endpoint and no host here, so a `Stop` has nothing to ask: these tests are
+            // about the name the prompt writes on the way in.
+            |_, _, _| {},
+        );
+        named
     }
 
     /// A hook event with a tool named, and its arguments.
