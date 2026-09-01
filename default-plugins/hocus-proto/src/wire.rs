@@ -85,6 +85,20 @@ pub const AGENT_STRIP_REPOSITION: &str = "agent_strip_reposition";
 pub const AGENT_RUN_DETAIL: &str = "agent_run_detail";
 /// hocus-agents → hocus: fetch the next page of completed run headers.
 pub const AGENT_ARCHIVE_MORE: &str = "agent_archive_more";
+/// hocus-agents → agentd: "describe this agent now".
+///
+/// The one summary nobody has to justify. Every other one is the daemon deciding that an
+/// edge was worth an HTTP request, and every guard around it - the cooldown, the baseline,
+/// the staleness check - exists to stop it asking too often. A user who pressed a key has
+/// already answered that question, so this path keeps only the guards that protect
+/// correctness (one request per target at a time, and something to describe) and drops the
+/// ones that protect the budget.
+///
+/// Broadcast rather than url-addressed, for the same reason [`AGENT_REFRESH`] is: a bare
+/// `zellij:hocus-agentd` url carries none of the alias' `shared true`, so it would miss the
+/// running daemon and launch a second one. A broadcast only ever reaches plugins that are
+/// already running, and this name is handled in the daemon and nowhere else.
+pub const AGENT_SUMMARIZE: &str = "agent_summarize";
 /// CLI → store: change something.
 pub const STORE_MUTATE: &str = "store_mutate";
 /// hocus/CLI → store: read something without a subscription.
@@ -217,6 +231,21 @@ pub use zellij_tile::agent::HookEvent;
 #[derive(Serialize, Deserialize)]
 pub struct Selection {
     pub plugin_id: u32,
+    #[serde(default)]
+    pub pane_id: Option<u32>,
+    #[serde(default)]
+    pub run_id: Option<String>,
+}
+
+/// What [`AGENT_SUMMARIZE`] names: one row of the agent list, as the panel has it.
+///
+/// Exactly one of the two is set, because a row carries one or the other and the panel
+/// sends what its row has. Which of them it is decides the whole shape of the work: a live
+/// agent has a pane to read and a run the daemon is already holding, an archived one has
+/// neither and has to be loaded from the store. The panel knows nothing about that
+/// difference and should not — it names the row and lets the daemon choose the path.
+#[derive(Serialize, Deserialize)]
+pub struct SummarizeRequest {
     #[serde(default)]
     pub pane_id: Option<u32>,
     #[serde(default)]

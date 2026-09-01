@@ -39,6 +39,16 @@
 //! draws it dim, which is the difference between "you are here" and "here is
 //! where you were".
 //!
+//! **`s` asks for a summary of the row under the cursor.** Every other summary in the
+//! session is the daemon deciding that an edge - a turn ending, a screen going still - was
+//! worth asking a model about, and hedged with a cooldown and a baseline to stop it asking
+//! too often. A person pressing a key has already settled that question, so this one skips
+//! those and arrives as an entry on the timeline, at the point it was asked for, rather than
+//! only replacing the sentence pinned above it. It works on an archived run too, which has
+//! no pane to read and is summarised from what it recorded. This pane sends the row and
+//! nothing else (`wire::AGENT_SUMMARIZE`): which of the two kinds of work that means is the
+//! daemon's to know, the same way the rows themselves are hocus's to compute.
+//!
 //! **The two panes are separate, with one exception.** Esc here hides this pane
 //! and nothing else, and hocus's Esc hides hocus. Ctrl-o moves this pane out of
 //! the way of a tiled pane and leaves the conversation where it is — hocus does
@@ -118,6 +128,16 @@ struct State {
     generation: u64,
     /// The last `history_lines`, and what it was computed from. See `cached_history_lines`.
     history_cache: Option<(HistoryKey, agents::HistoryLines)>,
+    /// The row an `s` has asked the daemon about and not yet had an answer for, as a
+    /// `selection_key`.
+    ///
+    /// A hint on the divider rather than state anything is decided from. The round trip is a
+    /// model's, so it is seconds long, and a key that reaches the network and shows nothing in
+    /// the meantime reads as a key that did nothing. Held as the key rather than a flag so
+    /// that walking off the row takes it with you: nothing here ever hears that a request
+    /// failed - a refusal in the daemon is silent by design - so the only honest lifetime is
+    /// one the user can end themselves.
+    summarizing: Option<String>,
 }
 
 /// Everything [`State::history_lines`] reads, as one comparable value.
@@ -170,6 +190,10 @@ impl ZellijPlugin for State {
         // key, so holding `j` at the end of the list says nothing.
         if self.selection_key() != selection {
             self.history_scroll = 0;
+            // Whatever was asked about, the cursor is no longer on it. Nothing ever tells
+            // this pane that a request was refused, so a hint that outlived the row it was
+            // about would be a lie the user could not clear.
+            self.summarizing = None;
             self.send_selection();
         }
         rendered
@@ -196,6 +220,12 @@ impl ZellijPlugin for State {
             self.run = Some(run);
             if changed {
                 self.generation += 1;
+                // A run that changed is the only answer an `s` ever gets: the summary it
+                // asked for arrives inside one of these, as an entry on the timeline. Cleared
+                // on any change rather than on one that demonstrably carries a summary,
+                // because a run that grew a prompt while the request was out has moved on
+                // from the state the hint was describing either way.
+                self.summarizing = None;
             }
             return changed;
         }
@@ -215,6 +245,10 @@ impl ZellijPlugin for State {
         let rendered = self.set_rows(strip);
         if self.selection_key() != selection {
             self.history_scroll = 0;
+            // Whatever was asked about, the cursor is no longer on it. Nothing ever tells
+            // this pane that a request was refused, so a hint that outlived the row it was
+            // about would be a lie the user could not clear.
+            self.summarizing = None;
             self.send_selection();
         }
         rendered
@@ -440,6 +474,11 @@ impl State {
                 // The page keys are the history's whichever half has the focus, for the
                 // same reason the arrows are the list's: the list has no page of its own,
                 // being windowed around the selection rather than scrolled.
+                // Ask the daemon to describe the selected row now. Not gated on the focus:
+                // it is about the row the cursor is on, which is the same row whichever
+                // half the keys are in, and the answer arrives in the half below either
+                // way.
+                BareKey::Char('s') => return self.request_summary(),
                 BareKey::PageUp => return self.scroll_history(self.page() as isize),
                 BareKey::PageDown => return self.scroll_history(-(self.page() as isize)),
                 _ => {},
@@ -530,6 +569,40 @@ impl State {
     /// agent's pane, if there is one. Neither of them puts the panel away - the
     /// pointer is already where the next click would go, and the keys are already
     /// where the next Tab into the history would want them.
+    /// Ask the daemon to describe the selected row now, and say whether the divider changed.
+    ///
+    /// Both kinds of row are worth asking about, and the daemon answers them differently: a
+    /// live agent has a pane to read and a run the daemon is already holding, an archived one
+    /// has neither and has to be fetched from the store. This pane knows nothing about that
+    /// difference and should not - it names the row and lets the daemon choose the path,
+    /// which is the same division of labour that has hocus computing the rows drawn here.
+    ///
+    /// Nothing is expected back on this message. The answer arrives the way every other
+    /// change to a run does, as a fresh `AGENT_RUN_DETAIL`, so a summary asked for here and
+    /// one that happened on its own reach the half by one road.
+    fn request_summary(&mut self) -> bool {
+        let request = match self.rows.get(self.selected) {
+            Some(StripRow::Agent { pane_id, .. }) => wire::SummarizeRequest {
+                pane_id: Some(*pane_id),
+                run_id: None,
+            },
+            Some(StripRow::Run { run_id, .. }) => wire::SummarizeRequest {
+                pane_id: None,
+                run_id: Some(run_id.clone()),
+            },
+            // A project or branch header, or `load older runs…`. Nothing there is an agent.
+            _ => return false,
+        };
+        let Ok(payload) = serde_json::to_string(&request) else {
+            return false;
+        };
+        pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUMMARIZE).with_payload(payload));
+        let asked = self.selection_key();
+        let changed = self.summarizing != asked;
+        self.summarizing = asked;
+        changed
+    }
+
     fn activate(&self) {
         if let Some(StripRow::Agent { pane_id, .. }) = self.rows.get(self.selected) {
             // the host resolves which tab holds the pane, so this works across
@@ -618,10 +691,12 @@ impl State {
         };
         // Everything the half is drawn from is settled now, so the lines can be borrowed
         // rather than copied.
+        // Built before `history` is borrowed below, because it borrows `self` too.
+        let label = self.history_label();
         let history = self.history();
         let pinned = &history.pinned[..pinned_rows];
 
-        render_divider(&history.label, start, entries_len - end, focused, top, cols);
+        render_divider(&label, start, entries_len - end, focused, top, cols);
         let body = top + 1;
         if pinned.is_empty() && history.entries.is_empty() {
             print_text_with_coordinates(
@@ -651,6 +726,30 @@ impl State {
             // reads as a list down there.
             let text = markdown::style_text(&line.text, &line.styles, index >= pinned_rows);
             print_text_with_coordinates(text, 0, body + index, Some(cols), None);
+        }
+    }
+
+    /// What the divider says: what the half is about, and whether a summary was asked for
+    /// and has not come back.
+    ///
+    /// The hint is appended to the label rather than drawn anywhere of its own, because the
+    /// divider is already the row that names the half - and `fit_label` cuts it to the room
+    /// left over, so a narrow pane loses the hint rather than the rule.
+    ///
+    /// Compared against the selection rather than read as a flag: `summarizing` is cleared
+    /// when the cursor moves, so this can only differ from it in the moment between a strip
+    /// arriving and the selection being re-sent. Belt and braces on a hint that must never
+    /// claim the row under the cursor is doing something it is not.
+    fn history_label(&self) -> String {
+        let label = &self.history().label;
+        if self.summarizing.is_none() || self.summarizing != self.selection_key() {
+            return label.clone();
+        }
+        match label.is_empty() {
+            // A selected agent with neither a run nor a summary yet has no label at all, and
+            // the first thing it ever says should not open with a separator.
+            true => "summarising…".to_owned(),
+            false => format!("{label} · summarising…"),
         }
     }
 
@@ -1331,6 +1430,113 @@ mod tests {
         // and it follows the cursor off that row
         state.on_key(KeyWithModifier::new(BareKey::Char('j')));
         assert!(state.history_lines(38).is_empty(), "pane 7 has no summary");
+    }
+
+    /// `s` is taken on both kinds of row that name an agent, and on neither kind that does
+    /// not. What it sends is not asserted here - the message reaches the host - but which
+    /// rows take the key is this pane's whole share of the decision.
+    #[test]
+    fn s_is_taken_on_a_row_that_names_an_agent_and_nowhere_else() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+
+        state.selected = 0;
+        assert!(
+            !state.on_key(KeyWithModifier::new(BareKey::Char('s'))),
+            "a project header names no agent"
+        );
+        assert!(state.summarizing.is_none());
+
+        state.selected = 2;
+        assert!(
+            state.on_key(KeyWithModifier::new(BareKey::Char('s'))),
+            "a live agent does, and the divider says so"
+        );
+        assert_eq!(state.summarizing.as_deref(), Some("pane:3"));
+        assert_eq!(state.selected, 2, "and the cursor stays where it was");
+
+        state.set_rows(unfocused(vec![
+            StripRow::Project("archive".to_owned()),
+            StripRow::Run {
+                run_id: "claude:session-1".to_owned(),
+                text: "claude · hook history".to_owned(),
+                kind: "claude".to_owned(),
+            },
+            StripRow::MoreRuns,
+        ]));
+        state.selected = 1;
+        assert!(
+            state.on_key(KeyWithModifier::new(BareKey::Char('s'))),
+            "an archived run is summarised from what it recorded"
+        );
+        assert_eq!(state.summarizing.as_deref(), Some("run:claude:session-1"));
+
+        state.selected = 2;
+        state.summarizing = None;
+        assert!(
+            !state.on_key(KeyWithModifier::new(BareKey::Char('s'))),
+            "`load older runs…` is Enter's, and names nothing to describe"
+        );
+        assert!(state.summarizing.is_none());
+    }
+
+    /// `s` is a letter, so it must not be taken from whatever the modifiers are bound to,
+    /// and it must not be mistaken for the history scroll `j`/`k` do.
+    #[test]
+    fn a_modified_s_is_left_alone() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+
+        assert!(
+            !state.on_key(KeyWithModifier::new(BareKey::Char('s')).with_ctrl_modifier()),
+            "ctrl-s is flow control in a great many terminals and is nobody's here"
+        );
+        assert!(state.summarizing.is_none());
+    }
+
+    /// The hint on the divider is a hint: it says a request is out, and it goes as soon as
+    /// there is any answer or the cursor moves off the row it was about. Nothing ever tells
+    /// this pane that a request was refused, so a hint with no ending of its own would be a
+    /// lie the user could not clear.
+    #[test]
+    fn the_divider_says_a_summary_was_asked_for_until_something_answers() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.selected = 2;
+        state.fill_history_cache(48);
+        assert_eq!(state.history_label(), "");
+
+        state.on_key(KeyWithModifier::new(BareKey::Char('s')));
+        assert_eq!(state.history_label(), "summarising…");
+
+        // A run arriving is the only answer an `s` ever gets.
+        let mut run = a_run();
+        run.pane_id = 3;
+        run.ended_at_ms = None;
+        run.outcome = agents::RunOutcome::Active;
+        state.pipe(PipeMessage::new(
+            PipeSource::Plugin(0),
+            wire::AGENT_RUN_DETAIL,
+            &Some(serde_json::to_string(&run).expect("encoded")),
+            &None,
+            false,
+        ));
+        state.fill_history_cache(48);
+        assert_eq!(state.history_label(), "claude · active");
+
+        // And walking away from an answer that never came takes the hint with it. `update`
+        // is what clears it, and reaches the host to re-send the selection, so what is
+        // driven here is the guard that makes the clearing safe rather than the clearing:
+        // a hint left standing by any route still cannot claim the row it is not about.
+        state.on_key(KeyWithModifier::new(BareKey::Char('s')));
+        assert_eq!(state.history_label(), "claude · active · summarising…");
+        state.on_key(KeyWithModifier::new(BareKey::Down));
+        state.fill_history_cache(48);
+        assert_eq!(
+            state.history_label(),
+            "",
+            "the cursor is on another agent now, and that one was not asked about"
+        );
     }
 
     #[test]

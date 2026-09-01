@@ -113,6 +113,14 @@ const GEOMETRY_GRACE_TICKS: u32 = SUMMARY_SETTLE_POLLS + 2;
 /// for the whole plugin.
 const SUMMARY_PANE: &str = "summary_pane";
 const SUMMARY_ID: &str = "summary_id";
+/// The same, for a summary of an archived run, which has no pane to name.
+///
+/// A key of its own rather than a nullable `SUMMARY_PANE`, because the two lanes are
+/// correlated in different maps and answer to different rules — a run has no screen to go
+/// stale against, no pane to rename and nothing to toast over. Which key is present is what
+/// `finish_summary` reads to tell them apart, so a reply can never be taken up by the wrong
+/// half.
+const SUMMARY_RUN: &str = "summary_run";
 
 /// How much of the user's request is kept to give the summary its question.
 ///
@@ -268,6 +276,14 @@ struct State {
     /// Panes with a summary request in flight. One at a time per pane, so a flurry of
     /// idle edges cannot fan out into a flurry of requests.
     summary_requests: BTreeMap<u32, InFlight>,
+    /// The same for archived runs, keyed by run id. Only a manual ask ever puts one here:
+    /// nothing about a run that has ended moves on its own, so there is no edge to notice.
+    ///
+    /// Separate from `summary_requests` because the key is the whole difference: a run that
+    /// has ended has no pane, and the pane it *had* may since have been given to another
+    /// agent. Keying both by pane id would let a summary of last week's run land on whoever
+    /// holds that number now.
+    run_summary_requests: BTreeMap<String, InFlight>,
     /// Heartbeats left before each pane may ask again, counted down by every poll.
     /// An absent pane is free to ask — see `SUMMARY_COOLDOWN_TICKS`.
     summary_cooldown: BTreeMap<u32, u32>,
@@ -341,6 +357,20 @@ enum Origin {
     /// working again — a description of a finished turn is not worth drawing over an
     /// agent that has a new one under way.
     Turn { session_id: String },
+    /// Asked for by a person, and so never void.
+    ///
+    /// The two rules above exist because nobody asked for those answers: an unrequested
+    /// sentence describing a screen that has moved on is worse than no sentence, so the
+    /// daemon throws it away rather than draw it. Here somebody did ask, and discarding the
+    /// answer they are waiting for because the pane scrolled in the meantime would be the
+    /// bug rather than the safeguard — they would press the key again and get the same
+    /// silence.
+    ///
+    /// `tail` is the screen the request was made from, on a manual ask about a pane with no
+    /// hook feed, and `None` for one made from a run's history. It is promoted to the pane's
+    /// baseline on success exactly as a [`Origin::Screen`] one is, so an answer bought here
+    /// still spares the automatic path from asking about the same screen a moment later.
+    Manual { tail: Option<String> },
 }
 
 /// Whether enough of the last successful summary's tail has turned over to make another one
@@ -351,6 +381,79 @@ enum Origin {
 /// held before: a line-wise comparison read every resize as a screen of new work.
 fn summary_materially_changed(previous: &str, current: &str) -> bool {
     agents::changed_materially(previous, current, SUMMARY_CHANGE_FACTOR)
+}
+
+/// Which part of a run a request is made from.
+///
+/// The two summaries answer different questions, and the difference is not a knob: it falls
+/// out of who asked. Nobody asked for the automatic one, so it may only cost what the turn
+/// that triggered it is worth. Somebody did ask for the other, and what they asked is "what
+/// is this agent doing" — a question about the run, not about its last few minutes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Span {
+    /// Everything the last accepted summary has not already been shown, prefixed with that
+    /// summary so the sentence rolls forward rather than restarting. What a `Stop` asks
+    /// about: one turn's worth of new material, however long the session has run.
+    SinceLastSummary,
+    /// The whole run, prompts included and the prior summary left out. What a summary
+    /// somebody asked for is made from.
+    ///
+    /// Two reasons, and the second is the load-bearing one. It is the better answer — they
+    /// are looking at a row and want to know what it has been doing, which the accumulated
+    /// paraphrase answers less well than the record does. And it is the only one that
+    /// *always* has something to say: a run whose every entry the last summary already
+    /// absorbed would otherwise answer a keypress with silence, which is indistinguishable
+    /// from the key not working.
+    Whole,
+}
+
+/// What to ask a model about a run.
+fn run_delta(run: &agents::AgentRun, fallback: Option<&str>, span: Span) -> Option<String> {
+    let whole = span == Span::Whole;
+    let fresh = |entry: &agents::RunEntry| whole || entry.revision > run.summarized_revision;
+    let has_result = run
+        .entries
+        .iter()
+        .any(|entry| fresh(entry) && entry.kind == agents::RunEntryKind::Result);
+    let mut delta = run
+        .entries
+        .iter()
+        .filter(|entry| {
+            fresh(entry)
+                && (matches!(
+                    entry.kind,
+                    agents::RunEntryKind::Plan
+                        | agents::RunEntryKind::Question
+                        | agents::RunEntryKind::Result // The prompts are what turn a list of steps back into a session, and
+                                                       // they are worth their room only when the whole run is being read: the
+                                                       // rolling summary has the newest of them as its own request field.
+                ) || (whole && entry.kind == agents::RunEntryKind::Prompt))
+        })
+        .map(|entry| format!("{}: {}", entry.kind.label(), entry.text))
+        .collect::<Vec<_>>()
+        .join("\n");
+    match fallback {
+        Some(fallback) if !has_result => {
+            if !delta.is_empty() {
+                delta.push('\n');
+            }
+            delta.push_str("result: ");
+            delta.push_str(fallback);
+        },
+        // Nobody just stopped, and the run holds nothing to describe. Only reachable for a
+        // run with no retained entries at all: a `Span::Whole` request reads every one of
+        // them, so anything the agent has ever said gets here.
+        None if delta.is_empty() => return None,
+        _ => {},
+    }
+    let delta = agents::tail(&delta, agents::SUMMARY_LINES, agents::SUMMARY_CHARS);
+    // Left out of a whole-run request on purpose: the entries it carries are what the
+    // previous summary was made from, so including it would ask the model to weigh its own
+    // paraphrase against the source it came from.
+    Some(match (whole, run.summary.as_ref()) {
+        (false, Some(summary)) => format!("previous summary: {}\n\n{delta}", summary.text),
+        _ => delta,
+    })
 }
 
 fn now_ms() -> i64 {
@@ -518,6 +621,29 @@ impl ZellijPlugin for State {
             if let (Some(pane_id), Some(event)) = (pane_id, event) {
                 self.on_hook_of(pane_id, &kind, &event);
             }
+            return false;
+        }
+        if pipe_message.name == wire::AGENT_SUMMARIZE {
+            // A person asked for this, so it skips the timing guards the automatic paths
+            // keep. Nothing is answered back: the summary arrives the way every other change
+            // to a run does, in the next snapshot, and a refusal is silent — see
+            // `summarize_pane_now`, which has half a dozen reasons to make none.
+            if let Some(request) = pipe_message
+                .payload
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<wire::SummarizeRequest>(json).ok())
+            {
+                match (request.pane_id, request.run_id.as_deref()) {
+                    (Some(pane_id), _) => self.summarize_pane_now(pane_id),
+                    (None, Some(run_id)) => self.summarize_run_now(run_id),
+                    (None, None) => false,
+                };
+            }
+            // `pipe` is not `update`, so the write at the end of the heartbeat does not run
+            // for us. The local-fallback path can finish a summary synchronously and dirty a
+            // run, and nothing else here would ever write it. Same reason `on_hook_of` calls
+            // this.
+            self.persist_dirty_runs();
             return false;
         }
         if pipe_message.name == wire::AGENT_REFRESH {
@@ -1143,47 +1269,44 @@ impl State {
     /// The last accepted run summary followed by the meaningful hook events since it.
     /// The prompt remains a separate request field, so trimming a long turn keeps the newest
     /// steps and final result without losing what the user asked.
-    fn run_summary_text(&self, pane_id: u32, fallback: &str) -> String {
+    ///
+    /// `fallback` is the agent's own final message, where a `Stop` has just carried one. It
+    /// is `None` when a person asked for the summary instead: there is no new message then,
+    /// and the request is built out of what the run already holds. That case is also the only
+    /// one that can come back empty — a `Stop` always brings words, whereas somebody can
+    /// press the key against a run whose every entry the last summary already absorbed, and
+    /// asking a model to describe nothing would cost a round trip to be told so.
+    ///
+    /// [`agents::RunEntryKind::Summary`] is deliberately not among the kinds gathered here.
+    /// A summary is the model's words about the agent; feeding one back as though the agent
+    /// had said it would let a paraphrase compound into the next paraphrase.
+    fn run_summary_text(&self, pane_id: u32, fallback: Option<&str>, span: Span) -> Option<String> {
         let Some(run) = self.runs.get(&pane_id) else {
-            return agents::tail(fallback, agents::SUMMARY_LINES, agents::SUMMARY_CHARS);
+            return fallback.map(|fallback| {
+                agents::tail(fallback, agents::SUMMARY_LINES, agents::SUMMARY_CHARS)
+            });
         };
-        let has_result = run.entries.iter().any(|entry| {
-            entry.revision > run.summarized_revision && entry.kind == agents::RunEntryKind::Result
-        });
-        let mut delta = run
-            .entries
-            .iter()
-            .filter(|entry| {
-                entry.revision > run.summarized_revision
-                    && matches!(
-                        entry.kind,
-                        agents::RunEntryKind::Plan
-                            | agents::RunEntryKind::Question
-                            | agents::RunEntryKind::Result
-                    )
-            })
-            .map(|entry| format!("{}: {}", entry.kind.label(), entry.text))
-            .collect::<Vec<_>>()
-            .join("\n");
-        if !delta.is_empty() && !has_result {
-            delta.push('\n');
-        }
-        if !has_result {
-            delta.push_str("result: ");
-            delta.push_str(fallback);
-        }
-        let delta = agents::tail(&delta, agents::SUMMARY_LINES, agents::SUMMARY_CHARS);
-        match run.summary.as_ref() {
-            Some(summary) => format!("previous summary: {}\n\n{delta}", summary.text),
-            None => delta,
-        }
+        run_delta(run, fallback, span)
     }
 
-    fn attach_run_summary(&mut self, pane_id: u32, summary: &agents::Summary) {
+    /// Hang a finished summary on the pane's run.
+    ///
+    /// `asked_for` is whether a person pressed a key for it, and decides whether it also
+    /// stays on the timeline. An automatic summary does not: one rolls forward at the end of
+    /// every turn, so a long run would grow a line per turn and the newest of them — the one
+    /// pinned above the timeline — is the only one anybody wanted. A summary somebody asked
+    /// for is the opposite: *when* it was asked for is half of what it says, so it stays
+    /// where it was made.
+    fn attach_run_summary(&mut self, pane_id: u32, summary: &agents::Summary, asked_for: bool) {
         let Some(run) = self.runs.get_mut(&pane_id) else {
             return;
         };
+        if asked_for {
+            agents::push_summary_entry(run, &summary.text);
+        }
         run.summary = Some(summary.clone());
+        // After the push, so the entry it just made is inside the accepted revision rather
+        // than being read back as unsummarised work by the next request.
         run.summarized_revision = run.revision;
         self.dirty_runs.insert(run.id.clone(), run.clone());
     }
@@ -1257,16 +1380,50 @@ impl State {
         else {
             return;
         };
+        self.send_turn_summary(
+            pane_id,
+            Some(message),
+            Origin::Turn {
+                session_id: event.session_id.clone(),
+            },
+            endpoint,
+            send,
+            toast,
+        );
+    }
+
+    /// Describe a hook-fed pane from what its run holds, and say whether a request went out.
+    ///
+    /// The whole of what a `Stop` does once its final message is in hand, and the whole of
+    /// what pressing the key against such a pane does — the two differ only in what they
+    /// bring. A `Stop` brings the message the agent has just finished writing and an
+    /// [`Origin::Turn`] that goes stale when the agent starts something else. A person
+    /// brings neither: there is no new message, so the delta is built from the run's own
+    /// entries, and nothing makes the answer stale because somebody is waiting for it.
+    ///
+    /// `message` is that final message where there is one. `None` means "no new words", and
+    /// `run_summary_text` then builds the request out of the entries alone rather than
+    /// writing a `result:` label with nothing after it.
+    fn send_turn_summary(
+        &mut self,
+        pane_id: u32,
+        message: Option<&str>,
+        origin: Origin,
+        endpoint: Option<&Endpoint>,
+        send: impl FnOnce(&str, HttpVerb, BTreeMap<String, String>, Vec<u8>, BTreeMap<String, String>),
+        toast: impl FnOnce(u32, &str),
+    ) -> bool {
+        let asked_for = matches!(origin, Origin::Manual { .. });
         let Some(pane) = self
             .panes
             .iter()
             .flatten()
             .find(|pane| pane.pane_id == pane_id)
         else {
-            return;
+            return false;
         };
         let Some((kind, _)) = agents::classify(pane, &self.manual_kinds) else {
-            return;
+            return false;
         };
         let branch = self
             .pane_location(pane)
@@ -1279,10 +1436,39 @@ impl State {
             // No endpoint: no API key, or summaries switched off. Before the feed there
             // was nothing to say here — a screen tail is not a summary of anything. A
             // final message is prose already, so the honest fallback is its opening.
-            self.finish_local_summary_with(pane_id, message, toast);
-            return;
+            //
+            // Only prose the agent wrote can be fed to it: `local_summary` shortens a
+            // message, and a list of retained events is not one. A manual ask brings no new
+            // message, so it reaches back for the newest one the run kept — the same words a
+            // `Stop` would have carried, read out of the record instead of off the wire.
+            // Nothing else here would be a summary rather than an invention.
+            let latest = self
+                .runs
+                .get(&pane_id)
+                .and_then(|run| {
+                    run.entries
+                        .iter()
+                        .rev()
+                        .find(|entry| entry.kind == agents::RunEntryKind::Result)
+                })
+                .map(|entry| entry.text.clone());
+            let Some(message) = message.map(str::to_owned).or(latest) else {
+                return false;
+            };
+            self.finish_local_summary_with(pane_id, &message, asked_for, toast);
+            return true;
         };
-        let message = self.run_summary_text(pane_id, message);
+        // A summary somebody asked for reads the whole run; one nobody asked for reads what
+        // has happened since the last. See `Span`.
+        let span = match asked_for {
+            true => Span::Whole,
+            false => Span::SinceLastSummary,
+        };
+        let Some(message) = self.run_summary_text(pane_id, message, span) else {
+            // Neither a final message nor an entry the last summary has not already
+            // absorbed: there is nothing here that a model has not already been shown.
+            return false;
+        };
         let body = agents::turn_summary_request_body(
             &endpoint.model,
             kind,
@@ -1301,16 +1487,15 @@ impl State {
             InFlight {
                 id,
                 hash: 0,
-                origin: Origin::Turn {
-                    session_id: event.session_id.clone(),
-                },
+                origin,
                 ticks: 0,
             },
         );
         // Not stamped with a cooldown, unlike the screen path. The cooldown exists to
         // stop a flurry of idle edges fanning out into a flurry of requests; a `Stop`
         // fires once per turn, so there is no flurry to stop — and a user asking three
-        // short questions in a minute should get three summaries, not one.
+        // short questions in a minute should get three summaries, not one. A person
+        // pressing the key is the same argument made louder.
         send(
             &endpoint.url,
             HttpVerb::Post,
@@ -1321,6 +1506,7 @@ impl State {
                 (SUMMARY_ID.to_owned(), id.to_string()),
             ]),
         );
+        true
     }
 
     /// Store and announce a summary made without asking anybody.
@@ -1328,10 +1514,15 @@ impl State {
     /// The same outputs `finish_summary_with` produces, minus the two it cannot: there is
     /// no title, so the pane keeps its name, and there is no reply to have been made stale
     /// in flight because nothing was in flight.
+    ///
+    /// `asked_for` carries the same meaning it does there. A person can reach this path too
+    /// — pressing the key against a hook-fed pane in a session with no API key — and the
+    /// answer they get is no less theirs for having been made locally.
     fn finish_local_summary_with(
         &mut self,
         pane_id: u32,
         message: &str,
+        asked_for: bool,
         toast: impl FnOnce(u32, &str),
     ) {
         let hash = agents::activity_hash(&self.activity, pane_id).unwrap_or_default();
@@ -1357,7 +1548,7 @@ impl State {
                 &agents::summary_toast(pane_id, kind.as_deref(), &summary),
             );
         }
-        self.attach_run_summary(pane_id, &summary);
+        self.attach_run_summary(pane_id, &summary, asked_for);
         self.summaries.insert(pane_id, summary);
         self.publish();
     }
@@ -2110,6 +2301,14 @@ impl State {
                 *owed = true;
             }
         }
+        // The same ageing, on the lane with no pane to prune by. A run that has ended cannot
+        // stop being a running agent, so `SUMMARY_TICKS` is the only thing that ever clears
+        // one of these — and without it a reply the host dropped would leave that run
+        // unaskable for the life of the session, with the key doing nothing every time.
+        self.run_summary_requests.retain(|_, request| {
+            request.ticks += 1;
+            request.ticks <= SUMMARY_TICKS
+        });
         // The same shape one line up, and pruned by the same rule: a pane that stops being
         // a running agent starts clean if it comes back.
         self.summary_cooldown.retain(|id, ticks| {
@@ -2261,11 +2460,267 @@ impl State {
             pane_id,
             text,
             &endpoint,
+            false,
             |url, verb, headers, body, context| {
                 web_request(url, verb, headers, body, context, None)
             },
         );
         true
+    }
+
+    /// Describe this pane now, whatever the clock says.
+    ///
+    /// The mirror of [`Self::start_summary`], minus `summary_due`. The cooldown, the
+    /// baseline and the settle counter are three ways of asking "is this worth a request",
+    /// and a person pressing a key has answered it; keeping them would mean the key silently
+    /// doing nothing for most of every minute, which is worse than the request it saves.
+    ///
+    /// What survives is the guard that is not about the budget: one request per pane at a
+    /// time. `finish_summary_with` correlates strictly on `(pane, id)` and drops everything
+    /// that does not match, so a second request would not arrive twice — it would orphan the
+    /// first and answer only itself.
+    ///
+    /// Which of the two paths it takes is the pane's, not the caller's: a pane that reports
+    /// for itself is described from what it said, and one that does not from what it shows.
+    /// That is the same division `observe_activity_with` and `on_turn_end` already keep, and
+    /// asking a hook-fed pane's screen here would reintroduce exactly the second, worse
+    /// answer that the feed was brought in to retire.
+    fn summarize_pane_now(&mut self, pane_id: u32) -> bool {
+        // Two different `None`s, and only one of them permits the local fallback — see
+        // `llm::summaries_enabled`. Resolved once, as `on_turn_end` does, because reading it
+        // is a host call.
+        let configuration = get_plugin_alias_configuration(HOCUS_ALIAS);
+        let wanted = hocus_proto::llm::summaries_enabled(&configuration);
+        let endpoint = Endpoint::resolve(&configuration, &self.env);
+        self.summarize_pane_now_with(
+            pane_id,
+            endpoint.as_ref(),
+            wanted,
+            poll::read_pane,
+            |url, verb, headers, body, context| {
+                web_request(url, verb, headers, body, context, None)
+            },
+            |pane_id, text| notify_with_pane_id(text, PaneId::Terminal(pane_id)),
+        )
+    }
+
+    /// The body of [`Self::summarize_pane_now`], with the host calls injected for the tests —
+    /// the same shape `on_turn_end_with` and `observe_activity_with` already take.
+    fn summarize_pane_now_with(
+        &mut self,
+        pane_id: u32,
+        endpoint: Option<&Endpoint>,
+        wanted: bool,
+        read: impl FnOnce(u32) -> poll::PaneSample,
+        send: impl FnOnce(&str, HttpVerb, BTreeMap<String, String>, Vec<u8>, BTreeMap<String, String>),
+        toast: impl FnOnce(u32, &str),
+    ) -> bool {
+        // `summaries "false"` is a user saying "do not do this", and they did not mean
+        // "unless I press a key". The same stance `on_turn_end_with` takes.
+        if !wanted {
+            return false;
+        }
+        if self.summary_requests.contains_key(&pane_id) {
+            return false;
+        }
+        // Nothing to describe: the pane has closed, stopped looking like an agent, or is
+        // demonstrably back at its shell prompt. The last of those is the one worth naming —
+        // `pending_release` means the foreground command has dropped back to a shell, so the
+        // screen is a prompt rather than a session, and describing it would name the shell.
+        if self.agent_kind(pane_id).is_none() || self.pending_release.contains(&pane_id) {
+            return false;
+        }
+        if self.hooks.contains_key(&pane_id) {
+            // A pane that reports for itself. There is no new final message — nobody just
+            // stopped — so the run's own entries are the whole of the input.
+            return self.send_turn_summary(
+                pane_id,
+                None,
+                Origin::Manual { tail: None },
+                endpoint,
+                send,
+                toast,
+            );
+        }
+        // A screen-only pane. There is no honest fallback for one of these without an
+        // endpoint: `local_summary` shortens prose the agent wrote, and a screen tail is not
+        // that. Before the hook feed there was nothing to fall back to at all, and pressing
+        // a key does not create one.
+        let Some(endpoint) = endpoint else {
+            return false;
+        };
+        let reading = read(pane_id);
+        // A reading that says nothing is no more summarisable for having been asked for: a
+        // pane scrolled back off its live tail shows old output, and one we could not read
+        // holds an error message rather than anything the agent wrote.
+        let agents::Sample::Text(text) = self.qualify(pane_id, &reading) else {
+            return false;
+        };
+        if !agents::worth_summarizing(text) {
+            return false;
+        }
+        // `finish_summary_with` stamps the answer with the hash the request was made from,
+        // and a pane the poller has not reached yet has none to stamp. Nothing is lost by
+        // refusing: the next heartbeat gives it one.
+        if agents::activity_hash(&self.activity, pane_id).is_none() {
+            return false;
+        }
+        let text = text.to_owned();
+        self.send_summary(pane_id, &text, endpoint, true, send);
+        true
+    }
+
+    /// Describe an archived run now.
+    ///
+    /// The lane with no pane in it. A run that has ended has no screen to read, no title to
+    /// rename and nobody to interrupt with a toast — and the pane id it carries names
+    /// whatever holds that number today, which after a session or two is somebody else. So
+    /// this is keyed by run id from end to end: the request is recorded under one, the reply
+    /// is correlated by one, and the answer is written back to the store under one.
+    ///
+    /// It is also the one summary path that reads its own input from the store. The daemon
+    /// holds `self.runs` for panes it is watching; an archived run is by definition not one
+    /// of those, and the same two calls `adopt_stored_run` makes are what fetch it.
+    fn summarize_run_now(&mut self, run_id: &str) -> bool {
+        let configuration = get_plugin_alias_configuration(HOCUS_ALIAS);
+        let wanted = hocus_proto::llm::summaries_enabled(&configuration);
+        let endpoint = Endpoint::resolve(&configuration, &self.env);
+        self.summarize_run_now_with(
+            run_id,
+            endpoint.as_ref(),
+            wanted,
+            |url, verb, headers, body, context| {
+                web_request(url, verb, headers, body, context, None)
+            },
+        )
+    }
+
+    /// The body of [`Self::summarize_run_now`], with the host call injected for the tests.
+    fn summarize_run_now_with(
+        &mut self,
+        run_id: &str,
+        endpoint: Option<&Endpoint>,
+        wanted: bool,
+        send: impl FnOnce(&str, HttpVerb, BTreeMap<String, String>, Vec<u8>, BTreeMap<String, String>),
+    ) -> bool {
+        if !wanted {
+            return false;
+        }
+        if self.run_summary_requests.contains_key(run_id) {
+            return false;
+        }
+        // No local fallback here at all, for the same reason the screen path has none: what
+        // a run holds is a record, not prose somebody wrote to be read.
+        let Some(endpoint) = endpoint else {
+            return false;
+        };
+        let Some(run) = self.load_run(run_id) else {
+            return false;
+        };
+        let Some(message) = run_delta(&run, None, Span::Whole) else {
+            // A run with no retained entries at all — every hook it saw was a tool call or a
+            // lifecycle event, none of which is kept. There is nothing to describe.
+            return false;
+        };
+        let body = agents::turn_summary_request_body(
+            &endpoint.model,
+            &run.kind,
+            run.cwd.as_deref(),
+            // No branch. The daemon probes checkouts for panes it is watching, and an
+            // archived run has none; the folder it names may not even be a checkout any
+            // more. A guess made from today's repositories would date the sentence wrongly.
+            None,
+            run.entries
+                .iter()
+                .find(|entry| entry.kind == agents::RunEntryKind::Prompt)
+                .map(|entry| entry.text.as_str()),
+            &message,
+        );
+        self.summary_seq += 1;
+        let id = self.summary_seq;
+        self.run_summary_requests.insert(
+            run_id.to_owned(),
+            InFlight {
+                id,
+                // Nothing to stamp: a run that has ended has no screen to have moved.
+                hash: 0,
+                origin: Origin::Manual { tail: None },
+                ticks: 0,
+            },
+        );
+        send(
+            &endpoint.url,
+            HttpVerb::Post,
+            endpoint.headers(),
+            body,
+            BTreeMap::from([
+                (SUMMARY_RUN.to_owned(), run_id.to_owned()),
+                (SUMMARY_ID.to_owned(), id.to_string()),
+            ]),
+        );
+        true
+    }
+
+    /// One run by id, from whichever of the two places is holding it.
+    ///
+    /// `dirty_runs` first, because a run summarised twice in quick succession has its first
+    /// answer sitting there unwritten, and reading past it would build the second request
+    /// against a state that is already superseded.
+    fn load_run(&self, run_id: &str) -> Option<agents::AgentRun> {
+        if let Some(run) = self.dirty_runs.get(run_id) {
+            return Some(run.clone());
+        }
+        if let Some(run) = self.runs.values().find(|run| run.id == run_id) {
+            return Some(run.clone());
+        }
+        let rows = store::Host::shared()
+            .fetch(&agents::rows::run_by_id_request(run_id))
+            .ok()?;
+        agents::rows::runs_from_rows(&rows).into_iter().next()
+    }
+
+    /// Take the reply to a summary of an archived run.
+    ///
+    /// [`Self::finish_summary_with`] with everything a pane afforded taken away: no rename,
+    /// because the pane whose name it would take is somebody else's now; no toast, because
+    /// nothing happened — the user asked, and is looking at the panel where the answer
+    /// lands; and no entry in `summaries`, which is keyed by pane and describes what is
+    /// running rather than what ran.
+    ///
+    /// No staleness check either, and here there is not even a rule to skip: an archived run
+    /// is a record, and records do not move.
+    fn finish_run_summary(&mut self, status: u16, body: &[u8], context: &BTreeMap<String, String>) {
+        let (Some(run_id), Some(id)) = (
+            context.get(SUMMARY_RUN),
+            context.get(SUMMARY_ID).and_then(|v| v.parse::<u64>().ok()),
+        ) else {
+            return;
+        };
+        if self.run_summary_requests.get(run_id).map(|r| r.id) != Some(id) {
+            return;
+        }
+        // Removed whatever happens next: the request is over either way, and leaving it
+        // would block this run from ever being asked about again.
+        self.run_summary_requests.remove(run_id);
+        // A failed summary is simply no summary — the same stance the pane lane takes, and
+        // for the same reason. The user can press the key again.
+        if !(200..300).contains(&status) {
+            return;
+        }
+        let Some(summary) = agents::parse_summary(body, 0) else {
+            return;
+        };
+        let Some(mut run) = self.load_run(run_id) else {
+            return;
+        };
+        agents::push_summary_entry(&mut run, &summary.text);
+        run.summary = Some(summary);
+        run.summarized_revision = run.revision;
+        // Straight to the store rather than through `attach_run_summary`, which writes to
+        // `self.runs` — this run is not in it, and putting it there would make the daemon
+        // hold a session it is not watching and cannot see end.
+        self.dirty_runs.insert(run.id.clone(), run);
+        self.publish();
     }
 
     /// Whether this settling is worth an HTTP request.
@@ -2304,12 +2759,20 @@ impl State {
         })
     }
 
-    /// Build and send one summary request. `send` is injected because it reaches the host.
+    /// Build and send one summary request from a pane's screen. `send` is injected because
+    /// it reaches the host.
+    ///
+    /// `manual` says whether somebody pressed a key for this, which decides only what makes
+    /// the answer stale — see [`Origin`]. Everything else about the request is the same
+    /// either way: the same tail, the same body, and the same cooldown stamped on the way
+    /// out, because a summary bought here really is a summary the automatic path no longer
+    /// has to buy.
     fn send_summary(
         &mut self,
         pane_id: u32,
         text: &str,
         endpoint: &Endpoint,
+        manual: bool,
         send: impl FnOnce(&str, HttpVerb, BTreeMap<String, String>, Vec<u8>, BTreeMap<String, String>),
     ) {
         let Some(pane) = self
@@ -2348,7 +2811,10 @@ impl State {
             InFlight {
                 id,
                 hash,
-                origin: Origin::Screen { tail },
+                origin: match manual {
+                    true => Origin::Manual { tail: Some(tail) },
+                    false => Origin::Screen { tail },
+                },
                 ticks: 0,
             },
         );
@@ -2373,6 +2839,13 @@ impl State {
     /// Every `WebRequestResult` in the session reaches this, so the context is what says
     /// the reply is ours at all — the same correlation `finish_git_probe` does.
     fn finish_summary(&mut self, status: u16, body: &[u8], context: &BTreeMap<String, String>) {
+        // Which key is present is what says which lane asked. A run's reply has no pane to
+        // rename or toast over and is correlated in a map of its own, so it must never be
+        // taken up by the half that would do those things.
+        if context.contains_key(SUMMARY_RUN) {
+            self.finish_run_summary(status, body, context);
+            return;
+        }
         self.finish_summary_with(
             status,
             body,
@@ -2411,8 +2884,11 @@ impl State {
             return;
         };
         let hash = request.hash;
-        // Both origins have a way of going stale in flight, and they are opposites —
-        // see `Origin`.
+        // Whether this summary stays on the timeline where it was made. Read before the
+        // origin is consumed below. See `attach_run_summary`.
+        let asked_for = matches!(request.origin, Origin::Manual { .. });
+        // Both automatic origins have a way of going stale in flight, and they are
+        // opposites — see `Origin`.
         let tail = match request.origin {
             // The pane has moved on since we asked, so this answer describes a screen
             // that is gone. Compared against the hash the *request* was made from rather
@@ -2444,6 +2920,11 @@ impl State {
                 }
                 None
             },
+            // Nothing to check. Both rules above are about answers nobody asked for; this
+            // one was asked for, and the asker is still waiting whatever the pane has done
+            // since. The tail rides through so a screen-derived manual answer still promotes
+            // the baseline below.
+            Origin::Manual { tail } => tail,
         };
         // The agent went away between the request leaving and its answer landing: the pane
         // closed, or it is back at its prompt. The answer describes a session that is over,
@@ -2496,7 +2977,7 @@ impl State {
         if let Some(tail) = tail {
             self.summary_baselines.insert(pane_id, tail);
         }
-        self.attach_run_summary(pane_id, &summary);
+        self.attach_run_summary(pane_id, &summary, asked_for);
         self.summaries.insert(pane_id, summary);
         self.publish();
     }
@@ -4322,9 +4803,15 @@ mod tests {
             |_| reading.take().expect("one pane per poll in these tests"),
             |state, pane_id, text| {
                 if state.summary_due(pane_id, text) {
-                    state.send_summary(pane_id, text, &endpoint(), |_, _, _, body, context| {
-                        sent.push((context[SUMMARY_PANE].parse().unwrap(), body));
-                    });
+                    state.send_summary(
+                        pane_id,
+                        text,
+                        &endpoint(),
+                        false,
+                        |_, _, _, body, context| {
+                            sent.push((context[SUMMARY_PANE].parse().unwrap(), body));
+                        },
+                    );
                     return true;
                 }
                 false
@@ -4847,6 +5334,15 @@ mod tests {
         wire::HookEvent {
             last_assistant_message: Some(message.to_owned()),
             ..hook("Stop")
+        }
+    }
+
+    /// The other half of a turn: what the user asked for, which is kept both as the
+    /// question a summary is written against and as an entry on the run.
+    fn prompt(text: &str) -> wire::HookEvent {
+        wire::HookEvent {
+            prompt: Some(text.to_owned()),
+            ..hook("UserPromptSubmit")
         }
     }
 
@@ -6683,7 +7179,9 @@ mod tests {
         };
 
         let mut body = Vec::new();
-        state.send_summary(7, BUSY_PANE, &endpoint(), |_, _, _, sent, _| body = sent);
+        state.send_summary(7, BUSY_PANE, &endpoint(), false, |_, _, _, sent, _| {
+            body = sent
+        });
 
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let user = value["messages"][1]["content"].as_str().unwrap();
@@ -6712,5 +7210,707 @@ mod tests {
 
         state.finish_git_probe(Some(0), b"stale".to_vec(), context);
         assert!(state.git_probes[&local("/work")].metadata.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Summaries somebody asked for
+    // -----------------------------------------------------------------------
+
+    /// `summarize_pane_now` with the host calls handed back: whether a request went out,
+    /// what was sent, and what was toasted.
+    fn ask(
+        state: &mut State,
+        pane_id: u32,
+        endpoint: Option<&Endpoint>,
+        reading: poll::PaneSample,
+    ) -> (bool, Vec<Asked>, Vec<(u32, String)>) {
+        ask_wanting(state, pane_id, endpoint, reading, true)
+    }
+
+    /// One request an ask sent: the pane it named, the correlation id it will be answered
+    /// on, and the body. The id is here because a manual ask shares `summary_seq` with every
+    /// other request the daemon makes, so a test that guessed at it would be asserting on
+    /// how many summaries its setup happened to provoke.
+    struct Asked {
+        pane_id: u32,
+        id: u64,
+        body: Vec<u8>,
+    }
+
+    /// The same, for the one test that is about `summaries "false"`.
+    fn ask_wanting(
+        state: &mut State,
+        pane_id: u32,
+        endpoint: Option<&Endpoint>,
+        reading: poll::PaneSample,
+        wanted: bool,
+    ) -> (bool, Vec<Asked>, Vec<(u32, String)>) {
+        let mut sent = Vec::new();
+        let mut toasts = Vec::new();
+        let asked = state.summarize_pane_now_with(
+            pane_id,
+            endpoint,
+            wanted,
+            |_| reading,
+            |_, _, _, body, context| {
+                sent.push(Asked {
+                    pane_id: context[SUMMARY_PANE].parse().unwrap(),
+                    id: context[SUMMARY_ID].parse().unwrap(),
+                    body,
+                });
+            },
+            |pane_id, text| toasts.push((pane_id, text.to_owned())),
+        );
+        (asked, sent, toasts)
+    }
+
+    /// The user content of a request, for the tests that are about what a model was shown.
+    fn asked_about(body: &[u8]) -> String {
+        let json: serde_json::Value = serde_json::from_slice(body).expect("a request body");
+        json["messages"][1]["content"]
+            .as_str()
+            .expect("a user message")
+            .to_owned()
+    }
+
+    /// The cooldown is the guard that fires most: an agent settles several times a turn and
+    /// only the first is paid for. It is also the one a person is most likely to run into,
+    /// because pressing the key is the natural thing to do a few seconds after watching the
+    /// automatic summary land and finding it says the wrong thing.
+    #[test]
+    fn a_summary_somebody_asked_for_is_not_held_off_by_the_cooldown() {
+        let (mut state, sent) = idle_agent(BUSY_PANE);
+        assert_eq!(
+            sent.len(),
+            1,
+            "the automatic one went, and stamped a cooldown"
+        );
+        assert!(state.summary_cooldown.contains_key(&7));
+        // The reply has to land, or the in-flight guard - which is not a budget rule and
+        // does still apply - would be what refused the second.
+        finish(&mut state, 200, &reply("done", false), &context(7, 1));
+
+        let (asked, sent, _) = ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
+
+        assert!(
+            asked,
+            "a person asking is not subject to the daemon's budget"
+        );
+        assert_eq!(sent.len(), 1);
+    }
+
+    /// The other budget guard, and the subtler one: a screen that has barely moved buys the
+    /// automatic path nothing, but somebody looking at that screen and pressing the key is
+    /// saying the last sentence about it was wrong.
+    #[test]
+    fn a_summary_somebody_asked_for_ignores_the_baseline() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+        finish(&mut state, 200, &reply("done", false), &context(7, 1));
+        state.summary_cooldown.clear();
+        assert!(
+            !state.summary_due(7, BUSY_PANE),
+            "the automatic path is done with this screen"
+        );
+
+        let (asked, sent, _) = ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
+
+        assert!(asked);
+        assert_eq!(sent.len(), 1);
+    }
+
+    /// The guard that is not about the budget. `finish_summary_with` correlates strictly on
+    /// `(pane, id)`, so a second request would not arrive twice - it would orphan the first
+    /// and answer only itself, and the answer already on its way would be thrown away.
+    #[test]
+    fn only_one_asked_for_summary_is_in_flight_at_a_time() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+        finish(&mut state, 200, &reply("done", false), &context(7, 1));
+        let (asked, _, _) = ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
+        assert!(asked);
+
+        let (asked, sent, _) = ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
+
+        assert!(!asked, "the first is still out");
+        assert!(sent.is_empty());
+    }
+
+    /// The answer to a request somebody is waiting for survives the pane having moved, which
+    /// is the exact opposite of the rule an unasked-for screen summary keeps. A person who
+    /// pressed the key while an agent was mid-build would otherwise get silence, press again,
+    /// and get silence again.
+    #[test]
+    fn an_asked_for_summary_survives_a_screen_that_moved_while_it_was_in_flight() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+        finish(&mut state, 200, &reply("first", false), &context(7, 1));
+        let (asked, _, _) = ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
+        assert!(asked);
+        // The agent got on with something else while the request was out.
+        let mut sent = Vec::new();
+        poll_showing(
+            &mut state,
+            "a completely different screen entirely",
+            &mut sent,
+        );
+
+        finish(
+            &mut state,
+            200,
+            &reply("what I was asked", false),
+            &context(7, 2),
+        );
+
+        assert_eq!(
+            state.summaries[&7].text, "what I was asked",
+            "somebody was waiting for this"
+        );
+    }
+
+    /// The same request, made by nobody, is thrown away - the rule this feature is the
+    /// exception to, asserted beside it so the two cannot drift.
+    #[test]
+    fn an_unasked_for_screen_summary_still_does_not_survive_a_screen_that_moved() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+        let mut sent = Vec::new();
+        poll_showing(
+            &mut state,
+            "a completely different screen entirely",
+            &mut sent,
+        );
+
+        finish(&mut state, 200, &reply("stale", false), &context(7, 1));
+
+        assert!(
+            !state.summaries.contains_key(&7),
+            "nobody asked, so a sentence about a screen that has gone is worse than none"
+        );
+    }
+
+    /// A pane that reports for itself is described from what it said, not from what it
+    /// shows. Asking its screen here would reintroduce the second, worse answer that the
+    /// hook feed was brought in to retire.
+    #[test]
+    fn asking_about_a_hook_fed_pane_reads_its_run_and_not_its_screen() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        feed(&mut state, 7, &prompt("rewrite the retry backoff"), None);
+        feed(&mut state, 7, &stop_saying(REPLY), None);
+        // The turn's own summary is what would otherwise still be in flight.
+        state.summary_requests.clear();
+
+        let (asked, sent, _) = ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
+
+        assert!(asked);
+        let body = asked_about(&sent[0].body);
+        assert!(
+            body.contains("rewrite the retry backoff"),
+            "the request carries what the user asked: {body}"
+        );
+        assert!(
+            !body.contains(BUSY_PANE),
+            "and not a photograph of the pane: {body}"
+        );
+    }
+
+    /// A run whose every entry the last summary absorbed is still worth asking about, which
+    /// is the whole difference between the two spans. Somebody pressing a key wants to know
+    /// what the agent has been doing; answering "nothing has changed since I last said" is
+    /// indistinguishable from the key not working.
+    #[test]
+    fn asking_about_a_hook_fed_pane_reads_the_whole_run_not_only_what_is_new() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        feed(&mut state, 7, &prompt("rewrite the retry backoff"), None);
+        feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
+        finish(
+            &mut state,
+            200,
+            &reply("rewrote the backoff", false),
+            &context(7, 1),
+        );
+        assert_eq!(
+            state.runs[&7].summarized_revision, state.runs[&7].revision,
+            "the automatic path has absorbed every entry and would ask nothing"
+        );
+
+        let (asked, sent, _) = ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
+
+        assert!(asked);
+        let body = asked_about(&sent[0].body);
+        assert!(
+            body.contains("rewrite the retry backoff"),
+            "the run is re-read from its record: {body}"
+        );
+        assert!(
+            !body.contains("previous summary"),
+            "and not weighed against the paraphrase made from it: {body}"
+        );
+    }
+
+    /// A run with nothing retained at all — every hook it saw was a tool call or a lifecycle
+    /// event, none of which is kept. There is genuinely nothing to describe.
+    #[test]
+    fn asking_about_a_pane_whose_run_holds_nothing_asks_nobody() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        feed(&mut state, 7, &hook("SessionStart"), None);
+        assert!(state.runs[&7].entries.is_empty());
+
+        let (asked, sent, _) = ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
+
+        assert!(!asked);
+        assert!(sent.is_empty());
+    }
+
+    /// A reading that says nothing is no more summarisable for having been asked for: a pane
+    /// scrolled off its live tail shows old output, and one that could not be read holds an
+    /// error message rather than anything the agent wrote.
+    #[test]
+    fn asking_about_a_pane_that_cannot_be_read_asks_nobody() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+        finish(&mut state, 200, &reply("done", false), &context(7, 1));
+        state.summary_cooldown.clear();
+
+        let (asked, sent, _) = ask(&mut state, 7, Some(&endpoint()), scrolled(BUSY_PANE));
+        assert!(!asked, "a scrolled pane shows old output");
+        assert!(sent.is_empty());
+
+        let (asked, sent, _) = ask(&mut state, 7, Some(&endpoint()), unreadable());
+        assert!(!asked, "and an unreadable one shows an error message");
+        assert!(sent.is_empty());
+    }
+
+    /// A screen-only pane has no honest fallback without an endpoint. `local_summary`
+    /// shortens prose the agent wrote, and a screen tail is not that - which is why there was
+    /// nothing to fall back to at all before the hook feed. Pressing a key does not make one.
+    #[test]
+    fn asking_about_a_screen_only_pane_with_no_endpoint_makes_nothing_up() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+        finish(&mut state, 200, &reply("done", false), &context(7, 1));
+        state.summary_cooldown.clear();
+
+        let (asked, sent, _) = ask(&mut state, 7, None, sample(BUSY_PANE));
+
+        assert!(!asked);
+        assert!(sent.is_empty());
+        assert_eq!(
+            state.summaries[&7].text, "done",
+            "and the summary it already had is left alone"
+        );
+    }
+
+    /// A hook-fed pane with no endpoint does have one, and a person is as entitled to it as
+    /// a `Stop` is: the agent's own final message, shortened.
+    #[test]
+    fn asking_about_a_hook_fed_pane_with_no_endpoint_falls_back_to_what_it_said() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        feed(&mut state, 7, &prompt("run the tests"), None);
+        feed(&mut state, 7, &stop_saying(REPLY), None);
+        let text = state.summaries[&7].text.clone();
+        // The `Stop` already made one locally; clear it so what is asserted below is this
+        // ask's own answer rather than that one still sitting there.
+        state.summaries.remove(&7);
+
+        let (asked, sent, _) = ask(&mut state, 7, None, sample(BUSY_PANE));
+
+        assert!(asked);
+        assert!(sent.is_empty(), "nobody was asked");
+        assert_eq!(state.summaries[&7].text, text);
+    }
+
+    /// `summaries "false"` is a user saying "do not do this", and they did not mean "unless
+    /// I press a key".
+    #[test]
+    fn asking_for_a_summary_that_is_switched_off_asks_nobody() {
+        let (mut state, _) = idle_agent(BUSY_PANE);
+        finish(&mut state, 200, &reply("done", false), &context(7, 1));
+        state.summary_cooldown.clear();
+
+        let (asked, sent, _) =
+            ask_wanting(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE), false);
+
+        assert!(!asked);
+        assert!(sent.is_empty());
+    }
+
+    /// The point of the whole feature: the answer stays on the timeline at the place it was
+    /// asked for, as well as replacing the sentence pinned above it.
+    #[test]
+    fn an_asked_for_summary_stays_on_the_timeline() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        feed(&mut state, 7, &prompt("rewrite the retry backoff"), None);
+        feed(&mut state, 7, &stop_saying(REPLY), None);
+        state.summary_requests.clear();
+        let (asked, sent, _) = ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
+        assert!(asked);
+
+        finish(
+            &mut state,
+            200,
+            &reply("rewrote the backoff", false),
+            &context(sent[0].pane_id, sent[0].id),
+        );
+
+        let run = state.runs.get(&7).expect("the pane's run");
+        let summaries: Vec<&str> = run
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == agents::RunEntryKind::Summary)
+            .map(|entry| entry.text.as_str())
+            .collect();
+        assert_eq!(summaries, vec!["rewrote the backoff"]);
+        assert_eq!(
+            run.summary.as_ref().expect("pinned too").text,
+            "rewrote the backoff"
+        );
+        assert!(
+            run.summarized_revision >= run.revision,
+            "and the entry it just made is inside the accepted revision, so the next request \
+             does not read it back as work the agent did"
+        );
+    }
+
+    /// The regression guard for the flag that decides it. An automatic summary rolls forward
+    /// at the end of every turn, so keeping each one would grow a long run a line per turn -
+    /// and the newest of them, pinned above the timeline, is the only one anybody wanted.
+    #[test]
+    fn a_summary_nobody_asked_for_leaves_the_timeline_alone() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        feed(&mut state, 7, &prompt("rewrite the retry backoff"), None);
+        feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
+
+        finish(
+            &mut state,
+            200,
+            &reply("rewrote the backoff", false),
+            &context(7, 1),
+        );
+
+        let run = state.runs.get(&7).expect("the pane's run");
+        assert!(
+            !run.entries
+                .iter()
+                .any(|entry| entry.kind == agents::RunEntryKind::Summary),
+            "the turn's own summary is pinned, not filed"
+        );
+        assert_eq!(
+            run.summary.as_ref().expect("pinned").text,
+            "rewrote the backoff"
+        );
+    }
+
+    /// Two presses against an agent that has not moved produce the same sentence twice, and
+    /// two identical paragraphs one under the other read as a bug rather than as a history.
+    #[test]
+    fn asking_twice_for_the_same_sentence_files_it_once() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        feed(&mut state, 7, &prompt("rewrite the retry backoff"), None);
+        feed(&mut state, 7, &stop_saying(REPLY), None);
+        state.summary_requests.clear();
+
+        for _ in 0..2 {
+            state.summary_requests.clear();
+            let (asked, sent, _) = ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
+            assert!(
+                asked,
+                "the run is re-read whole, so there is always something to ask"
+            );
+            finish(
+                &mut state,
+                200,
+                &reply("rewrote the backoff", false),
+                &context(sent[0].pane_id, sent[0].id),
+            );
+        }
+
+        let run = state.runs.get(&7).expect("the pane's run");
+        assert_eq!(
+            run.entries
+                .iter()
+                .filter(|entry| entry.kind == agents::RunEntryKind::Summary)
+                .count(),
+            1,
+            "the second press bought nothing, and says so by adding nothing"
+        );
+    }
+
+    /// A summary is the model's words about the agent. Feeding one back as though the agent
+    /// had said it would let a paraphrase compound into the next paraphrase, and a long run
+    /// would end up describing its own descriptions.
+    #[test]
+    fn a_filed_summary_is_not_shown_back_to_the_model() {
+        let mut run = agents::AgentRun {
+            id: "claude:cc-session-1".to_owned(),
+            pane_id: 7,
+            zellij_session_name: "here".to_owned(),
+            session_id: "cc-session-1".to_owned(),
+            kind: CLAUDE.to_owned(),
+            cwd: Some("/work".to_owned()),
+            started_at_ms: 10,
+            ended_at_ms: None,
+            outcome: agents::RunOutcome::Active,
+            revision: 0,
+            summarized_revision: 0,
+            summary: None,
+            entries: Vec::new(),
+        };
+        agents::push_summary_entry(&mut run, "a paraphrase of a paraphrase");
+        run.entries.push(agents::RunEntry {
+            revision: 2,
+            event_id: None,
+            kind: agents::RunEntryKind::Question,
+            text: "Which library?".to_owned(),
+        });
+        run.revision = 2;
+
+        let delta = run_delta(&run, None, Span::Whole).expect("there is a question to describe");
+
+        assert!(delta.contains("Which library?"));
+        assert!(!delta.contains("a paraphrase of a paraphrase"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Summaries of runs that have ended
+    // -----------------------------------------------------------------------
+
+    /// One archived run, as the store would hand it back.
+    fn archived_run(id: &str) -> agents::AgentRun {
+        agents::AgentRun {
+            id: id.to_owned(),
+            pane_id: 7,
+            zellij_session_name: "here".to_owned(),
+            session_id: "cc-session-1".to_owned(),
+            kind: CLAUDE.to_owned(),
+            cwd: Some("/work".to_owned()),
+            started_at_ms: 10,
+            ended_at_ms: Some(20),
+            outcome: agents::RunOutcome::Completed,
+            revision: 2,
+            summarized_revision: 0,
+            summary: None,
+            entries: vec![
+                agents::RunEntry {
+                    revision: 1,
+                    event_id: None,
+                    kind: agents::RunEntryKind::Prompt,
+                    text: "rewrite the retry backoff".to_owned(),
+                },
+                agents::RunEntry {
+                    revision: 2,
+                    event_id: None,
+                    kind: agents::RunEntryKind::Result,
+                    text: REPLY.to_owned(),
+                },
+            ],
+        }
+    }
+
+    fn ask_run(
+        state: &mut State,
+        run_id: &str,
+        endpoint: Option<&Endpoint>,
+    ) -> (bool, Vec<(String, Vec<u8>)>) {
+        let mut sent = Vec::new();
+        let asked =
+            state.summarize_run_now_with(run_id, endpoint, true, |_, _, _, body, context| {
+                sent.push((context[SUMMARY_RUN].clone(), body));
+            });
+        (asked, sent)
+    }
+
+    fn run_context(run_id: &str, id: u64) -> BTreeMap<String, String> {
+        BTreeMap::from([
+            (SUMMARY_RUN.to_owned(), run_id.to_owned()),
+            (SUMMARY_ID.to_owned(), id.to_string()),
+        ])
+    }
+
+    /// A run that has ended has no pane to read and no session to watch, and is summarised
+    /// from what it recorded. The answer goes back to the store, which is the only place an
+    /// archived run lives.
+    #[test]
+    fn an_archived_run_is_summarised_from_what_it_recorded() {
+        let mut state = State::default();
+        let run = archived_run("claude:cc-session-1");
+        // Standing in for the store fetch, which `load_run` tries second.
+        state.dirty_runs.insert(run.id.clone(), run.clone());
+
+        let (asked, sent) = ask_run(&mut state, &run.id, Some(&endpoint()));
+
+        assert!(asked);
+        assert_eq!(sent[0].0, run.id, "correlated by run, not by pane");
+        let body = asked_about(&sent[0].1);
+        assert!(body.contains("rewrite the retry backoff"), "{body}");
+
+        state.finish_run_summary(
+            200,
+            &reply("rewrote the backoff", false),
+            &run_context(&run.id, 1),
+        );
+
+        let stored = state.dirty_runs.get(&run.id).expect("queued for the store");
+        assert_eq!(
+            stored.summary.as_ref().expect("pinned").text,
+            "rewrote the backoff"
+        );
+        assert_eq!(
+            stored
+                .entries
+                .iter()
+                .filter(|entry| entry.kind == agents::RunEntryKind::Summary)
+                .count(),
+            1,
+            "and filed on the timeline, which is the whole reason to have asked"
+        );
+        assert!(
+            !state.runs.contains_key(&7),
+            "the daemon does not start watching a session that is over"
+        );
+        assert!(
+            !state.summaries.contains_key(&7),
+            "nor put it on whoever holds pane 7 now"
+        );
+    }
+
+    /// A reply carrying a run id must never be taken up by the half that renames panes and
+    /// toasts: the pane the run names is somebody else's by now.
+    #[test]
+    fn a_run_reply_is_not_taken_for_a_pane_reply() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        let run = archived_run("claude:cc-session-1");
+        state.dirty_runs.insert(run.id.clone(), run.clone());
+        assert!(ask_run(&mut state, &run.id, Some(&endpoint())).0);
+
+        // The dispatcher rather than the pane-lane body: which of the two a reply reaches is
+        // exactly what is under test. The run branch makes no host call, so this is safe to
+        // drive with no host behind it.
+        state.finish_summary(200, &reply("rewrote it", false), &run_context(&run.id, 1));
+
+        let finished = finish(
+            &mut state,
+            200,
+            &reply("hijacked", false),
+            &run_context(&run.id, 1),
+        );
+        assert!(finished.renames.is_empty(), "no pane of its own to rename");
+        assert!(finished.toasts.is_empty(), "and nobody to interrupt");
+        assert_eq!(
+            state.dirty_runs[&run.id]
+                .summary
+                .as_ref()
+                .expect("it still landed")
+                .text,
+            "rewrote it"
+        );
+    }
+
+    /// An archived run that already has a summary is still worth asking about — the same
+    /// span rule the live lane keeps, and the case this feature most exists for: a run whose
+    /// one sentence was written three prompts before it ended.
+    #[test]
+    fn an_archived_run_that_already_has_a_summary_is_still_worth_asking_about() {
+        let mut state = State::default();
+        let mut run = archived_run("claude:cc-session-1");
+        run.summarized_revision = run.revision;
+        run.summary = Some(agents::Summary {
+            text: "an old sentence".to_owned(),
+            title: String::new(),
+            awaiting: false,
+            hash: 0,
+        });
+        state.dirty_runs.insert(run.id.clone(), run.clone());
+
+        let (asked, sent) = ask_run(&mut state, &run.id, Some(&endpoint()));
+
+        assert!(asked);
+        let body = asked_about(&sent[0].1);
+        assert!(body.contains("rewrite the retry backoff"), "{body}");
+        assert!(!body.contains("an old sentence"), "{body}");
+    }
+
+    /// A run with nothing retained at all has nothing to describe.
+    #[test]
+    fn an_archived_run_that_holds_nothing_asks_nobody() {
+        let mut state = State::default();
+        let mut run = archived_run("claude:cc-session-1");
+        run.entries.clear();
+        state.dirty_runs.insert(run.id.clone(), run.clone());
+
+        let (asked, sent) = ask_run(&mut state, &run.id, Some(&endpoint()));
+
+        assert!(!asked);
+        assert!(sent.is_empty());
+    }
+
+    /// The in-flight guard, on the lane that has no pane to key it by.
+    #[test]
+    fn only_one_summary_of_a_run_is_in_flight_at_a_time() {
+        let mut state = State::default();
+        let run = archived_run("claude:cc-session-1");
+        state.dirty_runs.insert(run.id.clone(), run.clone());
+        assert!(ask_run(&mut state, &run.id, Some(&endpoint())).0);
+
+        let (asked, sent) = ask_run(&mut state, &run.id, Some(&endpoint()));
+
+        assert!(!asked);
+        assert!(sent.is_empty());
+    }
+
+    /// A reply the host dropped must not cost a run its summaries for the rest of the
+    /// session. Nothing else ever clears this lane — a run that has ended cannot stop being
+    /// a running agent, which is what prunes the pane lane — so the tick count is the whole
+    /// of its recovery.
+    #[test]
+    fn a_run_whose_reply_never_came_can_be_asked_about_again() {
+        let mut state = State::default();
+        let run = archived_run("claude:cc-session-1");
+        state.dirty_runs.insert(run.id.clone(), run.clone());
+        assert!(ask_run(&mut state, &run.id, Some(&endpoint())).0);
+        assert!(!ask_run(&mut state, &run.id, Some(&endpoint())).0);
+
+        let mut sent = Vec::new();
+        for _ in 0..=SUMMARY_TICKS {
+            poll_showing(&mut state, BUSY_PANE, &mut sent);
+        }
+
+        assert!(
+            ask_run(&mut state, &run.id, Some(&endpoint())).0,
+            "the answer is not coming, so the question may be asked again"
+        );
+    }
+
+    /// A run has no local fallback: what it holds is a record, not prose somebody wrote to
+    /// be read.
+    #[test]
+    fn an_archived_run_with_no_endpoint_makes_nothing_up() {
+        let mut state = State::default();
+        let run = archived_run("claude:cc-session-1");
+        state.dirty_runs.insert(run.id.clone(), run.clone());
+
+        let (asked, sent) = ask_run(&mut state, &run.id, None);
+
+        assert!(!asked);
+        assert!(sent.is_empty());
+        assert!(state.dirty_runs[&run.id].summary.is_none());
     }
 }
