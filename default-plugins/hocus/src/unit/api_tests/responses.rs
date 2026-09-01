@@ -280,10 +280,19 @@ fn surfaces_a_transport_error_event() {
 fn surfaces_an_incomplete_response() {
     let mut parser = SseParser::default();
     let items = parser.feed(
-        br#"data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}
+        br#"data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":1200,"output_tokens":34}}}
 "#,
     );
-    assert_eq!(items, vec![SseItem::ApiError("max_output_tokens".into())]);
+    assert_eq!(
+        items,
+        vec![
+            SseItem::Usage {
+                prompt: 1200,
+                completion: 34,
+            },
+            SseItem::ApiError("max_output_tokens".into()),
+        ]
+    );
 }
 
 /// A `type: "error"` frame spells its message as a bare top-level field, not as

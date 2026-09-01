@@ -113,6 +113,8 @@ pub fn chat_def() -> EntityDef {
     EntityDef::new("chat", 1)
         .attr(AttrDef::text("title").required())
         .attr(AttrDef::int("legacy_id"))
+        .attr(AttrDef::int("input_tokens"))
+        .attr(AttrDef::int("output_tokens"))
 }
 
 /// One message in a conversation, addressed by `(chat_id, seq)`.

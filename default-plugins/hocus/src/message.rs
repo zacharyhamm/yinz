@@ -207,6 +207,13 @@ impl Message {
     }
 }
 
+/// Provider-reported usage for one request, or the accumulated usage of a chat.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
 /// The reply arriving from the endpoint. Independent of `Status`: a tool the
 /// user typed runs alongside the reply rather than instead of it.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -218,11 +225,10 @@ pub struct StreamState {
     /// chunk. This flag exists to swallow it without recording a second
     /// outcome.
     pub finishing: bool,
-    /// What the provider said this exchange cost, prompt and completion
-    /// together, held until `done` so the `wire_chars` baseline is taken once
-    /// the reply it covers — text, tool calls and all — has settled.
+    /// What the provider said this exchange cost. Held until `done` so one
+    /// stream contributes to the chat's totals at most once.
     #[serde(default)]
-    pub usage: Option<u64>,
+    pub usage: Option<TokenUsage>,
 }
 
 /// Lifecycle of the tool queue. What the *model* asked for and what the user

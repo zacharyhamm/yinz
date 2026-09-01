@@ -513,7 +513,11 @@ fn save_parked_skips_empty_and_unchanged_chats() {
     assert_eq!(ids[2], None, "an empty tab leaves no row");
     assert_eq!(
         state.parked[0].saved,
-        archive::fingerprint(&state.parked[0].messages, state.parked[0].reply_at),
+        archive::fingerprint(
+            &state.parked[0].messages,
+            state.parked[0].reply_at,
+            state.parked[0].usage,
+        ),
         "a written one is recorded as such"
     );
 

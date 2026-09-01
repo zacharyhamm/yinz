@@ -1086,22 +1086,22 @@ fn title_note(state: &mut State) -> Option<String> {
     } else {
         None
     };
-    let context = context_note(state);
-    match (activity, context) {
-        (Some(activity), Some(context)) => Some(format!("{activity} · {context}")),
-        (activity, context) => activity.or(context),
+    let usage = usage_note(state);
+    match (activity, usage) {
+        (Some(activity), Some(usage)) => Some(format!("{activity} · {usage}")),
+        (activity, usage) => activity.or(usage),
     }
 }
 
-/// `12.3k tok`, or `~12.3k tok` while the number is a guess. Nothing for a
-/// chat with nothing in it, so a fresh pane is as bare as it was.
-fn context_note(state: &mut State) -> Option<String> {
-    if state.messages.is_empty() && state.usage.is_none() {
-        return None;
-    }
-    let (tokens, estimated) = state.context_tokens();
-    let mark = if estimated { "~" } else { "" };
-    Some(format!("{mark}{} tok", format_tokens(tokens)))
+/// Provider-reported usage accumulated across every request in this chat.
+fn usage_note(state: &State) -> Option<String> {
+    state.usage.map(|usage| {
+        format!(
+            "{} in · {} out",
+            format_tokens(usage.input_tokens),
+            format_tokens(usage.output_tokens)
+        )
+    })
 }
 
 /// A token count at the width a title slot can spare: `842`, `12.3k`, `1.2M`.
@@ -3304,19 +3304,24 @@ mod tests {
     #[test]
     fn the_title_note_sees_jobs_in_every_tab() {
         let mut state = tabs_state(2);
-        assert_eq!(
-            title_note(&mut state).as_deref(),
-            Some("~1 tok"),
-            "nothing happening anywhere: only the size"
-        );
+        assert_eq!(title_note(&mut state), None, "nothing happening anywhere");
+
+        state.usage = Some(crate::TokenUsage {
+            input_tokens: 1_200,
+            output_tokens: 34,
+        });
+        assert_eq!(title_note(&mut state).as_deref(), Some("1.2k in · 34 out"));
 
         state.jobs.push(job(1));
-        assert_eq!(title_note(&mut state).as_deref(), Some("⏲ 1 · ~1 tok"));
+        assert_eq!(
+            title_note(&mut state).as_deref(),
+            Some("⏲ 1 · 1.2k in · 34 out")
+        );
 
         state.parked[0].jobs.push(job(2));
         assert_eq!(
             title_note(&mut state).as_deref(),
-            Some("working +1 · ~1 tok"),
+            Some("working +1 · 1.2k in · 34 out"),
             "the other tab is live, and counted"
         );
         assert!(chat_tabs(&state, 80)[1].text.starts_with(" ● "));

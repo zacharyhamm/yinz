@@ -18,7 +18,7 @@ use hocus_proto::store::{self, Backend};
 use zellij_tile::prelude::*;
 
 use crate::tools::ToolCall;
-use crate::{Message, Reasoning, ReasoningKey, Role};
+use crate::{Message, Reasoning, ReasoningKey, Role, TokenUsage};
 
 /// The directory the archive used to live in. Read once, by the import.
 #[cfg(target_family = "wasm")]
@@ -169,6 +169,7 @@ pub fn save(
     messages: &[Message],
     saved_len: usize,
     reply_at: Option<usize>,
+    usage: Option<TokenUsage>,
 ) -> Result<usize, String> {
     let title = title(messages);
     let chat_id = match *id {
@@ -178,6 +179,8 @@ pub fn save(
             // upsert against on a chat that has never been written.
             let report = backend.apply(vec![Mutation::put("chat")
                 .set("title", title.clone())
+                .set("input_tokens", usage.map(|usage| usage.input_tokens))
+                .set("output_tokens", usage.map(|usage| usage.output_tokens))
                 .build()])?;
             let new = report
                 .ids
@@ -200,6 +203,8 @@ pub fn save(
         ),
         Mutation::update("chat", Pred::eq("id", chat_id as i64))
             .set("title", title)
+            .set("input_tokens", usage.map(|usage| usage.input_tokens))
+            .set("output_tokens", usage.map(|usage| usage.output_tokens))
             .build(),
     ];
 
@@ -229,6 +234,26 @@ pub fn save(
 
     backend.apply(mutations)?;
     Ok(messages.len())
+}
+
+/// Provider-reported totals saved beside a transcript. Missing on chats
+/// archived before usage accounting existed.
+pub fn load_usage(backend: &impl Backend, id: u64) -> Option<TokenUsage> {
+    let rows = backend
+        .fetch(
+            &FetchRequest::entity("chat")
+                .filter(Pred::eq("id", id))
+                .limit(1)
+                .select(["input_tokens", "output_tokens"]),
+        )
+        .ok()?;
+    let row = rows.rows.first()?;
+    let input_tokens = int_at(&rows, row, "input_tokens");
+    let output_tokens = int_at(&rows, row, "output_tokens");
+    (input_tokens.is_some() || output_tokens.is_some()).then_some(TokenUsage {
+        input_tokens: input_tokens.unwrap_or(0),
+        output_tokens: output_tokens.unwrap_or(0),
+    })
 }
 
 /// Read one transcript back.
@@ -487,7 +512,7 @@ pub fn import_legacy(backend: &impl Backend) {
             continue;
         };
         let mut id = None;
-        if save(backend, &mut id, &messages, 0, None).is_err() {
+        if save(backend, &mut id, &messages, 0, None, None).is_err() {
             continue;
         }
         if let Some(id) = id {
@@ -704,9 +729,27 @@ mod tests {
         ];
 
         let mut id = None;
-        save(&backend, &mut id, &messages, 0, None).expect("saved");
+        save(&backend, &mut id, &messages, 0, None, None).expect("saved");
         let id = id.expect("an id was allocated");
         assert_eq!(load(&backend, id).expect("loaded"), messages);
+    }
+
+    #[test]
+    fn token_usage_survives_a_round_trip_and_old_chats_have_none() {
+        let backend = backend();
+        let messages = [Message::user("one")];
+
+        let mut old_id = None;
+        save(&backend, &mut old_id, &messages, 0, None, None).expect("saved old chat");
+        assert_eq!(load_usage(&backend, old_id.expect("old id")), None);
+
+        let usage = TokenUsage {
+            input_tokens: 1_200,
+            output_tokens: 34,
+        };
+        let mut id = None;
+        save(&backend, &mut id, &messages, 0, None, Some(usage)).expect("saved usage");
+        assert_eq!(load_usage(&backend, id.expect("id")), Some(usage));
     }
 
     #[test]
@@ -714,11 +757,11 @@ mod tests {
         let backend = backend();
         let mut id = None;
         let messages = vec![Message::user("one")];
-        let saved = save(&backend, &mut id, &messages, 0, None).expect("saved");
+        let saved = save(&backend, &mut id, &messages, 0, None, None).expect("saved");
         let first = id.expect("an id");
 
         let messages = vec![Message::user("one"), Message::assistant("two")];
-        save(&backend, &mut id, &messages, saved, None).expect("saved");
+        save(&backend, &mut id, &messages, saved, None, None).expect("saved");
         assert_eq!(id, Some(first), "the id must not move");
         assert_eq!(load(&backend, first).expect("loaded").len(), 2);
     }
@@ -730,11 +773,11 @@ mod tests {
         let backend = backend();
         let mut id = None;
         let mut messages = vec![Message::user("one")];
-        let mut saved = save(&backend, &mut id, &messages, 0, None).expect("saved");
+        let mut saved = save(&backend, &mut id, &messages, 0, None, None).expect("saved");
 
         for text in ["two", "three", "four"] {
             messages.push(Message::assistant(text));
-            saved = save(&backend, &mut id, &messages, saved, None).expect("saved");
+            saved = save(&backend, &mut id, &messages, saved, None, None).expect("saved");
         }
         assert_eq!(load(&backend, id.expect("id")).expect("loaded"), messages);
     }
@@ -746,10 +789,10 @@ mod tests {
         let backend = backend();
         let mut id = None;
         let mut messages = vec![Message::user("ask"), Message::assistant("par")];
-        let saved = save(&backend, &mut id, &messages, 0, Some(1)).expect("saved");
+        let saved = save(&backend, &mut id, &messages, 0, Some(1), None).expect("saved");
 
         messages[1] = Message::assistant("partial reply");
-        save(&backend, &mut id, &messages, saved, Some(1)).expect("saved");
+        save(&backend, &mut id, &messages, saved, Some(1), None).expect("saved");
 
         let loaded = load(&backend, id.expect("id")).expect("loaded");
         assert_eq!(loaded[1].content, "partial reply");
@@ -762,11 +805,11 @@ mod tests {
         let backend = backend();
         let mut id = None;
         let mut messages = vec![Message::user("ask"), Message::assistant("")];
-        let saved = save(&backend, &mut id, &messages, 0, Some(1)).expect("saved");
+        let saved = save(&backend, &mut id, &messages, 0, Some(1), None).expect("saved");
 
         messages[1] = Message::assistant("the reply");
         messages.push(Message::notice("a typed tool"));
-        save(&backend, &mut id, &messages, saved, Some(1)).expect("saved");
+        save(&backend, &mut id, &messages, saved, Some(1), None).expect("saved");
 
         let loaded = load(&backend, id.expect("id")).expect("loaded");
         assert_eq!(loaded[1].content, "the reply");
@@ -785,10 +828,10 @@ mod tests {
             Message::assistant("two"),
             Message::notice("three"),
         ];
-        let saved = save(&backend, &mut id, &messages, 0, None).expect("saved");
+        let saved = save(&backend, &mut id, &messages, 0, None, None).expect("saved");
 
         let shorter = vec![Message::user("one"), Message::notice("three")];
-        save(&backend, &mut id, &shorter, saved, None).expect("saved");
+        save(&backend, &mut id, &shorter, saved, None, None).expect("saved");
 
         assert_eq!(load(&backend, id.expect("id")).expect("loaded"), shorter);
     }
@@ -798,7 +841,7 @@ mod tests {
         let backend = backend();
         for text in ["first question", "second question"] {
             let mut id = None;
-            save(&backend, &mut id, &[Message::user(text)], 0, None).expect("saved");
+            save(&backend, &mut id, &[Message::user(text)], 0, None, None).expect("saved");
         }
         let listed = list(&backend);
         assert_eq!(listed.len(), 2);
@@ -812,11 +855,19 @@ mod tests {
     fn a_title_is_rewritten_when_the_transcript_gains_a_question() {
         let backend = backend();
         let mut id = None;
-        let saved = save(&backend, &mut id, &[Message::notice("hello")], 0, None).expect("saved");
+        let saved = save(
+            &backend,
+            &mut id,
+            &[Message::notice("hello")],
+            0,
+            None,
+            None,
+        )
+        .expect("saved");
         assert_eq!(list(&backend)[0].title, "(empty)");
 
         let messages = vec![Message::notice("hello"), Message::user("the question")];
-        save(&backend, &mut id, &messages, saved, None).expect("saved");
+        save(&backend, &mut id, &messages, saved, None, None).expect("saved");
         assert_eq!(list(&backend)[0].title, "the question");
     }
 

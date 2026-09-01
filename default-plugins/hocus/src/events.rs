@@ -1271,8 +1271,19 @@ impl State {
             return false;
         }
         if !self.is_receiving() {
+            for item in self.sse.feed(chunk) {
+                if let SseItem::Usage { prompt, completion } = item {
+                    if let Some(stream) = self.stream.as_mut() {
+                        stream.usage = Some(TokenUsage {
+                            input_tokens: prompt,
+                            output_tokens: completion,
+                        });
+                    }
+                }
+            }
             if done {
-                self.stream = None;
+                let usage = self.stream.take().and_then(|stream| stream.usage);
+                self.record_usage(usage);
                 self.reply_at = None;
                 self.tool_calls.take();
                 // Not while a retry is armed. This is the terminator the host still owed for
@@ -1308,11 +1319,9 @@ impl State {
                     if self.arm_streamed_retry(&m) {
                         self.pop_placeholder();
                         self.tool_calls.take();
-                        self.stream = Some(StreamState {
-                            id: stream_id.to_owned(),
-                            finishing: true,
-                            usage: None,
-                        });
+                        if let Some(stream) = self.stream.as_mut() {
+                            stream.finishing = true;
+                        }
                         break;
                     }
                     self.pop_empty_placeholder();
@@ -1326,24 +1335,22 @@ impl State {
                     );
                     self.tool_calls.take();
                     self.scheduled_run = None;
-                    self.stream = Some(StreamState {
-                        id: stream_id.to_owned(),
-                        finishing: true,
-                        usage: None,
-                    });
+                    if let Some(stream) = self.stream.as_mut() {
+                        stream.finishing = true;
+                    }
                     break;
                 },
                 SseItem::ToolCallFragment { .. }
                 | SseItem::ReasoningItem { .. }
                 | SseItem::AssistantMessage => self.tool_calls.feed(&item),
-                // Held on the stream rather than recorded here: Ollama hangs
-                // the count on the last content chunk, ahead of the text it
-                // covers, and a tool-calling reply is still fragments in
-                // `tool_calls`. The baseline is taken at `done`, once the
-                // transcript holds what was counted.
+                // Held on the stream until `done`, so a provider that repeats
+                // usage on more than one chunk still contributes only once.
                 SseItem::Usage { prompt, completion } => {
                     if let Some(stream) = self.stream.as_mut() {
-                        stream.usage = Some(prompt + completion);
+                        stream.usage = Some(TokenUsage {
+                            input_tokens: prompt,
+                            output_tokens: completion,
+                        });
                     }
                     self.log(
                         "api_usage",
@@ -1361,12 +1368,7 @@ impl State {
 
         if done {
             let settled = self.stream.take();
-            // A cancelled or already-failed stream's count is not recorded
-            // even if one arrived: the outcome on screen is not what it cost.
-            let usage = settled
-                .as_ref()
-                .filter(|stream| !stream.finishing)
-                .and_then(|stream| stream.usage);
+            let usage = settled.as_ref().and_then(|stream| stream.usage);
             match settled {
                 // Outcome already recorded; this is the terminator we were
                 // waiting to swallow. Any half-accumulated calls go with it.
@@ -1419,18 +1421,10 @@ impl State {
                         asked.reasoning_items = reasoning_items;
                         asked.prose_before = prose_before;
                         self.messages.push(asked);
-                        // The elision memo is dropped by hand. Its key would
-                        // in fact notice this swap — the replacement message
-                        // carries the tool calls the popped one did not — but
-                        // the invalidation is explicit so the guarantee does
-                        // not rest on the coincidence. Same for the
-                        // transcript's per-message key, which the call summary
-                        // arriving as `display` would move.
                         let swapped = self.messages.len() - 1;
                         if let Some(cache) = self.transcript_cache.as_mut() {
                             cache.invalidate_from(swapped);
                         }
-                        self.elision_cache = None;
                         self.saved.1 = self.mutable_len().wrapping_add(1);
                         let tool_payload: Vec<serde_json::Value> = calls
                             .iter()
@@ -1491,7 +1485,6 @@ impl State {
                         if let Some(cache) = self.transcript_cache.as_mut() {
                             cache.invalidate_from(reply_at);
                         }
-                        self.elision_cache = None;
                         self.pop_empty_placeholder();
                         let error = "the endpoint returned a tool call as text instead of structured tool_calls; no tool was run. Retry, or set `thinking \"disabled\"` for DeepSeek";
                         self.messages.push(Message::error(error));
@@ -1553,17 +1546,7 @@ impl State {
                     }
                 },
             }
-            // The transcript now holds everything the provider counted — the
-            // prose, or the tool-calls message with its arguments — so this is
-            // the baseline that "added since" is measured against. Only a tool
-            // result, or the next question, moves the count off exact.
-            if let Some(tokens) = usage {
-                self.usage = Some(ContextUsage {
-                    tokens,
-                    wire_chars: api::wire_chars(&self.messages),
-                });
-                self.elision_cache = None;
-            }
+            self.record_usage(usage);
             // The reply is settled, so nothing is appending any more — whatever
             // a typed tool pushes from here on is its own message.
             self.reply_at = None;
@@ -1577,6 +1560,14 @@ impl State {
         // action — rendering per chunk freezes the whole session for the length
         // of the reply. The spinner timer repaints the arriving text instead.
         done
+    }
+
+    fn record_usage(&mut self, usage: Option<TokenUsage>) {
+        if let Some(usage) = usage {
+            let total = self.usage.get_or_insert_default();
+            total.input_tokens = total.input_tokens.saturating_add(usage.input_tokens);
+            total.output_tokens = total.output_tokens.saturating_add(usage.output_tokens);
+        }
     }
 
     /// The message for a Slack tool whose `dobbs` could not be executed, or

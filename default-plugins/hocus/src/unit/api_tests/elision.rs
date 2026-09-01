@@ -446,27 +446,6 @@ fn elision_never_touches_the_transcript() {
     assert_eq!(transcript, before);
 }
 
-/// The title's estimate is measured against what the provider last charged for. If it counted
-/// what elision removes, it would drift from reality by exactly the amount elision saves.
-#[test]
-fn wire_chars_counts_the_elided_body_not_the_stored_one() {
-    let kept = vec![write("c2", "todo.lua", &draft(FINAL)), result("c2", "ok")];
-    let with_stale = vec![
-        write("c1", "todo.lua", &draft(DRAFT)),
-        result("c1", "ok"),
-        write("c2", "todo.lua", &draft(FINAL)),
-        result("c2", "ok"),
-    ];
-
-    let extra = wire_chars(&with_stale) - wire_chars(&kept);
-    let held = draft(DRAFT).len();
-
-    assert!(
-        extra < held / 4,
-        "the stale draft cost {extra} chars of the {held} it holds"
-    );
-}
-
 /// The Responses transport pairs each reasoning item with the output item it produced, by
 /// position. Rewriting an argument string changes no positions - but that is the kind of thing
 /// that is true until someone reorders the loop, so it is asserted rather than argued.
@@ -662,11 +641,14 @@ fn a_realistic_authoring_transcript_is_a_fraction_of_what_it_was() {
                     .sum::<usize>()
         })
         .sum();
-    let sent = wire_chars(&transcript);
-    let body = request_body(&cfg, &transcript).len();
+    let body = body_value(&cfg, &transcript);
+    let sent = serde_json::to_vec(&body["messages"])
+        .expect("messages serialize")
+        .len();
+    let body_bytes = serde_json::to_vec(&body).expect("body serializes").len();
 
     println!(
-        "stored {stored} chars -> {sent} on the wire ({}% saved); whole body {body} bytes, of \
+        "stored {stored} chars -> {sent} message bytes ({}% saved); whole body {body_bytes} bytes, of \
          which ~29k is the tool specs",
         100 - sent * 100 / stored
     );
