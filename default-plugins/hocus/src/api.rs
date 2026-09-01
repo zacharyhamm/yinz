@@ -124,10 +124,11 @@ pub struct Config {
     /// own older `deepseek-reasoner` does.
     pub reasoning_echo: bool,
     /// Whether to ask for a final `usage` chunk via `stream_options`. On by
-    /// default — it is the only way a streamed completion says what the context
-    /// costs — but the same stance as `tools`: `stream_options` is a 2024
+    /// default — it asks a streamed completion to report its usage — but the
+    /// same stance as `tools`: `stream_options` is a 2024
     /// addition and an older proxy or a strict endpoint 400s on the unknown
-    /// field, so it needs an off switch. Off, the count stays an estimate.
+    /// field, so it needs an off switch. Off, hocus shows no totals unless the
+    /// provider includes usage without being asked.
     pub stream_usage: bool,
 }
 
@@ -382,9 +383,9 @@ struct ChatRequest<'a> {
     reasoning_effort: Option<&'a str>,
     stream: bool,
     /// Asks for a final `usage` chunk, which is the only way a streamed
-    /// completion reports how many tokens the context is. OpenAI, OpenRouter,
-    /// DeepSeek, vLLM and Ollama all honour it; anything that ignores it just
-    /// leaves the count estimated. `None` when `Config::stream_usage` is off,
+    /// completion reports separate input/output usage. OpenAI, OpenRouter,
+    /// DeepSeek, vLLM and Ollama all honour it; anything that ignores it leaves
+    /// the title without totals. `None` when `Config::stream_usage` is off,
     /// for the endpoints that reject the field outright.
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<StreamOptions>,
@@ -981,27 +982,6 @@ impl Elision {
     fn content(&self, message: usize) -> Option<&str> {
         self.results.get(&message).map(String::as_str)
     }
-
-    /// How many characters this removes, for the context estimate. See `wire_chars`.
-    fn saved(&self, transcript: &[Message]) -> usize {
-        let calls: usize = self
-            .calls
-            .iter()
-            .filter_map(|((message, at), replacement)| {
-                let call = transcript.get(*message)?.tool_calls.get(*at)?;
-                Some(call.arguments.len().saturating_sub(replacement.len()))
-            })
-            .sum();
-        let results: usize = self
-            .results
-            .iter()
-            .filter_map(|(message, replacement)| {
-                let content = &transcript.get(*message)?.content;
-                Some(content.len().saturating_sub(replacement.len()))
-            })
-            .sum();
-        calls + results
-    }
 }
 
 /// Every plugin call in the transcript, keyed by its id, as `(tool name, subject)`.
@@ -1152,84 +1132,6 @@ fn note_write(name: &str, subject: &Subject, seen: &mut BTreeSet<(&'static str, 
     if let (Subject::File(file), "plugin_write" | "plugin_edit") = (subject, name) {
         seen.insert(("read", Subject::File(file.clone())));
     }
-}
-
-/// How many characters of `transcript` go on the wire: the same messages
-/// `request_body_with_project_and_tools` sends, by the same rules, minus the
-/// system prompt and the JSON framing around each message. The basis of the `~chars/4` estimate shown while there is
-/// no `usage` from the provider — and, once there is one, of the estimate for
-/// what has been added since it was measured.
-///
-/// Reasoning is left out: it is echoed back on a few endpoints only, and a
-/// count that is honest about being rough is better than one that is rough
-/// in two directions at once.
-///
-/// Elision is not: it is subtracted here as it is on the wire, or the title's estimate and the
-/// `ContextUsage` baseline it is measured against would both drift from what is actually sent -
-/// and by exactly the amount this whole mechanism exists to save.
-///
-/// Split in two because the halves cost wildly different amounts. The sum below walks lengths;
-/// `elision_saved` parses every tool call's arguments as JSON, which is not something to do on
-/// a render frame — see `elision_key` for how the caller memoises it.
-pub fn wire_chars(transcript: &[Message]) -> usize {
-    wire_chars_whole(transcript).saturating_sub(elision_saved(transcript))
-}
-
-/// What `wire_chars` counts before elision is taken off: a walk of lengths, cheap enough to
-/// repeat on every frame.
-pub fn wire_chars_whole(transcript: &[Message]) -> usize {
-    let whole: usize = transcript
-        .iter()
-        .map(|message| match message.role {
-            Role::User | Role::Tool => message.content.len(),
-            // The same two rules as the request body: a call's prose goes out
-            // only when the call carries a `display`, and its arguments only
-            // when they are a JSON object.
-            Role::Assistant if !message.tool_calls.is_empty() => {
-                message
-                    .display
-                    .as_ref()
-                    .map_or(0, |_| message.content.len())
-                    + message
-                        .tool_calls
-                        .iter()
-                        .map(|call| {
-                            call.id.len() + call.name.len() + wire_arguments(call, None).len()
-                        })
-                        .sum::<usize>()
-            },
-            Role::Assistant => message.content.len(),
-            // `reasoning_items` is counted nowhere: a sealed blob's length says
-            // nothing useful about what it costs in tokens, and the endpoint
-            // reports the real number on `response.completed` anyway.
-            Role::Error | Role::Notice => 0,
-        })
-        .sum();
-    whole
-}
-
-/// How many characters `Elision` takes off that walk. The expensive half: it JSON-parses the
-/// arguments of every tool call in the transcript.
-pub fn elision_saved(transcript: &[Message]) -> usize {
-    Elision::plan(transcript).saved(transcript)
-}
-
-/// What `elision_saved` is a function of, cheaply: how many messages there are and how many
-/// tool calls they carry between them.
-///
-/// Everything elision reads - a call's name and arguments, a tool result's id and content - is
-/// pushed complete and never edited afterwards, so nothing can change the answer without
-/// changing one of these two numbers. A reply arriving does not: it only grows the `content` of
-/// an assistant message, which elision does not look at, and it gains its tool calls in the
-/// same move that pushes them.
-pub fn elision_key(transcript: &[Message]) -> (usize, usize) {
-    (
-        transcript.len(),
-        transcript
-            .iter()
-            .map(|message| message.tool_calls.len())
-            .sum(),
-    )
 }
 
 /// The biggest things in the outgoing transcript, largest first, as `(label, chars)`.
@@ -1522,8 +1424,8 @@ pub enum SseItem {
         name: Option<String>,
         arguments: Option<String>,
     },
-    /// The provider's count of what the request cost, in tokens. Sent once,
-    /// on the final chunk, and only because the request asked for it.
+    /// The provider's count of what the request cost, in tokens. Normally sent
+    /// once on the final chunk.
     Usage {
         prompt: u64,
         completion: u64,
@@ -1947,6 +1849,14 @@ struct ResponseUsage {
     output_tokens: Option<u64>,
 }
 
+fn response_usage(response: Option<&ResponseBody>) -> Option<SseItem> {
+    let usage = response?.usage.as_ref()?;
+    (usage.input_tokens.is_some() || usage.output_tokens.is_some()).then_some(SseItem::Usage {
+        prompt: usage.input_tokens.unwrap_or(0),
+        completion: usage.output_tokens.unwrap_or(0),
+    })
+}
+
 fn parse_response_event(event: ResponseEvent) -> Vec<SseItem> {
     match event.kind {
         ResponseEventKind::OutputTextDelta => event
@@ -2004,19 +1914,9 @@ fn parse_response_event(event: ResponseEvent) -> Vec<SseItem> {
             arguments: event.delta,
         }],
         ResponseEventKind::Completed => {
-            let mut items = Vec::new();
-            if let Some(ResponseUsage {
-                input_tokens: prompt,
-                output_tokens: completion,
-            }) = event.response.and_then(|response| response.usage)
-            {
-                if prompt.is_some() || completion.is_some() {
-                    items.push(SseItem::Usage {
-                        prompt: prompt.unwrap_or(0),
-                        completion: completion.unwrap_or(0),
-                    });
-                }
-            }
+            let mut items: Vec<_> = response_usage(event.response.as_ref())
+                .into_iter()
+                .collect();
             items.push(SseItem::Done);
             items
         },
@@ -2029,6 +1929,7 @@ fn parse_response_event(event: ResponseEvent) -> Vec<SseItem> {
         // `ApiError` would leave an empty or truncated answer looking like a
         // clean stop.
         ResponseEventKind::Failed | ResponseEventKind::Incomplete | ResponseEventKind::Error => {
+            let usage = response_usage(event.response.as_ref());
             let detail = event
                 .response
                 .and_then(|response| {
@@ -2045,7 +1946,10 @@ fn parse_response_event(event: ResponseEvent) -> Vec<SseItem> {
                 .or(event.message)
                 .filter(|detail| !detail.trim().is_empty())
                 .unwrap_or_else(|| "the response ended without completing".to_owned());
-            vec![SseItem::ApiError(detail)]
+            usage
+                .into_iter()
+                .chain(std::iter::once(SseItem::ApiError(detail)))
+                .collect()
         },
         ResponseEventKind::Other => Vec::new(),
     }

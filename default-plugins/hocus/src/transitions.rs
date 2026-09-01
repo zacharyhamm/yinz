@@ -1,5 +1,5 @@
 use crate::message::{
-    Ask, Job, Message, Reasoning, ReasoningKey, Retry, Role, ScheduledRun, Status, StreamState,
+    Ask, Job, Message, Reasoning, ReasoningKey, Retry, Role, ScheduledRun, Status,
 };
 use crate::*;
 use hocus_proto::jobs;
@@ -111,7 +111,6 @@ impl State {
         Chat {
             transcript_cache: self.transcript_cache.take(),
             plan_cache: self.plan_cache.take(),
-            elision_cache: self.elision_cache.take(),
             usage: self.usage.take(),
             messages: std::mem::take(&mut self.messages),
             status: std::mem::take(&mut self.status),
@@ -143,7 +142,6 @@ impl State {
     pub(crate) fn put_chat(&mut self, chat: Chat) {
         self.transcript_cache = chat.transcript_cache;
         self.plan_cache = chat.plan_cache;
-        self.elision_cache = chat.elision_cache;
         self.messages = chat.messages;
         self.status = chat.status;
         self.stream = chat.stream;
@@ -391,35 +389,6 @@ impl State {
         self.messages
             .iter()
             .rposition(|message| message.role == Role::Assistant && message.tool_calls.is_empty())
-    }
-
-    /// How big the context is, in tokens, and whether that is a guess.
-    ///
-    /// Exact only when the provider has counted it and nothing has been added
-    /// since; otherwise the provider's last count plus a `chars / 4` guess for
-    /// what came after, or the guess alone before any reply has arrived.
-    pub(crate) fn context_tokens(&mut self) -> (u64, bool) {
-        // Only the elided saving is memoised. The sum it comes off is a walk of lengths, but
-        // planning the elision parses every tool call's arguments - and this is asked on every
-        // render frame, with a key that moves on every chunk of an arriving reply, so doing
-        // both under one memo meant a full transcript parse per frame in wasm.
-        let key = api::elision_key(&self.messages);
-        let saved = match self.elision_cache {
-            Some((cached, saved)) if cached == key => saved,
-            _ => {
-                let saved = api::elision_saved(&self.messages);
-                self.elision_cache = Some((key, saved));
-                saved
-            },
-        };
-        let chars = api::wire_chars_whole(&self.messages).saturating_sub(saved);
-        match self.usage {
-            Some(usage) => {
-                let added = chars.saturating_sub(usage.wire_chars);
-                (usage.tokens + estimate_tokens(added), added > 0)
-            },
-            None => (estimate_tokens(chars), true),
-        }
     }
 
     /// Whether the read-only tool set is what goes out with the next request.
@@ -1551,11 +1520,9 @@ impl State {
         self.scheduled_run = None;
         // Not dropped: the host still owes exactly one `done: true` chunk, and
         // `finishing` is what keeps it from being recorded as a second outcome.
-        self.stream = Some(StreamState {
-            id: stream_id,
-            finishing: true,
-            usage: None,
-        });
+        if let Some(stream) = self.stream.as_mut() {
+            stream.finishing = true;
+        }
         true
     }
 
@@ -1590,7 +1557,6 @@ impl State {
         self.reply_at = None;
         self.messages.clear();
         self.plan_cache = None;
-        self.elision_cache = None;
         self.usage = None;
         self.chat_id = None;
         self.saved = self.fingerprint();
@@ -1673,12 +1639,6 @@ impl State {
         self.log_seq = self.log_seq.wrapping_add(1);
         post_log(self.chat_id, self.mono_ms, self.log_seq, kind, payload);
     }
-}
-
-/// The `chars / 4` rule of thumb, which is about right for English prose and
-/// code on every tokenizer this endpoint fronts.
-pub(crate) fn estimate_tokens(chars: usize) -> u64 {
-    (chars / 4) as u64
 }
 
 /// Unix seconds now, or zero where there is no clock worth the name.

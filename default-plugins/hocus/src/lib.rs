@@ -28,7 +28,7 @@ mod worker;
 
 pub use message::{
     Ask, Job, Message, Picker, PickerKind, PickerRow, Plan, Reasoning, ReasoningItem, ReasoningKey,
-    Retry, Role, RowKind, ScheduledRun, Status, StreamState,
+    Retry, Role, RowKind, ScheduledRun, Status, StreamState, TokenUsage,
 };
 use worker::post_log;
 
@@ -163,17 +163,6 @@ Esc           return to chat";
 /// so the response can be matched to the chat that asked.
 const STREAM_CONTEXT: &str = "stream";
 
-/// What the provider last said the context cost, and how much of the
-/// transcript was on the wire when it said so. The difference between that
-/// and the transcript now is what the title's `~` estimate is made of.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ContextUsage {
-    /// Prompt and completion together: what the *next* request will carry.
-    pub(crate) tokens: u64,
-    /// `api::wire_chars` at the moment the count arrived.
-    pub(crate) wire_chars: usize,
-}
-
 /// One conversation's worth of `State`, lifted out so a chat can be set aside
 /// while another is on screen and still receive its reply.
 ///
@@ -198,7 +187,7 @@ struct Chat {
     pub(crate) owes_reply: bool,
     pub(crate) manual_head: bool,
     pub(crate) chat_id: Option<u64>,
-    pub(crate) saved: (usize, usize),
+    pub(crate) saved: (usize, usize, Option<TokenUsage>),
     pub(crate) view: View,
     pub(crate) scheduled_run: Option<ScheduledRun>,
     /// A rate-limited request waiting to go out again. Travels with the chat for the reason
@@ -206,8 +195,7 @@ struct Chat {
     /// parked chat is as able to wait out a rate limit as a foreground one.
     pub(crate) retry: Option<Retry>,
     pub(crate) plan: Plan,
-    pub(crate) usage: Option<ContextUsage>,
-    pub(crate) elision_cache: Option<((usize, usize), usize)>,
+    pub(crate) usage: Option<TokenUsage>,
     /// Travels with the chat for the same reason `spotlight` does: the reload was asked for by
     /// *this* conversation, and it is the one owed the report. A watch left on `State` alone
     /// would be overwritten by another chat's reload and stranded when this one is parked.
@@ -443,19 +431,14 @@ pub struct State {
     /// The awaiting plan is rendered narrower inside its frame, so it has its
     /// own cache rather than making every keystroke parse the markdown again.
     pub plan_cache: Option<(ui::PlanKey, Vec<ui::VLine>)>,
-    /// The provider's last token count for this chat, `None` until a reply
-    /// has carried one. See `context_tokens`.
-    pub(crate) usage: Option<ContextUsage>,
-    /// Memoised `api::elision_saved` under the `api::elision_key` it was taken
-    /// at, so the title's estimate does not re-plan the elision - a JSON parse
-    /// of every tool call in the transcript - on every render frame.
-    pub(crate) elision_cache: Option<((usize, usize), usize)>,
+    /// Provider-reported input/output totals for this chat.
+    pub(crate) usage: Option<TokenUsage>,
     /// Which archived chat this conversation is being written back to. `None`
     /// until the first save, which is what makes an untouched pane leave no file.
     chat_id: Option<u64>,
     /// `fingerprint()` as of the last save, so an event that changed nothing
     /// doesn't rewrite the file.
-    saved: (usize, usize),
+    saved: (usize, usize, Option<TokenUsage>),
     /// Every open conversation other than the one on screen, in the order the
     /// tab bar shows them, with the foreground one spliced in at `chat_tab`.
     /// A parked chat keeps receiving its reply, running its tools and firing
@@ -823,9 +806,8 @@ impl Default for State {
             transcript_cache: None,
             plan_cache: None,
             usage: None,
-            elision_cache: None,
             chat_id: None,
-            saved: (0, 0),
+            saved: (0, 0, None),
             parked: Vec::new(),
             chat_tab: 0,
             chat_tab_focus: None,

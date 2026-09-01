@@ -7,9 +7,9 @@ use zellij_tile::prelude::*;
 // The archive
 // ---------------------------------------------------------------------------
 
-/// What autosave and the render cache watch. Only one message is ever mutated
-/// in place, so a count and that message's length between them catch every
-/// change to a transcript.
+/// What autosave watches. Only one message is ever mutated in place, so a
+/// count and that message's length between them catch every transcript change;
+/// the usage pair catches an accounting-only change.
 ///
 /// The one that can change without the count changing is the streaming
 /// placeholder at `reply_at`, which `append_to_reply` grows in place. The last
@@ -23,8 +23,12 @@ use zellij_tile::prelude::*;
 ///
 /// A free function because a parked `Chat` and the flat foreground fields both
 /// need it, and the rule must not be able to drift between the two.
-pub(crate) fn fingerprint(messages: &[Message], reply_at: Option<usize>) -> (usize, usize) {
-    (messages.len(), mutable_len(messages, reply_at))
+pub(crate) fn fingerprint(
+    messages: &[Message],
+    reply_at: Option<usize>,
+    usage: Option<TokenUsage>,
+) -> (usize, usize, Option<TokenUsage>) {
+    (messages.len(), mutable_len(messages, reply_at), usage)
 }
 
 /// The length of the message `fingerprint` watches. See there.
@@ -35,8 +39,8 @@ pub(crate) fn mutable_len(messages: &[Message], reply_at: Option<usize>) -> usiz
 
 impl State {
     /// `fingerprint` for the foreground chat.
-    pub(crate) fn fingerprint(&self) -> (usize, usize) {
-        fingerprint(&self.messages, self.reply_at)
+    pub(crate) fn fingerprint(&self) -> (usize, usize, Option<TokenUsage>) {
+        fingerprint(&self.messages, self.reply_at, self.usage)
     }
 
     /// `mutable_len` for the foreground chat.
@@ -50,9 +54,9 @@ impl State {
     /// rather than on every socket read; with it, the places a later write is
     /// no use — `show_chats`, which reads the archive straight back, a tab
     /// being closed, and `BeforeClose`, which has no later. A partial reply
-    /// archived beats one lost. Forced or not, a transcript whose fingerprint
-    /// has not moved is not rewritten: every row written is a function of
-    /// `messages`, so there is nothing new to say.
+    /// archived beats one lost. Forced or not, a chat whose fingerprint has
+    /// not moved is not rewritten: every row written is a function of its
+    /// messages and usage, so there is nothing new to say.
     ///
     /// An empty transcript is never written, so a pane you only opened leaves
     /// nothing behind.
@@ -70,7 +74,8 @@ impl State {
         if self.saved == key {
             return;
         }
-        let saved_len = self.saved.0;
+        let previous = self.saved;
+        let saved_len = previous.0;
         self.saved = key;
         let mut id = self.chat_id.take();
         let written = history::save(
@@ -79,13 +84,14 @@ impl State {
             &self.messages,
             saved_len,
             self.reply_at,
+            self.usage,
         );
         self.chat_id = id;
         if written.is_err() {
             // Nothing to say it to, and nothing to do about it. Retried on the
             // next change, because the fingerprint moved but the rows did not —
             // which is the wrong way round, so put it back.
-            self.saved = (saved_len, self.saved.1);
+            self.saved = previous;
         }
     }
 
@@ -376,6 +382,7 @@ impl State {
         let Some(mut messages) = history::load(&self.private_store(), id) else {
             return;
         };
+        let usage = history::load_usage(&self.private_store(), id);
         // The jobs the chat was armed with when hocus last ran come back with
         // it, and start counting down again from here.
         let jobs = self.take_held_jobs(id);
@@ -389,6 +396,7 @@ impl State {
         self.open_tab(Chat {
             messages,
             chat_id: Some(id),
+            usage,
             jobs,
             ..Chat::default()
         });

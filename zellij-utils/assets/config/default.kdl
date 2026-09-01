@@ -372,10 +372,10 @@ plugins {
     //
     //   stream_usage    "false" stops hocus asking the endpoint for a final
     //                   `usage` chunk (`stream_options.include_usage`), which is
-    //                   what makes the context size in the tab title exact. On
+    //                   what feeds the per-chat input/output totals. On
     //                   otherwise. Only for an endpoint or proxy that rejects
     //                   the `stream_options` field outright; without it the
-    //                   count is estimated from the transcript's length.
+    //                   title shows no totals unless usage arrives anyway.
     //
     // Typing `/plan` in the chat turns on planning mode: only the tools that read
     // anything are advertised to the model, so it researches and writes a plan
