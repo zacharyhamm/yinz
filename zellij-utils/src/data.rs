@@ -3397,6 +3397,11 @@ impl FileToOpen {
 pub struct CommandToRun {
     pub path: PathBuf,
     pub args: Vec<String>,
+    /// Where to start the command. Locally, `/host`, `/data`, `/cache` and `/tmp`
+    /// name the plugin mounts and a relative path is joined onto the plugin's
+    /// cwd. With `remote_host` or `firecracker_vm` set, the path is interpreted
+    /// on that machine exactly as written, and `None` means the login directory
+    /// there.
     pub cwd: Option<PathBuf>,
     pub remote_host: Option<String>,
     pub firecracker_vm: Option<String>,

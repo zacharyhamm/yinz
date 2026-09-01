@@ -30,8 +30,8 @@ For a development build instead, run `cargo x build` and
 `setup` uses the current directory as the project, installs the provider at
 `/usr/local/bin/zellij-firecracker` when needed, configures the host network, and builds the
 project's `.zellij/firecracker-image.sh` as a 64 GiB sparse `zellij-dev` image. It also writes the
-provider and a 90-second timeout to Zellij's managed `config.d` fragment, then runs `doctor`.
-Every `sudo` operation is announced before it runs.
+provider and a 90-second inactivity timeout to Zellij's managed `config.d` fragment, then runs
+`doctor`. Every `sudo` operation is announced before it runs.
 
 An existing valid `zellij-dev` image is reused. Rebuild it, including current Codex and Claude Code
 releases, with:
@@ -84,6 +84,9 @@ not using `setup`:
 firecracker_provider "/usr/bin/zellij-firecracker"
 firecracker_provider_timeout_secs 90
 ```
+
+The timeout is how long the provider may go without reporting progress, not a limit on the whole
+request: booting a guest and copying a large worktree into it take as long as they take.
 
 Use `--output` to select a different image directory. Use `--disk-size-gib` to change the sparse
 disk size. The builder writes its provider configuration to
@@ -158,12 +161,17 @@ It blocks guest access to the host and private networks. The provider does not u
 Firecracker jailer. Use a dedicated host or a privileged VM service when the host user is not a
 trusted boundary.
 
-Configure one executable and, optionally, its timeout:
+Configure one executable and, optionally, its inactivity timeout:
 
 ```kdl
 firecracker_provider "/absolute/path/to/provider"
 firecracker_provider_timeout_secs 90
 ```
+
+Zellij resets the timeout whenever the provider writes anything. A provider reports a long phase
+with `progress: <what it is doing>` lines on stderr; Zellij keeps those out of error messages and
+names the last one when it reports a provider that went silent. A provider that says nothing for
+the whole timeout is killed together with every process it started.
 
 Open a guest login shell or run a command in the guest:
 
@@ -174,6 +182,21 @@ zellij action new-pane --firecracker review --cwd /workspace/repo -- cargo test
 
 Names contain 1–64 ASCII letters, digits, `.`, `_`, or `-`. `--firecracker` cannot be combined
 with `--remote-host` or a plugin pane. Multiple panes can use the same VM.
+
+A layout names the VM with `firecracker_vm`, and optionally its image and the host worktree to
+mirror into it. A pane with `firecracker_vm` and no `command` opens the guest's login shell. A
+`cwd` on such a pane is a guest path:
+
+```kdl
+pane command="cargo" firecracker_vm="review" firecracker_image="rust-dev" firecracker_worktree="/home/me/src/project" {
+    args "test"
+}
+pane firecracker_vm="review" cwd="/workspace"
+```
+
+`zellij action dump-layout` and session resurrection write these back, so a Firecracker pane
+comes back in its VM rather than as a local command. The same three names are children of a
+`Run` keybinding action.
 
 ## Provider protocol
 
@@ -188,6 +211,7 @@ Requests:
 {"version":2,"action":"stop","session":"work","name":"review"}
 {"version":2,"action":"stop_session","session":"work"}
 {"version":2,"action":"list","session":null}
+{"version":2,"action":"rename_session","from":"work","to":"review"}
 ```
 
 An `ensure` response supplies an SSH URL. It can also supply the guest working directory, SSH key,
@@ -197,25 +221,67 @@ and known-hosts file:
 {"version":2,"ssh_host":"ssh://root@172.31.0.2:22","cwd":"/workspace","ssh_identity_file":"/home/me/.local/share/zellij/firecracker/id_ed25519","ssh_known_hosts_file":"/home/me/.local/state/zellij/firecracker/vms/abc/known_hosts"}
 ```
 
-`sync`, `stop`, and `stop_session` return `{"version":2}`. `list` returns:
+`rename_session` moves every VM `from` owns or leases to `to` and returns `{"version":2}`.
+Zellij sends it when the session is renamed, because `zellij firecracker stop` and `sync`
+resolve the session by its current name. It is additive to version 2: a provider that rejects
+it keeps the VMs under the old name, Zellij keeps using that name for them, and the server log
+says so.
+
+`sync`, `stop`, and `stop_session` return `{"version":2}` plus, when the worktree merge kept
+the host copy of a file, one `warnings` line per such file:
 
 ```json
-{"version":2,"vms":[{"session":"work","name":"review","state":"running"}]}
+{"version":2,"warnings":["/repo/src/a.rs: changed on both sides; kept the host copy, the guest copy is /repo/src/a.rs.guest"]}
 ```
+
+`list` returns the running VMs and the retained disks:
+
+```json
+{"version":2,"vms":[{"session":"work","name":"review","state":"running"}],
+ "recoveries":[{"path":"/state/recovery/<id>-<time>-sync-failed","reason":"sync-failed","retained_at":1756700000,"session":"work","name":"review","worktree":"/repo"}]}
+```
+
+Both `warnings` and `recoveries` are optional in the response; a provider that omits them is
+read as having none.
 
 The guest must have a matching Zellij binary on `PATH`. OpenSSH must permit Unix-socket
 forwarding. Provider failures, invalid JSON, output over 1 MiB, and timeouts are reported to the
-pane or management command.
+pane or management command. A timeout kills the provider and its helpers, not the VM: the next
+request for the same VM resumes its provisioning.
 
 ## Lifecycle and recovery
 
-The provider copies the host worktree to `/workspace` when it starts a worktree VM. It keeps a
+The provider copies the host worktree to the configured `guest_cwd` (`/workspace` by default)
+when it starts a worktree VM, creating that directory if the image does not have it. It keeps a
 standalone Git repository in the guest. It does not copy the host worktree's `.git` file or
-directory.
+directory. Alongside the guest disk it records a baseline: one content hash per file, symlink,
+and directory of the worktree as it was copied, with ignored outputs and `.git` left out.
+Timestamps are not part of it, so a save that changes nothing is not a change.
 
-The provider copies guest files back when the last session releases the VM. Before that copy, it
-checks every host file and symlink except `.git`. If the host changed, the provider refuses the
-copy and retains the guest disk for recovery. A manual sync uses the same check:
+The provider reports each phase - hashing and staging the worktree, cloning the image, waiting
+for the guest's ssh, copying into the guest - so the request is never cut short while work is
+going on. `boot_timeout_secs` in `firecracker.json` (60 by default) bounds only the wait for the
+guest's ssh; a copy that stalls fails through rsync's own 60-second I/O timeout. If the provider
+is killed part-way through provisioning, the VM stays up and is listed as `provisioning`; the
+next request for the same VM, image, and worktree resumes the copy, which is incremental, rather
+than starting a new disk. Releasing a VM that never finished provisioning retains its disk
+without merging anything back: a partial copy would read as deletions.
+
+When the last session releases the VM, the provider pulls the guest's copy and merges it into
+the host worktree file by file against that baseline:
+
+- a file changed only in the guest, or deleted only there, is applied to the host;
+- a file changed only on the host is kept;
+- a file changed on both sides keeps the host copy, and the guest copy is written beside it as
+  `<file>.guest`. A file the host changed and the guest deleted keeps the host copy. Each such
+  file is reported as a warning, which `zellij firecracker stop` prints and a normal session
+  exit writes to the server log.
+
+Nothing the guest did is lost in a merge, so a merge conflict does not retain the disk. A merge
+that cannot be attempted at all — the guest unreachable, rsync failing — does.
+
+A manual sync merges the same way while the VM keeps running, then brings the guest up to the
+merged tree and records it as the new baseline:
 
 ```sh
 zellij firecracker sync review [--session work]
@@ -229,9 +295,10 @@ zellij firecracker list [--session work] [--json]
 zellij firecracker stop review [--session work]
 ```
 
-The provider retains disks from crashed VMs, failed provisioning, and failed workspace syncs.
-Recovery directories are under `$XDG_STATE_HOME/zellij/firecracker/vms/recovery`. The provider
-deletes recovery directories after seven days.
+The provider retains disks from crashed VMs, failed provisioning, and workspace syncs that could
+not run. Recovery directories are under `$XDG_STATE_HOME/zellij/firecracker/vms/recovery`, each
+with the VM's `state.json`, its worktree baseline, and a `recovery.json` naming the reason.
+`zellij firecracker list` shows them. The provider deletes recovery directories after seven days.
 
 Firecracker panes cannot be warped to another session. A worktree VM can still have leases from
 more than one session.
@@ -240,12 +307,14 @@ more than one session.
 
 The Hocus `agent_spawn` tool and New Agent dialog accept `firecracker` and `firecracker_image`.
 They also support project, branch, and worktree setup. Hocus creates the checkout on the host.
-The provider then synchronizes that checkout with `/workspace` in the VM.
+The provider then synchronizes that checkout with the configured `guest_cwd` in the VM.
 
 Claude hook events use a pane-scoped control sequence on the authenticated SSH terminal. Zellij
 updates the pane agent record and broadcasts the event to plugins. The control sequence does not
-open a host listener. Configure Codex in a custom image to run `zellij --pty-broker report codex`
-for equivalent hook reporting.
+open a host listener. Zellij honours it only on Firecracker panes: a local pane reports through
+`zellij action agent-report`, and an ordinary ssh pane is not trusted to write agent records,
+since any program in it could print the sequence. Configure Codex in a custom image to run
+`zellij --pty-broker report codex` for equivalent hook reporting.
 
 Zellij passes the remote pane's terminal and locale allowlist. It also passes environment values
 that `agent_spawn` explicitly supplies. It does not copy the rest of the host environment. Use

@@ -190,6 +190,23 @@ fn command_cwd(
     default_to_plugin_cwd: bool,
 ) -> Option<PathBuf> {
     if command.remote_host.is_some() || command.firecracker_vm.is_some() {
+        // The cwd of a remote or Firecracker command is a path on that machine, so the
+        // plugin mounts have nothing to say about it. A plugin that sends one of them anyway
+        // asked for a directory that does not exist over there, and the far side would
+        // silently start the command wherever the broker happens to be.
+        if let Some(cwd) = command.cwd.as_deref() {
+            if ["/host", "/data", "/cache"]
+                .iter()
+                .any(|mount| cwd.starts_with(mount))
+            {
+                log::warn!(
+                    "plugin {} sent the plugin-mount path {} as the cwd of a remote command; \
+                     remote cwds are paths on the remote machine",
+                    env.name(),
+                    cwd.display()
+                );
+            }
+        }
         command.cwd.clone()
     } else {
         command

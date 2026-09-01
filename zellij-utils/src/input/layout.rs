@@ -330,6 +330,11 @@ impl Run {
                 if merged.args.is_empty() && !base_run_command.args.is_empty() {
                     merged.args = base_run_command.args.clone();
                 }
+                if merged.firecracker_vm.is_none() && base_run_command.firecracker_vm.is_some() {
+                    merged.firecracker_vm = base_run_command.firecracker_vm.clone();
+                    merged.firecracker_image = base_run_command.firecracker_image.clone();
+                    merged.firecracker_worktree = base_run_command.firecracker_worktree.clone();
+                }
                 Some(Run::Command(merged))
             },
             (Some(Run::Command(base_run_command)), Some(Run::Cwd(other_cwd))) => {

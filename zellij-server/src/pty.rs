@@ -1255,26 +1255,14 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 requested_cwd,
                 spawned,
             ) => {
-                let PaneId::Terminal(terminal_id) = pane_id else {
-                    continue;
-                };
-                if pty.pending_firecracker_reruns.get(&terminal_id) != Some(&generation) {
-                    continue;
-                }
-                pty.pending_firecracker_reruns.remove(&terminal_id);
-                pty.firecracker_reruns_in_transport.remove(&terminal_id);
-                let result = pty.finish_firecracker_rerun(
+                pty.handle_firecracker_rerun_spawned(
                     pane_id,
+                    run_command,
+                    generation,
                     previous_host,
                     requested_cwd,
-                    spawned.take()?,
-                );
-                finish_command_rerun(&mut pty, pane_id, run_command, result)?;
-                if let Some((run_command, completion_tx)) =
-                    pty.queued_firecracker_reruns.remove(&terminal_id)
-                {
-                    pty.defer_firecracker_rerun(pane_id, run_command, completion_tx)?;
-                }
+                    spawned,
+                )?;
             },
             PtyInstruction::DropToShellInPane {
                 pane_id,
@@ -2061,6 +2049,57 @@ impl Pty {
         }));
         self.pending_firecracker_reruns
             .insert(terminal_id, generation);
+        Ok(())
+    }
+
+    /// The second half of a deferred Firecracker rerun, once the worker thread has the guest
+    /// command running.
+    ///
+    /// A generation mismatch means the pane was closed while the spawn was in transport:
+    /// `close_pane` dropped its pending entry, but the worker had by then already registered
+    /// the remote transport and started the guest command, so the id must still go through
+    /// the teardown funnel or both outlive the pane. Terminal ids come from a counter and are
+    /// never reused, so a stale spawn cannot name anyone else's pane.
+    pub(crate) fn handle_firecracker_rerun_spawned(
+        &mut self,
+        pane_id: PaneId,
+        run_command: RunCommand,
+        generation: u64,
+        previous_host: Option<String>,
+        requested_cwd: Option<PathBuf>,
+        spawned: OneShot<Result<SpawnedRerun>>,
+    ) -> Result<()> {
+        let PaneId::Terminal(terminal_id) = pane_id else {
+            return Ok(());
+        };
+        self.firecracker_reruns_in_transport.remove(&terminal_id);
+        if self.pending_firecracker_reruns.get(&terminal_id) != Some(&generation) {
+            // Dropping a queued completion notifies its waiter; the pane it asked about is gone.
+            self.queued_firecracker_reruns.remove(&terminal_id);
+            if spawned.take()?.is_ok() {
+                self.bus
+                    .os_input
+                    .as_ref()
+                    .context("no OS I/O interface found")
+                    .and_then(|os_input| os_input.clear_terminal_id(terminal_id))
+                    .with_context(|| {
+                        format!(
+                            "failed to tear down the late Firecracker rerun of closed pane {terminal_id}"
+                        )
+                    })
+                    .non_fatal();
+            }
+            return Ok(());
+        }
+        self.pending_firecracker_reruns.remove(&terminal_id);
+        let result =
+            self.finish_firecracker_rerun(pane_id, previous_host, requested_cwd, spawned.take()?);
+        finish_command_rerun(self, pane_id, run_command, result)?;
+        if let Some((run_command, completion_tx)) =
+            self.queued_firecracker_reruns.remove(&terminal_id)
+        {
+            self.defer_firecracker_rerun(pane_id, run_command, completion_tx)?;
+        }
         Ok(())
     }
 
@@ -2998,6 +3037,8 @@ impl Pty {
         match id {
             PaneId::Terminal(id) => {
                 self.pending_firecracker_reruns.remove(&id);
+                self.firecracker_reruns_in_transport.remove(&id);
+                self.queued_firecracker_reruns.remove(&id);
                 let is_remote = self
                     .bus
                     .os_input

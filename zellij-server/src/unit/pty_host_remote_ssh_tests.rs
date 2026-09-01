@@ -577,3 +577,46 @@ fn a_pane_carries_this_sides_terminal_and_its_own_id() {
         other => panic!("expected a Spawn, got {other:?}"),
     }
 }
+
+/// ssh tokenizes an `-o Name=value` string on whitespace even when it arrives
+/// as one argv entry, so a path with a space has to be double-quoted or the
+/// value is cut short — which for `UserKnownHostsFile` means every strict
+/// host-key check fails.
+#[test]
+fn ssh_option_paths_are_quoted_for_the_option_tokenizer() {
+    assert_eq!(
+        ssh_option_value(Path::new("/home/a user/known_hosts")),
+        r#""/home/a user/known_hosts""#
+    );
+    assert_eq!(
+        ssh_option_value(Path::new(r#"/odd "dir"\here"#)),
+        r#""/odd \"dir\"\\here""#
+    );
+}
+
+#[test]
+fn known_hosts_and_control_paths_reach_ssh_quoted() {
+    let options = SshOptions {
+        identity_file: Some("/home/a user/key".into()),
+        known_hosts_file: Some("/home/a user/known_hosts".into()),
+    };
+    let args = options.args();
+    let known_hosts = args
+        .iter()
+        .position(|arg| arg == r#"UserKnownHostsFile="/home/a user/known_hosts""#)
+        .expect("the known_hosts path was not quoted");
+    assert_eq!(args[known_hosts - 1], "-o");
+    // `-i` takes its whole argument, so the key path stays bare.
+    let key = args.iter().position(|arg| arg == "-i").unwrap();
+    assert_eq!(args[key + 1], "/home/a user/key");
+
+    let common = ssh_common_args("build-box", &options);
+    let control_path = common
+        .iter()
+        .find_map(|arg| arg.strip_prefix("ControlPath="))
+        .expect("no ControlPath option");
+    assert!(
+        control_path.starts_with('"') && control_path.ends_with('"'),
+        "ControlPath value is not quoted: {control_path}"
+    );
+}

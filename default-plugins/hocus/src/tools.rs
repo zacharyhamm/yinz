@@ -1406,7 +1406,11 @@ pub fn specs() -> Value {
                     "args": { "type": "array", "items": { "type": "string" } },
                     "prompt": { "type": "string", "description": "What to start the agent on." },
                     "model": { "type": "string" },
-                    "cwd": { "type": "string", "description": "Defaults to the focused pane's." },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Defaults to the focused pane's. A path on this machine, so \
+                                        not accepted with firecracker outside a project.",
+                    },
                     "project": { "type": "string", "description": "Defaults to the active project." },
                     "kind": {
                         "type": "string",
@@ -1451,7 +1455,7 @@ pub fn specs() -> Value {
                     },
                     "firecracker": {
                         "type": "string",
-                        "description": "Firecracker VM name. With a project, its worktree is mirrored into /workspace.",
+                        "description": "Firecracker VM name. With a project, its worktree is mirrored into the VM's configured working directory (/workspace by default).",
                     },
                     "firecracker_image": {
                         "type": "string",

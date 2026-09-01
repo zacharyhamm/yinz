@@ -2713,3 +2713,92 @@ fn only_a_relative_file_url_reports_the_path_as_written() {
         RunPluginLocation::parse_with_relative("zellij:tab-bar", Some(cwd)).unwrap();
     assert_eq!(relative, None, "a builtin is named by a tag, not a path");
 }
+
+/// The three `firecracker_*` pane properties survive parsing, come through a
+/// `pane_template`, and turn a command-less pane into the guest's login shell.
+#[test]
+fn layout_with_firecracker_panes() {
+    use crate::input::command::RunCommand;
+    use std::path::PathBuf;
+    let kdl_layout = r#"
+        layout {
+            pane_template name="guest" firecracker_vm="review" firecracker_image="rust-dev" firecracker_worktree="/home/me/src/project"
+            guest command="cargo" {
+                args "test"
+            }
+            guest
+            pane firecracker_vm="shell" cwd="/workspace"
+            pane command="local"
+        }
+    "#;
+    let layout = Layout::from_kdl(kdl_layout, Some("layout_file_name".into()), None, None).unwrap();
+    let panes = &layout.template.as_ref().unwrap().0.children;
+    let runs: Vec<_> = panes.iter().map(|pane| pane.run.clone()).collect();
+    assert_eq!(
+        runs,
+        vec![
+            Some(Run::Command(RunCommand {
+                command: PathBuf::from("cargo"),
+                args: vec!["test".to_owned()],
+                hold_on_close: true,
+                firecracker_vm: Some("review".to_owned()),
+                firecracker_image: Some("rust-dev".to_owned()),
+                firecracker_worktree: Some(PathBuf::from("/home/me/src/project")),
+                ..Default::default()
+            })),
+            Some(Run::Command(RunCommand {
+                remote_default_shell: true,
+                firecracker_vm: Some("review".to_owned()),
+                firecracker_image: Some("rust-dev".to_owned()),
+                firecracker_worktree: Some(PathBuf::from("/home/me/src/project")),
+                ..Default::default()
+            })),
+            Some(Run::Command(RunCommand {
+                cwd: Some(PathBuf::from("/workspace")),
+                remote_default_shell: true,
+                firecracker_vm: Some("shell".to_owned()),
+                ..Default::default()
+            })),
+            Some(Run::Command(RunCommand {
+                command: PathBuf::from("local"),
+                hold_on_close: true,
+                ..Default::default()
+            })),
+        ]
+    );
+}
+
+#[test]
+fn firecracker_pane_properties_are_validated() {
+    for (layout, why) in [
+        (
+            r#"layout { pane command="cargo" firecracker_image="rust-dev" }"#,
+            "an image without a vm",
+        ),
+        (
+            r#"layout { pane command="cargo" firecracker_worktree="/repo" }"#,
+            "a worktree without a vm",
+        ),
+        (
+            r#"layout { pane command="cargo" firecracker_vm="not/a/name" }"#,
+            "an invalid vm name",
+        ),
+        (
+            r#"layout { pane command="cargo" firecracker_vm="review" firecracker_image="bad image" }"#,
+            "an invalid image name",
+        ),
+        (
+            r#"layout { pane command="cargo" firecracker_vm="review" firecracker_worktree="relative/repo" }"#,
+            "a relative worktree",
+        ),
+        (
+            r#"layout { pane edit="notes.md" firecracker_vm="review" }"#,
+            "an edit pane in a vm",
+        ),
+    ] {
+        assert!(
+            Layout::from_kdl(layout, Some("layout_file_name".into()), None, None).is_err(),
+            "{why} should be a layout error"
+        );
+    }
+}

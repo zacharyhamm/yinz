@@ -73,7 +73,7 @@ fn a_provider_boots_a_real_firecracker_remote_pane() {
         session,
         name,
     };
-    assert_eq!(provider.list(Some(session)).unwrap().len(), 1);
+    assert_eq!(provider.list(Some(session)).unwrap().vms.len(), 1);
 
     let options = SshOptions {
         identity_file: ensured.ssh_identity_file,
@@ -108,8 +108,8 @@ fn a_provider_boots_a_real_firecracker_remote_pane() {
         |output| format!("{output:?}"),
     );
     drop(pane);
-    provider.stop(session, name).unwrap();
-    assert!(provider.list(Some(session)).unwrap().is_empty());
+    assert_eq!(provider.stop(session, name).unwrap(), Vec::<String>::new());
+    assert!(provider.list(Some(session)).unwrap().vms.is_empty());
 }
 
 fn pump(conn: Arc<RemoteConn>, mut reader: RemoteReader) -> Pane {

@@ -606,6 +606,30 @@ impl ServerOsInputOutput {
         ))
     }
 
+    /// Tell the provider the session's new name and adopt it as the key for every later
+    /// request. A provider that refuses leaves both sides on the old name, so they still
+    /// agree with each other - only the CLI's view differs, which the error says.
+    fn rename_firecracker_session_now(&self, session: &str) -> Result<()> {
+        let mut firecracker = self.firecracker.lock().to_anyhow()?;
+        if self.firecracker_stopping.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let Some((provider, current)) = firecracker.as_mut() else {
+            return Ok(());
+        };
+        if current == session {
+            return Ok(());
+        }
+        provider.rename_session(current, session).with_context(|| {
+            format!(
+                "failed to rename the Firecracker session {current:?} to {session:?}; \
+                     its VMs stay under {current:?}"
+            )
+        })?;
+        *current = session.to_owned();
+        Ok(())
+    }
+
     fn resolve_firecracker_spawn(
         &self,
         terminal_action: TerminalAction,
@@ -966,6 +990,9 @@ pub trait ServerOsApi: Send + Sync {
     fn stop_firecracker_session(&self) -> Result<()> {
         Ok(())
     }
+    /// The session was renamed: move its Firecracker VMs with it, so the management
+    /// commands, which resolve the session by its current name, keep finding them.
+    fn rename_firecracker_session(&self, _session: String) {}
     fn begin_firecracker_shutdown(&self) {}
     /// Terminate every pty-host supervisor this server owns, on the way out.
     fn shutdown_pty_hosts(&self) {}
@@ -983,6 +1010,15 @@ pub trait ServerOsApi: Send + Sync {
     /// worse than no pid: it will happily name an unrelated *local* process, so
     /// a `kill` meant for a pane lands somewhere else entirely.
     fn is_remote_pane(&self, _terminal_id: u32) -> bool {
+        false
+    }
+    /// Whether this pane runs in a Firecracker guest the provider started.
+    ///
+    /// The guest has no route to the session socket, so its hook reports arrive
+    /// as a control sequence on the pane's own byte stream. That channel is
+    /// trusted for these panes only: a program in an ordinary ssh pane could
+    /// otherwise forge agent records and hook events for the plugins.
+    fn is_firecracker_pane(&self, _terminal_id: u32) -> bool {
         false
     }
     /// What the far side last reported about a remote pane: the cwd and
@@ -1170,6 +1206,9 @@ impl ServerOsApi for ServerOsInputOutput {
     }
     fn is_remote_pane(&self, terminal_id: u32) -> bool {
         self.pty_backend.is_remote(terminal_id)
+    }
+    fn is_firecracker_pane(&self, terminal_id: u32) -> bool {
+        self.pty_backend.is_firecracker(terminal_id)
     }
     fn remote_pane_status(&self, terminal_id: u32) -> Option<RemoteStatus> {
         self.pty_backend.remote_status(terminal_id)
@@ -1464,9 +1503,24 @@ impl ServerOsApi for ServerOsInputOutput {
         self.firecracker_stopping.store(true, Ordering::Release);
         let guard = self.firecracker.lock().to_anyhow()?;
         if let Some((provider, session)) = guard.as_ref() {
-            provider.stop_session(session)?;
+            // The clients are gone by the time this runs, so the log is the only place a
+            // merge conflict can be told; the `.guest` copies in the worktree are the other.
+            for warning in provider.stop_session(session)? {
+                log::warn!("Firecracker worktree merge: {warning}");
+            }
         }
         Ok(())
+    }
+    fn rename_firecracker_session(&self, session: String) {
+        // `resolve_firecracker` holds the provider lock across an `ensure`, which can
+        // take minutes, and this is called from the screen thread.
+        let server = self.clone();
+        std::thread::Builder::new()
+            .name("firecracker-rename".to_owned())
+            .spawn(move || server.rename_firecracker_session_now(&session).non_fatal())
+            .map(drop)
+            .context("failed to start the Firecracker rename thread")
+            .non_fatal();
     }
     fn begin_firecracker_shutdown(&self) {
         self.firecracker_stopping.store(true, Ordering::Release);

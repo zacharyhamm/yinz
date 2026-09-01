@@ -1,5 +1,5 @@
 use crate::input::{
-    command::RunCommand,
+    command::{validate_firecracker_vm_name, RunCommand},
     config::ConfigError,
     layout::{
         FloatingPaneLayout, Layout, LayoutConstraint, PercentOrFixed, PluginUserConfiguration, Run,
@@ -9,6 +9,22 @@ use crate::input::{
 };
 
 use kdl::*;
+
+/// A pane's Firecracker properties, once validated.
+#[derive(Default)]
+struct FirecrackerPaneFields {
+    vm: String,
+    image: Option<String>,
+    worktree: Option<PathBuf>,
+}
+
+impl FirecrackerPaneFields {
+    fn apply_to(self, run_command: &mut RunCommand) {
+        run_command.firecracker_vm = Some(self.vm);
+        run_command.firecracker_image = self.image;
+        run_command.firecracker_worktree = self.worktree;
+    }
+}
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
@@ -88,6 +104,9 @@ impl<'a> KdlLayoutParser<'a> {
             || word == "swap_floating_layout"
             || word == "hide_floating_panes"
             || word == "contents_file"
+            || word == "firecracker_vm"
+            || word == "firecracker_image"
+            || word == "firecracker_worktree"
     }
     fn is_a_valid_pane_property(&self, property_name: &str) -> bool {
         property_name == "borderless"
@@ -110,6 +129,9 @@ impl<'a> KdlLayoutParser<'a> {
             || property_name == "contents_file"
             || property_name == "default_fg"
             || property_name == "default_bg"
+            || property_name == "firecracker_vm"
+            || property_name == "firecracker_image"
+            || property_name == "firecracker_worktree"
     }
     fn is_a_valid_floating_pane_property(&self, property_name: &str) -> bool {
         property_name == "borderless"
@@ -130,6 +152,9 @@ impl<'a> KdlLayoutParser<'a> {
             || property_name == "contents_file"
             || property_name == "default_fg"
             || property_name == "default_bg"
+            || property_name == "firecracker_vm"
+            || property_name == "firecracker_image"
+            || property_name == "firecracker_worktree"
     }
     fn is_a_valid_tab_property(&self, property_name: &str) -> bool {
         property_name == "focus"
@@ -440,6 +465,46 @@ impl<'a> KdlLayoutParser<'a> {
             None => Ok(None),
         }
     }
+    /// The `firecracker_vm`, `firecracker_image` and `firecracker_worktree` properties of a
+    /// pane, checked here rather than when the pane is spawned: a layout error names the
+    /// node, a spawn error is a banner in the pane.
+    #[allow(clippy::result_large_err)]
+    fn parse_firecracker(
+        &self,
+        pane_node: &KdlNode,
+    ) -> Result<Option<FirecrackerPaneFields>, ConfigError> {
+        let vm = kdl_get_string_property_or_child_value_with_error!(pane_node, "firecracker_vm");
+        let image =
+            kdl_get_string_property_or_child_value_with_error!(pane_node, "firecracker_image");
+        let worktree = self.parse_path(pane_node, "firecracker_worktree")?;
+        let Some(vm) = vm else {
+            if image.is_some() || worktree.is_some() {
+                return Err(kdl_parsing_error!(
+                    "firecracker_image and firecracker_worktree need a firecracker_vm".to_owned(),
+                    pane_node
+                ));
+            }
+            return Ok(None);
+        };
+        validate_firecracker_vm_name(vm)
+            .map_err(|error| kdl_parsing_error!(format!("firecracker_vm: {error}"), pane_node))?;
+        if let Some(image) = image {
+            validate_firecracker_vm_name(image).map_err(|error| {
+                kdl_parsing_error!(format!("firecracker_image: {error}"), pane_node)
+            })?;
+        }
+        if worktree.as_ref().is_some_and(|path| !path.is_absolute()) {
+            return Err(kdl_parsing_error!(
+                "firecracker_worktree must be an absolute path".to_owned(),
+                pane_node
+            ));
+        }
+        Ok(Some(FirecrackerPaneFields {
+            vm: vm.to_owned(),
+            image: image.map(str::to_owned),
+            worktree,
+        }))
+    }
     #[allow(clippy::result_large_err)]
     fn parse_pane_command(
         &self,
@@ -450,6 +515,7 @@ impl<'a> KdlLayoutParser<'a> {
         let edit = self.parse_path(pane_node, "edit")?;
         let cwd = self.parse_path(pane_node, "cwd")?;
         let args = self.parse_args(pane_node)?;
+        let firecracker = self.parse_firecracker(pane_node)?;
         let close_on_exit =
             kdl_get_bool_property_or_child_value_with_error!(pane_node, "close_on_exit");
         let start_suspended =
@@ -466,15 +532,37 @@ impl<'a> KdlLayoutParser<'a> {
         let hold_on_close = close_on_exit.map(|c| !c).unwrap_or(true);
         let hold_on_start = start_suspended.unwrap_or(false);
         match (command, edit, cwd) {
+            (None, Some(_), _) if firecracker.is_some() => Err(kdl_parsing_error!(
+                "an edit pane cannot run in a Firecracker VM".to_owned(),
+                pane_node
+            )),
+            // The guest's login shell, the shape `new-pane --firecracker` with no
+            // command makes: not held on close, since logging out ends it.
+            (None, None, cwd) if firecracker.is_some() => {
+                let mut run_command = RunCommand {
+                    cwd,
+                    hold_on_close: close_on_exit.map(|c| !c).unwrap_or(false),
+                    remote_default_shell: true,
+                    ..Default::default()
+                };
+                firecracker.unwrap_or_default().apply_to(&mut run_command);
+                Ok(Some(Run::Command(run_command)))
+            },
             (None, None, Some(cwd)) => Ok(Some(Run::Cwd(cwd))),
-            (Some(command), None, cwd) => Ok(Some(Run::Command(RunCommand {
-                command,
-                args: args.unwrap_or_default(),
-                cwd,
-                hold_on_close,
-                hold_on_start,
-                ..Default::default()
-            }))),
+            (Some(command), None, cwd) => {
+                let mut run_command = RunCommand {
+                    command,
+                    args: args.unwrap_or_default(),
+                    cwd,
+                    hold_on_close,
+                    hold_on_start,
+                    ..Default::default()
+                };
+                if let Some(firecracker) = firecracker {
+                    firecracker.apply_to(&mut run_command);
+                }
+                Ok(Some(Run::Command(run_command)))
+            },
             (None, Some(edit), Some(cwd)) => {
                 Ok(Some(Run::EditFile(cwd.join(edit), None, Some(cwd))))
             },
