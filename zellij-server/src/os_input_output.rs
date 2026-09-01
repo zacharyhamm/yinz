@@ -545,7 +545,7 @@ pub struct ServerOsInputOutput {
     live_writers: Arc<LiveWriters>,
     cached_resizes: Arc<Mutex<Option<BTreeMap<u32, (u16, u16, Option<u16>, Option<u16>)>>>>,
     /// ssh forwards to the machines this session has remote panes on. One per
-    /// host, shared by every pane there.
+    /// host and option set, shared by every matching pane.
     remote_hosts: Arc<RemoteHosts>,
     firecracker: Arc<Mutex<Option<(crate::firecracker::Provider, String)>>>,
     firecracker_panes_quiesced: Arc<AtomicBool>,
@@ -1296,8 +1296,8 @@ impl ServerOsApi for ServerOsInputOutput {
         self.pty_backend.shutdown_pty_hosts();
         // The ssh forwards go with them. The brokers and their panes on the far
         // side survive by design — only an explicit terminate ends those — but
-        // leaving forwards behind would leak an ssh process and a bound socket
-        // per host on the way out.
+        // leaving forwards behind would leak ssh processes and bound sockets on
+        // the way out.
         self.remote_hosts.shutdown();
     }
 

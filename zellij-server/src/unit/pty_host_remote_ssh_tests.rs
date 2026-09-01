@@ -37,7 +37,7 @@ fn each_host_gets_its_own_socket_path_whatever_it_is_called() {
     ];
     let mut seen = std::collections::HashSet::new();
     for host in awkward {
-        let path = local_socket_path("server", host);
+        let path = local_socket_path("server", host, &SshOptions::default());
         let name = path.file_name().expect("no file name").to_string_lossy();
         assert!(
             !name.contains('/') && !name.contains('@') && !name.contains(':'),
@@ -48,8 +48,8 @@ fn each_host_gets_its_own_socket_path_whatever_it_is_called() {
     // Stable across calls, or a reconnect would bind a different socket than the
     // one the forward is on.
     assert_eq!(
-        local_socket_path("server", "build-box"),
-        local_socket_path("server", "build-box")
+        local_socket_path("server", "build-box", &SshOptions::default()),
+        local_socket_path("server", "build-box", &SshOptions::default())
     );
 }
 
@@ -61,10 +61,40 @@ fn each_host_gets_its_own_socket_path_whatever_it_is_called() {
 #[test]
 fn two_servers_do_not_share_a_forward_socket_for_the_same_host() {
     assert_ne!(
-        local_socket_path("server-a", "build-box"),
-        local_socket_path("server-b", "build-box"),
+        local_socket_path("server-a", "build-box", &SshOptions::default()),
+        local_socket_path("server-b", "build-box", &SshOptions::default()),
         "two servers would fight over one forward to the same host"
     );
+}
+
+#[test]
+fn one_endpoint_with_different_ssh_options_gets_distinct_state() {
+    let first = SshTarget::new(
+        "build-box",
+        SshOptions {
+            identity_file: Some("first-key".into()),
+            known_hosts_file: Some("first-hosts".into()),
+        },
+    );
+    let second = SshTarget::new(
+        "build-box",
+        SshOptions {
+            identity_file: Some("second-key".into()),
+            known_hosts_file: Some("second-hosts".into()),
+        },
+    );
+
+    assert_ne!(first, second);
+    assert_ne!(
+        local_socket_path("server", &first.host, &first.options),
+        local_socket_path("server", &second.host, &second.options)
+    );
+    let hosts = Arc::new(RemoteHosts::new());
+    let reconnect = SshReconnector {
+        hosts,
+        target: first.clone(),
+    };
+    assert_eq!(reconnect.target, first);
 }
 
 /// A host beginning with `-` would read as an ssh option, so
@@ -362,8 +392,9 @@ fn a_pane_whose_forward_has_gone_stale_is_retried_through_a_fresh_one() {
         .expect("could not stand in for the forward's ssh");
 
     let hosts = Arc::new(RemoteHosts::new());
+    let target = SshTarget::new(host, SshOptions::default());
     hosts.forwards.lock().unwrap().insert(
-        host.to_owned(),
+        target.clone(),
         Arc::new(HostForward {
             host: host.to_owned(),
             local_socket: local_socket.clone(),
@@ -385,7 +416,7 @@ fn a_pane_whose_forward_has_gone_stale_is_retried_through_a_fresh_one() {
         "the error should come from the retry, not from the stale forward: {msg}"
     );
     assert!(
-        !hosts.forwards.lock().unwrap().contains_key(host),
+        !hosts.forwards.lock().unwrap().contains_key(&target),
         "the stale forward must not be left in the table for the next pane"
     );
 
@@ -435,8 +466,9 @@ fn a_resume_through_a_forward_that_never_answers_gives_up_and_rebuilds() {
         .expect("could not stand in for the forward's ssh");
 
     let hosts = Arc::new(RemoteHosts::new());
+    let target = SshTarget::new(host, SshOptions::default());
     hosts.forwards.lock().unwrap().insert(
-        host.to_owned(),
+        target.clone(),
         Arc::new(HostForward {
             host: host.to_owned(),
             local_socket: local_socket.clone(),
@@ -446,9 +478,12 @@ fn a_resume_through_a_forward_that_never_answers_gives_up_and_rebuilds() {
 
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let resuming = hosts.clone();
+    let resume_target = target.clone();
     std::thread::spawn(move || {
         let started = Instant::now();
-        let outcome = resuming.try_resume(host, "tok", 0).map(|_| ());
+        let outcome = resuming
+            .try_resume_target(&resume_target, "tok", 0)
+            .map(|_| ());
         let _ = done_tx.send((outcome, started.elapsed()));
     });
     // Generous next to the bound under test, and a *test* failure rather than
@@ -471,7 +506,7 @@ fn a_resume_through_a_forward_that_never_answers_gives_up_and_rebuilds() {
         "the retry through a fresh forward should have been reached: {msg}"
     );
     assert!(
-        !hosts.forwards.lock().unwrap().contains_key(host),
+        !hosts.forwards.lock().unwrap().contains_key(&target),
         "the silent forward must not be left in the table for the next pane"
     );
 

@@ -350,6 +350,8 @@ fn ensure(
     }
     let host_fingerprint = worktree.as_deref().map(tree_fingerprint).transpose()?;
     let state_path = locked.identity_path(session, name, worktree.as_deref());
+    let entries = locked.entries()?;
+    ensure_vm_identity_available(&entries, &state_path, session, name)?;
     if let Ok(mut existing) = read_state(&state_path) {
         if vm_is_running(&existing, config) {
             if !existing.ready {
@@ -357,6 +359,12 @@ fn ensure(
                 retain_recovery(locked, &state_path, &existing, "unready")?;
                 let _ = fs::remove_file(&state_path);
             } else {
+                if existing.name != name {
+                    return Err(anyhow!(
+                        "worktree VM is already running as {:?}, not {name:?}",
+                        existing.name
+                    ));
+                }
                 if existing.image.as_deref() != image {
                     return Err(anyhow!(
                         "worktree VM is already running with image {:?}, not {:?}",
@@ -376,7 +384,6 @@ fn ensure(
         }
     }
 
-    let entries = locked.entries()?;
     let slot = (0..network.taps)
         .find(|slot| {
             !entries
@@ -816,6 +823,7 @@ fn tree_fingerprint(root: &Path) -> Result<u64> {
             let metadata = fs::symlink_metadata(&path)?;
             metadata.file_type().is_dir().hash(hasher);
             metadata.file_type().is_symlink().hash(hasher);
+            metadata.permissions().mode().hash(hasher);
             metadata.len().hash(hasher);
             if !metadata.is_dir() {
                 metadata
@@ -871,6 +879,39 @@ fn list(locked: &LockedState, session: Option<&str>) -> Result<Vec<VmEntry>> {
     Ok(vms)
 }
 
+fn find_vm(
+    entries: &[(PathBuf, VmState)],
+    session: &str,
+    name: &str,
+) -> Result<Option<(PathBuf, VmState)>> {
+    let mut matching = entries.iter().filter(|(_, state)| {
+        state.name == name
+            && (state.leases.iter().any(|lease| lease == session)
+                || (state.leases.is_empty() && state.session == session))
+    });
+    let found = matching.next().cloned();
+    if matching.next().is_some() {
+        return Err(anyhow!(
+            "multiple Firecracker VMs named {name:?} are running for session {session:?}"
+        ));
+    }
+    Ok(found)
+}
+
+fn ensure_vm_identity_available(
+    entries: &[(PathBuf, VmState)],
+    state_path: &Path,
+    session: &str,
+    name: &str,
+) -> Result<()> {
+    if find_vm(entries, session, name)?.is_some_and(|(path, _)| path != state_path) {
+        return Err(anyhow!(
+            "Firecracker VM {name:?} for session {session:?} already identifies another running VM"
+        ));
+    }
+    Ok(())
+}
+
 fn recover_unusable_vms(locked: &LockedState, config: &Config) -> Result<()> {
     for (path, state) in locked.entries()? {
         if state.ready && vm_is_running(&state, config) {
@@ -890,11 +931,7 @@ fn recover_unusable_vms(locked: &LockedState, config: &Config) -> Result<()> {
 
 fn stop_one(locked: &LockedState, config: &Config, session: &str, name: &str) -> Result<()> {
     validate_firecracker_vm_name(name).map_err(|error| anyhow!(error))?;
-    let Some((path, state)) = locked.entries()?.into_iter().find(|(_, state)| {
-        state.name == name
-            && (state.leases.iter().any(|lease| lease == session)
-                || (state.leases.is_empty() && state.session == session))
-    }) else {
+    let Some((path, state)) = find_vm(&locked.entries()?, session, name)? else {
         return Ok(());
     };
     release(locked, config, path, state, session)
@@ -937,11 +974,7 @@ fn release(
 
 fn sync_one(locked: &LockedState, config: &Config, session: &str, name: &str) -> Result<()> {
     validate_firecracker_vm_name(name).map_err(|error| anyhow!(error))?;
-    let Some((path, mut state)) = locked.entries()?.into_iter().find(|(_, state)| {
-        state.name == name
-            && (state.leases.iter().any(|lease| lease == session)
-                || (state.leases.is_empty() && state.session == session))
-    }) else {
+    let Some((path, mut state)) = find_vm(&locked.entries()?, session, name)? else {
         return Err(anyhow!(
             "Firecracker VM {name:?} is not running for session {session:?}"
         ));
@@ -3023,6 +3056,33 @@ mod tests {
     }
 
     #[test]
+    fn vm_identity_rejects_ambiguous_session_names() {
+        let mut state = vm_state(PathBuf::from("rootfs.ext4"), PathBuf::from("vm.sock"), None);
+        state.ready = true;
+        let entries = vec![(PathBuf::from("first.json"), state.clone())];
+
+        assert!(
+            ensure_vm_identity_available(&entries, Path::new("second.json"), "work", "review")
+                .is_err()
+        );
+        assert!(
+            ensure_vm_identity_available(&entries, Path::new("first.json"), "work", "review")
+                .is_ok()
+        );
+        assert!(
+            ensure_vm_identity_available(&entries, Path::new("first.json"), "other", "review")
+                .is_ok(),
+            "another session may lease the same worktree VM"
+        );
+
+        let duplicates = vec![
+            (PathBuf::from("first.json"), state.clone()),
+            (PathBuf::from("second.json"), state),
+        ];
+        assert!(find_vm(&duplicates, "work", "review").is_err());
+    }
+
+    #[test]
     fn worktree_fingerprint_ignores_root_outputs() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join(".gitignore"), "target/\n").unwrap();
@@ -3056,6 +3116,18 @@ mod tests {
         let original = tree_fingerprint(root.path()).unwrap();
 
         fs::write(root.path().join("source.rs"), "two").unwrap();
+        assert_ne!(tree_fingerprint(root.path()).unwrap(), original);
+        assert!(ensure_host_unchanged(root.path(), original).is_err());
+    }
+
+    #[test]
+    fn worktree_fingerprint_detects_permission_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("script.sh");
+        fs::write(&script, "#!/bin/sh\n").unwrap();
+        let original = tree_fingerprint(root.path()).unwrap();
+
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
         assert_ne!(tree_fingerprint(root.path()).unwrap(), original);
         assert!(ensure_host_unchanged(root.path(), original).is_err());
     }

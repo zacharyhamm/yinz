@@ -1,6 +1,6 @@
 //! Getting a socket to a broker on another machine.
 //!
-//! Two ssh invocations per host, with different jobs:
+//! Two ssh invocations per host and option set, with different jobs:
 //!
 //!   1. **Bootstrap** — `ssh <host> zellij --pty-broker ensure` runs to
 //!      completion and prints where the broker is listening. The remote decides
@@ -8,8 +8,8 @@
 //!      Linux and macOS (`$XDG_RUNTIME_DIR` vs a `$TMPDIR` fallback), and the
 //!      `sun_path` limit differs too (108 vs 104), so a locally-computed guess
 //!      would be wrong in exactly the cases that are hardest to diagnose.
-//!   2. **Forward** — one long-lived `ssh -N -L <local>:<remote>` per host that
-//!      *owns* the forward, with every pane connecting through it.
+//!   2. **Forward** — one long-lived `ssh -N -L <local>:<remote>` per target
+//!      that *owns* the forward, with every matching pane connecting through it.
 //!
 //! Why a dedicated master rather than per-pane `ssh -L`: a forward belongs to
 //! the connection that created it and dies with it, so with `ControlPersist` a
@@ -112,8 +112,9 @@ fn ensure_local_socket_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// One local socket per host *per server*; every pane on that host multiplexes
-/// through it as a separate connection, and therefore a separate ssh channel.
+/// One local socket per host and option set *per server*; every pane on that
+/// target multiplexes through it as a separate connection, and therefore a
+/// separate ssh channel.
 ///
 /// Keyed by the server as well as the host because `ZELLIJ_SOCK_DIR` is per
 /// user, not per session. On a host-only key two zellij sessions belonging to
@@ -127,10 +128,10 @@ fn ensure_local_socket_dir() -> Result<PathBuf> {
 /// Folded into the digest rather than appended to it, to keep the path well
 /// inside `sockaddr_un` — 104 bytes on macOS, where the temp dir alone can be
 /// nearly 50.
-fn local_socket_path(instance: &str, host: &str) -> PathBuf {
+fn local_socket_path(instance: &str, host: &str, options: &SshOptions) -> PathBuf {
     // A host may be an alias, a user@host, or contain characters a path cannot
     // hold, so key by a digest rather than the name itself.
-    let digest = blake3_short(&format!("{host}\0{instance}"));
+    let digest = blake3_short(&format!("{host}\0{options:?}\0{instance}"));
     local_socket_dir().join(format!("{digest}.sock"))
 }
 
@@ -145,7 +146,7 @@ fn blake3_short(input: &str) -> String {
     format!("{:08x}", hasher.finish() as u32)
 }
 
-/// The ControlMaster socket, which stays keyed by host alone.
+/// The ControlMaster socket, keyed by host and authentication options.
 ///
 /// Unlike the forward there is no collision to fix here: nothing unlinks or
 /// rebinds it, and `ControlMaster=auto` is built for exactly this — several
@@ -220,8 +221,7 @@ impl Drop for HostForward {
 
 /// Every host this session has panes on.
 pub struct RemoteHosts {
-    forwards: Mutex<HashMap<String, Arc<HostForward>>>,
-    ssh_options: Mutex<HashMap<String, SshOptions>>,
+    forwards: Mutex<HashMap<SshTarget, Arc<HostForward>>>,
     /// What makes this server's forward sockets its own. See
     /// `local_socket_path`.
     instance: String,
@@ -234,16 +234,35 @@ impl Default for RemoteHosts {
     fn default() -> Self {
         Self {
             forwards: Mutex::new(HashMap::new()),
-            ssh_options: Mutex::new(HashMap::new()),
             instance: new_host_id(),
         }
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct SshOptions {
     pub identity_file: Option<PathBuf>,
     pub known_hosts_file: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct SshTarget {
+    host: String,
+    options: SshOptions,
+}
+
+impl SshTarget {
+    fn new(host: &str, options: SshOptions) -> Self {
+        Self {
+            host: host.to_owned(),
+            options,
+        }
+    }
+}
+
+struct SshReconnector {
+    hosts: Arc<RemoteHosts>,
+    target: SshTarget,
 }
 
 impl SshOptions {
@@ -276,7 +295,7 @@ impl RemoteHosts {
 
     /// Where this server's forward to `host` listens.
     pub fn forward_socket_path(&self, host: &str) -> PathBuf {
-        local_socket_path(&self.instance, host)
+        local_socket_path(&self.instance, host, &SshOptions::default())
     }
 
     /// Open a pane on `host`, returning its connection and the reader's socket.
@@ -308,44 +327,16 @@ impl RemoteHosts {
         terminal_id: u32,
         ssh_options: SshOptions,
     ) -> Result<(Arc<RemoteConn>, UnixStream)> {
-        self.set_ssh_options(host, ssh_options)?;
         // Sampled here, per pane, rather than once when the host table was built:
         // sampling it once would freeze this side's terminal and locale for the
         // life of the session, which is the far side's bug seen from this end.
-        self.open_pane_with_env(
-            host,
+        self.open_pane_with_target_and_env(
+            SshTarget::new(host, ssh_options),
             cmd,
             initial_size,
             terminal_id,
             env::carry_from_local(),
         )
-    }
-
-    fn set_ssh_options(&self, host: &str, options: SshOptions) -> Result<()> {
-        let changed = {
-            let mut configured = self
-                .ssh_options
-                .lock()
-                .to_anyhow()
-                .context("failed to lock remote SSH options")?;
-            let changed = configured
-                .get(host)
-                .is_some_and(|existing| existing != &options);
-            configured.insert(host.to_owned(), options);
-            changed
-        };
-        if changed {
-            self.forget_forward(host);
-        }
-        Ok(())
-    }
-
-    fn ssh_options(&self, host: &str) -> SshOptions {
-        self.ssh_options
-            .lock()
-            .ok()
-            .and_then(|options| options.get(host).cloned())
-            .unwrap_or_default()
     }
 
     /// `open_pane` with the carried environment supplied rather than sampled, so
@@ -359,15 +350,35 @@ impl RemoteHosts {
         terminal_id: u32,
         env: Vec<(String, String)>,
     ) -> Result<(Arc<RemoteConn>, UnixStream)> {
+        self.open_pane_with_target_and_env(
+            SshTarget::new(host, SshOptions::default()),
+            cmd,
+            initial_size,
+            terminal_id,
+            env,
+        )
+    }
+
+    fn open_pane_with_target_and_env(
+        self: &Arc<Self>,
+        target: SshTarget,
+        cmd: &RunCommand,
+        initial_size: Option<WireWinsize>,
+        terminal_id: u32,
+        env: Vec<(String, String)>,
+    ) -> Result<(Arc<RemoteConn>, UnixStream)> {
         // Sampled before the attempt: a forward this call built itself failing is
         // not something rebuilding it again would fix, and only a reused one has
         // gone stale behind our back.
-        let was_cached = self.has_cached_forward(host);
-        match self.try_open_pane(host, cmd, initial_size, terminal_id, &env) {
+        let was_cached = self.has_cached_forward(&target);
+        match self.try_open_pane(&target, cmd, initial_size, terminal_id, &env) {
             Err(e) if was_cached && !is_a_real_answer(&e) => {
-                log::warn!("retrying a pane on {host} through a fresh forward ({e:#})");
-                self.forget_forward(host);
-                self.try_open_pane(host, cmd, initial_size, terminal_id, &env)
+                log::warn!(
+                    "retrying a pane on {} through a fresh forward ({e:#})",
+                    target.host
+                );
+                self.forget_forward(&target);
+                self.try_open_pane(&target, cmd, initial_size, terminal_id, &env)
             },
             result => result,
         }
@@ -375,73 +386,78 @@ impl RemoteHosts {
 
     fn try_open_pane(
         self: &Arc<Self>,
-        host: &str,
+        target: &SshTarget,
         cmd: &RunCommand,
         initial_size: Option<WireWinsize>,
         terminal_id: u32,
         env: &[(String, String)],
     ) -> Result<(Arc<RemoteConn>, UnixStream)> {
-        let socket = self.connect(host)?;
+        let socket = self.connect(target)?;
         let reader_socket = socket
             .try_clone()
             .context("failed to clone a remote pane's socket")?;
 
-        let pane_token = handshake_and_spawn(&socket, host, cmd, initial_size, terminal_id, env)?;
+        let pane_token =
+            handshake_and_spawn(&socket, &target.host, cmd, initial_size, terminal_id, env)?;
 
         let conn = Arc::new(RemoteConn::new(
             socket,
-            host.to_owned(),
+            target.host.clone(),
             pane_token,
             cmd.clone(),
-            Some(self.clone() as Arc<dyn Reconnector>),
+            Some(Arc::new(SshReconnector {
+                hosts: self.clone(),
+                target: target.clone(),
+            }) as Arc<dyn Reconnector>),
         )?);
         Ok((conn, reader_socket))
     }
 
-    fn has_cached_forward(&self, host: &str) -> bool {
+    fn has_cached_forward(&self, target: &SshTarget) -> bool {
         self.forwards
             .lock()
-            .map(|forwards| forwards.contains_key(host))
+            .map(|forwards| forwards.contains_key(target))
             .unwrap_or(false)
     }
 
-    /// Drop the cached forward to `host`, so the next connect rebuilds it.
-    fn forget_forward(&self, host: &str) {
+    /// Drop the cached forward to `target`, so the next connect rebuilds it.
+    fn forget_forward(&self, target: &SshTarget) {
         if let Ok(mut forwards) = self.forwards.lock() {
-            forwards.remove(host);
+            forwards.remove(target);
         }
     }
 
-    fn connect(&self, host: &str) -> Result<UnixStream> {
-        let forward = self.ensure_forward(host)?;
+    fn connect(&self, target: &SshTarget) -> Result<UnixStream> {
+        let forward = self.ensure_forward(target)?;
         UnixStream::connect(&forward.local_socket).with_context(|| {
             format!(
-                "failed to reach the zellij broker on {host} through {}",
+                "failed to reach the zellij broker on {} through {}",
+                target.host,
                 forward.local_socket.display()
             )
         })
     }
 
-    fn ensure_forward(&self, host: &str) -> Result<Arc<HostForward>> {
+    fn ensure_forward(&self, target: &SshTarget) -> Result<Arc<HostForward>> {
         let mut forwards = self
             .forwards
             .lock()
             .to_anyhow()
             .context("failed to lock the remote host table")?;
-        if let Some(existing) = forwards.get(host) {
+        if let Some(existing) = forwards.get(target) {
             // A master whose ssh has died leaves a socket that accepts nothing;
             // rebuild rather than handing out a dead forward.
             if UnixStream::connect(&existing.local_socket).is_ok() {
                 return Ok(existing.clone());
             }
-            forwards.remove(host);
+            forwards.remove(target);
         }
         let forward = Arc::new(start_forward(
             &self.instance,
-            host,
-            &self.ssh_options(host),
+            &target.host,
+            &target.options,
         )?);
-        forwards.insert(host.to_owned(), forward.clone());
+        forwards.insert(target.clone(), forward.clone());
         Ok(forward)
     }
 
@@ -456,7 +472,7 @@ impl RemoteHosts {
     /// Starts a broker if none is running, exactly as opening a pane does — a
     /// host with no broker has no panes, and the empty answer is the true one.
     pub fn list_panes(self: &Arc<Self>, host: &str) -> Result<Vec<RemotePaneEntry>> {
-        let socket = self.connect(host)?;
+        let socket = self.connect(&SshTarget::new(host, SshOptions::default()))?;
         let mut write_half = socket
             .try_clone()
             .context("failed to clone a broker socket")?;
@@ -494,8 +510,13 @@ impl RemoteHosts {
     /// forward and rebuilds one that no longer accepts connections, and a
     /// forward that is up but whose broker is not still reaches the rebuild
     /// below, which restarts it.
-    fn try_resume(&self, host: &str, pane_token: &str, received: u64) -> Result<Reconnected> {
-        let first = match self.resume_through_forward(host, pane_token, received) {
+    fn try_resume_target(
+        &self,
+        target: &SshTarget,
+        pane_token: &str,
+        received: u64,
+    ) -> Result<Reconnected> {
+        let first = match self.resume_through_forward(target, pane_token, received) {
             Ok(resumed) => return Ok(resumed),
             // The broker answered, and said no. A fresh forward reaches the same
             // broker and gets the same answer, so retrying wastes the caller's
@@ -504,8 +525,8 @@ impl RemoteHosts {
             Err(e) if e.downcast_ref::<ResumeRefusedError>().is_some() => return Err(e),
             Err(e) => e,
         };
-        self.forget_forward(host);
-        self.resume_through_forward(host, pane_token, received)
+        self.forget_forward(target);
+        self.resume_through_forward(target, pane_token, received)
             .with_context(|| {
                 format!("the forward this host already had did not work either: {first:#}")
             })
@@ -515,11 +536,11 @@ impl RemoteHosts {
     /// building one if it has none.
     fn resume_through_forward(
         &self,
-        host: &str,
+        target: &SshTarget,
         pane_token: &str,
         received: u64,
     ) -> Result<Reconnected> {
-        let socket = self.connect(host)?;
+        let socket = self.connect(target)?;
         // Bounded, because `connect` does not prove anything past the forward's
         // local end. An ssh whose TCP session has silently died — the laptop
         // slept, a NAT mapping expired — keeps accepting here, and the first
@@ -536,7 +557,7 @@ impl RemoteHosts {
         let read_socket = socket
             .try_clone()
             .context("failed to clone a reconnected pane's socket")?;
-        let dropped = handshake_and_resume(&socket, host, pane_token, received)?;
+        let dropped = handshake_and_resume(&socket, &target.host, pane_token, received)?;
         socket
             .set_read_timeout(None)
             .context("failed to unbound a resumed pane's socket")?;
@@ -545,6 +566,33 @@ impl RemoteHosts {
             read_socket,
             dropped,
         })
+    }
+
+    fn reconnect_target(
+        &self,
+        target: &SshTarget,
+        pane_token: &str,
+        received: u64,
+    ) -> Result<Reconnected> {
+        let deadline = Instant::now() + RESUME_RETRY_WINDOW;
+        loop {
+            match self.try_resume_target(target, pane_token, received) {
+                Ok(resumed) => return Ok(resumed),
+                Err(e) => {
+                    let worth_waiting_for = matches!(
+                        e.downcast_ref::<ResumeRefusedError>(),
+                        Some(ResumeRefusedError {
+                            kind: ResumeRefusal::AlreadyAttached,
+                            ..
+                        })
+                    );
+                    if !worth_waiting_for || Instant::now() >= deadline {
+                        return Err(e);
+                    }
+                    std::thread::sleep(RESUME_RETRY_INTERVAL);
+                },
+            }
+        }
     }
 }
 
@@ -563,25 +611,18 @@ impl Reconnector for RemoteHosts {
     /// point of having it: the pane is provably free before the token is handed
     /// over. This is what stops the *un*ordinary one from losing a pane outright.
     fn reconnect(&self, host: &str, pane_token: &str, received: u64) -> Result<Reconnected> {
-        let deadline = Instant::now() + RESUME_RETRY_WINDOW;
-        loop {
-            match self.try_resume(host, pane_token, received) {
-                Ok(resumed) => return Ok(resumed),
-                Err(e) => {
-                    let worth_waiting_for = matches!(
-                        e.downcast_ref::<ResumeRefusedError>(),
-                        Some(ResumeRefusedError {
-                            kind: ResumeRefusal::AlreadyAttached,
-                            ..
-                        })
-                    );
-                    if !worth_waiting_for || Instant::now() >= deadline {
-                        return Err(e);
-                    }
-                    std::thread::sleep(RESUME_RETRY_INTERVAL);
-                },
-            }
-        }
+        self.reconnect_target(
+            &SshTarget::new(host, SshOptions::default()),
+            pane_token,
+            received,
+        )
+    }
+}
+
+impl Reconnector for SshReconnector {
+    fn reconnect(&self, _host: &str, pane_token: &str, received: u64) -> Result<Reconnected> {
+        self.hosts
+            .reconnect_target(&self.target, pane_token, received)
     }
 }
 
@@ -757,7 +798,7 @@ fn start_forward(instance: &str, host: &str, options: &SshOptions) -> Result<Hos
     let endpoint = bootstrap_with_options(host, options)?;
 
     let dir = ensure_local_socket_dir()?;
-    let local_socket = local_socket_path(instance, host);
+    let local_socket = local_socket_path(instance, host, options);
     check_socket_path_length(&local_socket, 0)?;
     sweep_stale_sockets(&dir, &local_socket);
     // ssh refuses to bind over an existing file, and a stale one from a crashed
