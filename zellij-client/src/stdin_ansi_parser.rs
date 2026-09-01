@@ -72,6 +72,15 @@ pub struct ClipboardForwardSlot {
 pub const CLIENT_CLIPBOARD_FORWARD_TIMEOUT_MS: u64 = 30_000;
 pub const CLIENT_BARRIER_FORWARD_TIMEOUT_MS: u64 = 500;
 
+/// How long the startup kitty-graphics probe waits before reporting "no graphics".
+///
+/// Longer than the barrier forward timeout on purpose: this deadline is crossed once per client
+/// startup, a false negative costs a picture rather than correctness, and a high-latency link
+/// should not lose its images to an eager deadline. Nothing blocks on it - the answer starts
+/// `false` everywhere, so this only ever brings a *negative* forward in time for a transport that
+/// answers neither the probe nor the Primary-DA barrier that backstops it.
+pub const CLIENT_KITTY_PROBE_TIMEOUT_MS: u64 = 2_000;
+
 /// Which of the two forwarding mechanisms a query uses.
 ///
 /// The client can hold one window open per kind at a time, and they close
@@ -174,6 +183,9 @@ fn is_user_input(event: &InputEvent) -> bool {
 enum StartupKittyProbe {
     NotSent,
     AwaitingReply,
+    /// The deadline fired and `false` has been reported, but a late `i=31;OK` is still welcome:
+    /// a slow host is not an incapable one, and the capability is allowed to turn on afterwards.
+    TimedOutAwaitingReply,
     Resolved,
 }
 
@@ -224,6 +236,21 @@ impl StdinAnsiParser {
 
     pub fn expect_kitty_probe_reply(&mut self) {
         self.startup_kitty_probe = StartupKittyProbe::AwaitingReply;
+    }
+
+    /// The startup probe's deadline fired. Report "no graphics" now so a transport that answers
+    /// neither the probe nor the Primary-DA barrier - mosh's emulator swallows the APC, and a
+    /// proxy may swallow both - does not leave every client stuck on "unknown" forever.
+    ///
+    /// Stays open to a late `i=31;OK` afterwards, which is why this does not go straight to
+    /// `Resolved`. Returns `None` once the probe has been settled by a reply, by the barrier, or
+    /// by an earlier call, so the caller needs no cancellation of its own.
+    pub fn resolve_kitty_probe_by_timeout(&mut self) -> Option<HostReply> {
+        if self.startup_kitty_probe != StartupKittyProbe::AwaitingReply {
+            return None;
+        }
+        self.startup_kitty_probe = StartupKittyProbe::TimedOutAwaitingReply;
+        Some(HostReply::KittyGraphicsSupport(false))
     }
 
     /// Open a forwarding window for `token`. Subsequent reply events that
@@ -414,9 +441,18 @@ impl StdinAnsiParser {
                 } => {
                     match final_byte {
                         b'c' => {
-                            if self.startup_kitty_probe == StartupKittyProbe::AwaitingReply {
-                                self.startup_kitty_probe = StartupKittyProbe::Resolved;
-                                out.replies.push(HostReply::KittyGraphicsSupport(false));
+                            match self.startup_kitty_probe {
+                                StartupKittyProbe::AwaitingReply => {
+                                    self.startup_kitty_probe = StartupKittyProbe::Resolved;
+                                    out.replies.push(HostReply::KittyGraphicsSupport(false));
+                                },
+                                // The deadline already sent this answer. Settle the probe, but do
+                                // not say it twice: a repeat costs the server a whole
+                                // `ModeUpdate` fan-out to every plugin for no change.
+                                StartupKittyProbe::TimedOutAwaitingReply => {
+                                    self.startup_kitty_probe = StartupKittyProbe::Resolved;
+                                },
+                                StartupKittyProbe::NotSent | StartupKittyProbe::Resolved => {},
                             }
                             if let Some(reply) = HostReply::sixel_support_from_primary_da(&raw) {
                                 out.replies.push(reply);
@@ -561,13 +597,23 @@ impl StdinAnsiParser {
                 match apc_status(rest) {
                     SeqStatus::Complete(len) => {
                         let payload = &rest[2..len - 2];
-                        if self.startup_kitty_probe == StartupKittyProbe::AwaitingReply
-                            && payload.first() == Some(&b'G')
+                        if matches!(
+                            self.startup_kitty_probe,
+                            StartupKittyProbe::AwaitingReply
+                                | StartupKittyProbe::TimedOutAwaitingReply
+                        ) && payload.first() == Some(&b'G')
                             && contains_subslice(payload, b"i=31")
                         {
-                            replies.push(HostReply::KittyGraphicsSupport(contains_subslice(
-                                payload, b"i=31;OK",
-                            )));
+                            let supported = contains_subslice(payload, b"i=31;OK");
+                            // A late `OK` still turns the capability on - a slow host is not an
+                            // incapable one - but a late refusal only repeats what the deadline
+                            // already said, and a repeat costs the server a whole `ModeUpdate`
+                            // fan-out to every plugin for no change.
+                            if supported
+                                || self.startup_kitty_probe == StartupKittyProbe::AwaitingReply
+                            {
+                                replies.push(HostReply::KittyGraphicsSupport(supported));
+                            }
                             self.startup_kitty_probe = StartupKittyProbe::Resolved;
                         }
                         i += len;

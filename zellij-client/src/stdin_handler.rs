@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 
 const LONE_ESC_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
 const PARTIAL_REPLY_FLUSH_GUARD: Duration = Duration::from_millis(1000);
+const STARTUP_KITTY_PROBE_TIMEOUT: Duration =
+    Duration::from_millis(crate::stdin_ansi_parser::CLIENT_KITTY_PROBE_TIMEOUT_MS);
 use zellij_utils::{
     channels::SenderWithContext,
     vendored::termwiz::input::{InputEvent, InputParser},
@@ -23,7 +25,9 @@ pub(crate) fn stdin_loop(
     // with its live pixel dimensions, fg/bg, sync-output support, and
     // palette registers. These replies will be classified by the
     // continuous parser as they arrive and routed via `InputInstruction::
-    // AnsiStdinInstructions` — no deadline, no cache, no loading gate.
+    // AnsiStdinInstructions` — no cache, no loading gate. The kitty probe is the one reply with
+    // a deadline, because it is the one whose absence is itself an answer.
+    let mut kitty_probe_deadline: Option<Instant> = None;
     {
         let query_string = build_startup_query_string(support_kitty_graphics_protocol);
         let _ = os_input
@@ -32,7 +36,12 @@ pub(crate) fn stdin_loop(
             .unwrap();
         if support_kitty_graphics_protocol {
             stdin_ansi_parser.lock().unwrap().expect_kitty_probe_reply();
+            // A host that answers neither the probe nor the Primary-DA barrier would otherwise
+            // leave the capability unknown for the life of the session.
+            kitty_probe_deadline = Some(Instant::now() + STARTUP_KITTY_PROBE_TIMEOUT);
+            log::info!("kitty graphics: probing the host terminal");
         } else {
+            log::info!("kitty graphics: disabled for this client, not probing");
             let _ = send_input_instructions.send(InputInstruction::AnsiStdinInstructions(vec![
                 HostReply::KittyGraphicsSupport(false),
             ]));
@@ -61,15 +70,40 @@ pub(crate) fn stdin_loop(
             }
         });
     let mut needs_finalization = false;
+    // When the pending partial is allowed to be drained to the keyboard. Kept apart from the
+    // probe's deadline: waking for the probe must never cut this window short.
+    let mut finalize_at: Option<Instant> = None;
     let mut reply_in_progress_since: Option<Instant> = None;
     'stdin: loop {
-        match if needs_finalization {
-            stdin_rx.recv_timeout(LONE_ESC_FLUSH_INTERVAL)
-        } else {
-            stdin_rx
+        if kitty_probe_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            kitty_probe_deadline = None;
+            let timed_out = stdin_ansi_parser
+                .lock()
+                .unwrap()
+                .resolve_kitty_probe_by_timeout();
+            if let Some(reply) = timed_out {
+                log::info!(
+                    "kitty graphics: the host answered neither the probe nor the barrier within \
+                     {STARTUP_KITTY_PROBE_TIMEOUT:?}, assuming no support"
+                );
+                let _ = send_input_instructions
+                    .send(InputInstruction::AnsiStdinInstructions(vec![reply]));
+            }
+        }
+        // The loop would otherwise park in `recv()` forever on an idle client, and the probe's
+        // deadline would never be looked at.
+        let wait = next_wakeup(
+            Instant::now(),
+            needs_finalization.then_some(finalize_at).flatten(),
+            kitty_probe_deadline,
+        );
+        let received = match wait {
+            Some(wait) => stdin_rx.recv_timeout(wait),
+            None => stdin_rx
                 .recv()
-                .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
-        } {
+                .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+        };
+        match received {
             Ok(result) => {
                 match result {
                     Ok(buf) => {
@@ -117,6 +151,7 @@ pub(crate) fn stdin_loop(
                                 &stdin_ansi_parser,
                                 false,
                                 &mut needs_finalization,
+                                &mut finalize_at,
                                 &mut reply_in_progress_since,
                             );
                             continue;
@@ -138,6 +173,7 @@ pub(crate) fn stdin_loop(
                             &stdin_ansi_parser,
                             fed_termwiz,
                             &mut needs_finalization,
+                            &mut finalize_at,
                             &mut reply_in_progress_since,
                         );
                     },
@@ -153,6 +189,13 @@ pub(crate) fn stdin_loop(
                 }
             },
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                // The probe deadline can wake this arm too, and it must not touch the escape
+                // window: flushing here with nothing pending - or with a partial whose 50ms
+                // window has not run out yet - would turn a lone ESC into a premature Escape
+                // key, or split a host reply the rest of which is still in flight.
+                if !needs_finalization || finalize_at.is_some_and(|at| Instant::now() < at) {
+                    continue;
+                }
                 let pending = stdin_ansi_parser.lock().unwrap().pending_partial();
                 if pending.uses_reply_flush_guard() {
                     let elapsed = reply_in_progress_since
@@ -168,9 +211,13 @@ pub(crate) fn stdin_loop(
                             !explicitly_disable_kitty_keyboard_protocol,
                         );
                         needs_finalization = false;
+                        finalize_at = None;
                         reply_in_progress_since = None;
                     } else {
                         needs_finalization = true;
+                        // Without a fresh window `next_wakeup` would return zero and this
+                        // branch would spin for the whole `PARTIAL_REPLY_FLUSH_GUARD`.
+                        finalize_at = Some(Instant::now() + LONE_ESC_FLUSH_INTERVAL);
                     }
                 } else {
                     let drained = stdin_ansi_parser.lock().unwrap().finalize_fast_partial();
@@ -182,6 +229,7 @@ pub(crate) fn stdin_loop(
                         !explicitly_disable_kitty_keyboard_protocol,
                     );
                     needs_finalization = false;
+                    finalize_at = None;
                     reply_in_progress_since = None;
                 }
             },
@@ -194,16 +242,36 @@ pub(crate) fn stdin_loop(
     }
 }
 
+/// The next moment the loop has to wake up for: whichever of the two pending deadlines comes
+/// first, or `None` when neither is set and the loop may park indefinitely. They are kept
+/// separate because they mean different things - the probe's deadline only needs looking at,
+/// while `finalize_at` is the moment a partial may be drained to the keyboard.
+fn next_wakeup(
+    now: Instant,
+    finalize_at: Option<Instant>,
+    kitty_probe_deadline: Option<Instant>,
+) -> Option<Duration> {
+    [finalize_at, kitty_probe_deadline]
+        .into_iter()
+        .flatten()
+        .min()
+        .map(|deadline| deadline.saturating_duration_since(now))
+}
+
 fn schedule_finalization(
     stdin_ansi_parser: &Arc<Mutex<StdinAnsiParser>>,
     fed_termwiz: bool,
     needs_finalization: &mut bool,
+    finalize_at: &mut Option<Instant>,
     reply_in_progress_since: &mut Option<Instant>,
 ) {
     let pending = stdin_ansi_parser.lock().unwrap().pending_partial();
     if fed_termwiz || pending != PendingPartial::None {
         *needs_finalization = true;
     }
+    // Every read chunk restarts the window, as it did when the wait was a bare
+    // `recv_timeout(LONE_ESC_FLUSH_INTERVAL)`.
+    *finalize_at = (*needs_finalization).then(|| Instant::now() + LONE_ESC_FLUSH_INTERVAL);
     if pending.uses_reply_flush_guard() {
         if reply_in_progress_since.is_none() {
             *reply_in_progress_since = Some(Instant::now());
@@ -414,9 +482,11 @@ fn extract_focus_reports(residue: Vec<u8>) -> (Vec<u8>, Vec<bool>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_startup_query_string, extract_focus_reports, parse_keyboard_bytes, PIXEL_SIZE_QUERY,
+        build_startup_query_string, extract_focus_reports, next_wakeup, parse_keyboard_bytes,
+        LONE_ESC_FLUSH_INTERVAL, PIXEL_SIZE_QUERY,
     };
     use crate::{stdin_ansi_parser::StdinAnsiParser, InputInstruction};
+    use std::time::{Duration, Instant};
     use zellij_utils::{
         data::BareKey,
         vendored::termwiz::input::{InputEvent, InputParser, KeyCode, Modifiers},
@@ -468,6 +538,55 @@ mod tests {
             },
             other => panic!("expected plain y, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_idle_loop_with_no_deadline_parks_forever() {
+        assert_eq!(next_wakeup(Instant::now(), None, None), None);
+    }
+
+    #[test]
+    fn a_nearer_probe_deadline_does_not_shorten_the_flush_window_it_only_wakes_earlier() {
+        let now = Instant::now();
+        let wait = next_wakeup(
+            now,
+            Some(now + LONE_ESC_FLUSH_INTERVAL),
+            Some(now + Duration::from_millis(5)),
+        );
+        // The wake-up is the probe's, and the caller checks `finalize_at` before draining, so
+        // the escape window keeps its full 50ms.
+        assert_eq!(wait, Some(Duration::from_millis(5)));
+    }
+
+    #[test]
+    fn a_distant_probe_deadline_leaves_the_flush_window_in_charge() {
+        let now = Instant::now();
+        let wait = next_wakeup(
+            now,
+            Some(now + LONE_ESC_FLUSH_INTERVAL),
+            Some(now + Duration::from_secs(2)),
+        );
+        assert_eq!(wait, Some(LONE_ESC_FLUSH_INTERVAL));
+    }
+
+    #[test]
+    fn each_deadline_is_used_on_its_own_when_the_other_is_absent() {
+        let now = Instant::now();
+        assert_eq!(
+            next_wakeup(now, Some(now + LONE_ESC_FLUSH_INTERVAL), None),
+            Some(LONE_ESC_FLUSH_INTERVAL)
+        );
+        assert_eq!(
+            next_wakeup(now, None, Some(now + Duration::from_secs(2))),
+            Some(Duration::from_secs(2))
+        );
+    }
+
+    #[test]
+    fn a_deadline_already_passed_wakes_immediately_rather_than_underflowing() {
+        let now = Instant::now();
+        let past = now - Duration::from_millis(10);
+        assert_eq!(next_wakeup(now, Some(past), None), Some(Duration::ZERO));
     }
 
     #[test]

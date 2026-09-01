@@ -1999,6 +1999,16 @@ impl Screen {
         self.client_host_focused.remove(&client_id);
         self.client_notification_protocols.remove(&client_id);
         self.client_host_terminal_env.remove(&client_id);
+        // Client ids are recycled, and this entry describes the terminal on the other end, not the
+        // id: its probed `capabilities.kitty_graphics`, its theme, its keybinds. Left behind, the
+        // next holder of the id inherits them - `change_mode` clones whatever is here, and the
+        // `ChangeMode` the server enqueues right after `AddClient` fans it straight out to the
+        // plugins - so a mosh client would be told it can show images by a kitty terminal that
+        // has already gone. Every reader falls back to `default_mode_info` when the entry is
+        // absent, which is exactly how a never-seen id is treated. This also stops a departed
+        // client from becoming a phantom in every tab created afterwards, since `new_tab` copies
+        // this whole map into each new one.
+        self.mode_info.remove(&client_id);
         if let Some(prev_tab_id) = previously_active_tab_id {
             self.recompute_tab_size(prev_tab_id)
                 .with_context(err_context)?;
