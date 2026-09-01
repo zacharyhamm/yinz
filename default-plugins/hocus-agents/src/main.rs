@@ -25,6 +25,12 @@
 //! the keyboard between them and so does a click; the divider is where the focus shows,
 //! because the list's own dim-against-colour already means something else.
 //!
+//! **A summary is one more event.** The rolling one is the timeline's newest row and the
+//! ones somebody asked for sit where they were asked for; nothing is held above the timeline,
+//! so the whole half is one scrolling window and a talkative model costs the events beside it
+//! nothing they cannot be scrolled back to. A `summary:` label is bold where the other labels
+//! are dim, which is what tells the row apart now that its position no longer does.
+//!
 //! **The history is drawn as markdown**, by the same renderer the conversation uses
 //! (`hocus_proto::markdown`) — everything in the half is markdown by the time it arrives, a
 //! prompt being what the user typed and a result a model's last message, so the asterisks were
@@ -44,7 +50,7 @@
 //! worth asking a model about, and hedged with a cooldown and a baseline to stop it asking
 //! too often. A person pressing a key has already settled that question, so this one skips
 //! those and arrives as an entry on the timeline, at the point it was asked for, rather than
-//! only replacing the sentence pinned above it. It works on an archived run too, which has
+//! only replacing the rolling sentence. It works on an archived run too, which has
 //! no pane to read and is summarised from what it recorded. This pane sends the row and
 //! nothing else (`wire::AGENT_SUMMARIZE`): which of the two kinds of work that means is the
 //! daemon's to know, the same way the rows themselves are hocus's to compute.
@@ -421,8 +427,8 @@ fn split(rows: usize) -> (usize, usize) {
 
 /// The fewest rows worth giving the list: a row either side of the selection.
 const MIN_LIST_ROWS: usize = 3;
-/// The fewest rows worth giving the history: a pinned summary line and a line of timeline
-/// under it, or a placeholder.
+/// The fewest rows worth giving the history: a line of timeline and one to scroll to, or a
+/// placeholder.
 const MIN_HISTORY_ROWS: usize = 2;
 
 impl State {
@@ -667,8 +673,8 @@ impl State {
         changed
     }
 
-    /// The history half: a divider naming what is below it, then the summary and timeline of
-    /// whatever the cursor is on.
+    /// The history half: a divider naming what is below it, then the timeline of whatever the
+    /// cursor is on - summaries among the events rather than above them.
     ///
     /// Drawn even when there is nothing to say. The half is permanent so the list's height
     /// never moves under the pointer, and an empty history is a sentence rather than an
@@ -678,17 +684,11 @@ impl State {
         // `rows` is the body alone: `split` takes the divider off the list's share, and it is
         // drawn on the row above the body at `top`.
         //
-        // The summary is pinned above the timeline, and never takes more than half the half:
-        // a talkative model must not leave the timeline it is summarising with no room. A row
-        // the label has to itself is not part of that half - it carries none of the summary,
-        // and spending the whole cap on the word `summary:` would pin nothing at all.
-        let body_rows = rows;
-        let (pinned_rows, entries_len) = {
-            let history = self.history();
-            let cap = body_rows / 2 + usize::from(history.pinned_label_row);
-            (history.pinned.len().min(cap), history.entries.len())
-        };
-        let room = body_rows - pinned_rows;
+        // Nothing is held above the timeline: the summary is one of its rows, so the whole
+        // half is one scrolling window and a talkative model costs the events beside it
+        // nothing they cannot be scrolled back to.
+        let room = rows;
+        let entries_len = self.history().entries.len();
         // `history_scroll` counts backward from the newest entry, which is the end the half is
         // anchored to: an entry arriving pushes the window along rather than leaving the user
         // reading a stale top.
@@ -707,11 +707,10 @@ impl State {
         // Built before `history` is borrowed below, because it borrows `self` too.
         let label = self.history_label();
         let history = self.history();
-        let pinned = &history.pinned[..pinned_rows];
 
         render_divider(&label, start, entries_len - end, focused, top, cols);
         let body = top + 1;
-        if pinned.is_empty() && history.entries.is_empty() {
+        if history.entries.is_empty() {
             print_text_with_coordinates(
                 Text::new(placeholder).dim_range(..),
                 0,
@@ -721,11 +720,7 @@ impl State {
             );
             return;
         }
-        for (index, line) in pinned
-            .iter()
-            .chain(history.entries[start..end].iter())
-            .enumerate()
-        {
+        for (index, line) in history.entries[start..end].iter().enumerate() {
             // The margin is part of the string rather than an `x` offset, so a style range
             // covers the row as it reads rather than the text alone - which is why the styles
             // are shifted along with it. Nothing has to be padded out to the pane's width: the
@@ -733,11 +728,10 @@ impl State {
             // for a short line to leave showing. Only the rows on their way to the screen are
             // copied: the cache behind them holds every line of the run.
             let line = line.clone().indent(1);
-            // The pinned summary is the model's conclusion and the timeline is the record;
-            // dimming the record is what keeps the eye on the first. Dimmed *under* whatever
-            // the markdown asked for rather than instead of it, so a bulleted result still
-            // reads as a list down there.
-            let text = markdown::style_text(&line.text, &line.styles, index >= pinned_rows);
+            // Nothing is dimmed by where it sits: every event reads at the same weight, and a
+            // summary is told apart by its bold label rather than by the rest of the timeline
+            // being pushed into the background. Whatever the markdown asked for still stands.
+            let text = markdown::style_text(&line.text, &line.styles, false);
             print_text_with_coordinates(text, 0, body + index, Some(cols), None);
         }
     }
@@ -1354,7 +1348,7 @@ mod tests {
     /// the list's, so taking it off again here is what left the last row of the pane blank.
     ///
     /// Nothing observable is printed by a unit test, so the height is read off the room the
-    /// scroll is clamped against - which is the body's, less anything pinned above it.
+    /// scroll is clamped against - which is the whole of the body, nothing being held above it.
     #[test]
     fn the_history_body_is_the_whole_of_its_share() {
         let mut state = State::default();
@@ -1367,7 +1361,7 @@ mod tests {
             },
         ]));
         let mut run = a_run();
-        // No summary, so nothing is pinned and the timeline has the whole body to itself.
+        // No summary, so the thirty questions are the whole timeline.
         run.summary = None;
         run.entries = (0..30)
             .map(|index| agents::RunEntry {
@@ -1570,7 +1564,7 @@ mod tests {
         let history = state.history_lines(48);
         assert_eq!(history.label, "claude · archived");
         assert!(history
-            .pinned
+            .entries
             .iter()
             .any(|row| row.text.contains("summary: History")));
         assert!(history
@@ -1611,9 +1605,9 @@ mod tests {
             created_at_ms: None,
         });
         state.run = Some(run);
-        // Three rows of history below the divider: one pinned summary line and two of
-        // timeline, against the three timeline entries the filter lets through - so exactly
-        // one line to wind back over.
+        // Three rows of history below the divider, against four lines of timeline - the three
+        // entries the filter lets through and the rolling summary under them - so exactly one
+        // line to wind back over.
         state.render(7, 50);
         assert_eq!(state.last_history_rows, 3);
         assert_eq!(state.last_history_max_scroll, 1);
@@ -1630,11 +1624,10 @@ mod tests {
         assert!(!state.on_mouse(Mouse::ScrollDown(1)));
     }
 
-    /// A summary opening with a marker spends its first pinned row on the label alone, and that
-    /// row carries none of the summary - so it is not part of the half the pinned rows are
-    /// capped at, or a small pane would pin the word `summary:` and nothing else.
+    /// The summary is a row of the timeline like any other, so a talkative one costs the
+    /// events beside it nothing they cannot be scrolled back to: the whole half winds over it.
     #[test]
-    fn a_label_row_does_not_count_against_the_pinned_summary_s_half() {
+    fn a_long_summary_scrolls_off_the_top_like_any_other_event() {
         let mut state = State::default();
         state.set_rows(unfocused(vec![
             StripRow::Project("archive".to_owned()),
@@ -1646,17 +1639,42 @@ mod tests {
         ]));
         let mut run = a_run();
         run.summary = Some(agents::Summary {
-            text: "- history is stored and rendered".to_owned(),
+            // Four rows of it at this width - more than the half has to give, which under the
+            // old pinned block would have left one row of timeline showing whatever the scroll.
+            text: "word ".repeat(40),
             ..run.summary.take().unwrap()
         });
         state.run = Some(run);
 
-        // Three rows below the divider: without the allowance the cap is one and the pinned
-        // area is the bare label, leaving two rows of timeline; with it the summary itself is
-        // pinned too and one row of timeline is left.
+        // Three rows below the divider, and every one of them a line of timeline.
         state.render(7, 50);
         assert_eq!(state.last_history_rows, 3);
-        assert_eq!(state.last_history_max_scroll, 1);
+        let lines = state.cached_history_lines(50).entries.len();
+        assert!(lines > 5, "a summary longer than the half: {lines} lines");
+        assert_eq!(state.last_history_max_scroll, lines - 3);
+
+        // At rest the half is against the newest end, and the events above the summary have
+        // been wound past - under the old pinned block the top of it was always on screen.
+        let lines = state.cached_history_lines(50).entries.len();
+        assert!(!state.cached_history_lines(50).entries[lines - 3..]
+            .iter()
+            .any(|row| row.text.contains("prompt:")),);
+
+        // Wound all the way back, the oldest event is at the top of the half and the tail of
+        // the summary has scrolled off the bottom.
+        assert!(state.on_mouse(Mouse::ScrollUp(50)));
+        state.render(7, 50);
+        assert_eq!(state.history_scroll, state.last_history_max_scroll);
+        let history = state.cached_history_lines(50);
+        assert!(history.entries[0]
+            .text
+            .contains("prompt: implement history"));
+        assert!(
+            !history.entries[..3]
+                .iter()
+                .any(|row| row.text.ends_with("word") && !row.text.contains("summary:")),
+            "only the first line of the summary is still on screen"
+        );
     }
 
     /// `Tab` moves the keys, `j`/`k` do whatever the half they are in does with a line, and

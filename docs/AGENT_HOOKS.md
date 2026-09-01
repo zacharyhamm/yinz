@@ -303,8 +303,9 @@ The agents panel is two permanent halves with a rule between them: the list on t
 events history of whatever the cursor is on below. The list shows active runs on their live
 agent rows and completed runs under an `archive` header, newest first. It loads 50 archive rows
 at a time; select `load older runs…` and press Enter for the next page. Selecting a row fetches
-that run's full history into the bottom half; the rolling summary stays pinned above the
-timeline, and the rule names the run and says how far it is wound back.
+that run's full history into the bottom half; the rolling summary is the newest row of that
+timeline rather than a block above it, and the rule names the run and says how far it is wound
+back.
 
 `Tab` moves the keyboard between the halves, and so does a click — the rule is where the focus
 shows. `j`/`k` do whatever the half they are in does with a line: walk the selection, or scroll
@@ -318,7 +319,7 @@ below.
 
 `s` in the panel describes the selected row now. It works on a live agent and on an archived
 run, and the answer is filed on the timeline where it was asked for as well as replacing the
-sentence pinned above it.
+rolling sentence.
 
 - **It skips the guards that exist to stop the daemon asking too often** — the cooldown, the
   screen baseline, the settle count. Those are three ways of asking "is this worth a request",
@@ -339,7 +340,7 @@ sentence pinned above it.
   its live tail or cannot be read. Asking a hook-fed pane's screen would reintroduce the
   second, worse answer the feed was brought in to retire.
 - **Only manual summaries are filed on the timeline.** An automatic one would grow a long run
-  a line per turn, and the newest of them is pinned above it already. Two presses that produce
+  a line per turn, and the newest of them is drawn as the timeline's newest row already. Two presses that produce
   the same sentence file it once.
 - **A refusal is silent**, and there are several: `summaries "false"`, a pane that has closed
   or gone back to its shell, a run with nothing retained, a screen-only pane with no API key

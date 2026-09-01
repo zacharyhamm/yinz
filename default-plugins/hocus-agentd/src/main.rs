@@ -1382,9 +1382,9 @@ impl State {
     /// `asked_for` is whether a person pressed a key for it, and decides whether it also
     /// stays on the timeline. An automatic summary does not: one rolls forward at the end of
     /// every turn, so a long run would grow a line per turn and the newest of them — the one
-    /// pinned above the timeline — is the only one anybody wanted. A summary somebody asked
-    /// for is the opposite: *when* it was asked for is half of what it says, so it stays
-    /// where it was made.
+    /// the panel draws as the timeline's newest row — is the only one anybody wanted. A
+    /// summary somebody asked for is the opposite: *when* it was asked for is half of what it
+    /// says, so it stays where it was made.
     fn attach_run_summary(&mut self, pane_id: u32, summary: &agents::Summary, asked_for: bool) {
         let Some(run) = self.runs.get_mut(&pane_id) else {
             return;
@@ -7836,7 +7836,7 @@ mod tests {
     }
 
     /// The point of the whole feature: the answer stays on the timeline at the place it was
-    /// asked for, as well as replacing the sentence pinned above it.
+    /// asked for, as well as replacing the rolling sentence.
     #[test]
     fn an_asked_for_summary_stays_on_the_timeline() {
         let mut state = State {
@@ -7865,7 +7865,7 @@ mod tests {
             .collect();
         assert_eq!(summaries, vec!["rewrote the backoff"]);
         assert_eq!(
-            run.summary.as_ref().expect("pinned too").text,
+            run.summary.as_ref().expect("the rolling one too").text,
             "rewrote the backoff"
         );
         assert!(
@@ -7877,7 +7877,8 @@ mod tests {
 
     /// The regression guard for the flag that decides it. An automatic summary rolls forward
     /// at the end of every turn, so keeping each one would grow a long run a line per turn -
-    /// and the newest of them, pinned above the timeline, is the only one anybody wanted.
+    /// and the newest of them, drawn as the timeline's newest row, is the only one anybody
+    /// wanted.
     #[test]
     fn a_summary_nobody_asked_for_leaves_the_timeline_alone() {
         let mut state = State {
@@ -7899,10 +7900,10 @@ mod tests {
             !run.entries
                 .iter()
                 .any(|entry| entry.kind == agents::RunEntryKind::Summary),
-            "the turn's own summary is pinned, not filed"
+            "the turn's own summary rolls forward, it is not filed"
         );
         assert_eq!(
-            run.summary.as_ref().expect("pinned").text,
+            run.summary.as_ref().expect("the rolling one").text,
             "rewrote the backoff"
         );
     }
@@ -8064,7 +8065,7 @@ mod tests {
 
         let stored = state.dirty_runs.get(&run.id).expect("queued for the store");
         assert_eq!(
-            stored.summary.as_ref().expect("pinned").text,
+            stored.summary.as_ref().expect("the rolling one").text,
             "rewrote the backoff"
         );
         assert_eq!(
