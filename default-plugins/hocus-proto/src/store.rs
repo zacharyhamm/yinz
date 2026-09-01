@@ -244,6 +244,10 @@ pub fn agent_summary_def() -> EntityDef {
         .attr(AttrDef::text("text").required())
         .attr(AttrDef::text("title").required().default(""))
         .attr(AttrDef::boolean("awaiting").required().default(false))
+        // Epoch milliseconds this summary was made. Nullable for the same reason
+        // `agent_run_entry.created_at_ms` is: a row written before the attribute existed has
+        // no value for it, and migration only fills new columns in for rows written after.
+        .attr(AttrDef::int("created_at_ms"))
 }
 
 /// One hook-backed agent session. Archive pages fetch `header`; only the selected row fetches

@@ -125,6 +125,7 @@ fn state_with_summary(polls: u32) -> State {
             title: "running the tests".to_owned(),
             awaiting: true,
             hash: 11,
+            created_at_ms: None,
         },
     )]);
     state
@@ -196,6 +197,7 @@ fn a_summary_with_no_row_to_sit_under_is_not_sent() {
             title: String::new(),
             awaiting: false,
             hash: 1,
+            created_at_ms: None,
         },
     );
     let strip = state.current_strip();
