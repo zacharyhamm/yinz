@@ -9047,30 +9047,43 @@ impl Tab {
             }
         }
     }
-    /// Move or resize an overlay where it already is.
+    /// Move or resize overlays where they already are, as one placement.
     ///
     /// The kind is not a parameter and cannot change: an overlay was born dismissible or modal and
     /// stays so, which is why `OverlayPanes::change_pane_coordinates` touches only the geometry.
     /// A pane that is not an overlay is refused rather than promoted - overlay-ness is decided at
     /// birth, and `change_floating_pane_coordinates` is what moves a floating pane.
-    pub fn change_overlay_coordinates(
+    ///
+    /// The batch is the unit: two overlays linked as one panel (`OverlayPanes::link_touching`)
+    /// and both named here are placed as that panel rather than one after the other.
+    pub fn change_overlay_coordinates_batch(
         &mut self,
-        pane_id: &PaneId,
-        coordinates: FloatingPaneCoordinates,
+        batch: Vec<(PaneId, FloatingPaneCoordinates)>,
         override_user_placement: bool,
     ) -> Result<()> {
-        if !self.overlay_panes.panes_contain(pane_id) {
+        if let Some((pane_id, _)) = batch
+            .iter()
+            .find(|(pane_id, _)| !self.overlay_panes.panes_contain(pane_id))
+        {
             return Err(anyhow!(
                 "pane {pane_id:?} is not an overlay - use change_floating_pane_coordinates"
             ));
         }
-        self.overlay_panes.change_pane_coordinates(
-            *pane_id,
-            coordinates,
-            override_user_placement,
-        )?;
+        self.overlay_panes
+            .change_pane_coordinates_batch(batch, override_user_placement)?;
         self.set_force_render();
         Ok(())
+    }
+    /// Link the overlays among `pane_ids` that a single placement batch has just put edge to
+    /// edge, so the seam between them is draggable - see `OverlayPanes::link_touching`. Ids that
+    /// are not overlays on this tab are ignored.
+    pub fn link_touching_overlays(&mut self, pane_ids: &[PaneId]) {
+        let here: Vec<PaneId> = pane_ids
+            .iter()
+            .filter(|pane_id| self.overlay_panes.panes_contain(pane_id))
+            .copied()
+            .collect();
+        self.overlay_panes.link_touching(&here);
     }
     /// Move or resize a pane on the tab's floating layer.
     ///

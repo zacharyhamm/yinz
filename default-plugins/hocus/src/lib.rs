@@ -709,16 +709,15 @@ pub struct State {
     /// *what they were last placed against*.
     #[cfg(test)]
     pub(crate) placed_against: (usize, usize),
-    /// Where the conversation sits, and what the next Ctrl-o in it moves it clear of.
+    /// Where the panel sits, and what the next Ctrl-o - in either half - moves it clear of.
     ///
-    /// See [`overlay::Panel`]: the anchor, the tour and the corner are all per-panel, because
-    /// both panes take the key and each moves on its own.
-    pub(crate) chat: overlay::Panel,
-    /// The same, for the agent list.
-    ///
-    /// Its `placed_corner` starts `None` and stays that way until the first press: a list nobody
-    /// has moved sits in the slot beside the conversation, exactly where it always did.
-    pub(crate) agents: overlay::Panel,
+    /// See [`overlay::Panel`]: the agent list and the conversation are the two halves of one
+    /// panel, so there is one anchor, one tour and one corner between them.
+    pub(crate) panel: overlay::Panel,
+    /// Where the divider between the two halves is, as the manifest last reported it - see
+    /// [`overlay::Split`]. `None` until a manifest has shown the halves side by side, which
+    /// leaves the configured `split` in force.
+    pub(crate) split: overlay::Split,
     /// Every pane on our tab from the last `PaneUpdate`, our own entry included.
     ///
     /// What Ctrl-o ranks. `TabUpdate` reports the surface but not the panes on it, so the manifest
@@ -873,8 +872,8 @@ impl Default for State {
             agents_placed: true,
             #[cfg(test)]
             placed_against: (0, 0),
-            chat: overlay::Panel::default(),
-            agents: overlay::Panel::default(),
+            panel: overlay::Panel::default(),
+            split: None,
             tab_panes: Vec::new(),
             #[cfg(test)]
             last_placement: None,
@@ -1052,9 +1051,9 @@ impl ZellijPlugin for State {
             },
             wire::AGENT_SELECTION => return self.on_selection(&pipe_message),
             wire::AGENT_STRIP_REPOSITION => {
-                // Ctrl-o in the agent list. hocus owns both panes' geometry, so the list asks
+                // Ctrl-o in the agent list. hocus owns the panel's geometry, so the list asks
                 // rather than moves; nothing to redraw here, the move is the server's to paint.
-                self.reposition(overlay::Which::Agents);
+                self.reposition_from_list();
                 return false;
             },
             wire::AGENT_ARCHIVE_MORE => {

@@ -196,6 +196,20 @@ enum MouseAction {
     StopMovingOverlay {
         position: Position,
     },
+    /// A plain left press on the seam between two linked overlays - the divider of a panel
+    /// drawn as two panes. Checked before `StartMovingOverlay`, because the seam is on both
+    /// panes' frames and a press there would otherwise pick the panel up.
+    StartOverlaySeamDrag {
+        left: PaneId,
+        right: PaneId,
+        position: Position,
+    },
+    DragOverlaySeam {
+        position: Position,
+    },
+    StopOverlaySeamDrag {
+        position: Position,
+    },
     ScrollUp {
         pane_id: PaneId,
         lines: usize,
@@ -300,6 +314,10 @@ struct ClickedPaneDetails {
     /// because the two frame branches answer differently: every overlay is draggable, only a
     /// non-modal one is resizable.
     overlay_is_resizable: bool,
+    /// The linked pair whose seam the press landed on, when the frame cell under the pointer
+    /// is the divider between two overlays placed together (`OverlayPanes::seam_at`). A press
+    /// there drags the divider rather than the panel.
+    on_seam: Option<(PaneId, PaneId)>,
     terminal_wants_mouse: bool,
     /// The pane's terminal emulator has mouse tracking on, so right-click is its own.
     ///
@@ -317,6 +335,9 @@ struct MouseEventContext {
     pane_being_resized: bool,
     selecting_with_mouse: bool,
     pane_being_moved: Option<MouseDragTarget>,
+    /// A seam drag is in flight (`OverlayPanes::seam_is_being_dragged`). Exclusive with
+    /// `pane_being_moved` - the pointer is one pointer - and checked first, as the resize is.
+    seam_being_dragged: bool,
     clicked_pane: Option<ClickedPaneDetails>,
     advanced_mouse_actions: bool,
     pinned_selectable: Option<PaneId>,
@@ -581,6 +602,7 @@ impl MouseHandler {
             floating_visible,
             pane_being_resized: tab.pane_being_resized_with_mouse.is_some(),
             selecting_with_mouse: tab.selecting_with_mouse_in_pane.is_some(),
+            seam_being_dragged: tab.overlay_panes.seam_is_being_dragged(),
             pane_being_moved: if tab.overlay_panes.pane_is_being_moved_with_mouse() {
                 Some(MouseDragTarget::Overlay)
             } else if tab.floating_panes.pane_is_being_moved_with_mouse() {
@@ -611,6 +633,7 @@ impl MouseHandler {
         let is_floating = tab.floating_panes.panes_contain(&pane_id);
         let is_overlay = tab.pane_is_overlay(pane_id);
         let overlay_is_resizable = tab.overlay_panes.is_resizable(&pane_id);
+        let on_seam = tab.overlay_panes.seam_at(position);
         let is_hidden_stack_list_member = tab.pane_is_hidden_stack_list_member(&pane_id);
         let pane = Self::get_pane_at(tab, position, false).ok()??;
 
@@ -637,6 +660,7 @@ impl MouseHandler {
             is_floating,
             is_overlay,
             overlay_is_resizable,
+            on_seam,
             terminal_wants_mouse,
             terminal_emulator_wants_mouse,
         })
@@ -1005,6 +1029,22 @@ impl MouseHandler {
             MouseAction::StopMovingOverlay { position } => {
                 Self::execute_stop_moving_overlay(tab, position, client_id)
             },
+            MouseAction::StartOverlaySeamDrag {
+                left,
+                right,
+                position,
+            } => {
+                tab.overlay_panes.start_seam_drag(left, right, position);
+                Ok(MouseEffect::default())
+            },
+            MouseAction::DragOverlaySeam { position } => {
+                Self::execute_drag_overlay_seam(tab, position)
+            },
+            MouseAction::StopOverlaySeamDrag { position } => {
+                tab.overlay_panes.stop_seam_drag(position);
+                tab.set_force_render();
+                Ok(MouseEffect::state_changed())
+            },
             MouseAction::ScrollUp { pane_id: _, lines } => {
                 Self::handle_scrollwheel_up(tab, &event.position, lines, client_id)
                     .with_context(err_context)
@@ -1359,6 +1399,18 @@ impl MouseHandler {
         }
     }
 
+    /// A seam press never changes focus, like a frame drag: the user is adjusting the panel,
+    /// not choosing a half of it. Nothing to do with the floating layer's swap layouts either,
+    /// for the reason `execute_move_overlay` gives.
+    fn execute_drag_overlay_seam(tab: &mut Tab, position: Position) -> Result<MouseEffect> {
+        if tab.overlay_panes.drag_seam_to(&position) {
+            tab.set_force_render();
+            Ok(MouseEffect::state_changed())
+        } else {
+            Ok(MouseEffect::default())
+        }
+    }
+
     fn execute_stop_moving_overlay(
         tab: &mut Tab,
         position: Position,
@@ -1631,6 +1683,18 @@ impl MouseHandler {
             });
         }
 
+        if ctx.seam_being_dragged {
+            return Ok(match event.event_type {
+                MouseEventType::Motion if event.left => MouseAction::DragOverlaySeam {
+                    position: event.position,
+                },
+                MouseEventType::Release if event.left => MouseAction::StopOverlaySeamDrag {
+                    position: event.position,
+                },
+                _ => MouseAction::NoAction,
+            });
+        }
+
         if let Some(drag_target) = ctx.pane_being_moved {
             let (continue_move, stop_move) = match drag_target {
                 MouseDragTarget::Floating => (
@@ -1764,6 +1828,16 @@ impl MouseHandler {
                         pane_id: details.pane_id,
                     });
                 }
+                // The seam between two linked overlays is the one frame edge that is not the
+                // panel's: a ctrl-drag there would resize one half into the other, so it moves
+                // the divider exactly as a plain drag does. The panel's outer edges resize.
+                if let Some((left, right)) = details.on_seam {
+                    return Ok(MouseAction::StartOverlaySeamDrag {
+                        left,
+                        right,
+                        position: event.position,
+                    });
+                }
                 // a modal is not user-resizable, so a ctrl-drag on one is nothing at all rather
                 // than falling through to `start_pane_resize_with_mouse` - which would find it in
                 // neither the floating nor the tiled collection and error the whole mouse event
@@ -1815,6 +1889,17 @@ impl MouseHandler {
                 // means - plain drag on the frame moves, ctrl-drag resizes. (A tiled pane is the
                 // odd one out, resizing on a plain frame drag, because it has nowhere to move
                 // to.)
+                //
+                // The seam comes first: it is on both halves' frames, so without this check a
+                // press on the divider would pick the whole panel up instead of moving the
+                // divider. Two touching overlays nobody placed together have no seam.
+                if let Some((left, right)) = details.on_seam {
+                    return Ok(MouseAction::StartOverlaySeamDrag {
+                        left,
+                        right,
+                        position: event.position,
+                    });
+                }
                 if details.is_overlay {
                     return Ok(MouseAction::StartMovingOverlay {
                         position: event.position,
@@ -2329,6 +2414,7 @@ mod tests {
             pane_being_resized: false,
             selecting_with_mouse: false,
             pane_being_moved: None,
+            seam_being_dragged: false,
             clicked_pane: None,
             advanced_mouse_actions: true,
             pinned_selectable: None,
@@ -2351,6 +2437,7 @@ mod tests {
             is_floating: false,
             is_overlay,
             overlay_is_resizable: is_overlay,
+            on_seam: None,
             terminal_wants_mouse: false,
             terminal_emulator_wants_mouse: false,
         }
@@ -2409,6 +2496,79 @@ mod tests {
         assert!(matches!(
             MouseHandler::determine_mouse_action(&event, &context).unwrap(),
             MouseAction::StartMovingOverlay { .. }
+        ));
+    }
+
+    /// The seam between two linked overlays is on both their frames, so the seam check has to
+    /// come before the move: a press on the divider drags the divider, not the panel.
+    #[test]
+    fn a_press_on_a_linked_overlay_seam_starts_a_seam_drag_and_not_a_move() {
+        let (left, right) = (PaneId::Plugin(8), PaneId::Plugin(9));
+        let mut context = mouse_event_context(false);
+        context.pane_id_at_position = Some(right);
+        let mut details = frame_click_on(right, true);
+        details.on_seam = Some((left, right));
+        context.clicked_pane = Some(details);
+
+        let event = MouseEvent::new_left_press_event(Position::new(1, 1));
+        let action = MouseHandler::determine_mouse_action(&event, &context).unwrap();
+        assert!(
+            matches!(
+                action,
+                MouseAction::StartOverlaySeamDrag { left: l, right: r, .. } if l == left && r == right
+            ),
+            "got {action:?}"
+        );
+
+        // the same press on a frame cell that is not the seam still picks the panel up
+        context.clicked_pane = Some(frame_click_on(right, true));
+        assert!(matches!(
+            MouseHandler::determine_mouse_action(&event, &context).unwrap(),
+            MouseAction::StartMovingOverlay { .. }
+        ));
+
+        // and a ctrl-press on the seam is a seam drag too: the seam is the one frame edge that
+        // is not the panel's, and resizing one half into the other is not a resize anybody wants
+        let mut details = frame_click_on(right, true);
+        details.on_seam = Some((left, right));
+        context.clicked_pane = Some(details);
+        let ctrl_press = MouseEvent {
+            ctrl: true,
+            ..MouseEvent::new_left_press_event(Position::new(1, 1))
+        };
+        assert!(matches!(
+            MouseHandler::determine_mouse_action(&ctrl_press, &context).unwrap(),
+            MouseAction::StartOverlaySeamDrag { .. }
+        ));
+        // while a ctrl-press on any other frame cell of the half is the resize it always was
+        context.clicked_pane = Some(frame_click_on(right, true));
+        assert!(matches!(
+            MouseHandler::determine_mouse_action(&ctrl_press, &context).unwrap(),
+            MouseAction::StartResize { .. }
+        ));
+    }
+
+    /// An in-flight seam drag routes motion and release to the seam, ahead of any move.
+    #[test]
+    fn an_in_flight_seam_drag_routes_to_the_seam() {
+        let position = Position::new(3, 3);
+        let mut context = mouse_event_context(false);
+        context.seam_being_dragged = true;
+        assert!(matches!(
+            MouseHandler::determine_mouse_action(
+                &MouseEvent::new_left_motion_event(position),
+                &context
+            )
+            .unwrap(),
+            MouseAction::DragOverlaySeam { .. }
+        ));
+        assert!(matches!(
+            MouseHandler::determine_mouse_action(
+                &MouseEvent::new_left_release_event(position),
+                &context
+            )
+            .unwrap(),
+            MouseAction::StopOverlaySeamDrag { .. }
         ));
     }
 
@@ -2656,6 +2816,7 @@ mod tests {
             is_floating: false,
             is_overlay: false,
             overlay_is_resizable: false,
+            on_seam: None,
             terminal_wants_mouse: false,
             terminal_emulator_wants_mouse: false,
         }

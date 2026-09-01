@@ -55,8 +55,14 @@ load_plugins clear-defaults=true {
 "#;
 
 /// No sidebar at all to begin with: the binding has to build the whole strip.
+///
+/// The pane is an agent by *command*, not by title. A plain `pane name="claude"`
+/// is spawned as the default shell, and the harness reports that shell as the
+/// pane's process the moment it produces output — at which point `detect_kind`
+/// lets the shell outrank the title and the list empties again. Title-only
+/// detection is a guess by design, and is unit-tested where it lives.
 const NO_SIDEBAR_LAYOUT: &str = r#"layout {
-    pane name="claude"
+    pane command="claude"
 }
 "#;
 
@@ -169,8 +175,9 @@ fn submit(zellij: &TestSession, line: &str) {
 fn an_agent_that_never_leaves_its_folder_lands_under_its_project() {
     let repository = write_git_repository("hocus-project", "trunk");
     // Deliberately *not* named after an agent: this pane is detected by what it
-    // is running, which is the path detection uses in earnest. The title path is
-    // covered by the test below.
+    // is running, which is the path detection uses in earnest. Title-only
+    // detection is not covered end to end — see `NO_SIDEBAR_LAYOUT` for why it
+    // cannot be — only in the unit tests beside `detect_kind`.
     let layout = format!(
         r#"layout {{
     pane cwd="{}"
@@ -445,7 +452,7 @@ fn the_agent_list_and_conversation_are_independent_overlay_panes() {
     });
 
     zellij.wait_until("the agents pane is populated", |grid_snapshot| {
-        grid_snapshot.contains("0  claude  running")
+        grid_snapshot.contains("0  claude")
     });
 
     let screen = zellij.snapshot();
@@ -461,7 +468,10 @@ fn the_agent_list_and_conversation_are_independent_overlay_panes() {
     // pane beside the conversation.
     let no_project = row("no project");
     assert_eq!(row("  no branch"), no_project + 1);
-    assert_eq!(row(">     0  claude  running"), no_project + 2);
+    // The row and nothing after it: the status cell is `running` until the daemon
+    // has polled the pane's screen, then `busy` or `idle`, and this test is about
+    // which panes are on screen rather than what the agent is doing.
+    assert_eq!(row(">     0  claude"), no_project + 2);
     let title = row("hocus — ");
     assert_eq!(title, row("agents ─"), "the panes are side by side");
     assert!(screen.text.contains("assigned tab 0 to project"));
@@ -469,13 +479,13 @@ fn the_agent_list_and_conversation_are_independent_overlay_panes() {
     // Esc in the conversation hides only that pane; the list is independent.
     zellij.send_stdin(&keys::ESC);
     zellij.wait_until("the conversation is hidden", |grid_snapshot| {
-        !grid_snapshot.contains("hocus — ") && grid_snapshot.contains("0  claude  running")
+        !grid_snapshot.contains("hocus — ") && grid_snapshot.contains("0  claude")
     });
 
     // And the launch binding brings the conversation back beside the intact list.
     zellij.send_stdin(&keys::ctrl('b'));
     zellij.wait_until("the sidebar is back", |grid_snapshot| {
-        grid_snapshot.contains("hocus — ") && grid_snapshot.contains("0  claude  running")
+        grid_snapshot.contains("hocus — ") && grid_snapshot.contains("0  claude")
     });
     zellij.wait_until(
         "the conversation survived the round trip",

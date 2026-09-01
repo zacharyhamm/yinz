@@ -850,8 +850,8 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
     }
 
     // The agent strip that used to own the top third is its own pane now
-    // (hocus-agents, split off above this one); the conversation has the whole
-    // body below the title.
+    // (hocus-agents, the left half of the panel this one is the right half
+    // of); the conversation has the whole body below the title.
     let chrome = chrome_for(rows);
     let (body_y, body_rows) = body_of(chrome, rows);
     let layout = state
