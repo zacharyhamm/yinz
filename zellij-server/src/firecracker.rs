@@ -331,7 +331,7 @@ pub fn provider_from_options(path: Option<&Path>, timeout_secs: Option<u64>) -> 
     )?;
     Provider::new(
         path.to_path_buf(),
-        Duration::from_secs(timeout_secs.unwrap_or(60)),
+        Duration::from_secs(timeout_secs.unwrap_or(90)),
     )
 }
 
@@ -349,6 +349,12 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         let provider = Provider::new(path, timeout).unwrap();
         (dir, provider)
+    }
+
+    #[test]
+    fn provider_default_timeout_leaves_room_after_boot() {
+        let provider = provider_from_options(Some(Path::new("/provider")), None).unwrap();
+        assert_eq!(provider.timeout, Duration::from_secs(90));
     }
 
     #[test]

@@ -191,7 +191,6 @@ impl LockedState {
     fn new() -> Result<Self> {
         let dir = state_dir();
         secure_dir(&dir)?;
-        prune_recoveries(&dir)?;
         let lock = OpenOptions::new()
             .create(true)
             .read(true)
@@ -203,6 +202,7 @@ impl LockedState {
             return Err(std::io::Error::last_os_error())
                 .context("failed to lock Firecracker provider state");
         }
+        prune_recoveries(&dir)?;
         Ok(Self { dir, _lock: lock })
     }
 
@@ -289,7 +289,7 @@ fn serve_request() -> Result<()> {
     let config = load_config()?;
     let network = load_network(&config)?;
     let state = LockedState::new()?;
-    recover_unusable_vms(&state, &config)?;
+    recover_unusable_vms(&state)?;
     let response = match request {
         Request::Ensure {
             session,
@@ -353,9 +353,9 @@ fn ensure(
     let entries = locked.entries()?;
     ensure_vm_identity_available(&entries, &state_path, session, name)?;
     if let Ok(mut existing) = read_state(&state_path) {
-        if vm_is_running(&existing, config) {
+        if vm_is_running(&existing) {
             if !existing.ready {
-                terminate(&existing, config);
+                terminate(&existing);
                 retain_recovery(locked, &state_path, &existing, "unready")?;
                 let _ = fs::remove_file(&state_path);
             } else {
@@ -388,7 +388,7 @@ fn ensure(
         .find(|slot| {
             !entries
                 .iter()
-                .any(|(_, state)| state.slot == *slot && vm_is_running(state, config))
+                .any(|(_, state)| state.slot == *slot && vm_is_running(state))
         })
         .context("no free Firecracker TAP devices; increase the network tap pool")?;
     let (network_base, prefix) = parse_subnet(&network.subnet)?;
@@ -530,7 +530,7 @@ fn ensure(
         cgroup,
     };
     if let Err(error) = write_state(&state_path, &vm) {
-        terminate(&vm, config);
+        terminate(&vm);
         cleanup_files(&vm);
         return Err(error);
     }
@@ -538,20 +538,20 @@ fn ensure(
         let log = fs::read_to_string(&vm.log).unwrap_or_else(|read_error| {
             format!("<failed to read {}: {read_error}>", vm.log.display())
         });
-        terminate(&vm, config);
+        terminate(&vm);
         cleanup_files(&vm);
         let _ = fs::remove_file(&state_path);
         return Err(error).context(format!("Firecracker log:\n{log}"));
     }
     if let Err(error) = provision_guest(&vm, config) {
-        terminate(&vm, config);
+        terminate(&vm);
         retain_recovery(locked, &state_path, &vm, "provision-failed")?;
         let _ = fs::remove_file(&state_path);
         return Err(error);
     }
     vm.ready = true;
     if let Err(error) = write_state(&state_path, &vm) {
-        terminate(&vm, config);
+        terminate(&vm);
         retain_recovery(locked, &state_path, &vm, "state-commit-failed")?;
         let _ = fs::remove_file(&state_path);
         return Err(error);
@@ -912,12 +912,12 @@ fn ensure_vm_identity_available(
     Ok(())
 }
 
-fn recover_unusable_vms(locked: &LockedState, config: &Config) -> Result<()> {
+fn recover_unusable_vms(locked: &LockedState) -> Result<()> {
     for (path, state) in locked.entries()? {
-        if state.ready && vm_is_running(&state, config) {
+        if state.ready && vm_is_running(&state) {
             continue;
         }
-        terminate(&state, config);
+        terminate(&state);
         retain_recovery(
             locked,
             &path,
@@ -961,12 +961,12 @@ fn release(
         return write_state(&path, &state);
     }
     if let Err(error) = sync_from_guest(&state, config) {
-        terminate(&state, config);
+        terminate(&state);
         retain_recovery(locked, &path, &state, "sync-conflict")?;
         let _ = fs::remove_file(path);
         return Err(error);
     }
-    terminate(&state, config);
+    terminate(&state);
     cleanup_files(&state);
     let _ = fs::remove_file(path);
     Ok(())
@@ -979,7 +979,7 @@ fn sync_one(locked: &LockedState, config: &Config, session: &str, name: &str) ->
             "Firecracker VM {name:?} is not running for session {session:?}"
         ));
     };
-    if !vm_is_running(&state, config) {
+    if !vm_is_running(&state) {
         return Err(anyhow!("Firecracker VM {name:?} is not running"));
     }
     sync_from_guest(&state, config)?;
@@ -991,8 +991,8 @@ fn sync_one(locked: &LockedState, config: &Config, session: &str, name: &str) ->
     write_state(&path, &state)
 }
 
-fn terminate(state: &VmState, config: &Config) {
-    if !vm_is_running(state, config) {
+fn terminate(state: &VmState) {
+    if !vm_is_running(state) {
         return;
     }
     unsafe { libc::kill(state.pid, libc::SIGTERM) };
@@ -1107,10 +1107,8 @@ fn prune_recoveries(state: &Path) -> Result<()> {
     Ok(())
 }
 
-fn vm_is_running(state: &VmState, config: &Config) -> bool {
+fn vm_is_running(state: &VmState) -> bool {
     process_start_time(state.pid) == Some(state.start_time)
-        && proc_exe(state.pid).and_then(|path| path.canonicalize().ok())
-            == config.firecracker.canonicalize().ok()
 }
 
 fn process_start_time(pid: i32) -> Option<u64> {
@@ -1121,10 +1119,6 @@ fn process_start_time(pid: i32) -> Option<u64> {
         .nth(19)?
         .parse()
         .ok()
-}
-
-fn proc_exe(pid: i32) -> Option<PathBuf> {
-    fs::read_link(format!("/proc/{pid}/exe")).ok()
 }
 
 fn wait_for_process_start(pid: i32, timeout: Duration) -> Result<u64> {
@@ -3208,6 +3202,17 @@ mod tests {
         let mut serialized = serde_json::to_value(state).unwrap();
         serialized.as_object_mut().unwrap().remove("ready");
         assert!(serde_json::from_value::<VmState>(serialized).is_err());
+    }
+
+    #[test]
+    fn vm_liveness_uses_pid_and_start_time_only() {
+        let mut state = vm_state(PathBuf::new(), PathBuf::new(), None);
+        state.pid = std::process::id() as i32;
+        state.start_time = process_start_time(state.pid).unwrap();
+
+        assert!(vm_is_running(&state));
+        state.start_time = state.start_time.wrapping_add(1);
+        assert!(!vm_is_running(&state));
     }
 
     #[test]
