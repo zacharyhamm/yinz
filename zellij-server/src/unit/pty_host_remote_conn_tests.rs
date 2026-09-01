@@ -3,7 +3,7 @@ use super::*;
 use std::io::Read;
 use std::os::unix::net::UnixStream;
 
-use crate::pty_host::remote::protocol::{self, try_decode_frame, BrokerToServerMsg, Frame};
+use crate::pty_host::remote::protocol::{try_decode_frame, Frame};
 
 fn conn_pair() -> (RemoteConn, UnixStream) {
     let (ours, theirs) = UnixStream::pair().expect("socketpair failed");
@@ -218,41 +218,20 @@ fn a_release_with_no_time_left_is_refused_before_the_socket_is_touched() {
 }
 
 #[test]
-fn termination_waits_for_drained_child_exit() {
+fn termination_is_sent_without_waiting_for_an_acknowledgement() {
     let (conn, mut peer) = conn_pair();
-    let conn = std::sync::Arc::new(conn);
-    let (output_sent_tx, output_sent_rx) = std::sync::mpsc::channel();
-    let (ack_tx, ack_rx) = std::sync::mpsc::channel();
-    let broker = std::thread::spawn(move || {
-        let frame = protocol::read_frame(&mut peer)
-            .unwrap()
-            .expect("termination frame");
-        assert_eq!(
-            frame.decode_control::<ServerToBrokerMsg>().unwrap(),
-            ServerToBrokerMsg::Terminate
-        );
-        protocol::write_output(&mut peer, b"last words").unwrap();
-        output_sent_tx.send(()).unwrap();
-        ack_rx.recv().unwrap();
-        protocol::write_control(
-            &mut peer,
-            &BrokerToServerMsg::ChildExited { status: Some(0) },
-        )
-        .unwrap();
-    });
-    let terminating = conn.clone();
-    let (done_tx, done_rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        done_tx
-            .send(terminating.terminate(std::time::Duration::from_secs(1)))
-            .unwrap();
-    });
+    conn.terminate().unwrap();
+    let frames = drain_all(&mut peer);
+    assert_eq!(frames.len(), 1);
+    assert_eq!(
+        frames[0].decode_control::<ServerToBrokerMsg>().unwrap(),
+        ServerToBrokerMsg::Terminate
+    );
+}
 
-    output_sent_rx.recv().unwrap();
-    assert!(done_rx
-        .recv_timeout(std::time::Duration::from_millis(50))
-        .is_err());
-    ack_tx.send(()).unwrap();
-    done_rx.recv().unwrap().unwrap();
-    broker.join().unwrap();
+#[test]
+fn a_broken_connection_refuses_termination_immediately() {
+    let (conn, _peer) = conn_pair();
+    conn.mark_transport_lost();
+    assert!(conn.terminate().is_err());
 }

@@ -49,7 +49,9 @@ fn firecracker_resolution_keeps_an_unresolved_command_for_reruns() {
 }
 
 #[test]
-fn failed_firecracker_pane_quiescence_skips_provider_shutdown() {
+fn failed_firecracker_pane_termination_does_not_skip_provider_shutdown() {
+    use crate::pty_host::remote::RemoteConn;
+    use std::os::unix::net::UnixStream;
     use std::{fs, os::unix::fs::PermissionsExt};
 
     let dir = tempfile::tempdir().unwrap();
@@ -65,12 +67,40 @@ fn failed_firecracker_pane_quiescence_skips_provider_shutdown() {
         crate::firecracker::Provider::new(path, Duration::from_secs(1)).unwrap(),
         "work".to_owned(),
     ));
-    server
-        .firecracker_panes_quiesced
-        .store(false, Ordering::SeqCst);
+    let (write_socket, broker_peer) = UnixStream::pair().unwrap();
+    drop(broker_peer);
+    let (read_socket, _reader_peer) = UnixStream::pair().unwrap();
+    let command = RunCommand {
+        command: PathBuf::from("remote-step"),
+        remote_host: Some("build-box".to_owned()),
+        firecracker_vm: Some("review".to_owned()),
+        ..Default::default()
+    };
+    let connection = Arc::new(
+        RemoteConn::new(
+            write_socket,
+            "build-box".to_owned(),
+            "token".to_owned(),
+            command.clone(),
+            None,
+        )
+        .unwrap(),
+    );
+    let _reader = server
+        .pty_backend
+        .register_remote_terminal(
+            7,
+            connection.clone(),
+            read_socket,
+            Box::new(|_, _, _| {}),
+            command,
+        )
+        .unwrap();
+    connection.mark_transport_lost();
 
-    assert!(server.stop_firecracker_session().is_err());
-    assert!(!dir.path().join("called").exists());
+    assert!(server.clear_terminal_id(7).is_err());
+    server.stop_firecracker_session().unwrap();
+    assert!(dir.path().join("called").exists());
 }
 
 #[allow(dead_code)]

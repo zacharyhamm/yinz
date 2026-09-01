@@ -62,7 +62,6 @@ pub use async_trait::async_trait;
 /// tab is releasing several panes at once — see
 /// `Self::release_remote_terminal_for_warp`.
 const REMOTE_RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-const REMOTE_TERMINATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// An `AsyncReader` that wraps a `RawFd` using epoll via `AsyncFd`.
 ///
@@ -872,15 +871,6 @@ impl UnixPtyBackend {
             .and_then(|conn| conn.cmd().display_host())
     }
 
-    pub fn remote_command(&self, terminal_id: u32) -> Option<RunCommand> {
-        self.terminal_id_to_transport
-            .lock()
-            .ok()?
-            .get(&terminal_id)?
-            .remote()
-            .map(|conn| conn.cmd().clone())
-    }
-
     /// Deliver a signal to a remote pane's child, by name rather than by pid.
     pub fn signal_remote_child(&self, terminal_id: u32, signal: ChildSignal) -> Result<()> {
         let conn = self
@@ -928,7 +918,7 @@ impl UnixPtyBackend {
         // above cannot reach it. Without this the pane would leave a live
         // process and a live broker behind on every ordinary close.
         if let Some(PaneTransport::Remote(conn)) = removed {
-            conn.terminate(REMOTE_TERMINATION_TIMEOUT)
+            conn.terminate()
                 .with_context(|| format!("failed to terminate remote pane {terminal_id}"))?;
         }
         Ok(())

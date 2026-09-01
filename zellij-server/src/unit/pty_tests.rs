@@ -57,6 +57,8 @@ struct MockOsApi {
     clear_failures: Arc<Mutex<std::collections::HashSet<u32>>>,
     firecracker_started: Arc<Barrier>,
     firecracker_release: Arc<Barrier>,
+    firecracker_terminal_id: Arc<Mutex<Option<u32>>>,
+    resolved_firecracker_spawns: Arc<Mutex<Vec<u32>>>,
 }
 
 impl MockOsApi {
@@ -81,6 +83,8 @@ impl MockOsApi {
             clear_failures: Arc::new(Mutex::new(std::collections::HashSet::new())),
             firecracker_started: Arc::new(Barrier::new(1)),
             firecracker_release: Arc::new(Barrier::new(1)),
+            firecracker_terminal_id: Arc::new(Mutex::new(None)),
+            resolved_firecracker_spawns: Arc::new(Mutex::new(vec![])),
         }
     }
     fn rerun_commands(&self) -> Vec<RunCommand> {
@@ -179,12 +183,42 @@ impl ServerOsApi for MockOsApi {
     }
     fn resolve_firecracker_spawn(
         &self,
-        _terminal_action: TerminalAction,
+        terminal_action: TerminalAction,
         _default_editor: Option<PathBuf>,
     ) -> anyhow::Result<crate::os_input_output::ResolvedFirecracker> {
         self.firecracker_started.wait();
         self.firecracker_release.wait();
-        Err(anyhow::anyhow!("injected provider result"))
+        let terminal_id = self
+            .firecracker_terminal_id
+            .lock()
+            .unwrap()
+            .context("injected provider result")?;
+        let TerminalAction::RunCommand(mut command) = terminal_action else {
+            unreachable!()
+        };
+        let rerun_command = command.clone();
+        command.remote_host = Some("resolved-vm".to_owned());
+        Ok(crate::os_input_output::ResolvedFirecracker {
+            terminal_id,
+            command,
+            rerun_command,
+            ssh_options: Default::default(),
+        })
+    }
+    fn spawn_resolved_firecracker(
+        &self,
+        resolved: crate::os_input_output::ResolvedFirecracker,
+        _: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> anyhow::Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
+        self.resolved_firecracker_spawns
+            .lock()
+            .unwrap()
+            .push(resolved.terminal_id);
+        Ok((
+            resolved.terminal_id,
+            Box::new(crate::os_input_output::NullAsyncReader),
+            None,
+        ))
     }
     fn write_to_tty_stdin(&self, _: u32, buf: &[u8]) -> anyhow::Result<usize> {
         Ok(buf.len())
@@ -901,6 +935,94 @@ fn a_firecracker_preflight_does_not_block_other_pty_work() {
     os_api.firecracker_started.wait();
     assert!(pty.close_pane(PaneId::Terminal(7)).is_ok());
     os_api.firecracker_release.wait();
+}
+
+#[test]
+fn a_firecracker_layout_preflight_does_not_block_pty_work_or_apply_layout() {
+    let mut os_api = MockOsApi::new();
+    os_api.firecracker_started = Arc::new(Barrier::new(2));
+    os_api.firecracker_release = Arc::new(Barrier::new(2));
+    *os_api.firecracker_terminal_id.lock().unwrap() = Some(41);
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let (pty_tx, pty_rx) = channels::unbounded();
+    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    let command = RunCommand {
+        command: PathBuf::from("claude"),
+        firecracker_vm: Some("review".to_owned()),
+        ..Default::default()
+    };
+    let layout = TiledPaneLayout {
+        run: Some(Run::Command(command.clone())),
+        ..Default::default()
+    };
+
+    pty.spawn_terminals_for_layout(
+        None,
+        layout,
+        vec![],
+        Some(TerminalAction::RunCommand(command)),
+        HashMap::new(),
+        None,
+        0,
+        false,
+        true,
+        1,
+        None,
+    )
+    .unwrap();
+    os_api.firecracker_started.wait();
+    assert!(pty.close_pane(PaneId::Terminal(7)).is_ok());
+    os_api.firecracker_release.wait();
+
+    let (instruction, _) = pty_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .unwrap();
+    let PtyInstruction::FirecrackerLayoutResolved(pending, resolutions) = instruction else {
+        panic!("expected resolved Firecracker layout")
+    };
+    pty.finish_layout_spawn(*pending, resolutions).unwrap();
+
+    assert_eq!(
+        *os_api.resolved_firecracker_spawns.lock().unwrap(),
+        vec![41]
+    );
+    assert!(screen_rx.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        ScreenInstruction::ApplyLayout(_, _, tiled, _, _, _, _, _, _, _, _)
+            if tiled == vec![(41, None)]
+    )));
+}
+
+#[test]
+fn a_failed_firecracker_rerun_is_shown_and_held_without_hold_on_close() {
+    let os_api = MockOsApi::new();
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(os_api);
+    let command = RunCommand {
+        command: PathBuf::from("claude"),
+        firecracker_vm: Some("review".to_owned()),
+        hold_on_close: false,
+        ..Default::default()
+    };
+    let error = ZellijError::PaneStartFailed {
+        terminal_id: 41,
+        message: "provider failed".to_owned(),
+    }
+    .into();
+
+    finish_command_rerun(&mut pty, PaneId::Terminal(41), command, Err(error)).unwrap();
+
+    let instructions = screen_rx
+        .try_iter()
+        .map(|(instruction, _)| instruction)
+        .collect::<Vec<_>>();
+    assert!(instructions.iter().any(|instruction| matches!(
+        instruction,
+        ScreenInstruction::PtyBytes(41, message) if message == b"provider failed"
+    )));
+    assert!(instructions.iter().any(|instruction| matches!(
+        instruction,
+        ScreenInstruction::HoldPane(PaneId::Terminal(41), Some(2), _)
+    )));
 }
 
 #[test]

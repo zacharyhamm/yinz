@@ -524,6 +524,7 @@ pub enum PtyContext {
     SpawnTerminal,
     FirecrackerSpawnResolved,
     FirecrackerInPlaceSpawnResolved,
+    FirecrackerLayoutResolved,
     OpenInPlaceEditor,
     UpdateActivePane,
     GoToTab,
