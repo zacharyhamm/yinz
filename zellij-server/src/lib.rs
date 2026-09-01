@@ -2233,6 +2233,7 @@ pub fn start_server_impl(
     // the teardown in the loop above: those joins must not run with the write
     // lock held, or route threads still blocked on `session_data.read()` stay
     // blocked for the whole shutdown instead of seeing the socket close.
+    os_input.begin_firecracker_shutdown();
     let session_metadata = session_data.write().unwrap().take();
     drop(session_metadata);
 

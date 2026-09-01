@@ -39,7 +39,10 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
     process::Command,
-    sync::{Arc, Condvar, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Condvar, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -554,6 +557,7 @@ pub struct ServerOsInputOutput {
     /// host and option set, shared by every matching pane.
     remote_hosts: Arc<RemoteHosts>,
     firecracker: Arc<Mutex<Option<(crate::firecracker::Provider, String)>>>,
+    firecracker_stopping: Arc<AtomicBool>,
 }
 
 #[cfg(not(windows))]
@@ -572,21 +576,22 @@ impl ServerOsInputOutput {
                 "a pane cannot use both firecracker_vm and remote_host"
             ));
         }
-        let (provider, session) = self
-            .firecracker
-            .lock()
-            .to_anyhow()?
-            .as_ref()
-            .cloned()
-            .context(
-                "Firecracker is not configured; set firecracker_provider in the session config",
-            )?;
+        let firecracker = self.firecracker.lock().to_anyhow()?;
+        if self.firecracker_stopping.load(Ordering::Acquire) {
+            return Err(anyhow!("the Firecracker session is shutting down"));
+        }
+        let (provider, session) = firecracker.as_ref().context(
+            "Firecracker is not configured; set firecracker_provider in the session config",
+        )?;
         let ensured = provider.ensure(
-            &session,
+            session,
             name,
             cmd.firecracker_image.as_deref(),
             cmd.firecracker_worktree.as_deref(),
         )?;
+        if self.firecracker_stopping.load(Ordering::Acquire) {
+            return Err(anyhow!("the Firecracker session is shutting down"));
+        }
         cmd.remote_host = Some(ensured.ssh_host);
         if cmd.cwd.is_none() {
             cmd.cwd = ensured.cwd;
@@ -961,6 +966,7 @@ pub trait ServerOsApi: Send + Sync {
     fn stop_firecracker_session(&self) -> Result<()> {
         Ok(())
     }
+    fn begin_firecracker_shutdown(&self) {}
     /// Terminate every pty-host supervisor this server owns, on the way out.
     fn shutdown_pty_hosts(&self) {}
     /// Wait for queued client messages to reach their sockets, on the way out.
@@ -1451,14 +1457,19 @@ impl ServerOsApi for ServerOsInputOutput {
             .transpose()?
             .map(|provider| (provider, session));
         *self.firecracker.lock().to_anyhow()? = configured;
+        self.firecracker_stopping.store(false, Ordering::Release);
         Ok(())
     }
     fn stop_firecracker_session(&self) -> Result<()> {
+        self.firecracker_stopping.store(true, Ordering::Release);
         let guard = self.firecracker.lock().to_anyhow()?;
         if let Some((provider, session)) = guard.as_ref() {
             provider.stop_session(session)?;
         }
         Ok(())
+    }
+    fn begin_firecracker_shutdown(&self) {
+        self.firecracker_stopping.store(true, Ordering::Release);
     }
     #[cfg(not(windows))]
     fn shutdown_pty_hosts(&self) {
@@ -1576,6 +1587,7 @@ pub fn get_server_os_input() -> Result<ServerOsInputOutput, std::io::Error> {
         pty_backend: PtyBackendImpl::new()?,
         remote_hosts: Arc::new(RemoteHosts::new()),
         firecracker: Arc::new(Mutex::new(None)),
+        firecracker_stopping: Arc::new(AtomicBool::new(false)),
         client_senders: Arc::new(Mutex::new(HashMap::new())),
         live_writers: Arc::new(LiveWriters::default()),
         cached_resizes: Arc::new(Mutex::new(None)),
