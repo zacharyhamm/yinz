@@ -13,7 +13,7 @@ The included provider supports x86_64 Linux. It requires:
 
 - `/dev/kvm` with read and write access for the user
 - Firecracker on `PATH`
-- `curl`, `git`, `rsync`, `sha256sum`, `ssh`, `ssh-keygen`, `ssh-keyscan`, `unshare`,
+- `chroot`, `curl`, `git`, `rsync`, `sha256sum`, `ssh`, `ssh-keygen`, `ssh-keyscan`, `unshare`,
   `unsquashfs`, and `mkfs.ext4`
 - `ip`, `iptables`, and `systemd` for the one-time host network setup
 
@@ -97,6 +97,25 @@ zellij-firecracker image build --name rust-dev --project /absolute/path/to/proje
 
 The builder runs the script inside the staged guest root file system. It writes the image to
 `$XDG_DATA_HOME/zellij/firecracker/images/rust-dev.ext4`.
+
+The build is unprivileged: it re-execs itself under `unshare --user`, and the chroot itself runs in
+a further mount and PID namespace so the `/proc` and `/dev` mounts the script needs are gone before
+the image is written. Three consequences are worth knowing:
+
+- The builder maps your subordinate id ranges into the namespace (`unshare --map-auto`) when
+  `/etc/subuid` has an entry for you and `newuidmap` is installed, which is what lets packages
+  `chown` to system users. Without them only uid 0 is mapped and any such package fails; the build
+  says so when it falls back. Either way apt gets a temporary drop-in setting
+  `APT::Sandbox::User "root"` and pinning conffiles to the installed version, removed again before
+  the image is written.
+- The script runs with a fixed environment — `HOME=/root`, `TMPDIR=/tmp`,
+  `DEBIAN_FRONTEND=noninteractive`, and a `PATH` starting `/root/.cargo/bin` — not the host's. Only
+  `http_proxy`, `https_proxy` and `no_proxy` are carried over.
+- Host keys under `/etc/ssh` are deleted after the script runs, so installing `openssh-server`
+  cannot bake shared keys into the image; each VM generates its own on first boot.
+
+If `unshare --user` fails with `EPERM`, check
+`sysctl kernel.apparmor_restrict_unprivileged_userns` — Ubuntu 24.04 sets it to `1`.
 
 Use `--customize /absolute/path/to/script` when the script is not in a project. Image names use
 the same character rules as VM names. The provider never builds a missing image during agent

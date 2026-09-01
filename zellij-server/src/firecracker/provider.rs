@@ -8,7 +8,7 @@ use super::{EnsureResponse, VmEntry, PROTOCOL_VERSION};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
-    collections::hash_map::DefaultHasher,
+    collections::{hash_map::DefaultHasher, HashMap},
     env,
     ffi::{CString, OsStr},
     fs::{self, File, OpenOptions},
@@ -46,6 +46,27 @@ const KERNEL_URL: &str = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/
 const KERNEL_SHA256: &str = "90f6c45a719c76c08f09ba5e80b4a7f1044e33152c92b9e45a22e87c0021bac5";
 const ROOTFS_URL: &str = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260826-761f88fbb951-0/x86_64/ubuntu-24.04.squashfs";
 const ROOTFS_SHA256: &str = "1e424bde9bfaaca5c74fcc2b1c78be6285ae515528ef4acc9e64ff78b4225b48";
+/// Where the customization script is staged inside the guest root.
+const GUEST_CUSTOMIZE_SCRIPT: &str = "/tmp/zellij-firecracker-customize.sh";
+/// apt drops privileges to `_apt` to download, which cannot work when the
+/// builder's user namespace maps a single uid. Staged for the chroot only.
+const APT_SANDBOX_OVERRIDE: &str = "etc/apt/apt.conf.d/99-zellij-image-build";
+/// Keeps maintainer scripts from starting daemons in the chroot.
+const POLICY_RC_D: &str = "usr/sbin/policy-rc.d";
+/// Host resolvers to copy into the guest for the customization script. The
+/// rootfs ships an empty `/etc/resolv.conf`, so without this there is no DNS.
+const HOST_RESOLVERS: [&str; 2] = ["/run/systemd/resolve/resolv.conf", "/etc/resolv.conf"];
+/// The device files a customization script needs. Bound one by one rather than
+/// as a tree: a file bind cannot be unlinked (`EBUSY`), so a stray recursive
+/// delete of the staging directory can never reach the host's devices.
+const CHROOT_DEVICES: [&str; 6] = [
+    "/dev/null",
+    "/dev/zero",
+    "/dev/full",
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/tty",
+];
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -251,6 +272,9 @@ pub fn main() -> Result<()> {
         [group, command, rest @ ..] if group == "image" && command == "build" => image_build(rest),
         [group, command, rest @ ..] if group == "image" && command == "build-inner" => {
             image_build_inner(rest)
+        },
+        [group, command, rest @ ..] if group == "image" && command == "customize-inner" => {
+            image_customize_inner(rest)
         },
         [group, command, rest @ ..] if group == "network" && command == "setup" => {
             network_setup(rest)
@@ -1779,13 +1803,18 @@ fn doctor() -> Result<()> {
         }
     }
     for command in [
+        "chroot",
         "cp",
+        "curl",
         "git",
         "iptables",
+        "mkfs.ext4",
         "rsync",
+        "sha256sum",
         "ssh",
         "ssh-keyscan",
         "unshare",
+        "unsquashfs",
     ] {
         if find_in_path(Path::new(command)).is_none() {
             return Err(anyhow!("required command {command:?} is not on PATH"));
@@ -1805,11 +1834,38 @@ fn doctor() -> Result<()> {
     Ok(())
 }
 
+/// Map the caller's subordinate id ranges into the builder's user namespace
+/// when the host allows it. Packages routinely `chown` to system users --
+/// `libpam-modules-bin` gives `pam_extrausers_chkpwd` to `root:shadow` -- and
+/// with only uid 0 mapped every one of those fails with `EINVAL`. A host with
+/// no `/etc/subuid` entry or no setuid `newuidmap` falls back to mapping root
+/// alone, which is enough for a script that installs nothing.
+fn image_build_namespace_args() -> Vec<&'static str> {
+    const MAPPED: [&str; 4] = ["--user", "--map-auto", "--map-root-user", "--mount"];
+    let usable = Command::new("unshare")
+        .args(MAPPED)
+        .args(["--", "true"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if usable {
+        return MAPPED.to_vec();
+    }
+    println!(
+        "No subordinate id range for this user; building with only root mapped. \
+         Packages that chown to a system user will fail; see docs/FIRECRACKER.md."
+    );
+    vec!["--user", "--map-root-user", "--mount"]
+}
+
 fn image_build(args: &[String]) -> Result<()> {
     if env::var_os("ZELLIJ_FIRECRACKER_IMAGE_INNER").is_none() && unsafe { libc::geteuid() } != 0 {
         let exe = env::current_exe().context("failed to find zellij-firecracker")?;
         let status = Command::new("unshare")
-            .args(["--user", "--map-root-user", "--mount", "--"])
+            .args(image_build_namespace_args())
+            .arg("--")
             .arg(exe)
             .args(["image", "build-inner"])
             .args(args)
@@ -1892,16 +1948,6 @@ fn image_build_inner(args: &[String]) -> Result<()> {
         ssh_dir.join("authorized_keys"),
         fs::Permissions::from_mode(0o600),
     )?;
-    for entry in fs::read_dir(root.join("etc/ssh"))? {
-        let path = entry?.path();
-        if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("ssh_host_"))
-        {
-            fs::remove_file(path)?;
-        }
-    }
     let ssh_dropin = root.join("etc/ssh/sshd_config.d/99-zellij-firecracker.conf");
     fs::write(
         ssh_dropin,
@@ -1946,20 +1992,51 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
     )?;
     fs::create_dir_all(root.join("workspace"))?;
     if let Some(customize) = customize {
-        let guest_script = root.join("tmp/zellij-firecracker-customize.sh");
+        let guest_script = root.join(GUEST_CUSTOMIZE_SCRIPT.trim_start_matches('/'));
         fs::copy(&customize, &guest_script).with_context(|| {
             format!(
                 "failed to stage Firecracker customization script {}",
                 customize.display()
             )
         })?;
-        run(
-            Command::new("chroot")
-                .arg(&root)
-                .args(["/bin/sh", "/tmp/zellij-firecracker-customize.sh"]),
-            "Firecracker customization script failed",
-        )?;
-        fs::remove_file(guest_script)?;
+        fs::set_permissions(&guest_script, fs::Permissions::from_mode(0o755))?;
+        stage_apt_directories(&root)?;
+        let apt_override = write_apt_build_overrides(&root)?;
+        let policy = write_policy_rc_d(&root)?;
+        let saved_resolv = stage_resolv_conf(&root)?;
+        let devices = stage_chroot_devices(&root)?;
+        let result = image_customize(&root);
+        // Undo the staging whether or not the script worked, so a failed build
+        // leaves a tree the next attempt can reuse and a successful one ships
+        // stock apt behaviour.
+        restore_resolv_conf(&root, saved_resolv)?;
+        for device in devices {
+            let _ = fs::remove_file(device);
+        }
+        let _ = fs::remove_file(&policy);
+        let _ = fs::remove_file(&apt_override);
+        let _ = fs::remove_file(&guest_script);
+        result?;
+        // The chroot's mounts live in a child's mount namespace and die with
+        // it. If any survived, `mkfs.ext4 -d` below would walk them into the
+        // image, so check rather than trust.
+        if fs::read_dir(root.join("proc"))?.next().is_some() {
+            return Err(anyhow!(
+                "the image customization left /proc mounted; refusing to write it into the image"
+            ));
+        }
+    }
+    // Last, so that the customization script installing openssh-server cannot
+    // put its own `ssh-keygen -A` keys back: every VM generates its own at boot.
+    for entry in fs::read_dir(root.join("etc/ssh"))? {
+        let path = entry?.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("ssh_host_"))
+        {
+            fs::remove_file(path)?;
+        }
     }
     let rootfs = match image {
         Some(image) => {
@@ -2012,6 +2089,282 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
     fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
     println!("Wrote image and key to {}", output.display());
     println!("Wrote provider config to {}", config_path.display());
+    Ok(())
+}
+
+/// Two things apt cannot work out for itself here. Its download sandbox drops
+/// to `_apt`, whose uid may not be mapped in the builder's user namespace, so
+/// every fetch would die with `setgroups`/`seteuid` errors; and a conffile
+/// dpkg considers locally modified stops for a prompt no one can answer, so
+/// pin the existing version.
+fn write_apt_build_overrides(root: &Path) -> Result<PathBuf> {
+    let path = root.join(APT_SANDBOX_OVERRIDE);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        &path,
+        "APT::Sandbox::User \"root\";\nDpkg::Options { \"--force-confdef\"; \"--force-confold\"; };\n",
+    )
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(path)
+}
+
+/// The base rootfs is built for containers, so apt's spool directories have
+/// been stripped and apt refuses to download into them. Recreate them; they are
+/// standard on any Ubuntu system, so they stay in the finished image.
+fn stage_apt_directories(root: &Path) -> Result<()> {
+    for directory in [
+        "var/cache/apt/archives/partial",
+        "var/lib/apt/lists/partial",
+        "var/log/apt",
+    ] {
+        let path = root.join(directory);
+        fs::create_dir_all(&path)
+            .with_context(|| format!("failed to create {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// The exit status Debian's `invoke-rc.d` reads as "do not start this service".
+fn write_policy_rc_d(root: &Path) -> Result<PathBuf> {
+    let path = root.join(POLICY_RC_D);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, "#!/bin/sh\nexit 101\n")
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+    Ok(path)
+}
+
+/// The first candidate that actually names a nameserver.
+fn resolv_conf_from(candidates: &[PathBuf]) -> Result<Vec<u8>> {
+    for candidate in candidates {
+        let Ok(contents) = fs::read(candidate) else {
+            continue;
+        };
+        if String::from_utf8_lossy(&contents)
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some("nameserver"))
+        {
+            return Ok(contents);
+        }
+    }
+    Err(anyhow!(
+        "no host resolver with a nameserver entry; the image build needs DNS (checked {})",
+        candidates
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
+/// Give the chroot the host's DNS, returning what was there before.
+fn stage_resolv_conf(root: &Path) -> Result<Option<Vec<u8>>> {
+    let path = root.join("etc/resolv.conf");
+    let saved = fs::read(&path).ok();
+    let candidates: Vec<PathBuf> = HOST_RESOLVERS.iter().map(PathBuf::from).collect();
+    let contents = resolv_conf_from(&candidates)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // The guest file may be a symlink into /run; replace it outright so the
+    // write cannot escape the staged root.
+    let _ = fs::remove_file(&path);
+    fs::write(&path, contents).with_context(|| format!("failed to stage {}", path.display()))?;
+    Ok(saved)
+}
+
+fn restore_resolv_conf(root: &Path, saved: Option<Vec<u8>>) -> Result<()> {
+    let path = root.join("etc/resolv.conf");
+    match saved {
+        Some(contents) => fs::write(&path, contents)
+            .with_context(|| format!("failed to restore {}", path.display())),
+        None => {
+            let _ = fs::remove_file(&path);
+            Ok(())
+        },
+    }
+}
+
+/// Create the files the device binds mount over, returning the ones that were
+/// not already there so the caller can take them out again: an empty regular
+/// file left at `/dev/null` would shadow the real device until the guest mounts
+/// devtmpfs over it.
+fn stage_chroot_devices(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut created = vec![];
+    for (source, target) in chroot_binds(root) {
+        if !source.exists() || target.exists() {
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        File::create(&target).with_context(|| format!("failed to stage {}", target.display()))?;
+        created.push(target);
+    }
+    Ok(created)
+}
+
+/// The device files to bind into the chroot, as (host, guest) pairs.
+fn chroot_binds(root: &Path) -> Vec<(PathBuf, PathBuf)> {
+    CHROOT_DEVICES
+        .iter()
+        .map(|device| {
+            (
+                PathBuf::from(device),
+                root.join(device.trim_start_matches('/')),
+            )
+        })
+        .collect()
+}
+
+/// The chroot's environment. Built from scratch rather than inherited: the
+/// host's `HOME` does not exist in the guest, and a script that installs rustup
+/// into `$HOME/.cargo` and then links `/root/.cargo/bin` would leave dangling
+/// links. Proxies are the one thing worth carrying over.
+fn chroot_env_from(host: &HashMap<String, String>) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = [
+        (
+            "PATH",
+            "/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        ),
+        ("HOME", "/root"),
+        ("USER", "root"),
+        ("LOGNAME", "root"),
+        ("SHELL", "/bin/sh"),
+        ("TMPDIR", "/tmp"),
+        ("TERM", "dumb"),
+        ("LC_ALL", "C.UTF-8"),
+        ("DEBIAN_FRONTEND", "noninteractive"),
+    ]
+    .iter()
+    .map(|(key, value)| (key.to_string(), value.to_string()))
+    .collect();
+    for name in [
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+    ] {
+        if let Some(value) = host.get(name) {
+            env.push((name.to_string(), value.clone()));
+        }
+    }
+    env
+}
+
+fn image_customize_command(exe: &Path, unshare: &Path, root: &Path) -> Command {
+    let mut command = Command::new(unshare);
+    command
+        // A PID namespace as well as a mount one: the kernel only lets an
+        // unprivileged namespace mount a fresh procfs when it owns a PID
+        // namespace, and the chroot's processes have no business in the host's.
+        .args([
+            "--mount",
+            "--pid",
+            "--fork",
+            "--propagation",
+            "private",
+            "--",
+        ])
+        .arg(exe)
+        .args(["image", "customize-inner", "--root"])
+        .arg(root);
+    command
+}
+
+/// Run the customization script in a mount namespace of its own, so the mounts
+/// the chroot needs are gone by the time the image is written.
+fn image_customize(root: &Path) -> Result<()> {
+    let exe = env::current_exe().context("failed to find zellij-firecracker")?;
+    let unshare = find_in_path(Path::new("unshare")).context("unshare is not installed")?;
+    run(
+        &mut image_customize_command(&exe, &unshare, root),
+        "Firecracker customization script failed",
+    )
+}
+
+fn image_customize_inner(args: &[String]) -> Result<()> {
+    let root = option_path(args, "--root")?.context("image customize-inner requires --root")?;
+    mount_proc(&root)?;
+    // Only so dpkg can open a pty for its terminal log; a host that refuses is
+    // not a reason to fail the build.
+    let _ = mount_devpts(&root);
+    for (source, target) in chroot_binds(&root) {
+        bind_file(&source, &target)?;
+    }
+    let chroot = find_in_path(Path::new("chroot")).context("chroot is not installed")?;
+    let mut command = Command::new(chroot);
+    command
+        .arg(&root)
+        .args(["/bin/sh", GUEST_CUSTOMIZE_SCRIPT])
+        // Nothing in the guest may prompt: a maintainer script that reads from
+        // the terminal would hang the build forever.
+        .stdin(Stdio::null())
+        .env_clear();
+    for (key, value) in chroot_env_from(&env::vars().collect()) {
+        command.env(key, value);
+    }
+    run(&mut command, "the customization script failed")
+    // No unmount: this process exits and its mount namespace goes with it.
+}
+
+/// A fresh procfs, not a bind of the host's: binding a mount with locked
+/// submounts is refused inside the builder's user namespace.
+fn mount_proc(root: &Path) -> Result<()> {
+    let target = root.join("proc");
+    fs::create_dir_all(&target)?;
+    mount_at(Path::new("proc"), &target, Some("proc"), 0)
+        .with_context(|| format!("failed to mount proc at {}", target.display()))
+}
+
+fn mount_devpts(root: &Path) -> Result<()> {
+    let target = root.join("dev/pts");
+    fs::create_dir_all(&target)?;
+    mount_at(Path::new("devpts"), &target, Some("devpts"), 0)
+        .with_context(|| format!("failed to mount devpts at {}", target.display()))
+}
+
+fn bind_file(source: &Path, target: &Path) -> Result<()> {
+    // The parent staged the targets, so a missing one means the host has no
+    // such device and there is nothing to bind.
+    if !source.exists() || !target.exists() {
+        return Ok(());
+    }
+    mount_at(source, target, None, libc::MS_BIND)
+        .with_context(|| format!("failed to bind {} into the image", source.display()))
+}
+
+fn mount_at(
+    source: &Path,
+    target: &Path,
+    fstype: Option<&str>,
+    flags: libc::c_ulong,
+) -> Result<()> {
+    let source = CString::new(source.as_os_str().as_bytes())?;
+    let target = CString::new(target.as_os_str().as_bytes())?;
+    let fstype = fstype.map(CString::new).transpose()?;
+    let fstype_ptr = fstype
+        .as_ref()
+        .map(|fstype| fstype.as_ptr())
+        .unwrap_or(std::ptr::null());
+    if unsafe {
+        libc::mount(
+            source.as_ptr(),
+            target.as_ptr(),
+            fstype_ptr,
+            flags,
+            std::ptr::null(),
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error()).context("mount failed");
+    }
     Ok(())
 }
 
@@ -3291,5 +3644,186 @@ mod tests {
         assert!(rules
             .iter()
             .any(|rule| rule.contains("-t nat -I POSTROUTING 1 -s 172.31.0.0/24 -j MASQUERADE")));
+    }
+
+    #[test]
+    fn the_apt_build_overrides_are_written_where_apt_reads_them() {
+        let root = tempfile::tempdir().unwrap();
+        let path = write_apt_build_overrides(root.path()).unwrap();
+
+        assert_eq!(path, root.path().join(APT_SANDBOX_OVERRIDE));
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(
+            contents.contains("APT::Sandbox::User \"root\";"),
+            "{contents}"
+        );
+        assert!(contents.contains("--force-confold"), "{contents}");
+        fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn the_policy_override_refuses_to_start_services() {
+        let root = tempfile::tempdir().unwrap();
+        let path = write_policy_rc_d(root.path()).unwrap();
+
+        assert!(fs::read_to_string(&path).unwrap().ends_with("exit 101\n"));
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+    }
+
+    #[test]
+    fn apt_spool_directories_are_recreated_for_a_container_rootfs() {
+        let root = tempfile::tempdir().unwrap();
+        stage_apt_directories(root.path()).unwrap();
+
+        assert!(root.path().join("var/cache/apt/archives/partial").is_dir());
+        assert!(root.path().join("var/lib/apt/lists/partial").is_dir());
+        assert!(root.path().join("var/log/apt").is_dir());
+    }
+
+    #[test]
+    fn the_first_host_resolver_naming_a_nameserver_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        let empty = dir.path().join("empty");
+        let comments = dir.path().join("comments");
+        let real = dir.path().join("real");
+        fs::write(&empty, "").unwrap();
+        fs::write(&comments, "# nothing to see\n").unwrap();
+        fs::write(&real, "search example\nnameserver 10.0.0.1\n").unwrap();
+
+        assert_eq!(
+            resolv_conf_from(&[
+                missing.clone(),
+                empty.clone(),
+                comments.clone(),
+                real.clone()
+            ])
+            .unwrap(),
+            b"search example\nnameserver 10.0.0.1\n"
+        );
+
+        let error = resolv_conf_from(&[missing.clone(), empty, comments]).unwrap_err();
+        let error = format!("{error:#}");
+        assert!(error.contains(&missing.display().to_string()), "{error}");
+    }
+
+    #[test]
+    fn staging_a_resolver_is_undone_afterwards() {
+        let root = tempfile::tempdir().unwrap();
+        let host = tempfile::tempdir().unwrap();
+        let resolver = host.path().join("resolv.conf");
+        fs::write(&resolver, "nameserver 10.0.0.1\n").unwrap();
+        let guest = root.path().join("etc/resolv.conf");
+        fs::create_dir_all(guest.parent().unwrap()).unwrap();
+        fs::write(&guest, "\n").unwrap();
+
+        let saved = fs::read(&guest).ok();
+        let contents = resolv_conf_from(&[resolver]).unwrap();
+        fs::write(&guest, contents).unwrap();
+        assert_eq!(fs::read_to_string(&guest).unwrap(), "nameserver 10.0.0.1\n");
+
+        restore_resolv_conf(root.path(), saved).unwrap();
+        assert_eq!(fs::read_to_string(&guest).unwrap(), "\n");
+    }
+
+    #[test]
+    fn a_resolver_staged_where_there_was_none_is_removed_again() {
+        let root = tempfile::tempdir().unwrap();
+        let guest = root.path().join("etc/resolv.conf");
+        fs::create_dir_all(guest.parent().unwrap()).unwrap();
+        fs::write(&guest, "nameserver 10.0.0.1\n").unwrap();
+
+        restore_resolv_conf(root.path(), None).unwrap();
+
+        assert!(!guest.exists());
+    }
+
+    #[test]
+    fn chroot_binds_stay_inside_the_staged_root() {
+        let root = tempfile::tempdir().unwrap();
+        let binds = chroot_binds(root.path());
+
+        assert!(!binds.is_empty());
+        for (source, target) in &binds {
+            assert!(source.starts_with("/dev"), "{}", source.display());
+            assert!(target.starts_with(root.path()), "{}", target.display());
+            assert!(!target
+                .components()
+                .any(|component| component == std::path::Component::ParentDir));
+        }
+        assert!(binds
+            .iter()
+            .any(|(source, _)| source == Path::new("/dev/null")));
+    }
+
+    #[test]
+    fn staged_devices_report_only_what_they_created() {
+        let root = tempfile::tempdir().unwrap();
+        let existing = root.path().join("dev/null");
+        fs::create_dir_all(existing.parent().unwrap()).unwrap();
+        fs::write(&existing, "").unwrap();
+
+        let created = stage_chroot_devices(root.path()).unwrap();
+
+        assert!(!created.contains(&existing));
+        assert!(created.contains(&root.path().join("dev/zero")));
+        for path in &created {
+            assert!(path.is_file(), "{}", path.display());
+        }
+    }
+
+    #[test]
+    fn the_chroot_environment_does_not_inherit_the_host_home() {
+        let host = HashMap::from([
+            ("HOME".to_owned(), "/home/someone".to_owned()),
+            ("CARGO_HOME".to_owned(), "/home/someone/.cargo".to_owned()),
+            ("RUSTUP_HOME".to_owned(), "/home/someone/.rustup".to_owned()),
+            ("TMPDIR".to_owned(), "/scratch".to_owned()),
+            ("https_proxy".to_owned(), "http://proxy:3128".to_owned()),
+        ]);
+
+        let env = chroot_env_from(&host);
+        let value = |name: &str| {
+            env.iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+        };
+
+        assert_eq!(value("HOME").as_deref(), Some("/root"));
+        assert_eq!(value("TMPDIR").as_deref(), Some("/tmp"));
+        assert_eq!(value("CARGO_HOME"), None);
+        assert_eq!(value("RUSTUP_HOME"), None);
+        assert_eq!(value("https_proxy").as_deref(), Some("http://proxy:3128"));
+        assert!(value("PATH").unwrap().starts_with("/root/.cargo/bin:"));
+    }
+
+    #[test]
+    fn the_customization_runs_in_its_own_mount_and_pid_namespace() {
+        let command = image_customize_command(
+            Path::new("/build/zellij-firecracker"),
+            Path::new("/usr/bin/unshare"),
+            Path::new("/staging/root"),
+        );
+
+        assert_eq!(command.get_program(), "/usr/bin/unshare");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                "--mount",
+                "--pid",
+                "--fork",
+                "--propagation",
+                "private",
+                "--",
+                "/build/zellij-firecracker",
+                "image",
+                "customize-inner",
+                "--root",
+                "/staging/root",
+            ]
+        );
     }
 }
