@@ -2,7 +2,7 @@
 
 use crate::flags;
 use anyhow::Context;
-use std::{ffi::OsString, fs, path::PathBuf};
+use std::{ffi::OsString, fs, path::PathBuf, process::Command};
 use xshell::{cmd, Shell};
 
 pub fn main(sh: &Shell, flags: flags::FirecrackerTest) -> anyhow::Result<()> {
@@ -50,17 +50,6 @@ fn build(sh: &Shell) -> anyhow::Result<()> {
     .run()
     .context("failed to build the Firecracker test image")?;
 
-    let network = serde_json::json!({
-        "bridge": "zfctest",
-        "tap_prefix": "zftest-",
-        "subnet": "172.31.0.0/24",
-        "taps": 2,
-        "dns": "1.1.1.1"
-    });
-    fs::write(
-        test_dir.join("network.json"),
-        serde_json::to_vec_pretty(&network)?,
-    )?;
     println!(">> Ready. Run 'cargo x firecracker-test --test'.");
     Ok(())
 }
@@ -81,23 +70,81 @@ fn test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
     let _pd = sh.push_dir(crate::project_root());
     let cargo = crate::cargo()?;
     cmd!(sh, "{cargo} build --bin zellij-firecracker").run()?;
-    let script = r#"set -eu
-ip link set lo up
-ip link add zfctest type bridge
-ip addr add 172.31.0.1/24 dev zfctest
-ip link set zfctest up
-for tap in zftest-00 zftest-01; do
-  ip tuntap add dev "$tap" mode tap
-  ip link set "$tap" master zfctest
-  ip link set "$tap" up
-done
-exec "$@""#;
-    cmd!(sh, "unshare --user --map-root-user --net -- sh -c {script} firecracker-test {cargo} test -p zellij-server --test firecracker_vm -- --ignored --nocapture --test-threads 1")
+    let provider = crate::target_dir().join("debug/zellij-firecracker");
+    let network = TemporaryNetwork::start(sh, provider, test_dir.join("network.json"))?;
+    let test_result = cmd!(sh, "{cargo} test -p zellij-server --test firecracker_vm -- --ignored --nocapture --test-threads 1")
         .args(args)
         .envs(test_env())
         .run()
         .map_err(anyhow::Error::new)
-        .context("the Firecracker VM test failed")
+        .context("the Firecracker VM test failed");
+    let cleanup_result = network.stop(sh);
+    test_result?;
+    cleanup_result
+}
+
+struct TemporaryNetwork {
+    provider: PathBuf,
+    config: PathBuf,
+    active: bool,
+}
+
+impl TemporaryNetwork {
+    fn start(sh: &Shell, provider: PathBuf, config: PathBuf) -> anyhow::Result<Self> {
+        cmd!(sh, "sudo -v").run()?;
+        let uid = cmd!(sh, "id -u").read()?;
+        let uid = uid.trim();
+        fs::write(
+            &config,
+            serde_json::to_vec_pretty(&test_network(std::process::id()))?,
+        )?;
+        cmd!(
+            sh,
+            "sudo {provider} network apply --uid {uid} --config {config}"
+        )
+        .run()
+        .context("failed to create the temporary Firecracker test network")?;
+        Ok(Self {
+            provider,
+            config,
+            active: true,
+        })
+    }
+
+    fn stop(mut self, sh: &Shell) -> anyhow::Result<()> {
+        let provider = &self.provider;
+        let config = &self.config;
+        let result = cmd!(sh, "sudo {provider} network remove --config {config}")
+            .run()
+            .context("failed to remove the temporary Firecracker test network");
+        if result.is_ok() {
+            self.active = false;
+        }
+        result
+    }
+}
+
+impl Drop for TemporaryNetwork {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = Command::new("sudo")
+                .arg("-n")
+                .arg(&self.provider)
+                .args(["network", "remove", "--config"])
+                .arg(&self.config)
+                .status();
+        }
+    }
+}
+
+fn test_network(pid: u32) -> serde_json::Value {
+    serde_json::json!({
+        "bridge": format!("zfcb{pid:x}"),
+        "tap_prefix": format!("zfct{pid:x}-"),
+        "subnet": format!("10.{}.{}.0/24", (pid >> 8) & 0xff, pid & 0xff),
+        "taps": 2,
+        "dns": "1.1.1.1"
+    })
 }
 
 fn clean() -> anyhow::Result<()> {
@@ -130,4 +177,17 @@ fn test_env() -> Vec<(OsString, OsString)> {
         OsString::from(format!("/tmp/zfc-test-{}", std::process::id())),
     )])
     .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn temporary_network_names_fit_linux_interfaces_and_use_a_process_subnet() {
+        let network = test_network(u32::MAX);
+        assert!(network["bridge"].as_str().unwrap().len() <= 15);
+        assert!(network["tap_prefix"].as_str().unwrap().len() + 2 <= 15);
+        assert_eq!(network["subnet"], "10.255.255.0/24");
+    }
 }

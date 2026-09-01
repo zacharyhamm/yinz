@@ -28,11 +28,15 @@ struct Output {
 struct Pane {
     conn: Arc<RemoteConn>,
     output: Watched<Output>,
+    cancel: Option<tokio::sync::oneshot::Sender<()>>,
     pump: Option<JoinHandle<()>>,
 }
 
 impl Drop for Pane {
     fn drop(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            let _ = cancel.send(());
+        }
         if let Some(pump) = self.pump.take() {
             let _ = pump.join();
         }
@@ -79,7 +83,7 @@ fn a_provider_boots_a_real_firecracker_remote_pane() {
         command: PathBuf::from("/bin/sh"),
         args: vec![
             "-lc".to_owned(),
-            "set -e; test -f Cargo.toml; rustc --version >/dev/null; printf 'rustc-ok '; cargo x --help >/dev/null; printf 'cargo-x-ok '; codex --version >/dev/null; printf 'codex-ok '; claude --version >/dev/null; printf 'claude-ok firecracker-pane-ok '; zellij --version".to_owned(),
+            "set -e; test -f Cargo.toml; rustc --version >/dev/null; printf 'rustc-ok '; cargo --list | grep -q '^    x '; printf 'cargo-x-ok '; getent ahostsv4 index.crates.io >/dev/null; printf 'dns-ok '; curl -4 -fsS --connect-timeout 10 --max-time 30 https://index.crates.io/config.json >/dev/null; printf 'https-ok '; codex --version >/dev/null; printf 'codex-ok '; claude --version >/dev/null; printf 'claude-ok firecracker-pane-ok '; zellij --version".to_owned(),
         ],
         cwd: ensured.cwd,
         remote_host: Some(ensured.ssh_host.clone()),
@@ -98,7 +102,7 @@ fn a_provider_boots_a_real_firecracker_remote_pane() {
             let text = String::from_utf8_lossy(&output.bytes);
             (output.ended
                 && text
-                    .contains("rustc-ok cargo-x-ok codex-ok claude-ok firecracker-pane-ok zellij"))
+                    .contains("rustc-ok cargo-x-ok dns-ok https-ok codex-ok claude-ok firecracker-pane-ok zellij"))
             .then(|| text.into_owned())
         },
         |output| format!("{output:?}"),
@@ -110,6 +114,7 @@ fn a_provider_boots_a_real_firecracker_remote_pane() {
 
 fn pump(conn: Arc<RemoteConn>, mut reader: RemoteReader) -> Pane {
     let output: Watched<Output> = Watched::default();
+    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
     let pump_output = output.clone();
     let pump = std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -119,17 +124,20 @@ fn pump(conn: Arc<RemoteConn>, mut reader: RemoteReader) -> Pane {
         runtime.block_on(async move {
             let mut buffer = [0; 8192];
             loop {
-                match reader.read(&mut buffer).await {
-                    Ok(0) => {
-                        pump_output.lock().ended = true;
-                        return;
-                    },
-                    Ok(read) => pump_output.lock().bytes.extend_from_slice(&buffer[..read]),
-                    Err(error) => {
-                        let mut output = pump_output.lock();
-                        output.error = Some(error.to_string());
-                        output.ended = true;
-                        return;
+                tokio::select! {
+                    _ = &mut cancel_rx => return,
+                    read = reader.read(&mut buffer) => match read {
+                        Ok(0) => {
+                            pump_output.lock().ended = true;
+                            return;
+                        },
+                        Ok(read) => pump_output.lock().bytes.extend_from_slice(&buffer[..read]),
+                        Err(error) => {
+                            let mut output = pump_output.lock();
+                            output.error = Some(error.to_string());
+                            output.ended = true;
+                            return;
+                        },
                     },
                 }
             }
@@ -138,6 +146,7 @@ fn pump(conn: Arc<RemoteConn>, mut reader: RemoteReader) -> Pane {
     Pane {
         conn,
         output,
+        cancel: Some(cancel_tx),
         pump: Some(pump),
     }
 }

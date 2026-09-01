@@ -292,11 +292,12 @@ Linux, Firecracker, `/dev/kvm`, and the image-builder tools listed in `docs/FIRE
 Run these commands from the repository root:
 
 1. `cargo x firecracker-test --build` builds the static guest binary and pinned image.
-2. `cargo x firecracker-test --test` runs the ignored test in an isolated network namespace.
+2. `cargo x firecracker-test --test` runs the ignored test with a temporary host bridge and
+   firewall rules.
 3. `cargo x firecracker-test --clean` removes the generated image and test state.
 
-The first build can take several minutes. The test does not change the host network and does not
-require `sudo`.
+The first build can take several minutes. The test uses `sudo` to create process-specific bridge,
+TAP and firewall resources, and removes them whether the test passes or fails.
 
 ## Debugging / Troubleshooting while developing
 Zellij uses the excellent [`log`](https://crates.io/crates/log) crate to handle its internal logging. The output of these logs will go to `/$temp_dir/zellij-<UID>/zellij-log/zellij.log` which `$temp_dir` refers to [std::env::temp_dir()](https://doc.rust-lang.org/std/env/fn.temp_dir.html). On most of operating systems it points to `/tmp`, but there are exceptions, such as `/var/folders/dr/xxxxxxxxxxxxxx/T/` for Mac.
