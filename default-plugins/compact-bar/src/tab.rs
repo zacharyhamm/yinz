@@ -2,7 +2,7 @@ use crate::{line::tab_separator, LinePart};
 use ansi_term::{ANSIString, ANSIStrings};
 use unicode_width::UnicodeWidthStr;
 use zellij_tile::prelude::*;
-use zellij_tile_utils::style;
+use zellij_tile_utils::{ellipsize, style};
 
 fn cursors<'a>(
     focused_clients: &'a [ClientId],
@@ -97,24 +97,36 @@ pub fn render_tab(
     }
 }
 
+/// `tabname` decorated with the tab's state and cut to fit `max_name_width` columns.
+///
+/// The state markers are worked out first and charged to the budget, so that a tab whose title is
+/// already at the cap does not grow past it by acquiring a "(FULLSCREEN)" - the marker is the part
+/// the reader cannot reconstruct, so it is the name that gives way.
 pub fn tab_style(
-    mut tabname: String,
+    tabname: String,
     tab: &TabInfo,
     mut is_alternate_tab: bool,
     palette: Styling,
     capabilities: PluginCapabilities,
     dimmed: bool,
+    max_name_width: usize,
 ) -> LinePart {
     let separator = tab_separator(capabilities);
 
+    let mut suffix = String::new();
     if tab.is_fullscreen_active {
-        tabname.push_str(" (FULLSCREEN)");
+        suffix.push_str(" (FULLSCREEN)");
     } else if tab.is_sync_panes_active {
-        tabname.push_str(" (SYNC)");
+        suffix.push_str(" (SYNC)");
     }
     if tab.has_bell_notification || tab.is_flashing_bell {
-        tabname.push_str(" [!]");
+        suffix.push_str(" [!]");
     }
+    let tabname = format!(
+        "{}{}",
+        ellipsize(&tabname, max_name_width.saturating_sub(suffix.width())),
+        suffix
+    );
     // we only color alternate tabs differently if we can't use the arrow fonts to separate them
     if !capabilities.arrow_fonts {
         is_alternate_tab = false;

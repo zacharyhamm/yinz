@@ -13,9 +13,10 @@ use tab::get_tab_to_focus;
 use zellij_tile::prelude::*;
 
 use crate::clipboard_utils::{system_clipboard_error, text_copied_hint};
-use crate::line::tab_line;
+use crate::line::{tab_line, tab_line_prefix_width, tab_separator};
 use crate::tab::tab_style;
 use crate::tooltip::TooltipRenderer;
+use unicode_width::UnicodeWidthStr;
 
 static ARROW_SEPARATOR: &str = "";
 
@@ -24,6 +25,16 @@ const CONFIG_TOGGLE_TOOLTIP_KEY: &str = "tooltip";
 const MSG_TOGGLE_TOOLTIP: &str = "toggle_tooltip";
 const MSG_TOGGLE_PERSISTED_TOOLTIP: &str = "toggle_persisted_tooltip";
 const MSG_LAUNCH_TOOLTIP: &str = "launch_tooltip_if_not_launched";
+
+/// The widest a tab name is ever allowed to be, however much room the bar has.
+///
+/// A lone pane lends the tab its own title (see `Tab::single_pane_tab_name` on the server), and
+/// those run long - hostname, checkout prefix, then whatever the program set. Without a ceiling one
+/// such tab would take the whole bar on a wide terminal and push every other tab behind a "+N".
+const MAX_TAB_NAME_WIDTH: usize = 40;
+/// A floor for the fitted budget. On a terminal too narrow to honour it the bar overflows anyway,
+/// and a few characters of name read better there than a lone ellipsis.
+const MIN_TAB_NAME_WIDTH: usize = 8;
 
 #[derive(Debug, Default)]
 pub struct LinePart {
@@ -526,7 +537,7 @@ impl State {
             return;
         }
 
-        let tab_data = self.prepare_tab_data();
+        let tab_data = self.prepare_tab_data(cols);
         let tab_line_output = tab_line(
             &self.mode_info,
             &self.hostname,
@@ -546,7 +557,33 @@ impl State {
         self.render_background_with_text(&output);
     }
 
-    fn prepare_tab_data(&self) -> TabRenderData {
+    /// How wide a single tab's name may be, given what else has to share the row.
+    ///
+    /// Sizing every name against what is left beside the prefix is what keeps the active tab -
+    /// which `TabLineBuilder::build` drops the whole line for when it does not fit - inside the
+    /// bar. Nothing is reserved for the right-side elements: `add_right_side_elements` already
+    /// sizes itself to what remains and leaves itself out when there is nothing left.
+    fn max_tab_name_width(&self, cols: usize, breadcrumb_ancestry: &[String]) -> usize {
+        let session_name = if self.mode_info.style.hide_session_name {
+            None
+        } else {
+            self.mode_info.session_name.as_deref()
+        };
+        let prefix_width = tab_line_prefix_width(
+            &self.hostname,
+            session_name,
+            self.mode_info.style.colors,
+            cols,
+            self.mode_info.mode,
+            breadcrumb_ancestry,
+        );
+        let separator_width = tab_separator(self.mode_info.capabilities).width();
+        let tab_chrome = separator_width * 2 + 2; // separators, and a space either side of the name
+        cols.saturating_sub(prefix_width + tab_chrome)
+            .clamp(MIN_TAB_NAME_WIDTH, MAX_TAB_NAME_WIDTH)
+    }
+
+    fn prepare_tab_data(&self, cols: usize) -> TabRenderData {
         let mut all_tabs = Vec::new();
         let mut active_tab_index = 0;
         let mut active_swap_layout_name = None;
@@ -554,6 +591,12 @@ impl State {
         let mut is_alternate_tab = false;
         let dimmed = self.mode_info.session_ascended == Some(true)
             || self.mode_info.session_dimmed == Some(true);
+        let breadcrumb_ancestry: Vec<String> = if self.mode_info.host_fullscreen == Some(true) {
+            self.mode_info.session_ancestry.clone()
+        } else {
+            Vec::new()
+        };
+        let max_name_width = self.max_tab_name_width(cols, &breadcrumb_ancestry);
 
         for tab in &self.tabs {
             let tab_name = self.get_tab_display_name(tab);
@@ -573,6 +616,7 @@ impl State {
                 self.mode_info.style.colors,
                 self.mode_info.capabilities,
                 dimmed,
+                max_name_width,
             );
 
             is_alternate_tab = !is_alternate_tab;

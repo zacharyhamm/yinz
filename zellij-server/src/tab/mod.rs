@@ -27,6 +27,7 @@ use std::env::temp_dir;
 use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
+use zellij_tile_utils::ellipsize;
 use zellij_utils::data::AgentInfo;
 use zellij_utils::data::PaneContents;
 use zellij_utils::data::{
@@ -2451,6 +2452,15 @@ impl Tab {
         self.get_selectable_tiled_panes()
             .filter(|(_, p)| !p.borderless())
     }
+    /// How wide a name a lone pane may lend its tab, marker included. Matches `MAX_TAB_NAME_WIDTH`
+    /// in the tab bars, which cap every tab name whatever its source; staying inside the same
+    /// figure here means the bars have nothing left to cut, and the exit marker survives.
+    ///
+    /// The bars charge their own "(FULLSCREEN)" and "[!]" markers to that same budget, so a tab
+    /// wearing one of those *and* an exit marker can still lose the tail of the latter. That is a
+    /// corner it is not worth threading the bars' markers back through the server for.
+    const MAX_LENT_PANE_TITLE_WIDTH: usize = 40;
+
     pub fn single_pane_titles(&self) -> bool {
         self.pane_frame_style.draws_titles()
             && self.get_selectable_tiled_content_panes().count() == 1
@@ -2463,18 +2473,28 @@ impl Tab {
             return None;
         }
         let (_, pane) = self.get_selectable_tiled_content_panes().next()?;
-        let mut base = if self.tab_name_is_default() && pane.has_explicit_title() {
-            pane.display_title()
+        let exit_marker = if pane.is_held() && pane.exited() {
+            match pane.exit_status() {
+                Some(exit_code) => format!(" [ EXIT CODE: {} ] ", exit_code),
+                None => " [ EXITED ] ".to_string(),
+            }
+        } else {
+            String::new()
+        };
+        // Cut the title here rather than leaving the whole string to the bar. A pane title runs
+        // long - hostname, checkout prefix, then whatever the program set - and the marker is
+        // appended after it, so a bar cutting the finished string to its own cap would take away
+        // exactly the part the reader cannot reconstruct. Charging the marker to the budget first
+        // is what keeps it.
+        let base = if self.tab_name_is_default() && pane.has_explicit_title() {
+            ellipsize(
+                &pane.display_title(),
+                Self::MAX_LENT_PANE_TITLE_WIDTH.saturating_sub(exit_marker.width()),
+            )
         } else {
             self.name.clone()
         };
-        if pane.is_held() && pane.exited() {
-            match pane.exit_status() {
-                Some(exit_code) => base.push_str(&format!(" [ EXIT CODE: {} ] ", exit_code)),
-                None => base.push_str(" [ EXITED ] "),
-            }
-        }
-        Some(base)
+        Some(format!("{}{}", base, exit_marker))
     }
     fn resolve_active_pane_scroll(&self, _client_id: ClientId) -> Option<(usize, usize)> {
         if !self.single_pane_titles() {

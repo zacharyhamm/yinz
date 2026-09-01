@@ -2,7 +2,7 @@ use crate::{line::tab_separator, LinePart};
 use ansi_term::{ANSIString, ANSIStrings};
 use unicode_width::UnicodeWidthStr;
 use zellij_tile::prelude::*;
-use zellij_tile_utils::style;
+use zellij_tile_utils::{ellipsize, style};
 
 fn cursors<'a>(
     focused_clients: &'a [ClientId],
@@ -101,25 +101,38 @@ pub fn render_tab(
     }
 }
 
+/// `tabname` decorated with the tab's state and cut to fit `max_name_width` columns.
+///
+/// The state markers are worked out first and charged to the budget, so that a tab whose title is
+/// already at the cap does not grow past it by acquiring a "(FULLSCREEN)" - the marker is the part
+/// the reader cannot reconstruct, so it is the name that gives way.
+#[allow(clippy::too_many_arguments)]
 pub fn tab_style(
-    mut tabname: String,
+    tabname: String,
     tab: &TabInfo,
     mut is_alternate_tab: bool,
     is_hovered: bool,
     palette: Styling,
     capabilities: PluginCapabilities,
     dimmed: bool,
+    max_name_width: usize,
 ) -> LinePart {
     let separator = tab_separator(capabilities);
 
+    let mut suffix = String::new();
     if tab.is_fullscreen_active {
-        tabname.push_str(" (FULLSCREEN)");
+        suffix.push_str(" (FULLSCREEN)");
     } else if tab.is_sync_panes_active {
-        tabname.push_str(" (SYNC)");
+        suffix.push_str(" (SYNC)");
     }
     if tab.has_bell_notification || tab.is_flashing_bell {
-        tabname.push_str(" [!]");
+        suffix.push_str(" [!]");
     }
+    let tabname = format!(
+        "{}{}",
+        ellipsize(&tabname, max_name_width.saturating_sub(suffix.width())),
+        suffix
+    );
     // we only color alternate tabs differently if we can't use the arrow fonts to separate them
     if !capabilities.arrow_fonts {
         is_alternate_tab = false;
@@ -163,4 +176,79 @@ pub(crate) fn get_clicked_line_part(
         len += tab_line_part.len;
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The capabilities that turn the arrow separators off, so a `LinePart`'s `len` is just the
+    /// name plus its two padding spaces and the test can reason about widths directly.
+    fn no_arrow_fonts() -> PluginCapabilities {
+        PluginCapabilities {
+            arrow_fonts: true, // the flag reads "arrow fonts are unavailable"
+            ..Default::default()
+        }
+    }
+
+    fn rendered(tabname: &str, tab: &TabInfo, max_name_width: usize) -> LinePart {
+        tab_style(
+            tabname.to_string(),
+            tab,
+            false,
+            false,
+            Styling::default(),
+            no_arrow_fonts(),
+            false,
+            max_name_width,
+        )
+    }
+
+    #[test]
+    fn a_name_that_fits_is_left_alone() {
+        let part = rendered("short", &TabInfo::default(), 40);
+        assert!(part.part.contains("short"));
+        assert_eq!(part.len, "short".width() + 2);
+    }
+
+    #[test]
+    fn a_long_name_is_cut_to_the_budget() {
+        let long = "a".repeat(120);
+        let part = rendered(&long, &TabInfo::default(), 40);
+        assert!(part.part.contains('…'));
+        assert_eq!(part.len, 40 + 2);
+    }
+
+    #[test]
+    fn the_state_marker_survives_a_cut_name() {
+        let long = "a".repeat(120);
+        let tab = TabInfo {
+            is_fullscreen_active: true,
+            ..Default::default()
+        };
+        let part = rendered(&long, &tab, 40);
+        assert!(part.part.contains("(FULLSCREEN)"));
+        // the marker is charged to the budget rather than added on top of it
+        assert_eq!(part.len, 40 + 2);
+    }
+
+    #[test]
+    fn a_bell_marker_survives_too() {
+        let long = "a".repeat(120);
+        let tab = TabInfo {
+            has_bell_notification: true,
+            ..Default::default()
+        };
+        let part = rendered(&long, &tab, 20);
+        assert!(part.part.contains("[!]"));
+        assert_eq!(part.len, 20 + 2);
+    }
+
+    #[test]
+    fn a_wide_name_is_measured_in_columns_not_characters() {
+        // 19 two-column characters plus the ellipsis, not 39 characters: a wide character cannot
+        // straddle the last column, so the budget is met from below rather than exactly
+        let part = rendered(&"日".repeat(60), &TabInfo::default(), 40);
+        assert_eq!(part.len, 39 + 2);
+    }
 }

@@ -296,6 +296,29 @@ fn tab_line_prefix(
     (parts, breadcrumb_range)
 }
 
+/// The columns the prefix will take, so the caller can budget tab names against what is left.
+///
+/// The prefix is cheap and pure, so this builds it and throws it away rather than duplicating the
+/// rules for when the session name and breadcrumbs fit. `tab_line` builds it again for real.
+/// Dimming changes only colors, never widths, so it is not a parameter here.
+pub fn tab_line_prefix_width(
+    hostname: &str,
+    session_name: Option<&str>,
+    palette: Styling,
+    cols: usize,
+    breadcrumb_ancestry: &[String],
+) -> usize {
+    let (parts, _breadcrumb_range) = tab_line_prefix(
+        hostname,
+        session_name,
+        palette,
+        cols,
+        false,
+        breadcrumb_ancestry,
+    );
+    get_current_title_len(&parts)
+}
+
 pub fn tab_separator(capabilities: PluginCapabilities) -> &'static str {
     if !capabilities.arrow_fonts {
         ARROW_SEPARATOR

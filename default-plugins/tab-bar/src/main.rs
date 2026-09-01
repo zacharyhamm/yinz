@@ -6,10 +6,21 @@ use std::collections::BTreeMap;
 use std::convert::TryInto;
 
 use tab::get_tab_to_focus;
+use unicode_width::UnicodeWidthStr;
 use zellij_tile::prelude::*;
 
-use crate::line::tab_line;
+use crate::line::{tab_line, tab_line_prefix_width, tab_separator};
 use crate::tab::tab_style;
+
+/// The widest a tab name is ever allowed to be, however much room the bar has.
+///
+/// A lone pane lends the tab its own title (see `Tab::single_pane_tab_name` on the server), and
+/// those run long - hostname, checkout prefix, then whatever the program set. Without a ceiling one
+/// such tab would take the whole bar on a wide terminal and push every other tab behind a "+N".
+const MAX_TAB_NAME_WIDTH: usize = 40;
+/// A floor for the fitted budget. On a terminal too narrow to honour it the bar overflows anyway,
+/// and a few characters of name read better there than a lone ellipsis.
+const MIN_TAB_NAME_WIDTH: usize = 8;
 
 #[derive(Debug, Default)]
 pub struct LinePart {
@@ -46,6 +57,36 @@ struct State {
 static ARROW_SEPARATOR: &str = "";
 
 register_plugin!(State);
+
+impl State {
+    /// How wide a single tab's name may be, given what else has to share the row.
+    ///
+    /// The active tab is rendered unconditionally (see `populate_tabs_in_tab_line`), so it is the
+    /// one that would overflow the bar; sizing every name against what is left beside the prefix
+    /// and the new-tab button is what keeps that from happening. Tabs other than the active one
+    /// are dropped when they do not fit, so they need no budget of their own - but giving them the
+    /// same one keeps the bar's widths even.
+    fn max_tab_name_width(&self, bar_cols: usize, breadcrumb_ancestry: &[String]) -> usize {
+        let session_name = if self.mode_info.style.hide_session_name {
+            None
+        } else {
+            self.mode_info.session_name.as_deref()
+        };
+        let prefix_width = tab_line_prefix_width(
+            &self.hostname,
+            session_name,
+            self.mode_info.style.colors,
+            bar_cols,
+            breadcrumb_ancestry,
+        );
+        let separator_width = tab_separator(self.mode_info.capabilities).width();
+        let tab_chrome = separator_width * 2 + 2; // separators, and a space either side of the name
+        let new_tab_button_width = separator_width * 2 + 3; // " + " between separators
+        bar_cols
+            .saturating_sub(prefix_width + tab_chrome + new_tab_button_width)
+            .clamp(MIN_TAB_NAME_WIDTH, MAX_TAB_NAME_WIDTH)
+    }
+}
 
 impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
@@ -202,6 +243,13 @@ impl ZellijPlugin for State {
         }
         let dimmed = self.mode_info.session_ascended == Some(true)
             || self.mode_info.session_dimmed == Some(true);
+        let breadcrumb_ancestry: Vec<String> = if self.mode_info.host_fullscreen == Some(true) {
+            self.mode_info.session_ancestry.clone()
+        } else {
+            vec![]
+        };
+        let bar_cols = cols.saturating_sub(1);
+        let max_name_width = self.max_tab_name_width(bar_cols, &breadcrumb_ancestry);
         let mut all_tabs: Vec<LinePart> = vec![];
         let mut active_tab_index = 0;
         let mut is_alternate_tab = false;
@@ -224,6 +272,7 @@ impl ZellijPlugin for State {
                 self.mode_info.style.colors,
                 self.mode_info.capabilities,
                 dimmed,
+                max_name_width,
             );
             is_alternate_tab = !is_alternate_tab;
             all_tabs.push(tab);
@@ -237,17 +286,12 @@ impl ZellijPlugin for State {
         } else {
             self.hint_text.as_ref()
         };
-        let breadcrumb_ancestry: Vec<String> = if self.mode_info.host_fullscreen == Some(true) {
-            self.mode_info.session_ancestry.clone()
-        } else {
-            vec![]
-        };
         let (line, new_tab_button_range, breadcrumb_range) = tab_line(
             &self.hostname,
             self.mode_info.session_name.as_deref(),
             all_tabs,
             active_tab_index,
-            cols.saturating_sub(1),
+            bar_cols,
             self.mode_info.style.colors,
             self.mode_info.capabilities,
             self.mode_info.style.hide_session_name,
