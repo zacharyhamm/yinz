@@ -157,3 +157,64 @@ fn a_write_from_the_cli_is_visible_in_hocus() {
     });
     zellij.quit();
 }
+
+/// The same tie for the notes, which are three entities rather than one: a
+/// note the CLI writes through hocus-store, with a tag and a link to a todo
+/// hocus wrote, comes back whole from hocus's own tools.
+#[test]
+fn a_note_written_from_the_cli_is_listed_and_read_in_hocus() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(HOCUS_CONFIG)
+        .with_layout(LayoutInfo::Stringified(HOCUS_LAYOUT.to_owned()))
+        .start();
+
+    zellij.wait_until("hocus asks for permissions", |grid_snapshot| {
+        grid_snapshot.contains("Allow? (y/n)")
+    });
+    zellij.send_stdin(b"y");
+    zellij.wait_until("the prompt is dismissed", |grid_snapshot| {
+        !grid_snapshot.contains("Allow? (y/n)")
+    });
+
+    submit(
+        &zellij,
+        r#"/project_assign {"name": "p", "root": "/work/p"}"#,
+    );
+    // A todo for the note to reference, written by hocus so its id is the
+    // first the store hands out.
+    submit(&zellij, r#"/todo_add {"project": "p", "text": "the item"}"#);
+    zellij.wait_until("the todo is written", |grid_snapshot| {
+        grid_snapshot.contains("the item")
+    });
+
+    pipe_to_store(
+        &mut zellij,
+        r#"{"op":"note_add","args":{"project":"p","title":"from the cli","body":"the whole body","tags":["cli"],"todo_ids":[1]}}"#,
+    );
+
+    zellij.send_stdin(&[0x0c]); // Ctrl-l
+    zellij.wait_until("the transcript is cleared", |grid_snapshot| {
+        !grid_snapshot.contains("the item")
+    });
+
+    submit(&zellij, r#"/note_list {"project": "p"}"#);
+    zellij.wait_until(
+        "hocus lists the note the CLI wrote through hocus-store",
+        |grid_snapshot| grid_snapshot.contains("from the cli"),
+    );
+    zellij.wait_until("with its tag and its link", |grid_snapshot| {
+        grid_snapshot.contains("#cli") && grid_snapshot.contains("todos 1")
+    });
+    // The body is not in a listing; reading the note is what shows it.
+    assert!(!zellij.snapshot().contains("the whole body"));
+    submit(&zellij, r#"/note_get {"id": 1}"#);
+    zellij.wait_until("and reads its body", |grid_snapshot| {
+        grid_snapshot.contains("the whole body")
+    });
+    // The other direction: the todo listing names the note.
+    submit(&zellij, r#"/todo_list {"project": "p"}"#);
+    zellij.wait_until("and the todo names the note", |grid_snapshot| {
+        grid_snapshot.contains("notes 1")
+    });
+    zellij.quit();
+}

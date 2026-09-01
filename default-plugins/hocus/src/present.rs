@@ -88,6 +88,12 @@ pub fn present(call: &ToolCall, result: &str) -> Option<String> {
         "new_pane" => opened_pane(&json),
         "new_tab" => opened_tab(&json),
         "todo_add" | "todo_edit" | "todo_done" => todo_written(name, &json),
+        "note_list" => note_list(&json),
+        "note_get" => note_get(&json),
+        "note_search" => note_search(&json),
+        "note_add" | "note_edit" | "note_archive" | "note_delete" | "note_link" => {
+            note_written(name, &json)
+        },
         "agent_spawn" => spawned(&json, registered),
         _ => None,
     };
@@ -153,6 +159,7 @@ const FAMILIES: &[(&str, &[&str])] = &[
     ("agents", &["agent"]),
     ("projects", &["project"]),
     ("todos", &["todo"]),
+    ("notes", &["note"]),
     ("files", &["find_files", "search_files", "read_file"]),
     ("git", &["git"]),
     ("github", &["github"]),
@@ -611,7 +618,13 @@ fn todo_items(items: &[Value], depth: usize, out: &mut String) {
     for item in items {
         let box_ = if flag(item, "done") { "[x]" } else { "[ ]" };
         let indent = "  ".repeat(depth);
-        out.push_str(&format!("{indent}- {box_} `{}`\n", number(item, "id")));
+        out.push_str(&format!("{indent}- {box_} `{}`", number(item, "id")));
+        // The notes about an item, by id, so the reader can `/note_get` one.
+        let notes = array(item, "notes");
+        if !notes.is_empty() {
+            out.push_str(&format!(" · notes {}", ids(notes)));
+        }
+        out.push('\n');
         markdown_body(&text(item, "text"), &format!("{indent}  "), out);
         todo_items(array(item, "children"), depth + 1, out);
     }
@@ -647,6 +660,182 @@ fn todo_search(value: &Value) -> Option<String> {
     }
     if flag(value, "truncated") {
         out.push_str("\n_more matches were cut; narrow the query_\n");
+    }
+    Some(out)
+}
+
+/// Numbers joined for prose: `3, 7`.
+fn ids(values: &[Value]) -> String {
+    values
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The line a note gets in a listing: its id, title, age, and whatever else it
+/// carries. The body is deliberately not here; `note_get` is how one is read.
+fn note_line(note: &Value) -> String {
+    let mut line = format!(
+        "- `{}` **{}**",
+        number(note, "id"),
+        inline(&text(note, "title"))
+    );
+    if flag(note, "archived") {
+        line.push_str(" _(archived)_");
+    }
+    let mut extras: Vec<String> = Vec::new();
+    let age = age(note.get("age_seconds").and_then(Value::as_u64));
+    if !age.is_empty() {
+        extras.push(age);
+    }
+    let tags = array(note, "tags");
+    if !tags.is_empty() {
+        extras.push(
+            tags.iter()
+                .map(|tag| format!("#{}", inline(tag.as_str().unwrap_or_default())))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+    let todos = array(note, "todo_ids");
+    if !todos.is_empty() {
+        extras.push(format!("todos {}", ids(todos)));
+    }
+    let author = text(note, "author");
+    if !author.is_empty() && author != "user" {
+        extras.push(format!("by {}", inline(&author)));
+    }
+    if !extras.is_empty() {
+        line.push_str(" — ");
+        line.push_str(&extras.join(" · "));
+    }
+    line.push('\n');
+    line
+}
+
+fn note_list(value: &Value) -> Option<String> {
+    let mut out = heading(&format!("notes — {}", text(value, "scope")));
+    let notes = array(value, "notes");
+    if notes.is_empty() {
+        return Some(out + "_none_\n");
+    }
+    out.push_str(&format!("{} notes\n\n", notes.len()));
+    for note in notes {
+        out.push_str(&note_line(note));
+    }
+    Some(out)
+}
+
+fn note_get(value: &Value) -> Option<String> {
+    let mut out = heading(&format!(
+        "note {} — {}",
+        number(value, "id"),
+        text(value, "title")
+    ));
+    let mut meta: Vec<String> = Vec::new();
+    match text(value, "project") {
+        project if project.is_empty() && flag(value, "global") => meta.push("global".to_owned()),
+        project if project.is_empty() => meta.push(inline(&text(value, "root"))),
+        project => meta.push(inline(&project)),
+    }
+    let author = text(value, "author");
+    if !author.is_empty() {
+        meta.push(format!("by {}", inline(&author)));
+    }
+    let age = age(value.get("age_seconds").and_then(Value::as_u64));
+    if !age.is_empty() {
+        meta.push(age);
+    }
+    let tags = array(value, "tags");
+    if !tags.is_empty() {
+        meta.push(
+            tags.iter()
+                .map(|tag| format!("#{}", inline(tag.as_str().unwrap_or_default())))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+    let todos = array(value, "todo_ids");
+    if !todos.is_empty() {
+        meta.push(format!("todos {}", ids(todos)));
+    }
+    if flag(value, "archived") {
+        meta.push("archived".to_owned());
+    }
+    out.push_str(&format!("_{}_\n", meta.join(" · ")));
+    markdown_body(&text(value, "body"), "", &mut out);
+    Some(out)
+}
+
+fn note_search(value: &Value) -> Option<String> {
+    let matches = array(value, "matches");
+    let mut out = heading(&format!("note search — {}", text(value, "query")));
+    if matches.is_empty() {
+        return Some(out + "_no matches_\n");
+    }
+    for found in matches {
+        out.push_str(&note_line(found));
+        let snippet = text(found, "snippet");
+        if !snippet.is_empty() {
+            out.push_str(&format!("  {}\n", inline(&snippet)));
+        }
+    }
+    if flag(value, "truncated") {
+        out.push_str("\n_more matches were cut; narrow the query_\n");
+    }
+    Some(out)
+}
+
+fn note_written(name: &str, value: &Value) -> Option<String> {
+    if name == "note_link" {
+        let verb = if flag(value, "linked") {
+            "Linked"
+        } else {
+            "Unlinked"
+        };
+        return Some(format!(
+            "{verb} note `{}` and todo `{}`.\n",
+            number(value, "note_id"),
+            number(value, "todo_id")
+        ));
+    }
+    let note = format!("note `{}`", number(value, "id"));
+    let mut out = match name {
+        "note_add" => format!("Added {note}"),
+        "note_edit" => format!("Edited {note}"),
+        "note_delete" => format!("Deleted {note}"),
+        _ if flag(value, "archived") => format!("Archived {note}"),
+        _ => format!("Unarchived {note}"),
+    };
+    let project = text(value, "project");
+    if !project.is_empty() {
+        out.push_str(&format!(" in {}", inline(&project)));
+    } else if flag(value, "global") {
+        out.push_str(" (global)");
+    }
+    out.push_str(".\n");
+    let title = text(value, "title");
+    if !title.is_empty() {
+        out.push_str(&format!("\n**{}**\n", inline(&title)));
+    }
+    let tags = array(value, "tags");
+    if !tags.is_empty() {
+        out.push_str(&format!(
+            "tags: {}\n",
+            tags.iter()
+                .map(|tag| format!("#{}", inline(tag.as_str().unwrap_or_default())))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+    }
+    let todos = array(value, "todo_ids");
+    if !todos.is_empty() {
+        out.push_str(&format!("todos: {}\n", ids(todos)));
+    }
+    let warning = text(value, "warning");
+    if !warning.is_empty() {
+        out.push_str(&format!("\n_{}_\n", inline(&warning)));
     }
     Some(out)
 }

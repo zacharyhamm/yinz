@@ -72,6 +72,55 @@ fn undoing_a_todo_says_reopened_rather_than_crossed_off() {
     assert_eq!(shown, "Reopened `2` in h.\n\nt\n");
 }
 
+#[test]
+fn adding_a_note_names_it_its_project_tags_and_links() {
+    let raw = r#"{"id":3,"project":"h","title":"Why","tags":["design"],"todo_ids":[4,5]}"#;
+    let shown = present(&call("note_add", "{}"), raw).expect("presented");
+    assert_eq!(
+        shown,
+        "Added note `3` in h.\n\n**Why**\ntags: #design\ntodos: 4, 5\n"
+    );
+}
+
+#[test]
+fn a_global_note_and_a_warning_are_both_said() {
+    let raw = r#"{"id":3,"global":true,"title":"t","tags":[],"todo_ids":[],
+        "warning":"the note was written but its tags and links were not: boom"}"#;
+    let shown = present(&call("note_add", "{}"), raw).expect("presented");
+    assert!(shown.starts_with("Added note `3` (global).\n"), "{shown}");
+    assert!(
+        shown.ends_with("_the note was written but its tags and links were not: boom_\n"),
+        "{shown}"
+    );
+}
+
+#[test]
+fn archiving_deleting_and_linking_a_note_each_say_what_happened() {
+    let archived = r#"{"id":3,"project":"h","title":"t","archived":true}"#;
+    assert_eq!(
+        present(&call("note_archive", "{}"), archived),
+        Some("Archived note `3` in h.\n\n**t**\n".to_owned())
+    );
+    let restored = r#"{"id":3,"project":"h","title":"t","archived":false}"#;
+    assert!(present(&call("note_archive", "{}"), restored)
+        .unwrap()
+        .starts_with("Unarchived note `3` in h.\n"));
+    let deleted = r#"{"id":3,"project":"h","title":"t","deleted":true}"#;
+    assert!(present(&call("note_delete", "{}"), deleted)
+        .unwrap()
+        .starts_with("Deleted note `3` in h.\n"));
+    let linked = r#"{"note_id":3,"todo_id":4,"linked":true}"#;
+    assert_eq!(
+        present(&call("note_link", "{}"), linked),
+        Some("Linked note `3` and todo `4`.\n".to_owned())
+    );
+    let unlinked = r#"{"note_id":3,"todo_id":4,"linked":false}"#;
+    assert_eq!(
+        present(&call("note_link", "{}"), unlinked),
+        Some("Unlinked note `3` and todo `4`.\n".to_owned())
+    );
+}
+
 // -- slack and files ----------------------------------------------------
 
 /// A non-zero exit is a diagnostic; wrapping it would only bury it.

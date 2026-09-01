@@ -1,4 +1,5 @@
-//! hocus-store — the project registry and todo lists, reachable from a shell.
+//! hocus-store — the project registry, todo lists and notes, reachable from a
+//! shell.
 //!
 //! Background-only plugin. Never rendered.
 //!
@@ -9,6 +10,8 @@
 //!         -- '{"op":"todo_list","args":{"project":"work"}}'
 //!     zellij pipe --name store_mutate \
 //!         -- '{"op":"todo_add","args":{"project":"work","text":"ship it"}}'
+//!     zellij pipe --name store_mutate \
+//!         -- '{"op":"note_add","args":{"project":"work","title":"why","body":"because"}}'
 //!
 //! Deliberately no `--plugin`: plugin identity is (location, configuration),
 //! and a bare `zellij:hocus-store` url carries none of the alias' `shared true`
@@ -25,12 +28,13 @@
 //! off the pane snapshots hocus-agentd sends — which stays here because it has
 //! to happen whether or not a hocus pane is open.
 
+mod notes_ops;
 mod ops;
 
 use hocus_proto::location::Location;
 use hocus_proto::store::{Backend, Host};
 use hocus_proto::wire::{self, Mutation, PollReply, Query};
-use hocus_proto::{agents, projects, store, todos};
+use hocus_proto::{agents, notes, projects, store, todos};
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
@@ -157,8 +161,14 @@ fn discover_from(backend: &impl Backend, payload: &str) {
         return;
     }
     let mut mutations = projects::diff_mutations(&before, &after);
+    // A folder's todo list and its notes move with it, in the same batch as
+    // the project row, so no reader sees the project at one root and its
+    // lists at another.
     for (old, new) in discovery.root_moves {
         if let Ok(moved) = todos::plan_move_root(&old, &new) {
+            mutations.extend(moved);
+        }
+        if let Ok(moved) = notes::plan_move_root(&old, &new) {
             mutations.extend(moved);
         }
     }
@@ -307,8 +317,23 @@ mod tests {
     /// A snapshot with one pane in one checkout, as the daemon sends it.
     fn snapshot(pane: agents::AgentPane, manual_kinds: BTreeMap<u32, String>) -> String {
         let cwd = pane.cwd.clone().expect("the pane is somewhere");
+        let repository = checkout(&cwd);
+        snapshot_with(pane, repository, manual_kinds)
+    }
+
+    /// A snapshot whose one checkout is described by the caller.
+    fn snapshot_of(pane: agents::AgentPane, repository: projects::Repository) -> String {
+        snapshot_with(pane, repository, BTreeMap::new())
+    }
+
+    fn snapshot_with(
+        pane: agents::AgentPane,
+        repository: projects::Repository,
+        manual_kinds: BTreeMap<u32, String>,
+    ) -> String {
+        let cwd = pane.cwd.clone().expect("the pane is somewhere");
         let location = Location::new(pane.host.clone(), &cwd);
-        let repository = checkout(&cwd).on_host(pane.host.clone());
+        let repository = repository.on_host(pane.host.clone());
         serde_json::to_string(&PollReply {
             panes: Some(vec![pane]),
             activity: agents::Activity::new(),
@@ -412,6 +437,63 @@ mod tests {
             vec!["nested"],
             "the worktree joins the project above it rather than starting one",
         );
+    }
+
+    /// When the primary checkout of a project first seen through a linked
+    /// worktree shows up, the project's root moves to it — and its todo list
+    /// and notes move with it, or they would be stranded at a root no project
+    /// names any more.
+    #[test]
+    fn a_root_move_carries_the_folders_todos_and_notes() {
+        let backend = backend();
+        let remote = Some("git@example.com:hocus.git".to_owned());
+        let worktree = "/tmp/worktrees/feature";
+        let primary = "/tmp/work/hocus";
+
+        let mut linked = checkout(worktree);
+        linked.remote.clone_from(&remote);
+        linked.worktree_status = Some(projects::WorktreeStatus::Linked);
+        discover_from(
+            &backend,
+            &snapshot_of(pane_in(3, "codex", Some("codex"), worktree), linked),
+        );
+        assert_eq!(project_names(&backend), vec!["feature"]);
+        backend
+            .apply(vec![
+                zellij_tile::prelude::Mutation::put("todo")
+                    .set("root", worktree)
+                    .set("text", "ship it")
+                    .set("done", false)
+                    .build(),
+                zellij_tile::prelude::Mutation::put("note")
+                    .set("root", worktree)
+                    .set("title", "why")
+                    .set("body", "because")
+                    .set("author", "user")
+                    .set("archived", false)
+                    .build(),
+            ])
+            .expect("seeded");
+
+        let mut main = checkout(primary);
+        main.remote.clone_from(&remote);
+        discover_from(
+            &backend,
+            &snapshot_of(pane_in(4, "codex", Some("codex"), primary), main),
+        );
+
+        let todos = backend
+            .fetch(&FetchRequest::entity("todo").filter(Pred::eq("root", primary)))
+            .expect("fetched");
+        assert_eq!(todos.len(), 1, "the todo moved to the primary root");
+        let notes = backend
+            .fetch(&FetchRequest::entity("note").filter(Pred::eq("root", primary)))
+            .expect("fetched");
+        assert_eq!(notes.len(), 1, "the note moved with it");
+        let left = backend
+            .fetch(&FetchRequest::entity("note").filter(Pred::eq("root", worktree)))
+            .expect("fetched");
+        assert!(left.is_empty());
     }
 
     /// A pane the user named by hand is an agent for this purpose too — the

@@ -1,4 +1,5 @@
 use super::*;
+use hocus_proto::notes;
 use hocus_proto::panes::terminal_panes;
 
 fn state_with(messages: Vec<Message>, status: Status) -> State {
@@ -525,6 +526,37 @@ fn stored_list(state: &State, root: &str) -> todos::List {
     todos::fetch_list(&state.store(), root).expect("fetched")
 }
 
+// -- notes --------------------------------------------------------------
+
+/// Run a note tool the way the whole system does: writes through
+/// `note_write`, reads through `run_local`, both against the temporary store.
+fn note(state: &mut State, name: &str, arguments: &str) -> serde_json::Value {
+    let result =
+        note_result(state, name, arguments).unwrap_or_else(|| panic!("{name} answered nothing"));
+    serde_json::from_str(&result)
+        .unwrap_or_else(|_| panic!("{name} answered with an error: {result}"))
+}
+
+/// The raw answer of a note tool, or `None` if it is not one.
+fn note_result(state: &mut State, name: &str, arguments: &str) -> Option<String> {
+    let call = agent_call(name, arguments);
+    if !matches!(
+        name,
+        "note_add" | "note_edit" | "note_archive" | "note_delete" | "note_link"
+    ) {
+        return state.run_local(&call);
+    }
+    Some(match state.note_write(&call) {
+        Ok(message) => message,
+        Err(error) => error,
+    })
+}
+
+/// One note, read back out of the store.
+fn stored_note(state: &State, id: u64) -> Option<notes::Note> {
+    notes::fetch_note(&state.store(), id).expect("fetched")
+}
+
 // -- agents -------------------------------------------------------------
 
 fn pane_info(id: u32, title: &str, command: Option<&str>) -> PaneInfo {
@@ -698,6 +730,7 @@ mod file_tools;
 mod jobs;
 mod keys;
 mod linear_tools;
+mod note_tools;
 mod picker;
 mod plan_mode;
 mod plugin_tools;

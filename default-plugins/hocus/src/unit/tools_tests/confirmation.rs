@@ -55,6 +55,15 @@ fn confirmation_policy_lists_tools_correctly() {
         "todo_search",
         "todo_done",
         "todo_edit",
+        // As does a note tool.
+        "note_add",
+        "note_list",
+        "note_get",
+        "note_edit",
+        "note_archive",
+        "note_delete",
+        "note_link",
+        "note_search",
         // Reading Slack is free; only posting stops for a y/n.
         "slack_status",
         "slack_search",
@@ -84,7 +93,7 @@ fn every_advertised_tool_is_covered_by_the_confirmation_table() {
         .iter()
         .map(|spec| spec["function"]["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 72);
+    assert_eq!(names.len(), 80);
     let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
     assert_eq!(confirmed, 18);
 }

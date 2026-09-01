@@ -136,7 +136,7 @@ fn request_body_advertises_the_tools_when_they_are_enabled() {
     let mut cfg = test_config();
     cfg.tools = true;
     let body = body_value(&cfg, &[Message::user("hi")]);
-    assert_eq!(body["tools"].as_array().unwrap().len(), 72);
+    assert_eq!(body["tools"].as_array().unwrap().len(), 80);
 }
 
 #[test]
@@ -196,13 +196,16 @@ fn request_body_advertises_registered_extension_tools() {
 /// `plugin_write`, `plugin_check`, `plugin_edit`, `plugin_reload` and `plugin_log` gave back
 /// ~400 bytes of description that the system prompt already said, and `plugin_read` spent ~150
 /// of it saying that a default read is a page rather than a file.
+///
+/// Raised to 32kb for the eight note tools, whose schemas were kept to a key and a type each
+/// — the only descriptions left are the three that say a project defaults to the active one.
 #[test]
-fn hocus_prompt_contract_keeps_the_tool_payload_under_30_kb() {
+fn hocus_prompt_contract_keeps_the_tool_payload_under_32_kb() {
     let mut cfg = test_config();
     cfg.tools = true;
     let body = request_body(&cfg, &[Message::user("hi")]);
     assert!(
-        body.len() < 30_000,
+        body.len() < 32_000,
         "tool payload grew to {} bytes",
         body.len()
     );
@@ -583,7 +586,7 @@ fn acting_sends_the_body_it_always_did() {
     cfg.tools = true;
     let transcript = [Message::user("hi")];
     let body: serde_json::Value = serde_json::from_slice(&request_body(&cfg, &transcript)).unwrap();
-    assert_eq!(body["tools"].as_array().unwrap().len(), 72);
+    assert_eq!(body["tools"].as_array().unwrap().len(), 80);
     assert!(!body["messages"][0]["content"]
         .as_str()
         .unwrap()

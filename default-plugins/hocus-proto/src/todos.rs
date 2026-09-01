@@ -216,7 +216,9 @@ fn clean(
 }
 
 /// The text of an item, or an error naming why it cannot be one.
-fn clean_text(text: &str) -> Result<String, String> {
+///
+/// Public for the notes, whose title and body are cleaned the same way.
+pub fn clean_text(text: &str) -> Result<String, String> {
     let text = crate::text::sanitize(text);
     let text = text.trim();
     if text.is_empty() {

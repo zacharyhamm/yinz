@@ -3478,6 +3478,159 @@ fn the_hocus_todos_example_reads_a_project_list_out_of_the_shared_namespace() {
     assert!(child.starts_with('|'), "not indented: {child}");
 }
 
+/// `example-plugins/hocus-notes.lua` is the other plugin "Hocus data" points at. It reads three
+/// entities - the notes, then their tags and links by id - so the store here is seeded with all
+/// three, exactly as `hocus-proto`'s `store::shared_defs()` declares them.
+#[test]
+fn the_hocus_notes_example_reads_a_projects_notes_out_of_the_shared_namespace() {
+    use zellij_utils::data::{AttrDef, EntityDef, Mutation, PermissionStatus};
+
+    let store_dir = tempfile::tempdir().unwrap();
+    let store = PluginDataStore::new(store_dir.path());
+    let owner = "zellij:hocus-store";
+    store
+        .define_entity(
+            "shared:hocus",
+            owner,
+            &EntityDef::new("project", 1)
+                .attr(AttrDef::text("name").required())
+                .attr(AttrDef::text("root").indexed().required()),
+            false,
+        )
+        .unwrap();
+    store
+        .define_entity(
+            "shared:hocus",
+            owner,
+            &EntityDef::new("note", 1)
+                .attr(AttrDef::text("root").indexed())
+                .attr(AttrDef::text("title").full_text().required())
+                .attr(AttrDef::text("body").full_text().required())
+                .attr(AttrDef::text("author").required().default("user"))
+                .attr(
+                    AttrDef::boolean("archived")
+                        .indexed()
+                        .required()
+                        .default(false),
+                ),
+            false,
+        )
+        .unwrap();
+    store
+        .define_entity(
+            "shared:hocus",
+            owner,
+            &EntityDef::new("note_link", 1)
+                .attr(AttrDef::int("note_id").indexed().required())
+                .attr(AttrDef::int("todo_id").indexed().required()),
+            false,
+        )
+        .unwrap();
+    store
+        .define_entity(
+            "shared:hocus",
+            owner,
+            &EntityDef::new("note_tag", 1)
+                .attr(AttrDef::int("note_id").indexed().required())
+                .attr(AttrDef::text("tag").indexed().required()),
+            false,
+        )
+        .unwrap();
+    store
+        .apply(
+            "shared:hocus",
+            &[Mutation::put("project")
+                .uid("work")
+                .set("name", "work")
+                .set("root", ".")
+                .build()],
+        )
+        .unwrap();
+    let live = store
+        .apply(
+            "shared:hocus",
+            &[Mutation::put("note")
+                .set("root", ".")
+                .set("title", "why the parser")
+                .set("body", "because")
+                .set("author", "hocus")
+                .set("archived", false)
+                .build()],
+        )
+        .unwrap()
+        .report
+        .ids[0];
+    store
+        .apply(
+            "shared:hocus",
+            &[
+                // Archived, so the example must leave it out.
+                Mutation::put("note")
+                    .set("root", ".")
+                    .set("title", "old thought")
+                    .set("body", "gone")
+                    .set("author", "user")
+                    .set("archived", true)
+                    .build(),
+                // Another project's, so the root filter must leave it out.
+                Mutation::put("note")
+                    .set("root", "/elsewhere")
+                    .set("title", "elsewhere")
+                    .set("body", "b")
+                    .set("author", "user")
+                    .set("archived", false)
+                    .build(),
+                Mutation::put("note_tag")
+                    .uid(format!("{live}:design"))
+                    .set("note_id", live)
+                    .set("tag", "design")
+                    .build(),
+                Mutation::put("note_link")
+                    .uid(format!("{live}:7"))
+                    .set("note_id", live)
+                    .set("todo_id", 7)
+                    .build(),
+            ],
+        )
+        .unwrap();
+
+    let source = example_plugin("hocus-notes.lua");
+    let mut env = test_env();
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+    env.plugin_data_store = Arc::new(store);
+    let mut plugin = load_lua_plugin(&source, "hocus-notes.lua", env).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    plugin
+        .update(&Event::PermissionRequestResult(PermissionStatus::Granted))
+        .unwrap();
+
+    let rendered = String::from_utf8(plugin.render(10, 60).unwrap()).unwrap();
+    let codes = |text: &str| {
+        text.bytes()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    assert!(rendered.contains(&codes("work notes")), "{rendered}");
+    assert!(rendered.contains(&codes("why the parser")), "{rendered}");
+    assert!(
+        !rendered.contains(&codes("old thought")),
+        "archived: {rendered}"
+    );
+    assert!(
+        !rendered.contains(&codes("elsewhere")),
+        "other root: {rendered}"
+    );
+    // The detail line under the title, from the two side tables, indented one level.
+    let detail = rendered
+        .split(';')
+        .find(|item| item.contains(&codes("#design")))
+        .unwrap_or_else(|| panic!("no detail line in: {rendered}"));
+    assert!(detail.starts_with('|'), "not indented: {detail}");
+    assert!(detail.contains(&codes("todos 7")), "{detail}");
+    assert!(detail.contains(&codes("by hocus")), "{detail}");
+}
+
 /// What the catalog is allowed to show, which is the one new rule the command carries.
 ///
 /// `SharedPluginData` is a claim on `shared:` and nothing else, so another plugin's *private*
