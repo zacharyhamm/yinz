@@ -10,11 +10,12 @@ use zellij_client::{
 };
 
 use zellij_utils::sessions::{
-    assert_dead_session, assert_session, assert_session_ne, delete_session as delete_session_impl,
+    assert_dead_session, assert_session_ne, delete_session as delete_session_impl,
     generate_unique_session_name, get_active_session, get_resurrectable_sessions, get_sessions,
-    get_sessions_sorted_by_mtime, kill_session as kill_session_impl, match_session_name,
-    print_sessions, print_sessions_with_index, resurrection_layout, session_listing_error_message,
-    session_status, unresponsive_session_message, validate_session_name, ActiveSession,
+    get_sessions_sorted_by_mtime, get_sessions_with_status, kill_session as kill_session_impl,
+    match_session_name, print_sessions, print_sessions_with_index, resurrection_layout,
+    session_listing_error_message, session_status, undeliverable_kill_message,
+    unresponsive_session_message, validate_session_name, ActiveSession, SessionListing,
     SessionNameMatch, SessionProbe,
 };
 
@@ -36,8 +37,19 @@ use zellij_utils::{
 
 pub(crate) use zellij_utils::sessions::list_sessions;
 
+fn sessions_to_kill(
+    get_sessions: impl FnOnce() -> Result<Vec<(String, Duration, SessionProbe)>, std::io::ErrorKind>,
+) -> Result<Vec<(String, Duration)>, std::io::ErrorKind> {
+    Ok(get_sessions()?
+        .into_iter()
+        .filter_map(|(name, age, status)| {
+            (!matches!(status, SessionProbe::Absent)).then_some((name, age))
+        })
+        .collect())
+}
+
 pub(crate) fn kill_all_sessions(yes: bool) {
-    match get_sessions() {
+    match sessions_to_kill(get_sessions_with_status) {
         Ok(sessions) if sessions.is_empty() => {
             eprintln!("No active zellij sessions found.");
             process::exit(1);
@@ -54,10 +66,17 @@ pub(crate) fn kill_all_sessions(yes: bool) {
                     process::exit(1);
                 }
             }
+            let mut all_delivered = true;
             for session in &sessions {
-                kill_session_impl(&session.0);
+                if let Err(e) = kill_session_impl(&session.0) {
+                    // One unreachable server must not stop the rest being
+                    // killed, but it must not be reported as killed either.
+                    log::error!("failed to kill session {:?}: {e}", session.0);
+                    eprintln!("{}", undeliverable_kill_message(&session.0));
+                    all_delivered = false;
+                }
             }
-            process::exit(0);
+            process::exit(if all_delivered { 0 } else { 1 });
         },
         Err(e) => {
             eprintln!("Error occurred: {:?}", e);
@@ -126,8 +145,27 @@ fn sessions_to_delete(
 pub(crate) fn kill_session(target_session: &Option<String>) {
     match target_session {
         Some(target_session) => {
-            assert_session(target_session);
-            kill_session_impl(target_session);
+            // Deliberately not `assert_session`, which refuses an unresponsive
+            // session and tells the caller to run `kill-session` — the command
+            // they are already running. A wedged server is the one this command
+            // most needs to work on, so try it and report honestly if the
+            // request could not be delivered.
+            match session_status(target_session) {
+                Ok(SessionProbe::Alive) | Ok(SessionProbe::Unresponsive) => {},
+                Ok(SessionProbe::Absent) => {
+                    println!("No session named {:?} found.", target_session);
+                    process::exit(1);
+                },
+                Err(kind) => {
+                    eprintln!("{}", session_listing_error_message(kind));
+                    process::exit(1);
+                },
+            }
+            if let Err(e) = kill_session_impl(target_session) {
+                log::error!("failed to kill session {target_session:?}: {e}");
+                eprintln!("{}", undeliverable_kill_message(target_session));
+                process::exit(1);
+            }
             process::exit(0);
         },
         None => {
@@ -479,7 +517,7 @@ fn attach_with_session_name(
                 print_sessions(
                     sessions
                         .iter()
-                        .map(|s| (s.clone(), Duration::default(), false))
+                        .map(|s| (s.clone(), Duration::default(), SessionListing::Running))
                         .collect(),
                     false,
                     false,
@@ -827,7 +865,7 @@ pub(crate) fn watch_session(session_name: Option<String>, opts: CliArgs) {
                 print_sessions(
                     sessions
                         .iter()
-                        .map(|s| (s.clone(), Duration::default(), false))
+                        .map(|s| (s.clone(), Duration::default(), SessionListing::Running))
                         .collect(),
                     false,
                     false,
@@ -1269,6 +1307,7 @@ fn format_duration(duration_us: i64) -> String {
 mod tests {
     use super::{
         named_session_exists_or_error, retarget_implicit_agent_report, sessions_to_delete,
+        sessions_to_kill,
     };
     use std::{cell::Cell, io, time::Duration};
     use zellij_server::pty_host::protocol::HostStatus;
@@ -1392,6 +1431,28 @@ mod tests {
 
         assert_eq!(sessions, eligible);
         assert!(!discovery_called.get());
+    }
+
+    #[test]
+    fn session_killing_includes_every_non_absent_socket() {
+        let sessions = sessions_to_kill(|| {
+            Ok(vec![
+                ("alive".to_owned(), Duration::default(), SessionProbe::Alive),
+                (
+                    "wedged".to_owned(),
+                    Duration::default(),
+                    SessionProbe::Unresponsive,
+                ),
+                (
+                    "absent".to_owned(),
+                    Duration::default(),
+                    SessionProbe::Absent,
+                ),
+            ])
+        })
+        .unwrap();
+
+        assert_eq!(sessions, vec![session("alive"), session("wedged")]);
     }
 
     #[test]

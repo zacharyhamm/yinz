@@ -648,7 +648,8 @@ mod client_writer_flush {
     use std::sync::Arc;
     use std::time::Duration;
     use zellij_utils::ipc::{
-        ExitReason, IpcReceiverWithContext, IpcRecv, IpcSenderWithContext, ServerToClientMsg,
+        ClientToServerMsg, ExitReason, IpcReceiverWithContext, IpcRecv, IpcSenderWithContext,
+        ServerToClientMsg,
     };
 
     fn socket_pair() -> (
@@ -674,10 +675,19 @@ mod client_writer_flush {
     fn a_queued_exit_reaches_the_socket_before_the_wait_returns() {
         let (_guard, server_end, client_end) = socket_pair();
         let live_writers = Arc::new(LiveWriters::default());
+        let server_fd = {
+            use std::os::fd::AsFd;
+            match &server_end {
+                interprocess::local_socket::Stream::UdSocket(uds) => {
+                    uds.as_fd().try_clone_to_owned().expect("dup failed")
+                },
+            }
+        };
         let sender = ClientSender::new(
             1,
             IpcSenderWithContext::<ServerToClientMsg>::new(server_end),
             live_writers.clone(),
+            server_fd,
         );
 
         // What every break in the server main loop does on its way out.
@@ -752,5 +762,64 @@ mod client_writer_flush {
             live_writers.wait_until_drained(Duration::from_millis(50)),
             "both writers are done"
         );
+    }
+
+    /// The router thread must not outlive the client the server has removed.
+    ///
+    /// `remove_client` drops the `ClientSender`, which retires the write half.
+    /// The read half is a `dup` of the same socket held by the router thread,
+    /// blocked in `recv_client_msg` with no deadline and leaving only on EOF —
+    /// and nothing produced that EOF for a peer that connected and then kept
+    /// its descriptor open. Each one stranded a router thread and an open
+    /// socket for the life of the process; one server here reached 65,538 of
+    /// them, at which point its listen backlog was permanently full and a
+    /// `connect` to it never returned, hanging every zellij command on the
+    /// machine.
+    ///
+    /// `shutdown(2)` acts on the socket rather than the descriptor, so this
+    /// reaches the router's `dup` — which is the whole point, since the server
+    /// has no handle on that thread to interrupt any other way.
+    #[test]
+    fn shutting_a_client_down_unblocks_the_router_reading_it() {
+        let (_guard, server_end, client_end) = socket_pair();
+        let live_writers = Arc::new(LiveWriters::default());
+        let server_fd = {
+            use std::os::fd::AsFd;
+            match &server_end {
+                interprocess::local_socket::Stream::UdSocket(uds) => {
+                    uds.as_fd().try_clone_to_owned().expect("dup failed")
+                },
+            }
+        };
+        // Exactly how `new_client` wires a connection up: the receiver owns the
+        // stream and the sender is a clone of it.
+        let mut receiver: IpcReceiverWithContext<ClientToServerMsg> =
+            IpcReceiverWithContext::new(server_end);
+        let sender = ClientSender::new(1, receiver.get_sender(), live_writers.clone(), server_fd);
+
+        // The client is deliberately kept alive for the whole test: a peer that
+        // hangs up would produce the EOF on its own, which is the case that
+        // already worked.
+        let (blocked, is_blocked) = std::sync::mpsc::channel();
+        let router = std::thread::spawn(move || {
+            blocked.send(()).expect("nobody waiting for the router");
+            receiver.recv_client_msg()
+        });
+        is_blocked.recv().expect("the router thread never started");
+
+        sender.shutdown_reads();
+
+        let outcome = router.join().expect("the router thread panicked");
+        let described = match outcome {
+            IpcRecv::Eof => "Eof",
+            IpcRecv::Idle => "Idle",
+            IpcRecv::Malformed => "Malformed",
+            IpcRecv::Msg(..) => "Msg",
+        };
+        assert_eq!(
+            described, "Eof",
+            "shutting the read half down should end the router's read as a hangup"
+        );
+        drop(client_end);
     }
 }

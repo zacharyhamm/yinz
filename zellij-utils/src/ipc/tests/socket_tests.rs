@@ -578,4 +578,205 @@ fn only_a_missing_listener_is_an_absent_session() {
         classify_probe_connect_error(ErrorKind::PermissionDenied),
         Err(ErrorKind::PermissionDenied)
     );
+    // `Absent` is the answer that lets a new server unlink this socket and bind
+    // its own. A connect that timed out came from a server that is *running*
+    // and merely too far gone to accept, so it must never land there: unlinking
+    // would leave that process alive with no path any client could reach.
+    assert_eq!(
+        classify_probe_connect_error(ErrorKind::TimedOut),
+        Ok(SessionProbe::Unresponsive),
+        "a connect that timed out is a wedged server, not an absent one"
+    );
+    assert_eq!(
+        classify_probe_connect_error(ErrorKind::WouldBlock),
+        Ok(SessionProbe::Unresponsive)
+    );
+}
+
+/// A listener whose backlog is full, held open for the life of the guard.
+///
+/// Built with raw syscalls because the backlog size is the whole point and
+/// `ListenerOptions` does not expose it: a default backlog would need hundreds
+/// of connections to fill.
+#[cfg(unix)]
+struct FullBacklog {
+    listener_fd: std::os::fd::OwnedFd,
+    _pending: Vec<std::os::fd::OwnedFd>,
+}
+
+#[cfg(unix)]
+impl FullBacklog {
+    /// Take one connection off the queue, freeing a backlog slot.
+    fn accept_one(&self) {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        // Safety: an accept(2) on a listening socket this struct owns; the
+        // descriptor it yields is owned and closed here.
+        let accepted = unsafe {
+            libc::accept(
+                self.listener_fd.as_raw_fd(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert!(accepted >= 0, "accept() failed");
+        // Safety: a fresh descriptor from accept(2), owned solely here.
+        drop(unsafe { OwnedFd::from_raw_fd(accepted) });
+    }
+}
+
+#[cfg(unix)]
+fn listener_with_a_full_backlog(path: &std::path::Path) -> FullBacklog {
+    use crate::consts::unix_socket_address;
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    // Safety for the block below: ordinary socket syscalls on fds this function
+    // creates and owns; every raw fd is wrapped in an `OwnedFd` before it can
+    // escape, and every return value is checked.
+    unsafe {
+        let listener = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0);
+        assert!(listener >= 0, "socket() failed");
+        let listener_fd = OwnedFd::from_raw_fd(listener);
+        let (addr, len) = unix_socket_address(path).expect("socket path too long for sockaddr_un");
+        assert_eq!(
+            libc::bind(listener, &addr as *const _ as *const libc::sockaddr, len),
+            0,
+            "bind() failed"
+        );
+        // The smallest backlog the kernel will take, so a couple of unaccepted
+        // connections are enough to fill it.
+        assert_eq!(libc::listen(listener, 1), 0, "listen() failed");
+
+        // Fill it. Non-blocking connects, because a blocking one is exactly the
+        // call this whole test exists to stop hanging on.
+        let mut pending = Vec::new();
+        for _ in 0..64 {
+            let client = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_NONBLOCK, 0);
+            assert!(client >= 0, "client socket() failed");
+            let client_fd = OwnedFd::from_raw_fd(client);
+            let (addr, len) =
+                unix_socket_address(path).expect("socket path too long for sockaddr_un");
+            if libc::connect(client, &addr as *const _ as *const libc::sockaddr, len) == 0 {
+                pending.push(client_fd);
+                continue;
+            }
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::WouldBlock {
+                // The backlog will take no more, which is the state we wanted.
+                return FullBacklog {
+                    listener_fd,
+                    _pending: pending,
+                };
+            }
+            panic!("unexpected error filling the backlog: {err}");
+        }
+        panic!("the backlog never filled after 64 connections");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn unix_socket_addresses_use_the_initialized_path_length() {
+    use crate::consts::unix_socket_address;
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = std::path::Path::new("/tmp/zellij-test.sock");
+    let (addr, len) = unix_socket_address(path).unwrap();
+    let expected =
+        std::mem::offset_of!(libc::sockaddr_un, sun_path) + path.as_os_str().as_bytes().len() + 1;
+
+    assert_eq!(addr.sun_family, libc::AF_UNIX as libc::sa_family_t);
+    assert_eq!(len as usize, expected);
+    #[cfg(any(
+        target_vendor = "apple",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+    ))]
+    assert_eq!(addr.sun_len as usize, expected);
+}
+
+/// The regression test for a wedged server hanging every zellij command.
+///
+/// A server whose listen backlog is full neither accepts a connection nor
+/// refuses one — a blocking `connect` to it simply never returns. That is not
+/// covered by `PROBE_TIMEOUT`, which is applied to the stream a *successful*
+/// connect hands back, so before `IPC_CONNECT_TIMEOUT` existed one such server
+/// hung `zellij`, `zellij ls`, `zellij attach` and `zellij kill-session` for
+/// every unrelated session on the machine, since all of them sweep the socket
+/// directory. Observed in the wild: a server that had leaked 65,538
+/// connections and 131,085 threads over three days.
+#[cfg(unix)]
+#[test]
+fn a_full_backlog_times_out_instead_of_hanging_forever() {
+    use crate::consts::{ipc_connect, IPC_CONNECT_TIMEOUT};
+    use crate::sessions::{classify_probe_connect_error, SessionProbe};
+
+    let (_guard, path) = new_ipc();
+    let backlog = listener_with_a_full_backlog(&path);
+
+    let started_at = std::time::Instant::now();
+    let result = ipc_connect(&path);
+    let waited = started_at.elapsed();
+
+    let err = result.expect_err(
+        "connecting to a listener whose backlog is full should not succeed — if the kernel \
+         accepted it, this test is no longer exercising the condition it was written for",
+    );
+    assert_eq!(
+        classify_probe_connect_error(err.kind()),
+        Ok(SessionProbe::Unresponsive),
+        "a full backlog is a running server that cannot accept, so it must read as \
+         unresponsive — reading as absent would let a new server unlink its socket. \
+         Got {err:?}"
+    );
+    // Generous: the assertion is "bounded at all", and the old behaviour was
+    // unbounded. A tight bound here would only buy flakes on a loaded machine.
+    assert!(
+        waited < IPC_CONNECT_TIMEOUT * 8,
+        "the connect should have given up near its {IPC_CONNECT_TIMEOUT:?} deadline, \
+         but it waited {waited:?}"
+    );
+
+    // The socket is still a live server's, and nothing about the timeout may
+    // suggest otherwise.
+    assert!(
+        path.exists(),
+        "the timed-out probe must leave the socket alone"
+    );
+    drop(backlog);
+}
+
+/// The other half of the deadline: it must not fire on a healthy server.
+///
+/// A backlog can fill for a moment on a busy session — a burst of `zellij
+/// action` or hook clients arriving faster than the accept loop drains them —
+/// and treating that as a wedged server would be a worse bug than the one the
+/// deadline fixes, since `Unresponsive` is what stops a person attaching. So
+/// `EAGAIN` is retried rather than reported, and only the deadline ends it.
+#[cfg(unix)]
+#[test]
+fn a_backlog_that_frees_up_is_waited_out_rather_than_failed() {
+    use crate::consts::ipc_connect;
+
+    let (_guard, path) = new_ipc();
+    let backlog = listener_with_a_full_backlog(&path);
+
+    // Well inside the deadline, and long enough that the first attempt is
+    // certain to have hit `EAGAIN` — the point of the test is the retry, not
+    // the race to be first.
+    let connected = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            backlog.accept_one();
+        });
+        ipc_connect(&path)
+    });
+
+    assert!(
+        connected.is_ok(),
+        "a backlog that frees up inside the deadline should be waited out, not \
+         reported as a wedged server: {:?}",
+        connected.err()
+    );
 }
