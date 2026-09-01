@@ -40,7 +40,7 @@ impl Drop for Pane {
         if let Some(pump) = self.pump.take() {
             let _ = pump.join();
         }
-        let _ = self.conn.terminate(Duration::from_secs(5));
+        let _ = self.conn.terminate();
     }
 }
 

@@ -5,6 +5,7 @@ use std::{
     os::fd::AsFd,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -22,6 +23,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 pub struct Provider {
     path: PathBuf,
     timeout: Duration,
+    invocation_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -97,7 +99,11 @@ impl Provider {
                 "firecracker_provider_timeout_secs must be greater than zero"
             ));
         }
-        Ok(Self { path, timeout })
+        Ok(Self {
+            path,
+            timeout,
+            invocation_lock: Arc::new(Mutex::new(())),
+        })
     }
 
     pub fn ensure(
@@ -194,6 +200,7 @@ impl Provider {
     fn invoke<T: for<'de> Deserialize<'de>>(&self, request: Request<'_>) -> Result<T> {
         let request_json = serde_json::to_vec(&request)
             .context("failed to encode the firecracker provider request")?;
+        let _invocation = self.invocation_lock.lock().to_anyhow()?;
         let mut child = Command::new(&self.path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -457,6 +464,38 @@ esac
             .to_string();
         assert!(error.contains("timed out"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn cloned_provider_invocations_are_serialized_before_their_timeout_starts() {
+        let (dir, provider) = provider_script(
+            r#"lock="$(dirname "$0")/lock"
+if ! mkdir "$lock"; then touch "$(dirname "$0")/overlap"; fi
+sleep 0.6
+rmdir "$lock"
+printf '{"version":2}'"#,
+            Duration::from_secs(1),
+        );
+        let other = provider.clone();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let started = Instant::now();
+        let threads: Vec<_> = [provider, other]
+            .into_iter()
+            .map(|provider| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    provider.stop_session("work")
+                })
+            })
+            .collect();
+
+        barrier.wait();
+        for thread in threads {
+            thread.join().unwrap().unwrap();
+        }
+        assert!(started.elapsed() > Duration::from_secs(1));
+        assert!(!dir.path().join("overlap").exists());
     }
 
     #[test]

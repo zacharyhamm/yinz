@@ -273,7 +273,9 @@ fn finish_command_rerun(
     let err_context = || format!("failed to rerun command in pane {pane_id:?}");
     if let Err(err) = result.with_context(err_context) {
         match pane_start_failure(&err) {
-            Some((terminal_id, message)) if run_command.hold_on_close => {
+            Some((terminal_id, message))
+                if run_command.hold_on_close || run_command.firecracker_vm.is_some() =>
+            {
                 if let Some(originating_plugin) = run_command.originating_plugin.clone() {
                     pty.bus
                         .senders
@@ -389,6 +391,31 @@ pub struct PendingInPlaceSpawn {
     completion_tx: Option<NotificationEnd>,
 }
 
+#[doc(hidden)]
+#[derive(Clone, Debug)]
+pub struct PendingLayoutSpawn {
+    layout: TiledPaneLayout,
+    floating_panes_layout: Vec<FloatingPaneLayout>,
+    default_shell: TerminalAction,
+    plugin_ids: HashMap<RunPluginOrAlias, Vec<u32>>,
+    adopted_panes: Option<AdoptedTabTerminals>,
+    run_instructions: Vec<Option<Run>>,
+    floating_run_instructions: Vec<Option<Run>>,
+    tab_index: usize,
+    block_on_first_terminal: bool,
+    should_change_focus_to_new_tab: bool,
+    client_id: ClientId,
+    completion_tx: Option<NotificationEnd>,
+}
+
+fn is_unheld_firecracker_run(run: &Option<Run>) -> bool {
+    matches!(
+        run,
+        Some(Run::Command(command))
+            if command.firecracker_vm.is_some() && !command.hold_on_start
+    )
+}
+
 /// Instructions related to PTYs (pseudoterminals).
 #[derive(Clone, Debug, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PtyInstruction {
@@ -409,6 +436,10 @@ pub enum PtyInstruction {
     FirecrackerInPlaceSpawnResolved(
         Box<PendingInPlaceSpawn>,
         Result<ResolvedFirecracker, Arc<anyhow::Error>>,
+    ),
+    FirecrackerLayoutResolved(
+        Box<PendingLayoutSpawn>,
+        Vec<Option<Result<ResolvedFirecracker, Arc<anyhow::Error>>>>,
     ),
     OpenInPlaceEditor(
         PathBuf,
@@ -807,6 +838,9 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     },
                 };
                 finish_in_place_spawn(&mut pty, *pending, result)?;
+            },
+            PtyInstruction::FirecrackerLayoutResolved(pending, resolutions) => {
+                pty.finish_layout_spawn(*pending, resolutions)?;
             },
             PtyInstruction::OpenInPlaceEditor(
                 temp_file,
@@ -1606,6 +1640,51 @@ impl Pty {
         Ok(())
     }
 
+    fn defer_firecracker_layout_spawn(&mut self, pending: PendingLayoutSpawn) -> Result<()> {
+        let os_input = self
+            .bus
+            .os_input
+            .as_ref()
+            .context("no OS I/O interface found")?
+            .box_clone();
+        let runs = pending
+            .run_instructions
+            .iter()
+            .chain(&pending.floating_run_instructions)
+            .cloned()
+            .collect::<Vec<_>>();
+        let default_editor = self.default_editor.clone();
+        let senders = self.bus.senders.clone();
+        self.reap_firecracker_workers();
+        self.firecracker_workers.push(std::thread::spawn(move || {
+            let resolutions = runs
+                .into_iter()
+                .map(|run| match run {
+                    Some(Run::Command(command))
+                        if command.firecracker_vm.is_some() && !command.hold_on_start =>
+                    {
+                        Some(
+                            os_input
+                                .resolve_firecracker_spawn(
+                                    TerminalAction::RunCommand(command),
+                                    default_editor.clone(),
+                                )
+                                .map_err(Arc::new),
+                        )
+                    },
+                    _ => None,
+                })
+                .collect();
+            senders
+                .send_to_pty(PtyInstruction::FirecrackerLayoutResolved(
+                    Box::new(pending),
+                    resolutions,
+                ))
+                .non_fatal();
+        }));
+        Ok(())
+    }
+
     fn defer_firecracker_rerun(
         &mut self,
         pane_id: PaneId,
@@ -1813,8 +1892,6 @@ impl Pty {
         client_id: ClientId,
         completion_tx: Option<NotificationEnd>,
     ) -> Result<()> {
-        let err_context = || "failed to spawn terminals for layout for".to_string();
-
         let mut default_shell =
             default_shell.unwrap_or_else(|| self.get_default_terminal(cwd, None));
         self.fill_cwd(&mut default_shell, client_id);
@@ -1866,6 +1943,52 @@ impl Pty {
                 .map(|f| f.run.clone())
                 .collect(),
         };
+        let pending = PendingLayoutSpawn {
+            layout,
+            floating_panes_layout,
+            default_shell,
+            plugin_ids,
+            adopted_panes,
+            run_instructions: extracted_run_instructions,
+            floating_run_instructions: extracted_floating_run_instructions,
+            tab_index,
+            block_on_first_terminal,
+            should_change_focus_to_new_tab,
+            client_id,
+            completion_tx,
+        };
+        if pending
+            .run_instructions
+            .iter()
+            .chain(&pending.floating_run_instructions)
+            .any(is_unheld_firecracker_run)
+        {
+            return self.defer_firecracker_layout_spawn(pending);
+        }
+        self.finish_layout_spawn(pending, vec![])
+    }
+
+    fn finish_layout_spawn(
+        &mut self,
+        pending: PendingLayoutSpawn,
+        resolutions: Vec<Option<Result<ResolvedFirecracker, Arc<anyhow::Error>>>>,
+    ) -> Result<()> {
+        let err_context = || "failed to spawn terminals for layout for".to_string();
+        let PendingLayoutSpawn {
+            layout,
+            floating_panes_layout,
+            default_shell,
+            plugin_ids,
+            adopted_panes,
+            run_instructions: extracted_run_instructions,
+            floating_run_instructions: extracted_floating_run_instructions,
+            tab_index,
+            block_on_first_terminal,
+            should_change_focus_to_new_tab,
+            client_id,
+            completion_tx,
+        } = pending;
+        let mut resolutions = resolutions.into_iter();
         let mut new_pane_pids: Vec<(u32, bool, Option<RunCommand>, Result<Box<dyn AsyncReader>>)> =
             vec![]; // (terminal_id,
                     // starts_held,
@@ -1892,9 +2015,11 @@ impl Pty {
                 }
             });
             let mut terminal_id = None;
-            if let Some(new_pane_data) =
-                self.apply_run_instruction(run_instruction, default_shell.clone())?
-            {
+            if let Some(new_pane_data) = self.apply_run_instruction(
+                run_instruction,
+                default_shell.clone(),
+                resolutions.next().flatten(),
+            )? {
                 terminal_id = Some(new_pane_data.0);
                 new_pane_pids.push(new_pane_data);
             }
@@ -1912,9 +2037,11 @@ impl Pty {
                 }
             });
             let mut terminal_id = None;
-            if let Some(new_pane_data) =
-                self.apply_run_instruction(run_instruction, default_shell.clone())?
-            {
+            if let Some(new_pane_data) = self.apply_run_instruction(
+                run_instruction,
+                default_shell.clone(),
+                resolutions.next().flatten(),
+            )? {
                 terminal_id = Some(new_pane_data.0);
                 new_floating_panes_pids.push(new_pane_data);
             }
@@ -2066,7 +2193,7 @@ impl Pty {
                 },
                 Err(err) => match run_command {
                     Some(run_command) => {
-                        if run_command.hold_on_close {
+                        if run_command.hold_on_close || run_command.firecracker_vm.is_some() {
                             let message = pane_start_failure(&err)
                                 .map(|(_, message)| message)
                                 .unwrap_or_else(|| format!("{err:#}"));
@@ -2147,7 +2274,7 @@ impl Pty {
             });
             let mut terminal_id = None;
             if let Some(new_pane_data) =
-                self.apply_run_instruction(run_instruction, default_shell.clone())?
+                self.apply_run_instruction(run_instruction, default_shell.clone(), None)?
             {
                 terminal_id = Some(new_pane_data.0);
                 new_pane_pids.push(new_pane_data);
@@ -2167,7 +2294,7 @@ impl Pty {
             });
             let mut terminal_id = None;
             if let Some(new_pane_data) =
-                self.apply_run_instruction(run_instruction, default_shell.clone())?
+                self.apply_run_instruction(run_instruction, default_shell.clone(), None)?
             {
                 terminal_id = Some(new_pane_data.0);
                 new_floating_panes_pids.push(new_pane_data);
@@ -2249,7 +2376,7 @@ impl Pty {
                 },
                 Err(err) => match run_command {
                     Some(run_command) => {
-                        if run_command.hold_on_close {
+                        if run_command.hold_on_close || run_command.firecracker_vm.is_some() {
                             let message = pane_start_failure(&err)
                                 .map(|(_, message)| message)
                                 .unwrap_or_else(|| format!("{err:#}"));
@@ -2299,6 +2426,7 @@ impl Pty {
         &mut self,
         run_instruction: Option<Run>,
         default_shell: TerminalAction,
+        resolved_firecracker: Option<Result<ResolvedFirecracker, Arc<anyhow::Error>>>,
     ) -> Result<Option<(u32, bool, Option<RunCommand>, Result<Box<dyn AsyncReader>>)>> {
         // terminal_id,
         // starts_held,
@@ -2395,15 +2523,23 @@ impl Pty {
                         Err(e) => Err(e),
                     }
                 } else {
-                    match self
+                    let os_input = self
                         .bus
                         .os_input
                         .as_mut()
                         .context("no OS I/O interface found")
-                        .with_context(err_context)?
-                        .spawn_terminal(cmd, quit_cb, self.default_editor.clone())
-                        .with_context(err_context)
-                    {
+                        .with_context(err_context)?;
+                    let spawn_result = match resolved_firecracker {
+                        Some(Ok(resolved)) => {
+                            os_input.spawn_resolved_firecracker(resolved, quit_cb)
+                        },
+                        Some(Err(error)) => {
+                            Err(Arc::try_unwrap(error).unwrap_or_else(|error| anyhow!("{error:#}")))
+                        },
+                        None => os_input.spawn_terminal(cmd, quit_cb, self.default_editor.clone()),
+                    }
+                    .with_context(err_context);
+                    match spawn_result {
                         Ok((terminal_id, reader, child_pid)) => {
                             if let Some(child_pid) = child_pid {
                                 self.id_to_child_pid.insert(terminal_id, child_pid);

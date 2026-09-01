@@ -348,7 +348,6 @@ fn ensure(
     if worktree.as_ref().is_some_and(|path| !path.is_dir()) {
         return Err(anyhow!("Firecracker worktree must be a directory"));
     }
-    let host_fingerprint = worktree.as_deref().map(tree_fingerprint).transpose()?;
     let state_path = locked.identity_path(session, name, worktree.as_deref());
     let entries = locked.entries()?;
     ensure_vm_identity_available(&entries, &state_path, session, name)?;
@@ -383,6 +382,8 @@ fn ensure(
             let _ = fs::remove_file(&state_path);
         }
     }
+
+    let host_fingerprint = worktree.as_deref().map(tree_fingerprint).transpose()?;
 
     let slot = (0..network.taps)
         .find(|slot| {
