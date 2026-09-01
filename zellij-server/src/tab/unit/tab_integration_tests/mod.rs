@@ -46,6 +46,7 @@ use zellij_utils::{
 struct FakeInputOutput {
     file_dumps: Arc<Mutex<HashMap<String, String>>>,
     pub tty_stdin_bytes: Arc<Mutex<BTreeMap<u32, Vec<u8>>>>,
+    remote_panes: Arc<Mutex<HashSet<u32>>>,
 }
 
 impl ServerOsApi for FakeInputOutput {
@@ -79,6 +80,9 @@ impl ServerOsApi for FakeInputOutput {
     }
     fn tcdrain(&self, _id: u32) -> Result<()> {
         unimplemented!()
+    }
+    fn is_remote_pane(&self, terminal_id: u32) -> bool {
+        self.remote_panes.lock().unwrap().contains(&terminal_id)
     }
     fn kill(&self, _pid: u32) -> Result<()> {
         unimplemented!()
@@ -1149,11 +1153,18 @@ fn create_new_tab_with_plugin_receiver(
     size: Size,
     default_mode: ModeInfo,
 ) -> (Tab, Receiver<(PluginInstruction, ErrorContext)>) {
+    create_new_tab_with_plugin_receiver_and_os(size, default_mode, Box::default())
+}
+
+fn create_new_tab_with_plugin_receiver_and_os(
+    size: Size,
+    default_mode: ModeInfo,
+    os_api: Box<FakeInputOutput>,
+) -> (Tab, Receiver<(PluginInstruction, ErrorContext)>) {
     set_session_name("test".into());
     let index = 0;
     let position = 0;
     let name = String::new();
-    let os_api = Box::new(FakeInputOutput::default());
     let mut senders = ThreadSenders::default().silently_fail_on_send();
     let (mock_plugin_sender, mock_plugin_receiver): ChannelWithContext<PluginInstruction> =
         channels::unbounded();
@@ -1234,6 +1245,36 @@ fn create_new_tab_with_plugin_receiver(
     )
     .unwrap();
     (tab, mock_plugin_receiver)
+}
+
+#[test]
+fn only_remote_panes_may_report_agent_hooks_through_osc_777() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    let report = format!(
+        "\u{1b}]777;zellij-agent-report;claude;{}\u{1b}\\",
+        STANDARD.encode(r#"{"hook_event_name":"Notification"}"#)
+    )
+    .into_bytes();
+    let size = Size { cols: 80, rows: 24 };
+
+    let (mut local, local_plugins) = create_new_tab_with_plugin_receiver(size, ModeInfo::default());
+    while local_plugins.try_recv().is_ok() {}
+    local.handle_pty_bytes(1, report.clone()).unwrap();
+    assert!(local_plugins.try_recv().is_err());
+
+    let remote_os = Box::new(FakeInputOutput::default());
+    remote_os.remote_panes.lock().unwrap().insert(1);
+    let (mut remote, remote_plugins) =
+        create_new_tab_with_plugin_receiver_and_os(size, ModeInfo::default(), remote_os);
+    while remote_plugins.try_recv().is_ok() {}
+    remote.handle_pty_bytes(1, report).unwrap();
+    assert!(matches!(
+        remote_plugins
+            .try_recv()
+            .map(|(instruction, _)| instruction),
+        Ok(PluginInstruction::KeybindPipe { .. })
+    ));
 }
 
 // ========================================================================

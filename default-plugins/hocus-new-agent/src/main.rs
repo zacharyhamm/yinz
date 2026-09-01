@@ -638,7 +638,7 @@ impl State {
             self.refresh_git_suggestions();
             self.fill_firecracker_image_default();
         }
-        if id == FIRECRACKER && !self.dialog.form().text(FIRECRACKER).trim().is_empty() {
+        if id == FIRECRACKER {
             self.fill_firecracker_image_default();
         }
         if id == FIRECRACKER_IMAGE {
@@ -683,6 +683,7 @@ impl State {
             return;
         }
         let image = selected_project(self.dialog.form(), &self.projects)
+            .filter(|_| !self.dialog.form().text(FIRECRACKER).trim().is_empty())
             .and_then(|project| project.firecracker_image.clone())
             .unwrap_or_default();
         self.set_text(FIRECRACKER_IMAGE, &image);
@@ -1152,9 +1153,19 @@ mod tests {
             ..Default::default()
         };
         state.fill_projects();
+        state.changed(PROJECT);
+        assert_eq!(state.dialog.form().text(FIRECRACKER_IMAGE), "");
+
         state.set_text(FIRECRACKER, "review");
         state.changed(FIRECRACKER);
         assert_eq!(state.dialog.form().text(FIRECRACKER_IMAGE), "rust");
+
+        state.set_text(FIRECRACKER, "");
+        state.changed(FIRECRACKER);
+        assert_eq!(state.dialog.form().text(FIRECRACKER_IMAGE), "");
+
+        state.set_text(FIRECRACKER, "review");
+        state.changed(FIRECRACKER);
 
         state
             .dialog

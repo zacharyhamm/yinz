@@ -4771,6 +4771,7 @@ impl Tab {
     }
     fn process_pty_bytes(&mut self, pid: u32, bytes: VteBytes) -> Result<()> {
         let err_context = || format!("failed to process pty bytes from pid {pid}");
+        let accepts_agent_reports = self.os_api.is_remote_pane(pid);
 
         if let Some(terminal_output) = self
             .tiled_panes
@@ -4846,7 +4847,7 @@ impl Tab {
                     })
                     .with_context(err_context)?;
             }
-            for report in agent_reports {
+            for report in agent_reports.into_iter().filter(|_| accepts_agent_reports) {
                 let event: zellij_utils::agent::HookEvent = match serde_json::from_str(&report.json)
                 {
                     Ok(event) => event,

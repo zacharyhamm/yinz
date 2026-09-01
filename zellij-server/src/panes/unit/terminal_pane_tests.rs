@@ -1270,7 +1270,7 @@ fn ingest(bytes: &[u8], chunk_size: usize) -> (String, u64, Vec<u8>) {
 }
 
 #[test]
-fn a_remote_agent_report_is_authenticated_by_the_pty_and_not_rendered() {
+fn an_agent_report_sequence_is_parsed_and_not_rendered() {
     use base64::{engine::general_purpose::STANDARD, Engine};
 
     let json = r#"{"hook_event_name":"Notification"}"#;

@@ -8,7 +8,7 @@ use interprocess::local_socket::Stream as LocalSocketStream;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Barrier, Mutex};
 use zellij_utils::channels::{self, SenderWithContext};
 use zellij_utils::data::{Event, Palette};
 use zellij_utils::errors::ErrorContext;
@@ -54,6 +54,9 @@ struct MockOsApi {
     /// actually asked the OS to run - the `originating_plugin` it carried included.
     rerun_commands: Arc<Mutex<Vec<RunCommand>>>,
     rerun_failures: Arc<Mutex<std::collections::HashSet<u32>>>,
+    clear_failures: Arc<Mutex<std::collections::HashSet<u32>>>,
+    firecracker_started: Arc<Barrier>,
+    firecracker_release: Arc<Barrier>,
 }
 
 impl MockOsApi {
@@ -75,6 +78,9 @@ impl MockOsApi {
             release_delay: Arc::new(Mutex::new(std::time::Duration::ZERO)),
             rerun_commands: Arc::new(Mutex::new(Vec::new())),
             rerun_failures: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            clear_failures: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            firecracker_started: Arc::new(Barrier::new(1)),
+            firecracker_release: Arc::new(Barrier::new(1)),
         }
     }
     fn rerun_commands(&self) -> Vec<RunCommand> {
@@ -82,6 +88,9 @@ impl MockOsApi {
     }
     fn fail_rerun_of(&self, terminal_id: u32) {
         self.rerun_failures.lock().unwrap().insert(terminal_id);
+    }
+    fn fail_clear_of(&self, terminal_id: u32) {
+        self.clear_failures.lock().unwrap().insert(terminal_id);
     }
     fn refuse_to_warp(&self, terminal_id: u32, why: &str) {
         self.warp_refusals
@@ -167,6 +176,15 @@ impl ServerOsApi for MockOsApi {
         _: Option<PathBuf>,
     ) -> anyhow::Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
         unimplemented!()
+    }
+    fn resolve_firecracker_spawn(
+        &self,
+        _terminal_action: TerminalAction,
+        _default_editor: Option<PathBuf>,
+    ) -> anyhow::Result<crate::os_input_output::ResolvedFirecracker> {
+        self.firecracker_started.wait();
+        self.firecracker_release.wait();
+        Err(anyhow::anyhow!("injected provider result"))
     }
     fn write_to_tty_stdin(&self, _: u32, buf: &[u8]) -> anyhow::Result<usize> {
         Ok(buf.len())
@@ -301,8 +319,10 @@ impl ServerOsApi for MockOsApi {
         }
         Ok((Box::new(crate::os_input_output::NullAsyncReader), None))
     }
-    fn clear_terminal_id(&self, _: u32) -> anyhow::Result<()> {
-        Ok(())
+    fn clear_terminal_id(&self, terminal_id: u32) -> anyhow::Result<()> {
+        (!self.clear_failures.lock().unwrap().contains(&terminal_id))
+            .then_some(())
+            .context("injected clear failure")
     }
     fn check_terminal_can_be_warped(&self, terminal_id: u32) -> anyhow::Result<()> {
         match self.warp_refusals.lock().unwrap().get(&terminal_id) {
@@ -843,6 +863,44 @@ fn closing_a_remote_pane_does_not_signal_a_local_process() {
         os_api.local_signals()
     );
     assert_eq!(os_api.remote_signals(), vec![(7, ChildSignal::Hup)]);
+}
+
+#[test]
+fn a_failed_remote_termination_does_not_fail_the_close() {
+    let (mut pty, os_api) = pty_with_remote_pane(7, 4242);
+    os_api.fail_clear_of(7);
+
+    assert!(pty.close_pane(PaneId::Terminal(7)).is_ok());
+}
+
+#[test]
+fn a_firecracker_preflight_does_not_block_other_pty_work() {
+    let mut os_api = MockOsApi::new();
+    os_api.firecracker_started = Arc::new(Barrier::new(2));
+    os_api.firecracker_release = Arc::new(Barrier::new(2));
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let command = RunCommand {
+        command: PathBuf::from("claude"),
+        firecracker_vm: Some("review".to_owned()),
+        ..Default::default()
+    };
+    let pending = PendingTerminalSpawn {
+        terminal_action: Some(TerminalAction::RunCommand(command.clone())),
+        run_command: Some(command.clone()),
+        pane_title: None,
+        open_file_payload: None,
+        invoked_with: Some(Run::Command(command)),
+        new_pane_placement: NewPanePlacement::default(),
+        start_suppressed: false,
+        client_or_tab_index: ClientTabIndexOrPaneId::ClientId(1),
+        completion_tx: None,
+        set_blocking: false,
+    };
+
+    pty.defer_firecracker_spawn(pending).unwrap();
+    os_api.firecracker_started.wait();
+    assert!(pty.close_pane(PaneId::Terminal(7)).is_ok());
+    os_api.firecracker_release.wait();
 }
 
 #[test]

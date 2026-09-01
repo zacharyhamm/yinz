@@ -13,7 +13,7 @@ fn firecracker_resolution_keeps_an_unresolved_command_for_reruns() {
     let path = dir.path().join("provider");
     fs::write(
         &path,
-        "#!/bin/sh\nprintf '{\"version\":2,\"ssh_host\":\"build-box\",\"cwd\":\"/workspace\"}'\n",
+        "#!/bin/sh\nprintf '{\"version\":2,\"ssh_host\":\"build-box\",\"cwd\":\"/srv/project\"}'\n",
     )
     .unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -31,10 +31,21 @@ fn firecracker_resolution_keeps_an_unresolved_command_for_reruns() {
 
     let (resolved, rerun, ssh_options) = server.resolve_firecracker(requested.clone()).unwrap();
     assert_eq!(resolved.remote_host.as_deref(), Some("build-box"));
-    assert_eq!(resolved.cwd, Some(PathBuf::from("/workspace")));
+    assert_eq!(resolved.cwd, Some(PathBuf::from("/srv/project")));
     assert_eq!(rerun, requested);
     assert_eq!(ssh_options, SshOptions::default());
     assert!(server.resolve_firecracker(rerun).is_ok());
+
+    let explicit = RunCommand {
+        command: PathBuf::from("claude"),
+        cwd: Some(PathBuf::from("/elsewhere")),
+        firecracker_vm: Some("review".to_owned()),
+        ..Default::default()
+    };
+    assert_eq!(
+        server.resolve_firecracker(explicit).unwrap().0.cwd,
+        Some(PathBuf::from("/elsewhere"))
+    );
 }
 
 #[test]
@@ -300,6 +311,58 @@ fn a_local_rerun_terminates_the_previous_remote_transport() {
     if let Some(child_pid) = child_pid {
         server.force_kill(child_pid).unwrap();
     }
+    server.clear_terminal_id(7).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_dead_remote_transport_does_not_prevent_a_local_rerun() {
+    use crate::pty_host::remote::RemoteConn;
+    use std::os::unix::net::UnixStream;
+
+    let server = make_server();
+    let (write_socket, broker_peer) = UnixStream::pair().unwrap();
+    drop(broker_peer);
+    let (read_socket, _reader_peer) = UnixStream::pair().unwrap();
+    let remote_command = RunCommand {
+        command: PathBuf::from("remote-step"),
+        remote_host: Some("build-box".to_owned()),
+        ..Default::default()
+    };
+    let connection = Arc::new(
+        RemoteConn::new(
+            write_socket,
+            "build-box".to_owned(),
+            "token".to_owned(),
+            remote_command.clone(),
+            None,
+        )
+        .unwrap(),
+    );
+    let _remote_reader = server
+        .pty_backend
+        .register_remote_terminal(
+            7,
+            connection,
+            read_socket,
+            Box::new(|_, _, _| {}),
+            remote_command,
+        )
+        .unwrap();
+
+    let (_reader, child_pid) = server
+        .re_run_command_in_terminal(
+            7,
+            RunCommand {
+                command: PathBuf::from("sleep"),
+                args: vec!["60".to_owned()],
+                ..Default::default()
+            },
+            Box::new(|_, _, _| {}),
+        )
+        .unwrap();
+
+    server.force_kill(child_pid.unwrap()).unwrap();
     server.clear_terminal_id(7).unwrap();
 }
 

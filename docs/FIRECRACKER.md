@@ -141,7 +141,7 @@ Configure one executable and, optionally, its timeout:
 
 ```kdl
 firecracker_provider "/absolute/path/to/provider"
-firecracker_provider_timeout_secs 60
+firecracker_provider_timeout_secs 90
 ```
 
 Open a guest login shell or run a command in the guest:
