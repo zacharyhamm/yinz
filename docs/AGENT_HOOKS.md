@@ -55,7 +55,8 @@ action normally reads the pane from `$ZELLIJ_PANE_ID`. A locally supervised pane
 asks that supervisor for the pane's current session and terminal id. An `Attach` re-keys both,
 so hooks keep reporting after the pane is warped even though the process environment still holds
 the session-local values it started with. Explicit `--session` or `--pane-id` targets still win;
-non-detachable and remote panes keep the existing environment route. The pane's current agent
+non-detachable panes keep the existing environment route. Remote panes have a route of their
+own, below. The pane's current agent
 record travels in both `AdoptPane` and `AdoptTab`, so the receiving session has it before the next
 hook fires. Every reader of the pane manifest then sees the same answer: plugins on `PaneUpdate`,
 `zellij events`, `zellij action list-panes --json`, and hocus's agents list. The record is complete
@@ -239,6 +240,25 @@ Rules the generated scripts keep, all of which matter:
 Each entry carries an explicit timeout — five seconds for Claude Code, three for Codex, which
 caps a `SessionEnd` hook at that anyway. Claude Code's default is ten minutes, and a hook
 blocks the turn.
+
+## Remote panes: reporting through the broker
+
+A hook inside an ssh or Firecracker pane runs on the other machine, where there is no session to
+send `zellij action agent-report` to. It reports to that machine's remote pane broker instead:
+
+```sh
+printf '%s' "$payload" | zellij --pty-broker report claude   # a claude in a remote pane
+```
+
+The broker put `ZELLIJ_REMOTE_PANE_TOKEN` in every pane's environment; the report names the pane
+by it, on a connection of its own, and the broker relays the event to the pane's server on the
+pane's control channel (`BrokerToServerMsg::AgentReport`). The server applies it exactly as it
+would a local report: the pane's agent record is set and the event goes to the plugins on the
+hook pipe. Because the event arrives over the transport rather than out of the pane's bytes,
+nothing a program prints into the pane can forge one, and ssh and Firecracker panes are treated
+alike. A report for a pane no server is attached to is refused, not queued, as a local hook's
+would be with no session. hocus wires this command as the hook when it launches an agent in a
+Firecracker VM.
 
 ## What the feed changes
 

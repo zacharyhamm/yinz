@@ -155,6 +155,17 @@ pub fn serve_connection(
             )?;
             return Ok(());
         },
+        // From a hook inside one of this broker's panes, on a connection of its
+        // own: relayed to whichever server is attached to that pane, and done.
+        ServerToBrokerMsg::AgentReport {
+            pane_token,
+            kind,
+            json,
+        } => {
+            let delivered = relay_agent_report(registry, &pane_token, kind, json);
+            send(&wire, &BrokerToServerMsg::AgentReported { delivered })?;
+            return Ok(());
+        },
         other => return Err(anyhow!("expected a spawn or a resume, got {other:?}")),
     };
 
@@ -397,7 +408,11 @@ fn start_pane(
     // inherited from the broker: its environment is a frozen copy of whichever
     // ssh session happened to start it, possibly another login, hours ago, and
     // shared by every pane and every session that reaches this machine.
-    let env = remote_env::compose(&remote_env::LoginSource::from_user(&user), carried_env);
+    let mut env = remote_env::compose(&remote_env::LoginSource::from_user(&user), carried_env);
+    // The pane's token, so a hook running inside it can name it to this broker
+    // (`report_agent_hook`). Minted before the spawn for exactly that reason.
+    let token = new_host_id();
+    env.push((PANE_TOKEN_ENV.to_owned(), token.clone()));
 
     let pending = match pty_host_client::spawn(SpawnParams {
         host_bin,
@@ -445,7 +460,6 @@ fn start_pane(
         },
     };
 
-    let token = new_host_id();
     // `finish` starts the thread that watches for the child, so the callback is
     // live from here on — before there is a session to record against. A child
     // that exits in that window leaves its status in `Pending`, and the
@@ -1003,21 +1017,52 @@ pub fn broker_invocation() -> Option<String> {
 
 /// Write one hook event into this pane's authenticated pty stream. The host
 /// consumes the private OSC marker instead of displaying it.
+/// The environment variable a remote pane's process finds its broker token in.
+pub const PANE_TOKEN_ENV: &str = "ZELLIJ_REMOTE_PANE_TOKEN";
+
+/// Send a hook's event on the named pane's own channel, if a server is attached
+/// to it. A pane nobody is attached to has no one to tell; the event is
+/// dropped rather than queued, as a local hook's would be with no session.
+fn relay_agent_report(
+    registry: &Arc<PaneRegistry>,
+    pane_token: &str,
+    kind: String,
+    json: String,
+) -> bool {
+    let Some(session) = registry.get(pane_token) else {
+        return false;
+    };
+    let Some(wire) = session.wire() else {
+        return false;
+    };
+    send(&wire, &BrokerToServerMsg::AgentReport { kind, json }).is_ok()
+}
+
+fn valid_agent_kind(kind: &str) -> bool {
+    !kind.is_empty()
+        && kind.len() <= 32
+        && kind
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+}
+
+/// `zellij --pty-broker report <kind>`: the hook command a coding agent runs
+/// inside a remote pane. Reads the event from stdin and hands it to this
+/// machine's broker, which relays it to the pane's server on the pane's own
+/// channel, where it is trusted because it came over the transport rather
+/// than out of the pane's bytes.
 pub fn report_agent_hook() -> Result<()> {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
-    use std::io::{Read, Write};
+    use std::io::Read;
 
     let kind = std::env::args()
         .nth(3)
         .unwrap_or_else(|| "claude".to_owned());
-    if kind.is_empty()
-        || kind.len() > 32
-        || !kind
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
-    {
+    if !valid_agent_kind(&kind) {
         return Err(anyhow!("invalid remote agent kind"));
     }
+    let pane_token = std::env::var(PANE_TOKEN_ENV).with_context(|| {
+        format!("{PANE_TOKEN_ENV} is not set; this is not a pane of a Zellij remote broker")
+    })?;
     let mut json = Vec::new();
     std::io::stdin()
         .take(zellij_utils::agent::HOOK_BROADCAST_MAX_BYTES as u64 + 1)
@@ -1027,13 +1072,60 @@ pub fn report_agent_hook() -> Result<()> {
     }
     serde_json::from_slice::<zellij_utils::agent::HookEvent>(&json)
         .context("invalid agent hook JSON")?;
-    let encoded = STANDARD.encode(json);
-    let mut tty = std::fs::OpenOptions::new()
-        .write(true)
-        .open("/dev/tty")
-        .context("agent hook has no controlling terminal")?;
-    write!(tty, "\x1b]777;zellij-agent-report;{kind};{encoded}\x1b\\")?;
-    Ok(())
+    let json = String::from_utf8(json).context("agent hook JSON is not UTF-8")?;
+    report_agent_hook_to(&broker_socket_path(), &pane_token, &kind, &json)
+}
+
+/// The report itself, against a given broker socket: a fresh connection, the
+/// handshake every connection starts with, the report, and the broker's word
+/// on whether anyone was there to get it.
+pub fn report_agent_hook_to(
+    socket: &std::path::Path,
+    pane_token: &str,
+    kind: &str,
+    json: &str,
+) -> Result<()> {
+    let mut stream = UnixStream::connect(socket)
+        .with_context(|| format!("no remote pane broker at {}", socket.display()))?;
+    protocol::write_control(
+        &mut stream,
+        &ServerToBrokerMsg::Hello {
+            protocol_version: REMOTE_PROTOCOL_VERSION,
+            zellij_version: VERSION.to_owned(),
+        },
+    )?;
+    let mut reader = stream
+        .try_clone()
+        .context("failed to clone the broker connection")?;
+    match read_broker_control(&mut reader)? {
+        Some(BrokerToServerMsg::HelloAck {
+            protocol_version, ..
+        }) if protocol_version == REMOTE_PROTOCOL_VERSION => {},
+        other => return Err(anyhow!("unexpected broker handshake: {other:?}")),
+    }
+    protocol::write_control(
+        &mut stream,
+        &ServerToBrokerMsg::AgentReport {
+            pane_token: pane_token.to_owned(),
+            kind: kind.to_owned(),
+            json: json.to_owned(),
+        },
+    )?;
+    match read_broker_control(&mut reader)? {
+        Some(BrokerToServerMsg::AgentReported { delivered: true }) => Ok(()),
+        Some(BrokerToServerMsg::AgentReported { delivered: false }) => Err(anyhow!(
+            "no session is attached to this pane, so the report had nowhere to go"
+        )),
+        other => Err(anyhow!("unexpected answer to an agent report: {other:?}")),
+    }
+}
+
+fn read_broker_control(reader: &mut UnixStream) -> Result<Option<BrokerToServerMsg>> {
+    match protocol::read_frame(reader)? {
+        None => Ok(None),
+        Some(frame @ Frame::Control(_)) => frame.decode_control().map(Some),
+        Some(_) => Err(anyhow!("expected a control frame from the broker")),
+    }
 }
 
 fn broker_invocation_from_args<I: IntoIterator<Item = String>>(args: I) -> Option<String> {

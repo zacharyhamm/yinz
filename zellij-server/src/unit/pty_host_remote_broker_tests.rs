@@ -384,6 +384,63 @@ fn a_drain_timeout_still_finishes_and_reports_the_termination() {
     drop(pty.slave);
 }
 
+/// A hook inside a pane reports on a connection of its own, naming the pane by
+/// the token in its environment; the broker relays the event on the pane's
+/// channel and tells the hook whether anyone was there.
+#[test]
+fn an_agent_report_is_relayed_on_the_named_panes_channel() {
+    use crate::pty_host::client::PtyHostHandle;
+
+    let pty = nix::pty::openpty(None, None).expect("openpty failed");
+    let (control, _control_peer) = UnixStream::pair().expect("socketpair failed");
+    let (mut server_side, theirs) = UnixStream::pair().expect("socketpair failed");
+    let wire: Wire = Arc::new(Mutex::new(theirs));
+    let session = Arc::new(PaneSession::new(
+        "token".to_owned(),
+        "/bin/sh".to_owned(),
+        PtyHostHandle::for_test(control),
+        pty.master,
+        std::process::id(),
+    ));
+    let registry = Arc::new(PaneRegistry::new());
+    registry.insert(session.clone());
+    let _generation = session.attach(wire);
+
+    let dir = tempfile::tempdir().expect("tempdir failed");
+    let socket = dir.path().join("broker.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind failed");
+    let broker_registry = registry.clone();
+    let broker = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (stream, _) = listener.accept().expect("accept failed");
+            let _ = serve_connection(stream, std::path::Path::new("/bin/false"), &broker_registry);
+        }
+    });
+
+    report_agent_hook_to(&socket, "token", "claude", r#"{"hook_event_name":"Stop"}"#)
+        .expect("a report for an attached pane is delivered");
+    server_side
+        .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+        .expect("timeout failed");
+    assert!(matches!(
+        protocol::read_frame(&mut server_side)
+            .expect("relay read failed")
+            .expect("broker closed before the relay")
+            .decode_control::<BrokerToServerMsg>(),
+        Ok(BrokerToServerMsg::AgentReport { kind, json })
+            if kind == "claude" && json == r#"{"hook_event_name":"Stop"}"#
+    ));
+
+    let refused = report_agent_hook_to(&socket, "no-such-token", "claude", "{}")
+        .expect_err("a report for an unknown pane is refused");
+    assert!(
+        refused.to_string().contains("no session is attached"),
+        "{refused}"
+    );
+    broker.join().expect("broker panicked");
+    drop(pty.slave);
+}
+
 #[test]
 fn a_connection_that_just_ends_is_not_a_terminate() {
     let (ours, pump) = pump_on_a_pair();

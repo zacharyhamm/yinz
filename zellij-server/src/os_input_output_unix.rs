@@ -42,8 +42,8 @@ use crate::pty_host::remote::{
 };
 use crate::pty_host::{
     client::{
-        self as pty_host_client, ChildRunState, ChildStateCb, PtyHostHandle, ReleasedPane,
-        ReleasedRemotePane, SpawnParams,
+        self as pty_host_client, AgentReportCb, ChildRunState, ChildStateCb, PtyHostHandle,
+        ReleasedPane, ReleasedRemotePane, SpawnParams,
     },
     protocol::{WireTermios, WireWinsize},
 };
@@ -409,6 +409,9 @@ pub(crate) struct UnixPtyBackend {
     /// Told when any pane's root process stops or resumes. Registered once by the
     /// pty thread rather than passed per pane — see `ChildStateCb`.
     child_state_cb: Arc<Mutex<Option<ChildStateCb>>>,
+    /// Told when a coding agent's hook in any remote pane reports an event.
+    /// Registered once, like `child_state_cb`; handed to every remote reader.
+    agent_report_cb: Arc<Mutex<Option<AgentReportCb>>>,
 }
 
 /// Try to write as many bytes from `buf` as possible to `fd` without blocking.
@@ -454,6 +457,7 @@ impl UnixPtyBackend {
             wire_termios,
             terminal_id_to_host: Arc::new(Mutex::new(BTreeMap::new())),
             child_state_cb: Arc::new(Mutex::new(None)),
+            agent_report_cb: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -552,6 +556,17 @@ impl UnixPtyBackend {
 
     fn child_state_cb(&self) -> Option<ChildStateCb> {
         self.child_state_cb.lock().ok()?.clone()
+    }
+
+    /// Register the one callback that hears every remote pane's agent reports.
+    pub fn set_agent_report_callback(&self, cb: AgentReportCb) {
+        if let Ok(mut guard) = self.agent_report_cb.lock() {
+            *guard = Some(cb);
+        }
+    }
+
+    fn agent_report_cb(&self) -> Option<AgentReportCb> {
+        self.agent_report_cb.lock().ok()?.clone()
     }
 
     pub fn spawn_terminal(
@@ -790,13 +805,15 @@ impl UnixPtyBackend {
         quit_cb: crate::pty_host::client::QuitCb,
         cmd: RunCommand,
     ) -> Result<Box<dyn AsyncReader>> {
-        let reader = Box::new(
-            crate::pty_host::remote::RemoteReader::new(conn.clone(), read_socket)
-                .map_err(|e| anyhow!("failed to create a remote async reader: {e}"))?
-                // The remote counterpart of the supervisor's reader thread: the
-                // one thing that will tell the pty thread this pane has ended.
-                .on_exit(terminal_id, cmd, quit_cb),
-        ) as Box<dyn AsyncReader>;
+        let mut reader = crate::pty_host::remote::RemoteReader::new(conn.clone(), read_socket)
+            .map_err(|e| anyhow!("failed to create a remote async reader: {e}"))?
+            // The remote counterpart of the supervisor's reader thread: the
+            // one thing that will tell the pty thread this pane has ended.
+            .on_exit(terminal_id, cmd, quit_cb);
+        if let Some(cb) = self.agent_report_cb() {
+            reader = reader.on_agent_report(cb);
+        }
+        let reader = Box::new(reader) as Box<dyn AsyncReader>;
         self.terminal_id_to_transport
             .lock()
             .to_anyhow()?

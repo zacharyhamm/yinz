@@ -1269,39 +1269,6 @@ fn ingest(bytes: &[u8], chunk_size: usize) -> (String, u64, Vec<u8>) {
     )
 }
 
-#[test]
-fn an_agent_report_sequence_is_parsed_and_not_rendered() {
-    use base64::{engine::general_purpose::STANDARD, Engine};
-
-    let json = r#"{"hook_event_name":"Notification"}"#;
-    let mut pane = make_pane_for_ingest();
-    pane.handle_pty_bytes(
-        format!(
-            "\u{1b}]777;zellij-agent-report;claude;{}\u{1b}\\",
-            STANDARD.encode(json)
-        )
-        .into_bytes(),
-    );
-
-    assert_eq!(
-        pane.drain_agent_reports(),
-        vec![crate::panes::grid::PendingAgentReport {
-            kind: "claude".to_owned(),
-            json: json.to_owned(),
-        }]
-    );
-    assert!(pane.grid.dump_screen(false).trim().is_empty());
-
-    pane.handle_pty_bytes(
-        format!(
-            "\u{1b}]777;zellij-agent-report;bad!;{}\u{1b}\\",
-            STANDARD.encode("{}")
-        )
-        .into_bytes(),
-    );
-    assert!(pane.drain_agent_reports().is_empty());
-}
-
 const INGEST_CORPUS: &[u8] = b"plain text \x1b[31mred\x1b[0m more text\r\n\
         \x1b_Gq=2,a=d,d=A\x1b\\ after the apc\r\n\
         \x1b]0;a title\x07 and an osc\r\n\

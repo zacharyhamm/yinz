@@ -24,7 +24,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     path::PathBuf,
 };
 
@@ -539,6 +539,57 @@ struct RerunState {
     queued: VecDeque<(RunCommand, Option<NotificationEnd>)>,
 }
 
+/// A coding agent's hook event from a remote pane, arrived on the pane's
+/// broker channel. Sets the pane's agent record the way `agent-report` does
+/// for a local pane, and hands the event to the plugins on the hook pipe.
+fn handle_remote_agent_report(
+    senders: &ThreadSenders,
+    terminal_id: u32,
+    kind: &str,
+    json: String,
+) -> Result<()> {
+    use zellij_utils::agent::{self, HookEvent, HookOutcome};
+    if json.len() > agent::HOOK_BROADCAST_MAX_BYTES {
+        return Err(anyhow!("agent hook event exceeds the 64 KiB limit"));
+    }
+    let event: HookEvent = serde_json::from_str(&json).context("invalid remote agent report")?;
+    match agent::hook_outcome(kind, &event) {
+        HookOutcome::Ended => senders.send_to_screen(ScreenInstruction::SetPaneAgent(
+            PaneId::Terminal(terminal_id),
+            None,
+            None,
+        ))?,
+        HookOutcome::Reported(agent) => senders.send_to_screen(ScreenInstruction::SetPaneAgent(
+            PaneId::Terminal(terminal_id),
+            Some(agent),
+            None,
+        ))?,
+        HookOutcome::Nothing => {},
+    }
+    let args = BTreeMap::from([
+        (agent::AGENT_HOOK_KIND_ARG.to_owned(), kind.to_owned()),
+        (
+            agent::AGENT_HOOK_PANE_ID_ARG.to_owned(),
+            terminal_id.to_string(),
+        ),
+    ]);
+    senders.send_to_plugin(PluginInstruction::KeybindPipe {
+        name: agent::AGENT_HOOK_PIPE.to_owned(),
+        payload: Some(json),
+        plugin: None,
+        args: Some(args),
+        configuration: None,
+        floating: None,
+        pane_id_to_replace: None,
+        pane_title: None,
+        cwd: None,
+        skip_cache: false,
+        cli_client_id: ClientId::default(),
+        plugin_and_client_id: None,
+        notification_end: None,
+    })
+}
+
 /// A spawn worker could not hand its result back to the pty thread, so the pane it
 /// started has to be closed by the worker itself: nobody else knows the id.
 const LOST_SPAWN_HANDBACK: &str =
@@ -1008,6 +1059,7 @@ pub(crate) struct Pty {
 
 pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
     pty.register_child_state_callback();
+    pty.register_agent_report_callback();
     loop {
         let (event, mut err_ctx) = pty.bus.recv().expect("failed to receive event on channel");
         err_ctx.add_call(ContextType::Pty((&event).into()));
@@ -3898,6 +3950,21 @@ impl Pty {
                 PaneId::Terminal(terminal_id),
                 suspended,
             ));
+        }));
+    }
+
+    /// Tell the OS layer where a remote pane's agent hook reports go: the same
+    /// place `zellij action agent-report` takes a local pane's, minus the
+    /// action. Registered once, like the child state callback.
+    pub fn register_agent_report_callback(&self) {
+        let Some(os_input) = self.bus.os_input.as_ref() else {
+            return;
+        };
+        let senders = self.bus.senders.clone();
+        os_input.set_agent_report_callback(Arc::new(move |terminal_id, kind, json| {
+            handle_remote_agent_report(&senders, terminal_id, &kind, json)
+                .with_context(|| format!("failed to apply an agent report from pane {terminal_id}"))
+                .non_fatal();
         }));
     }
 
