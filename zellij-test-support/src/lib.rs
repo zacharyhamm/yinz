@@ -14,7 +14,10 @@
 //! tests cannot reach them.
 
 use std::fmt;
+use std::io::Write;
 use std::ops::{Deref, DerefMut};
+use std::path::Path;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -194,6 +197,35 @@ impl<T> Drop for NotifyGuard<'_, T> {
         drop(self.guard.take());
         self.condvar.notify_all();
     }
+}
+
+/// Write an executable script for a test to run, from a child process rather than with
+/// `fs::write`.
+///
+/// Under `cargo test` the tests of one crate share a process, and a child another test forks
+/// in the meantime inherits every open descriptor until it execs - a script still open for
+/// writing here then fails that exec with `Text file busy`. A writer in its own process leaves
+/// nothing to inherit.
+pub fn write_script(path: &Path, contents: &str) {
+    let mut writer = Command::new("sh")
+        .args(["-c", r#"cat > "$1" && chmod 755 "$1""#, "sh"])
+        .arg(path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("failed to start the script writer");
+    writer
+        .stdin
+        .take()
+        .expect("the script writer has no stdin")
+        .write_all(contents.as_bytes())
+        .expect("failed to write the script");
+    assert!(
+        writer
+            .wait()
+            .expect("failed to wait for the script writer")
+            .success(),
+        "the script writer failed"
+    );
 }
 
 #[cfg(test)]

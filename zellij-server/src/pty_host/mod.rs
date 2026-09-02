@@ -23,7 +23,9 @@ pub mod remote;
 
 pub use host::{run_pty_host, serve, ServeConfig};
 
-fn ensure_secure_dir(path: &std::path::Path) -> zellij_utils::errors::prelude::Result<()> {
+pub(crate) fn ensure_secure_dir(
+    path: &std::path::Path,
+) -> zellij_utils::errors::prelude::Result<()> {
     use zellij_utils::errors::prelude::*;
 
     std::fs::create_dir_all(path)

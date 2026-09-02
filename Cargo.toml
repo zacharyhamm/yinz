@@ -41,6 +41,7 @@ ssh2 = { version = "0.9.1", optional = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 insta = "1.48"
+zellij-test-support = { path = "zellij-test-support" }
 rand = { workspace = true }
 regex = { workspace = true }
 vte = { workspace = true }
