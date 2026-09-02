@@ -50,7 +50,7 @@ pub use async_trait::async_trait;
 
 #[doc(hidden)]
 #[derive(Clone, Debug)]
-pub struct ResolvedFirecracker {
+pub struct ResolvedSpawn {
     pub terminal_id: u32,
     pub(crate) command: RunCommand,
     pub(crate) rerun_command: RunCommand,
@@ -747,11 +747,11 @@ impl ServerOsInputOutput {
         Ok(())
     }
 
-    fn resolve_firecracker_spawn(
+    fn resolve_spawn(
         &self,
         terminal_action: TerminalAction,
         default_editor: Option<PathBuf>,
-    ) -> Result<ResolvedFirecracker> {
+    ) -> Result<ResolvedSpawn> {
         let terminal_id = self
             .pty_backend
             .next_terminal_id()
@@ -767,7 +767,7 @@ impl ServerOsInputOutput {
             )
         })?;
         let endpoint = endpoint.context("a local command has no endpoint to resolve")?;
-        Ok(ResolvedFirecracker {
+        Ok(ResolvedSpawn {
             terminal_id,
             command,
             rerun_command,
@@ -775,40 +775,45 @@ impl ServerOsInputOutput {
         })
     }
 
-    fn spawn_resolved_firecracker(
+    fn spawn_resolved(
         &self,
-        resolved: ResolvedFirecracker,
+        resolved: ResolvedSpawn,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
-        let host = resolved.endpoint.host;
-        let (conn, reader_socket) = self
-            .remote_hosts
-            .open_pane_with_ssh_options(
-                &host,
-                &resolved.command,
-                None,
-                resolved.terminal_id,
-                resolved.endpoint.ssh_options,
-            )
-            .map_err(|error| pane_start_failed(resolved.terminal_id, &host, error))?;
-        let reader = self
-            .pty_backend
-            .register_remote_terminal(
-                resolved.terminal_id,
-                conn,
-                reader_socket,
-                quit_cb,
-                resolved.rerun_command,
-            )
-            .context("failed to spawn a command in a Firecracker terminal")?;
-        Ok((resolved.terminal_id, reader, None))
+        let terminal_id = resolved.terminal_id;
+        let reader = self.open_remote(resolved, quit_cb)?;
+        // Deliberately no pid. The child's pid is meaningful only on its own
+        // machine, and handing one back here would put it in
+        // `id_to_child_pid`, where every consumer would treat it as local —
+        // `kill`, `sysinfo`, and the plugin-facing `GetPanePid` alike.
+        // `None` makes those paths skip the pane instead, which is what the
+        // remote-aware replacements rely on.
+        Ok((terminal_id, reader, None))
     }
 
-    fn resolve_firecracker_rerun(
+    /// Open a pane on a resolved endpoint's broker and register its transport
+    /// here: the one sequence every remote spawn and rerun ends with.
+    fn open_remote(
         &self,
-        terminal_id: u32,
-        command: RunCommand,
-    ) -> Result<ResolvedFirecracker> {
+        resolved: ResolvedSpawn,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<Box<dyn AsyncReader>> {
+        let ResolvedSpawn {
+            terminal_id,
+            command,
+            rerun_command,
+            endpoint: RemoteEndpoint { host, ssh_options },
+        } = resolved;
+        let (conn, reader_socket) = self
+            .remote_hosts
+            .open_pane_with_ssh_options(&host, &command, None, terminal_id, ssh_options)
+            .map_err(|error| pane_start_failed(terminal_id, &host, error))?;
+        self.pty_backend
+            .register_remote_terminal(terminal_id, conn, reader_socket, quit_cb, rerun_command)
+            .with_context(|| format!("failed to open a pane on {host}"))
+    }
+
+    fn resolve_rerun(&self, terminal_id: u32, command: RunCommand) -> Result<ResolvedSpawn> {
         let display_host = command.display_host();
         let (command, rerun_command, endpoint) = self.resolve_target(command).map_err(|error| {
             pane_start_failed(
@@ -818,7 +823,7 @@ impl ServerOsInputOutput {
             )
         })?;
         let endpoint = endpoint.context("a local command has no endpoint to resolve")?;
-        Ok(ResolvedFirecracker {
+        Ok(ResolvedSpawn {
             terminal_id,
             command,
             rerun_command,
@@ -826,34 +831,19 @@ impl ServerOsInputOutput {
         })
     }
 
-    fn rerun_resolved_firecracker(
+    fn rerun_resolved(
         &self,
-        resolved: ResolvedFirecracker,
+        resolved: ResolvedSpawn,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
-        let host = resolved.endpoint.host;
+        // The pane being re-run is held, not closed, so the broker still holds
+        // the session it was held from. Registering over it would drop this
+        // side's only handle on it and leave it to the orphan timeout; and the
+        // id has to be reserved again once cleared, or the next spawn takes it.
         self.clear_terminal_id(resolved.terminal_id).non_fatal();
         self.pty_backend.reserve_terminal_id(resolved.terminal_id);
-        let (conn, reader_socket) = self
-            .remote_hosts
-            .open_pane_with_ssh_options(
-                &host,
-                &resolved.command,
-                None,
-                resolved.terminal_id,
-                resolved.endpoint.ssh_options,
-            )
-            .map_err(|error| pane_start_failed(resolved.terminal_id, &host, error))?;
-        let reader = self
-            .pty_backend
-            .register_remote_terminal(
-                resolved.terminal_id,
-                conn,
-                reader_socket,
-                quit_cb,
-                resolved.rerun_command,
-            )
-            .context("failed to re-run a command in a Firecracker terminal")?;
+        let reader = self.open_remote(resolved, quit_cb)?;
+        // No pid, for the same reason `spawn_resolved` gives none.
         Ok((reader, None))
     }
 
@@ -995,19 +985,19 @@ pub trait ServerOsApi: Send + Sync {
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         default_editor: Option<PathBuf>,
     ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)>;
-    fn resolve_firecracker_spawn(
+    fn resolve_spawn(
         &self,
         _terminal_action: TerminalAction,
         _default_editor: Option<PathBuf>,
-    ) -> Result<ResolvedFirecracker> {
-        Err(anyhow!("this backend does not support Firecracker panes"))
+    ) -> Result<ResolvedSpawn> {
+        Err(anyhow!("this backend does not support remote panes"))
     }
-    fn spawn_resolved_firecracker(
+    fn spawn_resolved(
         &self,
-        _resolved: ResolvedFirecracker,
+        _resolved: ResolvedSpawn,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
-        Err(anyhow!("this backend does not support Firecracker panes"))
+        Err(anyhow!("this backend does not support remote panes"))
     }
     // reserves a terminal id without actually opening a terminal
     fn reserve_terminal_id(&self) -> Result<u32> {
@@ -1069,19 +1059,15 @@ pub trait ServerOsApi: Send + Sync {
         run_command: RunCommand,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(Box<dyn AsyncReader>, Option<u32>)>;
-    fn resolve_firecracker_rerun(
-        &self,
-        _terminal_id: u32,
-        _run_command: RunCommand,
-    ) -> Result<ResolvedFirecracker> {
-        Err(anyhow!("this backend does not support Firecracker panes"))
+    fn resolve_rerun(&self, _terminal_id: u32, _run_command: RunCommand) -> Result<ResolvedSpawn> {
+        Err(anyhow!("this backend does not support remote panes"))
     }
-    fn rerun_resolved_firecracker(
+    fn rerun_resolved(
         &self,
-        _resolved: ResolvedFirecracker,
+        _resolved: ResolvedSpawn,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
-        Err(anyhow!("this backend does not support Firecracker panes"))
+        Err(anyhow!("this backend does not support remote panes"))
     }
     fn clear_terminal_id(&self, terminal_id: u32) -> Result<()>;
     /// Whether new panes get a detachable pty-host supervisor. Config only
@@ -1260,21 +1246,16 @@ impl ServerOsApi for ServerOsInputOutput {
             )
         })?;
 
-        if let Some(RemoteEndpoint { host, ssh_options }) = endpoint {
-            let (conn, reader_socket) = self
-                .remote_hosts
-                .open_pane_with_ssh_options(&host, &cmd, None, terminal_id, ssh_options)
-                .map_err(|e| pane_start_failed(terminal_id, &host, e))?;
-            let async_reader = self
-                .pty_backend
-                .register_remote_terminal(terminal_id, conn, reader_socket, quit_cb, rerun_cmd)
-                .with_context(err_context)?;
-            // Deliberately no pid. The child's pid is meaningful only on its own
-            // machine, and handing one back here would put it in
-            // `id_to_child_pid`, where every consumer would treat it as local —
-            // `kill`, `sysinfo`, and the plugin-facing `GetPanePid` alike.
-            // `None` makes those paths skip the pane instead, which is what the
-            // remote-aware replacements rely on.
+        if let Some(endpoint) = endpoint {
+            let async_reader = self.open_remote(
+                ResolvedSpawn {
+                    terminal_id,
+                    command: cmd,
+                    rerun_command: rerun_cmd,
+                    endpoint,
+                },
+                quit_cb,
+            )?;
             return Ok((terminal_id, async_reader, None));
         }
 
@@ -1285,19 +1266,19 @@ impl ServerOsApi for ServerOsInputOutput {
 
         Ok((terminal_id, async_reader, Some(child_fd as u32)))
     }
-    fn resolve_firecracker_spawn(
+    fn resolve_spawn(
         &self,
         terminal_action: TerminalAction,
         default_editor: Option<PathBuf>,
-    ) -> Result<ResolvedFirecracker> {
-        ServerOsInputOutput::resolve_firecracker_spawn(self, terminal_action, default_editor)
+    ) -> Result<ResolvedSpawn> {
+        ServerOsInputOutput::resolve_spawn(self, terminal_action, default_editor)
     }
-    fn spawn_resolved_firecracker(
+    fn spawn_resolved(
         &self,
-        resolved: ResolvedFirecracker,
+        resolved: ResolvedSpawn,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
-        ServerOsInputOutput::spawn_resolved_firecracker(self, resolved, quit_cb)
+        ServerOsInputOutput::spawn_resolved(self, resolved, quit_cb)
     }
     fn reserve_terminal_id(&self) -> Result<u32> {
         let terminal_id = self
@@ -1548,22 +1529,16 @@ impl ServerOsApi for ServerOsInputOutput {
                     e,
                 )
             })?;
-        if let Some(RemoteEndpoint { host, ssh_options }) = endpoint {
-            // The pane being re-run is held, not closed, so the broker still
-            // holds the session it was held from. Registering over it would drop
-            // this side's only handle on it and leave it to the orphan timeout.
-            self.clear_terminal_id(terminal_id).non_fatal();
-            self.pty_backend.reserve_terminal_id(terminal_id);
-            let (conn, reader_socket) = self
-                .remote_hosts
-                .open_pane_with_ssh_options(&host, &run_command, None, terminal_id, ssh_options)
-                .map_err(|e| pane_start_failed(terminal_id, &host, e))?;
-            let async_reader = self
-                .pty_backend
-                .register_remote_terminal(terminal_id, conn, reader_socket, quit_cb, rerun_command)
-                .context("failed to re-run a command in a remote terminal")?;
-            // No pid, for the same reason `spawn_terminal` gives none.
-            return Ok((async_reader, None));
+        if let Some(endpoint) = endpoint {
+            return self.rerun_resolved(
+                ResolvedSpawn {
+                    terminal_id,
+                    command: run_command,
+                    rerun_command,
+                    endpoint,
+                },
+                quit_cb,
+            );
         }
 
         self.clear_terminal_id(terminal_id).non_fatal();
@@ -1572,19 +1547,15 @@ impl ServerOsApi for ServerOsInputOutput {
                 .spawn_terminal(run_command, None, quit_cb, terminal_id)?;
         Ok((async_reader, Some(child_fd as u32)))
     }
-    fn resolve_firecracker_rerun(
-        &self,
-        terminal_id: u32,
-        run_command: RunCommand,
-    ) -> Result<ResolvedFirecracker> {
-        ServerOsInputOutput::resolve_firecracker_rerun(self, terminal_id, run_command)
+    fn resolve_rerun(&self, terminal_id: u32, run_command: RunCommand) -> Result<ResolvedSpawn> {
+        ServerOsInputOutput::resolve_rerun(self, terminal_id, run_command)
     }
-    fn rerun_resolved_firecracker(
+    fn rerun_resolved(
         &self,
-        resolved: ResolvedFirecracker,
+        resolved: ResolvedSpawn,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
-        ServerOsInputOutput::rerun_resolved_firecracker(self, resolved, quit_cb)
+        ServerOsInputOutput::rerun_resolved(self, resolved, quit_cb)
     }
     fn clear_terminal_id(&self, terminal_id: u32) -> Result<()> {
         self.pty_backend.clear_terminal_id(terminal_id)

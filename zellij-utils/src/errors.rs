@@ -522,10 +522,7 @@ pub enum ScreenContext {
 )]
 pub enum PtyContext {
     SpawnTerminal,
-    FirecrackerSpawned,
-    FirecrackerInPlaceSpawned,
-    FirecrackerLayoutSpawned,
-    FirecrackerLayoutOverrideSpawned,
+    SpawnResolved,
     OpenInPlaceEditor,
     UpdateActivePane,
     GoToTab,
@@ -540,8 +537,6 @@ pub enum PtyContext {
     AdoptTab,
     ClaimAdoptedTab,
     ReRunCommandInPane,
-    FirecrackerReRunResolved,
-    FirecrackerReRunSpawned,
     DropToShellInPane,
     SpawnInPlaceTerminal,
     DumpLayout,
