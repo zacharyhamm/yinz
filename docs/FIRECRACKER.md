@@ -369,8 +369,16 @@ the host worktree file by file against that baseline:
 Nothing the guest did is lost in a merge, so a merge conflict does not retain the disk. A merge
 that cannot be attempted at all — the guest unreachable, rsync failing — does.
 
-A manual sync merges the same way while the VM keeps running, then brings the guest up to the
-merged tree and records it as the new baseline:
+A merge is applied to the host worktree whole or not at all: every step is recorded before it
+is taken, and a step that fails - a directory the host has made read-only, say - rolls the
+earlier ones back. A guest that turned a directory into a file while the host still keeps
+ignored outputs in that directory is refused before anything is touched.
+
+A manual sync merges the same way while the VM keeps running, then tells the guest exactly
+what the merge decided - the host's own changes, the host copy of each conflict with the
+`.guest` copy beside it, and the host's deletions - and records the merged tree as the new
+baseline. Nothing else in the guest is touched, so a file an agent writes while the sync runs
+survives it and is merged by the next one:
 
 ```sh
 zellij firecracker sync review [--session work]
