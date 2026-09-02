@@ -108,7 +108,6 @@ pub struct Listing {
 #[derive(Debug, Deserialize)]
 struct ListResponse {
     version: u32,
-    #[serde(alias = "entries")]
     vms: Vec<VmEntry>,
     #[serde(default)]
     recoveries: Vec<RecoveryEntry>,

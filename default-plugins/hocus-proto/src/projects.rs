@@ -623,6 +623,13 @@ pub fn adopt(projects: &mut Registry, mut project: Project) -> Option<String> {
             project.remote.clone_from(&other.remote);
             project.worktree_status = other.worktree_status;
             project.common_dir.clone_from(&other.common_dir);
+            // The image was set on the folder, not on the name a poll gave it, so
+            // it comes along unless the user named a different one.
+            if project.firecracker_image.is_none() {
+                project
+                    .firecracker_image
+                    .clone_from(&other.firecracker_image);
+            }
             other.name.clone()
         });
     if let Some(name) = &stale {
@@ -1147,6 +1154,25 @@ mod tests {
             projects["pocus"].remote.as_deref(),
             Some("git@example.com:hocus.git")
         );
+    }
+
+    #[test]
+    fn adopting_a_discovered_project_keeps_its_firecracker_image_unless_one_is_named() {
+        let mut projects = Registry::new();
+        discover(
+            &mut projects,
+            &[git("/work/hocus", None, WorktreeStatus::Primary)],
+        );
+        projects.get_mut("hocus").unwrap().firecracker_image = Some("rust".to_owned());
+
+        let mut named = projects.clone();
+        adopt(&mut named, validate("pocus", "/work/hocus").unwrap());
+        assert_eq!(named["pocus"].firecracker_image.as_deref(), Some("rust"));
+
+        let mut own = validate("pocus", "/work/hocus").unwrap();
+        own.firecracker_image = Some("ruby".to_owned());
+        adopt(&mut projects, own);
+        assert_eq!(projects["pocus"].firecracker_image.as_deref(), Some("ruby"));
     }
 
     #[test]

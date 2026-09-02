@@ -378,8 +378,16 @@ impl Run {
             (None, None) => None,
         }
     }
+    /// Prefix a layout, tab or template `cwd` onto this pane's own.
+    ///
+    /// A command that runs on another machine (`firecracker_vm` or `remote_host`,
+    /// see `RunCommand::display_host`) is left alone: its `cwd` names a
+    /// directory in the guest, so joining a host path onto it would produce a
+    /// path that exists nowhere, and when it has no `cwd` at all it must stay
+    /// `None` so the provider's own guest cwd applies.
     pub fn add_cwd(&mut self, cwd: &Path) {
         match self {
+            Run::Command(run_command) if run_command.display_host().is_some() => {},
             Run::Command(run_command) => match run_command.cwd.as_mut() {
                 Some(run_cwd) => {
                     *run_cwd = cwd.join(&run_cwd);

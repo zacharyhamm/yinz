@@ -20,8 +20,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use zellij_tile::plugin_authoring;
 use zellij_tile::prelude::{
-    FloatingPaneCoordinates, GitCheckout, PaneId, PercentOrFixed, PermissionType, SessionInfo,
-    WarpPlacement,
+    validate_firecracker_vm_name, FloatingPaneCoordinates, GitCheckout, PaneId, PercentOrFixed,
+    PermissionType, SessionInfo, WarpPlacement,
 };
 
 use crate::log::truncate_str;
@@ -756,10 +756,23 @@ pub fn specs() -> Value {
                 "properties": {
                     "command": { "type": "string", "description": "Omit for a shell." },
                     "args": { "type": "array", "items": { "type": "string" } },
-                    "cwd": { "type": "string", "description": "Defaults to the focused pane's." },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Defaults to the focused pane's; a guest path with firecracker.",
+                    },
                     "name": { "type": "string" },
                     "floating": { "type": "boolean" },
                     "in_new_tab": { "type": "boolean" },
+                    "firecracker": {
+                        "type": "string",
+                        "description": "Firecracker VM name; the pane's process runs in the VM, \
+                                        and omitting command opens the guest's login shell.",
+                    },
+                    "firecracker_image": {
+                        "type": "string",
+                        "description": "Named immutable image built with zellij-firecracker image \
+                                        build --name; requires firecracker.",
+                    },
                 },
             }),
         ),
@@ -1116,7 +1129,11 @@ pub fn specs() -> Value {
                 "properties": {
                     "name": { "type": "string" },
                     "root": { "type": "string", "description": "Absolute; required when new." },
-                    "firecracker_image": { "type": "string", "description": "Default named Firecracker image for this project." },
+                    "firecracker_image": {
+                        "type": "string",
+                        "description": "Default named Firecracker image for this project. \
+                                        Omitted keeps the stored one; empty clears it.",
+                    },
                     "tab_name": { "type": "string", "description": "Defaults to the project name." },
                 },
                 "required": ["name"],
@@ -1451,7 +1468,8 @@ pub fn specs() -> Value {
                     },
                     "hooks": {
                         "type": "boolean",
-                        "description": "claude reports its state via hooks; default true locally and unavailable in Firecracker VMs.",
+                        "description": "claude reports its state via hooks; default true, on the host \
+                                        and in a Firecracker VM alike.",
                     },
                     "firecracker": {
                         "type": "string",
@@ -2278,6 +2296,31 @@ impl Args {
             .skip_while(String::is_empty);
         let program = words.next()?;
         Some((program, words.collect()))
+    }
+
+    /// The VM a `new_pane` runs in and the image it boots from, read the way
+    /// `launch::plan` reads `agent_spawn`'s: blanks are absent, both names are
+    /// checked, and an image is only meaningful with a VM to boot it in.
+    pub fn firecracker_target(&self) -> Result<(Option<String>, Option<String>), String> {
+        let trimmed = |value: &Option<String>| {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        };
+        let vm = trimmed(&self.firecracker);
+        if let Some(name) = vm.as_deref() {
+            validate_firecracker_vm_name(name)?;
+        }
+        let image = trimmed(&self.firecracker_image);
+        if let Some(image) = image.as_deref() {
+            validate_firecracker_vm_name(image)?;
+            if vm.is_none() {
+                return Err("firecracker_image requires a Firecracker VM".to_owned());
+            }
+        }
+        Ok((vm, image))
     }
 
     /// What starting this agent means, in the terms `hocus-new-agent` says it in.
@@ -3783,28 +3826,48 @@ mod host {
     /// the host cannot tell from any other command pane, and the `agent_exit` hook would
     /// never fire for it.
     pub fn new_pane_with_context(args: &Args, context: BTreeMap<String, String>) -> String {
+        // Checked here, before anything opens, for the same reason `launch::plan`
+        // checks them: a bad name would otherwise reach the host as a pane that
+        // fails to start, and the model would have nothing to act on.
+        let (firecracker_vm, firecracker_image) = match args.firecracker_target() {
+            Ok(target) => target,
+            Err(error) => return error,
+        };
         let cwd = args.cwd.clone().map(PathBuf::from);
+        let open = |command: CommandToRun| {
+            if args.in_new_tab {
+                open_command_pane_in_new_tab(command, context).1
+            } else if args.floating {
+                open_command_pane_floating(command, None, context)
+            } else {
+                open_command_pane(command, context)
+            }
+        };
 
         // `program_and_args` is what `call_needs_confirmation` read, so a call
         // that was confirmed as running a program runs exactly that program.
         let opened = match args.program_and_args() {
-            Some((path, rest)) => {
-                let command = CommandToRun {
-                    path: PathBuf::from(path),
-                    args: rest,
-                    cwd: cwd.clone(),
-                    firecracker_vm: args.firecracker.clone(),
-                    firecracker_image: args.firecracker_image.clone(),
-                    ..Default::default()
-                };
-                if args.in_new_tab {
-                    open_command_pane_in_new_tab(command, context).1
-                } else if args.floating {
-                    open_command_pane_floating(command, None, context)
-                } else {
-                    open_command_pane(command, context)
-                }
-            },
+            Some((path, rest)) => open(CommandToRun {
+                path: PathBuf::from(path),
+                args: rest,
+                cwd,
+                firecracker_vm,
+                firecracker_image,
+                ..Default::default()
+            }),
+            // No command, but a VM: the guest's login shell, as `new_remote_pane`
+            // asks for the far machine's. `open_terminal*` would open a shell on
+            // the host, and `focused_cwd()` is a host path, so the cwd stays as
+            // given — unset lands the pane in the VM's working directory.
+            None if firecracker_vm.is_some() => open(CommandToRun {
+                path: PathBuf::new(),
+                args: vec![],
+                cwd,
+                firecracker_vm,
+                firecracker_image,
+                remote_default_shell: true,
+                ..Default::default()
+            }),
             // No command: a plain shell. `open_terminal*` wants a cwd, and the
             // focused pane's is the one the user would expect to land in.
             None => {

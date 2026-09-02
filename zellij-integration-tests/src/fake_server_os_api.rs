@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -57,11 +58,20 @@ pub struct FakeServerOsApi {
     /// like it is nowhere, and anything that reads a pane's folder — project
     /// detection above all — cannot be tested end to end.
     cwds: Arc<Mutex<HashMap<u32, PathBuf>>>,
+    /// How many times the server asked for the session's Firecracker VMs to be
+    /// released on its way out. The real backend forwards this to the provider;
+    /// the fake only counts, so a test can check the server asks exactly once
+    /// per exit.
+    firecracker_session_stops: Arc<AtomicUsize>,
 }
 
 impl FakeServerOsApi {
     pub fn written_files(&self) -> HashMap<String, String> {
         self.fake_filesystem.lock().unwrap().clone()
+    }
+
+    pub fn firecracker_session_stops(&self) -> usize {
+        self.firecracker_session_stops.load(Ordering::SeqCst)
     }
 
     pub fn connected_client_count(&self) -> usize {
@@ -286,6 +296,11 @@ impl ServerOsApi for FakeServerOsApi {
     /// has a supervisor process — but the control socket is, because that is the
     /// only thing the receiving session is told and the only thing it can get
     /// wrong.
+    fn stop_firecracker_session(&self) -> Result<()> {
+        self.firecracker_session_stops
+            .fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
     fn check_terminal_can_be_warped(&self, terminal_id: u32) -> Result<()> {
         self.shared_ptys
             .check_can_be_warped(terminal_id)

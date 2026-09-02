@@ -471,6 +471,73 @@ fn a_dead_remote_transport_does_not_prevent_a_local_rerun() {
     server.clear_terminal_id(7).unwrap();
 }
 
+/// A Firecracker pane is refused a warp before the release is attempted — the
+/// refusal is a message, where a failed release is a stranded pane — while an
+/// ordinary remote pane whose transport is up is allowed through.
+#[cfg(unix)]
+#[test]
+fn firecracker_panes_are_refused_a_warp_and_remote_panes_are_not() {
+    use crate::pty_host::remote::RemoteConn;
+    use std::os::unix::net::UnixStream;
+
+    let server = make_server();
+    // The peers are kept for the whole test: a dropped one reads as a lost
+    // transport, which is a different refusal from the one under test.
+    let mut kept_alive = Vec::new();
+    let mut register = |terminal_id: u32, command: RunCommand| {
+        let (write_socket, broker_peer) = UnixStream::pair().unwrap();
+        let (read_socket, reader_peer) = UnixStream::pair().unwrap();
+        kept_alive.push((broker_peer, reader_peer));
+        let connection = Arc::new(
+            RemoteConn::new(
+                write_socket,
+                "build-box".to_owned(),
+                "token".to_owned(),
+                command.clone(),
+                None,
+            )
+            .unwrap(),
+        );
+        server
+            .pty_backend
+            .register_remote_terminal(
+                terminal_id,
+                connection,
+                read_socket,
+                Box::new(|_, _, _| {}),
+                command,
+            )
+            .unwrap()
+    };
+    let _firecracker_reader = register(
+        7,
+        RunCommand {
+            command: PathBuf::from("claude"),
+            remote_host: Some("build-box".to_owned()),
+            firecracker_vm: Some("review".to_owned()),
+            ..Default::default()
+        },
+    );
+    let _remote_reader = register(
+        8,
+        RunCommand {
+            command: PathBuf::from("remote-step"),
+            remote_host: Some("build-box".to_owned()),
+            ..Default::default()
+        },
+    );
+
+    let error = server
+        .check_terminal_can_be_warped(7)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Firecracker panes"), "{error}");
+    server.check_terminal_can_be_warped(8).unwrap();
+
+    server.clear_terminal_id(7).unwrap();
+    server.clear_terminal_id(8).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn tcgetpgrp_returns_foreground_group() {

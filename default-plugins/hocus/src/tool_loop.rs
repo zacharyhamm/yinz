@@ -1265,17 +1265,26 @@ impl State {
             .map(str::trim)
             .filter(|name| !name.is_empty())
             .ok_or_else(|| "name is required".to_owned())?;
+        // Three readings of `firecracker_image`, kept apart on purpose: a key the
+        // model omitted keeps whatever is stored, an empty one clears it, and
+        // anything else names the image to use from now on.
+        let image = match args.firecracker_image.as_deref().map(str::trim) {
+            None => None,
+            Some("") => Some(None),
+            Some(image) => {
+                validate_firecracker_vm_name(image)?;
+                Some(Some(image.to_owned()))
+            },
+        };
+        // Read before `adopt` replaces the entry: a project remembered again with
+        // its root and nothing else keeps the image it already had.
+        let stored = self.projects.get(name).cloned();
         if let Some(root) = args.root.as_deref() {
             let mut project = projects::validate(name, root)?;
-            if let Some(image) = args
-                .firecracker_image
-                .as_deref()
-                .map(str::trim)
-                .filter(|image| !image.is_empty())
-            {
-                validate_firecracker_vm_name(image)?;
-                project.firecracker_image = Some(image.to_owned());
-            }
+            project.firecracker_image = match image {
+                Some(image) => image,
+                None => stored.and_then(|project| project.firecracker_image),
+            };
             let before = self.projects.clone();
             // The user just gave this folder a better name than a poll could.
             if let Some(gone) = projects::adopt(&mut self.projects, project.clone()) {
@@ -1290,9 +1299,21 @@ impl State {
             self.push_strip(false);
             Ok(project)
         } else {
-            self.projects.get(name).cloned().ok_or_else(|| {
+            let mut project = stored.ok_or_else(|| {
                 format!("unknown project {name}; root is required for a new project")
-            })
+            })?;
+            let Some(image) = image else {
+                return Ok(project);
+            };
+            // The image alone, on a project already known: an update in place,
+            // written the same way a new project is.
+            project.firecracker_image = image;
+            let before = self.projects.clone();
+            self.projects.insert(project.name.clone(), project.clone());
+            let mutations = projects::diff_mutations(&before, &self.projects);
+            let _ = self.write_store(mutations);
+            self.push_strip(false);
+            Ok(project)
         }
     }
 

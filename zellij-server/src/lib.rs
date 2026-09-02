@@ -2210,10 +2210,6 @@ pub fn start_server_impl(
     }
 
     log::info!("Server exiting: {exit_reason}");
-    let normal_shutdown = matches!(
-        exit_reason,
-        "the last client exited" | "KillSession" | "the last pane closed"
-    );
 
     // Before the joins below, so that a client connecting from now on — a hook's
     // `zellij action agent-report`, a session probe — is refused at the socket rather than
@@ -2240,9 +2236,11 @@ pub fn start_server_impl(
     // Belt and braces. A supervisor that outlived the sweep above would be a
     // leaked user process holding a live shell, invisible until `pty-host list`.
     os_input.shutdown_pty_hosts();
-    if normal_shutdown {
-        os_input.stop_firecracker_session().non_fatal();
-    }
+    // On every exit path, the fatal-error one included: the pty thread has been
+    // joined and every pane closed by now, so nothing in this server still needs
+    // its VMs. Only a server that never reaches here — killed, or crashed — leaves
+    // them running, which is what `zellij firecracker list` is for.
+    os_input.stop_firecracker_session().non_fatal();
 
     // Every break above sends the clients an `Exit` first, but sending only
     // queues it — the writer threads are detached, so without this wait the

@@ -137,6 +137,7 @@ impl Drop for TemporaryNetwork {
     }
 }
 
+/// A network of this process's own, so a test run never touches the user's real pool.
 fn test_network(pid: u32) -> serde_json::Value {
     serde_json::json!({
         "bridge": format!("zfcb{pid:x}"),

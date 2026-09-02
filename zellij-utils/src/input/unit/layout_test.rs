@@ -1828,6 +1828,104 @@ fn tab_cwd_prepended_to_panes_with_cwd() {
     assert_snapshot!(normalize_layout_debug(format!("{:#?}", layout)));
 }
 
+/// A pane that runs in a Firecracker VM keeps the `cwd` it was given, verbatim:
+/// it names a directory in the guest, so the layout's host `cwd` must not be
+/// joined onto it.
+#[test]
+fn global_cwd_not_prepended_to_firecracker_pane_with_cwd() {
+    use crate::input::command::RunCommand;
+    let kdl_layout = r#"
+        layout {
+            cwd "/tmp"
+            pane command="cargo" firecracker_vm="review" cwd="/workspace"
+            pane firecracker_vm="review" cwd="src/project"
+        }
+    "#;
+    let layout = Layout::from_kdl(kdl_layout, Some("layout_file_name".into()), None, None).unwrap();
+    let cwds: Vec<_> = layout
+        .template
+        .as_ref()
+        .unwrap()
+        .0
+        .children
+        .iter()
+        .map(|pane| match &pane.run {
+            Some(Run::Command(RunCommand { cwd, .. })) => cwd.clone(),
+            other => panic!("expected a command pane, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        cwds,
+        vec![
+            Some(PathBuf::from("/workspace")),
+            Some(PathBuf::from("src/project")),
+        ],
+        "a guest cwd is not a path under the host layout cwd"
+    );
+}
+
+/// A Firecracker pane without a `cwd` stays without one: the provider decides
+/// the guest's starting directory, and a host path would mean nothing there.
+#[test]
+fn global_cwd_not_given_to_firecracker_pane_without_cwd() {
+    use crate::input::command::RunCommand;
+    let kdl_layout = r#"
+        layout {
+            cwd "/tmp"
+            pane command="cargo" firecracker_vm="review"
+            pane firecracker_vm="review"
+            pane command="local" // the host pane still gets /tmp
+        }
+    "#;
+    let layout = Layout::from_kdl(kdl_layout, Some("layout_file_name".into()), None, None).unwrap();
+    let cwds: Vec<_> = layout
+        .template
+        .as_ref()
+        .unwrap()
+        .0
+        .children
+        .iter()
+        .map(|pane| match &pane.run {
+            Some(Run::Command(RunCommand { cwd, .. })) => cwd.clone(),
+            other => panic!("expected a command pane, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(cwds, vec![None, None, Some(PathBuf::from("/tmp"))]);
+}
+
+/// The same holds for a pane on a remote host, which has no layout spelling
+/// but reaches `Run::add_cwd` through the same layout, tab and template prefixes.
+#[test]
+fn global_cwd_not_prepended_to_remote_host_pane_with_cwd() {
+    use crate::input::command::RunCommand;
+    let mut run = Run::Command(RunCommand {
+        command: PathBuf::from("cargo"),
+        cwd: Some(PathBuf::from("src/project")),
+        remote_host: Some("ssh://me@build.example".to_owned()),
+        ..Default::default()
+    });
+    run.add_cwd(Path::new("/tmp"));
+    let Run::Command(run_command) = run else {
+        panic!("add_cwd changed the run variant");
+    };
+    assert_eq!(run_command.cwd, Some(PathBuf::from("src/project")));
+}
+
+#[test]
+fn global_cwd_not_given_to_remote_host_pane_without_cwd() {
+    use crate::input::command::RunCommand;
+    let mut run = Run::Command(RunCommand {
+        command: PathBuf::from("cargo"),
+        remote_host: Some("ssh://me@build.example".to_owned()),
+        ..Default::default()
+    });
+    run.add_cwd(Path::new("/tmp"));
+    let Run::Command(run_command) = run else {
+        panic!("add_cwd changed the run variant");
+    };
+    assert_eq!(run_command.cwd, None);
+}
+
 fn floating_pane_cwds(floating_panes: &[FloatingPaneLayout]) -> Vec<Option<PathBuf>> {
     floating_panes
         .iter()

@@ -2114,6 +2114,16 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                         kdl_action.span().len(),
                     ));
                 }
+                if firecracker_worktree
+                    .as_ref()
+                    .is_some_and(|path| !path.is_absolute())
+                {
+                    return Err(ConfigError::new_kdl_error(
+                        "firecracker_worktree must be an absolute path".into(),
+                        kdl_action.span().offset(),
+                        kdl_action.span().len(),
+                    ));
+                }
                 let run_command_action = RunCommandAction {
                     command: PathBuf::from(command),
                     args,

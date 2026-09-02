@@ -10,7 +10,7 @@
 //! given exactly the rows it asked for - scrolled the whole frame up by one. Every widget
 //! then answered to a click one row *below* itself, and the title scrolled off the top.
 
-use zellij_integration_tests::{keys, LayoutInfo, TestRunner, TERMINAL_SIZE};
+use zellij_integration_tests::{keys, LayoutInfo, Size, TestRunner, TERMINAL_SIZE};
 
 /// The modal as the shipped config opens it, minus every background plugin: a floating
 /// plugin pane that sizes itself to the dialog, with the mouse on.
@@ -217,6 +217,67 @@ fn the_new_agent_modal_can_be_dragged_by_its_frame() {
         "the modal went back to where it was opened:\n{}",
         snapshot.text
     );
+
+    zellij.quit();
+}
+
+/// The two Firecracker rows, and the check that pairs them: an image names what a
+/// VM boots from, so one typed without a VM is refused in the modal's status row
+/// rather than reaching the host as a pane that cannot start.
+#[test]
+fn an_image_without_a_vm_is_refused_in_the_modals_status_row() {
+    // Tall enough for the whole dialog: in the default 24 rows the form scrolls, and
+    // the button and the status row this test reads sit below the viewport.
+    let mut zellij = TestRunner::new(Size {
+        cols: 120,
+        rows: 40,
+    })
+    .with_config(NEW_AGENT_CONFIG)
+    .with_layout(LayoutInfo::Stringified(SHELL_ONLY.to_owned()))
+    .start();
+    let _shell = zellij.expect_pty_spawn();
+
+    zellij.send_stdin(&keys::ctrl('b'));
+    let snapshot = zellij.wait_until("the new agent modal is up", |snapshot| {
+        snapshot.contains("Firecracker image") && snapshot.contains("[x]")
+    });
+    assert!(
+        snapshot.contains("Firecracker VM"),
+        "the VM row is missing from the modal:\n{}",
+        snapshot.text
+    );
+
+    // Off, so the branch fields are not the first thing the submit complains about.
+    let (column, row) = position_of(&snapshot, "Create and switch branch");
+    zellij.send_stdin(&sgr_press(column + 1, row + 1));
+    zellij.send_stdin(&sgr_release(column + 1, row + 1));
+    zellij.wait_until("the branch checkbox is off", |snapshot| {
+        snapshot
+            .text
+            .lines()
+            .any(|line| line.contains("Create and switch branch") && line.contains("[ ]"))
+    });
+
+    // A click into a text field is enough to start typing in it.
+    let (column, row) = position_of(&snapshot, "Firecracker image");
+    zellij.send_stdin(&sgr_press(column + 1, row + 1));
+    zellij.send_stdin(&sgr_release(column + 1, row + 1));
+    for character in "rust".chars() {
+        zellij.send_stdin(&keys::key(character));
+    }
+    let snapshot = zellij.wait_until("the image was typed into its field", |snapshot| {
+        snapshot
+            .text
+            .lines()
+            .any(|line| line.contains("Firecracker image") && line.contains("rust"))
+    });
+
+    let (column, row) = position_of(&snapshot, "Create agent");
+    zellij.send_stdin(&sgr_press(column + 1, row + 1));
+    zellij.send_stdin(&sgr_release(column + 1, row + 1));
+    zellij.wait_until("the modal refused the image", |snapshot| {
+        snapshot.contains("firecracker_image requires a Firecracker VM")
+    });
 
     zellij.quit();
 }
