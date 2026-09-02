@@ -2281,6 +2281,66 @@ fn a_dragged_divider_is_read_back_off_the_manifest_and_kept() {
     assert_eq!(placed_pane(&state, 7), Some((51, 14, 42, 33)));
 }
 
+/// The manifest the server sends back after hocus's own placement shows the halves side by side
+/// too, cut where the split floors to a column. That is not a drag and must not be read as one:
+/// a ratio replaced by its floor is a smaller ratio, and the next placement would floor it again.
+#[test]
+fn a_manifest_echoing_our_own_placement_leaves_the_split_alone() {
+    let mut state = agents_beside_state();
+    // a third of the panel, which no width of the panel's divides exactly
+    state.split = Some((1, 3));
+    state.kdl = config(&[("width", "100")]);
+    state.apply_overlay_geometry();
+    assert_eq!(placed_pane(&state, 9).map(|(_, _, cols, _)| cols), Some(33));
+
+    state.on_panes(manifest(0, echoed_placement(&state)));
+    assert_eq!(
+        state.split,
+        Some((1, 3)),
+        "33 of 100 is our own cut of a third"
+    );
+
+    // and with nothing read off the manifest, the configured split stays configured
+    let mut state = agents_beside_state();
+    assert_eq!(state.split, None, "the list at home is the configured half");
+    state.on_panes(manifest(0, list_beside()));
+    assert_eq!(state.split, None);
+}
+
+/// The whole of what the echo guard is for: a terminal resized back and forth keeps the divider
+/// where it was, rather than walking it left a column at a time.
+#[test]
+fn the_split_does_not_drift_across_repeated_resizes() {
+    let mut state = agents_beside_state();
+    state.split = Some((1, 3));
+    for width in ["100", "70", "100", "70", "100", "70", "100"] {
+        state.kdl = config(&[("width", width)]);
+        state.apply_overlay_geometry();
+        state.on_panes(manifest(0, echoed_placement(&state)));
+    }
+    assert_eq!(state.split, Some((1, 3)));
+    assert_eq!(
+        placed_pane(&state, 9).map(|(_, _, cols, _)| cols),
+        Some(33),
+        "a third of 100, as on the first resize"
+    );
+}
+
+/// The manifest the server would send back for the last placement: both halves drawn exactly
+/// where they were asked to go, over the two-pane tab.
+fn echoed_placement(state: &State) -> Vec<PaneInfo> {
+    let (x, y, cols, rows) = placed_pane(state, 9).expect("the list was placed");
+    let list = overlay_pane(9, x, y, cols, rows);
+    let (x, y, cols, rows) = placed_pane(state, 7).expect("the conversation was placed");
+    let chat = overlay_pane(7, x, y, cols, rows);
+    vec![
+        list,
+        chat,
+        tiled(1, 0, 0, 100, 50, true),
+        tiled(2, 100, 0, 100, 50, false),
+    ]
+}
+
 /// The server's floor for a seam drag is lower than hocus's, and the user's divider wins: a
 /// split dragged past what a half can draw a conversation in is read back and kept, rather than
 /// pulled to the floor on the next placement - which would move a divider the user just placed.

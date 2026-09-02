@@ -1071,6 +1071,13 @@ impl State {
     /// later placement cuts the panel there. A manifest on which the two are not beside each
     /// other - one hidden and filling the panel, or the frame between them not yet re-drawn -
     /// says nothing about the split and leaves it as it was.
+    ///
+    /// **Only a divider somebody moved is read.** Most manifests with the halves side by side
+    /// are the server echoing hocus's own placement, and that cut is the split *floored* to a
+    /// column: reading it back would replace the ratio with its floor, and the next resize would
+    /// floor that again, so the divider crept left a column at a time for as long as the
+    /// terminal kept resizing. A manifest showing the cut the split already makes of that
+    /// width is therefore left alone, and the configured split stays configured until a drag.
     pub(crate) fn read_split(&mut self, panes: &[PaneInfo]) {
         let Some(agents_id) = self.agents_plugin else {
             return;
@@ -1084,9 +1091,15 @@ impl State {
         let (Some(chat), Some(agents)) = (drawn(self.own_plugin_id), drawn(agents_id)) else {
             return;
         };
-        if agents.is_beside(&chat) {
-            self.split = Some((agents.cols, agents.cols + chat.cols));
+        if !agents.is_beside(&chat) {
+            return;
         }
+        let panel_cols = agents.cols + chat.cols;
+        if agents.cols == agents_cols(&self.kdl, panel_cols, self.split) {
+            // Our own cut, echoed. See above.
+            return;
+        }
+        self.split = Some((agents.cols, panel_cols));
     }
 
     /// Ctrl-o: move the panel somewhere else.
