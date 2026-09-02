@@ -382,7 +382,11 @@ impl State {
         let Some(mut messages) = history::load(&self.private_store(), id) else {
             return;
         };
-        let usage = history::load_usage(&self.private_store(), id);
+        // A chat that cannot be read is not opened, as above: opened with no
+        // totals, its next save would write that absence over the real ones.
+        let Ok(usage) = history::load_usage(&self.private_store(), id) else {
+            return;
+        };
         // The jobs the chat was armed with when hocus last ran come back with
         // it, and start counting down again from here.
         let jobs = self.take_held_jobs(id);
