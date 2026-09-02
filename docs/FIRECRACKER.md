@@ -152,6 +152,34 @@ uid-derived `10.<uid-high>.<uid-low>.0/24` subnet described above, 16 TAP device
 sudo zellij-firecracker network teardown --user "$USER"
 ```
 
+`network setup` and `network apply` converge on the configured state from whatever state the host
+is in, so both are safe to re-run; the boot unit relies on it. Every rule the provider puts in
+`INPUT`, `FORWARD`, or nat `POSTROUTING` carries an `-m comment --comment
+"zellij-firecracker:<uid>"` tag, and cleanup finds its rules in the live table by that tag, by the
+bridge name, or by the jump to its own chain — never by reconstructing the spec from the current
+configuration, which is what used to break when the subnet changed.
+
+A failed run undoes only what that run created. A bridge or TAP that was already up is left alone,
+because it may be carrying another session's VMs. Anything that could not be undone is printed
+with the command that removes it.
+
+`network teardown` works without `/etc/zellij-firecracker/<uid>.json`: everything but the subnet
+follows from the UID. Use it to clean up after a setup that failed before it recorded its
+configuration.
+
+### Troubleshooting
+
+**`iptables: Chain already exists.`** — a host configured by a provider older than this change.
+Its rules were written for a different subnet, so the old cleanup could not match them, the
+leftover jump kept the chain referenced, and re-creating the chain failed on every run. Current
+versions recover on their own; nothing needs to be done by hand.
+
+**A warning about a NAT rule "that cannot be proven to be ours"** — a `POSTROUTING -s <subnet> -j
+MASQUERADE` for a subnet this host no longer uses. A NAT rule names no interface and, if it
+predates the tag, carries no identifying comment, so the provider refuses to guess and reports it
+instead. It blocks nothing. Remove it with the `iptables -t nat -D ...` command the warning prints,
+once you have confirmed it is not another tool's.
+
 This is a single-user developer provider. It is not a multi-user VM service. Each VM runs as the
 Zellij user in a user and mount namespace. Firecracker applies its seccomp filter. The provider
 also applies CPU, memory, and process limits through cgroup v2: each VM gets a child of the
