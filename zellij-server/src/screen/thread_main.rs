@@ -479,7 +479,10 @@ pub(crate) fn screen_thread_main(
                                     active_tab.hold_pane(pid, None, is_first_run, hold_for_command);
                             }
                         } else {
-                            log::error!("Tab index not found: {:?}", tab_index);
+                            screen.forget_unplaced_pane(
+                                pid,
+                                format!("tab index {tab_index:?} not found"),
+                            );
                         }
                     },
                     ClientTabIndexOrPaneId::PaneId(pane_id) => {
@@ -538,9 +541,9 @@ pub(crate) fn screen_thread_main(
                             }
                         }
                         if !found {
-                            log::error!(
-                                "Failed to find tab containing pane with id: {:?}",
-                                pane_id
+                            screen.forget_unplaced_pane(
+                                pid,
+                                format!("no tab contains pane {pane_id:?}"),
                             );
                         }
                     },

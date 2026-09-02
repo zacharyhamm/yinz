@@ -9,7 +9,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{atomic::AtomicBool, Arc},
     thread::JoinHandle,
     time::Duration,
 };
@@ -82,7 +82,13 @@ fn a_provider_boots_a_real_firecracker_remote_pane() {
     let name = "pane";
     let project = repo_root();
     let ensured = provider
-        .ensure(session, name, Some(IMAGE), Some(&project))
+        .ensure(
+            session,
+            name,
+            Some(IMAGE),
+            Some(&project),
+            &AtomicBool::new(false),
+        )
         .unwrap();
     let _guard = SessionGuard {
         provider: provider.clone(),
@@ -130,7 +136,13 @@ fn a_worktree_vm_syncs_merges_renames_and_stops() {
     let _config = ConfigWithCredential::new(&host_credential, "/root/.zellij-test/auth.json");
 
     let ensured = provider
-        .ensure(session, name, Some(IMAGE), Some(&worktree_path))
+        .ensure(
+            session,
+            name,
+            Some(IMAGE),
+            Some(&worktree_path),
+            &AtomicBool::new(false),
+        )
         .unwrap();
     assert_eq!(ensured.cwd.as_deref(), Some(Path::new("/workspace")));
     let listing = provider.list(Some(session)).unwrap();
@@ -243,10 +255,22 @@ fn two_sessions_share_a_worktree_vm_until_the_last_one_leaves() {
     fs::write(worktree_path.join("shared.txt"), "shared\n").unwrap();
 
     let ensured = provider
-        .ensure(first, name, Some(IMAGE), Some(&worktree_path))
+        .ensure(
+            first,
+            name,
+            Some(IMAGE),
+            Some(&worktree_path),
+            &AtomicBool::new(false),
+        )
         .unwrap();
     let joined = provider
-        .ensure(second, name, Some(IMAGE), Some(&worktree_path))
+        .ensure(
+            second,
+            name,
+            Some(IMAGE),
+            Some(&worktree_path),
+            &AtomicBool::new(false),
+        )
         .unwrap();
     assert_eq!(
         joined.ssh_host, ensured.ssh_host,
@@ -270,7 +294,13 @@ fn two_sessions_share_a_worktree_vm_until_the_last_one_leaves() {
 
     // A different name for the same worktree is refused while the VM runs.
     let refused = provider
-        .ensure(first, "other", Some(IMAGE), Some(&worktree_path))
+        .ensure(
+            first,
+            "other",
+            Some(IMAGE),
+            Some(&worktree_path),
+            &AtomicBool::new(false),
+        )
         .unwrap_err()
         .to_string();
     assert!(refused.contains("already running"), "{refused}");

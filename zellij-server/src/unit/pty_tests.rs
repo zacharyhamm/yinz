@@ -64,6 +64,8 @@ struct MockOsApi {
     firecracker_transport_release: Arc<Barrier>,
     firecracker_terminal_id: Arc<Mutex<Option<u32>>>,
     resolved_firecracker_spawns: Arc<Mutex<Vec<u32>>>,
+    /// The remote panes that run in a Firecracker VM rather than on an ssh host.
+    firecracker_panes: Arc<Mutex<std::collections::HashSet<u32>>>,
 }
 
 impl MockOsApi {
@@ -93,7 +95,12 @@ impl MockOsApi {
             firecracker_transport_release: Arc::new(Barrier::new(1)),
             firecracker_terminal_id: Arc::new(Mutex::new(None)),
             resolved_firecracker_spawns: Arc::new(Mutex::new(vec![])),
+            firecracker_panes: Arc::new(Mutex::new(std::collections::HashSet::new())),
         }
+    }
+    fn mark_firecracker(&self, terminal_id: u32) {
+        self.mark_remote(terminal_id);
+        self.firecracker_panes.lock().unwrap().insert(terminal_id);
     }
     fn rerun_commands(&self) -> Vec<RunCommand> {
         self.rerun_commands.lock().unwrap().clone()
@@ -287,6 +294,12 @@ impl ServerOsApi for MockOsApi {
     }
     fn is_remote_pane(&self, terminal_id: u32) -> bool {
         self.remote_panes.lock().unwrap().contains(&terminal_id)
+    }
+    fn is_firecracker_pane(&self, terminal_id: u32) -> bool {
+        self.firecracker_panes
+            .lock()
+            .unwrap()
+            .contains(&terminal_id)
     }
     fn signal_remote_child(&self, terminal_id: u32, signal: ChildSignal) -> anyhow::Result<()> {
         self.remote_signals
@@ -1369,14 +1382,63 @@ fn a_failed_firecracker_rerun_is_shown_and_held_without_hold_on_close() {
     )));
 }
 
+/// A Firecracker pane has no local pid, and its VM stops with the session, so
+/// teardown terminates it on its broker like a local child.
 #[test]
-fn pty_teardown_closes_remote_panes_without_local_pids() {
+fn pty_teardown_closes_firecracker_panes_without_local_pids() {
+    let os_api = MockOsApi::new();
+    let (pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    os_api.mark_firecracker(7);
+
+    drop(pty);
+
+    assert_eq!(os_api.remote_signals(), vec![(7, ChildSignal::Hup)]);
+    assert_eq!(os_api.cleared_terminal_ids.lock().unwrap().clone(), vec![7]);
+}
+
+/// An ssh pane's process is the point: it survives the session on its broker,
+/// where `zellij pty-host adopt --host` can find it, so teardown leaves it be.
+#[test]
+fn pty_teardown_leaves_ssh_panes_adoptable() {
     let os_api = MockOsApi::new();
     let (pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
     os_api.mark_remote(7);
 
     drop(pty);
 
+    assert!(os_api.remote_signals().is_empty());
+    assert!(os_api.cleared_terminal_ids.lock().unwrap().is_empty());
+}
+
+/// Closing a remote pane aborts its reader and moves on. The wait for the
+/// reader to actually stop belongs to the warp path, which reuses the socket;
+/// a close does not, and the pty thread must not spend the reader's shutdown
+/// timeout on every remote pane of a closing tab.
+#[test]
+fn closing_a_remote_pane_does_not_wait_for_its_reader() {
+    let (mut pty, os_api) = pty_with_remote_pane(7, 4242);
+    let (started_tx, started_rx) = channels::bounded(1);
+    let (release_tx, release_rx) = channels::bounded::<()>(1);
+    // A reader that never reaches an await point until released, so an abort
+    // alone cannot end it within the shutdown timeout.
+    pty.task_handles.insert(
+        7,
+        async_runtime().spawn(async move {
+            let _ = started_tx.send(());
+            let _ = tokio::task::spawn_blocking(move || release_rx.recv()).await;
+        }),
+    );
+    started_rx.recv().unwrap();
+
+    let start = std::time::Instant::now();
+    pty.close_pane(PaneId::Terminal(7)).unwrap();
+    let took = start.elapsed();
+    let _ = release_tx.send(());
+
+    assert!(
+        took < READER_SHUTDOWN_TIMEOUT,
+        "close_pane waited {took:?} for a reader it only had to abort"
+    );
     assert_eq!(os_api.remote_signals(), vec![(7, ChildSignal::Hup)]);
 }
 

@@ -3200,16 +3200,35 @@ impl Screen {
                         }
                     },
                     None => {
-                        log::error!("Could not find pane with id: {:?}", pane_id);
+                        self.forget_unplaced_pane(
+                            new_pane_id,
+                            format!("pane {pane_id:?} to replace not found"),
+                        );
                     },
                 };
             },
             ClientTabIndexOrPaneId::TabIndex(_tab_index)
             | ClientTabIndexOrPaneId::TabIndexNoFocus(_tab_index) => {
-                log::error!("Cannot replace pane with tab index");
+                self.forget_unplaced_pane(
+                    new_pane_id,
+                    "cannot replace a pane by tab index".to_owned(),
+                );
             },
         }
         Ok(())
+    }
+    /// A pane the pty thread already started has nowhere to go: the tab or
+    /// pane it was meant for closed while it was being spawned, which for a
+    /// remote pane can be a VM boot later. Nothing owns it now, so the pty
+    /// thread is asked to close it; otherwise its process, transport and reader
+    /// would run until the session ends.
+    pub fn forget_unplaced_pane(&self, pane_id: PaneId, why: String) {
+        log::error!("dropping pane {pane_id:?}: {why}");
+        self.bus
+            .senders
+            .send_to_pty(PtyInstruction::ClosePane(pane_id, None))
+            .with_context(|| format!("failed to close unplaced pane {pane_id:?}"))
+            .non_fatal();
     }
     pub fn replace_pane_with_existing_pane(
         &mut self,

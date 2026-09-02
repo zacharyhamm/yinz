@@ -224,6 +224,38 @@ fn the_hidden_half_of_a_scrollback_editor_pair_can_be_warped() {
     );
 }
 
+/// A pane spawned to replace one that closed meanwhile (a VM boot later, say)
+/// has nowhere to go. Screen never owned it, so it tells the pty thread to
+/// close it rather than leaving its process, transport and reader running
+/// until the session ends.
+#[test]
+fn a_replacement_for_a_pane_that_is_gone_is_closed_on_the_pty_thread() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    new_tab(&mut screen, 1, 0);
+    let (to_pty, pty_receiver): ChannelWithContext<PtyInstruction> = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+
+    screen
+        .replace_pane(
+            PaneId::Terminal(50),
+            None,
+            None,
+            None,
+            false,
+            ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(999)),
+        )
+        .expect("TEST");
+
+    let closed_by_pty: Vec<PaneId> = pty_receiver
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PtyInstruction::ClosePane(pane_id, _) => Some(pane_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(closed_by_pty, vec![PaneId::Terminal(50)]);
+}
+
 #[test]
 fn warping_a_pane_being_edited_closes_the_editor_on_the_pty_thread_too() {
     // The editor is being closed rather than moved, so unlike the warped pane it

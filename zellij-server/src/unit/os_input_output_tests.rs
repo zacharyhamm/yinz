@@ -19,7 +19,7 @@ fn firecracker_resolution_keeps_an_unresolved_command_for_reruns() {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
 
     let server = make_server();
-    *server.firecracker.lock().unwrap() = Some((
+    *server.firecracker.write().unwrap() = Some((
         crate::firecracker::Provider::new(path, Duration::from_secs(1)).unwrap(),
         "work".to_owned(),
     ));
@@ -71,7 +71,7 @@ fn rename_firecracker_session_updates_the_session_key() {
     .unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
     let server = make_server();
-    *server.firecracker.lock().unwrap() = Some((
+    *server.firecracker.write().unwrap() = Some((
         crate::firecracker::Provider::new(path, Duration::from_secs(1)).unwrap(),
         "work".to_owned(),
     ));
@@ -85,7 +85,7 @@ fn rename_firecracker_session_updates_the_session_key() {
     );
     let key = server
         .firecracker
-        .lock()
+        .read()
         .unwrap()
         .as_ref()
         .unwrap()
@@ -103,6 +103,93 @@ fn rename_firecracker_session_updates_the_session_key() {
 
 /// A provider that refuses the rename leaves the server on the old name too, so the two
 /// still agree on which session owns the VMs.
+/// Two renames in quick succession reach the provider in order, and the
+/// server ends up keyed on the last name: the rename worker applies what it
+/// was last asked for rather than whichever thread wins a lock.
+#[test]
+fn two_quick_renames_leave_the_provider_keyed_on_the_last_name() {
+    use std::fs;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("provider");
+    zellij_test_support::write_script(
+        &path,
+        "#!/bin/sh\nsleep 0.2\ncat >> \"$(dirname \"$0\")/requests\"\nprintf '{\"version\":2}'\n",
+    );
+    let server = make_server();
+    *server.firecracker.write().unwrap() = Some((
+        crate::firecracker::Provider::new(path, Duration::from_secs(5)).unwrap(),
+        "a".to_owned(),
+    ));
+
+    server.rename_firecracker_session("b".to_owned());
+    server.rename_firecracker_session("c".to_owned());
+    server.firecracker_renames.close_and_join();
+
+    let key = server
+        .firecracker
+        .read()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .1
+        .clone();
+    assert_eq!(key, "c");
+    let requests = fs::read_to_string(dir.path().join("requests")).unwrap();
+    assert!(
+        requests.ends_with(r#""to":"c"}"#),
+        "the last request must be the rename to c, got {requests}"
+    );
+    assert!(
+        !requests.contains(r#""from":"c","to":"b""#),
+        "a stale rename ran after the newer one: {requests}"
+    );
+}
+
+/// A session shutting down does not wait out a VM boot: the flag set by
+/// `stop_firecracker_session` cuts a running `ensure` short.
+#[test]
+fn stopping_the_session_cancels_an_ensure_in_flight() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("provider");
+    zellij_test_support::write_script(
+        &path,
+        "#!/bin/sh\nsleep 30\nprintf '{\"version\":2,\"ssh_host\":\"build-box\"}'\n",
+    );
+    let server = make_server();
+    *server.firecracker.write().unwrap() = Some((
+        crate::firecracker::Provider::new(path, Duration::from_secs(60)).unwrap(),
+        "work".to_owned(),
+    ));
+    let requested = RunCommand {
+        command: PathBuf::from("claude"),
+        target: PaneTarget::Firecracker {
+            vm: "review".to_owned(),
+            image: None,
+            worktree: None,
+        },
+        ..Default::default()
+    };
+
+    let resolver = {
+        let server = server.clone();
+        std::thread::spawn(move || server.resolve_target(requested))
+    };
+    std::thread::sleep(Duration::from_millis(200));
+    let start = std::time::Instant::now();
+    server.begin_firecracker_shutdown();
+    let resolved = resolver.join().unwrap();
+
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "the ensure was waited out instead of cancelled"
+    );
+    let error = resolved
+        .expect_err("a cancelled ensure is an error")
+        .to_string();
+    assert!(error.contains("shutting down"), "{error}");
+}
+
 #[test]
 fn a_refused_rename_keeps_the_old_firecracker_session_key() {
     use std::{fs, os::unix::fs::PermissionsExt};
@@ -112,7 +199,7 @@ fn a_refused_rename_keeps_the_old_firecracker_session_key() {
     fs::write(&path, "#!/bin/sh\necho 'unknown action' >&2\nexit 1\n").unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
     let server = make_server();
-    *server.firecracker.lock().unwrap() = Some((
+    *server.firecracker.write().unwrap() = Some((
         crate::firecracker::Provider::new(path, Duration::from_secs(1)).unwrap(),
         "work".to_owned(),
     ));
@@ -124,7 +211,7 @@ fn a_refused_rename_keeps_the_old_firecracker_session_key() {
     assert!(error.contains("stay under \"work\""), "{error}");
     let key = server
         .firecracker
-        .lock()
+        .read()
         .unwrap()
         .as_ref()
         .unwrap()
@@ -137,18 +224,15 @@ fn a_refused_rename_keeps_the_old_firecracker_session_key() {
 fn failed_firecracker_pane_termination_does_not_skip_provider_shutdown() {
     use crate::pty_host::remote::RemoteConn;
     use std::os::unix::net::UnixStream;
-    use std::{fs, os::unix::fs::PermissionsExt};
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("provider");
-    fs::write(
+    zellij_test_support::write_script(
         &path,
         "#!/bin/sh\ntouch \"$(dirname \"$0\")/called\"\nprintf '{\"version\":2}'\n",
-    )
-    .unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let server = make_server();
-    *server.firecracker.lock().unwrap() = Some((
+    *server.firecracker.write().unwrap() = Some((
         crate::firecracker::Provider::new(path, Duration::from_secs(1)).unwrap(),
         "work".to_owned(),
     ));
