@@ -1767,6 +1767,36 @@ pub struct HistoryLines {
     /// The timeline, oldest first - summaries among the rest of the events rather than above
     /// them. The caller windows this against the room it has.
     pub entries: Vec<MdLine>,
+    /// Which rows of `entries` came from which event, oldest first.
+    ///
+    /// `entries` alone is a flat run of lines, and a capped event is a lie without the whole
+    /// of what it said kept somewhere: this is what lets a caller put a cursor on an event
+    /// rather than on a line, and open the uncapped text when the user asks for it. The spans
+    /// tile `entries` exactly - every row belongs to one event and no row to two.
+    pub events: Vec<HistoryEvent>,
+}
+
+/// One event of the timeline: which rows of [`HistoryLines::entries`] it took after the cap,
+/// and the whole of what it said, for the reader that shows it uncapped.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HistoryEvent {
+    /// First row of this event in `entries`.
+    pub start: usize,
+    /// How many rows it took - never more than [`MAX_ENTRY_ROWS`].
+    pub len: usize,
+    /// What a reader's divider calls it: [`RunEntryKind::label`], or `"summary"`.
+    pub kind: String,
+    /// When it was recorded, so a reader's age stays live rather than freezing at open.
+    pub created_at_ms: Option<i64>,
+    /// The event's text, uncapped and unwrapped.
+    pub text: String,
+}
+
+impl HistoryEvent {
+    /// One past the last row of `entries` this event owns.
+    pub fn end(&self) -> usize {
+        self.start + self.len
+    }
 }
 
 /// Nothing selected, or nothing to say about what is - what a caller borrows when its cache is
@@ -1774,6 +1804,7 @@ pub struct HistoryLines {
 pub static NO_HISTORY: HistoryLines = HistoryLines {
     label: String::new(),
     entries: Vec::new(),
+    events: Vec::new(),
 };
 
 impl HistoryLines {
@@ -1828,49 +1859,52 @@ pub fn run_history(run: &AgentRun, width: usize, now_ms: i64) -> HistoryLines {
     let Some(inner) = wrap_width(width) else {
         return HistoryLines::default();
     };
-    let mut entries: Vec<MdLine> = run
-        .entries
-        .iter()
-        .filter(|entry| {
-            matches!(
-                entry.kind,
-                RunEntryKind::Prompt
-                    | RunEntryKind::Plan
-                    | RunEntryKind::Question
-                    | RunEntryKind::Summary
-            ) || (run.outcome != RunOutcome::Active
-                && entry.kind == RunEntryKind::Result
-                && entry.revision > run.summarized_revision)
-        })
-        .flat_map(|entry| {
-            let style = match entry.kind {
-                RunEntryKind::Summary => SUMMARY_LABEL_STYLE,
-                _ => LABEL_STYLE,
-            };
-            labelled(
-                &entry.text,
-                entry.kind.label(),
-                &age_gutter(now_ms, entry.created_at_ms),
-                inner,
-                style,
-            )
-            .0
-        })
-        .collect();
+    let mut entries: Vec<MdLine> = Vec::new();
+    let mut events: Vec<HistoryEvent> = Vec::new();
+    // Walked rather than `flat_map`ped: each event's rows have to be counted before the next
+    // one's begin, which is the whole of what a span is.
+    let mut push = |text: &str, kind: &str, created_at_ms, style| {
+        let gutter = age_gutter(now_ms, created_at_ms);
+        let rows = cap_rows(
+            labelled(text, kind, &gutter, inner, style).0,
+            gutter.width(),
+        );
+        events.push(HistoryEvent {
+            start: entries.len(),
+            len: rows.len(),
+            kind: kind.to_owned(),
+            created_at_ms,
+            text: text.to_owned(),
+        });
+        entries.extend(rows);
+    };
+    for entry in run.entries.iter().filter(|entry| {
+        matches!(
+            entry.kind,
+            RunEntryKind::Prompt
+                | RunEntryKind::Plan
+                | RunEntryKind::Question
+                | RunEntryKind::Summary
+        ) || (run.outcome != RunOutcome::Active
+            && entry.kind == RunEntryKind::Result
+            && entry.revision > run.summarized_revision)
+    }) {
+        let style = match entry.kind {
+            RunEntryKind::Summary => SUMMARY_LABEL_STYLE,
+            _ => LABEL_STYLE,
+        };
+        push(&entry.text, entry.kind.label(), entry.created_at_ms, style);
+    }
     if let Some(summary) = run
         .summary
         .as_ref()
         .filter(|summary| !repeats_newest(run, summary))
     {
-        entries.extend(
-            labelled(
-                &summary.text,
-                "summary",
-                &age_gutter(now_ms, summary.created_at_ms),
-                inner,
-                SUMMARY_LABEL_STYLE,
-            )
-            .0,
+        push(
+            &summary.text,
+            "summary",
+            summary.created_at_ms,
+            SUMMARY_LABEL_STYLE,
         );
     }
     HistoryLines {
@@ -1881,6 +1915,7 @@ pub fn run_history(run: &AgentRun, width: usize, now_ms: i64) -> HistoryLines {
         // without the run's state, which the selector row above already carries.
         label: short_run_id(&run.id),
         entries,
+        events,
     }
 }
 
@@ -1922,12 +1957,61 @@ pub fn summary_history(
     if let Some(then_ms) = summary.created_at_ms {
         label.push_str(&format!(" · {}", short_age(now_ms, then_ms)));
     }
+    // No label: the divider above it already names the agent this is about, and there is
+    // no second kind of row here for one to tell it apart from.
+    let entries =
+        crate::markdown::render(&summary.text, inner, crate::markdown::Options::compact());
+    // Uncapped, unlike a run's events: there is only one of these and nothing beside it
+    // competing for the room, so a talkative model costs nothing here. It is still one event,
+    // so a cursor can land on it and open it in full the way it can any other.
+    let events = match entries.is_empty() {
+        true => Vec::new(),
+        false => vec![HistoryEvent {
+            start: 0,
+            len: entries.len(),
+            kind: "summary".to_owned(),
+            created_at_ms: summary.created_at_ms,
+            text: summary.text.clone(),
+        }],
+    };
     HistoryLines {
         label,
-        // No label: the divider above it already names the agent this is about, and there is
-        // no second kind of row here for one to tell it apart from.
-        entries: crate::markdown::render(&summary.text, inner, crate::markdown::Options::compact()),
+        entries,
+        events,
     }
+}
+
+/// The most rows one event of a run's timeline gets, the overflow marker included.
+///
+/// Four, because that is enough for a prompt or a question whole and enough of a result to know
+/// whether it is the one you were looking for. Before this a single talkative `result:` could
+/// fill the half and push everything either side of it out of view, which is the opposite of
+/// what a timeline is for. Everything past the cap is still reachable - a cursor on the event
+/// and `Enter` opens the whole of it - which is what makes this a cap rather than a truncation.
+pub const MAX_ENTRY_ROWS: usize = 4;
+
+/// One event's rows, cut to [`MAX_ENTRY_ROWS`] with the last of them saying how much was left
+/// out.
+///
+/// The marker takes one of the four rather than being squeezed in beside them: a row that says
+/// "there is more here" is worth as much as the row of prose it replaces, and a cap that
+/// silently dropped the tail would read as an agent that stopped mid-sentence.
+///
+/// `indent` is the entry's gutter width, so the marker sits in the column the entry's
+/// continuation rows are indented to rather than out at the margin.
+fn cap_rows(rows: Vec<MdLine>, indent: usize) -> Vec<MdLine> {
+    if rows.len() <= MAX_ENTRY_ROWS {
+        return rows;
+    }
+    let kept = MAX_ENTRY_ROWS - 1;
+    let dropped = rows.len() - kept;
+    let mut rows: Vec<MdLine> = rows.into_iter().take(kept).collect();
+    rows.push(
+        MdLine::plain("")
+            .prepend(&format!("… +{dropped} lines"), LABEL_STYLE)
+            .indent(indent),
+    );
+    rows
 }
 
 /// One history row's text as markdown, with `label` in front of it, and whether the label took
@@ -5667,6 +5751,122 @@ mod tests {
             "every line of it, for the half to window, past the box's old ceiling of {}",
             long.entries.len()
         );
+        // Uncapped, unlike a run's events: there is one of these and nothing beside it
+        // competing for the room. It is still one event, so a cursor can open it in full.
+        assert!(long.entries.len() > MAX_ENTRY_ROWS);
+        assert_eq!(long.events.len(), 1);
+        assert_eq!(long.events[0].start, 0);
+        assert_eq!(long.events[0].len, long.entries.len());
+        assert_eq!(long.events[0].kind, "summary");
+    }
+
+    /// One event gets four rows of the timeline and no more, the last of them saying how much
+    /// was left out. Before the cap a single talkative result filled the half and pushed
+    /// everything either side of it out of view, which is the opposite of what a timeline is
+    /// for.
+    #[test]
+    fn a_long_event_is_capped_at_four_rows_that_name_what_is_missing() {
+        let mut run = a_pane_run();
+        run.entries = vec![RunEntry {
+            revision: 1,
+            event_id: None,
+            kind: RunEntryKind::Prompt,
+            // Ten lines of it at this width, against the four the cap allows.
+            text: "word ".repeat(50),
+            created_at_ms: None,
+        }];
+
+        let history = run_history(&run, 30, 100);
+        assert_eq!(history.entries.len(), MAX_ENTRY_ROWS);
+        // Three rows kept, so the marker speaks for everything from the fourth on - the count
+        // is the rows the cap dropped rather than a round number.
+        let rows = labelled(
+            &run.entries[0].text,
+            "prompt",
+            &age_gutter(100, None),
+            wrap_width(30).expect("wide enough"),
+            LABEL_STYLE,
+        )
+        .0
+        .len();
+        assert!(rows > MAX_ENTRY_ROWS, "{rows} rows before the cap");
+        assert_eq!(
+            history.entries.last().expect("four rows").text.trim(),
+            format!("… +{} lines", rows - (MAX_ENTRY_ROWS - 1))
+        );
+
+        // The event keeps the whole of what it said, which is what makes the cap honest: the
+        // pane opens this rather than the three rows it drew.
+        assert_eq!(history.events.len(), 1);
+        assert_eq!(history.events[0].text, run.entries[0].text);
+        assert_eq!(history.events[0].kind, "prompt");
+        assert_eq!(history.events[0].len, MAX_ENTRY_ROWS);
+    }
+
+    /// An event that fits is left alone: the marker costs a row, so spending one to say "one
+    /// more line" would show less than saying nothing.
+    #[test]
+    fn an_event_that_fits_the_cap_grows_no_marker() {
+        let mut run = a_pane_run();
+        run.entries = vec![RunEntry {
+            revision: 1,
+            event_id: None,
+            kind: RunEntryKind::Prompt,
+            // A list, so the label takes a row of its own: exactly the four the cap allows.
+            text: "- one\n- two\n- three".to_owned(),
+            created_at_ms: None,
+        }];
+        let history = run_history(&run, 40, 100);
+        assert_eq!(history.entries.len(), MAX_ENTRY_ROWS);
+        assert!(
+            !history.entries.last().unwrap().text.contains('…'),
+            "{:?}",
+            texts(&history.entries)
+        );
+    }
+
+    /// The spans tile the rows: every row of the half belongs to exactly one event, so a
+    /// cursor on an event and a window over the lines can be read against each other.
+    #[test]
+    fn the_event_spans_tile_the_rows_they_were_drawn_from() {
+        let mut run = a_pane_run();
+        run.summary = Some(a_summary("Ran the tests, all green.", false));
+        run.entries = vec![
+            RunEntry {
+                revision: 1,
+                event_id: None,
+                kind: RunEntryKind::Prompt,
+                text: "word ".repeat(50),
+                created_at_ms: Some(40),
+            },
+            RunEntry {
+                revision: 2,
+                event_id: None,
+                kind: RunEntryKind::Question,
+                text: "Ship it?".to_owned(),
+                created_at_ms: None,
+            },
+        ];
+
+        let history = run_history(&run, 40, 100);
+        assert_eq!(
+            history.events.len(),
+            3,
+            "two entries and the rolling summary"
+        );
+        let mut at = 0;
+        for event in &history.events {
+            assert_eq!(event.start, at, "no gap and no overlap");
+            assert!(event.len > 0 && event.len <= MAX_ENTRY_ROWS);
+            at = event.end();
+        }
+        assert_eq!(at, history.entries.len(), "and nothing left over");
+
+        // The stamp travels with the event, so a reader's divider can go on ticking.
+        assert_eq!(history.events[0].created_at_ms, Some(40));
+        assert_eq!(history.events[1].text, "Ship it?");
+        assert_eq!(history.events[2].kind, "summary");
+        assert_eq!(history.events[2].text, "Ran the tests, all green.");
     }
 
     /// Everything in the half is markdown by the time it gets here - a prompt is what the user
