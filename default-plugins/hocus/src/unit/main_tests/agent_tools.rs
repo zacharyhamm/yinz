@@ -447,6 +447,47 @@ fn a_projects_firecracker_image_is_kept_cleared_or_updated_by_the_project_tools(
     assert_eq!(project.firecracker_image, None);
     assert_eq!(stored_image(&mut state), None);
 
+    // Renaming a discovered project and clearing its image in one call: the
+    // clear wins over the discovered image, and the answer is what is stored.
+    let discovered = |state: &mut State, root: &str, image: &str| {
+        let mut registry = state.projects.clone();
+        projects::discover(
+            &mut registry,
+            &[projects::Repository {
+                root: root.to_owned(),
+                worktree_status: Some(projects::WorktreeStatus::Primary),
+                ..projects::Repository::default()
+            }],
+        );
+        let name = registry
+            .values()
+            .find(|project| project.root == root)
+            .map(|project| project.name.clone())
+            .expect("discovered");
+        registry.get_mut(&name).unwrap().firecracker_image = Some(image.to_owned());
+        state.projects = registry;
+        name
+    };
+    let found = discovered(&mut state, "/work/found", "rust");
+    let project = remember(
+        &mut state,
+        r#"{"name":"renamed","root":"/work/found","firecracker_image":""}"#,
+    )
+    .unwrap();
+    assert_eq!(project.firecracker_image, None);
+    assert_eq!(state.projects["renamed"].firecracker_image, None);
+    assert!(!state.projects.contains_key(&found));
+    // With nothing said about the image, the discovered one comes along and
+    // is what the tool reports.
+    let other = discovered(&mut state, "/work/other", "go");
+    let project = remember(&mut state, r#"{"name":"named","root":"/work/other"}"#).unwrap();
+    assert_eq!(project.firecracker_image.as_deref(), Some("go"));
+    assert_eq!(
+        state.projects["named"].firecracker_image.as_deref(),
+        Some("go")
+    );
+    assert!(!state.projects.contains_key(&other));
+
     // Neither a bad name nor an image for a project nobody has named yet.
     let error = remember(
         &mut state,
