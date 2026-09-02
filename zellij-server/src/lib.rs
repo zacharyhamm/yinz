@@ -85,6 +85,24 @@ const PLUGIN_THREAD_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
 /// the alternative of taking the whole machine's zellij down with it.
 const MAX_CONCURRENT_CLIENT_CONNECTIONS: usize = 512;
 
+/// How long a freshly accepted connection may stay silent before its router
+/// gives up on it.
+///
+/// The cap above is only a fix if a slot cannot be held forever, and a peer
+/// that connects and never writes would hold one exactly that long: the
+/// router blocks reading it, and every `RemoveClient` — hence every
+/// `shutdown_reads` that would unblock the router — is sent by the router
+/// itself. So until the first message the read is bounded by this deadline,
+/// after which the connection is treated as abandoned and its slot released.
+///
+/// Only the first message: every real client writes the moment it connects
+/// (`AttachClient`, `ConnStatus`, an `Action`), and a later read must not be
+/// bounded, because a deadline expiring halfway through a large frame would
+/// desynchronise a connection that was merely slow. Equal to the client's
+/// `CONNECT_TO_SERVER_TIMEOUT`, so it cannot fire on a client that is only
+/// slow to be scheduled.
+const FIRST_CLIENT_MESSAGE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// How long the accept loop pauses after an error before trying again, so that
 /// a persistent failure (`EMFILE`, typically) does not become a spin.
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
@@ -960,7 +978,30 @@ pub fn start_server_impl(
                                 accepted_at.elapsed()
                             );
 
-                            let receiver = os_input.new_client(client_id, stream).unwrap();
+                            let receiver = match os_input.new_client(client_id, stream) {
+                                Ok(receiver) => receiver,
+                                Err(err) => {
+                                    // The same outcome as the refusal above, and
+                                    // for the same reason: this used to `unwrap`,
+                                    // which took the listener thread down with it
+                                    // and left the session running but
+                                    // unreachable. Registering the client dups
+                                    // its socket, so `EMFILE` reaches here too.
+                                    Err::<(), _>(err)
+                                        .with_context(|| {
+                                            format!("failed to register client {client_id}")
+                                        })
+                                        .non_fatal();
+                                    // Give the id back. Nothing has been dispatched
+                                    // to a client this new, so there are no
+                                    // in-flight forwards to flush, and no sender
+                                    // was registered for `os_input.remove_client`
+                                    // to remove.
+                                    let _ = session_state.write().unwrap().remove_client(client_id);
+                                    drop(slot);
+                                    continue;
+                                },
+                            };
                             log::info!(
                                 "attach trace: server listener registered IPC client_id={client_id} after {:?}; spawning router",
                                 accepted_at.elapsed()
@@ -982,6 +1023,7 @@ pub fn start_server_impl(
                                         to_server,
                                         receiver,
                                         client_id,
+                                        FIRST_CLIENT_MESSAGE_TIMEOUT,
                                     )
                                     .fatal()
                                 })

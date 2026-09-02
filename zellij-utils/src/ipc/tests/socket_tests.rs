@@ -32,6 +32,10 @@ impl IpcStream for FlushFailingStream {
     fn try_clone_stream(&self) -> std::io::Result<Box<dyn IpcStream>> {
         Ok(Box::new(Self))
     }
+
+    fn set_read_timeout(&self, _timeout: Option<std::time::Duration>) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 fn flush_failing_sender<T: serde::Serialize>() -> IpcSenderWithContext<T> {
@@ -626,8 +630,8 @@ impl FullBacklog {
 
 #[cfg(unix)]
 fn listener_with_a_full_backlog(path: &std::path::Path) -> FullBacklog {
-    use crate::consts::unix_socket_address;
-    use std::os::fd::{FromRawFd, OwnedFd};
+    use crate::consts::{nonblocking_unix_stream_socket, unix_socket_address};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
     // Safety for the block below: ordinary socket syscalls on fds this function
     // creates and owns; every raw fd is wrapped in an `OwnedFd` before it can
@@ -650,9 +654,8 @@ fn listener_with_a_full_backlog(path: &std::path::Path) -> FullBacklog {
         // call this whole test exists to stop hanging on.
         let mut pending = Vec::new();
         for _ in 0..64 {
-            let client = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_NONBLOCK, 0);
-            assert!(client >= 0, "client socket() failed");
-            let client_fd = OwnedFd::from_raw_fd(client);
+            let client_fd = nonblocking_unix_stream_socket().expect("client socket() failed");
+            let client = client_fd.as_raw_fd();
             let (addr, len) =
                 unix_socket_address(path).expect("socket path too long for sockaddr_un");
             if libc::connect(client, &addr as *const _ as *const libc::sockaddr, len) == 0 {
@@ -694,6 +697,40 @@ fn unix_socket_addresses_use_the_initialized_path_length() {
         target_os = "openbsd",
     ))]
     assert_eq!(addr.sun_len as usize, expected);
+}
+
+/// `ipc_connect` builds its socket by hand, and must not hand back one with
+/// fewer guarantees than std would have given it: close-on-exec, so the
+/// connection is not inherited by every process forked while it is open, and
+/// blocking, because every caller reads and writes it as a blocking stream and
+/// the non-blocking mode was only ever for the bounded connect.
+#[cfg(unix)]
+#[test]
+fn a_connected_stream_is_close_on_exec_and_blocking() {
+    use crate::consts::ipc_connect;
+    use std::os::fd::{AsFd, AsRawFd};
+
+    let (_guard, path) = new_ipc();
+    let _listener = bind_listener(&path);
+
+    let stream = ipc_connect(&path).expect("connect to a listening socket failed");
+    let fd = match &stream {
+        interprocess::local_socket::Stream::UdSocket(uds) => uds.as_fd().as_raw_fd(),
+    };
+
+    // Safety: fcntl queries on a descriptor the stream above keeps alive.
+    let fd_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    assert!(fd_flags >= 0, "F_GETFD failed");
+    assert!(
+        fd_flags & libc::FD_CLOEXEC != 0,
+        "the connected socket must be close-on-exec, as std's would be"
+    );
+    let status_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    assert!(status_flags >= 0, "F_GETFL failed");
+    assert!(
+        status_flags & libc::O_NONBLOCK == 0,
+        "the connected socket must be blocking; non-blocking mode was only for the connect"
+    );
 }
 
 /// The regression test for a wedged server hanging every zellij command.

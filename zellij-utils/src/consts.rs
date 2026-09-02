@@ -269,21 +269,117 @@ pub(crate) fn unix_socket_address(
 /// `PROBE_TIMEOUT` covers only the reply, because it is applied to the stream
 /// this function returns: it can do nothing about a connect that never returns
 /// one.
+/// A non-blocking `AF_UNIX` stream socket with the descriptor flags std would
+/// have given it.
+///
+/// `std::os::unix::net::UnixStream` cannot connect non-blocking, which is the
+/// one thing `ipc_connect` needs, so the socket has to be made by hand — but
+/// "by hand" must not mean "with fewer guarantees". Two matter here:
+///
+/// - **close-on-exec.** std sets it on every socket it creates. Without it,
+///   every IPC connection a client holds open is inherited by any process
+///   forked while it is open — a `zellij run` child, a plugin's command — which
+///   keeps the connection alive after the client is gone, and is precisely the
+///   sort of leak the server's connection cap exists to survive.
+/// - **portability.** `SOCK_NONBLOCK` and `SOCK_CLOEXEC` are not part of
+///   `socket(2)` on apple targets; there the flags are set with `fcntl` after
+///   the fact, exactly as std does. Where the kernel does take them, they are
+///   passed atomically so that no fork can slip in between `socket` and
+///   `fcntl`.
+///
+/// Also as in std: `SO_NOSIGPIPE` on apple, so that writing to a server that
+/// has gone away comes back as `EPIPE` rather than killing the process.
 #[cfg(unix)]
-pub fn ipc_connect(path: &std::path::Path) -> std::io::Result<interprocess::local_socket::Stream> {
-    use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
-    use std::os::unix::net::UnixStream;
+pub(crate) fn nonblocking_unix_stream_socket() -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::{FromRawFd, OwnedFd};
 
-    let (addr, addr_len) = unix_socket_address(path)?;
+    // The cfg list is std's own (`library/std/src/sys/pal/unix/net.rs`).
+    #[cfg(any(
+        target_os = "android",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "illumos",
+        target_os = "linux",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "solaris",
+    ))]
+    let socket_type = libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC;
+    #[cfg(not(any(
+        target_os = "android",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "illumos",
+        target_os = "linux",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "solaris",
+    )))]
+    let socket_type = libc::SOCK_STREAM;
+
     // Safety: a socket(2) call with constant arguments; the descriptor it
     // returns is handed to `OwnedFd` before anything can go wrong with it.
-    let raw = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_NONBLOCK, 0) };
+    let raw = unsafe { libc::socket(libc::AF_UNIX, socket_type, 0) };
     if raw < 0 {
         return Err(std::io::Error::last_os_error());
     }
     // Safety: `raw` is a fresh descriptor this function just created and has
-    // not shared; `OwnedFd` becomes its sole owner and will close it.
+    // not shared; `OwnedFd` becomes its sole owner and will close it, including
+    // on every early return below.
     let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+
+    #[cfg(not(any(
+        target_os = "android",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "illumos",
+        target_os = "linux",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "solaris",
+    )))]
+    {
+        use std::os::fd::AsRawFd;
+        // Safety for the block: plain fcntl/setsockopt calls on a live
+        // descriptor this function owns.
+        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+        if flags < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        #[cfg(target_vendor = "apple")]
+        {
+            let one: libc::c_int = 1;
+            if unsafe {
+                libc::setsockopt(
+                    fd.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_NOSIGPIPE,
+                    &one as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                )
+            } < 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+    }
+
+    Ok(fd)
+}
+
+#[cfg(unix)]
+pub fn ipc_connect(path: &std::path::Path) -> std::io::Result<interprocess::local_socket::Stream> {
+    use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
+    use std::os::unix::net::UnixStream;
+
+    let (addr, addr_len) = unix_socket_address(path)?;
+    let fd = nonblocking_unix_stream_socket()?;
 
     let deadline = std::time::Instant::now() + IPC_CONNECT_TIMEOUT;
     loop {
