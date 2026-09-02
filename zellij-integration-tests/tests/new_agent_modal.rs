@@ -276,7 +276,7 @@ fn an_image_without_a_vm_is_refused_in_the_modals_status_row() {
     zellij.send_stdin(&sgr_press(column + 1, row + 1));
     zellij.send_stdin(&sgr_release(column + 1, row + 1));
     zellij.wait_until("the modal refused the image", |snapshot| {
-        snapshot.contains("firecracker_image requires a Firecracker VM")
+        snapshot.contains("firecracker_image needs a firecracker_vm")
     });
 
     zellij.quit();

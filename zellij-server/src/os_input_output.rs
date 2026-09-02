@@ -52,9 +52,9 @@ pub use async_trait::async_trait;
 #[derive(Clone, Debug)]
 pub struct ResolvedSpawn {
     pub terminal_id: u32,
-    pub(crate) command: RunCommand,
-    pub(crate) rerun_command: RunCommand,
-    pub(crate) endpoint: RemoteEndpoint,
+    pub command: RunCommand,
+    pub rerun_command: RunCommand,
+    pub endpoint: RemoteEndpoint,
 }
 
 /// Where a remote command's broker is reached: the ssh host (an alias, or the

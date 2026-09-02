@@ -877,7 +877,7 @@ mod tests {
         assert!(state.submit());
         assert_eq!(
             state.error.as_deref(),
-            Some("firecracker_image and firecracker_worktree need a firecracker_vm")
+            Some("firecracker_image needs a firecracker_vm")
         );
     }
 
