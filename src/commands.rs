@@ -1684,37 +1684,12 @@ mod tests {
 mod firecracker_command_tests {
     use super::{resolve_firecracker_session, run_firecracker};
     use serde_json::json;
-    use std::{
-        fs,
-        io::Write,
-        path::Path,
-        process::{Command, Stdio},
-        time::Duration,
-    };
+    use std::{fs, time::Duration};
     use tempfile::TempDir;
     use zellij_server::firecracker::Provider;
+    use zellij_test_support::write_script;
     use zellij_utils::cli::Firecracker;
     use zellij_utils::sessions::ActiveSession;
-
-    /// Written by a child process rather than with `fs::write`: under `cargo test`
-    /// these tests share one process, and a child another test forks meanwhile
-    /// inherits every open descriptor until it execs - a script still open for
-    /// writing here then fails that exec with `Text file busy`.
-    fn write_script(path: &Path, contents: &str) {
-        let mut writer = Command::new("sh")
-            .args(["-c", r#"cat > "$1" && chmod 755 "$1""#, "sh"])
-            .arg(path)
-            .stdin(Stdio::piped())
-            .spawn()
-            .unwrap();
-        writer
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(contents.as_bytes())
-            .unwrap();
-        assert!(writer.wait().unwrap().success());
-    }
 
     /// A provider that logs each request to `requests` beside itself and answers
     /// every one with `response`.

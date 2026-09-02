@@ -1,6 +1,7 @@
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     io::{ErrorKind, Read, Write},
     os::{fd::AsFd, unix::process::CommandExt},
     path::{Path, PathBuf},
@@ -30,39 +31,54 @@ pub struct Provider {
     invocation_lock: Arc<Mutex<()>>,
 }
 
-#[derive(Debug, Serialize)]
+/// One request to the provider. The server borrows what it sends; the provider owns what it
+/// reads, which is what the `Cow`s are for - one definition serves both ends of the pipe.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "action", rename_all = "snake_case")]
-enum Request<'a> {
+pub(crate) enum Request<'a> {
     Ensure {
         version: u32,
-        session: &'a str,
-        name: &'a str,
-        image: Option<&'a str>,
-        worktree: Option<&'a Path>,
+        session: Cow<'a, str>,
+        name: Cow<'a, str>,
+        image: Option<Cow<'a, str>>,
+        worktree: Option<Cow<'a, Path>>,
     },
     Stop {
         version: u32,
-        session: &'a str,
-        name: &'a str,
+        session: Cow<'a, str>,
+        name: Cow<'a, str>,
     },
     StopSession {
         version: u32,
-        session: &'a str,
+        session: Cow<'a, str>,
     },
     List {
         version: u32,
-        session: Option<&'a str>,
+        session: Option<Cow<'a, str>>,
     },
     Sync {
         version: u32,
-        session: &'a str,
-        name: &'a str,
+        session: Cow<'a, str>,
+        name: Cow<'a, str>,
     },
     RenameSession {
         version: u32,
-        from: &'a str,
-        to: &'a str,
+        from: Cow<'a, str>,
+        to: Cow<'a, str>,
     },
+}
+
+impl Request<'_> {
+    pub(crate) fn version(&self) -> u32 {
+        match self {
+            Self::Ensure { version, .. }
+            | Self::Stop { version, .. }
+            | Self::StopSession { version, .. }
+            | Self::List { version, .. }
+            | Self::Sync { version, .. }
+            | Self::RenameSession { version, .. } => *version,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -158,10 +174,10 @@ impl Provider {
         }
         let response: EnsureResponse = self.invoke(Request::Ensure {
             version: PROTOCOL_VERSION,
-            session,
-            name,
-            image,
-            worktree,
+            session: session.into(),
+            name: name.into(),
+            image: image.map(Cow::Borrowed),
+            worktree: worktree.map(Cow::Borrowed),
         })?;
         self.check_version(response.version)?;
         if response.ssh_host.trim().is_empty() {
@@ -187,8 +203,8 @@ impl Provider {
         validate_firecracker_vm_name(name).map_err(|e| anyhow!(e))?;
         let response: WarningsResponse = self.invoke(Request::Stop {
             version: PROTOCOL_VERSION,
-            session,
-            name,
+            session: session.into(),
+            name: name.into(),
         })?;
         self.check_version(response.version)?;
         Ok(response.warnings)
@@ -198,7 +214,7 @@ impl Provider {
     pub fn stop_session(&self, session: &str) -> Result<Vec<String>> {
         let response: WarningsResponse = self.invoke(Request::StopSession {
             version: PROTOCOL_VERSION,
-            session,
+            session: session.into(),
         })?;
         self.check_version(response.version)?;
         Ok(response.warnings)
@@ -211,8 +227,8 @@ impl Provider {
     pub fn rename_session(&self, from: &str, to: &str) -> Result<()> {
         let response: WarningsResponse = self.invoke(Request::RenameSession {
             version: PROTOCOL_VERSION,
-            from,
-            to,
+            from: from.into(),
+            to: to.into(),
         })?;
         self.check_version(response.version)
     }
@@ -220,7 +236,7 @@ impl Provider {
     pub fn list(&self, session: Option<&str>) -> Result<Listing> {
         let response: ListResponse = self.invoke(Request::List {
             version: PROTOCOL_VERSION,
-            session,
+            session: session.map(Cow::Borrowed),
         })?;
         self.check_version(response.version)?;
         for entry in &response.vms {
@@ -240,8 +256,8 @@ impl Provider {
         validate_firecracker_vm_name(name).map_err(|e| anyhow!(e))?;
         let response: WarningsResponse = self.invoke(Request::Sync {
             version: PROTOCOL_VERSION,
-            session,
-            name,
+            session: session.into(),
+            name: name.into(),
         })?;
         self.check_version(response.version)?;
         Ok(response.warnings)
@@ -461,27 +477,7 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use tempfile::TempDir;
-
-    /// Written by a child process rather than with `fs::write`. Under `cargo test`
-    /// these tests share one process, and a child another test forks in the
-    /// meantime inherits every open descriptor until it execs - a script still
-    /// open for writing here then fails that exec with `Text file busy`. A
-    /// writer in its own process leaves nothing to inherit.
-    fn write_script(path: &Path, contents: &str) {
-        let mut writer = Command::new("sh")
-            .args(["-c", r#"cat > "$1" && chmod 755 "$1""#, "sh"])
-            .arg(path)
-            .stdin(Stdio::piped())
-            .spawn()
-            .unwrap();
-        writer
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(contents.as_bytes())
-            .unwrap();
-        assert!(writer.wait().unwrap().success());
-    }
+    use zellij_test_support::write_script;
 
     fn provider_script(body: &str, timeout: Duration) -> (TempDir, Provider) {
         let dir = tempfile::tempdir().unwrap();

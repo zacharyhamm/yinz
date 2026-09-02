@@ -5,7 +5,8 @@
 //! own. The privileged part is a one-time pool of user-owned TAP devices.
 
 use super::{EnsureResponse, RecoveryEntry, VmEntry, PROGRESS_PREFIX, PROTOCOL_VERSION};
-use crate::pty_host::remote::ssh::ssh_option_value;
+use crate::pty_host::ensure_secure_dir;
+use crate::pty_host::remote::ssh::SshOptions;
 use highway::{HighwayHash, Key, PortableHash};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -31,7 +32,9 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use zellij_utils::consts::{ZELLIJ_CACHE_DIR, ZELLIJ_PROJ_DIR};
 use zellij_utils::errors::prelude::*;
+use zellij_utils::home::{xdg_config_dir, xdg_data_dir};
 use zellij_utils::input::command::validate_firecracker_vm_name;
 use zellij_utils::input::config::Config as ZellijConfig;
 
@@ -79,53 +82,7 @@ const CHROOT_DEVICES: [&str; 6] = [
     "/dev/tty",
 ];
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case")]
-enum Request {
-    Ensure {
-        version: u32,
-        session: String,
-        name: String,
-        image: Option<String>,
-        worktree: Option<PathBuf>,
-    },
-    Stop {
-        version: u32,
-        session: String,
-        name: String,
-    },
-    StopSession {
-        version: u32,
-        session: String,
-    },
-    List {
-        version: u32,
-        session: Option<String>,
-    },
-    Sync {
-        version: u32,
-        session: String,
-        name: String,
-    },
-    RenameSession {
-        version: u32,
-        from: String,
-        to: String,
-    },
-}
-
-impl Request {
-    fn version(&self) -> u32 {
-        match self {
-            Self::Ensure { version, .. }
-            | Self::Stop { version, .. }
-            | Self::StopSession { version, .. }
-            | Self::List { version, .. }
-            | Self::Sync { version, .. }
-            | Self::RenameSession { version, .. } => *version,
-        }
-    }
-}
+use super::Request;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct NetworkConfig {
@@ -245,7 +202,7 @@ fn lock_exclusively(lock: &File, progress: impl FnOnce() -> Progress) -> Result<
 impl LockedState {
     fn new() -> Result<Self> {
         let dir = state_dir();
-        secure_dir(&dir)?;
+        ensure_secure_dir(&dir)?;
         let lock = OpenOptions::new()
             .create(true)
             .read(true)
@@ -341,8 +298,9 @@ fn serve_request() -> Result<()> {
     serde_json::to_writer(std::io::stdout(), &response).context("failed to write response")
 }
 
-fn parse_request(input: &[u8]) -> Result<Request> {
-    let request: Request = serde_json::from_slice(input).context("invalid provider request")?;
+fn parse_request(input: &[u8]) -> Result<Request<'static>> {
+    let request: Request<'static> =
+        serde_json::from_slice(input).context("invalid provider request")?;
     if request.version() != PROTOCOL_VERSION {
         return Err(anyhow!(
             "provider protocol mismatch: expected version {PROTOCOL_VERSION}, got {}",
@@ -508,7 +466,7 @@ fn ensure(
     // written over: a clone into a directory whose disk a VMM may still hold open would
     // truncate that disk under it.
     retain_orphaned_vm_dir(locked, &vm_dir)?;
-    secure_dir(&vm_dir)?;
+    ensure_secure_dir(&vm_dir)?;
     if let Some(baseline) = &baseline {
         if let Err(error) = write_baseline(&vm_dir.join(BASELINE_FILE), baseline) {
             let _ = fs::remove_dir_all(&vm_dir);
@@ -527,7 +485,7 @@ fn ensure(
         )?;
     }
     let api_socket = runtime_dir().join(format!("{id}.sock"));
-    secure_dir(api_socket.parent().unwrap_or(Path::new("/tmp")))?;
+    ensure_secure_dir(api_socket.parent().unwrap_or(Path::new("/tmp")))?;
     let log = vm_dir.join("firecracker.log");
     let known_hosts = vm_dir.join("known_hosts");
     let vm_config = vm_dir.join("vm.json");
@@ -1589,24 +1547,24 @@ fn copy_credential(state: &VmState, config: &Config, credential: &CredentialFile
     )
 }
 
+/// The ssh arguments for reaching a guest: the key and known-hosts handling every remote pane
+/// uses, plus what a non-interactive provider needs - no prompts, a bounded connect.
+fn guest_ssh_args(state: &VmState, config: &Config) -> Vec<String> {
+    let mut args = strings(&["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
+    args.extend(
+        SshOptions {
+            identity_file: Some(config.ssh_private_key.clone()),
+            known_hosts_file: Some(state.known_hosts.clone()),
+        }
+        .args(),
+    );
+    args
+}
+
 fn ssh_command(state: &VmState, config: &Config) -> Command {
     let mut command = Command::new("ssh");
     command
-        .args([
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "StrictHostKeyChecking=yes",
-            "-o",
-            "ConnectTimeout=10",
-            "-o",
-        ])
-        .arg(format!(
-            "UserKnownHostsFile={}",
-            ssh_option_value(&state.known_hosts)
-        ))
-        .arg("-i")
-        .arg(&config.ssh_private_key)
+        .args(guest_ssh_args(state, config))
         .arg(format!("root@{}", state.guest_ip));
     command
 }
@@ -1616,14 +1574,14 @@ fn ssh_command(state: &VmState, config: &Config) -> Command {
 /// rsync's benefit, and the known_hosts value is double-quoted inside that for
 /// ssh's own option tokenizer.
 fn rsync_remote_shell(state: &VmState, config: &Config) -> String {
-    format!(
-        "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 -o {} -i {}",
-        shell_quote(&format!(
-            "UserKnownHostsFile={}",
-            ssh_option_value(&state.known_hosts)
-        )),
-        shell_quote(&config.ssh_private_key.to_string_lossy())
-    )
+    std::iter::once("ssh".to_owned())
+        .chain(
+            guest_ssh_args(state, config)
+                .iter()
+                .map(|arg| shell_quote(arg)),
+        )
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// What every rsync that crosses into the guest takes: the ssh to cross with, and an I/O
@@ -2167,7 +2125,7 @@ fn retain_recovery(
         // A copy the provider was killed in the middle of has nothing to say about the disk.
         remove_staging(&vm_dir.join(STAGING_DIR))?;
         let recovery = locked.dir.join("recovery");
-        secure_dir(&recovery)?;
+        ensure_secure_dir(&recovery)?;
         let id = state_path
             .file_stem()
             .and_then(|id| id.to_str())
@@ -2204,7 +2162,7 @@ fn retain_orphaned_vm_dir(locked: &LockedState, vm_dir: &Path) -> Result<()> {
     }
     remove_staging(&vm_dir.join(STAGING_DIR))?;
     let recovery = locked.dir.join("recovery");
-    secure_dir(&recovery)?;
+    ensure_secure_dir(&recovery)?;
     let id = vm_dir
         .file_name()
         .and_then(|id| id.to_str())
@@ -2233,7 +2191,7 @@ fn retain_orphaned_vm_dir(locked: &LockedState, vm_dir: &Path) -> Result<()> {
 /// out, so it only stands in for a directory whose note cannot be read.
 fn prune_recoveries(state: &Path) -> Result<()> {
     let recovery = state.join("recovery");
-    secure_dir(&recovery)?;
+    ensure_secure_dir(&recovery)?;
     let now = SystemTime::now();
     for entry in fs::read_dir(&recovery)? {
         let entry = entry?;
@@ -2423,42 +2381,26 @@ fn ipv4_add(address: Ipv4Addr, offset: u32) -> Result<Ipv4Addr> {
         .context("Firecracker subnet address overflow")
 }
 
-fn secure_dir(path: &Path) -> Result<()> {
-    fs::create_dir_all(path).with_context(|| format!("failed to create {}", path.display()))?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-        .with_context(|| format!("failed to secure {}", path.display()))
-}
-
+/// The provider's directories are Zellij's own, one level down: the same `ProjectDirs` the
+/// rest of Zellij resolves, so a config, image or cache is where a user of Zellij expects it.
 fn config_dir() -> PathBuf {
-    env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("zellij")
+    xdg_config_dir()
 }
 
 fn data_dir() -> PathBuf {
-    env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("zellij/firecracker")
+    xdg_data_dir().join("firecracker")
 }
 
 fn cache_dir() -> PathBuf {
-    env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("zellij/firecracker")
+    ZELLIJ_CACHE_DIR.join("firecracker")
 }
 
 fn state_dir() -> PathBuf {
-    env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("zellij/firecracker/vms")
+    ZELLIJ_PROJ_DIR
+        .state_dir()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("/tmp/zellij"))
+        .join("firecracker/vms")
 }
 
 fn runtime_dir() -> PathBuf {
@@ -2691,6 +2633,86 @@ fn parse_setup_options(args: &[String]) -> Result<SetupOptions> {
 fn resolve_zellij(explicit: Option<&Path>) -> Result<PathBuf> {
     let provider = env::current_exe().context("failed to find the running zellij-firecracker")?;
     resolve_zellij_from(explicit, &provider, env::var_os("PATH").as_deref())
+}
+
+/// The dynamic loader an ELF executable asks for, from its `PT_INTERP` program header;
+/// `None` for a static binary, and for anything that is not a 64-bit little-endian ELF.
+fn elf_interpreter(path: &Path) -> Result<Option<PathBuf>> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let u16_at = |at: usize| {
+        bytes
+            .get(at..at + 2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+    };
+    let u32_at = |at: usize| {
+        bytes
+            .get(at..at + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let u64_at = |at: usize| {
+        bytes
+            .get(at..at + 8)
+            .map(|b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+    };
+    if bytes.get(..4) != Some(b"\x7fELF") || bytes.get(4) != Some(&2) || bytes.get(5) != Some(&1) {
+        return Ok(None);
+    }
+    let (Some(offset), Some(entry_size), Some(count)) = (u64_at(0x20), u16_at(0x36), u16_at(0x38))
+    else {
+        return Ok(None);
+    };
+    for index in 0..usize::from(count) {
+        let header = usize::try_from(offset)?.saturating_add(index * usize::from(entry_size));
+        if u32_at(header) != Some(3) {
+            continue;
+        }
+        let (Some(start), Some(len)) = (u64_at(header + 8), u64_at(header + 0x20)) else {
+            return Ok(None);
+        };
+        let start = usize::try_from(start)?;
+        let end = start.saturating_add(usize::try_from(len)?);
+        let interpreter = bytes.get(start..end).context("truncated ELF interpreter")?;
+        let interpreter = interpreter.strip_suffix(&[0]).unwrap_or(interpreter);
+        return Ok(Some(PathBuf::from(OsStr::from_bytes(interpreter))));
+    }
+    Ok(None)
+}
+
+/// Say so when the Zellij going into a guest is dynamically linked. A static build runs in
+/// any guest; a dynamic one needs the guest's loader and a glibc at least as new as the
+/// host's, and a host newer than the guest's Ubuntu 24.04 fails inside the VM only, with
+/// nothing on this side to explain it. With the staged `root` in hand the loader can at
+/// least be looked for.
+fn warn_about_dynamic_zellij(zellij: &Path, root: Option<&Path>) {
+    let interpreter = match elf_interpreter(zellij) {
+        Ok(Some(interpreter)) => interpreter,
+        Ok(None) => return,
+        Err(error) => {
+            eprintln!(
+                "warning: could not tell whether {} is statically linked: {error:#}",
+                zellij.display()
+            );
+            return;
+        },
+    };
+    let loader_missing = root.is_some_and(|root| {
+        !root
+            .join(interpreter.strip_prefix("/").unwrap_or(&interpreter))
+            .exists()
+    });
+    eprintln!(
+        "warning: {} is dynamically linked (loader {}){}; a guest whose glibc is older than \
+         this host's cannot run it, and every pane in the VM then fails to start. Build a \
+         static Zellij (for example --target x86_64-unknown-linux-musl) and pass it with \
+         --zellij",
+        zellij.display(),
+        interpreter.display(),
+        if loader_missing {
+            " which the guest image does not have"
+        } else {
+            ""
+        }
+    );
 }
 
 fn resolve_zellij_from(
@@ -3047,6 +3069,11 @@ fn doctor() -> Result<()> {
     if !output.status.success() {
         return Err(anyhow!("Firecracker --version failed"));
     }
+    if let Ok(provider) = env::current_exe() {
+        if let Ok(zellij) = resolve_zellij_from(None, &provider, env::var_os("PATH").as_deref()) {
+            warn_about_dynamic_zellij(&zellij, None);
+        }
+    }
     match cgroup_root_or_skip(delegated_cgroup_root(), config.require_resource_limits)? {
         Some(cgroup) => println!(
             "KVM, Firecracker, image, key, {} TAPs and the cgroup {} are ready.",
@@ -3133,8 +3160,8 @@ fn image_build_inner(args: &[String]) -> Result<()> {
         .map(|value| value.parse::<u64>().context("invalid --disk-size-gib"))
         .transpose()?
         .unwrap_or(8);
-    secure_dir(&output)?;
-    secure_dir(&cache_dir())?;
+    ensure_secure_dir(&output)?;
+    ensure_secure_dir(&cache_dir())?;
     let kernel = download_verified(KERNEL_URL, KERNEL_SHA256, "vmlinux-6.1.182")?;
     let squashfs = download_verified(ROOTFS_URL, ROOTFS_SHA256, "ubuntu-24.04.squashfs")?;
     let private_key = output.join("id_ed25519");
@@ -3161,6 +3188,7 @@ fn image_build_inner(args: &[String]) -> Result<()> {
     } else {
         find_in_path(&zellij).with_context(|| format!("could not find {}", zellij.display()))?
     };
+    warn_about_dynamic_zellij(&zellij, Some(&root));
     fs::copy(&zellij, root.join("usr/local/bin/zellij"))
         .context("failed to install Zellij in the guest")?;
     fs::set_permissions(
@@ -3168,7 +3196,7 @@ fn image_build_inner(args: &[String]) -> Result<()> {
         fs::Permissions::from_mode(0o755),
     )?;
     let ssh_dir = root.join("root/.ssh");
-    secure_dir(&ssh_dir)?;
+    ensure_secure_dir(&ssh_dir)?;
     fs::copy(
         private_key.with_extension("pub"),
         ssh_dir.join("authorized_keys"),
@@ -3270,7 +3298,7 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
     let rootfs = match image {
         Some(image) => {
             let images = output.join("images");
-            secure_dir(&images)?;
+            ensure_secure_dir(&images)?;
             images.join(format!("{image}.ext4"))
         },
         None => output.join("ubuntu-24.04.ext4"),
@@ -3287,7 +3315,7 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
     fs::copy(kernel, output.join("vmlinux-6.1.182"))?;
     let firecracker =
         find_in_path(Path::new("firecracker")).context("firecracker is not installed")?;
-    secure_dir(&config_dir())?;
+    ensure_secure_dir(&config_dir())?;
     let config_path = config_path();
     let config = if config_path.exists() {
         let mut config: Config = serde_json::from_slice(&fs::read(&config_path)?)?;
@@ -5312,6 +5340,51 @@ mod tests {
         );
     }
 
+    /// A minimal ELF64 with one `PT_INTERP` header, as a linker would write it.
+    fn elf_with_interpreter(interpreter: &str) -> Vec<u8> {
+        let mut bytes = vec![0u8; 64];
+        bytes[..4].copy_from_slice(b"\x7fELF");
+        bytes[4] = 2; // 64-bit
+        bytes[5] = 1; // little-endian
+        bytes[0x20..0x28].copy_from_slice(&64u64.to_le_bytes()); // e_phoff
+        bytes[0x36..0x38].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
+        bytes[0x38..0x3a].copy_from_slice(&1u16.to_le_bytes()); // e_phnum
+        let mut header = vec![0u8; 56];
+        header[..4].copy_from_slice(&3u32.to_le_bytes()); // PT_INTERP
+        let interp = format!("{interpreter}\0");
+        header[8..16].copy_from_slice(&120u64.to_le_bytes()); // p_offset
+        header[0x20..0x28].copy_from_slice(&(interp.len() as u64).to_le_bytes()); // p_filesz
+        bytes.extend(header);
+        bytes.extend(interp.as_bytes());
+        bytes
+    }
+
+    #[test]
+    fn elf_interpreter_reads_pt_interp_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let dynamic = dir.path().join("dynamic");
+        fs::write(
+            &dynamic,
+            elf_with_interpreter("/lib64/ld-linux-x86-64.so.2"),
+        )
+        .unwrap();
+        assert_eq!(
+            elf_interpreter(&dynamic).unwrap(),
+            Some(PathBuf::from("/lib64/ld-linux-x86-64.so.2"))
+        );
+
+        let mut static_elf = elf_with_interpreter("/lib64/ld-linux-x86-64.so.2");
+        static_elf[64..68].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD instead
+        let static_path = dir.path().join("static");
+        fs::write(&static_path, static_elf).unwrap();
+        assert_eq!(elf_interpreter(&static_path).unwrap(), None);
+
+        let script = dir.path().join("script");
+        fs::write(&script, "#!/bin/sh\n").unwrap();
+        assert_eq!(elf_interpreter(&script).unwrap(), None);
+        assert!(elf_interpreter(&dir.path().join("missing")).is_err());
+    }
+
     #[test]
     fn terminating_an_owned_child_reaps_it_without_the_grace_period() {
         let mut child = Command::new("sleep").arg("30").spawn().unwrap();
@@ -6004,10 +6077,11 @@ mod tests {
 
         let shell = rsync_remote_shell(&state, &config);
         assert!(
-            shell.contains(r#"-o 'UserKnownHostsFile="/home/a user/state/known_hosts"'"#),
+            shell.contains(r#"'-o' 'UserKnownHostsFile="/home/a user/state/known_hosts"'"#),
             "{shell}"
         );
-        assert!(shell.ends_with("-i '/home/a user/id_ed25519'"), "{shell}");
+        assert!(shell.contains("'-i' '/home/a user/id_ed25519'"), "{shell}");
+        assert!(shell.starts_with("ssh '-o' 'BatchMode=yes'"), "{shell}");
     }
 
     /// A VM the last attempt left unready is the same VM: provisioning picks up where it
@@ -7708,8 +7782,8 @@ mod tests {
             &guests,
             Request::RenameSession {
                 version: PROTOCOL_VERSION,
-                from: "work".to_owned(),
-                to: "renamed".to_owned(),
+                from: "work".into(),
+                to: "renamed".into(),
             },
         )
         .unwrap();
@@ -7746,8 +7820,8 @@ mod tests {
             &guests,
             Request::Sync {
                 version: PROTOCOL_VERSION,
-                session: "work".to_owned(),
-                name: "first".to_owned(),
+                session: "work".into(),
+                name: "first".into(),
             },
         )
         .unwrap();
@@ -7766,8 +7840,8 @@ mod tests {
             &guests,
             Request::Stop {
                 version: PROTOCOL_VERSION,
-                session: "work".to_owned(),
-                name: "first".to_owned(),
+                session: "work".into(),
+                name: "first".into(),
             },
         )
         .unwrap();
@@ -7785,7 +7859,7 @@ mod tests {
             &guests,
             Request::StopSession {
                 version: PROTOCOL_VERSION,
-                session: "work".to_owned(),
+                session: "work".into(),
             },
         )
         .unwrap();

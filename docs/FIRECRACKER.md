@@ -62,6 +62,13 @@ Zellij is resolved from `--zellij`, beside the provider, or from `PATH`, in that
 builder downloads pinned Firecracker CI kernel and Ubuntu 24.04 root file system artifacts and
 verifies their SHA-256 checksums.
 
+The Zellij copied into the guest should be statically linked: the guest is Ubuntu 24.04 with its
+glibc 2.39, and a dynamically linked binary from a host with a newer glibc boots and provisions
+fine but fails inside every pane, where nothing on the host can explain it. `image build` and
+`doctor` warn when the binary they find is dynamically linked; build a static one with
+`cargo build --release --target x86_64-unknown-linux-musl --bin zellij` and pass it with
+`--zellij`, as `cargo x firecracker-test --build` does.
+
 If `~/.codex/auth.json` exists, setup offers to copy it to `/root/.codex/auth.json` in each VM. It
 separately offers the same for `~/.claude/.credentials.json`. Setup records only the selected file
 mappings; it never prints credential contents, preserves existing mappings, and does not duplicate
