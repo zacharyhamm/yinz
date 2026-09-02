@@ -25,6 +25,19 @@ fn firecracker_provider_options_round_trip() {
     assert!(Options::from_kdl(&invalid).is_err());
     let relative: KdlDocument = "firecracker_provider \"bin/provider\"".parse().unwrap();
     assert!(Options::from_kdl(&relative).is_err());
+
+    // `~` is expanded the way a layout's paths are, so the same spelling works
+    // in both places.
+    let tilde: KdlDocument = "firecracker_provider \"~/bin/zellij-firecracker\""
+        .parse()
+        .unwrap();
+    let home = directories::BaseDirs::new()
+        .map(|dirs| dirs.home_dir().to_path_buf())
+        .expect("a home directory");
+    assert_eq!(
+        Options::from_kdl(&tilde).unwrap().firecracker_provider,
+        Some(home.join("bin/zellij-firecracker"))
+    );
 }
 
 #[test]

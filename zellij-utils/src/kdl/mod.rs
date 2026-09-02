@@ -31,7 +31,7 @@ use miette::NamedSource;
 
 use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -2093,7 +2093,15 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                     .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "firecracker_image"));
                 let firecracker_worktree = command_metadata
                     .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "firecracker_worktree"))
-                    .map(PathBuf::from);
+                    .map(crate::input::expand_path)
+                    .transpose()
+                    .map_err(|error| {
+                        ConfigError::new_kdl_error(
+                            format!("firecracker_worktree: {error}"),
+                            kdl_action.span().offset(),
+                            kdl_action.span().len(),
+                        )
+                    })?;
                 let target = PaneTarget::from_parts(
                     None,
                     firecracker_vm,
@@ -2901,12 +2909,17 @@ impl Options {
                 .map(|(v, _)| v);
         let firecracker_provider =
             match kdl_property_first_arg_as_string_or_error!(kdl_options, "firecracker_provider") {
-                Some((value, _)) if Path::new(value).is_absolute() => Some(PathBuf::from(value)),
                 Some((value, entry)) => {
-                    return Err(kdl_parsing_error!(
-                        format!("firecracker_provider must be an absolute path, got {value:?}"),
-                        entry
-                    ))
+                    let path = crate::input::expand_path(value).map_err(|error| {
+                        kdl_parsing_error!(format!("firecracker_provider: {error}"), entry)
+                    })?;
+                    if !path.is_absolute() {
+                        return Err(kdl_parsing_error!(
+                            format!("firecracker_provider must be an absolute path, got {value:?}"),
+                            entry
+                        ));
+                    }
+                    Some(path)
                 },
                 None => None,
             };
