@@ -883,11 +883,27 @@ fn sync_to_guest(state: &VmState, config: &Config, worktree: &Path) -> Result<()
 
 /// The copies of a worktree between the host and a running guest, after provisioning.
 /// Production is rsync over ssh; the tests stand a directory in for the guest.
+///
+/// A push names its paths. The guest keeps running through a sync, so a push that made the
+/// guest's tree match the host's - `--delete` and all - would revert or remove whatever the
+/// guest wrote between the pull and the push, and the baseline written afterwards would
+/// hide the loss. Naming exactly the paths the merge decided leaves everything else alone,
+/// and the next sync reads it as the guest change it is.
 trait GuestCopy {
     /// Copy the guest's worktree, without its `.git`, into the empty directory `dest`.
     fn pull(&self, state: &VmState, config: &Config, dest: &Path) -> Result<()>;
-    /// Make the guest's worktree, apart from its `.git`, match the staged tree at `src`.
-    fn push(&self, state: &VmState, config: &Config, src: &Path) -> Result<()>;
+    /// Copy `paths`, relative to `worktree`, into the guest's worktree, replacing whatever
+    /// the guest holds at each. A directory is copied as an entry of its own, not with its
+    /// contents; the merge names every entry it wants.
+    fn push_paths(
+        &self,
+        state: &VmState,
+        config: &Config,
+        worktree: &Path,
+        paths: &[String],
+    ) -> Result<()>;
+    /// Remove `paths`, relative to the guest's worktree, from the guest.
+    fn remove_paths(&self, state: &VmState, config: &Config, paths: &[String]) -> Result<()>;
 }
 
 struct RsyncOverSsh;
@@ -906,49 +922,94 @@ impl GuestCopy for RsyncOverSsh {
         )
     }
 
-    fn push(&self, state: &VmState, config: &Config, src: &Path) -> Result<()> {
-        run(
+    fn push_paths(
+        &self,
+        state: &VmState,
+        config: &Config,
+        worktree: &Path,
+        paths: &[String],
+    ) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let mut list = Vec::new();
+        for path in paths {
+            list.extend_from_slice(path.as_bytes());
+            list.push(0);
+        }
+        // `--files-from` makes the list exact: a directory named in it is sent as an entry,
+        // not recursed into, and `--relative` recreates its parents. `--force` lets a file
+        // replace a directory the guest has already been told to empty.
+        run_with_input(
             filtered_rsync()
-                .args(["-a", "--delete", "--exclude=.git"])
+                .args([
+                    "-a",
+                    "--force",
+                    "--exclude=.git",
+                    "--files-from=-",
+                    "--from0",
+                ])
                 .args(guest_rsync_args(state, config))
-                .arg(with_trailing_slash(src))
+                .arg(with_trailing_slash(worktree))
                 .arg(guest_workspace(state, config)),
-            "failed to copy the merged worktree into the guest",
+            &list,
+            "failed to copy the merged paths into the guest",
         )
+    }
+
+    fn remove_paths(&self, state: &VmState, config: &Config, paths: &[String]) -> Result<()> {
+        // A few hundred quoted paths per command keeps well inside the argument limit.
+        for chunk in paths.chunks(256) {
+            let script = format!(
+                "cd {} && rm -rf -- {}",
+                shell_quote(&config.guest_cwd.display().to_string()),
+                chunk
+                    .iter()
+                    .map(|path| shell_quote(path))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            run(
+                ssh_command(state, config).arg(script),
+                "failed to remove paths from the guest",
+            )?;
+        }
+        Ok(())
     }
 }
 
-/// Bring the guest back in line with the host after a merge. Everything but the guest's own
-/// `.git`, which `sync_to_guest` made as a standalone clone and which nothing on the host
-/// mirrors.
-fn push_to_guest(
-    state: &VmState,
-    config: &Config,
-    copy: &dyn GuestCopy,
-    worktree: &Path,
-) -> Result<()> {
-    let staging = Staging::fresh(state)?;
-    {
-        let _progress = Progress::start("staging the worktree");
-        stage_filtered_worktree(worktree, staging.path())?;
-    }
-    let _progress = Progress::start("copying the merged worktree into the guest");
-    copy.push(state, config, staging.path())
+/// What a sync learnt from the guest: the merge's outcome, the host worktree as it now
+/// stands, and what the guest has to be told to match it.
+#[derive(Debug, Default)]
+struct GuestSync {
+    report: MergeReport,
+    /// `None` for a VM without a worktree.
+    baseline: Option<Baseline>,
+    push: Vec<String>,
+    remove: Vec<String>,
 }
 
 /// Pull the guest's copy of the worktree and merge it into the host's.
-fn sync_from_guest(state: &VmState, config: &Config, copy: &dyn GuestCopy) -> Result<MergeReport> {
+fn sync_from_guest(state: &VmState, config: &Config, copy: &dyn GuestCopy) -> Result<GuestSync> {
     let Some(worktree) = state.worktree.as_deref() else {
-        return Ok(MergeReport::default());
+        return Ok(GuestSync::default());
     };
     let baseline = read_baseline(state)?;
     let staging = Staging::fresh(state)?;
+    let guest = staging.subdir("guest")?;
+    let undo = staging.subdir("undo")?;
     {
         let _progress = Progress::start("copying changes out of the guest");
-        copy.pull(state, config, staging.path())?;
+        copy.pull(state, config, &guest)?;
     }
     let _progress = Progress::start("merging the guest's changes");
-    merge_worktrees(&baseline, worktree, staging.path())
+    let merged = merge_worktrees(&baseline, worktree, &guest, &undo)?;
+    Ok(GuestSync {
+        report: merged.report,
+        baseline: Some(merged.baseline),
+        push: merged.push,
+        remove: merged.remove,
+    })
 }
 
 /// A scratch directory beside the VM's disk for the copies in and out of the guest.
@@ -967,6 +1028,13 @@ impl Staging {
 
     fn path(&self) -> &Path {
         &self.0
+    }
+
+    /// A fresh directory of its own inside the staging area.
+    fn subdir(&self, name: &str) -> Result<PathBuf> {
+        let path = self.0.join(name);
+        fs::create_dir(&path).with_context(|| format!("failed to create {}", path.display()))?;
+        Ok(path)
     }
 }
 
@@ -1030,8 +1098,20 @@ fn read_baseline(state: &VmState) -> Result<Baseline> {
 }
 
 fn write_baseline(path: &Path, baseline: &Baseline) -> Result<()> {
-    fs::write(path, serde_json::to_vec(baseline)?)
+    write_json_atomically(path, baseline)
         .with_context(|| format!("failed to write the worktree baseline {}", path.display()))
+}
+
+/// Write `value` beside `path` and rename it into place, so a provider killed mid-write
+/// leaves the previous file rather than a truncated one.
+fn write_json_atomically<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
+    if let Err(error) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(tmp);
+        return Err(error).context("failed to commit the file");
+    }
+    Ok(())
 }
 
 /// The baseline of a worktree as the guest sees it: staged through the gitignore filter
@@ -1130,42 +1210,80 @@ impl MergeReport {
     }
 }
 
-/// Three-way merge of the guest's copy of a worktree into the host's, against the baseline
-/// both started from. Per path: agreement needs nothing; a change on one side only wins; a
-/// change on both sides keeps the host copy and is reported. Both trees are read through the
-/// gitignore filter and deletions are decided from that view, so ignored host outputs are
-/// neither compared nor touched.
-fn merge_worktrees(baseline: &Baseline, worktree: &Path, guest: &Path) -> Result<MergeReport> {
-    let host = worktree_baseline(worktree)?;
-    let guest_entries = worktree_baseline(guest)?;
-    let mut report = MergeReport::default();
-    let mut copies = vec![];
-    let mut deletions = vec![];
+/// The outcome of a merge: the report for the user, the host worktree as it now stands, and
+/// what the guest has to take from the host to agree with it.
+#[derive(Debug, Default)]
+struct Merged {
+    report: MergeReport,
+    baseline: Baseline,
+    /// Paths the guest must now take from the host.
+    push: Vec<String>,
+    /// Paths the guest must now drop.
+    remove: Vec<String>,
+}
+
+/// Everything a merge is going to do, decided before anything is touched.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct MergePlan {
+    /// Guest-only changes to copy onto the host, parents first.
+    copies: Vec<String>,
+    /// Guest-only deletions to apply on the host, deepest first.
+    deletions: Vec<String>,
+    /// Both sides changed: the host copy stays, the guest copy goes beside it.
+    conflicts: Vec<Conflict>,
+    /// `copies` and `deletions` in path order, as the report lists them.
+    applied: Vec<String>,
+    /// What the guest lacks of the host's side: host-only changes, the host copy of every
+    /// conflict, and the guest copies written beside them.
+    host_wins: Vec<String>,
+    /// What the guest still holds that the host no longer does.
+    host_deleted: Vec<String>,
+}
+
+/// Decide a three-way merge of the guest's copy of a worktree into the host's, against the
+/// baseline both started from. Per path: agreement needs nothing; a change on one side only
+/// wins; a change on both sides keeps the host copy and is reported. Pure: what the plan
+/// does to the two trees is `apply_merge`'s business.
+fn plan_merge(baseline: &Baseline, host: &Baseline, guest: &Baseline) -> MergePlan {
+    let mut plan = MergePlan::default();
     let paths: BTreeSet<&String> = baseline
         .keys()
         .chain(host.keys())
-        .chain(guest_entries.keys())
+        .chain(guest.keys())
         .collect();
     for path in paths {
         let before = baseline.get(path);
         let on_host = host.get(path);
-        let on_guest = guest_entries.get(path);
-        if on_guest == on_host || on_guest == before {
+        let on_guest = guest.get(path);
+        if on_guest == on_host {
+            continue;
+        }
+        if on_guest == before {
+            match on_host {
+                Some(_) => plan.host_wins.push(path.clone()),
+                None => plan.host_deleted.push(path.clone()),
+            }
             continue;
         }
         if on_host == before {
             match on_guest {
-                Some(_) => copies.push(path.clone()),
-                None => deletions.push(path.clone()),
+                Some(_) => plan.copies.push(path.clone()),
+                None => plan.deletions.push(path.clone()),
             }
-            report.applied.push(path.clone());
+            plan.applied.push(path.clone());
             continue;
         }
         let guest_copy = on_guest.map(|_| format!("{path}{GUEST_COPY_SUFFIX}"));
-        if let Some(copy) = &guest_copy {
-            copy_entry(&guest.join(path), &worktree.join(copy))?;
+        // The guest converges on the host's view of the path: the host copy where there is
+        // one, nothing where the host deleted it - its own copy survives beside it.
+        match on_host {
+            Some(_) => plan.host_wins.push(path.clone()),
+            None => plan.host_deleted.push(path.clone()),
         }
-        report.conflicts.push(Conflict {
+        if let Some(copy) = &guest_copy {
+            plan.host_wins.push(copy.clone());
+        }
+        plan.conflicts.push(Conflict {
             path: path.clone(),
             guest_copy,
         });
@@ -1173,14 +1291,216 @@ fn merge_worktrees(baseline: &Baseline, worktree: &Path, guest: &Path) -> Result
     // Deepest first, so a directory is only removed once everything the guest deleted under
     // it is gone; one that still holds something — a host-only addition, an ignored output —
     // stays. Copies go parents first, which is the order the set handed them out in.
-    deletions.sort_by(|a, b| b.cmp(a));
-    for path in &deletions {
-        remove_entry(&worktree.join(path))?;
+    plan.deletions.sort_by(|a, b| b.cmp(a));
+    plan
+}
+
+/// Refuse a plan that could not be carried out in full before any of it is. What is checked
+/// is what `apply_merge` would otherwise fail on halfway: a copy whose source has gone, and a
+/// file or link taking the place of a directory the plan does not empty - one still holding
+/// something the merge never sees, an ignored output say, which `copy_entry` refuses to
+/// remove.
+fn validate_merge(plan: &MergePlan, worktree: &Path, guest: &Path) -> Result<()> {
+    let deletions: HashSet<&str> = plan.deletions.iter().map(String::as_str).collect();
+    let sources = plan
+        .copies
+        .iter()
+        .map(|path| (path.as_str(), path.as_str()))
+        .chain(plan.conflicts.iter().filter_map(|conflict| {
+            conflict
+                .guest_copy
+                .as_deref()
+                .map(|copy| (conflict.path.as_str(), copy))
+        }));
+    for (source, destination) in sources {
+        let metadata = fs::symlink_metadata(guest.join(source)).with_context(|| {
+            format!("the guest's copy of {source} could not be read; nothing was merged")
+        })?;
+        if metadata.is_dir() {
+            continue;
+        }
+        let target = worktree.join(destination);
+        if fs::symlink_metadata(&target).is_ok_and(|existing| existing.is_dir()) {
+            if let Some(kept) = first_survivor(worktree, destination, &deletions)? {
+                return Err(anyhow!(
+                    "the guest replaced the directory {destination} with a file, but the host \
+                     still holds {kept} in it; nothing was merged"
+                ));
+            }
+        }
     }
-    for path in &copies {
-        copy_entry(&guest.join(path), &worktree.join(path))?;
+    Ok(())
+}
+
+/// The first entry under `dir` (relative to `worktree`) that the plan's deletions would
+/// leave in place, if any.
+fn first_survivor(worktree: &Path, dir: &str, deletions: &HashSet<&str>) -> Result<Option<String>> {
+    for entry in fs::read_dir(worktree.join(dir))? {
+        let entry = entry?;
+        let relative = format!("{dir}/{}", entry.file_name().to_string_lossy());
+        if !deletions.contains(relative.as_str()) {
+            return Ok(Some(relative));
+        }
+        if entry.file_type()?.is_dir() {
+            if let Some(kept) = first_survivor(worktree, &relative, deletions)? {
+                return Ok(Some(kept));
+            }
+        }
     }
-    Ok(report)
+    Ok(None)
+}
+
+/// One step of a merge, recorded before the step so it can be undone.
+#[derive(Debug)]
+enum UndoStep {
+    /// Nothing was there: whatever the merge put there goes.
+    Remove(PathBuf),
+    /// A file or link was there, and a copy of it is kept under the undo directory.
+    RestoreFile { path: PathBuf, saved: PathBuf },
+    /// A directory was there. It is only ever removed once empty or replaced when empty, so
+    /// an empty directory with the same mode restores it.
+    RestoreDir { path: PathBuf, mode: u32 },
+}
+
+fn snapshot(log: &mut Vec<UndoStep>, worktree: &Path, relative: &str, undo: &Path) -> Result<()> {
+    let path = worktree.join(relative);
+    let step = match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => UndoStep::Remove(path),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", path.display()))
+        },
+        Ok(metadata) if metadata.is_dir() => UndoStep::RestoreDir {
+            path,
+            mode: metadata.permissions().mode(),
+        },
+        Ok(_) => {
+            let saved = undo.join(relative);
+            copy_entry(&path, &saved)?;
+            UndoStep::RestoreFile { path, saved }
+        },
+    };
+    log.push(step);
+    Ok(())
+}
+
+/// Undo the recorded steps, last first. Every step is attempted; the first failure is
+/// what is reported.
+fn roll_back(log: Vec<UndoStep>) -> Result<()> {
+    let mut first_error = None;
+    for step in log.into_iter().rev() {
+        let result = match step {
+            UndoStep::Remove(path) => remove_entry(&path),
+            UndoStep::RestoreFile { path, saved } => copy_entry(&saved, &path),
+            UndoStep::RestoreDir { path, mode } => (|| -> Result<()> {
+                match fs::symlink_metadata(&path) {
+                    Ok(existing) if existing.is_dir() => {},
+                    Ok(_) => {
+                        fs::remove_file(&path)?;
+                        fs::create_dir(&path)?;
+                    },
+                    Err(_) => fs::create_dir_all(&path)?,
+                }
+                fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
+                Ok(())
+            })()
+            .with_context(|| format!("failed to restore {}", path.display())),
+        };
+        if let Err(error) = result {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+/// Carry out the plan on the host worktree, or leave the worktree as it was. Every step is
+/// recorded before it is taken; the first that fails rolls the ones before it back, so a
+/// merge is applied whole or not at all.
+fn apply_merge(plan: &MergePlan, worktree: &Path, guest: &Path, undo: &Path) -> Result<()> {
+    let mut log = Vec::new();
+    let applied = (|| -> Result<()> {
+        for conflict in &plan.conflicts {
+            if let Some(copy) = &conflict.guest_copy {
+                snapshot(&mut log, worktree, copy, undo)?;
+                copy_entry(&guest.join(&conflict.path), &worktree.join(copy))?;
+            }
+        }
+        for path in &plan.deletions {
+            snapshot(&mut log, worktree, path, undo)?;
+            remove_entry(&worktree.join(path))?;
+        }
+        for path in &plan.copies {
+            snapshot(&mut log, worktree, path, undo)?;
+            copy_entry(&guest.join(path), &worktree.join(path))?;
+        }
+        Ok(())
+    })();
+    match applied {
+        Ok(()) => Ok(()),
+        Err(error) => match roll_back(log) {
+            Ok(()) => Err(error.context("nothing was merged: the host worktree was rolled back")),
+            Err(rollback_error) => Err(error.context(format!(
+                "the host worktree was left partly merged; rolling it back failed too: \
+                 {rollback_error:#}"
+            ))),
+        },
+    }
+}
+
+/// The host worktree's baseline after `plan` was applied to it, derived from the trees the
+/// plan was made from rather than hashed again: the host's entries, less what was deleted,
+/// with the guest's entry for every path it won and every copy written beside a conflict.
+fn merged_baseline(
+    plan: &MergePlan,
+    host: &Baseline,
+    guest: &Baseline,
+    worktree: &Path,
+) -> Baseline {
+    let mut baseline = host.clone();
+    for path in &plan.deletions {
+        // A directory that still held something stayed.
+        if fs::symlink_metadata(worktree.join(path)).is_err() {
+            baseline.remove(path);
+        }
+    }
+    for path in &plan.copies {
+        if let Some(hash) = guest.get(path) {
+            baseline.insert(path.clone(), *hash);
+        }
+    }
+    for conflict in &plan.conflicts {
+        if let (Some(copy), Some(hash)) = (&conflict.guest_copy, guest.get(&conflict.path)) {
+            baseline.insert(copy.clone(), *hash);
+        }
+    }
+    baseline
+}
+
+/// Three-way merge of the guest's copy of a worktree into the host's, against the baseline
+/// both started from: `plan_merge`, `validate_merge`, `apply_merge`. Both trees are read
+/// through the gitignore filter and deletions are decided from that view, so ignored host
+/// outputs are neither compared nor touched. `undo` is an empty directory the pre-images
+/// of a rolled-back merge are kept in.
+fn merge_worktrees(
+    baseline: &Baseline,
+    worktree: &Path,
+    guest: &Path,
+    undo: &Path,
+) -> Result<Merged> {
+    let host = worktree_baseline(worktree)?;
+    let guest_entries = worktree_baseline(guest)?;
+    let plan = plan_merge(baseline, &host, &guest_entries);
+    validate_merge(&plan, worktree, guest)?;
+    apply_merge(&plan, worktree, guest, undo)?;
+    let baseline = merged_baseline(&plan, &host, &guest_entries, worktree);
+    Ok(Merged {
+        report: MergeReport {
+            applied: plan.applied,
+            conflicts: plan.conflicts,
+        },
+        baseline,
+        push: plan.host_wins,
+        remove: plan.host_deleted,
+    })
 }
 
 fn copy_entry(source: &Path, destination: &Path) -> Result<()> {
@@ -1610,7 +1930,7 @@ fn release(
         return Ok(vec![]);
     }
     let report = match sync_from_guest(&state, config, copy) {
-        Ok(report) => report,
+        Ok(synced) => synced.report,
         Err(error) => {
             terminate(&state, None);
             retain_recovery(locked, &path, &state, "sync-failed")?;
@@ -1651,13 +1971,22 @@ fn sync_one(
             "Firecracker VM {name:?} is still being provisioned; open a pane in it first"
         ));
     }
-    let report = sync_from_guest(&state, config, copy)?;
-    let Some(worktree) = state.worktree.as_deref() else {
+    let synced = sync_from_guest(&state, config, copy)?;
+    let (Some(worktree), Some(baseline)) = (state.worktree.as_deref(), synced.baseline) else {
         return Ok(vec![]);
     };
-    push_to_guest(&state, config, copy, worktree)?;
-    write_baseline(&baseline_path(&state)?, &worktree_baseline(worktree)?)?;
-    Ok(report.warnings(worktree))
+    // Removals first: a directory the host turned into a file has to be emptied before the
+    // file can take its place.
+    {
+        let _progress = Progress::start("removing the host's deletions from the guest");
+        copy.remove_paths(&state, config, &synced.remove)?;
+    }
+    {
+        let _progress = Progress::start("copying the merged paths into the guest");
+        copy.push_paths(&state, config, worktree, &synced.push)?;
+    }
+    write_baseline(&baseline_path(&state)?, &baseline)?;
+    Ok(synced.report.warnings(worktree))
 }
 
 fn terminate(state: &VmState, mut child: Option<&mut Child>) {
@@ -1974,13 +2303,7 @@ fn read_state_opt(path: &Path) -> Result<Option<VmState>> {
 }
 
 fn write_state(path: &Path, state: &VmState) -> Result<()> {
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(state)?)?;
-    if let Err(error) = fs::rename(&tmp, path) {
-        let _ = fs::remove_file(tmp);
-        return Err(error).context("failed to commit VM state");
-    }
-    Ok(())
+    write_json_atomically(path, state).context("failed to commit VM state")
 }
 
 fn vm_id(session: &str, name: &str) -> String {
@@ -4179,6 +4502,25 @@ fn run(command: &mut Command, context: &str) -> Result<()> {
     }
 }
 
+/// `run`, with `input` on the command's stdin.
+fn run_with_input(command: &mut Command, input: &[u8], context: &str) -> Result<()> {
+    let mut child = command
+        .stdin(Stdio::piped())
+        .spawn()
+        .with_context(|| context.to_owned())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(input)
+            .with_context(|| format!("{context}: failed to write its input"))?;
+    }
+    let status = child.wait().with_context(|| context.to_owned())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("{context}: {status}"))
+    }
+}
+
 /// Says what the provider is doing, for the server's inactivity timeout.
 ///
 /// One line on stderr as the phase starts and another every few seconds until the guard is
@@ -5180,6 +5522,7 @@ mod tests {
     struct MergeFixture {
         host: tempfile::TempDir,
         guest: tempfile::TempDir,
+        undo: tempfile::TempDir,
         baseline: Baseline,
     }
 
@@ -5199,12 +5542,42 @@ mod tests {
             Self {
                 host,
                 guest,
+                undo: tempfile::tempdir().unwrap(),
                 baseline,
             }
         }
 
         fn merge(&self) -> MergeReport {
-            merge_worktrees(&self.baseline, self.host.path(), self.guest.path()).unwrap()
+            self.merge_fully().report
+        }
+
+        fn merge_fully(&self) -> Merged {
+            let merged = merge_worktrees(
+                &self.baseline,
+                self.host.path(),
+                self.guest.path(),
+                self.undo.path(),
+            )
+            .unwrap();
+            assert_eq!(
+                merged.baseline,
+                worktree_baseline(self.host.path()).unwrap(),
+                "the derived baseline must describe the host worktree as merged"
+            );
+            merged
+        }
+
+        fn try_merge(&self) -> Result<Merged> {
+            merge_worktrees(
+                &self.baseline,
+                self.host.path(),
+                self.guest.path(),
+                self.undo.path(),
+            )
+        }
+
+        fn host_tree(&self) -> Baseline {
+            worktree_baseline(self.host.path()).unwrap()
         }
 
         fn host_file(&self, path: &str) -> Option<String> {
@@ -5379,6 +5752,102 @@ mod tests {
         assert_eq!(fixture.host_file("was-dir").as_deref(), Some("now a file"));
     }
 
+    /// A merge is applied whole or not at all. When a step fails halfway - here a copy into
+    /// a directory the host has made read-only - the steps before it are undone and the host
+    /// worktree is exactly what it was.
+    #[test]
+    fn a_merge_that_fails_midway_rolls_the_host_back() {
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root is not refused by a read-only directory
+        }
+        let fixture = MergeFixture::new(&[
+            ("kept.rs", "same"),
+            ("removed.rs", "gone"),
+            ("ro/existing.rs", "x"),
+        ]);
+        fs::remove_file(fixture.guest.path().join("removed.rs")).unwrap();
+        fs::write(fixture.guest.path().join("added.rs"), "new").unwrap();
+        fs::write(fixture.guest.path().join("ro/new.rs"), "new").unwrap();
+        let before = fixture.host_tree();
+        let read_only = fixture.host.path().join("ro");
+        let mode = fs::metadata(&read_only).unwrap().permissions().mode();
+        fs::set_permissions(&read_only, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let error = fixture.try_merge().unwrap_err();
+        fs::set_permissions(&read_only, fs::Permissions::from_mode(mode)).unwrap();
+
+        assert!(format!("{error:#}").contains("rolled back"), "{error:#}");
+        assert_eq!(fixture.host_tree(), before);
+        assert_eq!(fixture.host_file("removed.rs").as_deref(), Some("gone"));
+        assert_eq!(fixture.host_file("added.rs"), None);
+        assert_eq!(fixture.host_file("ro/new.rs"), None);
+    }
+
+    /// The guest turning a directory into a file while the host still keeps ignored outputs
+    /// in it is the merge that used to fail halfway, with the tracked files already deleted.
+    /// It is refused before anything is touched.
+    #[test]
+    fn a_file_replacing_a_directory_the_host_still_uses_is_refused_up_front() {
+        let fixture = MergeFixture::new(&[
+            (".gitignore", "d/target/\n"),
+            ("d/f.rs", "f"),
+            ("other.rs", "before"),
+        ]);
+        fs::create_dir_all(fixture.host.path().join("d/target")).unwrap();
+        fs::write(fixture.host.path().join("d/target/out"), "built").unwrap();
+        fs::remove_dir_all(fixture.guest.path().join("d")).unwrap();
+        fs::write(fixture.guest.path().join("d"), "now a file").unwrap();
+        fs::write(fixture.guest.path().join("other.rs"), "after").unwrap();
+        let before = fixture.host_tree();
+
+        let error = fixture.try_merge().unwrap_err().to_string();
+
+        assert!(error.contains("nothing was merged"), "{error}");
+        assert!(error.contains("d/target"), "{error}");
+        assert_eq!(fixture.host_tree(), before);
+        assert_eq!(fixture.host_file("other.rs").as_deref(), Some("before"));
+        assert_eq!(fixture.host_file("d/f.rs").as_deref(), Some("f"));
+        assert_eq!(fixture.host_file("d/target/out").as_deref(), Some("built"));
+    }
+
+    /// The plan says what the guest has to take and drop to agree with the merged host: the
+    /// host's own changes, the host copy of every conflict with the guest copy beside it,
+    /// and the host's deletions. Guest-only changes are already on both sides.
+    #[test]
+    fn merge_plans_what_the_guest_takes_and_drops() {
+        let fixture = MergeFixture::new(&[
+            ("host-edit.rs", "before"),
+            ("host-gone.rs", "old"),
+            ("both.rs", "before"),
+            ("guest-edit.rs", "before"),
+            ("host-edit-guest-gone.rs", "before"),
+        ]);
+        fs::write(fixture.host.path().join("host-edit.rs"), "host").unwrap();
+        fs::remove_file(fixture.host.path().join("host-gone.rs")).unwrap();
+        fs::write(fixture.host.path().join("both.rs"), "host").unwrap();
+        fs::write(fixture.host.path().join("host-edit-guest-gone.rs"), "host").unwrap();
+        fs::write(fixture.host.path().join("host-new.rs"), "new").unwrap();
+        fs::write(fixture.guest.path().join("both.rs"), "guest").unwrap();
+        fs::write(fixture.guest.path().join("guest-edit.rs"), "guest").unwrap();
+        fs::remove_file(fixture.guest.path().join("host-edit-guest-gone.rs")).unwrap();
+
+        let merged = fixture.merge_fully();
+
+        assert_eq!(
+            merged.push,
+            [
+                "both.rs",
+                "both.rs.guest",
+                "host-edit-guest-gone.rs",
+                "host-edit.rs",
+                "host-new.rs",
+            ]
+        );
+        assert_eq!(merged.remove, ["host-gone.rs"]);
+        assert_eq!(merged.report.applied, ["guest-edit.rs"]);
+        assert_eq!(merged.report.conflicts.len(), 2);
+    }
+
     #[test]
     fn merge_copies_symlinks_and_modes() {
         let fixture = MergeFixture::new(&[("script.sh", "#!/bin/sh\n"), ("target.rs", "t")]);
@@ -5461,7 +5930,10 @@ mod tests {
             "guest output",
         )
         .unwrap();
-        let report = merge_worktrees(&baseline, host.path(), staged.path()).unwrap();
+        let undo = tempfile::tempdir().unwrap();
+        let report = merge_worktrees(&baseline, host.path(), staged.path(), undo.path())
+            .unwrap()
+            .report;
         assert_eq!(report.applied, ["source.rs"]);
         assert!(report.conflicts.is_empty());
         assert_eq!(
@@ -6663,6 +7135,12 @@ mod tests {
         dirs: HashMap<String, PathBuf>,
         /// Whose pull fails, as it does when a guest cannot be reached.
         unreachable: HashSet<String>,
+        /// What a sync told the guests to take and to drop.
+        pushed: Mutex<Vec<String>>,
+        removed: Mutex<Vec<String>>,
+        /// Files a guest writes the moment its worktree has been pulled - what an agent
+        /// still working in the guest does during a sync. `(vm name, path, content)`.
+        late_writes: Mutex<Vec<(String, String, String)>>,
     }
 
     impl GuestCopy for FakeGuests {
@@ -6674,15 +7152,48 @@ mod tests {
                 .dirs
                 .get(&state.name)
                 .context("no fake guest for this VM")?;
-            stage_filtered_worktree(guest, dest)
+            stage_filtered_worktree(guest, dest)?;
+            let mut late = self.late_writes.lock().unwrap();
+            for (_, path, content) in late.iter().filter(|(name, _, _)| *name == state.name) {
+                fs::write(guest.join(path), content)?;
+            }
+            late.retain(|(name, _, _)| *name != state.name);
+            Ok(())
         }
 
-        fn push(&self, state: &VmState, _config: &Config, src: &Path) -> Result<()> {
+        fn push_paths(
+            &self,
+            state: &VmState,
+            _config: &Config,
+            worktree: &Path,
+            paths: &[String],
+        ) -> Result<()> {
             let guest = self
                 .dirs
                 .get(&state.name)
                 .context("no fake guest for this VM")?;
-            stage_filtered_worktree(src, guest)
+            self.pushed.lock().unwrap().extend(paths.iter().cloned());
+            for path in paths {
+                copy_entry(&worktree.join(path), &guest.join(path))?;
+            }
+            Ok(())
+        }
+
+        fn remove_paths(&self, state: &VmState, _config: &Config, paths: &[String]) -> Result<()> {
+            let guest = self
+                .dirs
+                .get(&state.name)
+                .context("no fake guest for this VM")?;
+            self.removed.lock().unwrap().extend(paths.iter().cloned());
+            for path in paths {
+                let target = guest.join(path);
+                match fs::symlink_metadata(&target) {
+                    Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&target)?,
+                    Ok(_) => fs::remove_file(&target)?,
+                    Err(_) => {},
+                }
+            }
+            Ok(())
         }
     }
 
@@ -7045,6 +7556,69 @@ mod tests {
         );
         assert!(vm.path.exists(), "the VM keeps running");
         assert!(vm_is_running(&vm.state));
+    }
+
+    /// The guest keeps working through a sync. What it writes between the pull and the push
+    /// is not swept away by the push - only the paths the merge decided are sent - and the
+    /// next sync merges it as the guest change it is.
+    #[test]
+    fn sync_leaves_what_the_guest_wrote_after_the_pull_and_pushes_only_the_merge() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let mut guests = FakeGuests::default();
+        let mut vm = LeasedVm::new(
+            &locked,
+            &mut guests,
+            "review",
+            &[
+                ("host-edit.rs", "before"),
+                ("gone.rs", "old"),
+                ("both.rs", "before"),
+            ],
+        );
+        let live = LiveProcess::spawn();
+        live.attach(&mut vm);
+        fs::write(vm.host.join("host-edit.rs"), "host").unwrap();
+        fs::remove_file(vm.host.join("gone.rs")).unwrap();
+        fs::write(vm.host.join("both.rs"), "host").unwrap();
+        fs::write(vm.guest.join("both.rs"), "guest").unwrap();
+        guests.late_writes.lock().unwrap().push((
+            "review".to_owned(),
+            "late.rs".to_owned(),
+            "written after the pull".to_owned(),
+        ));
+        let config = provider_config(root.path());
+
+        let warnings = sync_one(&locked, &config, &guests, "work", "review").unwrap();
+
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(
+            vm.guest_file("late.rs").as_deref(),
+            Some("written after the pull"),
+            "a file the guest wrote during the sync survives the push"
+        );
+        assert_eq!(vm.host_file("late.rs"), None);
+        assert_eq!(vm.guest_file("host-edit.rs").as_deref(), Some("host"));
+        assert_eq!(vm.guest_file("gone.rs"), None);
+        assert_eq!(vm.guest_file("both.rs").as_deref(), Some("host"));
+        assert_eq!(vm.guest_file("both.rs.guest").as_deref(), Some("guest"));
+        let mut pushed = guests.pushed.lock().unwrap().clone();
+        pushed.sort();
+        assert_eq!(pushed, ["both.rs", "both.rs.guest", "host-edit.rs"]);
+        assert_eq!(*guests.removed.lock().unwrap(), ["gone.rs"]);
+        assert_eq!(
+            read_baseline(&vm.state).unwrap(),
+            worktree_baseline(&vm.host).unwrap()
+        );
+
+        let warnings = sync_one(&locked, &config, &guests, "work", "review").unwrap();
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            vm.host_file("late.rs").as_deref(),
+            Some("written after the pull"),
+            "the next sync merges it"
+        );
     }
 
     #[test]
