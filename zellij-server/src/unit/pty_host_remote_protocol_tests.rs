@@ -318,8 +318,9 @@ fn the_remote_protocol_versions_independently_of_the_supervisor_protocol() {
     // than only picked back up by the one that lost it, and ListPanes, so one
     // stranded by a failed handoff can be found again.
     // v4: `Spawn` carries a `PaneTarget` instead of loose host/VM fields.
+    // v5: `AgentReport`, a hook's event relayed on the pane's channel.
     assert_eq!(
-        REMOTE_PROTOCOL_VERSION, 4,
+        REMOTE_PROTOCOL_VERSION, 5,
         "bumping this is cheap; make sure it is deliberate"
     );
     assert_eq!(

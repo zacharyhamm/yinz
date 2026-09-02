@@ -159,15 +159,15 @@ fn a_worktree_vm_syncs_merges_renames_and_stops() {
             "rm gone.txt guest-deleted.txt; echo guest-both > both.txt; ",
             "printf 'cred-mode=%s ' \"$(stat -c %a /root/.zellij-test/auth.json)\"; ",
             "grep -q firecracker-test-secret /root/.zellij-test/auth.json && printf 'cred-ok '; ",
-            "printf '{\"hook_event_name\":\"Stop\",\"session_id\":\"fc-test\"}' | zellij --pty-broker report claude; ",
+            "printf '{\"hook_event_name\":\"Stop\",\"session_id\":\"fc-test\"}' | zellij --pty-broker report claude && printf 'hook-reported '; ",
             "printf 'guest-edits-done'"
         ),
         "guest-edits-done",
     );
     assert!(text.contains("cred-mode=600 cred-ok"), "{text}");
     assert!(
-        text.contains("\x1b]777;zellij-agent-report;claude;"),
-        "the guest's hook report did not reach the pane: {text:?}"
+        text.contains("hook-reported"),
+        "the guest's hook report was not accepted by its broker: {text:?}"
     );
 
     // Meanwhile on the host: one file both sides changed, one the host alone changed, and

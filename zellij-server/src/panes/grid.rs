@@ -72,12 +72,6 @@ pub enum PendingNotification {
     Osc777 { title: String, body: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingAgentReport {
-    pub kind: String,
-    pub json: String,
-}
-
 impl PendingNotification {
     pub fn title_and_body(&self) -> (String, String) {
         match self {
@@ -898,7 +892,6 @@ pub struct Grid {
     pub pending_clipboard_update: Option<String>,
     pub pending_osc7_cwd: Option<std::path::PathBuf>,
     pub pending_desktop_notifications: Vec<PendingNotification>,
-    pub pending_agent_reports: Vec<PendingAgentReport>,
     notification_tracker: NotificationTracker,
     /// Whitelisted host-terminal queries intercepted from the app running
     /// in this pane (CSI 14t / 16t pixel-dim queries, OSC 10;? / 11;? /
@@ -1278,7 +1271,6 @@ impl Grid {
             pending_clipboard_update: None,
             pending_osc7_cwd: None,
             pending_desktop_notifications: Vec::new(),
-            pending_agent_reports: Vec::new(),
             notification_tracker: NotificationTracker::default(),
             pending_forwarded_queries: Vec::new(),
             pending_nested_session_messages: Vec::new(),
@@ -5417,28 +5409,7 @@ impl Perform for Grid {
                     .iter()
                     .flat_map(|x| str::from_utf8(x))
                     .collect();
-                if parts.first().copied() == Some("zellij-agent-report") {
-                    if let (Some(kind), Some(encoded)) = (parts.get(1), parts.get(2)) {
-                        let valid_kind = !kind.is_empty()
-                            && kind.len() <= 32
-                            && kind
-                                .bytes()
-                                .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte));
-                        if valid_kind && encoded.len() <= 90_000 {
-                            if let Ok(bytes) = BASE64_DECODER.decode(encoded.as_bytes()) {
-                                if let Ok(json) = String::from_utf8(bytes) {
-                                    if json.len() > zellij_utils::agent::HOOK_BROADCAST_MAX_BYTES {
-                                        return;
-                                    }
-                                    self.pending_agent_reports.push(PendingAgentReport {
-                                        kind: (*kind).to_owned(),
-                                        json,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                } else if parts.first().copied() == Some("notify") {
+                if parts.first().copied() == Some("notify") {
                     let title = parts.get(1).map(|s| s.to_string()).unwrap_or_default();
                     let body = parts
                         .get(2..)

@@ -45,7 +45,11 @@ use crate::pty_host::protocol::{SpawnFailureKind, WireWinsize};
 /// v4 carries the pane's `PaneTarget` on `Spawn` in place of the loose
 /// `remote_host`/`firecracker_*` fields; a v3 broker would read every pane as
 /// local and refuse a `remote_default_shell` request it cannot see the host for.
-pub const REMOTE_PROTOCOL_VERSION: u32 = 4;
+/// v5 adds `AgentReport`: a coding agent's hook inside a remote pane hands its
+/// event to the broker over its socket, and the broker relays it on the pane's
+/// control channel, so a report is authenticated by the transport rather than
+/// parsed out of the pane's bytes where any program could forge it.
+pub const REMOTE_PROTOCOL_VERSION: u32 = 5;
 
 /// Frame kind tags. The tag is what lets pty bytes stay raw while everything
 /// else stays JSON.
@@ -191,6 +195,16 @@ pub enum ServerToBrokerMsg {
     /// because the panes worth asking about are precisely the ones no
     /// connection is speaking for.
     ListPanes,
+    /// A coding agent's hook event, from a hook running *inside* the pane
+    /// named by `pane_token` (the token is in that pane's environment). Sent on
+    /// a connection of its own by `zellij --pty-broker report`; the broker
+    /// relays it to the server on the pane's own channel and answers
+    /// `AgentReported`.
+    AgentReport {
+        pane_token: String,
+        kind: String,
+        json: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -260,6 +274,13 @@ pub enum BrokerToServerMsg {
         /// rides along to the plugins that classify agents.
         foreground_argv: Option<Vec<String>>,
     },
+    /// A hook event from a coding agent in this pane, relayed from the hook's
+    /// own connection to the broker. `json` is the event as the agent wrote
+    /// it; `kind` names the agent.
+    AgentReport { kind: String, json: String },
+    /// The answer to a hook's `AgentReport`: whether a pane with that token was
+    /// attached to a server to relay it to.
+    AgentReported { delivered: bool },
 }
 
 /// A frame as it comes off the wire, before any control body is interpreted.

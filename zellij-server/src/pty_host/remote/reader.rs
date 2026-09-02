@@ -24,7 +24,7 @@ use zellij_utils::input::command::RunCommand;
 use super::conn::{RemoteConn, RemoteGitProbe, RemoteStatus};
 use super::protocol::{self, BrokerToServerMsg, Frame};
 use crate::os_input_output::AsyncReader;
-use crate::pty_host::client::QuitCb;
+use crate::pty_host::client::{AgentReportCb, QuitCb};
 use crate::PaneId;
 
 pub use async_trait::async_trait;
@@ -91,6 +91,9 @@ pub struct RemoteReader {
     /// for the pane and uses it to re-run a held one.
     cmd: RunCommand,
     terminal_id: u32,
+    /// Where a coding agent's hook reports from this pane go. One closure for
+    /// every pane, registered on the backend; `None` on a reader nobody asked.
+    agent_report_cb: Option<AgentReportCb>,
 }
 
 impl RemoteReader {
@@ -107,7 +110,14 @@ impl RemoteReader {
             on_exit: Mutex::new(None),
             cmd: RunCommand::default(),
             terminal_id: 0,
+            agent_report_cb: None,
         })
+    }
+
+    /// Say where a coding agent's hook reports from this pane go.
+    pub fn on_agent_report(mut self, cb: AgentReportCb) -> Self {
+        self.agent_report_cb = Some(cb);
+        self
     }
 
     /// Say what to do when the pane ends.
@@ -341,6 +351,18 @@ impl RemoteReader {
                     shell_argv,
                     foreground_argv,
                 });
+                false
+            },
+            // An event, not state: handed on at once rather than cached, or a
+            // burst of them would collapse to whichever came last.
+            BrokerToServerMsg::AgentReport { kind, json } => {
+                match &self.agent_report_cb {
+                    Some(cb) => cb(self.terminal_id, kind, json),
+                    None => log::warn!(
+                        "pane {} reported an agent hook event but nothing is listening",
+                        self.terminal_id
+                    ),
+                }
                 false
             },
             // Handshake and spawn results are consumed before the pane is handed

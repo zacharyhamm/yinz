@@ -437,6 +437,11 @@ pub enum ChildRunState {
 /// which it can be, because unlike `quit_cb` it carries no per-pane policy.
 pub type ChildStateCb = Arc<dyn Fn(u32, ChildRunState) + Send + Sync>;
 
+/// Told when a coding agent's hook in a remote pane reports an event, with the
+/// pane's terminal id, the agent kind and the event JSON. Registered once on
+/// the backend, like `ChildStateCb`, and handed to every remote reader.
+pub type AgentReportCb = Arc<dyn Fn(u32, String, String) + Send + Sync>;
+
 fn handshake_and_spawn(
     control: &UnixStream,
     params: &SpawnParams<'_>,

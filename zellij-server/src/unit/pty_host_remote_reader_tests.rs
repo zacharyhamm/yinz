@@ -232,6 +232,43 @@ async fn a_status_report_updates_the_cache_without_disturbing_the_stream() {
     assert_eq!(status.foreground_argv, Some(vec!["claude".to_owned()]));
 }
 
+/// An agent's hook event is an event, not state: it goes to the callback at
+/// once, without touching the byte stream the pane renders.
+#[tokio::test]
+async fn an_agent_report_control_frame_reaches_the_callback() {
+    let (reader, _conn, mut peer) = reader_pair();
+    let seen: Arc<Mutex<Vec<(u32, String, String)>>> = Arc::new(Mutex::new(vec![]));
+    let sink = seen.clone();
+    let mut reader = reader
+        .on_exit(7, RunCommand::default(), Box::new(|_, _, _| {}))
+        .on_agent_report(Arc::new(move |terminal_id, kind, json| {
+            sink.lock()
+                .expect("poisoned")
+                .push((terminal_id, kind, json));
+        }));
+    let mut framed = Vec::new();
+    write_control(
+        &mut framed,
+        &BrokerToServerMsg::AgentReport {
+            kind: "claude".to_owned(),
+            json: r#"{"hook_event_name":"Stop"}"#.to_owned(),
+        },
+    )
+    .expect("frame failed");
+    write_output(&mut framed, b"prompt$ ").expect("frame failed");
+    send(&mut peer, &framed);
+
+    assert_eq!(read_to_string(&mut reader, 8).await, "prompt$ ");
+    assert_eq!(
+        seen.lock().expect("poisoned").clone(),
+        vec![(
+            7,
+            "claude".to_owned(),
+            r#"{"hook_event_name":"Stop"}"#.to_owned()
+        )]
+    );
+}
+
 /// A caller's buffer is whatever size it is; a frame larger than it must be
 /// handed over across several reads rather than truncated.
 #[tokio::test]

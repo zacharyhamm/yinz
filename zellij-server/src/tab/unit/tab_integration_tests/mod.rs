@@ -47,7 +47,6 @@ struct FakeInputOutput {
     file_dumps: Arc<Mutex<HashMap<String, String>>>,
     pub tty_stdin_bytes: Arc<Mutex<BTreeMap<u32, Vec<u8>>>>,
     remote_panes: Arc<Mutex<HashSet<u32>>>,
-    firecracker_panes: Arc<Mutex<HashSet<u32>>>,
 }
 
 impl ServerOsApi for FakeInputOutput {
@@ -84,12 +83,6 @@ impl ServerOsApi for FakeInputOutput {
     }
     fn is_remote_pane(&self, terminal_id: u32) -> bool {
         self.remote_panes.lock().unwrap().contains(&terminal_id)
-    }
-    fn is_firecracker_pane(&self, terminal_id: u32) -> bool {
-        self.firecracker_panes
-            .lock()
-            .unwrap()
-            .contains(&terminal_id)
     }
     fn kill(&self, _pid: u32) -> Result<()> {
         unimplemented!()
@@ -1252,52 +1245,6 @@ fn create_new_tab_with_plugin_receiver_and_os(
     )
     .unwrap();
     (tab, mock_plugin_receiver)
-}
-
-/// The byte stream is the only route a Firecracker guest has to the session,
-/// so its hook reports are honoured there. A local pane has the IPC route, and
-/// an ordinary ssh pane is not trusted to write agent records at all: any
-/// program in it could print the sequence.
-#[test]
-fn only_firecracker_panes_may_report_agent_hooks_through_osc_777() {
-    use base64::{engine::general_purpose::STANDARD, Engine};
-
-    let report = format!(
-        "\u{1b}]777;zellij-agent-report;claude;{}\u{1b}\\",
-        STANDARD.encode(r#"{"hook_event_name":"Notification"}"#)
-    )
-    .into_bytes();
-    let size = Size { cols: 80, rows: 24 };
-
-    let (mut local, local_plugins) = create_new_tab_with_plugin_receiver(size, ModeInfo::default());
-    while local_plugins.try_recv().is_ok() {}
-    local.handle_pty_bytes(1, report.clone()).unwrap();
-    assert!(local_plugins.try_recv().is_err());
-
-    let ssh_os = Box::new(FakeInputOutput::default());
-    ssh_os.remote_panes.lock().unwrap().insert(1);
-    let (mut ssh, ssh_plugins) =
-        create_new_tab_with_plugin_receiver_and_os(size, ModeInfo::default(), ssh_os);
-    while ssh_plugins.try_recv().is_ok() {}
-    ssh.handle_pty_bytes(1, report.clone()).unwrap();
-    assert!(
-        ssh_plugins.try_recv().is_err(),
-        "an ordinary remote pane forged an agent report"
-    );
-
-    let firecracker_os = Box::new(FakeInputOutput::default());
-    firecracker_os.remote_panes.lock().unwrap().insert(1);
-    firecracker_os.firecracker_panes.lock().unwrap().insert(1);
-    let (mut firecracker, firecracker_plugins) =
-        create_new_tab_with_plugin_receiver_and_os(size, ModeInfo::default(), firecracker_os);
-    while firecracker_plugins.try_recv().is_ok() {}
-    firecracker.handle_pty_bytes(1, report).unwrap();
-    assert!(matches!(
-        firecracker_plugins
-            .try_recv()
-            .map(|(instruction, _)| instruction),
-        Ok(PluginInstruction::KeybindPipe { .. })
-    ));
 }
 
 // ========================================================================

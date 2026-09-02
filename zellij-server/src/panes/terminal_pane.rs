@@ -9,7 +9,7 @@ use crate::panes::sixel::SixelImageStore;
 use crate::panes::FrameColorOverride;
 use crate::panes::LinkHandler;
 use crate::panes::{
-    grid::{Grid, PendingAgentReport, PendingNotification},
+    grid::{Grid, PendingNotification},
     nested_session_modal::GuestModalShortcuts,
     terminal_character::{render_first_run_banner, TerminalCharacter, EMPTY_TERMINAL_CHARACTER},
 };
@@ -1015,10 +1015,6 @@ impl Pane for TerminalPane {
 
     fn drain_desktop_notifications(&mut self) -> Vec<PendingNotification> {
         std::mem::take(&mut self.grid.pending_desktop_notifications)
-    }
-
-    fn drain_agent_reports(&mut self) -> Vec<PendingAgentReport> {
-        self.grid.pending_agent_reports.drain(..).collect()
     }
 
     fn drain_osc7_cwd(&mut self) -> Option<std::path::PathBuf> {
