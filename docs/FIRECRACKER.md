@@ -182,6 +182,12 @@ with the command that removes it.
 follows from the UID. Use it to clean up after a setup that failed before it recorded its
 configuration.
 
+`network apply` sweeps only the rules of the network it is applying — found by that network's
+bridge, chain, tag and subnet — so applying a second network for the same user, as the test
+harness does with a temporary one, leaves the pool's rules alone; `network remove --uid <uid>
+--config <file>` removes exactly that network, and the tag-wide sweep is `network teardown`'s
+alone. The harness picks its subnet in `10.200-254.x.0/24`, stepping past the user's own pool.
+
 ### Troubleshooting
 
 **`iptables: Chain already exists.`** — a host configured by a provider older than this change.
@@ -393,7 +399,11 @@ zellij firecracker sync review [--session work]
 
 Zellij sends `stop_session` whenever the server exits on its own — the last client or pane
 closing, a kill-session, or a fatal server error — after it has closed the session's panes.
-Detaching does not stop VMs. Only a server that never gets to exit on its own, killed with
+On the way out it terminates every Firecracker pane on its broker, since the VM is about to stop
+with the session; an ordinary ssh pane is left running on its broker, where
+`zellij pty-host adopt --host` can pick it up later. A boot still in progress at that moment is
+cancelled rather than waited out, and renaming the session waits for any boot in flight so no VM
+is ever keyed under a stale name. Detaching does not stop VMs. Only a server that never gets to exit on its own, killed with
 `SIGKILL` or crashed, leaves VMs running. Inspect and stop them with:
 
 ```sh
@@ -421,6 +431,16 @@ with the VM's `state.json`, its worktree baseline, and a `recovery.json` naming 
 
 Firecracker panes cannot be warped to another session. A worktree VM can still have leases from
 more than one session.
+
+A pane that was spawned for a tab or pane that closed while its VM booted has nowhere to go; the
+server closes it on the pty thread rather than leaving the guest command, its transport and its
+reader running until the session ends. Likewise a layout that cannot be applied past some pane
+closes the VM panes it had already started for the panes after it.
+
+The state directory holds one `<id>.json` per VM. A state file that cannot be read for any
+reason other than not existing fails the request naming the file, rather than being read as "no
+VM" and having a fresh clone written over a running guest's disk; a stray plain file under
+`recovery/` is ignored by the pruning that runs on every request.
 
 ## Agents
 
