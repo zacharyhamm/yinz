@@ -462,7 +462,7 @@ fn run_action_firecracker_children_round_trip() {
     assert_eq!(action.target.firecracker_image(), Some("rust-dev"));
     assert_eq!(
         action.target.firecracker_worktree(),
-        Some(Path::new("/home/me/src/project"))
+        Some(std::path::Path::new("/home/me/src/project"))
     );
 
     let serialized = Keybinds::to_kdl(&deserialized, true);
@@ -478,6 +478,45 @@ fn run_action_firecracker_children_round_trip() {
     )
     .unwrap();
     assert_eq!(deserialized, reparsed);
+
+    // `~` is expanded, as a layout's `firecracker_worktree` is.
+    let tilde: KdlDocument = r#"
+        keybinds clear-defaults=true {
+            normal {
+                bind "Ctrl f" {
+                    Run "cargo" {
+                        firecracker_vm "review"
+                        firecracker_worktree "~/src/project"
+                    }
+                }
+            }
+        }"#
+    .parse()
+    .unwrap();
+    let deserialized = Keybinds::from_kdl(
+        tilde.get("keybinds").unwrap(),
+        Default::default(),
+        &Default::default(),
+    )
+    .unwrap();
+    let action = deserialized
+        .0
+        .get(&InputMode::Normal)
+        .unwrap()
+        .values()
+        .flatten()
+        .find_map(|action| match action {
+            Action::NewTiledPane { command, .. } => command.clone(),
+            _ => None,
+        })
+        .expect("the Run action was not parsed");
+    let home = directories::BaseDirs::new()
+        .map(|dirs| dirs.home_dir().to_path_buf())
+        .expect("a home directory");
+    assert_eq!(
+        action.target.firecracker_worktree(),
+        Some(home.join("src/project").as_path())
+    );
 
     for (config, why) in [
         (
