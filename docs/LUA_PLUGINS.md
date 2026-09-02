@@ -379,7 +379,11 @@ seconds` interrupts a stuck step; leave it off for interactive ones - every step
 so the user can focus the pane and type. `stdin = "..."` is written to the step's child once it
 starts, which is where a secret goes: **never put a secret in `args`** - argv is visible in the
 pane manifest and in serialized sessions. `cwd = "inherit"` uses the pane's last reported
-working directory only when the next step runs on the same host. Other options:
+working directory only when the next step runs on the same host. A step's `cwd` is read on the
+machine the step runs on: locally `/host`, `/data` and `/cache` name the plugin mounts and a
+missing `cwd` means the plugin's own; with `remote_host` or `firecracker_vm` set it is passed
+through as written, and a missing one lands the step wherever that machine logs the user in,
+never in the plugin's cwd, which is a path here. Other options:
 `close_on_success`, `on_cancel = "close"`, `keep_scrollback =
 false` to wipe between steps, `kill_grace` (seconds between SIGINT and SIGKILL, default 5).
 
