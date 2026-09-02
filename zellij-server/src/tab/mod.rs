@@ -9714,11 +9714,7 @@ pub fn pane_info_for_pane(
             pane_info.id = *terminal_id;
             pane_info.is_plugin = false;
             if let Some(Run::Command(command)) = pane.invoked_with() {
-                pane_info.firecracker_image = command.firecracker_image.clone();
-                pane_info.firecracker_worktree = command
-                    .firecracker_worktree
-                    .as_ref()
-                    .map(|path| path.to_string_lossy().into_owned());
+                pane_info.target = command.target.clone();
             }
             pane_info.terminal_command = pane.invoked_with().as_ref().and_then(|c| match c {
                 Run::Command(run_command) => Some(run_command.to_string()),

@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::{
+    input::command::PaneTarget,
     input::layout::PluginUserConfiguration,
     input::layout::{
         FloatingPaneLayout, Layout, LayoutConstraint, PercentOrFixed, Run, RunPluginOrAlias,
@@ -250,18 +251,23 @@ fn serialize_firecracker_attributes(layout_run: &Option<Run>, kdl_node: &mut Kdl
     let Some(Run::Command(run_command)) = layout_run else {
         return;
     };
-    let Some(vm) = &run_command.firecracker_vm else {
+    let PaneTarget::Firecracker {
+        vm,
+        image,
+        worktree,
+    } = &run_command.target
+    else {
         return;
     };
     kdl_node
         .entries_mut()
         .push(KdlEntry::new_prop("firecracker_vm", vm.to_owned()));
-    if let Some(image) = &run_command.firecracker_image {
+    if let Some(image) = image {
         kdl_node
             .entries_mut()
             .push(KdlEntry::new_prop("firecracker_image", image.to_owned()));
     }
-    if let Some(worktree) = &run_command.firecracker_worktree {
+    if let Some(worktree) = worktree {
         kdl_node.entries_mut().push(KdlEntry::new_prop(
             "firecracker_worktree",
             worktree.display().to_string(),
@@ -2567,14 +2573,20 @@ mod tests {
             args: vec!["test".to_owned()],
             cwd: Some(PathBuf::from("/workspace")),
             hold_on_close: true,
-            firecracker_vm: Some("review".to_owned()),
-            firecracker_image: Some("rust-dev".to_owned()),
-            firecracker_worktree: Some(PathBuf::from("/home/me/src/project")),
+            target: PaneTarget::Firecracker {
+                vm: "review".to_owned(),
+                image: Some("rust-dev".to_owned()),
+                worktree: Some(PathBuf::from("/home/me/src/project")),
+            },
             ..Default::default()
         };
         let guest_shell = RunCommand {
             remote_default_shell: true,
-            firecracker_vm: Some("review".to_owned()),
+            target: PaneTarget::Firecracker {
+                vm: "review".to_owned(),
+                image: None,
+                worktree: None,
+            },
             ..Default::default()
         };
         let tab_layout_manifest = TabLayoutManifest {

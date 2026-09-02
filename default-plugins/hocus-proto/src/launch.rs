@@ -18,7 +18,7 @@
 
 use std::collections::BTreeMap;
 use zellij_tile::prelude::{
-    validate_firecracker_vm_name, CommandToRun, GitCheckout, PaneId, HOCUS_AGENT_PANE_CONTEXT,
+    CommandToRun, GitCheckout, PaneId, PaneTarget, HOCUS_AGENT_PANE_CONTEXT,
 };
 
 /// The branch a new one is cut from when the caller does not say.
@@ -253,17 +253,12 @@ pub fn claude_hook_settings_argument() -> String {
 /// status row, hocus hands them back to the model as the tool result — so they say what
 /// is missing rather than that something is.
 pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
-    let firecracker = trimmed(&spec.firecracker).map(str::to_owned);
-    if let Some(name) = firecracker.as_deref() {
-        validate_firecracker_vm_name(name)?;
-    }
-    let firecracker_image = trimmed(&spec.firecracker_image).map(str::to_owned);
-    if let Some(image) = firecracker_image.as_deref() {
-        validate_firecracker_vm_name(image)?;
-        if firecracker.is_none() {
-            return Err("firecracker_image requires a Firecracker VM".to_owned());
-        }
-    }
+    let target = PaneTarget::from_parts(
+        None,
+        trimmed(&spec.firecracker),
+        trimmed(&spec.firecracker_image),
+        None,
+    )?;
     let kind = trimmed(&spec.kind).map(str::to_lowercase);
     let program = match (kind.as_deref(), trimmed(&spec.command)) {
         (Some(kind), _) => binary_for(kind).to_owned(),
@@ -300,8 +295,7 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
     let command = CommandToRun {
         path: path.into(),
         args,
-        firecracker_vm: firecracker,
-        firecracker_image,
+        target,
         ..Default::default()
     };
 
@@ -462,7 +456,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(checkout, GitCheckout::Current);
-        assert_eq!(command.firecracker_vm.as_deref(), Some("review"));
+        assert_eq!(command.target.firecracker_vm(), Some("review"));
         assert_eq!(command.path, PathBuf::from("env"));
         assert_eq!(command.args[0], "TOKEN=explicit");
         let settings = command
@@ -481,7 +475,7 @@ mod tests {
             ..spec("claude")
         })
         .unwrap();
-        assert_eq!(command.firecracker_vm, None);
+        assert_eq!(command.target.firecracker_vm(), None);
         assert!(command.args.iter().any(|arg| arg == "--settings"));
     }
 

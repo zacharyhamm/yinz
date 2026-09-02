@@ -333,7 +333,9 @@ fn a_default_shell_pane_ships_no_command_of_its_own() {
     let cmd = RunCommand {
         command: std::path::PathBuf::new(),
         remote_default_shell: true,
-        remote_host: Some("build-box".to_owned()),
+        target: zellij_utils::data::PaneTarget::Ssh {
+            host: "build-box".to_owned(),
+        },
         ..Default::default()
     };
     handshake_and_spawn(&ours, "build-box", &cmd, None, 0, &[]).expect("handshake should succeed");
@@ -404,7 +406,9 @@ fn a_pane_whose_forward_has_gone_stale_is_retried_through_a_fresh_one() {
 
     let cmd = RunCommand {
         command: std::path::PathBuf::from("/bin/sh"),
-        remote_host: Some(host.to_owned()),
+        target: zellij_utils::data::PaneTarget::Ssh {
+            host: host.to_owned(),
+        },
         ..Default::default()
     };
     let msg = match hosts.open_pane(host, &cmd, None, 0) {
@@ -548,7 +552,9 @@ fn a_pane_carries_this_sides_terminal_and_its_own_id() {
     let cmd = RunCommand {
         command: std::path::PathBuf::new(),
         remote_default_shell: true,
-        remote_host: Some("build-box".to_owned()),
+        target: zellij_utils::data::PaneTarget::Ssh {
+            host: "build-box".to_owned(),
+        },
         ..Default::default()
     };
     let carried = vec![

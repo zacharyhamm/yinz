@@ -589,20 +589,23 @@ fn duplicate_command(
     // A pane on another machine, ssh or Firecracker, already reports a cwd on
     // that machine, and the server hands a remote cwd over untranslated. Only a
     // local pane gets `/host`, which the server maps to the caller's cwd.
-    let (remote_host, firecracker_vm, cwd) = match pane.host.as_deref() {
-        Some(host) => match host.strip_prefix("firecracker:") {
-            Some(name) => (None, Some(name.to_owned()), pane.cwd.clone()),
-            None => (Some(host.to_owned()), None, pane.cwd.clone()),
-        },
-        None => (None, None, Some("/host".to_owned())),
+    let mut target = PaneTarget::parse_display(pane.host.as_deref());
+    if let PaneTarget::Firecracker {
+        image, worktree, ..
+    } = &mut target
+    {
+        image.clone_from(&pane.firecracker_image);
+        *worktree = pane.firecracker_worktree.clone().map(Into::into);
+    }
+    let cwd = if target.is_local() {
+        Some("/host".to_owned())
+    } else {
+        pane.cwd.clone()
     };
     Some(CommandToRun {
         path: launch::binary_for(kind).into(),
         cwd: cwd.map(Into::into),
-        remote_host,
-        firecracker_vm,
-        firecracker_image: pane.firecracker_image.clone(),
-        firecracker_worktree: pane.firecracker_worktree.clone().map(Into::into),
+        target,
         ..Default::default()
     })
 }
@@ -858,7 +861,7 @@ mod tests {
         state.set_text(BRANCH, "topic");
         state.changed(BRANCH);
         let (command, checkout) = request(state.dialog.form()).unwrap();
-        assert_eq!(command.firecracker_vm.as_deref(), Some("review"));
+        assert_eq!(command.target.firecracker_vm(), Some("review"));
         assert!(matches!(checkout, GitCheckout::NewWorktree { .. }));
     }
 
@@ -874,7 +877,7 @@ mod tests {
         assert!(state.submit());
         assert_eq!(
             state.error.as_deref(),
-            Some("firecracker_image requires a Firecracker VM")
+            Some("firecracker_image and firecracker_worktree need a firecracker_vm")
         );
     }
 
@@ -1316,7 +1319,7 @@ mod tests {
         assert!(command.args.is_empty());
         // The cwd of an ssh pane is a path on `builder`, so it is sent as-is.
         assert_eq!(command.cwd, Some("/tmp/repo".into()));
-        assert_eq!(command.remote_host.as_deref(), Some("builder"));
+        assert_eq!(command.target.ssh_host(), Some("builder"));
 
         let local_pane = AgentPane {
             host: None,
@@ -1324,7 +1327,7 @@ mod tests {
         };
         let command = duplicate_command(&local_pane, &BTreeMap::new()).unwrap();
         assert_eq!(command.cwd, Some("/host".into()));
-        assert_eq!(command.remote_host, None);
+        assert!(command.target.is_local());
 
         let firecracker_pane = AgentPane {
             host: Some("firecracker:review".to_owned()),
@@ -1334,10 +1337,14 @@ mod tests {
         };
         let command = duplicate_command(&firecracker_pane, &BTreeMap::new()).unwrap();
         assert_eq!(command.cwd, Some("/tmp/repo".into()));
-        assert_eq!(command.remote_host, None);
-        assert_eq!(command.firecracker_vm.as_deref(), Some("review"));
-        assert_eq!(command.firecracker_image.as_deref(), Some("rust-dev"));
-        assert_eq!(command.firecracker_worktree, Some("/host/repo".into()));
+        assert_eq!(
+            command.target,
+            PaneTarget::Firecracker {
+                vm: "review".to_owned(),
+                image: Some("rust-dev".to_owned()),
+                worktree: Some("/host/repo".into()),
+            }
+        );
 
         let ordinary_pane = AgentPane {
             command: Some("bash".to_owned()),

@@ -1,4 +1,5 @@
 //! Trigger a command
+pub use crate::data::{validate_firecracker_vm_name, PaneTarget, FIRECRACKER_HOST_PREFIX};
 use crate::data::{Direction, OriginatingPlugin};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -72,29 +73,13 @@ pub struct RunCommand {
     pub originating_plugin: Option<OriginatingPlugin>,
     #[serde(default)]
     pub use_terminal_title: bool,
-    /// The machine this command runs on, if not this one.
-    ///
-    /// Carried alongside the command rather than as a new `Run` variant: a
-    /// variant would ripple into `Run::merge`, the KDL property whitelist and
-    /// three arms of session serialization, all to express something that is
-    /// really an attribute of *where* the command runs rather than of what it
-    /// is. `serde(default)` keeps every existing layout and serialized session
-    /// parsing unchanged.
+    /// The machine this command runs on. See `PaneTarget`.
     #[serde(default)]
-    pub remote_host: Option<String>,
-    /// Named Firecracker VM owned by this session.
-    #[serde(default)]
-    pub firecracker_vm: Option<String>,
-    /// Immutable image selected for a Firecracker VM.
-    #[serde(default)]
-    pub firecracker_image: Option<String>,
-    /// Canonical host worktree mirrored into a Firecracker VM.
-    #[serde(default)]
-    pub firecracker_worktree: Option<PathBuf>,
+    pub target: PaneTarget,
     /// Run the default login shell of the machine this pane runs on, and ignore
     /// `command`.
     ///
-    /// Only meaningful together with `remote_host`: which shell a user has, and
+    /// Only meaningful with a remote `target`: which shell a user has, and
     /// where their home directory is, are facts about *that* machine, and the
     /// machine asking for the pane cannot know either. So nothing is resolved
     /// here — the broker on the far side reads its own passwd entry, exactly as
@@ -152,18 +137,9 @@ pub struct RunCommandAction {
     pub originating_plugin: Option<OriginatingPlugin>,
     #[serde(default)]
     pub use_terminal_title: bool,
-    /// See `RunCommand::remote_host`.
+    /// See `RunCommand::target`.
     #[serde(default)]
-    pub remote_host: Option<String>,
-    /// See `RunCommand::firecracker_vm`.
-    #[serde(default)]
-    pub firecracker_vm: Option<String>,
-    /// See `RunCommand::firecracker_image`.
-    #[serde(default)]
-    pub firecracker_image: Option<String>,
-    /// See `RunCommand::firecracker_worktree`.
-    #[serde(default)]
-    pub firecracker_worktree: Option<PathBuf>,
+    pub target: PaneTarget,
     /// See `RunCommand::remote_default_shell`.
     #[serde(default)]
     pub remote_default_shell: bool,
@@ -179,10 +155,7 @@ impl From<RunCommandAction> for RunCommand {
             hold_on_start: action.hold_on_start,
             originating_plugin: action.originating_plugin,
             use_terminal_title: action.use_terminal_title,
-            remote_host: action.remote_host,
-            firecracker_vm: action.firecracker_vm,
-            firecracker_image: action.firecracker_image,
-            firecracker_worktree: action.firecracker_worktree,
+            target: action.target,
             remote_default_shell: action.remote_default_shell,
         }
     }
@@ -199,10 +172,7 @@ impl From<RunCommand> for RunCommandAction {
             hold_on_start: run_command.hold_on_start,
             originating_plugin: run_command.originating_plugin,
             use_terminal_title: run_command.use_terminal_title,
-            remote_host: run_command.remote_host,
-            firecracker_vm: run_command.firecracker_vm,
-            firecracker_image: run_command.firecracker_image,
-            firecracker_worktree: run_command.firecracker_worktree,
+            target: run_command.target,
             remote_default_shell: run_command.remote_default_shell,
         }
     }
@@ -244,27 +214,22 @@ impl RunCommand {
     /// the ordinary `CommandNotFound` path instead of quietly logging the user
     /// in somewhere.
     pub fn is_remote_default_shell(&self) -> bool {
-        self.remote_default_shell && (self.remote_host.is_some() || self.firecracker_vm.is_some())
+        self.remote_default_shell && self.target.is_remote()
     }
+    /// `PaneTarget::display` of this command's target.
     pub fn display_host(&self) -> Option<String> {
-        self.firecracker_vm
-            .as_ref()
-            .map(|name| format!("firecracker:{name}"))
-            .or_else(|| self.remote_host.clone())
+        self.target.display()
     }
-}
-
-pub fn validate_firecracker_vm_name(name: &str) -> Result<(), String> {
-    if (1..=64).contains(&name.len())
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-    {
-        Ok(())
-    } else {
-        Err(format!(
-            "invalid Firecracker VM name {name:?}: use 1-64 letters, digits, '.', '_' or '-'"
-        ))
+    /// The spawn resolves an endpoint first (today: a VM to boot) and so
+    /// happens off the pty thread; a held pane waits for the user instead.
+    pub fn defers_spawn(&self) -> bool {
+        self.target.is_firecracker() && !self.hold_on_start
+    }
+    /// A start failure is shown in the pane rather than closing it: always for
+    /// a remote target, whose failures (an unreachable host, a VM that did not
+    /// boot) the user has to read, and otherwise only when asked.
+    pub fn shows_start_failure(&self) -> bool {
+        self.hold_on_close || self.target.is_remote()
     }
 }
 
@@ -272,11 +237,12 @@ pub fn validate_firecracker_vm_name(name: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    use std::path::Path;
+
     #[test]
-    fn firecracker_panes_hide_the_provider_ssh_endpoint() {
+    fn firecracker_panes_display_their_vm_name() {
         let command = RunCommand {
-            remote_host: Some("ssh://zellij@127.0.0.1:2201".to_owned()),
-            firecracker_vm: Some("review".to_owned()),
+            target: PaneTarget::firecracker("review", None, None).unwrap(),
             ..Default::default()
         };
 
@@ -284,5 +250,77 @@ mod tests {
             command.display_host().as_deref(),
             Some("firecracker:review")
         );
+        assert_eq!(
+            PaneTarget::parse_display(command.display_host().as_deref()),
+            PaneTarget::Firecracker {
+                vm: "review".to_owned(),
+                image: None,
+                worktree: None
+            }
+        );
+        assert_eq!(
+            PaneTarget::parse_display(Some("build-box")),
+            PaneTarget::Ssh {
+                host: "build-box".to_owned()
+            }
+        );
+        assert_eq!(PaneTarget::parse_display(None), PaneTarget::Local);
+    }
+
+    #[test]
+    fn a_firecracker_target_carries_every_validation_rule() {
+        assert!(PaneTarget::firecracker("bad/name", None, None).is_err());
+        assert!(PaneTarget::firecracker("review", Some("bad/image"), None).is_err());
+        assert!(PaneTarget::firecracker("review", None, Some(Path::new("relative"))).is_err());
+        assert_eq!(
+            PaneTarget::firecracker(" review ", Some(" "), Some(Path::new(""))).unwrap(),
+            PaneTarget::Firecracker {
+                vm: "review".to_owned(),
+                image: None,
+                worktree: None
+            }
+        );
+        assert!(PaneTarget::from_parts(Some("build-box"), Some("review"), None, None).is_err());
+        assert!(PaneTarget::from_parts(None, None, Some("rust-dev"), None).is_err());
+        assert!(PaneTarget::from_parts(Some("build-box"), None, Some("rust-dev"), None).is_err());
+        assert_eq!(
+            PaneTarget::from_parts(Some(" build-box "), None, None, None).unwrap(),
+            PaneTarget::Ssh {
+                host: "build-box".to_owned()
+            }
+        );
+        assert_eq!(
+            PaneTarget::from_parts(None, None, None, None).unwrap(),
+            PaneTarget::Local
+        );
+    }
+
+    #[test]
+    fn a_consumer_target_inherits_image_and_worktree_individually() {
+        let base =
+            PaneTarget::firecracker("review", Some("rust-dev"), Some(Path::new("/w"))).unwrap();
+        let mut local = PaneTarget::Local;
+        local.merge_from(&base);
+        assert_eq!(local, base);
+
+        let mut other_vm = PaneTarget::firecracker("review-2", None, None).unwrap();
+        other_vm.merge_from(&base);
+        assert_eq!(
+            other_vm,
+            PaneTarget::Firecracker {
+                vm: "review-2".to_owned(),
+                image: Some("rust-dev".to_owned()),
+                worktree: Some(PathBuf::from("/w"))
+            }
+        );
+
+        let mut own_image = PaneTarget::firecracker("review-2", Some("go"), None).unwrap();
+        own_image.merge_from(&base);
+        assert_eq!(own_image.firecracker_image(), Some("go"));
+        assert_eq!(own_image.firecracker_worktree(), Some(Path::new("/w")));
+
+        let mut ssh = PaneTarget::ssh("build-box").unwrap();
+        ssh.merge_from(&base);
+        assert_eq!(ssh.ssh_host(), Some("build-box"));
     }
 }

@@ -1060,6 +1060,45 @@ fn remote_handoff_from_protobuf(
     })
 }
 
+fn pane_target_to_protobuf(
+    target: &crate::data::PaneTarget,
+) -> crate::client_server_contract::client_server_contract::PaneTarget {
+    use crate::client_server_contract::client_server_contract::{
+        pane_target::Kind, FirecrackerTarget, PaneTarget,
+    };
+    let kind = match target {
+        crate::data::PaneTarget::Local => Kind::Local(true),
+        crate::data::PaneTarget::Ssh { host } => Kind::SshHost(host.clone()),
+        crate::data::PaneTarget::Firecracker {
+            vm,
+            image,
+            worktree,
+        } => Kind::Firecracker(FirecrackerTarget {
+            vm: vm.clone(),
+            image: image.clone(),
+            worktree: worktree
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string()),
+        }),
+    };
+    PaneTarget { kind: Some(kind) }
+}
+
+fn pane_target_from_protobuf(
+    target: Option<crate::client_server_contract::client_server_contract::PaneTarget>,
+) -> crate::data::PaneTarget {
+    use crate::client_server_contract::client_server_contract::pane_target::Kind;
+    match target.and_then(|target| target.kind) {
+        None | Some(Kind::Local(_)) => crate::data::PaneTarget::Local,
+        Some(Kind::SshHost(host)) => crate::data::PaneTarget::Ssh { host },
+        Some(Kind::Firecracker(firecracker)) => crate::data::PaneTarget::Firecracker {
+            vm: firecracker.vm,
+            image: firecracker.image,
+            worktree: firecracker.worktree.map(std::path::PathBuf::from),
+        },
+    }
+}
+
 fn run_command_to_protobuf(
     cmd: &crate::input::command::RunCommand,
 ) -> crate::client_server_contract::client_server_contract::RunCommandAction {
@@ -1074,14 +1113,8 @@ fn run_command_to_protobuf(
         hold_on_start: cmd.hold_on_start,
         originating_plugin: cmd.originating_plugin.clone().map(|op| op.into()),
         use_terminal_title: cmd.use_terminal_title,
-        remote_host: cmd.remote_host.clone(),
         remote_default_shell: cmd.remote_default_shell,
-        firecracker_vm: cmd.firecracker_vm.clone(),
-        firecracker_image: cmd.firecracker_image.clone(),
-        firecracker_worktree: cmd
-            .firecracker_worktree
-            .as_ref()
-            .map(|path| path.to_string_lossy().to_string()),
+        target: Some(pane_target_to_protobuf(&cmd.target)),
     }
 }
 
@@ -1096,11 +1129,8 @@ fn run_command_from_protobuf(
         hold_on_start: cmd.hold_on_start,
         originating_plugin: cmd.originating_plugin.and_then(|op| op.try_into().ok()),
         use_terminal_title: cmd.use_terminal_title,
-        remote_host: cmd.remote_host,
         remote_default_shell: cmd.remote_default_shell,
-        firecracker_vm: cmd.firecracker_vm,
-        firecracker_image: cmd.firecracker_image,
-        firecracker_worktree: cmd.firecracker_worktree.map(std::path::PathBuf::from),
+        target: pane_target_from_protobuf(cmd.target),
     })
 }
 
@@ -4277,13 +4307,8 @@ impl From<crate::input::command::RunCommandAction>
             hold_on_start: action.hold_on_start,
             originating_plugin: action.originating_plugin.map(|op| op.into()),
             use_terminal_title: action.use_terminal_title,
-            remote_host: action.remote_host,
             remote_default_shell: action.remote_default_shell,
-            firecracker_vm: action.firecracker_vm,
-            firecracker_image: action.firecracker_image,
-            firecracker_worktree: action
-                .firecracker_worktree
-                .map(|path| path.to_string_lossy().to_string()),
+            target: Some(pane_target_to_protobuf(&action.target)),
         }
     }
 }
@@ -4385,13 +4410,8 @@ impl From<crate::input::layout::Run>
                         hold_on_start: cmd.hold_on_start,
                         originating_plugin: cmd.originating_plugin.map(|op| op.into()),
                         use_terminal_title: cmd.use_terminal_title,
-                        remote_host: cmd.remote_host,
                         remote_default_shell: cmd.remote_default_shell,
-                        firecracker_vm: cmd.firecracker_vm,
-                        firecracker_image: cmd.firecracker_image,
-                        firecracker_worktree: cmd
-                            .firecracker_worktree
-                            .map(|path| path.to_string_lossy().to_string()),
+                        target: Some(pane_target_to_protobuf(&cmd.target)),
                     },
                 )),
             },
@@ -4778,11 +4798,8 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Run>
                         .map(|op| op.try_into())
                         .transpose()?,
                     use_terminal_title: cmd.use_terminal_title,
-                    remote_host: cmd.remote_host,
                     remote_default_shell: cmd.remote_default_shell,
-                    firecracker_vm: cmd.firecracker_vm,
-                    firecracker_image: cmd.firecracker_image,
-                    firecracker_worktree: cmd.firecracker_worktree.map(std::path::PathBuf::from),
+                    target: pane_target_from_protobuf(cmd.target),
                 },
             )),
             RunType::EditFile(edit) => Ok(crate::input::layout::Run::EditFile(
@@ -4892,11 +4909,8 @@ impl TryFrom<crate::client_server_contract::client_server_contract::RunCommandAc
                 .map(|op| op.try_into())
                 .transpose()?,
             use_terminal_title: action.use_terminal_title,
-            remote_host: action.remote_host,
             remote_default_shell: action.remote_default_shell,
-            firecracker_vm: action.firecracker_vm,
-            firecracker_image: action.firecracker_image,
-            firecracker_worktree: action.firecracker_worktree.map(std::path::PathBuf::from),
+            target: pane_target_from_protobuf(action.target),
         })
     }
 }

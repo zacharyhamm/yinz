@@ -287,7 +287,7 @@ impl SharedPtys {
             registry
                 .fake_pty_states
                 .get(&terminal_id)
-                .and_then(|state| state.run_command().remote_host.clone())
+                .and_then(|state| state.run_command().target.display())
         })
     }
 

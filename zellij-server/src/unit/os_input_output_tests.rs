@@ -1,5 +1,5 @@
 use super::*;
-use zellij_utils::input::command::RunCommand;
+use zellij_utils::input::command::{PaneTarget, RunCommand};
 
 fn make_server() -> ServerOsInputOutput {
     get_server_os_input().expect("failed to create server os input")
@@ -25,25 +25,35 @@ fn firecracker_resolution_keeps_an_unresolved_command_for_reruns() {
     ));
     let requested = RunCommand {
         command: PathBuf::from("claude"),
-        firecracker_vm: Some("review".to_owned()),
+        target: PaneTarget::Firecracker {
+            vm: "review".to_owned(),
+            image: None,
+            worktree: None,
+        },
         ..Default::default()
     };
 
-    let (resolved, rerun, ssh_options) = server.resolve_firecracker(requested.clone()).unwrap();
-    assert_eq!(resolved.remote_host.as_deref(), Some("build-box"));
+    let (resolved, rerun, endpoint) = server.resolve_target(requested.clone()).unwrap();
+    let endpoint = endpoint.expect("a Firecracker command resolves to an endpoint");
+    assert_eq!(endpoint.host, "build-box");
+    assert_eq!(resolved.target, requested.target);
     assert_eq!(resolved.cwd, Some(PathBuf::from("/srv/project")));
     assert_eq!(rerun, requested);
-    assert_eq!(ssh_options, SshOptions::default());
-    assert!(server.resolve_firecracker(rerun).is_ok());
+    assert_eq!(endpoint.ssh_options, SshOptions::default());
+    assert!(server.resolve_target(rerun).is_ok());
 
     let explicit = RunCommand {
         command: PathBuf::from("claude"),
         cwd: Some(PathBuf::from("/elsewhere")),
-        firecracker_vm: Some("review".to_owned()),
+        target: PaneTarget::Firecracker {
+            vm: "review".to_owned(),
+            image: None,
+            worktree: None,
+        },
         ..Default::default()
     };
     assert_eq!(
-        server.resolve_firecracker(explicit).unwrap().0.cwd,
+        server.resolve_target(explicit).unwrap().0.cwd,
         Some(PathBuf::from("/elsewhere"))
     );
 }
@@ -147,8 +157,11 @@ fn failed_firecracker_pane_termination_does_not_skip_provider_shutdown() {
     let (read_socket, _reader_peer) = UnixStream::pair().unwrap();
     let command = RunCommand {
         command: PathBuf::from("remote-step"),
-        remote_host: Some("build-box".to_owned()),
-        firecracker_vm: Some("review".to_owned()),
+        target: PaneTarget::Firecracker {
+            vm: "review".to_owned(),
+            image: None,
+            worktree: None,
+        },
         ..Default::default()
     };
     let connection = Arc::new(
@@ -368,7 +381,9 @@ fn a_local_rerun_terminates_the_previous_remote_transport() {
     let (read_socket, _reader_peer) = UnixStream::pair().unwrap();
     let remote_command = RunCommand {
         command: PathBuf::from("remote-step"),
-        remote_host: Some("build-box".to_owned()),
+        target: PaneTarget::Ssh {
+            host: "build-box".to_owned(),
+        },
         ..Default::default()
     };
     let connection = Arc::new(
@@ -431,7 +446,9 @@ fn a_dead_remote_transport_does_not_prevent_a_local_rerun() {
     let (read_socket, _reader_peer) = UnixStream::pair().unwrap();
     let remote_command = RunCommand {
         command: PathBuf::from("remote-step"),
-        remote_host: Some("build-box".to_owned()),
+        target: PaneTarget::Ssh {
+            host: "build-box".to_owned(),
+        },
         ..Default::default()
     };
     let connection = Arc::new(
@@ -513,8 +530,11 @@ fn firecracker_panes_are_refused_a_warp_and_remote_panes_are_not() {
         7,
         RunCommand {
             command: PathBuf::from("claude"),
-            remote_host: Some("build-box".to_owned()),
-            firecracker_vm: Some("review".to_owned()),
+            target: PaneTarget::Firecracker {
+                vm: "review".to_owned(),
+                image: None,
+                worktree: None,
+            },
             ..Default::default()
         },
     );
@@ -522,7 +542,9 @@ fn firecracker_panes_are_refused_a_warp_and_remote_panes_are_not() {
         8,
         RunCommand {
             command: PathBuf::from("remote-step"),
-            remote_host: Some("build-box".to_owned()),
+            target: PaneTarget::Ssh {
+                host: "build-box".to_owned(),
+            },
             ..Default::default()
         },
     );

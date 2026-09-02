@@ -385,7 +385,9 @@ fn released_remote_pane(screen: &mut Screen, terminal_id: u32) -> Box<WarpedPane
                 cmd: RunCommand {
                     command: PathBuf::from("/usr/bin/cargo"),
                     args: vec!["watch".to_owned()],
-                    remote_host: Some("build-box".to_owned()),
+                    target: zellij_utils::data::PaneTarget::Ssh {
+                        host: "build-box".to_owned(),
+                    },
                     ..Default::default()
                 },
             })),
@@ -413,7 +415,7 @@ fn a_remote_pane_travels_as_a_broker_address_rather_than_a_socket() {
          serialized screen already holds everything before it"
     );
     assert_eq!(
-        remote.cmd.remote_host.as_deref(),
+        remote.cmd.target.ssh_host(),
         Some("build-box"),
         "the command travels with the pane, because a resume carries none — without it the pane \
          cannot title itself or re-run on the right machine"
@@ -1650,7 +1652,7 @@ fn a_remote_pane_warps_as_a_broker_and_a_token() {
          the replay with the pane's serialized screen",
     );
     assert_eq!(
-        remote.cmd.remote_host.as_deref(),
+        remote.cmd.target.ssh_host(),
         Some("build-box"),
         "the command travels with a remote pane: the adopting server has no \
          supervisor to learn it from",

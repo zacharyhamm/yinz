@@ -16,7 +16,7 @@ use crate::pty_host::remote::{
 // backend — needs to be able to name it.
 pub use crate::os_input_output_unix::AdoptedTerminal;
 use crate::pty_host::client::{ChildStateCb, ReleasedPane};
-use zellij_utils::data::RemotePaneHandoff;
+use zellij_utils::data::{PaneTarget, RemotePaneHandoff};
 
 use interprocess;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -54,7 +54,17 @@ pub struct ResolvedFirecracker {
     pub terminal_id: u32,
     pub(crate) command: RunCommand,
     pub(crate) rerun_command: RunCommand,
-    pub(crate) ssh_options: SshOptions,
+    pub(crate) endpoint: RemoteEndpoint,
+}
+
+/// Where a remote command's broker is reached: the ssh host (an alias, or the
+/// `ssh://` URL a Firecracker provider hands back) and the ssh options for it.
+/// Kept apart from the command's `PaneTarget`, which says what the user asked
+/// for and is what the pane shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteEndpoint {
+    pub host: String,
+    pub ssh_options: SshOptions,
 }
 
 fn find_executable(candidate: &std::path::Path) -> Option<PathBuf> {
@@ -562,20 +572,31 @@ pub struct ServerOsInputOutput {
 
 #[cfg(not(windows))]
 impl ServerOsInputOutput {
-    /// Resolve transport-only provider fields while retaining a command that can call it again.
-    fn resolve_firecracker(
+    /// Resolve where a command runs: nothing for a local one, the ssh host for an
+    /// ssh one, and for a Firecracker one the endpoint the provider hands back once
+    /// the VM is up. The returned command is the one to send there (a Firecracker
+    /// command gets the guest cwd filled in); the second is the command as asked
+    /// for, kept so a re-run can resolve it again.
+    fn resolve_target(
         &self,
         mut cmd: RunCommand,
-    ) -> Result<(RunCommand, RunCommand, SshOptions)> {
+    ) -> Result<(RunCommand, RunCommand, Option<RemoteEndpoint>)> {
         let rerun_cmd = cmd.clone();
-        let Some(name) = cmd.firecracker_vm.as_deref() else {
-            return Ok((cmd, rerun_cmd, SshOptions::default()));
+        let (name, image, worktree) = match &cmd.target {
+            PaneTarget::Local => return Ok((cmd, rerun_cmd, None)),
+            PaneTarget::Ssh { host } => {
+                let endpoint = RemoteEndpoint {
+                    host: host.clone(),
+                    ssh_options: SshOptions::default(),
+                };
+                return Ok((cmd, rerun_cmd, Some(endpoint)));
+            },
+            PaneTarget::Firecracker {
+                vm,
+                image,
+                worktree,
+            } => (vm.clone(), image.clone(), worktree.clone()),
         };
-        if cmd.remote_host.is_some() {
-            return Err(anyhow!(
-                "a pane cannot use both firecracker_vm and remote_host"
-            ));
-        }
         let firecracker = self.firecracker.lock().to_anyhow()?;
         if self.firecracker_stopping.load(Ordering::Acquire) {
             return Err(anyhow!("the Firecracker session is shutting down"));
@@ -583,27 +604,21 @@ impl ServerOsInputOutput {
         let (provider, session) = firecracker.as_ref().context(
             "Firecracker is not configured; set firecracker_provider in the session config",
         )?;
-        let ensured = provider.ensure(
-            session,
-            name,
-            cmd.firecracker_image.as_deref(),
-            cmd.firecracker_worktree.as_deref(),
-        )?;
+        let ensured = provider.ensure(session, &name, image.as_deref(), worktree.as_deref())?;
         if self.firecracker_stopping.load(Ordering::Acquire) {
             return Err(anyhow!("the Firecracker session is shutting down"));
         }
-        cmd.remote_host = Some(ensured.ssh_host);
         if cmd.cwd.is_none() {
             cmd.cwd = ensured.cwd;
         }
-        Ok((
-            cmd,
-            rerun_cmd,
-            SshOptions {
+        let endpoint = RemoteEndpoint {
+            host: ensured.ssh_host,
+            ssh_options: SshOptions {
                 identity_file: ensured.ssh_identity_file,
                 known_hosts_file: ensured.ssh_known_hosts_file,
             },
-        ))
+        };
+        Ok((cmd, rerun_cmd, Some(endpoint)))
     }
 
     /// Tell the provider the session's new name and adopt it as the key for every later
@@ -642,19 +657,19 @@ impl ServerOsInputOutput {
         self.pty_backend.reserve_terminal_id(terminal_id);
         let (command, _) = build_command(terminal_action, default_editor);
         let display_host = command.display_host();
-        let (command, rerun_command, ssh_options) =
-            self.resolve_firecracker(command).map_err(|error| {
-                pane_start_failed(
-                    terminal_id,
-                    display_host.as_deref().unwrap_or("firecracker"),
-                    error,
-                )
-            })?;
+        let (command, rerun_command, endpoint) = self.resolve_target(command).map_err(|error| {
+            pane_start_failed(
+                terminal_id,
+                display_host.as_deref().unwrap_or("firecracker"),
+                error,
+            )
+        })?;
+        let endpoint = endpoint.context("a local command has no endpoint to resolve")?;
         Ok(ResolvedFirecracker {
             terminal_id,
             command,
             rerun_command,
-            ssh_options,
+            endpoint,
         })
     }
 
@@ -663,11 +678,7 @@ impl ServerOsInputOutput {
         resolved: ResolvedFirecracker,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
-        let host = resolved
-            .command
-            .remote_host
-            .clone()
-            .context("Firecracker provider returned no remote host")?;
+        let host = resolved.endpoint.host;
         let (conn, reader_socket) = self
             .remote_hosts
             .open_pane_with_ssh_options(
@@ -675,7 +686,7 @@ impl ServerOsInputOutput {
                 &resolved.command,
                 None,
                 resolved.terminal_id,
-                resolved.ssh_options,
+                resolved.endpoint.ssh_options,
             )
             .map_err(|error| pane_start_failed(resolved.terminal_id, &host, error))?;
         let reader = self
@@ -697,19 +708,19 @@ impl ServerOsInputOutput {
         command: RunCommand,
     ) -> Result<ResolvedFirecracker> {
         let display_host = command.display_host();
-        let (command, rerun_command, ssh_options) =
-            self.resolve_firecracker(command).map_err(|error| {
-                pane_start_failed(
-                    terminal_id,
-                    display_host.as_deref().unwrap_or("firecracker"),
-                    error,
-                )
-            })?;
+        let (command, rerun_command, endpoint) = self.resolve_target(command).map_err(|error| {
+            pane_start_failed(
+                terminal_id,
+                display_host.as_deref().unwrap_or("firecracker"),
+                error,
+            )
+        })?;
+        let endpoint = endpoint.context("a local command has no endpoint to resolve")?;
         Ok(ResolvedFirecracker {
             terminal_id,
             command,
             rerun_command,
-            ssh_options,
+            endpoint,
         })
     }
 
@@ -718,11 +729,7 @@ impl ServerOsInputOutput {
         resolved: ResolvedFirecracker,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
-        let host = resolved
-            .command
-            .remote_host
-            .clone()
-            .context("Firecracker provider returned no remote host")?;
+        let host = resolved.endpoint.host;
         self.clear_terminal_id(resolved.terminal_id).non_fatal();
         self.pty_backend.reserve_terminal_id(resolved.terminal_id);
         let (conn, reader_socket) = self
@@ -732,7 +739,7 @@ impl ServerOsInputOutput {
                 &resolved.command,
                 None,
                 resolved.terminal_id,
-                resolved.ssh_options,
+                resolved.endpoint.ssh_options,
             )
             .map_err(|error| pane_start_failed(resolved.terminal_id, &host, error))?;
         let reader = self
@@ -1143,7 +1150,7 @@ impl ServerOsApi for ServerOsInputOutput {
 
         let (cmd, failover_cmd) = build_command(terminal_action, default_editor);
         let display_host = cmd.display_host();
-        let (cmd, rerun_cmd, ssh_options) = self.resolve_firecracker(cmd).map_err(|e| {
+        let (cmd, rerun_cmd, endpoint) = self.resolve_target(cmd).map_err(|e| {
             pane_start_failed(
                 terminal_id,
                 display_host.as_deref().unwrap_or("firecracker"),
@@ -1151,7 +1158,7 @@ impl ServerOsApi for ServerOsInputOutput {
             )
         })?;
 
-        if let Some(host) = cmd.remote_host.clone() {
+        if let Some(RemoteEndpoint { host, ssh_options }) = endpoint {
             let (conn, reader_socket) = self
                 .remote_hosts
                 .open_pane_with_ssh_options(&host, &cmd, None, terminal_id, ssh_options)
@@ -1431,15 +1438,15 @@ impl ServerOsApi for ServerOsInputOutput {
         // the command would quietly run *here* under the same pane, and the pane
         // still open on the far machine would be left to the orphan timeout.
         let display_host = run_command.display_host();
-        let (run_command, rerun_command, ssh_options) =
-            self.resolve_firecracker(run_command).map_err(|e| {
+        let (run_command, rerun_command, endpoint) =
+            self.resolve_target(run_command).map_err(|e| {
                 pane_start_failed(
                     terminal_id,
                     display_host.as_deref().unwrap_or("firecracker"),
                     e,
                 )
             })?;
-        if let Some(host) = run_command.remote_host.clone() {
+        if let Some(RemoteEndpoint { host, ssh_options }) = endpoint {
             // The pane being re-run is held, not closed, so the broker still
             // holds the session it was held from. Registering over it would drop
             // this side's only handle on it and leave it to the orphan timeout.

@@ -32,10 +32,7 @@ fn sh(script: &str) -> RunCommand {
         hold_on_start: false,
         originating_plugin: None,
         use_terminal_title: false,
-        remote_host: None,
-        firecracker_vm: None,
-        firecracker_image: None,
-        firecracker_worktree: None,
+        target: Default::default(),
         remote_default_shell: false,
     }
 }

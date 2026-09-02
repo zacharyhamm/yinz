@@ -36,25 +36,30 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use crate::input::actions::{Action, SearchDirection, SearchOption};
-use crate::input::command::{validate_firecracker_vm_name, RunCommandAction};
+use crate::input::command::{PaneTarget, RunCommandAction};
 
 /// The `firecracker_*` children of a `Run` action, the counterpart of the
 /// `firecracker_vm`/`firecracker_image`/`firecracker_worktree` pane properties.
 fn push_firecracker_nodes(run_command_action: &RunCommandAction, children: &mut KdlDocument) {
-    let Some(vm) = &run_command_action.firecracker_vm else {
+    let PaneTarget::Firecracker {
+        vm,
+        image,
+        worktree,
+    } = &run_command_action.target
+    else {
         return;
     };
     let mut vm_node = KdlNode::new("firecracker_vm");
-    vm_node.push(vm.clone());
+    vm_node.push(KdlValue::String(vm.clone()));
     children.nodes_mut().push(vm_node);
-    if let Some(image) = &run_command_action.firecracker_image {
+    if let Some(image) = image {
         let mut image_node = KdlNode::new("firecracker_image");
-        image_node.push(image.clone());
+        image_node.push(KdlValue::String(image.clone()));
         children.nodes_mut().push(image_node);
     }
-    if let Some(worktree) = &run_command_action.firecracker_worktree {
+    if let Some(worktree) = worktree {
         let mut worktree_node = KdlNode::new("firecracker_worktree");
-        worktree_node.push(worktree.display().to_string());
+        worktree_node.push(KdlValue::String(worktree.display().to_string()));
         children.nodes_mut().push(worktree_node);
     }
 }
@@ -2083,47 +2088,25 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                     .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "stacked"))
                     .unwrap_or(false);
                 let firecracker_vm = command_metadata
-                    .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "firecracker_vm"))
-                    .map(|s| s.to_owned());
+                    .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "firecracker_vm"));
                 let firecracker_image = command_metadata
-                    .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "firecracker_image"))
-                    .map(|s| s.to_owned());
+                    .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "firecracker_image"));
                 let firecracker_worktree = command_metadata
                     .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "firecracker_worktree"))
                     .map(PathBuf::from);
-                for (what, name) in [
-                    ("firecracker_vm", firecracker_vm.as_deref()),
-                    ("firecracker_image", firecracker_image.as_deref()),
-                ] {
-                    if let Some(name) = name {
-                        validate_firecracker_vm_name(name).map_err(|error| {
-                            ConfigError::new_kdl_error(
-                                format!("{what}: {error}"),
-                                kdl_action.span().offset(),
-                                kdl_action.span().len(),
-                            )
-                        })?;
-                    }
-                }
-                if firecracker_vm.is_none()
-                    && (firecracker_image.is_some() || firecracker_worktree.is_some())
-                {
-                    return Err(ConfigError::new_kdl_error(
-                        "firecracker_image and firecracker_worktree need a firecracker_vm".into(),
+                let target = PaneTarget::from_parts(
+                    None,
+                    firecracker_vm,
+                    firecracker_image,
+                    firecracker_worktree.as_deref(),
+                )
+                .map_err(|error| {
+                    ConfigError::new_kdl_error(
+                        error,
                         kdl_action.span().offset(),
                         kdl_action.span().len(),
-                    ));
-                }
-                if firecracker_worktree
-                    .as_ref()
-                    .is_some_and(|path| !path.is_absolute())
-                {
-                    return Err(ConfigError::new_kdl_error(
-                        "firecracker_worktree must be an absolute path".into(),
-                        kdl_action.span().offset(),
-                        kdl_action.span().len(),
-                    ));
-                }
+                    )
+                })?;
                 let run_command_action = RunCommandAction {
                     command: PathBuf::from(command),
                     args,
@@ -2131,9 +2114,7 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                     direction,
                     hold_on_close,
                     hold_on_start,
-                    firecracker_vm,
-                    firecracker_image,
-                    firecracker_worktree,
+                    target,
                     ..Default::default()
                 };
                 let x = command_metadata
@@ -6912,8 +6893,7 @@ impl PaneInfo {
         let is_selectable = bool_node!("is_selectable");
         let pane_info = PaneInfo {
             host: None,
-            firecracker_image: None,
-            firecracker_worktree: None,
+            target: Default::default(),
             agent: None,
             id,
             is_plugin,

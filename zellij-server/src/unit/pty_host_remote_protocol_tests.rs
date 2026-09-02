@@ -12,10 +12,7 @@ fn sample_run_command() -> RunCommand {
         hold_on_start: false,
         originating_plugin: None,
         use_terminal_title: true,
-        remote_host: None,
-        firecracker_vm: None,
-        firecracker_image: None,
-        firecracker_worktree: None,
+        target: Default::default(),
         remote_default_shell: false,
     }
 }
@@ -320,8 +317,9 @@ fn the_remote_protocol_versions_independently_of_the_supervisor_protocol() {
     // v3: Release/Released, so a pane can be handed to another server rather
     // than only picked back up by the one that lost it, and ListPanes, so one
     // stranded by a failed handoff can be found again.
+    // v4: `Spawn` carries a `PaneTarget` instead of loose host/VM fields.
     assert_eq!(
-        REMOTE_PROTOCOL_VERSION, 3,
+        REMOTE_PROTOCOL_VERSION, 4,
         "bumping this is cheap; make sure it is deliberate"
     );
     assert_eq!(

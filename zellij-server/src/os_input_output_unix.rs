@@ -827,7 +827,7 @@ impl UnixPtyBackend {
             .and_then(|t| {
                 t.get(&terminal_id)
                     .and_then(|t| t.remote())
-                    .map(|conn| conn.cmd().firecracker_vm.is_some())
+                    .map(|conn| conn.cmd().target.is_firecracker())
             })
             .unwrap_or(false)
     }
@@ -1032,7 +1032,7 @@ impl UnixPtyBackend {
             .and_then(|transport| transport.remote())
             .cloned();
         if let Some(conn) = remote {
-            if conn.cmd().firecracker_vm.is_some() {
+            if conn.cmd().target.is_firecracker() {
                 return Err(anyhow!(
                     "Firecracker panes belong to their originating session and cannot be moved between sessions"
                 ));

@@ -14,8 +14,7 @@ fn serialize_and_deserialize_session_info_with_data() {
     let panes_list = vec![
         PaneInfo {
             host: None,
-            firecracker_image: None,
-            firecracker_worktree: None,
+            target: Default::default(),
             agent: None,
             id: 1,
             is_plugin: false,
@@ -46,8 +45,7 @@ fn serialize_and_deserialize_session_info_with_data() {
         },
         PaneInfo {
             host: None,
-            firecracker_image: None,
-            firecracker_worktree: None,
+            target: Default::default(),
             agent: None,
             id: 1,
             is_plugin: true,

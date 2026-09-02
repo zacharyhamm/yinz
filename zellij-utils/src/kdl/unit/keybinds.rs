@@ -458,11 +458,11 @@ fn run_action_firecracker_children_round_trip() {
             _ => None,
         })
         .expect("the Run action was not parsed");
-    assert_eq!(action.firecracker_vm.as_deref(), Some("review"));
-    assert_eq!(action.firecracker_image.as_deref(), Some("rust-dev"));
+    assert_eq!(action.target.firecracker_vm(), Some("review"));
+    assert_eq!(action.target.firecracker_image(), Some("rust-dev"));
     assert_eq!(
-        action.firecracker_worktree,
-        Some(PathBuf::from("/home/me/src/project"))
+        action.target.firecracker_worktree(),
+        Some(Path::new("/home/me/src/project"))
     );
 
     let serialized = Keybinds::to_kdl(&deserialized, true);

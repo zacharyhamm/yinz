@@ -1,5 +1,5 @@
 use crate::input::{
-    command::{validate_firecracker_vm_name, RunCommand},
+    command::{PaneTarget, RunCommand},
     config::ConfigError,
     layout::{
         FloatingPaneLayout, Layout, LayoutConstraint, PercentOrFixed, PluginUserConfiguration, Run,
@@ -9,22 +9,6 @@ use crate::input::{
 };
 
 use kdl::*;
-
-/// A pane's Firecracker properties, once validated.
-#[derive(Default)]
-struct FirecrackerPaneFields {
-    vm: String,
-    image: Option<String>,
-    worktree: Option<PathBuf>,
-}
-
-impl FirecrackerPaneFields {
-    fn apply_to(self, run_command: &mut RunCommand) {
-        run_command.firecracker_vm = Some(self.vm);
-        run_command.firecracker_image = self.image;
-        run_command.firecracker_worktree = self.worktree;
-    }
-}
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
@@ -469,41 +453,17 @@ impl<'a> KdlLayoutParser<'a> {
     /// pane, checked here rather than when the pane is spawned: a layout error names the
     /// node, a spawn error is a banner in the pane.
     #[allow(clippy::result_large_err)]
-    fn parse_firecracker(
-        &self,
-        pane_node: &KdlNode,
-    ) -> Result<Option<FirecrackerPaneFields>, ConfigError> {
+    fn parse_firecracker(&self, pane_node: &KdlNode) -> Result<Option<PaneTarget>, ConfigError> {
         let vm = kdl_get_string_property_or_child_value_with_error!(pane_node, "firecracker_vm");
         let image =
             kdl_get_string_property_or_child_value_with_error!(pane_node, "firecracker_image");
         let worktree = self.parse_path(pane_node, "firecracker_worktree")?;
-        let Some(vm) = vm else {
-            if image.is_some() || worktree.is_some() {
-                return Err(kdl_parsing_error!(
-                    "firecracker_image and firecracker_worktree need a firecracker_vm".to_owned(),
-                    pane_node
-                ));
-            }
+        if vm.is_none() && image.is_none() && worktree.is_none() {
             return Ok(None);
-        };
-        validate_firecracker_vm_name(vm)
-            .map_err(|error| kdl_parsing_error!(format!("firecracker_vm: {error}"), pane_node))?;
-        if let Some(image) = image {
-            validate_firecracker_vm_name(image).map_err(|error| {
-                kdl_parsing_error!(format!("firecracker_image: {error}"), pane_node)
-            })?;
         }
-        if worktree.as_ref().is_some_and(|path| !path.is_absolute()) {
-            return Err(kdl_parsing_error!(
-                "firecracker_worktree must be an absolute path".to_owned(),
-                pane_node
-            ));
-        }
-        Ok(Some(FirecrackerPaneFields {
-            vm: vm.to_owned(),
-            image: image.map(str::to_owned),
-            worktree,
-        }))
+        PaneTarget::from_parts(None, vm, image, worktree.as_deref())
+            .map(Some)
+            .map_err(|error| kdl_parsing_error!(error, pane_node))
     }
     #[allow(clippy::result_large_err)]
     fn parse_pane_command(
@@ -531,43 +491,37 @@ impl<'a> KdlLayoutParser<'a> {
         }
         let hold_on_close = close_on_exit.map(|c| !c).unwrap_or(true);
         let hold_on_start = start_suspended.unwrap_or(false);
-        match (command, edit, cwd) {
-            (None, Some(_), _) if firecracker.is_some() => Err(kdl_parsing_error!(
+        match (command, edit, cwd, firecracker) {
+            (None, Some(_), _, Some(_)) => Err(kdl_parsing_error!(
                 "an edit pane cannot run in a Firecracker VM".to_owned(),
                 pane_node
             )),
             // The guest's login shell, the shape `new-pane --firecracker` with no
-            // command makes: not held on close, since logging out ends it.
-            (None, None, cwd) if firecracker.is_some() => {
-                let mut run_command = RunCommand {
-                    cwd,
-                    hold_on_close: close_on_exit.map(|c| !c).unwrap_or(false),
-                    remote_default_shell: true,
-                    ..Default::default()
-                };
-                firecracker.unwrap_or_default().apply_to(&mut run_command);
-                Ok(Some(Run::Command(run_command)))
-            },
-            (None, None, Some(cwd)) => Ok(Some(Run::Cwd(cwd))),
-            (Some(command), None, cwd) => {
-                let mut run_command = RunCommand {
-                    command,
-                    args: args.unwrap_or_default(),
-                    cwd,
-                    hold_on_close,
-                    hold_on_start,
-                    ..Default::default()
-                };
-                if let Some(firecracker) = firecracker {
-                    firecracker.apply_to(&mut run_command);
-                }
-                Ok(Some(Run::Command(run_command)))
-            },
-            (None, Some(edit), Some(cwd)) => {
+            // command makes: not held on close, since logging out ends it. A
+            // consumer of a command template gets the template's command back
+            // in `Run::merge`.
+            (None, None, cwd, Some(target)) => Ok(Some(Run::Command(RunCommand {
+                cwd,
+                hold_on_close: close_on_exit.map(|c| !c).unwrap_or(false),
+                remote_default_shell: true,
+                target,
+                ..Default::default()
+            }))),
+            (None, None, Some(cwd), None) => Ok(Some(Run::Cwd(cwd))),
+            (Some(command), None, cwd, target) => Ok(Some(Run::Command(RunCommand {
+                command,
+                args: args.unwrap_or_default(),
+                cwd,
+                hold_on_close,
+                hold_on_start,
+                target: target.unwrap_or_default(),
+                ..Default::default()
+            }))),
+            (None, Some(edit), Some(cwd), None) => {
                 Ok(Some(Run::EditFile(cwd.join(edit), None, Some(cwd))))
             },
-            (None, Some(edit), None) => Ok(Some(Run::EditFile(edit, None, None))),
-            (Some(_command), Some(_edit), _) => Err(ConfigError::new_layout_kdl_error(
+            (None, Some(edit), None, None) => Ok(Some(Run::EditFile(edit, None, None))),
+            (Some(_command), Some(_edit), _, _) => Err(ConfigError::new_layout_kdl_error(
                 "cannot have both a command and an edit instruction for the same pane".into(),
                 pane_node.span().offset(),
                 pane_node.span().len(),

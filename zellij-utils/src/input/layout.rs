@@ -330,10 +330,18 @@ impl Run {
                 if merged.args.is_empty() && !base_run_command.args.is_empty() {
                     merged.args = base_run_command.args.clone();
                 }
-                if merged.firecracker_vm.is_none() && base_run_command.firecracker_vm.is_some() {
-                    merged.firecracker_vm = base_run_command.firecracker_vm.clone();
-                    merged.firecracker_image = base_run_command.firecracker_image.clone();
-                    merged.firecracker_worktree = base_run_command.firecracker_worktree.clone();
+                merged.target.merge_from(&base_run_command.target);
+                // A consumer that names only a VM parses as that VM's login
+                // shell; when its template names a command, the consumer
+                // meant that command in the VM, not a shell beside it.
+                if merged.command.as_os_str().is_empty()
+                    && merged.remote_default_shell
+                    && !base_run_command.command.as_os_str().is_empty()
+                {
+                    merged.command = base_run_command.command.clone();
+                    merged.args = base_run_command.args.clone();
+                    merged.remote_default_shell = false;
+                    merged.hold_on_close = base_run_command.hold_on_close;
                 }
                 Some(Run::Command(merged))
             },
@@ -380,14 +388,15 @@ impl Run {
     }
     /// Prefix a layout, tab or template `cwd` onto this pane's own.
     ///
-    /// A command that runs on another machine (`firecracker_vm` or `remote_host`,
-    /// see `RunCommand::display_host`) is left alone: its `cwd` names a
-    /// directory in the guest, so joining a host path onto it would produce a
-    /// path that exists nowhere, and when it has no `cwd` at all it must stay
-    /// `None` so the provider's own guest cwd applies.
+    /// A Firecracker pane is left alone: its `cwd` names a directory in the
+    /// guest, so joining a host path onto it would produce a path that exists
+    /// nowhere, and when it has no `cwd` at all it must stay `None` so the
+    /// provider's own guest cwd (the mirrored worktree) applies. An ssh pane
+    /// gets the join like a local one: the layout author names the directory
+    /// the pane starts in on that machine, and nothing else knows a better one.
     pub fn add_cwd(&mut self, cwd: &Path) {
         match self {
-            Run::Command(run_command) if run_command.display_host().is_some() => {},
+            Run::Command(run_command) if run_command.target.is_firecracker() => {},
             Run::Command(run_command) => match run_command.cwd.as_mut() {
                 Some(run_cwd) => {
                     *run_cwd = cwd.join(&run_cwd);

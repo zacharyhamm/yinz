@@ -468,11 +468,15 @@ fn a_new_pane_firecracker_vm_name_is_checked_before_anything_opens() {
     let args = Args::parse(r#"{"firecracker":" review ","firecracker_image":"rust"}"#).unwrap();
     assert_eq!(
         args.firecracker_target(),
-        Ok((Some("review".to_owned()), Some("rust".to_owned())))
+        Ok(PaneTarget::Firecracker {
+            vm: "review".to_owned(),
+            image: Some("rust".to_owned()),
+            worktree: None,
+        })
     );
     // Blank is absent, the same as a key the model left out.
     let args = Args::parse(r#"{"firecracker":"","firecracker_image":" "}"#).unwrap();
-    assert_eq!(args.firecracker_target(), Ok((None, None)));
+    assert_eq!(args.firecracker_target(), Ok(PaneTarget::Local));
 }
 
 /// An image names what a VM boots from, so one without a VM is a request with a
@@ -482,11 +486,11 @@ fn a_new_pane_image_without_a_vm_is_refused() {
     let args = Args::parse(r#"{"firecracker_image":"rust"}"#).unwrap();
     assert_eq!(
         args.firecracker_target(),
-        Err("firecracker_image requires a Firecracker VM".to_owned())
+        Err("firecracker_image and firecracker_worktree need a firecracker_vm".to_owned())
     );
     let args = Args::parse(r#"{"firecracker":"review","firecracker_image":"no/slashes"}"#).unwrap();
     let error = args
         .firecracker_target()
         .expect_err("an image name is checked like a VM name");
-    assert!(error.contains("invalid Firecracker VM name"), "{error}");
+    assert!(error.contains("invalid Firecracker image name"), "{error}");
 }

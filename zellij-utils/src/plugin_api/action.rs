@@ -2244,11 +2244,15 @@ impl TryFrom<ProtobufRunCommandAction> for RunCommandAction {
             .and_then(|d| d.try_into().ok());
         let hold_on_close = protobuf_run_command_action.hold_on_close;
         let hold_on_start = protobuf_run_command_action.hold_on_start;
-        let firecracker_vm = protobuf_run_command_action.firecracker_vm;
-        let firecracker_image = protobuf_run_command_action.firecracker_image;
-        let firecracker_worktree = protobuf_run_command_action
-            .firecracker_worktree
-            .map(PathBuf::from);
+        let target = crate::plugin_api::command::pane_target_from_wire(
+            protobuf_run_command_action.target,
+            crate::plugin_api::command::FlatPaneTarget {
+                remote_host: None,
+                firecracker_vm: protobuf_run_command_action.firecracker_vm,
+                firecracker_image: protobuf_run_command_action.firecracker_image,
+                firecracker_worktree: protobuf_run_command_action.firecracker_worktree,
+            },
+        )?;
         Ok(RunCommandAction {
             command,
             args,
@@ -2256,9 +2260,7 @@ impl TryFrom<ProtobufRunCommandAction> for RunCommandAction {
             direction,
             hold_on_close,
             hold_on_start,
-            firecracker_vm,
-            firecracker_image,
-            firecracker_worktree,
+            target,
             ..Default::default()
         })
     }
@@ -2276,11 +2278,10 @@ impl TryFrom<RunCommandAction> for ProtobufRunCommandAction {
         });
         let hold_on_close = run_command_action.hold_on_close;
         let hold_on_start = run_command_action.hold_on_start;
-        let firecracker_vm = run_command_action.firecracker_vm;
-        let firecracker_image = run_command_action.firecracker_image;
-        let firecracker_worktree = run_command_action
-            .firecracker_worktree
-            .map(|path| path.display().to_string());
+        let flat = crate::plugin_api::command::FlatPaneTarget::from(&run_command_action.target);
+        let target = Some(crate::plugin_api::command::ProtobufPaneTarget::from(
+            &run_command_action.target,
+        ));
         Ok(ProtobufRunCommandAction {
             command,
             args,
@@ -2289,9 +2290,10 @@ impl TryFrom<RunCommandAction> for ProtobufRunCommandAction {
             hold_on_close,
             hold_on_start,
             pane_name: None,
-            firecracker_vm,
-            firecracker_image,
-            firecracker_worktree,
+            firecracker_vm: flat.firecracker_vm,
+            firecracker_image: flat.firecracker_image,
+            firecracker_worktree: flat.firecracker_worktree,
+            target,
         })
     }
 }
@@ -3564,7 +3566,6 @@ pub(crate) mod tests {
             RunCommandAction {
                 originating_plugin: None,
                 use_terminal_title: false,
-                remote_host: None,
                 remote_default_shell: false,
                 ..command
             }
@@ -3576,7 +3577,6 @@ pub(crate) mod tests {
                 Run::Command(command) => Run::Command(RunCommand {
                     originating_plugin: None,
                     use_terminal_title: false,
-                    remote_host: None,
                     remote_default_shell: false,
                     ..command
                 }),

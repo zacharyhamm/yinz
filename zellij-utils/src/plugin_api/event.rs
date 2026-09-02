@@ -54,7 +54,7 @@ use crate::data::{
     AgentInfo, AgentSource, AgentState, ClientId, ClientInfo, ContextMenuContext, ContextMenuItem,
     ContextMenuLink, CopyDestination, DataRows, Event, EventType, FileMetadata,
     HostTerminalThemeMode, InputMode, KeyWithModifier, LayoutInfo, LayoutMetadata, ModeInfo, Mouse,
-    PaneContents, PaneId, PaneInfo, PaneManifest, PaneMetadata, PaneScrollbackResponse,
+    PaneContents, PaneId, PaneInfo, PaneManifest, PaneMetadata, PaneScrollbackResponse, PaneTarget,
     PermissionStatus, PluginCapabilities, PluginInfo, QueueJobInfo, QueueJobOutcome, QueueJobState,
     QueueSnapshot, SelectedText, SessionInfo, Style, StyledText, TabInfo, TabMetadata,
 };
@@ -64,6 +64,7 @@ use crate::errors::prelude::*;
 use crate::input::actions::Action;
 use crate::input::hooks::HookPoint;
 
+use crate::plugin_api::command::ProtobufPaneTarget;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::path::PathBuf;
@@ -2051,9 +2052,21 @@ impl TryFrom<ProtobufPaneInfo> for PaneInfo {
             default_fg: protobuf_pane_info.default_fg,
             default_bg: protobuf_pane_info.default_bg,
             cwd: protobuf_pane_info.cwd,
+            target: match protobuf_pane_info.target {
+                Some(target) => PaneTarget::try_from(target)?,
+                None => {
+                    let mut target = PaneTarget::parse_display(protobuf_pane_info.host.as_deref());
+                    if let PaneTarget::Firecracker {
+                        image, worktree, ..
+                    } = &mut target
+                    {
+                        *image = protobuf_pane_info.firecracker_image;
+                        *worktree = protobuf_pane_info.firecracker_worktree.map(PathBuf::from);
+                    }
+                    target
+                },
+            },
             host: protobuf_pane_info.host,
-            firecracker_image: protobuf_pane_info.firecracker_image,
-            firecracker_worktree: protobuf_pane_info.firecracker_worktree,
             agent: protobuf_pane_info
                 .agent
                 .map(AgentInfo::try_from)
@@ -2105,8 +2118,12 @@ impl TryFrom<PaneInfo> for ProtobufPaneInfo {
             default_bg: pane_info.default_bg,
             cwd: pane_info.cwd,
             host: pane_info.host,
-            firecracker_image: pane_info.firecracker_image,
-            firecracker_worktree: pane_info.firecracker_worktree,
+            firecracker_image: pane_info.target.firecracker_image().map(ToOwned::to_owned),
+            firecracker_worktree: pane_info
+                .target
+                .firecracker_worktree()
+                .map(|path| path.display().to_string()),
+            target: Some(ProtobufPaneTarget::from(&pane_info.target)),
             agent: pane_info
                 .agent
                 .map(ProtobufAgentInfo::try_from)
@@ -3033,9 +3050,12 @@ fn serialize_session_update_event_with_non_default_values() {
     index_in_pane_group_2.insert(3, 1);
     let panes_list = vec![
         PaneInfo {
-            host: None,
-            firecracker_image: Some("rust-dev".to_owned()),
-            firecracker_worktree: Some("/work/hocus".to_owned()),
+            host: Some("firecracker:review".to_owned()),
+            target: PaneTarget::Firecracker {
+                vm: "review".to_owned(),
+                image: Some("rust-dev".to_owned()),
+                worktree: Some(PathBuf::from("/work/hocus")),
+            },
             agent: None,
             id: 1,
             is_plugin: false,
@@ -3066,8 +3086,7 @@ fn serialize_session_update_event_with_non_default_values() {
         },
         PaneInfo {
             host: None,
-            firecracker_image: None,
-            firecracker_worktree: None,
+            target: Default::default(),
             agent: None,
             id: 1,
             is_plugin: true,
