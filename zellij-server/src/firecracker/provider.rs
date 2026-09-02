@@ -3097,22 +3097,44 @@ fn network_setup(args: &[String]) -> Result<()> {
         dns,
     };
     validate_network_config(&config)?;
-    fs::create_dir_all("/etc/zellij-firecracker")?;
-    fs::write(
-        network_config_path(uid),
-        serde_json::to_vec_pretty(&config)?,
-    )?;
     write_network_unit()?;
-    network_apply(uid, &config)?;
-    run(
-        Command::new("systemctl").args([
-            "enable",
-            &format!("zellij-firecracker-network@{uid}.service"),
-        ]),
-        "failed to enable Firecracker networking at boot",
-    )?;
+    // The recorded configuration is written only once the host actually matches it. A run that
+    // dies half way must not leave behind a file describing a state that was never applied: the
+    // next run would then clean up by the wrong subnet and wedge the host.
+    let undo = network_apply(uid, &config)?;
+    if let Err(error) = record_network_config(uid, &config).and_then(|()| {
+        run(
+            Command::new("systemctl").args([
+                "enable",
+                &format!("zellij-firecracker-network@{uid}.service"),
+            ]),
+            "failed to enable Firecracker networking at boot",
+        )
+    }) {
+        rollback(uid, &config, undo);
+        return Err(error);
+    }
     println!("Configured {} TAPs on {} for {user}.", taps, config.bridge);
     Ok(())
+}
+
+fn record_network_config(uid: u32, config: &NetworkConfig) -> Result<()> {
+    fs::create_dir_all("/etc/zellij-firecracker")?;
+    fs::write(network_config_path(uid), serde_json::to_vec_pretty(config)?)
+        .context("failed to record the Firecracker network configuration")
+}
+
+/// The configuration a UID gets without one recorded on disk: everything but the subnet is
+/// derived from the UID, which is what lets `teardown` clean up after a run that never got as
+/// far as writing its config file.
+fn default_network_config(uid: u32) -> Result<NetworkConfig> {
+    Ok(NetworkConfig {
+        bridge: format!("zfc{uid}"),
+        tap_prefix: format!("zft{uid}-"),
+        subnet: network_subnet(uid, None)?,
+        taps: DEFAULT_TAPS,
+        dns: "1.1.1.1".parse()?,
+    })
 }
 
 fn network_apply_cli(args: &[String]) -> Result<()> {
@@ -3123,7 +3145,7 @@ fn network_apply_cli(args: &[String]) -> Result<()> {
     let path = option_path(args, "--config")?.unwrap_or_else(|| network_config_path(uid));
     let config: NetworkConfig = serde_json::from_slice(&fs::read(&path)?)?;
     validate_network_config(&config)?;
-    network_apply(uid, &config)
+    network_apply(uid, &config).map(|_| ())
 }
 
 fn network_remove_cli(args: &[String]) -> Result<()> {
@@ -3131,19 +3153,71 @@ fn network_remove_cli(args: &[String]) -> Result<()> {
     let path = option_path(args, "--config")?.context("network remove requires --config PATH")?;
     let config: NetworkConfig = serde_json::from_slice(&fs::read(&path)?)?;
     validate_network_config(&config)?;
-    network_remove(&config);
+    network_remove(unsafe { libc::geteuid() }, &config);
     Ok(())
 }
 
-fn network_apply(uid: u32, config: &NetworkConfig) -> Result<()> {
-    let result = network_apply_inner(uid, config);
-    if result.is_err() {
-        network_remove(config);
-    }
-    result
+/// What a partially applied run has to undo, in the order it must be undone.
+///
+/// Only resources *this* run created appear here. A bridge or TAP that was already up belongs to
+/// whatever created it - deleting it would cut off VMs another session is running - so a failed
+/// re-run leaves it exactly as it found it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Undo {
+    Firewall,
+    Interface(String),
 }
 
-fn network_apply_inner(uid: u32, config: &NetworkConfig) -> Result<()> {
+fn undo_steps(created_bridge: Option<String>, created_taps: Vec<String>) -> Vec<Undo> {
+    let mut steps = vec![Undo::Firewall];
+    steps.extend(created_taps.into_iter().rev().map(Undo::Interface));
+    steps.extend(created_bridge.map(Undo::Interface));
+    steps
+}
+
+fn rollback(uid: u32, config: &NetworkConfig, steps: Vec<Undo>) {
+    for step in steps {
+        match step {
+            Undo::Firewall => {
+                let subnets = known_subnets(uid, config);
+                if let Err(error) = remove_firewall(&mut RealIptables, uid, config, &subnets) {
+                    eprintln!("warning: could not undo the Firecracker firewall rules: {error:#}");
+                }
+            },
+            Undo::Interface(name) => {
+                let status = Command::new("ip")
+                    .args(["link", "delete", &name])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                if !matches!(status, Ok(status) if status.success()) {
+                    eprintln!("warning: could not remove {name}; run 'sudo ip link delete {name}'");
+                }
+            },
+        }
+    }
+}
+
+fn network_apply(uid: u32, config: &NetworkConfig) -> Result<Vec<Undo>> {
+    let mut created_bridge = None;
+    let mut created_taps = Vec::new();
+    let result = network_apply_inner(uid, config, &mut created_bridge, &mut created_taps);
+    let steps = undo_steps(created_bridge, created_taps);
+    match result {
+        Ok(()) => Ok(steps),
+        Err(error) => {
+            rollback(uid, config, steps);
+            Err(error)
+        },
+    }
+}
+
+fn network_apply_inner(
+    uid: u32,
+    config: &NetworkConfig,
+    created_bridge: &mut Option<String>,
+    created_taps: &mut Vec<String>,
+) -> Result<()> {
     let (base, _) = parse_subnet(&config.subnet)?;
     let gateway = ipv4_add(base, 1)?;
     fs::write("/proc/sys/net/ipv4/ip_forward", "1")?;
@@ -3152,6 +3226,7 @@ fn network_apply_inner(uid: u32, config: &NetworkConfig) -> Result<()> {
             Command::new("ip").args(["link", "add", &config.bridge, "type", "bridge"]),
             "failed to create the Firecracker bridge",
         )?;
+        *created_bridge = Some(config.bridge.clone());
     }
     run(
         Command::new("ip").args([
@@ -3183,6 +3258,7 @@ fn network_apply_inner(uid: u32, config: &NetworkConfig) -> Result<()> {
                 ]),
                 "failed to create a Firecracker TAP",
             )?;
+            created_taps.push(tap.clone());
         }
         run(
             Command::new("ip").args(["link", "set", &tap, "master", &config.bridge]),
@@ -3199,14 +3275,49 @@ fn network_apply_inner(uid: u32, config: &NetworkConfig) -> Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-    remove_firewall(config);
-    for args in firewall_rules(config) {
-        run(
-            Command::new("iptables").arg("-w").args(&args),
-            "failed to configure Firecracker firewall rules",
-        )?;
+    apply_firewall(&mut RealIptables, uid, config, &known_subnets(uid, config))
+}
+
+/// One `iptables` invocation. Injected so the firewall logic - which is where every idempotency
+/// bug has lived - is unit testable against a fake table, without root.
+trait Iptables {
+    /// Runs `iptables -w <args>`.
+    fn run(&mut self, args: &[String]) -> Result<IptablesOutput>;
+}
+
+struct IptablesOutput {
+    success: bool,
+    stdout: String,
+    stderr: String,
+}
+
+struct RealIptables;
+
+impl Iptables for RealIptables {
+    fn run(&mut self, args: &[String]) -> Result<IptablesOutput> {
+        let output = Command::new("iptables")
+            .arg("-w")
+            .args(args)
+            .output()
+            .context("failed to run iptables")?;
+        Ok(IptablesOutput {
+            success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
     }
-    Ok(())
+}
+
+fn iptables_must(ipt: &mut dyn Iptables, args: &[String], context: &str) -> Result<()> {
+    let output = ipt.run(args)?;
+    if output.success {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "{context}: iptables {}: {}",
+        args.join(" "),
+        output.stderr.trim()
+    ))
 }
 
 fn firewall_chain(config: &NetworkConfig) -> String {
@@ -3216,9 +3327,17 @@ fn firewall_chain(config: &NetworkConfig) -> String {
     )
 }
 
-fn firewall_rules(config: &NetworkConfig) -> Vec<Vec<String>> {
+const FIREWALL_TAG_PREFIX: &str = "zellij-firecracker:";
+
+fn firewall_tag(uid: u32) -> String {
+    format!("{FIREWALL_TAG_PREFIX}{uid}")
+}
+
+/// The rules inside our own chain. They need no tag: the chain name identifies them, and the
+/// chain is flushed as a whole.
+fn firewall_chain_rules(config: &NetworkConfig) -> Vec<Vec<String>> {
     let chain = firewall_chain(config);
-    let mut rules = vec![vec!["-N".to_owned(), chain.clone()]];
+    let mut rules = Vec::new();
     for protocol in ["udp", "tcp"] {
         rules.push(strings(&[
             "-A",
@@ -3256,149 +3375,401 @@ fn firewall_rules(config: &NetworkConfig) -> Vec<Vec<String>> {
         "ACCEPT",
     ]));
     rules.push(strings(&["-A", &chain, "-j", "DROP"]));
-    rules.extend([
-        strings(&[
-            "-I",
-            "INPUT",
-            "1",
-            "-i",
-            &config.bridge,
-            "-s",
-            &config.subnet,
-            "-j",
-            "DROP",
-        ]),
-        strings(&[
-            "-I",
-            "INPUT",
-            "1",
-            "-i",
-            &config.bridge,
-            "-s",
-            &config.subnet,
-            "-m",
-            "conntrack",
-            "--ctstate",
-            "ESTABLISHED,RELATED",
-            "-j",
-            "ACCEPT",
-        ]),
-        strings(&[
-            "-I",
-            "FORWARD",
-            "1",
-            "-i",
-            &config.bridge,
-            "-s",
-            &config.subnet,
-            "-j",
-            &chain,
-        ]),
-        strings(&[
-            "-I",
-            "FORWARD",
-            "1",
-            "-o",
-            &config.bridge,
-            "-d",
-            &config.subnet,
-            "-m",
-            "conntrack",
-            "--ctstate",
-            "ESTABLISHED,RELATED",
-            "-j",
-            "ACCEPT",
-        ]),
-        strings(&[
-            "-t",
-            "nat",
-            "-I",
-            "POSTROUTING",
-            "1",
-            "-s",
-            &config.subnet,
-            "-j",
-            "MASQUERADE",
-        ]),
-    ]);
     rules
+}
+
+/// A rule this provider owns in one of the built-in chains, carrying the tag that lets cleanup
+/// recognise it again whatever the subnet, DNS server or TAP count was when it was written.
+struct BaseRule {
+    table: Option<&'static str>,
+    chain: &'static str,
+    spec: Vec<String>,
+}
+
+impl BaseRule {
+    fn args(&self, verb: &str, position: Option<&str>) -> Vec<String> {
+        let mut args: Vec<String> = Vec::new();
+        if let Some(table) = self.table {
+            args.extend(strings(&["-t", table]));
+        }
+        args.push(verb.to_owned());
+        args.push(self.chain.to_owned());
+        if let Some(position) = position {
+            args.push(position.to_owned());
+        }
+        args.extend(self.spec.iter().cloned());
+        args
+    }
+
+    fn insert_args(&self) -> Vec<String> {
+        self.args("-I", Some("1"))
+    }
+
+    fn check_args(&self) -> Vec<String> {
+        self.args("-C", None)
+    }
+}
+
+fn tagged(uid: u32, matches: &[&str], target: &str) -> Vec<String> {
+    let mut spec = strings(matches);
+    spec.extend(strings(&["-m", "comment", "--comment", &firewall_tag(uid)]));
+    spec.extend(strings(&["-j", target]));
+    spec
+}
+
+/// The rules we insert into INPUT, FORWARD and nat POSTROUTING, in insertion order. Each goes in
+/// at position 1, so the later ones end up above the earlier ones.
+fn firewall_base_rules(uid: u32, config: &NetworkConfig) -> Vec<BaseRule> {
+    let chain = firewall_chain(config);
+    vec![
+        BaseRule {
+            table: None,
+            chain: "INPUT",
+            spec: tagged(uid, &["-i", &config.bridge, "-s", &config.subnet], "DROP"),
+        },
+        BaseRule {
+            table: None,
+            chain: "INPUT",
+            spec: tagged(
+                uid,
+                &[
+                    "-i",
+                    &config.bridge,
+                    "-s",
+                    &config.subnet,
+                    "-m",
+                    "conntrack",
+                    "--ctstate",
+                    "ESTABLISHED,RELATED",
+                ],
+                "ACCEPT",
+            ),
+        },
+        BaseRule {
+            table: None,
+            chain: "FORWARD",
+            spec: tagged(uid, &["-i", &config.bridge, "-s", &config.subnet], &chain),
+        },
+        BaseRule {
+            table: None,
+            chain: "FORWARD",
+            spec: tagged(
+                uid,
+                &[
+                    "-o",
+                    &config.bridge,
+                    "-d",
+                    &config.subnet,
+                    "-m",
+                    "conntrack",
+                    "--ctstate",
+                    "ESTABLISHED,RELATED",
+                ],
+                "ACCEPT",
+            ),
+        },
+        BaseRule {
+            table: Some("nat"),
+            chain: "POSTROUTING",
+            spec: tagged(uid, &["-s", &config.subnet], "MASQUERADE"),
+        },
+    ]
 }
 
 fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_owned()).collect()
 }
 
-fn remove_firewall(config: &NetworkConfig) {
+/// Brings the firewall to the configured state from whatever state it is in.
+///
+/// Everything of ours is swept out first, then written fresh, so re-running this - which the boot
+/// unit does on every boot - converges instead of accumulating or colliding.
+fn apply_firewall(
+    ipt: &mut dyn Iptables,
+    uid: u32,
+    config: &NetworkConfig,
+    subnets: &[String],
+) -> Result<()> {
+    let cleanup = remove_firewall(ipt, uid, config, subnets)?;
+    cleanup.report();
     let chain = firewall_chain(config);
-    for args in [
-        strings(&[
-            "-t",
-            "nat",
-            "-D",
-            "POSTROUTING",
-            "-s",
-            &config.subnet,
-            "-j",
-            "MASQUERADE",
-        ]),
-        strings(&[
-            "-D",
-            "FORWARD",
-            "-o",
-            &config.bridge,
-            "-d",
-            &config.subnet,
-            "-m",
-            "conntrack",
-            "--ctstate",
-            "ESTABLISHED,RELATED",
-            "-j",
-            "ACCEPT",
-        ]),
-        strings(&[
-            "-D",
-            "FORWARD",
-            "-i",
-            &config.bridge,
-            "-s",
-            &config.subnet,
-            "-j",
-            &chain,
-        ]),
-        strings(&[
-            "-D",
-            "INPUT",
-            "-i",
-            &config.bridge,
-            "-s",
-            &config.subnet,
-            "-m",
-            "conntrack",
-            "--ctstate",
-            "ESTABLISHED,RELATED",
-            "-j",
-            "ACCEPT",
-        ]),
-        strings(&[
-            "-D",
-            "INPUT",
-            "-i",
-            &config.bridge,
-            "-s",
-            &config.subnet,
-            "-j",
-            "DROP",
-        ]),
-        strings(&["-F", &chain]),
-        strings(&["-X", &chain]),
-    ] {
-        let _ = Command::new("iptables")
-            .arg("-w")
-            .args(args)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+    if !chain_exists(&read_rules(ipt, None)?, &chain) {
+        iptables_must(
+            ipt,
+            &strings(&["-N", &chain]),
+            "failed to create the Firecracker firewall chain",
+        )?;
+    } else {
+        iptables_must(
+            ipt,
+            &strings(&["-F", &chain]),
+            "failed to flush the Firecracker firewall chain",
+        )?;
     }
+    for rule in firewall_chain_rules(config) {
+        iptables_must(ipt, &rule, "failed to configure Firecracker firewall rules")?;
+    }
+    for rule in firewall_base_rules(uid, config) {
+        if ipt.run(&rule.check_args())?.success {
+            continue;
+        }
+        iptables_must(
+            ipt,
+            &rule.insert_args(),
+            "failed to configure Firecracker firewall rules",
+        )?;
+    }
+    Ok(())
+}
+
+/// What a sweep could not do on its own.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct FirewallCleanup {
+    /// NAT rules that masquerade a subnet we no longer know about. They carry neither our tag nor
+    /// our bridge name, so nothing proves they are ours and we refuse to guess.
+    orphans: Vec<String>,
+}
+
+impl FirewallCleanup {
+    fn report(&self) {
+        for orphan in &self.orphans {
+            eprintln!(
+                "warning: a NAT rule for a subnet this host no longer uses was left in place \
+                 because it cannot be proven to be ours; remove it with 'sudo iptables -w -t nat {}'",
+                orphan.replacen("-A", "-D", 1)
+            );
+        }
+    }
+}
+
+/// Removes every firewall rule this provider owns, whatever it was configured with when the rule
+/// was written.
+///
+/// Rules are found in the live table rather than reconstructed from the current configuration,
+/// because the two drift: a rule written for one subnet cannot be deleted by a spec naming
+/// another, and the leftover jump then keeps the chain alive so that re-creating it fails with
+/// "Chain already exists".
+fn remove_firewall(
+    ipt: &mut dyn Iptables,
+    uid: u32,
+    config: &NetworkConfig,
+    subnets: &[String],
+) -> Result<FirewallCleanup> {
+    let chain = firewall_chain(config);
+    let tag = firewall_tag(uid);
+    // Each -D removes one match, so duplicates need more than one pass; the bound just stops a
+    // pathological table from looping forever.
+    for _ in 0..32 {
+        let ours = our_rules(
+            &read_rules(ipt, None)?,
+            &read_rules(ipt, Some("nat"))?,
+            &chain,
+            &config.bridge,
+            &tag,
+            subnets,
+        );
+        if ours.is_empty() {
+            break;
+        }
+        for rule in &ours {
+            let output = ipt.run(&rule.delete_args())?;
+            if !output.success {
+                return Err(anyhow!(
+                    "failed to remove the Firecracker firewall rule {:?}: {}",
+                    rule.line,
+                    output.stderr.trim()
+                ));
+            }
+        }
+    }
+    let filter = read_rules(ipt, None)?;
+    let nat = read_rules(ipt, Some("nat"))?;
+    let leftover = our_rules(&filter, &nat, &chain, &config.bridge, &tag, subnets);
+    if !leftover.is_empty() {
+        return Err(anyhow!(
+            "could not remove these Firecracker firewall rules: {}",
+            leftover
+                .iter()
+                .map(|rule| rule.line.clone())
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+    if chain_exists(&filter, &chain) {
+        let _ = ipt.run(&strings(&["-F", &chain]))?;
+        let output = ipt.run(&strings(&["-X", &chain]))?;
+        if !output.success && chain_exists(&read_rules(ipt, None)?, &chain) {
+            return Err(anyhow!(
+                "could not remove the Firecracker firewall chain {chain}: {}",
+                output.stderr.trim()
+            ));
+        }
+    }
+    Ok(FirewallCleanup {
+        orphans: orphan_masquerades(&nat, subnets),
+    })
+}
+
+/// The subnets a rule of ours may name: the one we are configuring, and the one last recorded for
+/// this UID, which is what a run that changes the subnet has to clean up after.
+fn known_subnets(uid: u32, config: &NetworkConfig) -> Vec<String> {
+    let mut subnets = vec![config.subnet.clone()];
+    if let Some(recorded) = fs::read(network_config_path(uid))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<NetworkConfig>(&bytes).ok())
+    {
+        if !subnets.contains(&recorded.subnet) {
+            subnets.push(recorded.subnet);
+        }
+    }
+    subnets
+}
+
+fn read_rules(ipt: &mut dyn Iptables, table: Option<&str>) -> Result<Vec<String>> {
+    let mut args = Vec::new();
+    if let Some(table) = table {
+        args.extend(strings(&["-t", table]));
+    }
+    args.push("-S".to_owned());
+    let output = ipt.run(&args)?;
+    if !output.success {
+        return Err(anyhow!(
+            "failed to read the iptables {} table: {}",
+            table.unwrap_or("filter"),
+            output.stderr.trim()
+        ));
+    }
+    Ok(output.stdout.lines().map(|line| line.to_owned()).collect())
+}
+
+fn chain_exists(filter: &[String], chain: &str) -> bool {
+    filter
+        .iter()
+        .any(|line| split_rule(line) == strings(&["-N", chain]))
+}
+
+/// A rule of ours found in the live table, ready to be deleted by the exact spec iptables printed.
+#[derive(Debug, PartialEq, Eq)]
+struct OwnedRule {
+    line: String,
+    argv: Vec<String>,
+    table: Option<&'static str>,
+}
+
+impl OwnedRule {
+    fn delete_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some(table) = self.table {
+            args.extend(strings(&["-t", table]));
+        }
+        args.push("-D".to_owned());
+        args.extend(self.argv.iter().skip(1).cloned());
+        args
+    }
+}
+
+fn our_rules(
+    filter: &[String],
+    nat: &[String],
+    chain: &str,
+    bridge: &str,
+    tag: &str,
+    subnets: &[String],
+) -> Vec<OwnedRule> {
+    let mut rules = Vec::new();
+    for (table, lines) in [(None, filter), (Some("nat"), nat)] {
+        for line in lines {
+            let argv = split_rule(line);
+            if argv.first().map(String::as_str) != Some("-A") {
+                continue;
+            }
+            // Rules inside our own chain go with the chain when it is flushed.
+            if argv.get(1).map(String::as_str) == Some(chain) {
+                continue;
+            }
+            if !rule_is_ours(&argv, chain, bridge, tag, subnets) {
+                continue;
+            }
+            rules.push(OwnedRule {
+                line: line.clone(),
+                argv,
+                table,
+            });
+        }
+    }
+    rules
+}
+
+fn rule_is_ours(argv: &[String], chain: &str, bridge: &str, tag: &str, subnets: &[String]) -> bool {
+    let follows = |flag: &str, value: &str| {
+        argv.windows(2)
+            .any(|pair| pair[0] == flag && pair[1] == value)
+    };
+    follows("--comment", tag)
+        || follows("-j", chain)
+        || follows("-i", bridge)
+        || follows("-o", bridge)
+        || (argv.get(1).map(String::as_str) == Some("POSTROUTING")
+            && follows("-j", "MASQUERADE")
+            && subnets.iter().any(|subnet| follows("-s", subnet)))
+}
+
+/// Bare `POSTROUTING -s <subnet> -j MASQUERADE` rules for a subnet we do not recognise.
+///
+/// A NAT rule names no interface, so once the subnet it was written for is forgotten there is
+/// nothing left to identify it by. The shape test - a source and nothing else - keeps Docker's and
+/// Tailscale's rules, which all carry an interface or a mark match, out of the report.
+fn orphan_masquerades(nat: &[String], subnets: &[String]) -> Vec<String> {
+    nat.iter()
+        .filter(|line| {
+            let argv = split_rule(line);
+            argv.len() == 6
+                && argv[0] == "-A"
+                && argv[1] == "POSTROUTING"
+                && argv[2] == "-s"
+                && argv[4..] == strings(&["-j", "MASQUERADE"])[..]
+                && !subnets.contains(&argv[3])
+        })
+        .cloned()
+        .collect()
+}
+
+/// Splits a line of `iptables -S` back into arguments. Only comments are quoted, and iptables
+/// escapes a quote or a backslash inside one with a backslash.
+fn split_rule(line: &str) -> Vec<String> {
+    let mut argv = Vec::new();
+    let mut word = String::new();
+    let mut started = false;
+    let mut quoted = false;
+    let mut escaped = false;
+    for character in line.chars() {
+        if escaped {
+            word.push(character);
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' if quoted => escaped = true,
+            '"' => {
+                quoted = !quoted;
+                started = true;
+            },
+            character if character.is_ascii_whitespace() && !quoted => {
+                if started {
+                    argv.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            },
+            character => {
+                word.push(character);
+                started = true;
+            },
+        }
+    }
+    if started {
+        argv.push(word);
+    }
+    argv
 }
 
 /// The `ip` commands that undo `network_apply_inner`'s interfaces: every TAP of the pool,
@@ -3410,8 +3781,11 @@ fn network_remove_commands(config: &NetworkConfig) -> Vec<Vec<String>> {
         .collect()
 }
 
-fn network_remove(config: &NetworkConfig) {
-    remove_firewall(config);
+fn network_remove(uid: u32, config: &NetworkConfig) {
+    match remove_firewall(&mut RealIptables, uid, config, &known_subnets(uid, config)) {
+        Ok(cleanup) => cleanup.report(),
+        Err(error) => eprintln!("warning: {error:#}"),
+    }
     for args in network_remove_commands(config) {
         let _ = Command::new("ip")
             .args(args)
@@ -3426,7 +3800,16 @@ fn network_teardown(args: &[String]) -> Result<()> {
     let user = option_value(args, "--user")?.context("network teardown requires --user USER")?;
     let uid = id_value(user, "-u")?;
     let path = network_config_path(uid);
-    let config: NetworkConfig = serde_json::from_slice(&fs::read(&path)?)?;
+    // Teardown is the recovery path for a host a failed setup left half configured, so a missing
+    // or unreadable config file must not stop it: everything but the subnet follows from the UID.
+    let config = match fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<NetworkConfig>(&bytes).ok())
+    {
+        Some(config) => config,
+        None => default_network_config(uid)?,
+    };
+    validate_network_config(&config)?;
     run(
         Command::new("systemctl").args([
             "disable",
@@ -3440,8 +3823,8 @@ fn network_teardown(args: &[String]) -> Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-    network_remove(&config);
-    fs::remove_file(path)?;
+    network_remove(uid, &config);
+    let _ = fs::remove_file(path);
     Ok(())
 }
 
@@ -4821,15 +5204,15 @@ mod tests {
             taps: 2,
             dns: Ipv4Addr::new(10, 0, 0, 53),
         };
-        let rules = firewall_rules(&config)
+        let chain_rules = firewall_chain_rules(&config)
             .into_iter()
             .map(|args| args.join(" "))
             .collect::<Vec<_>>();
-        let dns = rules
+        let dns = chain_rules
             .iter()
             .position(|rule| rule.contains("-d 10.0.0.53 -p udp --dport 53 -j ACCEPT"))
             .unwrap();
-        let private = rules
+        let private = chain_rules
             .iter()
             .position(|rule| rule.contains("-d 10.0.0.0/8 -j DROP"))
             .unwrap();
@@ -4837,18 +5220,31 @@ mod tests {
             dns < private,
             "the configured DNS exception must precede the private-network drop"
         );
-        assert!(rules
-            .iter()
-            .any(|rule| rule.contains("INPUT 1 -i zfc1000 -s 172.31.0.0/24 -j DROP")));
-        assert!(rules.iter().any(|rule| rule.contains(
-            "INPUT 1 -i zfc1000 -s 172.31.0.0/24 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
-        )));
-        assert!(rules
+        assert!(chain_rules
             .iter()
             .any(|rule| rule.contains("--dports 22,80,443 -j ACCEPT")));
-        assert!(rules
+
+        let base = firewall_base_rules(1000, &config)
             .iter()
-            .any(|rule| rule.contains("-t nat -I POSTROUTING 1 -s 172.31.0.0/24 -j MASQUERADE")));
+            .map(|rule| rule.insert_args().join(" "))
+            .collect::<Vec<_>>();
+        let tag = "-m comment --comment zellij-firecracker:1000";
+        assert!(base
+            .iter()
+            .any(|rule| rule == &format!("-I INPUT 1 -i zfc1000 -s 172.31.0.0/24 {tag} -j DROP")));
+        assert!(base.iter().any(|rule| rule
+            == &format!(
+                "{} {tag} -j ACCEPT",
+                "-I INPUT 1 -i zfc1000 -s 172.31.0.0/24 -m conntrack --ctstate ESTABLISHED,RELATED"
+            )));
+        assert!(base
+            .iter()
+            .any(|rule| rule
+                == &format!("-t nat -I POSTROUTING 1 -s 172.31.0.0/24 {tag} -j MASQUERADE")));
+        assert!(
+            base.iter().all(|rule| rule.contains(tag)),
+            "every rule outside our own chain must carry the tag that identifies it: {base:?}"
+        );
     }
 
     #[test]
@@ -5040,6 +5436,395 @@ mod tests {
             taps: 2,
             dns: Ipv4Addr::new(1, 1, 1, 1),
         }
+    }
+
+    /// Enough of an iptables table to exercise the real command sequence: chain creation refuses
+    /// a duplicate, `-X` refuses a chain something still jumps to, and `-D` refuses a rule that
+    /// is not there - the three failures that produced the wedged host this all came from.
+    #[derive(Default)]
+    struct FakeIptables {
+        chains: Vec<(String, String)>,
+        rules: Vec<(String, String, Vec<String>)>,
+        log: Vec<String>,
+    }
+
+    impl FakeIptables {
+        fn seed(&mut self, table: &str, chain: &str, spec: &str) {
+            self.rules.push((
+                table.to_owned(),
+                chain.to_owned(),
+                spec.split_whitespace().map(str::to_owned).collect(),
+            ));
+        }
+
+        fn add_chain(&mut self, table: &str, chain: &str) {
+            self.chains.push((table.to_owned(), chain.to_owned()));
+        }
+
+        /// The table as `iptables -S` prints it, comments quoted the way iptables quotes them.
+        fn dump(&self, table: &str) -> String {
+            let builtins: &[&str] = if table == "nat" {
+                &["PREROUTING", "INPUT", "OUTPUT", "POSTROUTING"]
+            } else {
+                &["INPUT", "FORWARD", "OUTPUT"]
+            };
+            let mut lines: Vec<String> = builtins
+                .iter()
+                .map(|chain| format!("-P {chain} ACCEPT"))
+                .collect();
+            lines.extend(
+                self.chains
+                    .iter()
+                    .filter(|(owner, _)| owner == table)
+                    .map(|(_, chain)| format!("-N {chain}")),
+            );
+            lines.extend(
+                self.rules
+                    .iter()
+                    .filter(|(owner, _, _)| owner == table)
+                    .map(|(_, chain, spec)| format!("-A {chain} {}", render_spec(spec))),
+            );
+            lines.join("\n")
+        }
+
+        fn lines(&self, table: &str) -> Vec<String> {
+            self.dump(table)
+                .lines()
+                .filter(|line| line.starts_with("-A"))
+                .map(str::to_owned)
+                .collect()
+        }
+
+        fn fail(stderr: &str) -> Result<IptablesOutput> {
+            Ok(IptablesOutput {
+                success: false,
+                stdout: String::new(),
+                stderr: stderr.to_owned(),
+            })
+        }
+
+        fn ok(stdout: String) -> Result<IptablesOutput> {
+            Ok(IptablesOutput {
+                success: true,
+                stdout,
+                stderr: String::new(),
+            })
+        }
+    }
+
+    fn render_spec(spec: &[String]) -> String {
+        let mut rendered: Vec<String> = Vec::new();
+        for (index, word) in spec.iter().enumerate() {
+            if index > 0 && spec[index - 1] == "--comment" {
+                rendered.push(format!("\"{word}\""));
+            } else {
+                rendered.push(word.clone());
+            }
+        }
+        rendered.join(" ")
+    }
+
+    impl Iptables for FakeIptables {
+        fn run(&mut self, args: &[String]) -> Result<IptablesOutput> {
+            self.log.push(args.join(" "));
+            let (table, rest) = match args {
+                [flag, table, rest @ ..] if flag == "-t" => (table.clone(), rest),
+                rest => ("filter".to_owned(), rest),
+            };
+            let chain = rest.get(1).cloned().unwrap_or_default();
+            let known = |fake: &Self, chain: &str| {
+                fake.chains
+                    .iter()
+                    .any(|(owner, name)| owner == &table && name == chain)
+            };
+            match rest[0].as_str() {
+                "-S" => Self::ok(self.dump(&table)),
+                "-N" => {
+                    if known(self, &chain) {
+                        return Self::fail("iptables: Chain already exists.");
+                    }
+                    self.chains.push((table, chain));
+                    Self::ok(String::new())
+                },
+                "-F" => {
+                    self.rules
+                        .retain(|(owner, name, _)| owner != &table || name != &chain);
+                    Self::ok(String::new())
+                },
+                "-X" => {
+                    if !known(self, &chain) {
+                        return Self::fail("iptables: No chain/target/match by that name.");
+                    }
+                    if self.rules.iter().any(|(owner, _, spec)| {
+                        owner == &table
+                            && spec
+                                .windows(2)
+                                .any(|pair| pair[0] == "-j" && pair[1] == chain)
+                    }) {
+                        return Self::fail("iptables: Too many links.");
+                    }
+                    self.chains
+                        .retain(|(owner, name)| owner != &table || name != &chain);
+                    Self::ok(String::new())
+                },
+                verb @ ("-A" | "-I" | "-C" | "-D") => {
+                    let spec: Vec<String> = if verb == "-I" {
+                        rest[3..].to_vec()
+                    } else {
+                        rest[2..].to_vec()
+                    };
+                    let position = self.rules.iter().position(|(owner, name, existing)| {
+                        owner == &table && name == &chain && existing == &spec
+                    });
+                    match verb {
+                        "-A" => self.rules.push((table, chain, spec)),
+                        "-I" => {
+                            let at = self
+                                .rules
+                                .iter()
+                                .position(|(owner, name, _)| owner == &table && name == &chain)
+                                .unwrap_or(self.rules.len());
+                            self.rules.insert(at, (table, chain, spec));
+                        },
+                        "-C" => {
+                            if position.is_none() {
+                                return Self::fail("iptables: Bad rule.");
+                            }
+                        },
+                        _ => match position {
+                            Some(at) => {
+                                self.rules.remove(at);
+                            },
+                            None => return Self::fail("iptables: Bad rule."),
+                        },
+                    }
+                    Self::ok(String::new())
+                },
+                other => panic!("unexpected iptables verb {other}"),
+            }
+        }
+    }
+
+    /// The host that produced this work: rules written for a retired subnet, plus an empty chain
+    /// they still jump to, plus unrelated Docker and Tailscale rules that must survive.
+    fn wedged_table() -> FakeIptables {
+        let mut fake = FakeIptables::default();
+        fake.add_chain("filter", "ZFC_ZFC1000");
+        fake.add_chain("filter", "DOCKER-USER");
+        fake.seed(
+            "filter",
+            "INPUT",
+            "-s 172.31.0.0/24 -i zfc1000 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+        );
+        fake.seed("filter", "INPUT", "-s 172.31.0.0/24 -i zfc1000 -j DROP");
+        fake.seed("filter", "INPUT", "-p tcp -m tcp --dport 4000 -j ACCEPT");
+        fake.seed(
+            "filter",
+            "FORWARD",
+            "-d 172.31.0.0/24 -o zfc1000 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+        );
+        fake.seed(
+            "filter",
+            "FORWARD",
+            "-s 172.31.0.0/24 -i zfc1000 -j ZFC_ZFC1000",
+        );
+        fake.seed("filter", "FORWARD", "-j DOCKER-USER");
+        fake.seed("filter", "DOCKER-USER", "-o core-vm-harness -j ACCEPT");
+        fake.seed("nat", "POSTROUTING", "-s 172.31.0.0/24 -j MASQUERADE");
+        fake.seed(
+            "nat",
+            "POSTROUTING",
+            "-s 172.17.0.0/16 ! -o docker0 -j MASQUERADE",
+        );
+        fake
+    }
+
+    fn uid_network_config() -> NetworkConfig {
+        NetworkConfig {
+            bridge: "zfc1000".to_owned(),
+            tap_prefix: "zft1000-".to_owned(),
+            subnet: "10.3.232.0/24".to_owned(),
+            taps: 2,
+            dns: Ipv4Addr::new(1, 1, 1, 1),
+        }
+    }
+
+    /// The regression this whole change exists for: a host whose rules were written for a subnet
+    /// the configuration no longer names used to fail with "Chain already exists" forever, because
+    /// cleanup deleted by spec and so matched nothing.
+    #[test]
+    fn applying_the_firewall_recovers_a_host_left_on_a_retired_subnet() {
+        let mut fake = wedged_table();
+        let config = uid_network_config();
+
+        apply_firewall(&mut fake, 1000, &config, &strings(&["10.3.232.0/24"])).unwrap();
+
+        let filter = fake.lines("filter");
+        assert!(
+            !filter.iter().any(|rule| rule.contains("172.31.0.0/24")),
+            "the retired subnet's rules must be gone: {filter:#?}"
+        );
+        assert!(filter
+            .iter()
+            .any(|rule| rule == "-A INPUT -p tcp -m tcp --dport 4000 -j ACCEPT"));
+        assert!(filter
+            .iter()
+            .any(|rule| rule == "-A FORWARD -j DOCKER-USER"));
+        assert!(filter
+            .iter()
+            .any(|rule| rule == "-A DOCKER-USER -o core-vm-harness -j ACCEPT"));
+        assert!(filter.iter().any(|rule| rule
+            == "-A FORWARD -i zfc1000 -s 10.3.232.0/24 -m comment --comment \
+                \"zellij-firecracker:1000\" -j ZFC_ZFC1000"));
+        assert!(filter
+            .iter()
+            .any(|rule| rule == "-A ZFC_ZFC1000 -d 10.0.0.0/8 -j DROP"));
+        let nat = fake.lines("nat");
+        assert!(nat.iter().any(|rule| rule
+            == "-A POSTROUTING -s 10.3.232.0/24 -m comment --comment \
+                \"zellij-firecracker:1000\" -j MASQUERADE"));
+        assert!(
+            nat.iter()
+                .any(|rule| rule == "-A POSTROUTING -s 172.17.0.0/16 ! -o docker0 -j MASQUERADE"),
+            "another tool's NAT rule must survive: {nat:#?}"
+        );
+    }
+
+    /// A NAT rule for a forgotten subnet names no interface and carries no tag, so nothing proves
+    /// it is ours. It is reported rather than guessed at - and it does not block setup.
+    #[test]
+    fn a_masquerade_for_a_forgotten_subnet_is_reported_and_left_alone() {
+        let mut fake = wedged_table();
+        let config = uid_network_config();
+
+        let cleanup =
+            remove_firewall(&mut fake, 1000, &config, &strings(&["10.3.232.0/24"])).unwrap();
+
+        assert_eq!(
+            cleanup.orphans,
+            vec!["-A POSTROUTING -s 172.31.0.0/24 -j MASQUERADE".to_owned()],
+            "Docker's and Tailscale's rules carry an interface or a mark and must not be reported"
+        );
+        assert!(fake
+            .lines("nat")
+            .iter()
+            .any(|rule| rule == "-A POSTROUTING -s 172.31.0.0/24 -j MASQUERADE"));
+        assert!(
+            !fake
+                .dump("filter")
+                .lines()
+                .any(|line| line == "-N ZFC_ZFC1000"),
+            "the chain must be gone once nothing jumps to it"
+        );
+    }
+
+    /// The boot unit re-applies on every boot, so a second application has to be a no-op rather
+    /// than a duplicate or a collision.
+    #[test]
+    fn applying_the_firewall_twice_converges_on_the_same_rules() {
+        let config = uid_network_config();
+        let subnets = strings(&["10.3.232.0/24"]);
+        let mut fake = FakeIptables::default();
+
+        apply_firewall(&mut fake, 1000, &config, &subnets).unwrap();
+        let first = fake.lines("filter");
+        let first_nat = fake.lines("nat");
+        fake.log.clear();
+        apply_firewall(&mut fake, 1000, &config, &subnets).unwrap();
+
+        assert_eq!(fake.lines("filter"), first);
+        assert_eq!(fake.lines("nat"), first_nat);
+        let mut sorted = first.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            first.len(),
+            "re-applying must not duplicate a rule: {first:#?}"
+        );
+    }
+
+    /// `-D` removes one match, so a table that accumulated duplicates needs more than one pass.
+    #[test]
+    fn cleanup_drains_duplicate_rules() {
+        let config = uid_network_config();
+        let mut fake = FakeIptables::default();
+        for _ in 0..3 {
+            fake.seed(
+                "filter",
+                "FORWARD",
+                "-i zfc1000 -s 10.3.232.0/24 -m comment --comment zellij-firecracker:1000 -j ACCEPT",
+            );
+        }
+
+        remove_firewall(&mut fake, 1000, &config, &strings(&["10.3.232.0/24"])).unwrap();
+
+        assert!(fake.lines("filter").is_empty());
+    }
+
+    /// Rollback undoes this run's work and nothing else: a bridge that was already up belongs to
+    /// whatever created it, and deleting it would cut off VMs another session is running.
+    #[test]
+    fn rollback_only_undoes_what_the_run_created() {
+        assert_eq!(
+            undo_steps(None, strings(&["zft1000-00"])),
+            vec![Undo::Firewall, Undo::Interface("zft1000-00".to_owned())],
+            "a pre-existing bridge must survive a failed re-run"
+        );
+        assert_eq!(
+            undo_steps(
+                Some("zfc1000".to_owned()),
+                strings(&["zft1000-00", "zft1000-01"])
+            ),
+            vec![
+                Undo::Firewall,
+                Undo::Interface("zft1000-01".to_owned()),
+                Undo::Interface("zft1000-00".to_owned()),
+                Undo::Interface("zfc1000".to_owned()),
+            ],
+            "TAPs come off before the bridge they are attached to"
+        );
+    }
+
+    #[test]
+    fn iptables_output_is_split_back_into_the_arguments_that_produced_it() {
+        assert_eq!(
+            split_rule(
+                "-A INPUT -i zfc1000 -m comment --comment \"zellij-firecracker:1000\" -j DROP"
+            ),
+            strings(&[
+                "-A",
+                "INPUT",
+                "-i",
+                "zfc1000",
+                "-m",
+                "comment",
+                "--comment",
+                "zellij-firecracker:1000",
+                "-j",
+                "DROP",
+            ])
+        );
+        assert_eq!(
+            split_rule("--comment \"two words\""),
+            strings(&["--comment", "two words"])
+        );
+        assert_eq!(
+            split_rule("--comment \"a \\\"quoted\\\" word\""),
+            strings(&["--comment", "a \"quoted\" word"])
+        );
+        assert_eq!(split_rule("--comment \"\""), strings(&["--comment", ""]));
+    }
+
+    /// Teardown is the recovery path for a host a failed setup left without a config file.
+    #[test]
+    fn a_uid_alone_is_enough_to_describe_the_network_to_remove() {
+        let config = default_network_config(1000).unwrap();
+
+        assert_eq!(config.bridge, "zfc1000");
+        assert_eq!(config.tap_prefix, "zft1000-");
+        assert_eq!(config.subnet, "10.3.232.0/24");
+        validate_network_config(&config).unwrap();
     }
 
     #[test]
