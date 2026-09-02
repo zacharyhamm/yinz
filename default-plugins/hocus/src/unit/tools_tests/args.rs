@@ -453,3 +453,40 @@ fn an_agents_own_arguments_survive_having_no_command_to_hang_off() {
     let (command, _) = launch::plan(&spec).unwrap();
     assert_eq!(command.args, ["--dangerously-skip-permissions"]);
 }
+
+/// `new_pane` reads its VM the way `launch::plan` reads `agent_spawn`'s, so a bad
+/// name is turned back as the tool result rather than as a pane that fails to
+/// start.
+#[test]
+fn a_new_pane_firecracker_vm_name_is_checked_before_anything_opens() {
+    let args = Args::parse(r#"{"firecracker":"no spaces"}"#).unwrap();
+    let error = args
+        .firecracker_target()
+        .expect_err("a space is not a VM name");
+    assert!(error.contains("invalid Firecracker VM name"), "{error}");
+
+    let args = Args::parse(r#"{"firecracker":" review ","firecracker_image":"rust"}"#).unwrap();
+    assert_eq!(
+        args.firecracker_target(),
+        Ok((Some("review".to_owned()), Some("rust".to_owned())))
+    );
+    // Blank is absent, the same as a key the model left out.
+    let args = Args::parse(r#"{"firecracker":"","firecracker_image":" "}"#).unwrap();
+    assert_eq!(args.firecracker_target(), Ok((None, None)));
+}
+
+/// An image names what a VM boots from, so one without a VM is a request with a
+/// hole in it - said so, rather than opened on the host and quietly ignored.
+#[test]
+fn a_new_pane_image_without_a_vm_is_refused() {
+    let args = Args::parse(r#"{"firecracker_image":"rust"}"#).unwrap();
+    assert_eq!(
+        args.firecracker_target(),
+        Err("firecracker_image requires a Firecracker VM".to_owned())
+    );
+    let args = Args::parse(r#"{"firecracker":"review","firecracker_image":"no/slashes"}"#).unwrap();
+    let error = args
+        .firecracker_target()
+        .expect_err("an image name is checked like a VM name");
+    assert!(error.contains("invalid Firecracker VM name"), "{error}");
+}

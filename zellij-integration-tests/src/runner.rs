@@ -458,6 +458,13 @@ impl TestSession {
         self.fake_server_os_api.shared_ptys.remote_warp_counts()
     }
 
+    /// How many times the server has asked the OS layer to release the session's
+    /// Firecracker VMs. It does so once, on its way out; `quit` joins the server
+    /// thread, so the count read after it is final.
+    pub fn firecracker_session_stops(&self) -> usize {
+        self.fake_server_os_api.firecracker_session_stops()
+    }
+
     /// A handle on the next pane this session took over from another one.
     ///
     /// Deliberately not `expect_pty_spawn`: nothing was spawned. The handle

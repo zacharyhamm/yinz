@@ -134,10 +134,6 @@ pub struct NetworkConfig {
     pub subnet: String,
     pub taps: u8,
     pub dns: Ipv4Addr,
-    #[serde(default)]
-    pub cgroup: Option<PathBuf>,
-    #[serde(default)]
-    pub gid: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -318,17 +314,35 @@ fn serve_request() -> Result<()> {
     if input.len() > 1024 * 1024 {
         return Err(anyhow!("provider request exceeded 1 MiB"));
     }
-    let request: Request = serde_json::from_slice(&input).context("invalid provider request")?;
+    let request = parse_request(&input)?;
+    let config = load_config()?;
+    let network = load_network(&config)?;
+    let state = LockedState::new()?;
+    let response = handle_request(&state, &config, &network, &RsyncOverSsh, request)?;
+    serde_json::to_writer(std::io::stdout(), &response).context("failed to write response")
+}
+
+fn parse_request(input: &[u8]) -> Result<Request> {
+    let request: Request = serde_json::from_slice(input).context("invalid provider request")?;
     if request.version() != PROTOCOL_VERSION {
         return Err(anyhow!(
             "provider protocol mismatch: expected version {PROTOCOL_VERSION}, got {}",
             request.version()
         ));
     }
-    let config = load_config()?;
-    let network = load_network(&config)?;
-    let state = LockedState::new()?;
-    recover_unusable_vms(&state)?;
+    Ok(request)
+}
+
+/// One request against the locked state: the dead VMs are retained first, then the request
+/// is dispatched. `copy` is how worktrees move between the host and a guest.
+fn handle_request(
+    state: &LockedState,
+    config: &Config,
+    network: &NetworkConfig,
+    copy: &dyn GuestCopy,
+    request: Request,
+) -> Result<serde_json::Value> {
+    recover_unusable_vms(state)?;
     let response = match request {
         Request::Ensure {
             session,
@@ -337,9 +351,9 @@ fn serve_request() -> Result<()> {
             worktree,
             ..
         } => serde_json::to_value(ensure(
-            &state,
-            &config,
-            &network,
+            state,
+            config,
+            network,
             &session,
             &name,
             image.as_deref(),
@@ -347,27 +361,27 @@ fn serve_request() -> Result<()> {
         )?)?,
         Request::Stop { session, name, .. } => json!({
             "version": PROTOCOL_VERSION,
-            "warnings": stop_one(&state, &config, &session, &name)?,
+            "warnings": stop_one(state, config, copy, &session, &name)?,
         }),
         Request::StopSession { session, .. } => json!({
             "version": PROTOCOL_VERSION,
-            "warnings": stop_session(&state, &config, &session)?,
+            "warnings": stop_session(state, config, copy, &session)?,
         }),
         Request::List { session, .. } => json!({
             "version": PROTOCOL_VERSION,
-            "vms": list(&state, session.as_deref())?,
-            "recoveries": list_recoveries(&state, session.as_deref())?,
+            "vms": list(state, session.as_deref())?,
+            "recoveries": list_recoveries(state, session.as_deref())?,
         }),
         Request::Sync { session, name, .. } => json!({
             "version": PROTOCOL_VERSION,
-            "warnings": sync_one(&state, &config, &session, &name)?,
+            "warnings": sync_one(state, config, copy, &session, &name)?,
         }),
         Request::RenameSession { from, to, .. } => {
-            rename_session(&state, &from, &to)?;
+            rename_session(state, &from, &to)?;
             json!({ "version": PROTOCOL_VERSION })
         },
     };
-    serde_json::to_writer(std::io::stdout(), &response).context("failed to write response")
+    Ok(response)
 }
 
 fn ensure(
@@ -560,19 +574,14 @@ fn ensure(
             return Err(error);
         },
     };
-    let cgroup = match network.cgroup.as_deref() {
-        Some(parent) => {
-            match place_in_cgroup(parent, &id, pid, config.memory_mib, config.vcpu_count) {
-                Ok(cgroup) => Some(cgroup),
-                Err(error) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    cleanup_vm_paths(&rootfs, &api_socket);
-                    return Err(error);
-                },
-            }
+    let cgroup = match place_in_cgroup(&id, pid, config.memory_mib, config.vcpu_count) {
+        Ok(cgroup) => Some(cgroup),
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            cleanup_vm_paths(&rootfs, &api_socket);
+            return Err(error);
         },
-        None => None,
     };
     let vm = VmState {
         ready: false,
@@ -811,35 +820,19 @@ fn sync_to_guest(state: &VmState, config: &Config, worktree: &Path) -> Result<()
     )
 }
 
-/// Bring the guest back in line with the host after a merge. Everything but the guest's own
-/// `.git`, which `sync_to_guest` made as a standalone clone and which nothing on the host
-/// mirrors.
-fn push_to_guest(state: &VmState, config: &Config, worktree: &Path) -> Result<()> {
-    let staging = Staging::fresh(state)?;
-    {
-        let _progress = Progress::start("staging the worktree");
-        stage_filtered_worktree(worktree, staging.path())?;
-    }
-    let _progress = Progress::start("copying the merged worktree into the guest");
-    run(
-        filtered_rsync()
-            .args(["-a", "--delete", "--exclude=.git"])
-            .args(guest_rsync_args(state, config))
-            .arg(with_trailing_slash(staging.path()))
-            .arg(guest_workspace(state, config)),
-        "failed to copy the merged worktree into the guest",
-    )
+/// The copies of a worktree between the host and a running guest, after provisioning.
+/// Production is rsync over ssh; the tests stand a directory in for the guest.
+trait GuestCopy {
+    /// Copy the guest's worktree, without its `.git`, into the empty directory `dest`.
+    fn pull(&self, state: &VmState, config: &Config, dest: &Path) -> Result<()>;
+    /// Make the guest's worktree, apart from its `.git`, match the staged tree at `src`.
+    fn push(&self, state: &VmState, config: &Config, src: &Path) -> Result<()>;
 }
 
-/// Pull the guest's copy of the worktree and merge it into the host's.
-fn sync_from_guest(state: &VmState, config: &Config) -> Result<MergeReport> {
-    let Some(worktree) = state.worktree.as_deref() else {
-        return Ok(MergeReport::default());
-    };
-    let baseline = read_baseline(state)?;
-    let staging = Staging::fresh(state)?;
-    {
-        let _progress = Progress::start("copying changes out of the guest");
+struct RsyncOverSsh;
+
+impl GuestCopy for RsyncOverSsh {
+    fn pull(&self, state: &VmState, config: &Config, dest: &Path) -> Result<()> {
         // The guest's `.git` is its own standalone clone; nothing on the host mirrors it,
         // and pulling it would cost the whole repository on every release.
         run(
@@ -847,9 +840,51 @@ fn sync_from_guest(state: &VmState, config: &Config) -> Result<MergeReport> {
                 .args(["-a", "--exclude=.git"])
                 .args(guest_rsync_args(state, config))
                 .arg(guest_workspace(state, config))
-                .arg(with_trailing_slash(staging.path())),
+                .arg(with_trailing_slash(dest)),
             "failed to copy changes out of the guest",
-        )?;
+        )
+    }
+
+    fn push(&self, state: &VmState, config: &Config, src: &Path) -> Result<()> {
+        run(
+            filtered_rsync()
+                .args(["-a", "--delete", "--exclude=.git"])
+                .args(guest_rsync_args(state, config))
+                .arg(with_trailing_slash(src))
+                .arg(guest_workspace(state, config)),
+            "failed to copy the merged worktree into the guest",
+        )
+    }
+}
+
+/// Bring the guest back in line with the host after a merge. Everything but the guest's own
+/// `.git`, which `sync_to_guest` made as a standalone clone and which nothing on the host
+/// mirrors.
+fn push_to_guest(
+    state: &VmState,
+    config: &Config,
+    copy: &dyn GuestCopy,
+    worktree: &Path,
+) -> Result<()> {
+    let staging = Staging::fresh(state)?;
+    {
+        let _progress = Progress::start("staging the worktree");
+        stage_filtered_worktree(worktree, staging.path())?;
+    }
+    let _progress = Progress::start("copying the merged worktree into the guest");
+    copy.push(state, config, staging.path())
+}
+
+/// Pull the guest's copy of the worktree and merge it into the host's.
+fn sync_from_guest(state: &VmState, config: &Config, copy: &dyn GuestCopy) -> Result<MergeReport> {
+    let Some(worktree) = state.worktree.as_deref() else {
+        return Ok(MergeReport::default());
+    };
+    let baseline = read_baseline(state)?;
+    let staging = Staging::fresh(state)?;
+    {
+        let _progress = Progress::start("copying changes out of the guest");
+        copy.pull(state, config, staging.path())?;
     }
     let _progress = Progress::start("merging the guest's changes");
     merge_worktrees(&baseline, worktree, staging.path())
@@ -1304,9 +1339,7 @@ fn list_recoveries(locked: &LockedState, session: Option<&str>) -> Result<Vec<Re
                 continue;
             }
         }
-        let note: Option<RecoveryNote> = fs::read(path.join(RECOVERY_NOTE_FILE))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        let note = read_recovery_note(&path);
         let retained_at = note
             .as_ref()
             .map(|note| note.retained_at)
@@ -1334,6 +1367,12 @@ fn list_recoveries(locked: &LockedState, session: Option<&str>) -> Result<Vec<Re
     }
     entries.sort_by(|a, b| (a.retained_at, &a.path).cmp(&(b.retained_at, &b.path)));
     Ok(entries)
+}
+
+fn read_recovery_note(recovery_dir: &Path) -> Option<RecoveryNote> {
+    fs::read(recovery_dir.join(RECOVERY_NOTE_FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
 
 fn find_vm(
@@ -1391,6 +1430,7 @@ fn recover_unusable_vms(locked: &LockedState) -> Result<()> {
 fn stop_one(
     locked: &LockedState,
     config: &Config,
+    copy: &dyn GuestCopy,
     session: &str,
     name: &str,
 ) -> Result<Vec<String>> {
@@ -1398,7 +1438,7 @@ fn stop_one(
     let Some((path, state)) = find_vm(&locked.entries()?, session, name)? else {
         return Ok(vec![]);
     };
-    release(locked, config, path, state, session)
+    release(locked, config, copy, path, state, session)
 }
 
 /// Move every VM `from` owns or leases to `to`: the Zellij session was renamed, and the
@@ -1463,12 +1503,17 @@ fn rename_session(locked: &LockedState, from: &str, to: &str) -> Result<()> {
 
 /// Releases every VM the session holds, returning the merge warnings of all of them. One
 /// VM's failure does not stop the others from being released; the first error is reported.
-fn stop_session(locked: &LockedState, config: &Config, session: &str) -> Result<Vec<String>> {
+fn stop_session(
+    locked: &LockedState,
+    config: &Config,
+    copy: &dyn GuestCopy,
+    session: &str,
+) -> Result<Vec<String>> {
     let mut first_error = None;
     let mut warnings = vec![];
     for (path, state) in locked.entries()? {
         if state.session == session || state.leases.iter().any(|lease| lease == session) {
-            match release(locked, config, path, state, session) {
+            match release(locked, config, copy, path, state, session) {
                 Ok(released) => warnings.extend(released),
                 Err(error) => {
                     first_error.get_or_insert(error);
@@ -1485,6 +1530,7 @@ fn stop_session(locked: &LockedState, config: &Config, session: &str) -> Result<
 fn release(
     locked: &LockedState,
     config: &Config,
+    copy: &dyn GuestCopy,
     path: PathBuf,
     mut state: VmState,
     session: &str,
@@ -1502,7 +1548,7 @@ fn release(
         let _ = fs::remove_file(path);
         return Ok(vec![]);
     }
-    let report = match sync_from_guest(&state, config) {
+    let report = match sync_from_guest(&state, config, copy) {
         Ok(report) => report,
         Err(error) => {
             terminate(&state, None);
@@ -1526,6 +1572,7 @@ fn release(
 fn sync_one(
     locked: &LockedState,
     config: &Config,
+    copy: &dyn GuestCopy,
     session: &str,
     name: &str,
 ) -> Result<Vec<String>> {
@@ -1543,11 +1590,11 @@ fn sync_one(
             "Firecracker VM {name:?} is still being provisioned; open a pane in it first"
         ));
     }
-    let report = sync_from_guest(&state, config)?;
+    let report = sync_from_guest(&state, config, copy)?;
     let Some(worktree) = state.worktree.as_deref() else {
         return Ok(vec![]);
     };
-    push_to_guest(&state, config, worktree)?;
+    push_to_guest(&state, config, copy, worktree)?;
     write_baseline(&baseline_path(&state)?, &worktree_baseline(worktree)?)?;
     Ok(report.warnings(worktree))
 }
@@ -1600,19 +1647,53 @@ fn cleanup_vm_paths(rootfs: &Path, api_socket: &Path) {
     }
 }
 
-fn place_in_cgroup(
-    parent: &Path,
-    id: &str,
-    pid: i32,
-    memory_mib: usize,
-    vcpu_count: u8,
-) -> Result<PathBuf> {
-    if !parent.starts_with("/sys/fs/cgroup") || !parent.is_dir() {
+const CGROUP_ROOT: &str = "/sys/fs/cgroup";
+
+/// The cgroup v2 subtree this process may manage on its own: the highest ancestor of its
+/// own cgroup whose `cgroup.procs` it owns. systemd delegates `user@<uid>.service` to the
+/// user, so a provider started from a login session finds that. Nothing outside such a
+/// subtree will do - moving a process needs write access to `cgroup.procs` of the common
+/// ancestor of where it is and where it is going, and above the delegation boundary that
+/// file is root's - which is why `network setup` cannot prepare a cgroup for us.
+fn delegated_cgroup_root() -> Result<PathBuf> {
+    let uid = unsafe { libc::geteuid() };
+    let own = fs::read_to_string("/proc/self/cgroup")?
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))
+        .map(|path| Path::new(CGROUP_ROOT).join(path.trim().trim_start_matches('/')))
+        .context("this process is not in a cgroup v2 hierarchy")?;
+    delegation_root(&own, &|dir| {
+        fs::metadata(dir.join("cgroup.procs")).is_ok_and(|metadata| metadata.uid() == uid)
+    })
+}
+
+fn delegation_root(own: &Path, owned: &dyn Fn(&Path) -> bool) -> Result<PathBuf> {
+    if !owned(own) {
         return Err(anyhow!(
-            "delegated Firecracker cgroup {} is unavailable; rerun network setup",
-            parent.display()
+            "cgroup {} is not delegated to this user, so a VM's memory, CPU and process \
+             limits cannot be applied; start Zellij from a systemd user session",
+            own.display()
         ));
     }
+    let mut root = own.to_path_buf();
+    while let Some(parent) = root.parent() {
+        if parent == Path::new(CGROUP_ROOT) || !owned(parent) {
+            break;
+        }
+        root = parent.to_path_buf();
+    }
+    Ok(root)
+}
+
+fn place_in_cgroup(id: &str, pid: i32, memory_mib: usize, vcpu_count: u8) -> Result<PathBuf> {
+    let parent = delegated_cgroup_root()?.join("zellij-firecracker");
+    fs::create_dir_all(&parent)?;
+    fs::write(parent.join("cgroup.subtree_control"), "+cpu +memory +pids").with_context(|| {
+        format!(
+            "failed to enable cpu, memory and pids control under {}",
+            parent.display()
+        )
+    })?;
     let cgroup = parent.join(id);
     fs::create_dir_all(&cgroup)?;
     let configured = (|| -> Result<()> {
@@ -1674,17 +1755,20 @@ fn retain_recovery(
     Ok(())
 }
 
+/// Remove the recoveries older than the retention period, aged by the note `retain_recovery`
+/// wrote: a directory's mtime changes whenever something inside it is looked at or copied
+/// out, so it only stands in for a directory whose note cannot be read.
 fn prune_recoveries(state: &Path) -> Result<()> {
     let recovery = state.join("recovery");
     secure_dir(&recovery)?;
     let now = SystemTime::now();
     for entry in fs::read_dir(&recovery)? {
         let entry = entry?;
-        let age = entry
-            .metadata()?
-            .modified()
-            .ok()
-            .and_then(|modified| now.duration_since(modified).ok());
+        let retained_at = match read_recovery_note(&entry.path()) {
+            Some(note) => Some(UNIX_EPOCH + Duration::from_secs(note.retained_at)),
+            None => entry.metadata()?.modified().ok(),
+        };
+        let age = retained_at.and_then(|retained_at| now.duration_since(retained_at).ok());
         if age.is_some_and(|age| age > RECOVERY_RETENTION) {
             fs::remove_dir_all(entry.path())?;
         }
@@ -2388,9 +2472,11 @@ fn doctor() -> Result<()> {
     if !output.status.success() {
         return Err(anyhow!("Firecracker --version failed"));
     }
+    let cgroup = delegated_cgroup_root()?;
     println!(
-        "KVM, Firecracker, image, key and {} TAPs are ready.",
-        network.taps
+        "KVM, Firecracker, image, key, {} TAPs and the cgroup {} are ready.",
+        network.taps,
+        cgroup.display()
     );
     Ok(())
 }
@@ -2994,7 +3080,6 @@ fn network_setup(args: &[String]) -> Result<()> {
     require_root()?;
     let user = option_value(args, "--user")?.context("network setup requires --user USER")?;
     let uid = id_value(user, "-u")?;
-    let gid = id_value(user, "-g")?;
     let subnet = network_subnet(uid, option_value(args, "--subnet")?)?;
     let taps = option_value(args, "--taps")?
         .map(|value| value.parse().context("invalid --taps"))
@@ -3010,10 +3095,6 @@ fn network_setup(args: &[String]) -> Result<()> {
         subnet,
         taps,
         dns,
-        cgroup: Some(PathBuf::from(format!(
-            "/sys/fs/cgroup/zellij-firecracker-{uid}"
-        ))),
-        gid: Some(gid),
     };
     validate_network_config(&config)?;
     fs::create_dir_all("/etc/zellij-firecracker")?;
@@ -3063,9 +3144,6 @@ fn network_apply(uid: u32, config: &NetworkConfig) -> Result<()> {
 }
 
 fn network_apply_inner(uid: u32, config: &NetworkConfig) -> Result<()> {
-    if let Some(cgroup) = &config.cgroup {
-        delegate_cgroup(cgroup, uid, config.gid.unwrap_or(uid))?;
-    }
     let (base, _) = parse_subnet(&config.subnet)?;
     let gateway = ipv4_add(base, 1)?;
     fs::write("/proc/sys/net/ipv4/ip_forward", "1")?;
@@ -3323,15 +3401,23 @@ fn remove_firewall(config: &NetworkConfig) {
     }
 }
 
+/// The `ip` commands that undo `network_apply_inner`'s interfaces: every TAP of the pool,
+/// then the bridge. Deleting the bridge alone detaches the TAPs and leaves them behind.
+fn network_remove_commands(config: &NetworkConfig) -> Vec<Vec<String>> {
+    (0..config.taps)
+        .map(|slot| strings(&["link", "delete", &format!("{}{slot:02}", config.tap_prefix)]))
+        .chain([strings(&["link", "delete", &config.bridge])])
+        .collect()
+}
+
 fn network_remove(config: &NetworkConfig) {
     remove_firewall(config);
-    let _ = Command::new("ip")
-        .args(["link", "delete", &config.bridge])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    if let Some(cgroup) = &config.cgroup {
-        let _ = fs::remove_dir(cgroup);
+    for args in network_remove_commands(config) {
+        let _ = Command::new("ip")
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 
@@ -3356,27 +3442,6 @@ fn network_teardown(args: &[String]) -> Result<()> {
         .status();
     network_remove(&config);
     fs::remove_file(path)?;
-    Ok(())
-}
-
-fn delegate_cgroup(path: &Path, uid: u32, gid: u32) -> Result<()> {
-    if !path.starts_with("/sys/fs/cgroup") {
-        return Err(anyhow!("refusing to create cgroup outside /sys/fs/cgroup"));
-    }
-    fs::create_dir_all(path)?;
-    fs::write(path.join("cgroup.subtree_control"), "+cpu +memory +pids")?;
-    chown(path, uid, gid)?;
-    for file in ["cgroup.procs", "cgroup.subtree_control"] {
-        chown(&path.join(file), uid, gid)?;
-    }
-    Ok(())
-}
-
-fn chown(path: &Path, uid: u32, gid: u32) -> Result<()> {
-    let path = CString::new(path.as_os_str().as_bytes())?;
-    if unsafe { libc::chown(path.as_ptr(), uid, gid) } != 0 {
-        return Err(std::io::Error::last_os_error()).context("failed to delegate cgroup");
-    }
     Ok(())
 }
 
@@ -4755,8 +4820,6 @@ mod tests {
             subnet: "172.31.0.0/24".to_owned(),
             taps: 2,
             dns: Ipv4Addr::new(10, 0, 0, 53),
-            cgroup: None,
-            gid: None,
         };
         let rules = firewall_rules(&config)
             .into_iter()
@@ -4967,5 +5030,673 @@ mod tests {
                 "/staging/root",
             ]
         );
+    }
+
+    fn network_config() -> NetworkConfig {
+        NetworkConfig {
+            bridge: "zfc1000".to_owned(),
+            tap_prefix: "zft1000-".to_owned(),
+            subnet: "172.31.0.0/24".to_owned(),
+            taps: 2,
+            dns: Ipv4Addr::new(1, 1, 1, 1),
+        }
+    }
+
+    #[test]
+    fn network_removal_deletes_every_tap_and_then_the_bridge() {
+        let commands = network_remove_commands(&network_config());
+        assert_eq!(
+            commands,
+            [
+                strings(&["link", "delete", "zft1000-00"]),
+                strings(&["link", "delete", "zft1000-01"]),
+                strings(&["link", "delete", "zfc1000"]),
+            ]
+        );
+    }
+
+    /// The delegation root is the top of the run of owned ancestors, and a process whose
+    /// own cgroup is not delegated gets told so rather than a VM without limits.
+    #[test]
+    fn the_delegated_cgroup_root_is_the_highest_owned_ancestor() {
+        let owned = |dir: &Path| {
+            [
+                "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service",
+                "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice",
+                "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/x.scope",
+            ]
+            .contains(&dir.to_str().unwrap())
+        };
+        let own = Path::new(
+            "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/x.scope",
+        );
+        assert_eq!(
+            delegation_root(own, &owned).unwrap(),
+            Path::new("/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service")
+        );
+
+        // Owning everything up to the top of the hierarchy still stops at the mount.
+        assert_eq!(
+            delegation_root(Path::new("/sys/fs/cgroup/a/b"), &|_| true).unwrap(),
+            Path::new("/sys/fs/cgroup/a")
+        );
+
+        let session = Path::new("/sys/fs/cgroup/user.slice/user-1000.slice/session-3.scope");
+        let error = delegation_root(session, &owned).unwrap_err().to_string();
+        assert!(error.contains("not delegated to this user"), "{error}");
+        assert!(error.contains("session-3.scope"), "{error}");
+    }
+
+    fn recovery_dir_with_note(recovery: &Path, name: &str, retained_at: SystemTime) -> PathBuf {
+        let dir = recovery.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("rootfs.ext4"), "disk").unwrap();
+        fs::write(
+            dir.join(RECOVERY_NOTE_FILE),
+            serde_json::to_vec(&RecoveryNote {
+                reason: "unready".to_owned(),
+                retained_at: retained_at.duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        dir
+    }
+
+    fn set_modified(dir: &Path, modified: SystemTime) {
+        File::open(dir).unwrap().set_modified(modified).unwrap();
+    }
+
+    /// A recovery directory's mtime moves whenever something is copied out of it or dropped
+    /// in beside it, so the note written when the disk was retained is what ages it.
+    #[test]
+    fn recoveries_are_pruned_by_the_time_they_were_retained_not_their_mtime() {
+        let root = tempfile::tempdir().unwrap();
+        let recovery = root.path().join("recovery");
+        let day = Duration::from_secs(24 * 60 * 60);
+        let now = SystemTime::now();
+        let stale = recovery_dir_with_note(&recovery, "a-stale", now - 8 * day);
+        let recent = recovery_dir_with_note(&recovery, "b-recent", now - day);
+        set_modified(&recent, now - 30 * day);
+        let noteless = recovery.join("c-noteless");
+        fs::create_dir(&noteless).unwrap();
+        set_modified(&noteless, now - 30 * day);
+        assert!(stale.metadata().unwrap().modified().unwrap() > now - day);
+
+        prune_recoveries(root.path()).unwrap();
+
+        assert!(!stale.exists(), "a note eight days old is past retention");
+        assert!(recent.exists(), "a note from yesterday keeps the disk");
+        assert!(!noteless.exists(), "without a note the mtime still counts");
+    }
+
+    /// Guest worktrees kept as plain directories, one per VM name: what `release` and `sync`
+    /// pull from and push to instead of rsyncing over ssh.
+    #[derive(Default)]
+    struct FakeGuests {
+        dirs: HashMap<String, PathBuf>,
+        /// Whose pull fails, as it does when a guest cannot be reached.
+        unreachable: HashSet<String>,
+    }
+
+    impl GuestCopy for FakeGuests {
+        fn pull(&self, state: &VmState, _config: &Config, dest: &Path) -> Result<()> {
+            if self.unreachable.contains(&state.name) {
+                return Err(anyhow!("injected pull failure for {}", state.name));
+            }
+            let guest = self
+                .dirs
+                .get(&state.name)
+                .context("no fake guest for this VM")?;
+            stage_filtered_worktree(guest, dest)
+        }
+
+        fn push(&self, state: &VmState, _config: &Config, src: &Path) -> Result<()> {
+            let guest = self
+                .dirs
+                .get(&state.name)
+                .context("no fake guest for this VM")?;
+            stage_filtered_worktree(src, guest)
+        }
+    }
+
+    /// A ready VM on record: its host worktree, the guest's copy of it, the baseline both
+    /// started from, and the disk and socket a release cleans up.
+    struct LeasedVm {
+        path: PathBuf,
+        state: VmState,
+        host: PathBuf,
+        guest: PathBuf,
+        vm_dir: PathBuf,
+    }
+
+    impl LeasedVm {
+        fn new(
+            locked: &LockedState,
+            guests: &mut FakeGuests,
+            name: &str,
+            files: &[(&str, &str)],
+        ) -> Self {
+            let root = &locked.dir;
+            let host = root.join(format!("{name}-host"));
+            let guest = root.join(format!("{name}-guest"));
+            for (path, content) in files {
+                for tree in [&host, &guest] {
+                    let path = tree.join(path);
+                    fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    fs::write(path, content).unwrap();
+                }
+            }
+            for tree in [&host, &guest] {
+                fs::create_dir_all(tree).unwrap();
+            }
+            let vm_dir = root.join(name);
+            fs::create_dir(&vm_dir).unwrap();
+            let rootfs = vm_dir.join("rootfs.ext4");
+            fs::write(&rootfs, "disk").unwrap();
+            let api_socket = root.join(format!("{name}.sock"));
+            fs::write(&api_socket, "socket").unwrap();
+            let mut state = vm_state(rootfs, api_socket, None);
+            state.name = name.to_owned();
+            state.ready = true;
+            state.worktree = Some(host.clone());
+            write_baseline(
+                &baseline_path(&state).unwrap(),
+                &worktree_baseline(&host).unwrap(),
+            )
+            .unwrap();
+            let path = locked.path("work", name);
+            write_state(&path, &state).unwrap();
+            guests.dirs.insert(name.to_owned(), guest.clone());
+            Self {
+                path,
+                state,
+                host,
+                guest,
+                vm_dir,
+            }
+        }
+
+        fn write_state(&self) {
+            write_state(&self.path, &self.state).unwrap();
+        }
+
+        fn host_file(&self, path: &str) -> Option<String> {
+            fs::read_to_string(self.host.join(path)).ok()
+        }
+
+        fn guest_file(&self, path: &str) -> Option<String> {
+            fs::read_to_string(self.guest.join(path)).ok()
+        }
+    }
+
+    fn recoveries(locked: &LockedState) -> Vec<String> {
+        let Ok(entries) = fs::read_dir(locked.dir.join("recovery")) else {
+            return vec![];
+        };
+        let mut names: Vec<String> = entries
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn release_keeps_a_vm_another_session_still_leases() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let mut guests = FakeGuests::default();
+        let mut vm = LeasedVm::new(&locked, &mut guests, "review", &[("shared.rs", "before")]);
+        vm.state.leases = vec!["work".to_owned(), "other".to_owned()];
+        vm.write_state();
+        fs::write(vm.guest.join("shared.rs"), "guest").unwrap();
+
+        let warnings = release(
+            &locked,
+            &provider_config(root.path()),
+            &guests,
+            vm.path.clone(),
+            vm.state.clone(),
+            "work",
+        )
+        .unwrap();
+
+        assert!(warnings.is_empty());
+        assert_eq!(read_state(&vm.path).unwrap().leases, ["other"]);
+        assert_eq!(
+            vm.host_file("shared.rs").as_deref(),
+            Some("before"),
+            "nothing is merged while another session still has the VM"
+        );
+        assert!(vm.vm_dir.join("rootfs.ext4").exists());
+        assert!(vm.state.api_socket.exists());
+    }
+
+    #[test]
+    fn releasing_an_unready_vm_retains_its_disk_without_merging() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let mut guests = FakeGuests::default();
+        let mut vm = LeasedVm::new(&locked, &mut guests, "review", &[("edited.rs", "before")]);
+        vm.state.ready = false;
+        vm.write_state();
+        fs::write(vm.guest.join("edited.rs"), "guest").unwrap();
+
+        let warnings = release(
+            &locked,
+            &provider_config(root.path()),
+            &guests,
+            vm.path.clone(),
+            vm.state.clone(),
+            "work",
+        )
+        .unwrap();
+
+        assert!(warnings.is_empty());
+        assert_eq!(vm.host_file("edited.rs").as_deref(), Some("before"));
+        assert!(!vm.path.exists());
+        assert!(!vm.state.api_socket.exists());
+        let retained = recoveries(&locked);
+        assert_eq!(retained.len(), 1, "{retained:?}");
+        assert!(retained[0].ends_with("-unready"), "{retained:?}");
+        assert!(locked
+            .dir
+            .join("recovery")
+            .join(&retained[0])
+            .join("rootfs.ext4")
+            .exists());
+    }
+
+    #[test]
+    fn a_release_whose_pull_fails_retains_the_disk_and_reports_the_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let mut guests = FakeGuests::default();
+        let vm = LeasedVm::new(&locked, &mut guests, "review", &[("edited.rs", "before")]);
+        fs::write(vm.guest.join("edited.rs"), "guest").unwrap();
+        guests.unreachable.insert("review".to_owned());
+
+        let error = release(
+            &locked,
+            &provider_config(root.path()),
+            &guests,
+            vm.path.clone(),
+            vm.state.clone(),
+            "work",
+        )
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("injected pull failure"),
+            "{error}"
+        );
+        assert_eq!(vm.host_file("edited.rs").as_deref(), Some("before"));
+        assert!(!vm.path.exists());
+        let retained = recoveries(&locked);
+        assert_eq!(retained.len(), 1, "{retained:?}");
+        assert!(retained[0].ends_with("-sync-failed"), "{retained:?}");
+    }
+
+    #[test]
+    fn a_successful_release_merges_the_guest_and_cleans_up() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let mut guests = FakeGuests::default();
+        let vm = LeasedVm::new(
+            &locked,
+            &mut guests,
+            "review",
+            &[
+                ("kept.rs", "same"),
+                ("guest-edit.rs", "before"),
+                ("both.rs", "before"),
+            ],
+        );
+        fs::write(vm.guest.join("guest-edit.rs"), "guest").unwrap();
+        fs::write(vm.guest.join("both.rs"), "guest").unwrap();
+        fs::write(vm.host.join("both.rs"), "host").unwrap();
+
+        let warnings = release(
+            &locked,
+            &provider_config(root.path()),
+            &guests,
+            vm.path.clone(),
+            vm.state.clone(),
+            "work",
+        )
+        .unwrap();
+
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains(&vm.host.join("both.rs").display().to_string())
+                && warnings[0].contains("both.rs.guest"),
+            "{warnings:?}"
+        );
+        assert_eq!(vm.host_file("kept.rs").as_deref(), Some("same"));
+        assert_eq!(vm.host_file("guest-edit.rs").as_deref(), Some("guest"));
+        assert_eq!(vm.host_file("both.rs").as_deref(), Some("host"));
+        assert_eq!(vm.host_file("both.rs.guest").as_deref(), Some("guest"));
+        assert!(!vm.path.exists());
+        assert!(
+            !vm.vm_dir.exists(),
+            "the disk and its directory are removed"
+        );
+        assert!(!vm.state.api_socket.exists());
+        assert!(recoveries(&locked).is_empty());
+    }
+
+    #[test]
+    fn stop_session_releases_every_vm_the_session_holds() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let mut guests = FakeGuests::default();
+        let owned = LeasedVm::new(&locked, &mut guests, "owned", &[("both.rs", "before")]);
+        fs::write(owned.guest.join("both.rs"), "guest").unwrap();
+        fs::write(owned.host.join("both.rs"), "host").unwrap();
+        let mut shared = LeasedVm::new(&locked, &mut guests, "shared", &[("edited.rs", "before")]);
+        shared.state.session = "other".to_owned();
+        shared.state.leases = vec!["other".to_owned(), "work".to_owned()];
+        shared.write_state();
+        fs::write(shared.guest.join("edited.rs"), "guest").unwrap();
+        let mut elsewhere = LeasedVm::new(&locked, &mut guests, "elsewhere", &[]);
+        elsewhere.state.session = "other".to_owned();
+        elsewhere.state.leases = vec!["other".to_owned()];
+        elsewhere.write_state();
+
+        let warnings =
+            stop_session(&locked, &provider_config(root.path()), &guests, "work").unwrap();
+
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("both.rs"), "{warnings:?}");
+        assert!(!owned.path.exists());
+        assert_eq!(owned.host_file("both.rs.guest").as_deref(), Some("guest"));
+        assert_eq!(read_state(&shared.path).unwrap().leases, ["other"]);
+        assert_eq!(shared.host_file("edited.rs").as_deref(), Some("before"));
+        assert_eq!(read_state(&elsewhere.path).unwrap(), elsewhere.state);
+        assert!(recoveries(&locked).is_empty());
+    }
+
+    #[test]
+    fn stop_session_continues_past_a_failure_and_reports_the_first_error() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let mut guests = FakeGuests::default();
+        let broken = LeasedVm::new(&locked, &mut guests, "broken", &[("edited.rs", "before")]);
+        let fine = LeasedVm::new(&locked, &mut guests, "fine", &[("edited.rs", "before")]);
+        for vm in [&broken, &fine] {
+            fs::write(vm.guest.join("edited.rs"), "guest").unwrap();
+        }
+        guests.unreachable.insert("broken".to_owned());
+
+        let error =
+            stop_session(&locked, &provider_config(root.path()), &guests, "work").unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("injected pull failure for broken"),
+            "{error}"
+        );
+        assert!(!fine.path.exists(), "the other VM was still released");
+        assert_eq!(fine.host_file("edited.rs").as_deref(), Some("guest"));
+        assert!(!broken.path.exists());
+        assert_eq!(broken.host_file("edited.rs").as_deref(), Some("before"));
+        let retained = recoveries(&locked);
+        assert_eq!(retained.len(), 1, "{retained:?}");
+        assert!(retained[0].ends_with("-sync-failed"), "{retained:?}");
+    }
+
+    /// A process that is not this test's child, so `terminate` without a `Child` in hand
+    /// watches it leave `/proc` the way a Firecracker that outlived its provider does.
+    struct LiveProcess {
+        pid: i32,
+        start_time: u64,
+    }
+
+    impl LiveProcess {
+        fn spawn() -> Self {
+            let output = Command::new("sh")
+                .args(["-c", "sleep 60 </dev/null >/dev/null 2>&1 & echo $!"])
+                .output()
+                .unwrap();
+            let pid = String::from_utf8(output.stdout)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            let start_time = wait_for_process_start(pid, Duration::from_secs(2)).unwrap();
+            Self { pid, start_time }
+        }
+
+        fn attach(&self, vm: &mut LeasedVm) {
+            vm.state.pid = self.pid;
+            vm.state.start_time = self.start_time;
+            vm.write_state();
+        }
+    }
+
+    impl Drop for LiveProcess {
+        fn drop(&mut self) {
+            unsafe {
+                libc::kill(self.pid, libc::SIGKILL);
+            }
+        }
+    }
+
+    #[test]
+    fn sync_merges_the_guest_pushes_the_result_back_and_rewrites_the_baseline() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let mut guests = FakeGuests::default();
+        let mut vm = LeasedVm::new(
+            &locked,
+            &mut guests,
+            "review",
+            &[("guest-edit.rs", "before"), ("host-edit.rs", "before")],
+        );
+        let live = LiveProcess::spawn();
+        live.attach(&mut vm);
+        fs::write(vm.guest.join("guest-edit.rs"), "guest").unwrap();
+        fs::write(vm.host.join("host-edit.rs"), "host").unwrap();
+
+        let warnings = sync_one(
+            &locked,
+            &provider_config(root.path()),
+            &guests,
+            "work",
+            "review",
+        )
+        .unwrap();
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(vm.host_file("guest-edit.rs").as_deref(), Some("guest"));
+        assert_eq!(vm.guest_file("host-edit.rs").as_deref(), Some("host"));
+        assert_eq!(vm.guest_file("guest-edit.rs").as_deref(), Some("guest"));
+        assert_eq!(
+            read_baseline(&vm.state).unwrap(),
+            worktree_baseline(&vm.host).unwrap(),
+            "the merged tree is the new baseline"
+        );
+        assert!(vm.path.exists(), "the VM keeps running");
+        assert!(vm_is_running(&vm.state));
+    }
+
+    #[test]
+    fn sync_refuses_an_unready_or_unknown_vm() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let mut guests = FakeGuests::default();
+        let mut vm = LeasedVm::new(&locked, &mut guests, "review", &[("edited.rs", "before")]);
+        let live = LiveProcess::spawn();
+        vm.state.ready = false;
+        live.attach(&mut vm);
+        fs::write(vm.guest.join("edited.rs"), "guest").unwrap();
+        let config = provider_config(root.path());
+
+        let error = sync_one(&locked, &config, &guests, "work", "review").unwrap_err();
+        assert!(
+            error.to_string().contains("still being provisioned"),
+            "{error}"
+        );
+        let error = sync_one(&locked, &config, &guests, "work", "missing").unwrap_err();
+        assert!(error.to_string().contains("is not running"), "{error}");
+        let error = sync_one(&locked, &config, &guests, "other", "review").unwrap_err();
+        assert!(error.to_string().contains("is not running"), "{error}");
+        assert_eq!(vm.host_file("edited.rs").as_deref(), Some("before"));
+    }
+
+    #[test]
+    fn requests_of_another_protocol_version_are_rejected() {
+        let error = parse_request(br#"{"action":"list","version":999}"#).unwrap_err();
+        assert!(error.to_string().contains("protocol mismatch"), "{error}");
+        assert!(parse_request(b"not json").is_err());
+        let request = parse_request(
+            format!(r#"{{"action":"list","version":{PROTOCOL_VERSION}}}"#).as_bytes(),
+        )
+        .unwrap();
+        assert!(matches!(request, Request::List { session: None, .. }));
+    }
+
+    #[test]
+    fn list_requests_answer_with_the_vms_and_the_recoveries() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let mut guests = FakeGuests::default();
+        let mut running = LeasedVm::new(&locked, &mut guests, "review", &[]);
+        let live = LiveProcess::spawn();
+        live.attach(&mut running);
+        // A VM whose process is gone is retained before the request is answered.
+        LeasedVm::new(&locked, &mut guests, "crashed", &[]);
+
+        let response = handle_request(
+            &locked,
+            &provider_config(root.path()),
+            &network_config(),
+            &guests,
+            Request::List {
+                version: PROTOCOL_VERSION,
+                session: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(response["version"], PROTOCOL_VERSION);
+        assert_eq!(
+            response["vms"],
+            json!([{ "session": "work", "name": "review", "state": "running" }])
+        );
+        let recoveries = response["recoveries"].as_array().unwrap();
+        assert_eq!(recoveries.len(), 1, "{recoveries:?}");
+        assert_eq!(recoveries[0]["reason"], "crashed");
+        assert_eq!(recoveries[0]["name"], "crashed");
+        assert_eq!(recoveries[0]["session"], "work");
+    }
+
+    #[test]
+    fn rename_requests_move_the_session_state() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let mut guests = FakeGuests::default();
+        let mut vm = LeasedVm::new(&locked, &mut guests, "review", &[]);
+        let live = LiveProcess::spawn();
+        live.attach(&mut vm);
+
+        let response = handle_request(
+            &locked,
+            &provider_config(root.path()),
+            &network_config(),
+            &guests,
+            Request::RenameSession {
+                version: PROTOCOL_VERSION,
+                from: "work".to_owned(),
+                to: "renamed".to_owned(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(response, json!({ "version": PROTOCOL_VERSION }));
+        assert!(!vm.path.exists());
+        let moved = read_state(&locked.path("renamed", "review")).unwrap();
+        assert_eq!(moved.session, "renamed");
+        assert_eq!(moved.leases, ["renamed"]);
+    }
+
+    #[test]
+    fn stop_and_sync_requests_answer_with_their_warnings() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let config = provider_config(root.path());
+        let network = network_config();
+        let mut guests = FakeGuests::default();
+        let mut first = LeasedVm::new(&locked, &mut guests, "first", &[("both.rs", "before")]);
+        let first_live = LiveProcess::spawn();
+        first_live.attach(&mut first);
+        fs::write(first.guest.join("both.rs"), "guest").unwrap();
+        fs::write(first.host.join("both.rs"), "host").unwrap();
+        let mut second = LeasedVm::new(&locked, &mut guests, "second", &[("both.rs", "before")]);
+        let second_live = LiveProcess::spawn();
+        second_live.attach(&mut second);
+        fs::write(second.guest.join("both.rs"), "guest").unwrap();
+        fs::write(second.host.join("both.rs"), "host").unwrap();
+
+        let synced = handle_request(
+            &locked,
+            &config,
+            &network,
+            &guests,
+            Request::Sync {
+                version: PROTOCOL_VERSION,
+                session: "work".to_owned(),
+                name: "first".to_owned(),
+            },
+        )
+        .unwrap();
+        let warnings = synced["warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), 1, "{synced}");
+        assert!(
+            warnings[0].as_str().unwrap().contains("both.rs"),
+            "{synced}"
+        );
+        assert!(vm_is_running(&first.state), "a sync keeps the VM running");
+
+        let stopped = handle_request(
+            &locked,
+            &config,
+            &network,
+            &guests,
+            Request::Stop {
+                version: PROTOCOL_VERSION,
+                session: "work".to_owned(),
+                name: "first".to_owned(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            stopped,
+            json!({ "version": PROTOCOL_VERSION, "warnings": [] })
+        );
+        assert!(!first.path.exists());
+        assert!(!vm_is_running(&first.state), "a stop terminates the VM");
+
+        let stopped = handle_request(
+            &locked,
+            &config,
+            &network,
+            &guests,
+            Request::StopSession {
+                version: PROTOCOL_VERSION,
+                session: "work".to_owned(),
+            },
+        )
+        .unwrap();
+        let warnings = stopped["warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), 1, "{stopped}");
+        assert!(
+            warnings[0].as_str().unwrap().contains("both.rs"),
+            "{stopped}"
+        );
+        assert!(!second.path.exists());
+        assert!(!vm_is_running(&second.state));
+        assert!(locked.entries().unwrap().is_empty());
     }
 }

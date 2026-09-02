@@ -390,6 +390,73 @@ fn project_images_apply_only_to_firecracker_spawns_and_explicit_images_win() {
     assert_eq!(firecracker.firecracker_image.as_deref(), Some("custom"));
 }
 
+/// The image is one field of a project and answers to the project tools like the
+/// rest: a call that says nothing about it keeps what is stored, an empty one
+/// clears it, and one with no root updates a project already known in place.
+#[test]
+fn a_projects_firecracker_image_is_kept_cleared_or_updated_by_the_project_tools() {
+    let mut state = idle_state();
+    let remember = |state: &mut State, arguments: &str| {
+        state.remember_project(&tools::Args::parse(arguments).unwrap())
+    };
+    let stored_image = |state: &mut State| {
+        let rows = state
+            .store()
+            .fetch(&FetchRequest::entity("project"))
+            .expect("fetched");
+        projects::from_rows(&rows)["hocus"]
+            .firecracker_image
+            .clone()
+    };
+
+    let project = remember(
+        &mut state,
+        r#"{"name":"hocus","root":"/work/hocus","firecracker_image":"rust"}"#,
+    )
+    .unwrap();
+    assert_eq!(project.firecracker_image.as_deref(), Some("rust"));
+    assert_eq!(stored_image(&mut state).as_deref(), Some("rust"));
+
+    // Remembered again with its root and nothing said about the image.
+    let project = remember(&mut state, r#"{"name":"hocus","root":"/work/hocus"}"#).unwrap();
+    assert_eq!(project.firecracker_image.as_deref(), Some("rust"));
+    assert_eq!(
+        state.projects["hocus"].firecracker_image.as_deref(),
+        Some("rust")
+    );
+
+    // The image alone, on a project already known.
+    let project = remember(&mut state, r#"{"name":"hocus","firecracker_image":"ruby"}"#).unwrap();
+    assert_eq!(project.firecracker_image.as_deref(), Some("ruby"));
+    assert_eq!(stored_image(&mut state).as_deref(), Some("ruby"));
+
+    // Empty clears it, with or without the root.
+    let project = remember(&mut state, r#"{"name":"hocus","firecracker_image":""}"#).unwrap();
+    assert_eq!(project.firecracker_image, None);
+    assert_eq!(stored_image(&mut state), None);
+    remember(
+        &mut state,
+        r#"{"name":"hocus","root":"/work/hocus","firecracker_image":"rust"}"#,
+    )
+    .unwrap();
+    let project = remember(
+        &mut state,
+        r#"{"name":"hocus","root":"/work/hocus","firecracker_image":" "}"#,
+    )
+    .unwrap();
+    assert_eq!(project.firecracker_image, None);
+    assert_eq!(stored_image(&mut state), None);
+
+    // Neither a bad name nor an image for a project nobody has named yet.
+    let error = remember(
+        &mut state,
+        r#"{"name":"hocus","firecracker_image":"no spaces"}"#,
+    )
+    .expect_err("a space is not an image name");
+    assert!(error.contains("invalid Firecracker VM name"), "{error}");
+    assert!(remember(&mut state, r#"{"name":"other","firecracker_image":"rust"}"#).is_err());
+}
+
 /// `agent` and `command` are alternatives, and the schema cannot say so — this is
 /// where a call naming neither is turned back.
 #[test]

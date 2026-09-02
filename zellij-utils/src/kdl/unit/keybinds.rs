@@ -488,6 +488,10 @@ fn run_action_firecracker_children_round_trip() {
             r#"keybinds { normal { bind "Ctrl f" { Run "cargo" { firecracker_vm "no/slashes"; }; }; }; }"#,
             "an invalid vm name",
         ),
+        (
+            r#"keybinds { normal { bind "Ctrl f" { Run "cargo" { firecracker_vm "review"; firecracker_worktree "relative/repo"; }; }; }; }"#,
+            "a relative worktree",
+        ),
     ] {
         let document: KdlDocument = config.parse().unwrap();
         assert!(

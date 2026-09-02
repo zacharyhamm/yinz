@@ -301,6 +301,28 @@ fn new_remote_pane_requires_only_a_host() {
     );
 }
 
+/// The model only sends what the schema names. `new_pane` read both Firecracker
+/// fields before it advertised either, which made them fields nothing ever set.
+#[test]
+fn new_pane_advertises_its_firecracker_fields() {
+    let specs = specs();
+    let parameters = specs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|spec| spec["function"]["name"] == "new_pane")
+        .unwrap()["function"]["parameters"]
+        .clone();
+    let properties = parameters["properties"].as_object().unwrap();
+    for field in ["firecracker", "firecracker_image"] {
+        assert!(
+            properties.contains_key(field),
+            "new_pane does not list {field}"
+        );
+        assert_eq!(properties[field]["type"], json!("string"), "{field}");
+    }
+}
+
 /// The Linear tools are advertised whether or not a key is configured, the same
 /// as `web_search` and the Slack tools — "not configured" is answered as a tool
 /// result the model can read, rather than by withholding the tool.

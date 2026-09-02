@@ -52,61 +52,95 @@ pub(crate) fn firecracker(
     command: zellij_utils::cli::Firecracker,
     config: &Config,
 ) -> zellij_utils::errors::prelude::Result<()> {
-    use zellij_utils::cli::Firecracker;
-    use zellij_utils::errors::prelude::*;
-
     let provider = zellij_server::firecracker::provider_from_options(
         config.options.firecracker_provider.as_deref(),
         config.options.firecracker_provider_timeout_secs,
     )?;
+    run_firecracker(
+        command,
+        &provider,
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    )
+}
+
+/// The session a `zellij firecracker` command acts on: `--session` if given, else the
+/// session this command runs inside, else the only active one.
+pub(crate) fn resolve_firecracker_session(
+    explicit: Option<String>,
+    env_session: Option<String>,
+    active: ActiveSession,
+) -> zellij_utils::errors::prelude::Result<String> {
+    use zellij_utils::errors::prelude::*;
+
+    explicit
+        .or(env_session)
+        .or(match active {
+            ActiveSession::One(name) => Some(name),
+            ActiveSession::None | ActiveSession::Many => None,
+        })
+        .context("no session selected; pass --session SESSION")
+}
+
+/// Run one `zellij firecracker` command against `provider`, writing the listing to
+/// `out` and each merge warning to `err`.
+pub(crate) fn run_firecracker(
+    command: zellij_utils::cli::Firecracker,
+    provider: &zellij_server::firecracker::Provider,
+    out: &mut impl std::io::Write,
+    err: &mut impl std::io::Write,
+) -> zellij_utils::errors::prelude::Result<()> {
+    use zellij_utils::cli::Firecracker;
+
+    fn selected_session(explicit: Option<String>) -> zellij_utils::errors::prelude::Result<String> {
+        // The active-session scan is only worth doing without an explicit choice.
+        match explicit {
+            Some(session) => Ok(session),
+            None => resolve_firecracker_session(
+                None,
+                envs::get_session_name().ok(),
+                get_active_session(),
+            ),
+        }
+    }
+
     match command {
         Firecracker::List { session, json } => {
             let listing = provider.list(session.as_deref())?;
             if json {
-                println!("{}", serde_json::to_string(&listing)?);
+                writeln!(out, "{}", serde_json::to_string(&listing)?)?;
             } else {
                 if listing.vms.is_empty() {
-                    println!("No Firecracker VMs found.");
+                    writeln!(out, "No Firecracker VMs found.")?;
                 }
                 for entry in &listing.vms {
-                    println!("{}\t{}\t{}", entry.session, entry.name, entry.state);
+                    writeln!(out, "{}\t{}\t{}", entry.session, entry.name, entry.state)?;
                 }
                 if !listing.recoveries.is_empty() {
-                    println!("Retained disks:");
+                    writeln!(out, "Retained disks:")?;
                 }
                 for recovery in &listing.recoveries {
-                    println!(
+                    writeln!(
+                        out,
                         "{}\t{}\t{}\t{}",
                         recovery.session.as_deref().unwrap_or("-"),
                         recovery.name.as_deref().unwrap_or("-"),
                         recovery.reason,
                         recovery.path.display()
-                    );
+                    )?;
                 }
             }
         },
         Firecracker::Stop { name, session } => {
-            let session = session
-                .or_else(|| envs::get_session_name().ok())
-                .or_else(|| match get_active_session() {
-                    ActiveSession::One(name) => Some(name),
-                    _ => None,
-                })
-                .context("no session selected; pass --session SESSION")?;
+            let session = selected_session(session)?;
             for warning in provider.stop(&session, &name)? {
-                eprintln!("warning: {warning}");
+                writeln!(err, "warning: {warning}")?;
             }
         },
         Firecracker::Sync { name, session } => {
-            let session = session
-                .or_else(|| envs::get_session_name().ok())
-                .or_else(|| match get_active_session() {
-                    ActiveSession::One(name) => Some(name),
-                    _ => None,
-                })
-                .context("no session selected; pass --session SESSION")?;
+            let session = selected_session(session)?;
             for warning in provider.sync(&session, &name)? {
-                eprintln!("warning: {warning}");
+                writeln!(err, "warning: {warning}")?;
             }
         },
     }
@@ -1643,5 +1677,261 @@ mod tests {
                 io::ErrorKind::PermissionDenied
             ))
         );
+    }
+}
+
+#[cfg(test)]
+mod firecracker_command_tests {
+    use super::{resolve_firecracker_session, run_firecracker};
+    use serde_json::json;
+    use std::{
+        fs,
+        io::Write,
+        path::Path,
+        process::{Command, Stdio},
+        time::Duration,
+    };
+    use tempfile::TempDir;
+    use zellij_server::firecracker::Provider;
+    use zellij_utils::cli::Firecracker;
+    use zellij_utils::sessions::ActiveSession;
+
+    /// Written by a child process rather than with `fs::write`: under `cargo test`
+    /// these tests share one process, and a child another test forks meanwhile
+    /// inherits every open descriptor until it execs - a script still open for
+    /// writing here then fails that exec with `Text file busy`.
+    fn write_script(path: &Path, contents: &str) {
+        let mut writer = Command::new("sh")
+            .args(["-c", r#"cat > "$1" && chmod 755 "$1""#, "sh"])
+            .arg(path)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        writer
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(contents.as_bytes())
+            .unwrap();
+        assert!(writer.wait().unwrap().success());
+    }
+
+    /// A provider that logs each request to `requests` beside itself and answers
+    /// every one with `response`.
+    fn stub_provider(response: &str) -> (TempDir, Provider) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("provider");
+        write_script(
+            &path,
+            &format!(
+                "#!/bin/sh\ncat >> \"$(dirname \"$0\")/requests\"\nprintf '%s' '{response}'\n"
+            ),
+        );
+        let provider = Provider::new(path, Duration::from_secs(5)).unwrap();
+        (dir, provider)
+    }
+
+    fn requests(dir: &TempDir) -> Vec<serde_json::Value> {
+        fs::read_to_string(dir.path().join("requests"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    fn run(command: Firecracker, provider: &Provider) -> (String, String) {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        run_firecracker(command, provider, &mut out, &mut err).unwrap();
+        (
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+        )
+    }
+
+    fn list(session: Option<&str>, json: bool) -> Firecracker {
+        Firecracker::List {
+            session: session.map(str::to_owned),
+            json,
+        }
+    }
+
+    #[test]
+    fn an_explicit_session_wins_over_the_environment_and_the_active_one() {
+        assert_eq!(
+            resolve_firecracker_session(
+                Some("explicit".to_owned()),
+                Some("env".to_owned()),
+                ActiveSession::One("active".to_owned()),
+            )
+            .unwrap(),
+            "explicit"
+        );
+    }
+
+    #[test]
+    fn the_environment_session_wins_over_the_active_one() {
+        assert_eq!(
+            resolve_firecracker_session(
+                None,
+                Some("env".to_owned()),
+                ActiveSession::One("active".to_owned()),
+            )
+            .unwrap(),
+            "env"
+        );
+    }
+
+    #[test]
+    fn a_single_active_session_is_used_when_nothing_else_selects_one() {
+        assert_eq!(
+            resolve_firecracker_session(None, None, ActiveSession::One("active".to_owned()))
+                .unwrap(),
+            "active"
+        );
+    }
+
+    #[test]
+    fn no_session_and_an_ambiguous_one_are_both_refused() {
+        for active in [ActiveSession::None, ActiveSession::Many] {
+            let error = resolve_firecracker_session(None, None, active)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(error, "no session selected; pass --session SESSION");
+        }
+    }
+
+    #[test]
+    fn list_says_so_when_there_are_no_vms() {
+        let (dir, provider) = stub_provider(r#"{"version":2,"vms":[]}"#);
+        let (out, err) = run(list(None, false), &provider);
+        assert_eq!(out, "No Firecracker VMs found.\n");
+        assert_eq!(err, "");
+        assert_eq!(
+            requests(&dir),
+            vec![json!({"version": 2, "action": "list", "session": null})]
+        );
+    }
+
+    #[test]
+    fn list_prints_one_tab_separated_line_per_vm() {
+        let (dir, provider) = stub_provider(
+            r#"{"version":2,"vms":[{"session":"work","name":"review","state":"running"},{"session":"other","name":"build","state":"provisioning"}]}"#,
+        );
+        let (out, err) = run(list(Some("work"), false), &provider);
+        assert_eq!(out, "work\treview\trunning\nother\tbuild\tprovisioning\n");
+        assert_eq!(err, "");
+        assert_eq!(
+            requests(&dir),
+            vec![json!({"version": 2, "action": "list", "session": "work"})]
+        );
+    }
+
+    #[test]
+    fn list_prints_retained_disks_after_the_vms() {
+        let (_dir, provider) = stub_provider(
+            r#"{"version":2,"vms":[{"session":"work","name":"review","state":"running"}],"recoveries":[{"path":"/state/recovery/abc-1-sync-failed","reason":"sync-failed","retained_at":1,"session":"work","name":"review","worktree":"/repo"},{"path":"/state/recovery/def-2-crashed","reason":"crashed","retained_at":2}]}"#,
+        );
+        let (out, _) = run(list(None, false), &provider);
+        assert_eq!(
+            out,
+            "work\treview\trunning\n\
+             Retained disks:\n\
+             work\treview\tsync-failed\t/state/recovery/abc-1-sync-failed\n\
+             -\t-\tcrashed\t/state/recovery/def-2-crashed\n"
+        );
+    }
+
+    #[test]
+    fn list_json_is_one_object_with_vms_and_recoveries() {
+        let (_dir, provider) = stub_provider(
+            r#"{"version":2,"vms":[{"session":"work","name":"review","state":"running"}],"recoveries":[{"path":"/state/recovery/def-2-crashed","reason":"crashed","retained_at":2}]}"#,
+        );
+        let (out, err) = run(list(None, true), &provider);
+        assert_eq!(err, "");
+        assert_eq!(out.matches('\n').count(), 1, "{out:?}");
+        let printed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            printed,
+            json!({
+                "vms": [{"session": "work", "name": "review", "state": "running"}],
+                "recoveries": [{
+                    "path": "/state/recovery/def-2-crashed",
+                    "reason": "crashed",
+                    "retained_at": 2,
+                    "session": null,
+                    "name": null,
+                    "worktree": null,
+                }],
+            })
+        );
+
+        let (_dir, provider) = stub_provider(r#"{"version":2,"vms":[]}"#);
+        let (out, _) = run(list(None, true), &provider);
+        assert_eq!(out, "{\"vms\":[],\"recoveries\":[]}\n");
+    }
+
+    #[test]
+    fn stop_prints_each_merge_warning_to_stderr() {
+        let (dir, provider) = stub_provider(
+            r#"{"version":2,"warnings":["/repo/a.rs: changed on both sides; kept the host copy, the guest copy is /repo/a.rs.guest","/repo/b.rs: changed on both sides; kept the host copy, the guest copy is /repo/b.rs.guest"]}"#,
+        );
+        let (out, err) = run(
+            Firecracker::Stop {
+                name: "review".to_owned(),
+                session: Some("work".to_owned()),
+            },
+            &provider,
+        );
+        assert_eq!(out, "");
+        assert_eq!(
+            err,
+            "warning: /repo/a.rs: changed on both sides; kept the host copy, the guest copy is /repo/a.rs.guest\n\
+             warning: /repo/b.rs: changed on both sides; kept the host copy, the guest copy is /repo/b.rs.guest\n"
+        );
+        assert_eq!(
+            requests(&dir),
+            vec![json!({"version": 2, "action": "stop", "session": "work", "name": "review"})]
+        );
+    }
+
+    #[test]
+    fn sync_prints_each_merge_warning_to_stderr() {
+        let (dir, provider) = stub_provider(
+            r#"{"version":2,"warnings":["/repo/a.rs: changed on both sides; kept the host copy, the guest copy is /repo/a.rs.guest"]}"#,
+        );
+        let (out, err) = run(
+            Firecracker::Sync {
+                name: "review".to_owned(),
+                session: Some("work".to_owned()),
+            },
+            &provider,
+        );
+        assert_eq!(out, "");
+        assert_eq!(
+            err,
+            "warning: /repo/a.rs: changed on both sides; kept the host copy, the guest copy is /repo/a.rs.guest\n"
+        );
+        assert_eq!(
+            requests(&dir),
+            vec![json!({"version": 2, "action": "sync", "session": "work", "name": "review"})]
+        );
+    }
+
+    #[test]
+    fn a_clean_stop_or_sync_prints_nothing() {
+        let (_dir, provider) = stub_provider(r#"{"version":2}"#);
+        for command in [
+            Firecracker::Stop {
+                name: "review".to_owned(),
+                session: Some("work".to_owned()),
+            },
+            Firecracker::Sync {
+                name: "review".to_owned(),
+                session: Some("work".to_owned()),
+            },
+        ] {
+            assert_eq!(run(command, &provider), (String::new(), String::new()));
+        }
     }
 }

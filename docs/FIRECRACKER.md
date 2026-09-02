@@ -74,8 +74,8 @@ sudo zellij-firecracker network setup --user "$USER"
 zellij-firecracker doctor
 ```
 
-The network command creates one bridge and 16 user-owned TAP devices, a delegated cgroup,
-restrictive nftables rules, and a systemd unit that restores these resources after boot. Its
+The network command creates one bridge and 16 user-owned TAP devices, restrictive iptables
+rules, and a systemd unit that restores these resources after boot. Its
 default subnet is `10.<uid-high>.<uid-low>.0/24`; UIDs above 65535 must pass `--subnet` to avoid
 collisions. An explicit `--subnet` always takes precedence. Configure the provider manually when
 not using `setup`:
@@ -145,8 +145,8 @@ The provider copies each file after SSH is ready. It sets mode `0600` in the gue
 must be absolute or start with `~/`. Guest paths must be absolute and cannot contain parent path
 components.
 
-The network command accepts `--subnet`, `--taps`, and `--dns`. It uses
-`172.31.0.0/24`, 16 TAP devices, and `1.1.1.1` by default. Remove the host network with:
+The network command accepts `--subnet`, `--taps`, and `--dns`. By default it uses the
+uid-derived `10.<uid-high>.<uid-low>.0/24` subnet described above, 16 TAP devices, and `1.1.1.1`. Remove the host network with:
 
 ```sh
 sudo zellij-firecracker network teardown --user "$USER"
@@ -154,7 +154,11 @@ sudo zellij-firecracker network teardown --user "$USER"
 
 This is a single-user developer provider. It is not a multi-user VM service. Each VM runs as the
 Zellij user in a user and mount namespace. Firecracker applies its seccomp filter. The provider
-also applies CPU, memory, and process limits through cgroup v2.
+also applies CPU, memory, and process limits through cgroup v2: each VM gets a child of the
+cgroup subtree systemd delegates to the user (`user@<uid>.service`), found from the provider's
+own cgroup. A provider started outside such a subtree, such as from a plain ssh login without a
+systemd user session, refuses to start VMs rather than run them without limits; `doctor`
+reports the subtree it would use.
 
 The network permits DNS through the configured resolver and outbound TCP ports 22, 80, and 443.
 It blocks guest access to the host and private networks. The provider does not use the privileged
@@ -287,13 +291,28 @@ merged tree and records it as the new baseline:
 zellij firecracker sync review [--session work]
 ```
 
-Zellij closes the session's panes before it sends `stop_session` during a normal session exit.
-Detaching does not stop VMs. A killed server can leave VMs running. Inspect and stop them with:
+Zellij sends `stop_session` whenever the server exits on its own — the last client or pane
+closing, a kill-session, or a fatal server error — after it has closed the session's panes.
+Detaching does not stop VMs. Only a server that never gets to exit on its own, killed with
+`SIGKILL` or crashed, leaves VMs running. Inspect and stop them with:
 
 ```sh
 zellij firecracker list [--session work] [--json]
 zellij firecracker stop review [--session work]
 ```
+
+`list` prints one tab-separated `session`, `name`, `state` line per VM, or
+`No Firecracker VMs found.`, then any retained disks under a `Retained disks:` header as
+tab-separated `session`, `name`, `reason`, `path` lines, with `-` for a session or name the
+provider does not know. With `--json` it prints the provider's listing as one object:
+
+```json
+{"vms":[{"session":"work","name":"review","state":"running"}],
+ "recoveries":[{"path":"/state/recovery/<id>-<time>-sync-failed","reason":"sync-failed","retained_at":1756700000,"session":"work","name":"review","worktree":"/repo"}]}
+```
+
+Both arrays are always present; `session`, `name`, and `worktree` in a recovery entry are
+`null` when unknown.
 
 The provider retains disks from crashed VMs, failed provisioning, and workspace syncs that could
 not run. Recovery directories are under `$XDG_STATE_HOME/zellij/firecracker/vms/recovery`, each

@@ -862,6 +862,34 @@ mod tests {
         assert!(matches!(checkout, GitCheckout::NewWorktree { .. }));
     }
 
+    /// The two checks `launch::plan` makes of the Firecracker fields, shown in
+    /// the status row like every other refusal rather than reaching the host.
+    #[test]
+    fn an_image_without_a_vm_is_refused_on_submit() {
+        let mut state = State::default();
+        state.set_text(BRANCH, "topic");
+        state.changed(BRANCH);
+        state.set_text(FIRECRACKER_IMAGE, "rust");
+        state.changed(FIRECRACKER_IMAGE);
+        assert!(state.submit());
+        assert_eq!(
+            state.error.as_deref(),
+            Some("firecracker_image requires a Firecracker VM")
+        );
+    }
+
+    #[test]
+    fn an_invalid_vm_name_is_refused_on_submit() {
+        let mut state = State::default();
+        state.set_text(BRANCH, "topic");
+        state.changed(BRANCH);
+        state.set_text(FIRECRACKER, "no spaces");
+        state.changed(FIRECRACKER);
+        assert!(state.submit());
+        let error = state.error.clone().expect("the name was refused");
+        assert!(error.contains("invalid Firecracker VM name"), "{error}");
+    }
+
     /// The point of the shared module: the modal's form and hocus's `agent_spawn`
     /// arguments are two spellings of one request, and must resolve alike.
     #[test]
