@@ -131,7 +131,10 @@ fn a_usage_only_change_is_archived() {
     });
     state.autosave();
 
-    assert_eq!(history::load_usage(&state.private_store(), id), state.usage);
+    assert_eq!(
+        history::load_usage(&state.private_store(), id),
+        Ok(state.usage)
+    );
 }
 
 #[test]

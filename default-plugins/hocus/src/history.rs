@@ -12,7 +12,9 @@
 //!
 //! Failures are reported rather than swallowed here, and swallowed by the
 //! callers that have nowhere to put them. A full disk is still not a reason to
-//! take the pane down.
+//! take the pane down. The one thing a caller must not do with a failed read
+//! is treat it as an empty one: a chat reopened with nothing where its totals
+//! should be would write that nothing back over them.
 
 use hocus_proto::store::{self, Backend};
 use zellij_tile::prelude::*;
@@ -193,10 +195,10 @@ pub fn save(
         },
     };
 
-    // Absent usage means "leave what is stored alone", not "clear it": a chat is
-    // opened before its totals are read back, and `load_usage` answers `None`
-    // for a fetch that failed as well as for a chat that never had any. Writing
-    // that through would erase counts nothing can recover.
+    // Absent usage means "leave what is stored alone", not "clear it": usage
+    // only ever grows, so a chat with none to report has nothing to say about
+    // the columns, and `set(None)` would write NULL over totals archived by
+    // an earlier run.
     let mut chat = Mutation::update("chat", Pred::eq("id", chat_id as i64)).set("title", title);
     if let Some(usage) = usage {
         chat = chat
@@ -245,24 +247,28 @@ pub fn save(
     Ok(messages.len())
 }
 
-/// Provider-reported totals saved beside a transcript. Missing on chats
-/// archived before usage accounting existed.
-pub fn load_usage(backend: &impl Backend, id: u64) -> Option<TokenUsage> {
-    let rows = backend
-        .fetch(
-            &FetchRequest::entity("chat")
-                .filter(Pred::eq("id", id))
-                .limit(1)
-                .select(["input_tokens", "output_tokens"]),
-        )
-        .ok()?;
-    let row = rows.rows.first()?;
+/// Provider-reported totals saved beside a transcript. `Ok(None)` on chats
+/// archived before usage accounting existed; `Err` when the store could not be
+/// read, which is not the same thing - a caller that opened the chat with
+/// nothing in its place would save that nothing over the real totals.
+pub fn load_usage(backend: &impl Backend, id: u64) -> Result<Option<TokenUsage>, String> {
+    let rows = backend.fetch(
+        &FetchRequest::entity("chat")
+            .filter(Pred::eq("id", id))
+            .limit(1)
+            .select(["input_tokens", "output_tokens"]),
+    )?;
+    let Some(row) = rows.rows.first() else {
+        return Ok(None);
+    };
     let input_tokens = int_at(&rows, row, "input_tokens");
     let output_tokens = int_at(&rows, row, "output_tokens");
-    (input_tokens.is_some() || output_tokens.is_some()).then_some(TokenUsage {
-        input_tokens: input_tokens.unwrap_or(0),
-        output_tokens: output_tokens.unwrap_or(0),
-    })
+    Ok(
+        (input_tokens.is_some() || output_tokens.is_some()).then_some(TokenUsage {
+            input_tokens: input_tokens.unwrap_or(0),
+            output_tokens: output_tokens.unwrap_or(0),
+        }),
+    )
 }
 
 /// Read one transcript back.
@@ -750,7 +756,7 @@ mod tests {
 
         let mut old_id = None;
         save(&backend, &mut old_id, &messages, 0, None, None).expect("saved old chat");
-        assert_eq!(load_usage(&backend, old_id.expect("old id")), None);
+        assert_eq!(load_usage(&backend, old_id.expect("old id")), Ok(None));
 
         let usage = TokenUsage {
             input_tokens: 1_200,
@@ -758,30 +764,85 @@ mod tests {
         };
         let mut id = None;
         save(&backend, &mut id, &messages, 0, None, Some(usage)).expect("saved usage");
-        assert_eq!(load_usage(&backend, id.expect("id")), Some(usage));
+        assert_eq!(load_usage(&backend, id.expect("id")), Ok(Some(usage)));
     }
 
-    /// `load_usage` answers `None` for a fetch that failed as much as for a chat
-    /// that never had any, and a chat is opened before its totals are read back.
-    /// A save carrying that `None` must leave the stored counts where they are —
-    /// writing it through would erase them for good.
+    /// A save that has no usage to report leaves the archived totals as they
+    /// were. Usage only grows, so `None` never means "cleared" - and it is what
+    /// a chat reopened without its totals carries, which must not wipe them.
     #[test]
-    fn a_save_without_usage_leaves_the_archived_totals_alone() {
+    fn a_save_without_usage_leaves_stored_totals_alone() {
         let backend = backend();
-        let messages = [Message::user("one")];
         let usage = TokenUsage {
             input_tokens: 1_200,
             output_tokens: 34,
         };
-
         let mut id = None;
-        let saved = save(&backend, &mut id, &messages, 0, None, Some(usage)).expect("saved usage");
-        let id_value = id.expect("an id");
+        let mut messages = vec![Message::user("one")];
+        let saved = save(&backend, &mut id, &messages, 0, None, Some(usage)).expect("saved");
+        let id = id.expect("id");
 
-        let messages = [Message::user("one"), Message::assistant("two")];
-        save(&backend, &mut id, &messages, saved, None, None).expect("saved without usage");
+        messages.push(Message::assistant("two"));
+        save(&backend, &mut Some(id), &messages, saved, None, None).expect("saved again");
 
-        assert_eq!(load_usage(&backend, id_value), Some(usage));
+        assert_eq!(load_usage(&backend, id), Ok(Some(usage)));
+    }
+
+    /// A backend that cannot be read from. Everything else goes through to
+    /// the real store, so a chat can be archived and then "lost".
+    struct UnreadableStore<B>(B);
+
+    impl<B: Backend> Backend for UnreadableStore<B> {
+        fn define(&self, def: &EntityDef) -> Result<DataSchemaInfo, String> {
+            self.0.define(def)
+        }
+        fn fetch(&self, _: &FetchRequest) -> Result<DataRows, String> {
+            Err("the store is unreadable".to_owned())
+        }
+        fn count(&self, request: &FetchRequest) -> Result<u64, String> {
+            self.0.count(request)
+        }
+        fn apply(&self, mutations: Vec<Mutation>) -> Result<ApplyReport, String> {
+            self.0.apply(mutations)
+        }
+        fn watch(
+            &self,
+            request: &FetchRequest,
+            mode: WatchMode,
+        ) -> Result<DataWatchHandle, String> {
+            self.0.watch(request, mode)
+        }
+    }
+
+    /// A read that failed is reported as one, not as a chat with no totals:
+    /// the caller has to be able to tell the two apart, because it opens the
+    /// second and must refuse the first.
+    #[test]
+    fn load_usage_reports_a_failed_read_rather_than_an_empty_one() {
+        let backend = backend();
+        let usage = TokenUsage {
+            input_tokens: 1_200,
+            output_tokens: 34,
+        };
+        let mut id = None;
+        save(
+            &backend,
+            &mut id,
+            &[Message::user("one")],
+            0,
+            None,
+            Some(usage),
+        )
+        .expect("saved");
+        let id = id.expect("id");
+
+        let unreadable = UnreadableStore(&backend);
+        assert!(load_usage(&unreadable, id).is_err());
+        assert_eq!(
+            load_usage(&backend, id),
+            Ok(Some(usage)),
+            "the totals are still there"
+        );
     }
 
     #[test]
