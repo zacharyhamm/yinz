@@ -184,6 +184,42 @@ fn translate_plugin_path(env: &PluginEnv, path: PathBuf) -> PathBuf {
     }
 }
 
+/// The `RunCommandAction` behind every plugin call that opens or re-runs a
+/// command pane: the plugin's `CommandToRun` with its cwd resolved through the
+/// plugin mounts (`command_cwd`), tagged as this plugin's so the pane's exit
+/// comes back to it with `context`. Placement is the caller's to set; the
+/// defaults here are the ones every caller shared - held on close, not
+/// suspended on start.
+fn run_command_action(
+    env: &PluginEnv,
+    command_to_run: CommandToRun,
+    default_to_plugin_cwd: bool,
+    context: BTreeMap<String, String>,
+) -> RunCommandAction {
+    let cwd = command_cwd(env, &command_to_run, default_to_plugin_cwd);
+    RunCommandAction {
+        command: command_to_run.path,
+        args: command_to_run.args,
+        cwd,
+        direction: None,
+        hold_on_close: true,
+        hold_on_start: false,
+        originating_plugin: Some(OriginatingPlugin::new(
+            env.plugin_id,
+            env.client_id,
+            context,
+        )),
+        use_terminal_title: false,
+        target: command_to_run.target,
+        remote_default_shell: command_to_run.remote_default_shell,
+    }
+}
+
+/// Where a plugin's command starts. Locally the plugin mounts are translated
+/// and, when the caller asks, a missing cwd becomes the plugin's own. A remote
+/// target's cwd is a path on that machine and is passed through as written;
+/// with none given the pane starts wherever that machine logs the user in,
+/// never in the plugin's cwd, which is a path here.
 fn command_cwd(
     env: &PluginEnv,
     command: &CommandToRun,
@@ -199,12 +235,13 @@ fn command_cwd(
                 .iter()
                 .any(|mount| cwd.starts_with(mount))
             {
-                log::warn!(
+                Err::<(), _>(anyhow!(
                     "plugin {} sent the plugin-mount path {} as the cwd of a remote command; \
                      remote cwds are paths on the remote machine",
                     env.name(),
                     cwd.display()
-                );
+                ))
+                .non_fatal();
             }
         }
         command.cwd.clone()
@@ -1285,28 +1322,7 @@ fn open_command_pane_in_new_tab(
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
 ) {
-    let cwd = command_cwd(env, &command_to_run, true);
-    let command = command_to_run.path;
-    let args = command_to_run.args;
-    let remote_default_shell = command_to_run.remote_default_shell;
-    let hold_on_close = true;
-    let hold_on_start = false;
-    let run_command_action = RunCommandAction {
-        command,
-        args,
-        cwd,
-        direction: None,
-        hold_on_close,
-        hold_on_start,
-        originating_plugin: Some(OriginatingPlugin::new(
-            env.plugin_id,
-            env.client_id,
-            context,
-        )),
-        use_terminal_title: false,
-        target: command_to_run.target,
-        remote_default_shell,
-    };
+    let run_command_action = run_command_action(env, command_to_run, true, context);
     let initial_panes = Some(vec![CommandOrPlugin::Command(run_command_action)]);
     let action = Action::NewTab {
         tiled_layout: None,
@@ -2037,7 +2053,7 @@ fn open_terminal_near_plugin(env: &mut PluginEnv, cwd: PathBuf) {
             ..Default::default()
         })
     });
-    let name = None;
+    let name: Option<String> = None;
     default_shell.change_cwd(cwd);
 
     // Create completion channel
@@ -2120,7 +2136,7 @@ fn open_terminal_floating_near_plugin(
         })
     });
     default_shell.change_cwd(cwd);
-    let name = None;
+    let name: Option<String> = None;
 
     // Create completion channel
     let (completion_tx, completion_rx) = oneshot::channel();
@@ -2197,7 +2213,7 @@ fn open_terminal_in_place_of_plugin(
         })
     });
     default_shell.change_cwd(cwd);
-    let name = None;
+    let name: Option<String> = None;
 
     // Create completion channel
     let (completion_tx, completion_rx) = oneshot::channel();
@@ -2229,31 +2245,8 @@ fn open_command_pane_in_place_of_plugin(
     close_plugin_after_replace: bool,
     context: BTreeMap<String, String>,
 ) {
-    let cwd = command_cwd(env, &command_to_run, false);
-    let command = command_to_run.path;
-    let args = command_to_run.args;
-    let remote_default_shell = command_to_run.remote_default_shell;
-    let direction = None;
-    let hold_on_close = true;
-    let hold_on_start = false;
-    let name = None;
-    let use_terminal_title = false; // TODO: support this
-    let run_command_action = RunCommandAction {
-        command,
-        args,
-        cwd,
-        direction,
-        hold_on_close,
-        hold_on_start,
-        originating_plugin: Some(OriginatingPlugin::new(
-            env.plugin_id,
-            env.client_id,
-            context,
-        )),
-        use_terminal_title,
-        target: command_to_run.target,
-        remote_default_shell,
-    };
+    let name: Option<String> = None;
+    let run_command_action = run_command_action(env, command_to_run, false, context);
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
     // Create completion channel
@@ -2297,7 +2290,7 @@ fn open_terminal_pane_in_place_of_pane_id(
         })
     });
     default_shell.change_cwd(cwd_path);
-    let name = None;
+    let name: Option<String> = None;
 
     let (completion_tx, completion_rx) = oneshot::channel();
     let _ = env
@@ -2333,31 +2326,8 @@ fn open_command_pane_in_place_of_pane_id(
     close_replaced_pane: bool,
     context: BTreeMap<String, String>,
 ) {
-    let cwd = command_cwd(env, &command_to_run, false);
-    let command = command_to_run.path;
-    let args = command_to_run.args;
-    let remote_default_shell = command_to_run.remote_default_shell;
-    let direction = None;
-    let hold_on_close = true;
-    let hold_on_start = false;
-    let name = None;
-    let use_terminal_title = false;
-    let run_command_action = RunCommandAction {
-        command,
-        args,
-        cwd,
-        direction,
-        hold_on_close,
-        hold_on_start,
-        originating_plugin: Some(OriginatingPlugin::new(
-            env.plugin_id,
-            env.client_id,
-            context,
-        )),
-        use_terminal_title,
-        target: command_to_run.target,
-        remote_default_shell,
-    };
+    let name: Option<String> = None;
+    let run_command_action = run_command_action(env, command_to_run, false, context);
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
     let (completion_tx, completion_rx) = oneshot::channel();
@@ -2431,31 +2401,9 @@ fn open_command_pane(
     context: BTreeMap<String, String>,
 ) {
     let error_msg = || format!("failed to open command in plugin {}", env.name());
-    let cwd = command_cwd(env, &command_to_run, false);
-    let command = command_to_run.path;
-    let args = command_to_run.args;
-    let remote_default_shell = command_to_run.remote_default_shell;
-    let direction = None;
-    let hold_on_close = true;
-    let hold_on_start = false;
-    let name = None;
-    let use_terminal_title = false; // TODO: support this
-    let run_command_action = RunCommandAction {
-        command,
-        args,
-        cwd,
-        direction,
-        hold_on_close,
-        hold_on_start,
-        originating_plugin: Some(OriginatingPlugin::new(
-            env.plugin_id,
-            env.client_id,
-            context,
-        )),
-        use_terminal_title,
-        target: command_to_run.target,
-        remote_default_shell,
-    };
+    let direction: Option<Direction> = None;
+    let name: Option<String> = None;
+    let run_command_action = run_command_action(env, command_to_run, false, context);
     let action = Action::NewTiledPane {
         direction,
         command: Some(run_command_action),
@@ -2495,31 +2443,8 @@ fn spawn_command_pane_near_plugin(
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
 ) -> OpenCommandPaneNearPluginResponse {
-    let cwd = command_cwd(env, &command_to_run, false);
-    let command = command_to_run.path;
-    let args = command_to_run.args;
-    let remote_default_shell = command_to_run.remote_default_shell;
-    let direction = None;
-    let hold_on_close = true;
-    let hold_on_start = false;
-    let name = None;
-    let use_terminal_title = false; // TODO: support this
-    let run_command_action = RunCommandAction {
-        command,
-        args,
-        cwd,
-        direction,
-        hold_on_close,
-        hold_on_start,
-        originating_plugin: Some(OriginatingPlugin::new(
-            env.plugin_id,
-            env.client_id,
-            context,
-        )),
-        use_terminal_title,
-        target: command_to_run.target,
-        remote_default_shell,
-    };
+    let name: Option<String> = None;
+    let run_command_action = run_command_action(env, command_to_run, false, context);
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
     // Create completion channel
@@ -2815,31 +2740,8 @@ fn open_command_pane_floating(
     context: BTreeMap<String, String>,
 ) {
     let error_msg = || format!("failed to open command in plugin {}", env.name());
-    let cwd = command_cwd(env, &command_to_run, false);
-    let command = command_to_run.path;
-    let args = command_to_run.args;
-    let remote_default_shell = command_to_run.remote_default_shell;
-    let direction = None;
-    let hold_on_close = true;
-    let hold_on_start = false;
-    let name = None;
-    let use_terminal_title = false; // TODO: support this
-    let run_command_action = RunCommandAction {
-        command,
-        args,
-        cwd,
-        direction,
-        hold_on_close,
-        hold_on_start,
-        originating_plugin: Some(OriginatingPlugin::new(
-            env.plugin_id,
-            env.client_id,
-            context,
-        )),
-        use_terminal_title,
-        target: command_to_run.target,
-        remote_default_shell,
-    };
+    let name: Option<String> = None;
+    let run_command_action = run_command_action(env, command_to_run, false, context);
     let action = Action::NewFloatingPane {
         command: Some(run_command_action),
         pane_name: name,
@@ -2873,23 +2775,7 @@ fn open_command_pane_overlay(
     context: BTreeMap<String, String>,
 ) {
     let error_msg = || format!("failed to open command in plugin {}", env.name());
-    let cwd = command_cwd(env, &command_to_run, false);
-    let run_command_action = RunCommandAction {
-        command: command_to_run.path,
-        args: command_to_run.args,
-        cwd,
-        direction: None,
-        hold_on_close: true,
-        hold_on_start: false,
-        originating_plugin: Some(OriginatingPlugin::new(
-            env.plugin_id,
-            env.client_id,
-            context,
-        )),
-        use_terminal_title: false,
-        target: command_to_run.target,
-        remote_default_shell: command_to_run.remote_default_shell,
-    };
+    let run_command_action = run_command_action(env, command_to_run, false, context);
     let action = Action::NewFloatingPane {
         command: Some(run_command_action),
         pane_name: None,
@@ -2914,31 +2800,8 @@ fn open_command_pane_floating_near_plugin(
     floating_pane_coordinates: Option<FloatingPaneCoordinates>,
     context: BTreeMap<String, String>,
 ) {
-    let cwd = command_cwd(env, &command_to_run, false);
-    let command = command_to_run.path;
-    let args = command_to_run.args;
-    let remote_default_shell = command_to_run.remote_default_shell;
-    let direction = None;
-    let hold_on_close = true;
-    let hold_on_start = false;
-    let name = None;
-    let use_terminal_title = false; // TODO: support this
-    let run_command_action = RunCommandAction {
-        command,
-        args,
-        cwd,
-        direction,
-        hold_on_close,
-        hold_on_start,
-        originating_plugin: Some(OriginatingPlugin::new(
-            env.plugin_id,
-            env.client_id,
-            context,
-        )),
-        use_terminal_title,
-        target: command_to_run.target,
-        remote_default_shell,
-    };
+    let name: Option<String> = None;
+    let run_command_action = run_command_action(env, command_to_run, false, context);
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
     // Create completion channel
@@ -2977,31 +2840,8 @@ fn open_command_pane_in_place(
     context: BTreeMap<String, String>,
 ) {
     let error_msg = || format!("failed to open command in plugin {}", env.name());
-    let cwd = command_cwd(env, &command_to_run, false);
-    let command = command_to_run.path;
-    let args = command_to_run.args;
-    let remote_default_shell = command_to_run.remote_default_shell;
-    let direction = None;
-    let hold_on_close = true;
-    let hold_on_start = false;
-    let name = None;
-    let use_terminal_title = false; // TODO: support this
-    let run_command_action = RunCommandAction {
-        command,
-        args,
-        cwd,
-        direction,
-        hold_on_close,
-        hold_on_start,
-        originating_plugin: Some(OriginatingPlugin::new(
-            env.plugin_id,
-            env.client_id,
-            context,
-        )),
-        use_terminal_title,
-        target: command_to_run.target,
-        remote_default_shell,
-    };
+    let name: Option<String> = None;
+    let run_command_action = run_command_action(env, command_to_run, false, context);
     let action = Action::NewInPlacePane {
         command: Some(run_command_action),
         pane_name: name,
@@ -3029,32 +2869,9 @@ fn open_command_pane_background(
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
 ) {
-    let cwd = command_cwd(env, &command_to_run, true);
-    let command = command_to_run.path;
-    let args = command_to_run.args;
-    let remote_default_shell = command_to_run.remote_default_shell;
-    let direction = None;
-    let hold_on_close = true;
-    let hold_on_start = false;
     let start_suppressed = true;
-    let name = None;
-    let use_terminal_title = false; // TODO: support this
-    let run_command_action = RunCommandAction {
-        command,
-        args,
-        cwd,
-        direction,
-        hold_on_close,
-        hold_on_start,
-        originating_plugin: Some(OriginatingPlugin::new(
-            env.plugin_id,
-            env.client_id,
-            context,
-        )),
-        use_terminal_title,
-        target: command_to_run.target,
-        remote_default_shell,
-    };
+    let name: Option<String> = None;
+    let run_command_action = run_command_action(env, command_to_run, true, context);
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
     // Create completion channel
@@ -3099,22 +2916,7 @@ fn run_command_in_pane(
         log::error!("cannot run a command in a plugin pane");
         return;
     };
-    let cwd = command_cwd(env, &command_to_run, true);
-    let run_command = RunCommand {
-        command: command_to_run.path,
-        args: command_to_run.args,
-        cwd,
-        hold_on_close: true,
-        hold_on_start: false,
-        originating_plugin: Some(OriginatingPlugin::new(
-            env.plugin_id,
-            env.client_id,
-            context,
-        )),
-        use_terminal_title: false,
-        target: command_to_run.target,
-        remote_default_shell: command_to_run.remote_default_shell,
-    };
+    let run_command: RunCommand = run_command_action(env, command_to_run, true, context).into();
     let _ = env
         .senders
         .send_to_screen(ScreenInstruction::RunCommandInPane(

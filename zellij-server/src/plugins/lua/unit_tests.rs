@@ -4063,6 +4063,82 @@ fn run_command_in_pane_takes_a_numeric_pane_id() {
     );
 }
 
+/// `open_command_pane` reaches the pty thread as a `SpawnTerminal`; a remote
+/// command's cwd is a path on that machine, so it travels as written and a
+/// missing one is not filled in from the plugin's (host) cwd, while a local
+/// command's `/host` still names the plugin's cwd.
+#[test]
+fn a_remote_command_pane_keeps_its_guest_cwd() {
+    use crate::pty::PtyInstruction;
+    use zellij_utils::channels::SenderWithContext;
+    use zellij_utils::input::command::TerminalAction;
+
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = {}
+        function M.load()
+          zellij.open_command_pane { { path = "remote", remote_host = "build-box" }, {} }
+          zellij.open_command_pane {
+            { path = "remote-explicit", cwd = "/srv/work", remote_host = "build-box" }, {}
+          }
+          zellij.open_command_pane { { path = "local", cwd = "/host/src" }, {} }
+        end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.env_mut().plugin_cwd = PathBuf::from("/plugin/cwd");
+    let (pty_tx, pty_rx) = zellij_utils::channels::unbounded();
+    plugin.env_mut().senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    let spawned = Arc::new(Mutex::new(vec![]));
+    let sink = spawned.clone();
+    // Each spawn carries a completion the plugin call waits on; dropping the
+    // instruction here is what answers it, as the pty thread would.
+    let pump = std::thread::spawn(move || {
+        for (instruction, _) in pty_rx.iter() {
+            match instruction {
+                PtyInstruction::SpawnTerminal(Some(TerminalAction::RunCommand(command)), ..) => {
+                    sink.lock().unwrap().push((
+                        command.command.clone(),
+                        command.cwd.clone(),
+                        command.target.clone(),
+                    ))
+                },
+                PtyInstruction::Exit => break,
+                _ => {},
+            }
+        }
+    });
+    plugin.load(&BTreeMap::new()).unwrap();
+    plugin
+        .env_mut()
+        .senders
+        .send_to_pty(PtyInstruction::Exit)
+        .unwrap();
+    pump.join().unwrap();
+
+    let ssh = zellij_utils::data::PaneTarget::Ssh {
+        host: "build-box".to_owned(),
+    };
+    assert_eq!(
+        *spawned.lock().unwrap(),
+        vec![
+            (PathBuf::from("remote"), None, ssh.clone()),
+            (
+                PathBuf::from("remote-explicit"),
+                Some(PathBuf::from("/srv/work")),
+                ssh
+            ),
+            (
+                PathBuf::from("local"),
+                Some(PathBuf::from("/plugin/cwd/src")),
+                zellij_utils::data::PaneTarget::Local
+            ),
+        ]
+    );
+}
+
 #[test]
 fn a_remote_replacement_does_not_inherit_the_plugins_cwd() {
     let mut plugin = load_permitted(
