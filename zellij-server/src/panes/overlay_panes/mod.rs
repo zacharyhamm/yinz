@@ -92,10 +92,18 @@
 //! dragged next to each other keep moving on a frame drag, because nothing placed them together.
 //!
 //! **A linked pair is one panel to every gesture and every placement.** A frame drag on either
-//! half carries the other with it (`move_pane_to_position`), a ctrl-resize of either half keeps
-//! the other's rows in step (`resize_pane_with_strategies`), and the claims those gestures make -
-//! `position_is_user_stated`, `size_is_user_stated` - are made on both halves, because they are
-//! claims about the panel. A placement batch that names both halves is then applied to the panel
+//! half carries the other with it (`move_pane_to_position`). A ctrl-resize of either half is a
+//! resize of the panel. A *directed* one - a ctrl-drag of an edge or corner, a keyboard resize
+//! with a direction - names an edge of the half (`resize_half_of_panel`): an outer or a
+//! vertical edge grows or shrinks the panel, the other half's rows keeping in step, while the
+//! seam-side edge is the seam, so moving it moves the divider - the other half gives up exactly
+//! what this one takes, down to the floor a seam drag keeps - and the panel's outer edges stay.
+//! An *undirected* one - ctrl+MouseScroll, a keyboard resize with no direction - names no edge,
+//! so it is the panel's bounding box on all four sides, whichever half it landed on, with the
+//! seam kept at its share of the width (`resize_panel`). The claims those gestures make -
+//! `position_is_user_stated`, `size_is_user_stated` - are made on both halves and read off the
+//! panel's bounding box, because they are claims about the panel; a resize that only moved the
+//! seam claims nothing, like the seam drag below. A placement batch that names both halves is then applied to the panel
 //! rather than to each half (`place_linked_pair`): the batch's two rectangles describe a
 //! *layout* (which half has which share, where the divider is, whether one half has the whole
 //! panel), and that layout is mapped onto the rectangle the user's gestures left the panel in,
@@ -258,6 +266,10 @@ pub struct OverlayPanes {
     /// Pairs of overlays placed together as one panel, `(left, right)` - the right one starting
     /// on the column where the left one ends. See the module doc; `link_touching` is the only
     /// way in, and hiding, removing or placing a member apart again is the way out.
+    ///
+    /// **A pane is in at most one pair.** `link_of` answers with the first pair naming a pane
+    /// and every reader assumes that is the only one, so `link_touching` keeps the invariant
+    /// rather than leaving a second pair nobody would consult.
     linked: Vec<(PaneId, PaneId)>,
     /// `(left, right, seam column − pointer column at the press)` while a seam drag is in flight.
     /// The seam twin of `pane_being_moved_with_mouse`, and exclusive with it: the pointer is one
@@ -1372,6 +1384,14 @@ impl OverlayPanes {
     /// The cost, stated plainly: an overlay the user has sized is `Fixed`, so it stops growing
     /// with the screen. That is the same trade the drag already makes for position, and it is
     /// what "the user said so" has to mean if it is to survive a re-resolution at all.
+    ///
+    /// A half of a linked panel is resized as the panel, unless the other half is hidden, in
+    /// which case the shown half is the whole panel and the hidden one is kept at the same
+    /// rectangle. Which way "as the panel" goes depends on the strategy: a *directed* resize
+    /// names an edge of the half, and that edge is either the panel's or the seam
+    /// (`resize_half_of_panel`); an *undirected* one - ctrl+MouseScroll, a keyboard resize with
+    /// no direction - names no edge, so it is the panel's bounding box on all four sides, with
+    /// the seam kept where it was in proportion (`resize_panel`).
     pub fn resize_pane_with_strategies(
         &mut self,
         pane_id: PaneId,
@@ -1383,13 +1403,29 @@ impl OverlayPanes {
             return Ok(false);
         }
         let surface = self.surface();
-        let overlay = self
-            .panes
-            .get_mut(&pane_id)
+        let before = self
+            .get(&pane_id)
+            .map(|pane| pane.position_and_size())
             .with_context(|| format!("no overlay pane with ID {pane_id:?}"))
             .with_context(err_context)?;
 
-        let before = overlay.pane.position_and_size();
+        let partner = self.linked_partner(&pane_id);
+        let visible_partner = partner.filter(|partner| !self.is_hidden(partner));
+        let undirected = strategies
+            .iter()
+            .all(|strategy| strategy.direction.is_none());
+        if let (Some(partner), true) = (visible_partner, undirected) {
+            // The strategies are applied to the panel, not to the half, so the half's own
+            // resized geometry is never computed: a half flush with the surface's edge could
+            // report "nothing changed" while the panel still has somewhere to go.
+            if !self.resize_panel(pane_id, partner, strategies, change_by) {
+                return Ok(false);
+            }
+            self.set_pane_frames().non_fatal();
+            self.set_force_render();
+            return Ok(true);
+        }
+
         let mut geom = before;
         for strategy in strategies {
             geom = geom_resized_within(geom, surface, strategy, change_by);
@@ -1399,32 +1435,224 @@ impl OverlayPanes {
         if geom == before {
             return Ok(false);
         }
-        let moved = geom.x != before.x || geom.y != before.y;
-        Self::claim_geom(overlay, geom, moved);
 
-        // A linked partner is the other half of the same panel: its rows follow, since the
-        // panel has one top and one bottom, and the claim is made on it too, since the claim is
-        // the panel's (module doc). A hidden partner takes the whole resized rectangle - it is
-        // placed at its share again on the reveal, and until then it must not stretch the pair's
-        // bounding box beyond what the user sized.
-        if let Some(partner) = self.linked_partner(&pane_id) {
-            let partner_is_hidden = self.is_hidden(&partner);
-            if let Some(overlay) = self.panes.get_mut(&partner) {
-                let mut partner_geom = overlay.pane.position_and_size();
-                if partner_is_hidden {
-                    partner_geom.x = geom.x;
-                    partner_geom.cols.set_inner(geom.cols.as_usize());
+        match visible_partner {
+            // A visible partner is the other half of the same panel, and the resize is the
+            // panel's: see `resize_half_of_panel`.
+            Some(partner) => {
+                if !self.resize_half_of_panel(pane_id, partner, before, geom) {
+                    return Ok(false);
                 }
-                partner_geom.y = geom.y;
-                partner_geom.rows.set_inner(geom.rows.as_usize());
-                Self::claim_geom(overlay, partner_geom, moved);
-            }
+            },
+            None => {
+                let moved = geom.x != before.x || geom.y != before.y;
+                if let Some(overlay) = self.panes.get_mut(&pane_id) {
+                    Self::claim_geom(overlay, geom, moved);
+                }
+                // A hidden partner takes the whole resized rectangle, and the claim with it,
+                // since the claim is the panel's (module doc) - it is placed at its share again
+                // on the reveal, and until then it must not stretch the pair's bounding box
+                // beyond what the user sized.
+                if let Some(overlay) = partner.and_then(|partner| self.panes.get_mut(&partner)) {
+                    let mut partner_geom = overlay.pane.position_and_size();
+                    partner_geom.x = geom.x;
+                    partner_geom.y = geom.y;
+                    partner_geom.cols.set_inner(geom.cols.as_usize());
+                    partner_geom.rows.set_inner(geom.rows.as_usize());
+                    Self::claim_geom(overlay, partner_geom, moved);
+                }
+            },
         }
 
         // this is also what resizes the pane's pty to the new geometry
         self.set_pane_frames().non_fatal();
         self.set_force_render();
         Ok(true)
+    }
+
+    /// Apply `geom`, the geometry a *directed* user resize gave `pane_id`, to the panel it forms
+    /// with its visible `partner`; `false` => nothing could change. An undirected resize goes to
+    /// `resize_panel` instead, since it names no edge for this function to read.
+    ///
+    /// The half's seam-side edge *is* the seam, so moving it moves the seam: the partner gives up
+    /// or takes exactly what the half took or gave, its outer edge never moves, and the seam
+    /// stops at the floor a seam drag keeps (`MIN_TERMINAL_WIDTH`) rather than folding the
+    /// partner or inverting the strategy, as `geom_resized_within` inverts at the surface's
+    /// edge. The half's other edges are the panel's: the partner's rows follow, since the panel
+    /// has one top and one bottom, and the outer edge moving is the panel growing or shrinking.
+    ///
+    /// The claims are the panel's too, read off what happened to the pair's bounding box and
+    /// made on both halves. A resize that only moved the seam therefore claims nothing, as
+    /// `drag_seam_to` claims nothing (module doc): the split is the owning plugin's to read
+    /// back, and a size claim here would freeze a panel whose size did not change. Both halves'
+    /// geometry is written back as `Fixed` either way, so `reapply_coordinates` keeps the split.
+    fn resize_half_of_panel(
+        &mut self,
+        pane_id: PaneId,
+        partner: PaneId,
+        before: PaneGeom,
+        mut geom: PaneGeom,
+    ) -> bool {
+        let Some((left, _)) = self.link_of(&pane_id) else {
+            return false;
+        };
+        let Some(partner_before) = self.get(&partner).map(|pane| pane.position_and_size()) else {
+            return false;
+        };
+        let mut partner_geom = partner_before;
+        let floor = MIN_TERMINAL_WIDTH;
+        if pane_id == left {
+            // the seam is this half's right edge; the partner keeps its right edge and at least
+            // the floor, and the seam is never pushed further than it already was
+            let partner_right = partner_before.x + partner_before.cols.as_usize();
+            let seam_at_most = partner_right
+                .saturating_sub(floor)
+                .max(before.x + before.cols.as_usize());
+            let seam = (geom.x + geom.cols.as_usize()).min(seam_at_most);
+            geom.cols.set_inner(seam - geom.x);
+            partner_geom.x = seam;
+            partner_geom.cols.set_inner(partner_right - seam);
+        } else {
+            // the seam is this half's left edge; the partner keeps its left edge and at least
+            // the floor, and this half keeps its right edge
+            let seam_at_least = (partner_before.x + floor).min(before.x);
+            let right = geom.x + geom.cols.as_usize();
+            let seam = geom.x.max(seam_at_least);
+            geom.x = seam;
+            geom.cols.set_inner(right - seam);
+            partner_geom.cols.set_inner(seam - partner_before.x);
+        }
+        partner_geom.y = geom.y;
+        partner_geom.rows.set_inner(geom.rows.as_usize());
+        if geom == before && partner_geom == partner_before {
+            return false;
+        }
+
+        let panel_before = union_of(before, partner_before);
+        let panel = union_of(geom, partner_geom);
+        self.set_panel_halves(
+            panel_before,
+            panel,
+            [(pane_id, geom), (partner, partner_geom)],
+        );
+        true
+    }
+
+    /// Apply an undirected resize - `strategies` that name no edge - to the panel `pane_id`
+    /// forms with its visible `partner`; `false` => nothing could change.
+    ///
+    /// The resize is the panel's bounding box's, on all four sides, exactly as it would be a
+    /// lone overlay's: which half the gesture landed on does not matter, and neither half's
+    /// seam-side edge is read as the seam. The seam keeps its share of the panel's width,
+    /// carried from the old box onto the new one in proportion as `place_linked_pair` carries a
+    /// layout, and never closer than `MIN_TERMINAL_WIDTH` to either outer edge - the floor a seam
+    /// drag keeps. A panel already at two of that floor is not shrunk in width at all, only in
+    /// height. The claims are the panel's, read off the bounding box and made on both halves.
+    fn resize_panel(
+        &mut self,
+        pane_id: PaneId,
+        partner: PaneId,
+        strategies: &[ResizeStrategy],
+        change_by: (usize, usize),
+    ) -> bool {
+        let Some((left, right)) = self.link_of(&pane_id) else {
+            return false;
+        };
+        let (Some(left_before), Some(right_before)) = (
+            self.get(&left).map(|pane| pane.position_and_size()),
+            self.get(&right).map(|pane| pane.position_and_size()),
+        ) else {
+            return false;
+        };
+        debug_assert!(partner == left || partner == right);
+        let surface = self.surface();
+        let floor = MIN_TERMINAL_WIDTH;
+
+        let panel_before = union_of(left_before, right_before);
+        let mut panel = panel_before;
+        for strategy in strategies {
+            panel = geom_resized_within(panel, surface, strategy, change_by);
+        }
+        if panel.cols.as_usize() < floor * 2 {
+            // each half keeps the floor, so the panel is never narrower than two of them: a
+            // shrink that would overshoot stops there, centred as the step would have been, and
+            // a panel already there gives up no more width
+            let cols = panel_before.cols.as_usize().min(floor * 2);
+            panel.x = panel_before.x + (panel_before.cols.as_usize() - cols) / 2;
+            panel.cols.set_inner(cols);
+        }
+        if panel == panel_before {
+            return false;
+        }
+
+        let panel_right = panel.x + panel.cols.as_usize();
+        // a panel narrower than two floors (a tiny surface) is cut evenly rather than not at all
+        let half_floor = floor.min(panel.cols.as_usize() / 2).max(1);
+        let seam_at_least = panel.x + half_floor;
+        let seam_at_most = panel_right.saturating_sub(half_floor).max(seam_at_least);
+        let seam = map_edge(
+            left_before.x + left_before.cols.as_usize(),
+            panel_before.x,
+            panel_before.cols.as_usize(),
+            panel.x,
+            panel.cols.as_usize(),
+        )
+        .clamp(seam_at_least, seam_at_most);
+        let mut left_geom = left_before;
+        left_geom.x = panel.x;
+        left_geom.y = panel.y;
+        left_geom.cols.set_inner(seam - panel.x);
+        left_geom.rows.set_inner(panel.rows.as_usize());
+        let mut right_geom = right_before;
+        right_geom.x = seam;
+        right_geom.y = panel.y;
+        right_geom
+            .cols
+            .set_inner(panel_right.saturating_sub(seam).max(1));
+        right_geom.rows.set_inner(panel.rows.as_usize());
+
+        self.set_panel_halves(
+            panel_before,
+            panel,
+            [(left, left_geom), (right, right_geom)],
+        );
+        true
+    }
+
+    /// Give the two `halves` of a panel their new geometry, written back as `Fixed`, and make the
+    /// panel's claims on both: the size is the user's if the panel's bounding box changed size
+    /// from `panel_before` to `panel`, the position if it moved. A resize that changed neither -
+    /// one that only moved the seam - claims nothing, as `drag_seam_to` claims nothing.
+    fn set_panel_halves(
+        &mut self,
+        panel_before: PaneGeom,
+        panel: PaneGeom,
+        halves: [(PaneId, PaneGeom); 2],
+    ) {
+        let moved = panel.x != panel_before.x || panel.y != panel_before.y;
+        let resized = panel.cols.as_usize() != panel_before.cols.as_usize()
+            || panel.rows.as_usize() != panel_before.rows.as_usize();
+        for (half_id, half_geom) in halves {
+            let Some(overlay) = self.panes.get_mut(&half_id) else {
+                continue;
+            };
+            Self::set_geom_fixed(overlay, half_geom);
+            overlay.carry.size_is_user_stated |= resized;
+            overlay.carry.position_is_user_stated |= moved;
+        }
+    }
+
+    /// Give `overlay` `geom` and write all four of its coordinates back as `Fixed`, so
+    /// `reapply_coordinates` reproduces it - and claim nothing. `Fixed` is not a claim: it is
+    /// how a seam drag and a pair placement record geometry the user has not claimed, and a
+    /// claim is the caller's to make.
+    fn set_geom_fixed(overlay: &mut OverlayPane, geom: PaneGeom) {
+        overlay.pane.set_geom(geom);
+        overlay.pane.set_should_render(true);
+        overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x));
+        overlay.coordinates.y = Some(PercentOrFixed::Fixed(geom.y));
+        overlay.coordinates.width = Some(PercentOrFixed::Fixed(geom.cols.as_usize()));
+        overlay.coordinates.height = Some(PercentOrFixed::Fixed(geom.rows.as_usize()));
     }
 
     /// Give `overlay` the geometry a user resize produced, and write it back as the user's:
@@ -1594,6 +1822,10 @@ impl OverlayPanes {
     /// two visible panes apart unlinks them. A seam drag in flight on a pair the batch keeps
     /// together is left in flight: re-placing the panel under the pointer is no reason to drop
     /// the divider.
+    ///
+    /// A pane is in at most one pair (see `linked`). A batch that lands a pane against two
+    /// others - three overlays in a row - links it with the first of them in the batch's order,
+    /// and the pair that would name it again is not made.
     pub fn link_touching(&mut self, pane_ids: &[PaneId]) {
         if pane_ids.len() < 2 {
             return;
@@ -1603,6 +1835,11 @@ impl OverlayPanes {
         }
         for (index, a) in pane_ids.iter().enumerate() {
             for b in &pane_ids[index + 1..] {
+                // every link naming a batch member was just forgotten, so a pane already in a
+                // pair got there earlier in this batch, and that pair is the one it keeps
+                if self.link_of(a).is_some() || self.link_of(b).is_some() {
+                    continue;
+                }
                 if let Some(pair) = self.placed_together(a, b) {
                     self.linked.push(pair);
                 }

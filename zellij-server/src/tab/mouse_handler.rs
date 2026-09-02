@@ -2301,6 +2301,8 @@ impl MouseHandler {
     ///
     /// `direction: None` moves all four borders, and `geom_resized_within` halves a directionless
     /// `change_by`, so a notch is 2 columns and 1 row on every side - the floating layer's step.
+    /// Over a half of a linked overlay panel the four borders are the *panel's*
+    /// (`OverlayPanes::resize_panel`), whichever half the pointer is on.
     fn handle_resize_scroll(
         tab: &mut Tab,
         pane_id: PaneId,
