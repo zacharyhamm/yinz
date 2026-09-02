@@ -3492,10 +3492,13 @@ impl PaneTarget {
             (None, Some(vm)) => {
                 PaneTarget::firecracker(vm, firecracker_image, firecracker_worktree)
             },
-            (host, None) if has_image || has_worktree => {
-                let _ = host;
-                Err("firecracker_image and firecracker_worktree need a firecracker_vm".to_owned())
-            },
+            (_, None) if has_image || has_worktree => Err(match (has_image, has_worktree) {
+                (true, true) => {
+                    "firecracker_image and firecracker_worktree need a firecracker_vm".to_owned()
+                },
+                (true, false) => "firecracker_image needs a firecracker_vm".to_owned(),
+                _ => "firecracker_worktree needs a firecracker_vm".to_owned(),
+            }),
             (Some(host), None) => PaneTarget::ssh(host),
             (None, None) => Ok(PaneTarget::Local),
         }

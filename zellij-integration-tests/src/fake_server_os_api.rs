@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use interprocess::local_socket::Stream as LocalSocketStream;
-use zellij_server::os_input_output::{AdoptedTerminal, AsyncReader, ServerOsApi};
+use zellij_server::os_input_output::{
+    AdoptedTerminal, AsyncReader, RemoteEndpoint, ResolvedSpawn, ServerOsApi,
+};
 use zellij_server::panes::PaneId;
 use zellij_server::pty_host::client::{ReleasedPane, ReleasedPtyHost, ReleasedRemotePane};
 use zellij_server::ClientId;
@@ -119,39 +121,58 @@ impl ServerOsApi for FakeServerOsApi {
         _default_editor: Option<PathBuf>,
     ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
         let terminal_id = self.shared_ptys.next_terminal_id();
-        let opened_file_contents = match &terminal_action {
-            TerminalAction::OpenFile(payload) => self
-                .fake_filesystem
-                .lock()
-                .unwrap()
-                .get(&payload.path.to_string_lossy().to_string())
-                .cloned(),
-            _ => None,
+        self.spawn_with_id(terminal_id, terminal_action, quit_cb)
+    }
+    /// A remote pane is spawned in two steps like the real one, so the pty
+    /// thread's deferred path is exercised; here both steps are immediate and
+    /// the pane is a fake pty like any other, remembered with its target so
+    /// the warp fakes can tell it is remote.
+    fn resolve_spawn(
+        &self,
+        terminal_action: TerminalAction,
+        _default_editor: Option<PathBuf>,
+    ) -> Result<ResolvedSpawn> {
+        let TerminalAction::RunCommand(command) = terminal_action else {
+            return Err(anyhow!("only a command can run on another machine"));
         };
-        let requested_cwd = match &terminal_action {
-            TerminalAction::RunCommand(run_command) => run_command.cwd.clone(),
-            TerminalAction::OpenFile(payload) => payload.cwd.clone(),
-        };
-        if let Some(cwd) = requested_cwd {
-            self.cwds
-                .lock()
-                .unwrap()
-                .insert(FAKE_PID_BASE + terminal_id, cwd);
-        }
-        let fake_async_reader =
-            self.shared_ptys
-                .register(terminal_id, Some(terminal_action), Some(quit_cb));
-        if let Some(contents) = opened_file_contents {
-            let contents_with_carriage_returns =
-                contents.replace("\r\n", "\n").replace('\n', "\r\n");
-            self.shared_ptys
-                .write_output(terminal_id, contents_with_carriage_returns.as_bytes());
-        }
-        Ok((
+        Ok(ResolvedSpawn {
+            terminal_id: self.shared_ptys.next_terminal_id(),
+            rerun_command: command.clone(),
+            endpoint: RemoteEndpoint {
+                host: command.target.display().unwrap_or_default(),
+                ssh_options: Default::default(),
+            },
+            command,
+        })
+    }
+    fn spawn_resolved(
+        &self,
+        resolved: ResolvedSpawn,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
+        self.spawn_with_id(
+            resolved.terminal_id,
+            TerminalAction::RunCommand(resolved.command),
+            quit_cb,
+        )
+    }
+    fn resolve_rerun(&self, terminal_id: u32, command: RunCommand) -> Result<ResolvedSpawn> {
+        Ok(ResolvedSpawn {
             terminal_id,
-            fake_async_reader,
-            Some(FAKE_PID_BASE + terminal_id),
-        ))
+            rerun_command: command.clone(),
+            endpoint: RemoteEndpoint {
+                host: command.target.display().unwrap_or_default(),
+                ssh_options: Default::default(),
+            },
+            command,
+        })
+    }
+    fn rerun_resolved(
+        &self,
+        resolved: ResolvedSpawn,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
+        self.re_run_command_in_terminal(resolved.terminal_id, resolved.command, quit_cb)
     }
     fn reserve_terminal_id(&self) -> Result<u32> {
         let terminal_id = self.shared_ptys.next_terminal_id();
@@ -410,5 +431,48 @@ impl ServerOsApi for FakeServerOsApi {
             buffered: Vec::new(),
             child_exit_status: adopted.child_exit_status,
         })
+    }
+}
+
+impl FakeServerOsApi {
+    fn spawn_with_id(
+        &self,
+        terminal_id: u32,
+        terminal_action: TerminalAction,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
+        let opened_file_contents = match &terminal_action {
+            TerminalAction::OpenFile(payload) => self
+                .fake_filesystem
+                .lock()
+                .unwrap()
+                .get(&payload.path.to_string_lossy().to_string())
+                .cloned(),
+            _ => None,
+        };
+        let requested_cwd = match &terminal_action {
+            TerminalAction::RunCommand(run_command) => run_command.cwd.clone(),
+            TerminalAction::OpenFile(payload) => payload.cwd.clone(),
+        };
+        if let Some(cwd) = requested_cwd {
+            self.cwds
+                .lock()
+                .unwrap()
+                .insert(FAKE_PID_BASE + terminal_id, cwd);
+        }
+        let fake_async_reader =
+            self.shared_ptys
+                .register(terminal_id, Some(terminal_action), Some(quit_cb));
+        if let Some(contents) = opened_file_contents {
+            let contents_with_carriage_returns =
+                contents.replace("\r\n", "\n").replace('\n', "\r\n");
+            self.shared_ptys
+                .write_output(terminal_id, contents_with_carriage_returns.as_bytes());
+        }
+        Ok((
+            terminal_id,
+            fake_async_reader,
+            Some(FAKE_PID_BASE + terminal_id),
+        ))
     }
 }

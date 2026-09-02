@@ -486,7 +486,7 @@ fn a_new_pane_image_without_a_vm_is_refused() {
     let args = Args::parse(r#"{"firecracker_image":"rust"}"#).unwrap();
     assert_eq!(
         args.firecracker_target(),
-        Err("firecracker_image and firecracker_worktree need a firecracker_vm".to_owned())
+        Err("firecracker_image needs a firecracker_vm".to_owned())
     );
     let args = Args::parse(r#"{"firecracker":"review","firecracker_image":"no/slashes"}"#).unwrap();
     let error = args

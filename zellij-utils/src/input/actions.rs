@@ -3721,7 +3721,7 @@ mod tests {
         }
         let error = Action::actions_from_cli(action, Box::new(|| PathBuf::from("/tmp")), None)
             .expect_err("an image needs a vm");
-        assert!(error.contains("need a firecracker_vm"), "{error}");
+        assert!(error.contains("needs a firecracker_vm"), "{error}");
     }
 
     #[test]
