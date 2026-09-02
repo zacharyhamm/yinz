@@ -348,21 +348,28 @@ impl Provider {
             }
         }
 
-        if stdout_oversized || stderr_oversized {
-            return Err(anyhow!(
-                "firecracker provider output exceeded {MAX_OUTPUT} bytes"
-            ));
-        }
         let status = status.context("the provider output loop ended before the provider exited")?;
         if !status.success() {
+            // What the provider had to say about the failure comes before how much it
+            // said: the kept tail of an oversize stderr still holds the message.
             let (_, message) = split_progress(&stderr_bytes);
             return Err(anyhow!(
-                "firecracker provider exited with {status}: {}",
+                "firecracker provider exited with {status}: {}{}",
                 if message.is_empty() {
                     "no error message".to_owned()
                 } else {
                     message
+                },
+                if stderr_oversized {
+                    format!(" (stderr truncated to its last {MAX_OUTPUT} bytes)")
+                } else {
+                    String::new()
                 }
+            ));
+        }
+        if stdout_oversized || stderr_oversized {
+            return Err(anyhow!(
+                "firecracker provider output exceeded {MAX_OUTPUT} bytes"
             ));
         }
         // A provider that succeeded still has things to say - a VM started without host
@@ -422,9 +429,13 @@ fn read_available(
         match pipe.read(&mut chunk) {
             Ok(0) => return Ok(false),
             Ok(read) => {
-                let remaining = MAX_OUTPUT.saturating_sub(kept.len());
-                kept.extend_from_slice(&chunk[..read.min(remaining)]);
-                *oversized |= read > remaining;
+                // The last bytes are the ones worth keeping: a provider says what went
+                // wrong as it exits, after whatever it had to log on the way there.
+                kept.extend_from_slice(&chunk[..read]);
+                if kept.len() > MAX_OUTPUT {
+                    kept.drain(..kept.len() - MAX_OUTPUT);
+                    *oversized = true;
+                }
                 return Ok(true);
             },
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -678,6 +689,23 @@ printf '{"version":2}'"#,
         );
         let response = provider.ensure("work", "review", None, None).unwrap();
         assert_eq!(response.ssh_host, "ssh://zellij@127.0.0.1:2201");
+    }
+
+    /// A guest that failed to boot can leave a console log bigger than the output cap; the
+    /// failure it ends with is still the message, not the size of what preceded it.
+    #[test]
+    fn a_failing_provider_with_oversize_output_reports_its_stderr() {
+        let (_dir, provider) = provider_script(
+            &format!(
+                "head -c {} /dev/zero | tr '\\0' 'x' >&2\necho >&2\necho 'the guest never answered' >&2\nexit 1",
+                MAX_OUTPUT + 10
+            ),
+            Duration::from_secs(5),
+        );
+        let error = provider.stop_session("work").unwrap_err().to_string();
+        assert!(error.contains("the guest never answered"), "{error}");
+        assert!(error.contains("truncated"), "{error}");
+        assert!(!error.contains("output exceeded"), "{error}");
     }
 
     #[test]

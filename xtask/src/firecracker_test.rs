@@ -96,7 +96,7 @@ impl TemporaryNetwork {
         let uid = uid.trim();
         fs::write(
             &config,
-            serde_json::to_vec_pretty(&test_network(std::process::id()))?,
+            serde_json::to_vec_pretty(&test_network(std::process::id(), uid.parse()?))?,
         )?;
         cmd!(
             sh,
@@ -114,9 +114,14 @@ impl TemporaryNetwork {
     fn stop(mut self, sh: &Shell) -> anyhow::Result<()> {
         let provider = &self.provider;
         let config = &self.config;
-        let result = cmd!(sh, "sudo {provider} network remove --config {config}")
-            .run()
-            .context("failed to remove the temporary Firecracker test network");
+        let uid = cmd!(sh, "id -u").read()?;
+        let uid = uid.trim();
+        let result = cmd!(
+            sh,
+            "sudo {provider} network remove --uid {uid} --config {config}"
+        )
+        .run()
+        .context("failed to remove the temporary Firecracker test network");
         if result.is_ok() {
             self.active = false;
         }
@@ -138,11 +143,19 @@ impl Drop for TemporaryNetwork {
 }
 
 /// A network of this process's own, so a test run never touches the user's real pool.
-fn test_network(pid: u32) -> serde_json::Value {
+///
+/// The real pool lives at `10.<uid >> 8>.<uid & 255>.0/24`, so the second octet here starts
+/// at 200 - a uid below 51200 can never reach it - and the one uid that could is stepped past.
+fn test_network(pid: u32, uid: u32) -> serde_json::Value {
+    let mut second = 200 + (pid >> 8) % 55;
+    let third = pid & 0xff;
+    if second == uid >> 8 && third == uid & 0xff {
+        second = 200 + (second - 200 + 1) % 55;
+    }
     serde_json::json!({
         "bridge": format!("zfcb{pid:x}"),
         "tap_prefix": format!("zfct{pid:x}-"),
-        "subnet": format!("10.{}.{}.0/24", (pid >> 8) & 0xff, pid & 0xff),
+        "subnet": format!("10.{second}.{third}.0/24"),
         "taps": 2,
         "dns": "1.1.1.1"
     })
@@ -186,9 +199,30 @@ mod tests {
 
     #[test]
     fn temporary_network_names_fit_linux_interfaces_and_use_a_process_subnet() {
-        let network = test_network(u32::MAX);
+        let network = test_network(u32::MAX, 1000);
         assert!(network["bridge"].as_str().unwrap().len() <= 15);
         assert!(network["tap_prefix"].as_str().unwrap().len() + 2 <= 15);
-        assert_eq!(network["subnet"], "10.255.255.0/24");
+        assert_eq!(
+            network["subnet"],
+            format!("10.{}.255.0/24", 200 + (u32::MAX >> 8) % 55)
+        );
+    }
+
+    /// The pool of uid 1000 is 10.3.232.0/24; no pid may land a test network on it, and a uid
+    /// whose pool sits in the test range is stepped past.
+    #[test]
+    fn temporary_network_never_shares_the_users_pool_subnet() {
+        for pid in [1000u32, 66536, 132072, 3_000_000] {
+            assert_ne!(test_network(pid, 1000)["subnet"], "10.3.232.0/24");
+        }
+        // pid 1234 lands on 10.204.210.0/24, the pool of uid 52434.
+        let pid = (4 << 8) | 210;
+        let uid = (204 << 8) | 210;
+        assert_eq!(test_network(pid, 1000)["subnet"], "10.204.210.0/24");
+        assert_eq!(
+            test_network(pid, uid)["subnet"],
+            "10.205.210.0/24",
+            "a uid whose pool is in the test range is stepped past"
+        );
     }
 }
