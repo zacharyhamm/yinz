@@ -32,6 +32,15 @@
 //! nothing they cannot be scrolled back to. A `summary:` label is bold where the other labels
 //! are dim, which is what tells the row apart now that its position no longer does.
 //!
+//! **An event gets four rows of the timeline and no more.** A talkative `result:` used to fill
+//! the half on its own and push whatever happened either side of it out of view, which is the
+//! opposite of what a timeline is for; the fourth row of a long one now says how many were left
+//! out (`agents::MAX_ENTRY_ROWS`). That is only honest because the rest is a keystroke away:
+//! with the keys in this half, `j`/`k` walk an event at a time rather than a line at a time, and
+//! `Enter` gives the event the whole pane and a scroll of its own until `Esc`. The wheel and the
+//! page keys still move by lines, which is what reading in place wants. The idle summary hocus
+//! pushes is not capped — there is one of it and nothing beside it competing for the room.
+//!
 //! **The history is drawn as markdown**, by the same renderer the conversation uses
 //! (`hocus_proto::markdown`) — everything in the half is markdown by the time it arrives, a
 //! prompt being what the user typed and a result a model's last message, so the asterisks were
@@ -95,6 +104,37 @@ struct State {
     run: Option<agents::AgentRun>,
     /// Lines the history half is wound back from its newest entry.
     history_scroll: usize,
+    /// Which event the history half's cursor is on, counted back from the newest - `0` is the
+    /// newest event, the end the half is anchored to.
+    ///
+    /// Counted from the newest for the same reason `history_scroll` is: an entry arriving must
+    /// not drag the cursor off what the user was pointing at. Only drawn while
+    /// `focus == Focus::History` - the half has no cursor when the keys are not in it, the way
+    /// the list's own selection is a band whether or not it has them.
+    history_cursor: usize,
+    /// The event being read in full, if any - the whole pane becomes it.
+    ///
+    /// Holds what the event *said* rather than a pointer into the timeline: the run behind it
+    /// goes on growing while it is open, and a reader that re-resolved its event every frame
+    /// would be reading a moving target - the entry under a given index is not the entry that
+    /// was there when Enter was pressed.
+    reading: Option<Reading>,
+    /// The last wrapped body of `reading`, and the `(id, width)` it was wrapped for.
+    ///
+    /// The same bargain `history_cache` strikes, for the same reason: the reader redraws on
+    /// every keystroke and wrapping it is a markdown parse of the whole event, which is much
+    /// the most expensive thing this pane does.
+    reader_cache: Option<((u64, usize), Vec<markdown::MdLine>)>,
+    /// The largest `Reading::scroll` the last reader render could honour - the counterpart of
+    /// `last_history_max_scroll`, and kept for the same reason: only `render` knows the width
+    /// the body was wrapped to, and so only `render` knows how many lines it came to.
+    last_reader_max_scroll: usize,
+    /// How many rows the last reader render had for its body.
+    last_reader_rows: usize,
+    /// Bumped on every open, and what `reader_cache` is keyed on. A counter rather than the
+    /// event's text, so two openings of the same event are still two readers and a very long
+    /// event is not compared character by character on the way to every frame.
+    reading_id: u64,
     /// Which half the keys work. Not reset by anything hocus pushes: a strip arriving while
     /// the user is reading the history must not throw them back into the list.
     focus: Focus,
@@ -165,6 +205,27 @@ struct HistoryKey {
     minute: i64,
 }
 
+/// One event of the timeline, filling the pane so it can be read whole.
+///
+/// The history half caps every event at [`agents::MAX_ENTRY_ROWS`] rows, which is only honest
+/// because this exists: `Enter` on the cursor opens the event here, with the whole pane and a
+/// scroll of its own to spend on it.
+struct Reading {
+    /// What the divider calls it - `prompt`, `result`, `summary`.
+    kind: String,
+    /// When the event was recorded, or `None` for one made before there were stamps. Kept
+    /// rather than the formatted age so the divider goes on ticking with the minute timer.
+    created_at_ms: Option<i64>,
+    /// The whole of what the event said, unwrapped.
+    text: String,
+    /// Lines scrolled from the top. The reader is anchored to the head rather than the tail:
+    /// the history half is a timeline, where the newest end is the interesting one, and an
+    /// event is a piece of prose, where the beginning is.
+    scroll: usize,
+    /// Which opening this is. See `State::reading_id`.
+    id: u64,
+}
+
 /// Which half of the pane the keys work.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Focus {
@@ -219,12 +280,7 @@ impl ZellijPlugin for State {
         // Where the cursor moved to is hocus's business, not only this pane's: it
         // draws the selected agent's summary. Compared rather than sent on every
         // key, so holding `j` at the end of the list says nothing.
-        if self.selection_key() != selection {
-            self.history_scroll = 0;
-            // Whatever was asked about, the cursor is no longer on it. Nothing ever tells
-            // this pane that a request was refused, so a hint that outlived the row it was
-            // about would be a lie the user could not clear.
-            self.summarizing = None;
+        if self.follow_selection(selection) {
             self.send_selection();
         }
         rendered
@@ -274,18 +330,20 @@ impl ZellijPlugin for State {
         // push whose focus walked onto another agent.
         let selection = self.selection_key();
         let rendered = self.set_rows(strip);
-        if self.selection_key() != selection {
-            self.history_scroll = 0;
-            // Whatever was asked about, the cursor is no longer on it. Nothing ever tells
-            // this pane that a request was refused, so a hint that outlived the row it was
-            // about would be a lie the user could not clear.
-            self.summarizing = None;
+        if self.follow_selection(selection) {
             self.send_selection();
         }
         rendered
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
+        // The reader is the whole pane rather than a third region: an event long enough to
+        // need it is long enough to want the room, and the list it covers is still exactly
+        // where Esc puts it back.
+        if self.reading.is_some() {
+            self.render_reader(rows, cols);
+            return;
+        }
         if self.rows.is_empty() {
             // Nothing to select and so nothing to have a history: the pane says so once
             // rather than splitting an empty list off an empty history.
@@ -451,6 +509,36 @@ const MIN_LIST_ROWS: usize = 3;
 const MIN_HISTORY_ROWS: usize = 2;
 
 impl State {
+    /// Whether the cursor has left the row `was` named, dropping everything that belonged to
+    /// it if so.
+    ///
+    /// Split from the `send_selection` that follows it at both call sites for the reason given
+    /// there: the host calls live in the entry points, and the tests drive everything below
+    /// them directly.
+    fn follow_selection(&mut self, was: Option<String>) -> bool {
+        if self.selection_key() == was {
+            return false;
+        }
+        self.leave_row();
+        true
+    }
+
+    /// Everything about the history half that belonged to the row the cursor has just left.
+    ///
+    /// One place rather than three, because the list of what a row owns has grown: where the
+    /// half was wound to, which event the cursor was on, whether a summary was asked for, and
+    /// the newest of them: whichever event was open in the reader, which is about an entry of a
+    /// run the cursor is no longer pointing at.
+    ///
+    /// Nothing ever tells this pane that a summary request was refused, so the only honest
+    /// lifetime for that hint is one the user can end themselves by walking off the row.
+    fn leave_row(&mut self) {
+        self.history_scroll = 0;
+        self.history_cursor = 0;
+        self.summarizing = None;
+        self.close_reader();
+    }
+
     fn on_key(&mut self, key: KeyWithModifier) -> bool {
         if key.bare_key == BareKey::Char('`') && key.has_modifiers(&[KeyModifier::Ctrl]) {
             // puts this pane away - the same gesture that revealed it. This pane and
@@ -458,6 +546,14 @@ impl State {
             // to put away with its own Esc.
             hide_self();
             return false;
+        }
+        // The reader is the whole pane, so it answers every key that is not the gesture above:
+        // there is no list to steer and no half to move the focus between while it is up, and a
+        // key that fell through to them would act on a pane the user cannot see. Ctrl-` is the
+        // exception because it puts the pane away rather than acting inside it - and it leaves
+        // the reader open, so coming back lands where you were.
+        if self.reading.is_some() {
+            return self.read_key(key);
         }
         if key.bare_key == BareKey::Char('o') && key.has_modifiers(&[KeyModifier::Ctrl]) {
             // Move this pane out of the way of whatever it is covering - the same gesture the
@@ -497,16 +593,22 @@ impl State {
             match key.bare_key {
                 // `j`/`k` follow the focus - the vim spelling of whatever the focused half
                 // does with a line.
+                //
+                // In the history half that is an event rather than a line: the half caps every
+                // event at four rows, so stepping one at a time is what walks the timeline, and
+                // a line step would leave the cursor pointing between two of them with nothing
+                // for `Enter` to open. The wheel and the page keys still move by lines, which
+                // is what reading a long event in place wants.
                 BareKey::Char('k') => {
                     return match self.focus {
                         Focus::List => self.step_selection(Motion::Up),
-                        Focus::History => self.scroll_history(1),
+                        Focus::History => self.step_history_cursor(1),
                     };
                 },
                 BareKey::Char('j') => {
                     return match self.focus {
                         Focus::List => self.step_selection(Motion::Down),
-                        Focus::History => self.scroll_history(-1),
+                        Focus::History => self.step_history_cursor(-1),
                     };
                 },
                 // The page keys are the history's whichever half has the focus, for the
@@ -528,6 +630,13 @@ impl State {
                 false
             },
             BareKey::Enter => {
+                // With the keys in the history half, Enter is about the event under the
+                // cursor rather than the row above: the half caps every event at four rows,
+                // and this is where the rest of one is. The list half's Enter is untouched -
+                // the two halves have separate cursors, and this is the key that says so.
+                if self.focus == Focus::History {
+                    return self.open_reader();
+                }
                 if matches!(self.rows.get(self.selected), Some(StripRow::MoreRuns)) {
                     pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_ARCHIVE_MORE));
                     return false;
@@ -553,6 +662,17 @@ impl State {
     }
 
     fn on_mouse(&mut self, mouse_event: Mouse) -> bool {
+        // With the reader up there is one thing on screen and the wheel is its. A click is
+        // ignored rather than closing it: nothing under the pointer is a target, and a stray
+        // click losing the user's place in a long event is worse than a click that does
+        // nothing.
+        if self.reading.is_some() {
+            return match mouse_event {
+                Mouse::ScrollUp(lines) => self.scroll_reader(-(lines.max(1) as isize)),
+                Mouse::ScrollDown(lines) => self.scroll_reader(lines.max(1) as isize),
+                _ => false,
+            };
+        }
         match mouse_event {
             Mouse::LeftClick(line, _) if line >= 0 => self.on_click(line as usize),
             // The wheel carries no coordinates, so it cannot be routed by where the pointer
@@ -714,9 +834,25 @@ impl State {
         let max_scroll = entries_len.saturating_sub(room);
         self.last_history_max_scroll = max_scroll;
         self.history_scroll = self.history_scroll.min(max_scroll);
+        let focused = self.focus == Focus::History;
+        // The cursor is walked by `step_history_cursor`, which knows how many events there are
+        // but not how many of their rows fit: how many lines the half has depends on the width,
+        // and only `render` is told the width. So the winding that keeps the cursor on screen
+        // happens here, the same place and for the same reason `last_history_max_scroll` is
+        // recorded.
+        if focused {
+            self.history_cursor = self
+                .history_cursor
+                .min(self.history().events.len().saturating_sub(1));
+            if let Some(reveal) = self.reveal_cursor(room) {
+                self.history_scroll = reveal.min(max_scroll);
+            }
+        }
         let end = entries_len - self.history_scroll;
         let start = end.saturating_sub(room);
-        let focused = self.focus == Focus::History;
+        let cursor = focused
+            .then(|| self.cursor_event().map(|event| event.start))
+            .flatten();
         let placeholder = match self.selection_key() {
             Some(_) => "  nothing to show yet",
             None => "  select an agent",
@@ -746,13 +882,109 @@ impl State {
             // host deletes the viewport before every render, so there is no frame underneath
             // for a short line to leave showing. Only the rows on their way to the screen are
             // copied: the cache behind them holds every line of the run.
-            let line = line.clone().indent(1);
+            //
+            // The cursor takes that margin on the event's first row, which is the row its
+            // label is on: a marker in the column every other row leaves blank, the same
+            // shape the list above uses to say where its own cursor is.
+            let line = match cursor == Some(start + index) {
+                true => line.clone().prepend(">", markdown::MdStyle::default()),
+                false => line.clone().indent(1),
+            };
             // Nothing is dimmed by where it sits: every event reads at the same weight, and a
             // summary is told apart by its bold label rather than by the rest of the timeline
             // being pushed into the background. Whatever the markdown asked for still stands.
             let text = markdown::style_text(&line.text, &line.styles, false);
             print_text_with_coordinates(text, 0, body + index, Some(cols), None);
         }
+    }
+
+    /// Where the history half has to be wound for the cursor's event to be on screen, or `None`
+    /// when it already is.
+    ///
+    /// In `history_scroll`'s units - lines back from the newest - and unclamped: the caller
+    /// holds the `max_scroll` this has to fit inside.
+    ///
+    /// The two edges are answered in order, foot then head, so an event taller than the room
+    /// shows its head: it is capped at four rows, so that only happens on a pane with two or
+    /// three rows to give, and there the beginning of an event is what identifies it.
+    fn reveal_cursor(&self, room: usize) -> Option<usize> {
+        let event = self.cursor_event()?;
+        let entries_len = self.history().entries.len();
+        let mut scroll = self.history_scroll;
+        // Below the bottom edge: wind forward until its last row is the newest on screen.
+        if entries_len.saturating_sub(scroll) < event.end() {
+            scroll = entries_len.saturating_sub(event.end());
+        }
+        // Above the top edge: wind back until its first row is the oldest on screen.
+        if event.start + room < entries_len.saturating_sub(scroll) {
+            scroll = entries_len.saturating_sub(event.start + room);
+        }
+        (scroll != self.history_scroll).then_some(scroll)
+    }
+
+    /// The reader: one event of the timeline with the whole pane to itself.
+    ///
+    /// A divider of the same shape the halves have - what this is, and how far through it you
+    /// are - and the event's markdown below it. `focused` is unconditionally true: there is
+    /// nowhere else for the keys to be while this is up.
+    fn render_reader(&mut self, rows: usize, cols: usize) {
+        self.fill_reader_cache(cols);
+        let Some(reading) = self.reading.as_ref() else {
+            return;
+        };
+        // A row for the divider, the rest for the event.
+        let room = rows.saturating_sub(1);
+        self.last_reader_rows = room;
+        let lines = self.reader_lines();
+        let max_scroll = lines.len().saturating_sub(room);
+        let scroll = reading.scroll.min(max_scroll);
+        // The label is built here rather than held in `Reading` so the age goes on ticking with
+        // the minute timer, the way every other age on this pane does.
+        let mut label = reading.kind.clone();
+        if let Some(then_ms) = reading.created_at_ms {
+            label.push_str(&format!(" · {}", agents::short_age(now_ms(), then_ms)));
+        }
+        let end = (scroll + room).min(lines.len());
+        render_divider(&label, scroll, lines.len() - end, true, 0, cols);
+        for (index, line) in lines[scroll..end].iter().enumerate() {
+            let line = line.clone().indent(1);
+            let text = markdown::style_text(&line.text, &line.styles, false);
+            print_text_with_coordinates(text, 0, 1 + index, Some(cols), None);
+        }
+        // Settled last, for the same reason the history half settles its own here: only this
+        // knows the width the body was wrapped to, and so only this knows how many lines it
+        // came to.
+        self.last_reader_max_scroll = max_scroll;
+        if let Some(reading) = self.reading.as_mut() {
+            reading.scroll = scroll;
+        }
+    }
+
+    /// [`Self::reader_lines`], computed once per event and width. See `fill_history_cache` for
+    /// why anything on this pane is cached at all.
+    fn fill_reader_cache(&mut self, width: usize) {
+        let Some(reading) = self.reading.as_ref() else {
+            return;
+        };
+        let key = (reading.id, width);
+        if self.reader_cache.as_ref().is_some_and(|(k, _)| *k == key) {
+            return;
+        }
+        // The same margin the history half's body keeps, at both edges.
+        let lines = markdown::render(
+            &reading.text,
+            width.saturating_sub(2),
+            markdown::Options::compact(),
+        );
+        self.reader_cache = Some((key, lines));
+    }
+
+    /// Whatever [`Self::fill_reader_cache`] last put there.
+    fn reader_lines(&self) -> &[markdown::MdLine] {
+        self.reader_cache
+            .as_ref()
+            .map(|(_, lines)| lines.as_slice())
+            .unwrap_or_default()
     }
 
     /// What the divider says: what the half is about, and whether a summary was asked for
@@ -859,6 +1091,10 @@ impl State {
     /// Asked of the same two sources `history_lines` draws from, in the same order, so the
     /// answer cannot claim an age the half is not showing.
     fn shows_an_age(&self) -> bool {
+        // The reader is the whole pane, so what it says is the only thing that can go stale.
+        if let Some(reading) = self.reading.as_ref() {
+            return reading.created_at_ms.is_some();
+        }
         if let Some(run) = self
             .run
             .as_ref()
@@ -894,6 +1130,114 @@ impl State {
         };
         let moved = target != self.history_scroll;
         self.history_scroll = target;
+        moved
+    }
+
+    /// Move the history half's cursor by `delta` events, positive being back into the past, and
+    /// say whether it went anywhere.
+    ///
+    /// The counterpart of `scroll_history`, and the one place `history_cursor` changes, so the
+    /// clamp cannot be forgotten at a call site. Clamped against the events the *cache* holds
+    /// rather than the run's own entries: what a cursor can point at is what the half drew, and
+    /// the two differ - a result is filtered out of a live run's timeline, and the rolling
+    /// summary is a row the run does not have an entry for.
+    fn step_history_cursor(&mut self, delta: isize) -> bool {
+        let last = self.history().events.len().saturating_sub(1);
+        let target = match delta >= 0 {
+            true => self
+                .history_cursor
+                .saturating_add(delta.unsigned_abs())
+                .min(last),
+            false => self.history_cursor.saturating_sub(delta.unsigned_abs()),
+        };
+        let moved = target != self.history_cursor;
+        self.history_cursor = target;
+        moved
+    }
+
+    /// The event under the history half's cursor, if there is one.
+    ///
+    /// `history_cursor` counts back from the newest - see the field - so the index into the
+    /// oldest-first `events` is measured from the far end.
+    fn cursor_event(&self) -> Option<&agents::HistoryEvent> {
+        let events = &self.history().events;
+        let index = events.len().checked_sub(self.history_cursor + 1)?;
+        events.get(index)
+    }
+
+    /// Open the event under the cursor in the reader, and say whether anything changed.
+    ///
+    /// Everything the reader needs is copied out of the event rather than referred back to:
+    /// see [`Reading`]. Nothing to open is not a failure - a half showing a placeholder has no
+    /// event under its cursor - and Enter simply does nothing there.
+    fn open_reader(&mut self) -> bool {
+        let Some(event) = self.cursor_event() else {
+            return false;
+        };
+        let (kind, created_at_ms, text) =
+            (event.kind.clone(), event.created_at_ms, event.text.clone());
+        self.reading_id += 1;
+        self.reading = Some(Reading {
+            kind,
+            created_at_ms,
+            text,
+            scroll: 0,
+            id: self.reading_id,
+        });
+        true
+    }
+
+    /// Put the reader away, and say whether there was one.
+    ///
+    /// The cache goes with it: it is keyed on an id that never comes round again, so keeping it
+    /// would only hold a copy of the whole event for as long as the pane is open.
+    fn close_reader(&mut self) -> bool {
+        self.reader_cache = None;
+        self.reading.take().is_some()
+    }
+
+    /// A key with the reader up. Everything in here is about the one event on screen.
+    ///
+    /// `Esc` closes the reader rather than hiding the pane: the pane's Esc is a dismissal, and
+    /// with a reader open the thing being dismissed is the reader. Every other key is
+    /// swallowed, because the list and the halves are not on screen and a key that steered them
+    /// would move something the user cannot see.
+    fn read_key(&mut self, key: KeyWithModifier) -> bool {
+        match key.bare_key {
+            BareKey::Esc => self.close_reader(),
+            BareKey::Up => self.scroll_reader(-1),
+            BareKey::Down => self.scroll_reader(1),
+            BareKey::Char('k') if key.has_no_modifiers() => self.scroll_reader(-1),
+            BareKey::Char('j') if key.has_no_modifiers() => self.scroll_reader(1),
+            BareKey::PageUp => self.scroll_reader(-(self.reader_page() as isize)),
+            BareKey::PageDown => self.scroll_reader(self.reader_page() as isize),
+            _ => false,
+        }
+    }
+
+    /// One page of the reader: what it can show, less a line of overlap, the same bargain
+    /// `page` strikes for the history half.
+    fn reader_page(&self) -> usize {
+        self.last_reader_rows.saturating_sub(1).max(1)
+    }
+
+    /// Move the reader by `delta` lines, positive being *down* into the event, and say whether
+    /// it moved.
+    ///
+    /// The opposite sign to `scroll_history`, and deliberately: the half is a timeline anchored
+    /// to its newest end, where winding back means going up; the reader is a piece of prose
+    /// anchored to its head, where the scroll is a line number.
+    fn scroll_reader(&mut self, delta: isize) -> bool {
+        let max = self.last_reader_max_scroll;
+        let Some(reading) = self.reading.as_mut() else {
+            return false;
+        };
+        let target = match delta >= 0 {
+            true => reading.scroll.saturating_add(delta.unsigned_abs()).min(max),
+            false => reading.scroll.saturating_sub(delta.unsigned_abs()),
+        };
+        let moved = target != reading.scroll;
+        reading.scroll = target;
         moved
     }
 
@@ -1795,8 +2139,8 @@ mod tests {
         );
     }
 
-    /// `Tab` moves the keys, `j`/`k` do whatever the half they are in does with a line, and
-    /// the arrows walk the list from either half.
+    /// `Tab` moves the keys, `j`/`k` do whatever the half they are in does with a step - a row
+    /// of the list, an event of the timeline - and the arrows walk the list from either half.
     #[test]
     fn tab_moves_the_focus_and_jk_follow_it() {
         let mut state = State::default();
@@ -1829,7 +2173,10 @@ mod tests {
         assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
         assert_eq!(state.focus, Focus::History);
         assert!(state.on_key(KeyWithModifier::new(BareKey::Char('k'))));
-        assert_eq!(state.history_scroll, 1, "k scrolls the history it is in");
+        assert_eq!(
+            state.history_cursor, 1,
+            "k walks the timeline it is in, an event at a time"
+        );
         assert_eq!(state.selected, 1, "and moves no selection");
 
         // the arrows steer the list from either half, and take the keys back with them
@@ -1861,6 +2208,210 @@ mod tests {
             !state.on_key(KeyWithModifier::new(BareKey::Down)),
             "and now nothing moved at all"
         );
+    }
+
+    /// A strip of one archived run, the shape every history test below wants.
+    fn one_run_selected() -> Strip {
+        unfocused(vec![
+            StripRow::Project("archive".to_owned()),
+            StripRow::Run {
+                run_id: "claude:session-1".to_owned(),
+                text: "claude · hook history".to_owned(),
+                kind: "claude".to_owned(),
+            },
+        ])
+    }
+
+    /// Walking the cursor onto an event the half is not showing winds the half to it. The key
+    /// handler cannot do this itself: how many lines the half has depends on the width, and
+    /// only `render` is told the width.
+    #[test]
+    fn the_cursor_winds_the_half_back_to_the_event_it_lands_on() {
+        let mut state = State::default();
+        state.set_rows(one_run_selected());
+        let mut run = a_run();
+        run.summary = None;
+        run.entries = (0..30)
+            .map(|index| agents::RunEntry {
+                revision: index + 1,
+                event_id: None,
+                kind: agents::RunEntryKind::Question,
+                text: format!("question {index}"),
+                created_at_ms: None,
+            })
+            .collect();
+        state.run = Some(run);
+        state.focus = Focus::History;
+        state.render(20, 50);
+        // Thirty one-line events against nine rows: the half is at the newest end.
+        assert_eq!(state.last_history_rows, 10);
+        assert_eq!(state.history_scroll, 0);
+
+        // Walk the cursor past the top of the window and the half follows it back.
+        for _ in 0..12 {
+            assert!(state.on_key(KeyWithModifier::new(BareKey::Char('k'))));
+        }
+        state.render(20, 50);
+        assert_eq!(state.history_cursor, 12);
+        assert_eq!(
+            state.history_scroll, 3,
+            "wound back just far enough to put the event on the oldest row"
+        );
+
+        // And back down again: the half winds forward only as far as it has to.
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('j'))));
+        state.render(20, 50);
+        assert_eq!(state.history_cursor, 11);
+        assert_eq!(state.history_scroll, 3, "still on screen, so nothing moved");
+
+        // The cursor stops at the oldest event rather than running off the end.
+        for _ in 0..50 {
+            state.on_key(KeyWithModifier::new(BareKey::Char('k')));
+        }
+        state.render(20, 50);
+        assert_eq!(state.history_cursor, 29);
+        assert_eq!(state.history_scroll, state.last_history_max_scroll);
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Char('k'))));
+    }
+
+    /// `Enter` in the history half opens the event under the cursor, uncapped and with the
+    /// whole pane to read it in; `Esc` puts the reader away and leaves the pane where it is.
+    /// The list half's `Enter` is untouched - the two halves have separate cursors.
+    #[test]
+    fn enter_in_the_history_half_opens_the_event_and_esc_comes_back() {
+        let mut state = State::default();
+        state.set_rows(one_run_selected());
+        let mut run = a_run();
+        run.summary = None;
+        run.entries = vec![agents::RunEntry {
+            revision: 1,
+            event_id: None,
+            kind: agents::RunEntryKind::Prompt,
+            text: "word ".repeat(400),
+            created_at_ms: Some(1),
+        }];
+        state.run = Some(run);
+        state.render(20, 50);
+
+        // Capped in the half, whole in the reader.
+        assert_eq!(
+            state.cached_history_lines(50).entries.len(),
+            agents::MAX_ENTRY_ROWS
+        );
+        assert!(
+            !state.on_key(KeyWithModifier::new(BareKey::Enter)),
+            "the keys are in the list half, where Enter is the list's - and this row is an \
+             archived run, which has no pane to walk to"
+        );
+        assert!(state.reading.is_none());
+
+        state.focus = Focus::History;
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Enter)));
+        let reading = state.reading.as_ref().expect("the event under the cursor");
+        assert_eq!(reading.kind, "prompt");
+        assert_eq!(reading.created_at_ms, Some(1));
+        assert_eq!(reading.text, "word ".repeat(400));
+
+        state.render(20, 50);
+        assert!(
+            state.reader_lines().len() > agents::MAX_ENTRY_ROWS,
+            "the whole of it, which is the point of opening it"
+        );
+        assert!(state.last_reader_max_scroll > 0);
+
+        // The reader has the keys while it is up, and scrolls from its head.
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Char('k'))));
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('j'))));
+        assert_eq!(state.reading.as_ref().unwrap().scroll, 1);
+        assert_eq!(state.selected, 1, "and steers nothing behind it");
+
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Esc)));
+        assert!(state.reading.is_none(), "Esc closed the reader");
+        assert!(state.reader_cache.is_none(), "and let go of its copy");
+    }
+
+    /// A summary somebody asked for arrives as an entry of the run, so the reader's divider
+    /// says what it is and how old it is - and the minute tick has to keep it honest.
+    #[test]
+    fn the_reader_is_an_age_that_goes_on_ticking() {
+        let mut state = State::default();
+        state.set_rows(one_run_selected());
+        let mut run = a_run();
+        run.summary = None;
+        run.entries = vec![agents::RunEntry {
+            revision: 1,
+            event_id: None,
+            kind: agents::RunEntryKind::Prompt,
+            text: "implement history".to_owned(),
+            created_at_ms: None,
+        }];
+        state.run = Some(run);
+        state.render(20, 50);
+        state.focus = Focus::History;
+        state.on_key(KeyWithModifier::new(BareKey::Enter));
+        assert!(state.reading.is_some());
+        assert!(!state.shows_an_age(), "an unstamped event has none to tick");
+
+        state.reading.as_mut().unwrap().created_at_ms = Some(1);
+        assert!(state.shows_an_age());
+    }
+
+    /// The reader is about an event of the row the cursor was on, so walking off that row
+    /// takes it with you: a strip whose focus lands on another agent moves the selection, and
+    /// what is on screen has to follow.
+    #[test]
+    fn a_strip_that_moves_the_selection_closes_the_reader() {
+        let mut state = State::default();
+        state.set_rows(with_summary(strip(), 3, "Ran the tests.", false));
+        state.render(20, 50);
+        state.focus = Focus::History;
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Enter)));
+        assert!(state.reading.is_some(), "the idle summary is an event too");
+
+        // What `pipe` does with a strip, less the host call it ends with.
+        let was = state.selection_key();
+        state.set_rows(focused_on(strip(), 7));
+        assert!(state.follow_selection(was));
+        assert_eq!(state.selection(), Some(7), "the focus walked onto pane 7");
+        assert!(state.reading.is_none());
+    }
+
+    /// The reader's body is a markdown parse of the whole event, on a pane that redraws on
+    /// every keystroke - so it is wrapped once per event and width, the way the history half
+    /// below it is. Read by poisoning the cache, as `the_history_is_rendered_once_per_thing_it
+    /// _depends_on` does.
+    #[test]
+    fn the_reader_is_wrapped_once_per_event_and_width() {
+        let mut state = State::default();
+        state.set_rows(one_run_selected());
+        let mut run = a_run();
+        run.summary = None;
+        run.entries = vec![agents::RunEntry {
+            revision: 1,
+            event_id: None,
+            kind: agents::RunEntryKind::Prompt,
+            text: "word ".repeat(50),
+            created_at_ms: None,
+        }];
+        state.run = Some(run);
+        state.render(20, 50);
+        state.focus = Focus::History;
+        state.on_key(KeyWithModifier::new(BareKey::Enter));
+        state.render(20, 50);
+
+        let poison = vec![markdown::MdLine::plain("poison")];
+        let key = state.reader_cache.as_ref().unwrap().0;
+        state.reader_cache = Some((key, poison.clone()));
+        state.fill_reader_cache(50);
+        assert_eq!(state.reader_lines(), poison, "same event, same width");
+        state.fill_reader_cache(40);
+        assert_ne!(state.reader_lines(), poison, "a resize rewraps it");
+
+        // And a second opening is a second event, however alike the two look.
+        state.on_key(KeyWithModifier::new(BareKey::Esc));
+        state.on_key(KeyWithModifier::new(BareKey::Enter));
+        state.fill_reader_cache(40);
+        assert_ne!(state.reader_lines(), poison);
     }
 
     /// The page keys are the history's from either half: the list has no page of its own,
