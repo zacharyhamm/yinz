@@ -220,10 +220,11 @@ impl RunCommand {
     pub fn display_host(&self) -> Option<String> {
         self.target.display()
     }
-    /// The spawn resolves an endpoint first (today: a VM to boot) and so
-    /// happens off the pty thread; a held pane waits for the user instead.
+    /// Runs on another machine, so the spawn resolves an endpoint (an ssh
+    /// connection, a VM to boot) and happens off the pty thread; a held pane
+    /// waits for the user instead.
     pub fn defers_spawn(&self) -> bool {
-        self.target.is_firecracker() && !self.hold_on_start
+        self.target.is_remote() && !self.hold_on_start
     }
     /// A start failure is shown in the pane rather than closing it: always for
     /// a remote target, whose failures (an unreachable host, a VM that did not
