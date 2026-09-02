@@ -6,9 +6,28 @@ message Command {
   string path = 1;
   repeated string args = 2;
   optional string cwd = 3;
+  // Fields 4 and 6-8 are the flat spelling of `target`, kept so plugins built
+  // before `PaneTarget` keep working: readers take `target` when it is set and
+  // fall back to these, writers fill both.
   optional string remote_host = 4;
   bool remote_default_shell = 5;
   optional string firecracker_vm = 6;
   optional string firecracker_image = 7;
   optional string firecracker_worktree = 8;
+  optional PaneTarget target = 9;
+}
+
+// Where a pane's process runs; unset or `local` means this machine.
+message PaneTarget {
+  oneof kind {
+    bool local = 1;
+    string ssh_host = 2;
+    FirecrackerTarget firecracker = 3;
+  }
+}
+
+message FirecrackerTarget {
+  string vm = 1;
+  optional string image = 2;
+  optional string worktree = 3;
 }

@@ -20,8 +20,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use zellij_tile::plugin_authoring;
 use zellij_tile::prelude::{
-    validate_firecracker_vm_name, FloatingPaneCoordinates, GitCheckout, PaneId, PercentOrFixed,
-    PermissionType, SessionInfo, WarpPlacement,
+    FloatingPaneCoordinates, GitCheckout, PaneId, PaneTarget, PercentOrFixed, PermissionType,
+    SessionInfo, WarpPlacement,
 };
 
 use crate::log::truncate_str;
@@ -2301,26 +2301,13 @@ impl Args {
     /// The VM a `new_pane` runs in and the image it boots from, read the way
     /// `launch::plan` reads `agent_spawn`'s: blanks are absent, both names are
     /// checked, and an image is only meaningful with a VM to boot it in.
-    pub fn firecracker_target(&self) -> Result<(Option<String>, Option<String>), String> {
-        let trimmed = |value: &Option<String>| {
-            value
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-        };
-        let vm = trimmed(&self.firecracker);
-        if let Some(name) = vm.as_deref() {
-            validate_firecracker_vm_name(name)?;
-        }
-        let image = trimmed(&self.firecracker_image);
-        if let Some(image) = image.as_deref() {
-            validate_firecracker_vm_name(image)?;
-            if vm.is_none() {
-                return Err("firecracker_image requires a Firecracker VM".to_owned());
-            }
-        }
-        Ok((vm, image))
+    pub fn firecracker_target(&self) -> Result<PaneTarget, String> {
+        PaneTarget::from_parts(
+            None,
+            self.firecracker.as_deref(),
+            self.firecracker_image.as_deref(),
+            None,
+        )
     }
 
     /// What starting this agent means, in the terms `hocus-new-agent` says it in.
@@ -3829,7 +3816,7 @@ mod host {
         // Checked here, before anything opens, for the same reason `launch::plan`
         // checks them: a bad name would otherwise reach the host as a pane that
         // fails to start, and the model would have nothing to act on.
-        let (firecracker_vm, firecracker_image) = match args.firecracker_target() {
+        let target = match args.firecracker_target() {
             Ok(target) => target,
             Err(error) => return error,
         };
@@ -3851,20 +3838,18 @@ mod host {
                 path: PathBuf::from(path),
                 args: rest,
                 cwd,
-                firecracker_vm,
-                firecracker_image,
+                target,
                 ..Default::default()
             }),
             // No command, but a VM: the guest's login shell, as `new_remote_pane`
             // asks for the far machine's. `open_terminal*` would open a shell on
             // the host, and `focused_cwd()` is a host path, so the cwd stays as
             // given — unset lands the pane in the VM's working directory.
-            None if firecracker_vm.is_some() => open(CommandToRun {
+            None if target.is_firecracker() => open(CommandToRun {
                 path: PathBuf::new(),
                 args: vec![],
                 cwd,
-                firecracker_vm,
-                firecracker_image,
+                target,
                 remote_default_shell: true,
                 ..Default::default()
             }),
@@ -3913,10 +3898,7 @@ mod host {
                 path: PathBuf::from(path),
                 args: rest,
                 cwd: args.cwd.clone().map(PathBuf::from),
-                remote_host: Some(remote_host),
-                firecracker_vm: None,
-                firecracker_image: None,
-                firecracker_worktree: None,
+                target: PaneTarget::Ssh { host: remote_host },
                 remote_default_shell: false,
             },
             None => CommandToRun {
@@ -3925,10 +3907,7 @@ mod host {
                 path: PathBuf::new(),
                 args: vec![],
                 cwd: args.cwd.clone().map(PathBuf::from),
-                remote_host: Some(remote_host),
-                firecracker_vm: None,
-                firecracker_image: None,
-                firecracker_worktree: None,
+                target: PaneTarget::Ssh { host: remote_host },
                 remote_default_shell: true,
             },
         };

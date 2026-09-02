@@ -1,4 +1,5 @@
 use super::super::layout::*;
+use crate::input::command::PaneTarget;
 use insta::assert_snapshot;
 
 fn normalize_layout_debug(s: String) -> String {
@@ -1893,37 +1894,42 @@ fn global_cwd_not_given_to_firecracker_pane_without_cwd() {
     assert_eq!(cwds, vec![None, None, Some(PathBuf::from("/tmp"))]);
 }
 
-/// The same holds for a pane on a remote host, which has no layout spelling
-/// but reaches `Run::add_cwd` through the same layout, tab and template prefixes.
+/// A pane on an ssh host, which has no layout spelling but reaches
+/// `Run::add_cwd` through the same layout, tab and template prefixes, gets
+/// the prefix like a local pane: the layout names where it starts there.
 #[test]
-fn global_cwd_not_prepended_to_remote_host_pane_with_cwd() {
+fn global_cwd_prepended_to_remote_host_pane_with_cwd() {
     use crate::input::command::RunCommand;
     let mut run = Run::Command(RunCommand {
         command: PathBuf::from("cargo"),
         cwd: Some(PathBuf::from("src/project")),
-        remote_host: Some("ssh://me@build.example".to_owned()),
+        target: PaneTarget::Ssh {
+            host: "ssh://me@build.example".to_owned(),
+        },
         ..Default::default()
     });
-    run.add_cwd(Path::new("/tmp"));
+    run.add_cwd(Path::new("/srv/app"));
     let Run::Command(run_command) = run else {
         panic!("add_cwd changed the run variant");
     };
-    assert_eq!(run_command.cwd, Some(PathBuf::from("src/project")));
+    assert_eq!(run_command.cwd, Some(PathBuf::from("/srv/app/src/project")));
 }
 
 #[test]
-fn global_cwd_not_given_to_remote_host_pane_without_cwd() {
+fn global_cwd_given_to_remote_host_pane_without_cwd() {
     use crate::input::command::RunCommand;
     let mut run = Run::Command(RunCommand {
         command: PathBuf::from("cargo"),
-        remote_host: Some("ssh://me@build.example".to_owned()),
+        target: PaneTarget::Ssh {
+            host: "ssh://me@build.example".to_owned(),
+        },
         ..Default::default()
     });
-    run.add_cwd(Path::new("/tmp"));
+    run.add_cwd(Path::new("/srv/app"));
     let Run::Command(run_command) = run else {
         panic!("add_cwd changed the run variant");
     };
-    assert_eq!(run_command.cwd, None);
+    assert_eq!(run_command.cwd, Some(PathBuf::from("/srv/app")));
 }
 
 fn floating_pane_cwds(floating_panes: &[FloatingPaneLayout]) -> Vec<Option<PathBuf>> {
@@ -2839,22 +2845,30 @@ fn layout_with_firecracker_panes() {
                 command: PathBuf::from("cargo"),
                 args: vec!["test".to_owned()],
                 hold_on_close: true,
-                firecracker_vm: Some("review".to_owned()),
-                firecracker_image: Some("rust-dev".to_owned()),
-                firecracker_worktree: Some(PathBuf::from("/home/me/src/project")),
+                target: PaneTarget::Firecracker {
+                    vm: "review".to_owned(),
+                    image: Some("rust-dev".to_owned()),
+                    worktree: Some(PathBuf::from("/home/me/src/project")),
+                },
                 ..Default::default()
             })),
             Some(Run::Command(RunCommand {
                 remote_default_shell: true,
-                firecracker_vm: Some("review".to_owned()),
-                firecracker_image: Some("rust-dev".to_owned()),
-                firecracker_worktree: Some(PathBuf::from("/home/me/src/project")),
+                target: PaneTarget::Firecracker {
+                    vm: "review".to_owned(),
+                    image: Some("rust-dev".to_owned()),
+                    worktree: Some(PathBuf::from("/home/me/src/project")),
+                },
                 ..Default::default()
             })),
             Some(Run::Command(RunCommand {
                 cwd: Some(PathBuf::from("/workspace")),
                 remote_default_shell: true,
-                firecracker_vm: Some("shell".to_owned()),
+                target: PaneTarget::Firecracker {
+                    vm: "shell".to_owned(),
+                    image: None,
+                    worktree: None,
+                },
                 ..Default::default()
             })),
             Some(Run::Command(RunCommand {

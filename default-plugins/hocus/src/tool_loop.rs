@@ -2542,7 +2542,7 @@ impl State {
             // does not exist, and the agent would start wherever the broker happens to
             // be. The git route never has this problem - there `cwd` is the host
             // checkout to mirror, and the provider supplies the guest directory.
-            if command.firecracker_vm.is_some() && cwd.is_some() {
+            if command.target.is_firecracker() && cwd.is_some() {
                 return "cwd is a path on this machine, and a Firecracker agent starts in the \
                         VM's workspace; leave cwd unset or name a project"
                     .to_owned();
@@ -2557,8 +2557,8 @@ impl State {
                 )),
                 args: command.args,
                 cwd,
-                firecracker: command.firecracker_vm,
-                firecracker_image: command.firecracker_image,
+                firecracker: command.target.firecracker_vm().map(str::to_owned),
+                firecracker_image: command.target.firecracker_image().map(str::to_owned),
                 ..tools::Args::default()
             };
             // The one thing this route did not do. `spawn_in_checkout` goes through a host

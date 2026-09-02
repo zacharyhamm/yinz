@@ -353,7 +353,7 @@ fn a_remote_pane_keeps_its_process_when_it_moves_between_sessions() {
         other => panic!("an adopted remote pane should carry a command, got {other:?}"),
     };
     assert_eq!(
-        arrived_command.remote_host.as_deref(),
+        arrived_command.target.ssh_host(),
         Some("build-box"),
         "the command travelled without its host, so the pane no longer knows where it runs — a \
          resume carries no command, so this is the only copy there was"

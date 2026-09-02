@@ -1831,7 +1831,9 @@ fn released_remote_pane_for_warp(screen: &mut Screen, terminal_id: u32) -> Box<W
                 cmd: RunCommand {
                     command: PathBuf::from("/usr/bin/tail"),
                     args: vec!["-f".to_owned(), "/var/log/build".to_owned()],
-                    remote_host: Some("build-box".to_owned()),
+                    target: zellij_utils::data::PaneTarget::Ssh {
+                        host: "build-box".to_owned(),
+                    },
                     ..Default::default()
                 },
             })),

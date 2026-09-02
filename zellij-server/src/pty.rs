@@ -102,7 +102,7 @@ fn finish_terminal_spawn(
     let show_spawn_error = pending
         .run_command
         .as_ref()
-        .is_some_and(|command| command.hold_on_close || command.firecracker_vm.is_some());
+        .is_some_and(|command| command.shows_start_failure());
     match result.with_context(err_context) {
         Ok((pid, starts_held)) => {
             let hold_for_command = starts_held.then(|| pending.run_command.clone()).flatten();
@@ -214,7 +214,7 @@ fn finish_in_place_spawn(
     let show_spawn_error = pending
         .run_command
         .as_ref()
-        .is_some_and(|command| command.hold_on_close || command.firecracker_vm.is_some());
+        .is_some_and(|command| command.shows_start_failure());
     match result.with_context(err_context) {
         Ok((pid, starts_held)) => pty
             .bus
@@ -273,9 +273,7 @@ fn finish_command_rerun(
     let err_context = || format!("failed to rerun command in pane {pane_id:?}");
     if let Err(err) = result.with_context(err_context) {
         match pane_start_failure(&err) {
-            Some((terminal_id, message))
-                if run_command.hold_on_close || run_command.firecracker_vm.is_some() =>
-            {
+            Some((terminal_id, message)) if run_command.shows_start_failure() => {
                 if let Some(originating_plugin) = run_command.originating_plugin.clone() {
                     pty.bus
                         .senders
@@ -488,11 +486,7 @@ const LOST_FIRECRACKER_HANDBACK: &str =
      the pane has been dropped";
 
 fn is_unheld_firecracker_run(run: &Option<Run>) -> bool {
-    matches!(
-        run,
-        Some(Run::Command(command))
-            if command.firecracker_vm.is_some() && !command.hold_on_start
-    )
+    matches!(run, Some(Run::Command(command)) if command.defers_spawn())
 }
 
 fn terminal_quit_callback(
@@ -870,9 +864,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     completion_tx,
                     set_blocking,
                 };
-                if run_command.as_ref().is_some_and(|command| {
-                    command.firecracker_vm.is_some() && !command.hold_on_start
-                }) {
+                if run_command.as_ref().is_some_and(RunCommand::defers_spawn) {
                     pending.terminal_action =
                         Some(pty.prepare_terminal_action(terminal_action, client_or_tab_index));
                     pty.defer_firecracker_spawn(pending)?;
@@ -937,9 +929,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     client_or_tab_index: client_id_tab_index_or_pane_id,
                     completion_tx,
                 };
-                if run_command.as_ref().is_some_and(|command| {
-                    command.firecracker_vm.is_some() && !command.hold_on_start
-                }) {
+                if run_command.as_ref().is_some_and(RunCommand::defers_spawn) {
                     pending.terminal_action =
                         Some(pty.prepare_terminal_action(
                             terminal_action,
@@ -1202,7 +1192,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 pty.adopted_tabs.insert(tab_index, terminals);
             },
             PtyInstruction::ReRunCommandInPane(pane_id, run_command, completion_tx) => {
-                if matches!(pane_id, PaneId::Terminal(_)) && run_command.firecracker_vm.is_some() {
+                if matches!(pane_id, PaneId::Terminal(_)) && run_command.target.is_firecracker() {
                     let PaneId::Terminal(terminal_id) = pane_id else {
                         unreachable!()
                     };
@@ -1839,9 +1829,7 @@ impl Pty {
             let spawns: Vec<Option<Result<SpawnedTerminal>>> = runs
                 .into_iter()
                 .map(|run| match run {
-                    Some(Run::Command(command))
-                        if command.firecracker_vm.is_some() && !command.hold_on_start =>
-                    {
+                    Some(Run::Command(command)) if command.defers_spawn() => {
                         let terminal_action = TerminalAction::RunCommand(command);
                         let quit_cb = terminal_quit_callback(senders.clone(), &terminal_action);
                         Some(
@@ -1915,9 +1903,7 @@ impl Pty {
                 .map(|runs| {
                     runs.into_iter()
                         .map(|run| match run {
-                            Some(Run::Command(command))
-                                if command.firecracker_vm.is_some() && !command.hold_on_start =>
-                            {
+                            Some(Run::Command(command)) if command.defers_spawn() => {
                                 let terminal_action = TerminalAction::RunCommand(command);
                                 let quit_cb =
                                     terminal_quit_callback(senders.clone(), &terminal_action);
@@ -2528,7 +2514,7 @@ impl Pty {
                 },
                 Err(err) => match run_command {
                     Some(run_command) => {
-                        if run_command.hold_on_close || run_command.firecracker_vm.is_some() {
+                        if run_command.shows_start_failure() {
                             let message = pane_start_failure(&err)
                                 .map(|(_, message)| message)
                                 .unwrap_or_else(|| format!("{err:#}"));
@@ -2760,7 +2746,7 @@ impl Pty {
                 },
                 Err(err) => match run_command {
                     Some(run_command) => {
-                        if run_command.hold_on_close || run_command.firecracker_vm.is_some() {
+                        if run_command.shows_start_failure() {
                             let message = pane_start_failure(&err)
                                 .map(|(_, message)| message)
                                 .unwrap_or_else(|| format!("{err:#}"));
@@ -2834,10 +2820,7 @@ impl Pty {
                 let starts_held = command.hold_on_start;
                 // The default shell's cwd is a path on *this* machine; a command
                 // that runs elsewhere must not inherit it.
-                if command.cwd.is_none()
-                    && command.remote_host.is_none()
-                    && command.firecracker_vm.is_none()
-                {
+                if command.cwd.is_none() && command.target.is_local() {
                     if let TerminalAction::RunCommand(cmd) = default_shell {
                         command.cwd = cmd.cwd;
                     }

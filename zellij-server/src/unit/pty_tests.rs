@@ -12,7 +12,7 @@ use std::sync::{Arc, Barrier, Mutex};
 use zellij_utils::channels::{self, SenderWithContext};
 use zellij_utils::data::{Event, Palette};
 use zellij_utils::errors::ErrorContext;
-use zellij_utils::input::command::RunCommand;
+use zellij_utils::input::command::{PaneTarget, RunCommand};
 use zellij_utils::ipc::{ClientToServerMsg, IpcReceiverWithContext, ServerToClientMsg};
 
 #[derive(Clone)]
@@ -201,16 +201,18 @@ impl ServerOsApi for MockOsApi {
             .lock()
             .unwrap()
             .context("injected provider result")?;
-        let TerminalAction::RunCommand(mut command) = terminal_action else {
+        let TerminalAction::RunCommand(command) = terminal_action else {
             unreachable!()
         };
         let rerun_command = command.clone();
-        command.remote_host = Some("resolved-vm".to_owned());
         Ok(crate::os_input_output::ResolvedFirecracker {
             terminal_id,
             command,
             rerun_command,
-            ssh_options: Default::default(),
+            endpoint: crate::os_input_output::RemoteEndpoint {
+                host: "resolved-vm".to_owned(),
+                ssh_options: Default::default(),
+            },
         })
     }
     fn spawn_resolved_firecracker(
@@ -233,17 +235,19 @@ impl ServerOsApi for MockOsApi {
     fn resolve_firecracker_rerun(
         &self,
         terminal_id: u32,
-        mut command: RunCommand,
+        command: RunCommand,
     ) -> anyhow::Result<crate::os_input_output::ResolvedFirecracker> {
         self.firecracker_started.wait();
         self.firecracker_release.wait();
         let rerun_command = command.clone();
-        command.remote_host = Some("resolved-vm".to_owned());
         Ok(crate::os_input_output::ResolvedFirecracker {
             terminal_id,
             command,
             rerun_command,
-            ssh_options: Default::default(),
+            endpoint: crate::os_input_output::RemoteEndpoint {
+                host: "resolved-vm".to_owned(),
+                ssh_options: Default::default(),
+            },
         })
     }
     fn rerun_resolved_firecracker(
@@ -373,7 +377,7 @@ impl ServerOsApi for MockOsApi {
         run_command: RunCommand,
         _: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> anyhow::Result<(Box<dyn AsyncReader>, Option<u32>)> {
-        let next_host = run_command.remote_host.clone();
+        let next_host = run_command.target.display();
         self.rerun_commands.lock().unwrap().push(run_command);
         if self.rerun_failures.lock().unwrap().contains(&terminal_id) {
             self.remote_panes.lock().unwrap().remove(&terminal_id);
@@ -955,7 +959,11 @@ fn a_firecracker_preflight_does_not_block_other_pty_work() {
     let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
     let command = RunCommand {
         command: PathBuf::from("claude"),
-        firecracker_vm: Some("review".to_owned()),
+        target: PaneTarget::Firecracker {
+            vm: "review".to_owned(),
+            image: None,
+            worktree: None,
+        },
         ..Default::default()
     };
     let pending = PendingTerminalSpawn {
@@ -990,7 +998,11 @@ fn a_firecracker_layout_preflight_does_not_block_pty_work_or_apply_layout() {
     pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
     let command = RunCommand {
         command: PathBuf::from("claude"),
-        firecracker_vm: Some("review".to_owned()),
+        target: PaneTarget::Firecracker {
+            vm: "review".to_owned(),
+            image: None,
+            worktree: None,
+        },
         ..Default::default()
     };
     let layout = TiledPaneLayout {
@@ -1050,7 +1062,11 @@ fn dropping_pty_does_not_wait_for_a_firecracker_worker() {
     let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
     let command = RunCommand {
         command: PathBuf::from("claude"),
-        firecracker_vm: Some("review".to_owned()),
+        target: PaneTarget::Firecracker {
+            vm: "review".to_owned(),
+            image: None,
+            worktree: None,
+        },
         ..Default::default()
     };
     let pending = PendingTerminalSpawn {
@@ -1094,7 +1110,11 @@ fn a_firecracker_layout_override_waits_off_thread_for_transport() {
     pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
     let command = RunCommand {
         command: PathBuf::from("claude"),
-        firecracker_vm: Some("review".to_owned()),
+        target: PaneTarget::Firecracker {
+            vm: "review".to_owned(),
+            image: None,
+            worktree: None,
+        },
         ..Default::default()
     };
     let pending = PendingLayoutOverride {
@@ -1158,7 +1178,11 @@ fn a_firecracker_rerun_does_not_block_the_pty_during_transport() {
     pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
     let command = RunCommand {
         command: PathBuf::from("claude"),
-        firecracker_vm: Some("review".to_owned()),
+        target: PaneTarget::Firecracker {
+            vm: "review".to_owned(),
+            image: None,
+            worktree: None,
+        },
         ..Default::default()
     };
 
@@ -1216,7 +1240,11 @@ fn closing_a_pane_mid_transport_tears_down_the_late_spawn() {
     pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
     let command = RunCommand {
         command: PathBuf::from("claude"),
-        firecracker_vm: Some("review".to_owned()),
+        target: PaneTarget::Firecracker {
+            vm: "review".to_owned(),
+            image: None,
+            worktree: None,
+        },
         ..Default::default()
     };
 
@@ -1252,7 +1280,11 @@ fn closing_a_pane_mid_transport_tears_down_the_late_spawn() {
         (
             RunCommand {
                 command: PathBuf::from("claude"),
-                firecracker_vm: Some("review".to_owned()),
+                target: PaneTarget::Firecracker {
+                    vm: "review".to_owned(),
+                    image: None,
+                    worktree: None,
+                },
                 ..Default::default()
             },
             None,
@@ -1307,7 +1339,11 @@ fn a_failed_firecracker_rerun_is_shown_and_held_without_hold_on_close() {
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(os_api);
     let command = RunCommand {
         command: PathBuf::from("claude"),
-        firecracker_vm: Some("review".to_owned()),
+        target: PaneTarget::Firecracker {
+            vm: "review".to_owned(),
+            image: None,
+            worktree: None,
+        },
         hold_on_close: false,
         ..Default::default()
     };
@@ -1703,7 +1739,9 @@ fn a_respawn_on_the_same_host_reports_it_once_and_never_blips() {
         RunCommand {
             command: PathBuf::from("step2"),
             hold_on_close: true,
-            remote_host: Some("build-box".to_owned()),
+            target: PaneTarget::Ssh {
+                host: "build-box".to_owned(),
+            },
             ..Default::default()
         },
     )
@@ -1729,7 +1767,9 @@ fn a_respawn_onto_another_host_clears_the_old_hosts_cwd() {
         RunCommand {
             command: PathBuf::from("step2"),
             hold_on_close: true,
-            remote_host: Some("new-box".to_owned()),
+            target: PaneTarget::Ssh {
+                host: "new-box".to_owned(),
+            },
             ..Default::default()
         },
     )
@@ -1752,7 +1792,9 @@ fn a_same_host_respawn_keeps_its_cwd_until_the_host_reports_again() {
         RunCommand {
             command: PathBuf::from("step2"),
             hold_on_close: true,
-            remote_host: Some("build-box".to_owned()),
+            target: PaneTarget::Ssh {
+                host: "build-box".to_owned(),
+            },
             ..Default::default()
         },
     )
@@ -1779,7 +1821,9 @@ fn a_failed_host_change_retracts_the_old_host_and_cwd() {
         RunCommand {
             command: PathBuf::from("step2"),
             hold_on_close: true,
-            remote_host: Some("new-box".to_owned()),
+            target: PaneTarget::Ssh {
+                host: "new-box".to_owned(),
+            },
             ..Default::default()
         },
     );
@@ -1812,7 +1856,9 @@ fn a_remote_pane_does_not_inherit_a_local_panes_cwd() {
 
     let mut action = TerminalAction::RunCommand(RunCommand {
         remote_default_shell: true,
-        remote_host: Some("build-box".to_owned()),
+        target: PaneTarget::Ssh {
+            host: "build-box".to_owned(),
+        },
         ..Default::default()
     });
     pty.fill_cwd_from_pane_id(&mut action, &PaneId::Terminal(3));
@@ -1836,7 +1882,9 @@ fn a_remote_pane_inherits_the_cwd_of_a_pane_on_its_own_machine() {
 
     let mut action = TerminalAction::RunCommand(RunCommand {
         remote_default_shell: true,
-        remote_host: Some("build-box".to_owned()),
+        target: PaneTarget::Ssh {
+            host: "build-box".to_owned(),
+        },
         ..Default::default()
     });
     pty.fill_cwd_from_pane_id(&mut action, &PaneId::Terminal(3));

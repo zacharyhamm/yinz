@@ -1,4 +1,5 @@
 use super::test_framework::*;
+use crate::data::PaneTarget;
 use crate::data::{
     AgentInfo, AgentSource, AgentState, BareKey, CommandOrPlugin, ConnectToSession, Direction,
     FloatingPaneCoordinates, HostTerminalThemeMode, InputMode, KeyModifier, KeyWithModifier,
@@ -124,7 +125,9 @@ fn a_remote_handoff_without_a_command_arrives_as_no_remote_pane() {
     let cmd = Some(RunCommandAction {
         command: PathBuf::from("/usr/bin/cargo"),
         args: vec!["watch".to_owned()],
-        remote_host: Some("build-box".to_owned()),
+        target: PaneTarget::Ssh {
+            host: "build-box".to_owned(),
+        },
         ..Default::default()
     })
     .map(|cmd| cmd.into());
@@ -132,7 +135,7 @@ fn a_remote_handoff_without_a_command_arrives_as_no_remote_pane() {
         Ok(Action::AdoptPane { payload, .. }) => {
             let remote = payload.remote.expect("the handoff should have survived");
             assert_eq!(remote.host, "build-box");
-            assert_eq!(remote.cmd.remote_host.as_deref(), Some("build-box"));
+            assert_eq!(remote.cmd.target.ssh_host(), Some("build-box"));
         },
         other => panic!("expected an AdoptPane, got {other:?}"),
     }
@@ -1009,7 +1012,9 @@ fn test_client_messages() {
                         command: PathBuf::from("/usr/bin/cargo"),
                         args: vec!["watch".to_owned()],
                         cwd: Some(PathBuf::from("/home/build/project")),
-                        remote_host: Some("build-box".to_owned()),
+                        target: PaneTarget::Ssh {
+                            host: "build-box".to_owned()
+                        },
                         remote_default_shell: true,
                         ..Default::default()
                     },
@@ -1146,7 +1151,9 @@ fn test_client_messages() {
                                 args: vec!["watch".to_owned()],
                                 cwd: Some(PathBuf::from("/home/build/project")),
                                 hold_on_close: true,
-                                remote_host: Some("build-box".to_owned()),
+                                target: PaneTarget::Ssh {
+                                    host: "build-box".to_owned()
+                                },
                                 ..Default::default()
                             },
                         }),
@@ -1786,10 +1793,7 @@ fn test_client_messages() {
                 hold_on_start: false,
                 originating_plugin: None,
                 use_terminal_title: false,
-                remote_host: None,
-                firecracker_vm: None,
-                firecracker_image: None,
-                firecracker_worktree: None,
+                target: Default::default(),
                 remote_default_shell: false,
             }),
             pane_name: Some("my_pane_name".to_owned()),
@@ -1824,10 +1828,7 @@ fn test_client_messages() {
                     context: demo_context.clone(),
                 }),
                 use_terminal_title: false,
-                remote_host: None,
-                firecracker_vm: None,
-                firecracker_image: None,
-                firecracker_worktree: None,
+                target: Default::default(),
                 remote_default_shell: false,
             }),
             pane_name: Some("my_pane_name".to_owned()),
@@ -1876,10 +1877,7 @@ fn test_client_messages() {
                     context: demo_context.clone(),
                 }),
                 use_terminal_title: false,
-                remote_host: None,
-                firecracker_vm: None,
-                firecracker_image: None,
-                firecracker_worktree: None,
+                target: Default::default(),
                 remote_default_shell: false,
             }),
             direction: Some(Direction::Right),
@@ -1908,10 +1906,7 @@ fn test_client_messages() {
                     context: demo_context.clone(),
                 }),
                 use_terminal_title: false,
-                remote_host: None,
-                firecracker_vm: None,
-                firecracker_image: None,
-                firecracker_worktree: None,
+                target: Default::default(),
                 remote_default_shell: false,
             }),
             pane_name: Some("my_pane_name".to_owned()),
@@ -1954,10 +1949,7 @@ fn test_client_messages() {
                     context: demo_context.clone(),
                 }),
                 use_terminal_title: false,
-                remote_host: None,
-                firecracker_vm: None,
-                firecracker_image: None,
-                firecracker_worktree: None,
+                target: Default::default(),
                 remote_default_shell: false,
             }),
             pane_name: Some("my_pane_name".to_owned()),
@@ -2442,10 +2434,7 @@ fn test_client_messages() {
                     hold_on_start: false,
                     originating_plugin: None,
                     use_terminal_title: true,
-                    remote_host: None,
-                    firecracker_vm: None,
-                    firecracker_image: None,
-                    firecracker_worktree: None,
+                    target: Default::default(),
                     remote_default_shell: false,
                 })),
                 ..Default::default()
@@ -2478,10 +2467,7 @@ fn test_client_messages() {
                         context: empty_context.clone(),
                     }),
                     use_terminal_title: true,
-                    remote_host: None,
-                    firecracker_vm: None,
-                    firecracker_image: None,
-                    firecracker_worktree: None,
+                    target: Default::default(),
                     remote_default_shell: false,
                 })),
                 ..Default::default()
@@ -2677,10 +2663,7 @@ fn test_client_messages() {
                     hold_on_start: false,
                     originating_plugin: None,
                     use_terminal_title: false,
-                    remote_host: None,
-                    firecracker_vm: None,
-                    firecracker_image: None,
-                    firecracker_worktree: None,
+                    target: Default::default(),
                     remote_default_shell: false,
                 }),
                 CommandOrPlugin::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin::default())),
@@ -2789,10 +2772,7 @@ fn test_client_messages() {
                 hold_on_start: false,
                 originating_plugin: None,
                 use_terminal_title: false,
-                remote_host: None,
-                firecracker_vm: None,
-                firecracker_image: None,
-                firecracker_worktree: None,
+                target: Default::default(),
                 remote_default_shell: false,
             },
             near_current_pane: false,

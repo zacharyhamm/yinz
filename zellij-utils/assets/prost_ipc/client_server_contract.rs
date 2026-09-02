@@ -1814,19 +1814,42 @@ pub struct RunCommandAction {
     /// Added missing use_terminal_title field
     #[prost(bool, tag="8")]
     pub use_terminal_title: bool,
-    /// The machine this command runs on, if not this one
-    #[prost(string, optional, tag="9")]
-    pub remote_host: ::core::option::Option<::prost::alloc::string::String>,
     /// Resolve the login shell on the machine the pane runs on, ignoring command
     #[prost(bool, tag="10")]
     pub remote_default_shell: bool,
-    /// Named Firecracker VM owned by this session
-    #[prost(string, optional, tag="11")]
-    pub firecracker_vm: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(string, optional, tag="12")]
-    pub firecracker_image: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(string, optional, tag="13")]
-    pub firecracker_worktree: ::core::option::Option<::prost::alloc::string::String>,
+    /// The machine this command runs on
+    #[prost(message, optional, tag="14")]
+    pub target: ::core::option::Option<PaneTarget>,
+}
+/// Where a pane's process runs; unset or `local` means this machine.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PaneTarget {
+    #[prost(oneof="pane_target::Kind", tags="1, 2, 3")]
+    pub kind: ::core::option::Option<pane_target::Kind>,
+}
+/// Nested message and enum types in `PaneTarget`.
+pub mod pane_target {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Kind {
+        #[prost(bool, tag="1")]
+        Local(bool),
+        #[prost(string, tag="2")]
+        SshHost(::prost::alloc::string::String),
+        #[prost(message, tag="3")]
+        Firecracker(super::FirecrackerTarget),
+    }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FirecrackerTarget {
+    #[prost(string, tag="1")]
+    pub vm: ::prost::alloc::string::String,
+    #[prost(string, optional, tag="2")]
+    pub image: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="3")]
+    pub worktree: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

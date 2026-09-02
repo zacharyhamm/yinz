@@ -23,7 +23,7 @@ use zellij_server::{
     },
 };
 use zellij_test_support::Watched;
-use zellij_utils::input::command::RunCommand;
+use zellij_utils::input::command::{PaneTarget, RunCommand};
 
 const TIMEOUT: Duration = Duration::from_secs(90);
 const IMAGE: &str = "zellij-dev";
@@ -300,7 +300,9 @@ fn run_in_guest(ensured: &EnsureResponse, script: &str, marker: &str) -> String 
         command: PathBuf::from("/bin/sh"),
         args: vec!["-lc".to_owned(), script.to_owned()],
         cwd: ensured.cwd.clone(),
-        remote_host: Some(ensured.ssh_host.clone()),
+        target: PaneTarget::Ssh {
+            host: ensured.ssh_host.clone(),
+        },
         ..Default::default()
     };
     let hosts = Arc::new(RemoteHosts::new());

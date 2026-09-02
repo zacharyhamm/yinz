@@ -42,7 +42,10 @@ use crate::pty_host::protocol::{SpawnFailureKind, WireWinsize};
 /// pane only when its connection's blocking read returns, which a warp cannot
 /// wait on; without the bump the adopting side would race that and be told the
 /// pane already has a server attached.
-pub const REMOTE_PROTOCOL_VERSION: u32 = 3;
+/// v4 carries the pane's `PaneTarget` on `Spawn` in place of the loose
+/// `remote_host`/`firecracker_*` fields; a v3 broker would read every pane as
+/// local and refuse a `remote_default_shell` request it cannot see the host for.
+pub const REMOTE_PROTOCOL_VERSION: u32 = 4;
 
 /// Frame kind tags. The tag is what lets pty bytes stay raw while everything
 /// else stays JSON.

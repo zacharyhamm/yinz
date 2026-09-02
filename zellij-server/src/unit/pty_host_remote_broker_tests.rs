@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::pty_host::remote::session::PaneRegistry;
-use zellij_utils::input::command::RunCommand;
+use zellij_utils::input::command::{PaneTarget, RunCommand};
 
 use crate::pty_host::remote::protocol::{try_decode_frame, write_control, Frame};
 
@@ -503,7 +503,11 @@ fn default_shell_command(host: Option<&str>) -> RunCommand {
     RunCommand {
         command: PathBuf::new(),
         remote_default_shell: true,
-        remote_host: host.map(String::from),
+        target: host
+            .map(|host| PaneTarget::Ssh {
+                host: host.to_owned(),
+            })
+            .unwrap_or_default(),
         ..Default::default()
     }
 }
@@ -587,7 +591,9 @@ fn anything_that_is_not_a_remote_default_shell_is_left_alone() {
     let mut ordinary = RunCommand {
         command: PathBuf::from("/usr/bin/htop"),
         args: vec!["-d".to_owned(), "5".to_owned()],
-        remote_host: Some("build-box".to_owned()),
+        target: PaneTarget::Ssh {
+            host: "build-box".to_owned(),
+        },
         ..Default::default()
     };
     assert_eq!(
@@ -628,7 +634,9 @@ fn an_explicit_command_pane_gets_an_environment_but_no_login_shell() {
 
     let mut cmd = RunCommand {
         command: PathBuf::from("/usr/bin/env"),
-        remote_host: Some("build-box".to_owned()),
+        target: PaneTarget::Ssh {
+            host: "build-box".to_owned(),
+        },
         remote_default_shell: false,
         ..Default::default()
     };

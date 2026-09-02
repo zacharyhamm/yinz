@@ -46,7 +46,7 @@ use zellij_server::pty_host::remote::protocol::{
 };
 use zellij_server::pty_host::remote::ssh::{self, RemoteHosts};
 use zellij_server::pty_host::remote::{RemoteConn, RemoteReader};
-use zellij_utils::input::command::RunCommand;
+use zellij_utils::input::command::{PaneTarget, RunCommand};
 
 // ---------------------------------------------------------------------------
 // Where the far machine is
@@ -494,7 +494,9 @@ fn open_pane_with(
         command: PathBuf::from("/bin/sh"),
         args: vec!["-c".to_owned(), script.to_owned()],
         cwd: cwd.map(PathBuf::from),
-        remote_host: Some(HOST.to_owned()),
+        target: PaneTarget::Ssh {
+            host: HOST.to_owned(),
+        },
         ..Default::default()
     };
     let (conn, reader_socket) = hosts
@@ -524,7 +526,9 @@ fn open_default_shell_pane_with(
         command: PathBuf::new(),
         remote_default_shell: true,
         cwd: cwd.map(PathBuf::from),
-        remote_host: Some(HOST.to_owned()),
+        target: PaneTarget::Ssh {
+            host: HOST.to_owned(),
+        },
         ..Default::default()
     };
     let (conn, reader_socket) = hosts
@@ -1453,7 +1457,9 @@ fn adopt_elsewhere(hosts: &Arc<RemoteHosts>, token: &str, received: u64) -> (Pan
             token.to_owned(),
             RunCommand {
                 command: PathBuf::from("/bin/sh"),
-                remote_host: Some(HOST.to_owned()),
+                target: PaneTarget::Ssh {
+                    host: HOST.to_owned(),
+                },
                 ..Default::default()
             },
             Some(hosts.clone() as Arc<dyn Reconnector>),

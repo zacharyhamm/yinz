@@ -1317,21 +1317,15 @@ impl Action {
                 modal,
                 tab_id,
             } => {
-                if let Some(name) = firecracker.as_deref() {
-                    super::command::validate_firecracker_vm_name(name)?;
-                }
-                // The same rules a layout's `firecracker_image` and `firecracker_worktree`
-                // are held to, checked here for the same reason: a CLI error names the flag,
-                // a spawn error is a banner in a pane that already exists.
-                if let Some(image) = firecracker_image.as_deref() {
-                    super::command::validate_firecracker_vm_name(image)?;
-                }
-                if firecracker_worktree
-                    .as_ref()
-                    .is_some_and(|path| !path.is_absolute())
-                {
-                    return Err("--firecracker-worktree must be an absolute path".to_owned());
-                }
+                // The same rules a layout's `firecracker_*` properties are held to,
+                // checked here for the same reason: a CLI error names the flag, a
+                // spawn error is a banner in a pane that already exists.
+                let target = super::command::PaneTarget::from_parts(
+                    remote_host.as_deref(),
+                    firecracker.as_deref(),
+                    firecracker_image.as_deref(),
+                    firecracker_worktree.as_deref(),
+                )?;
                 let pane_id_to_replace = match pane_id {
                     Some(pane_id_str) => match PaneId::from_str(&pane_id_str) {
                         Ok(parsed_pane_id) => Some(parsed_pane_id),
@@ -1353,7 +1347,7 @@ impl Action {
                 // default for it nor a sensible base to resolve a relative path
                 // against. Left exactly as given: `None` then means "wherever
                 // that machine logs you in", which is what ssh does.
-                let command_cwd = if remote_host.is_some() || firecracker.is_some() {
+                let command_cwd = if target.is_remote() {
                     cwd.clone()
                 } else {
                     cwd.clone()
@@ -1375,13 +1369,10 @@ impl Action {
                         direction,
                         hold_on_close: !close_on_exit,
                         hold_on_start: start_suspended,
-                        remote_host: remote_host.clone(),
-                        firecracker_vm: firecracker.clone(),
-                        firecracker_image: firecracker_image.clone(),
-                        firecracker_worktree: firecracker_worktree.clone(),
+                        target: target.clone(),
                         ..Default::default()
                     })
-                } else if remote_host.is_some() || firecracker.is_some() {
+                } else if target.is_remote() {
                     // No command and a host: that machine's login shell. Not
                     // held on close — `ssh host` ends when you log out, and so
                     // does a local default-shell pane; holding it would leave a
@@ -1393,10 +1384,7 @@ impl Action {
                         direction,
                         hold_on_close: false,
                         hold_on_start: false,
-                        remote_host: remote_host.clone(),
-                        firecracker_vm: firecracker.clone(),
-                        firecracker_image: firecracker_image.clone(),
-                        firecracker_worktree: firecracker_worktree.clone(),
+                        target: target.clone(),
                         remote_default_shell: true,
                         ..Default::default()
                     })
@@ -2719,7 +2707,7 @@ mod tests {
     use super::*;
     use crate::data::BareKey;
     use crate::data::KeyModifier;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn test_send_keys_single_key() {
@@ -3612,7 +3600,7 @@ mod tests {
     fn a_remote_pane_with_no_command_asks_for_that_machines_login_shell() {
         let command = tiled_run_command(remote_new_pane(vec![], None));
         assert!(command.remote_default_shell);
-        assert_eq!(command.remote_host.as_deref(), Some("build-box"));
+        assert_eq!(command.target.ssh_host(), Some("build-box"));
         assert_eq!(
             command.command,
             PathBuf::new(),
@@ -3650,8 +3638,8 @@ mod tests {
     fn a_firecracker_pane_preserves_its_vm_name_command_and_guest_cwd() {
         let shell = tiled_run_command(firecracker_new_pane(vec![], None));
         assert!(shell.remote_default_shell);
-        assert_eq!(shell.firecracker_vm.as_deref(), Some("review.vm-1"));
-        assert_eq!(shell.remote_host, None);
+        assert_eq!(shell.target.firecracker_vm(), Some("review.vm-1"));
+        assert_eq!(shell.target.ssh_host(), None);
 
         let command = tiled_run_command(firecracker_new_pane(
             vec!["pwd".to_owned()],
@@ -3659,7 +3647,7 @@ mod tests {
         ));
         assert_eq!(command.command, PathBuf::from("pwd"));
         assert_eq!(command.cwd, Some(PathBuf::from("workspace/repo")));
-        assert_eq!(command.firecracker_vm.as_deref(), Some("review.vm-1"));
+        assert_eq!(command.target.firecracker_vm(), Some("review.vm-1"));
     }
 
     #[test]
@@ -3700,10 +3688,10 @@ mod tests {
             Some("/home/me/src/project"),
         ));
         assert!(shell.remote_default_shell);
-        assert_eq!(shell.firecracker_image.as_deref(), Some("rust-dev"));
+        assert_eq!(shell.target.firecracker_image(), Some("rust-dev"));
         assert_eq!(
-            shell.firecracker_worktree,
-            Some(PathBuf::from("/home/me/src/project"))
+            shell.target.firecracker_worktree(),
+            Some(Path::new("/home/me/src/project"))
         );
 
         let command = tiled_run_command(with_image_and_worktree(
@@ -3712,11 +3700,28 @@ mod tests {
             Some("/home/me/src/project"),
         ));
         assert_eq!(command.command, PathBuf::from("pwd"));
-        assert_eq!(command.firecracker_image.as_deref(), Some("rust-dev"));
+        assert_eq!(command.target.firecracker_image(), Some("rust-dev"));
         assert_eq!(
-            command.firecracker_worktree,
-            Some(PathBuf::from("/home/me/src/project"))
+            command.target.firecracker_worktree(),
+            Some(Path::new("/home/me/src/project"))
         );
+    }
+
+    #[test]
+    fn a_firecracker_image_without_a_vm_is_rejected() {
+        let mut action = firecracker_new_pane(vec![], None);
+        if let CliAction::NewPane {
+            firecracker,
+            firecracker_image,
+            ..
+        } = &mut action
+        {
+            *firecracker = None;
+            *firecracker_image = Some("rust-dev".to_owned());
+        }
+        let error = Action::actions_from_cli(action, Box::new(|| PathBuf::from("/tmp")), None)
+            .expect_err("an image needs a vm");
+        assert!(error.contains("need a firecracker_vm"), "{error}");
     }
 
     #[test]

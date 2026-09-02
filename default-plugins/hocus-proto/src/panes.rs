@@ -36,8 +36,11 @@ pub fn terminal_panes(manifest: &PaneManifest, tabs: &[TabInfo]) -> Vec<agents::
             // once, and never again by anyone who missed it.
             cwd: pane.cwd.clone(),
             host: pane.host.clone(),
-            firecracker_image: pane.firecracker_image.clone(),
-            firecracker_worktree: pane.firecracker_worktree.clone(),
+            firecracker_image: pane.target.firecracker_image().map(str::to_owned),
+            firecracker_worktree: pane
+                .target
+                .firecracker_worktree()
+                .map(|path| path.display().to_string()),
             // Order matters: a held pane has also exited, and "waiting to be re-run"
             // is the more useful of the two things to say.
             status: if pane.is_held {
@@ -118,7 +121,7 @@ fn focused(manifest: &PaneManifest, tabs: &[TabInfo], plugin: bool) -> Option<u3
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zellij_tile::prelude::PaneInfo;
+    use zellij_tile::prelude::{PaneInfo, PaneTarget};
 
     #[test]
     fn terminal_panes_carry_the_location_and_firecracker_identity_reported() {
@@ -129,8 +132,12 @@ mod tests {
                 PaneInfo {
                     id: 3,
                     cwd: Some("/work/hocus".to_owned()),
-                    firecracker_image: Some("rust-dev".to_owned()),
-                    firecracker_worktree: Some("/host/hocus".to_owned()),
+                    host: Some("firecracker:review".to_owned()),
+                    target: PaneTarget::Firecracker {
+                        vm: "review".to_owned(),
+                        image: Some("rust-dev".to_owned()),
+                        worktree: Some("/host/hocus".into()),
+                    },
                     ..PaneInfo::default()
                 },
                 PaneInfo {

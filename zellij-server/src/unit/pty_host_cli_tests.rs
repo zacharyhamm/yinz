@@ -370,7 +370,7 @@ fn a_stranded_pane_is_addressed_by_its_broker_and_nothing_local() {
          whatever the ring still holds",
     );
     assert_eq!(
-        remote.cmd.remote_host.as_deref(),
+        remote.cmd.target.ssh_host(),
         Some("build-box"),
         "the host is the part that has to be right: it is what a later re-run reads",
     );
@@ -397,5 +397,5 @@ fn a_recovered_panes_command_is_reconstructed_by_splitting_on_spaces() {
         vec!["-c", "'echo", "one", "two'"],
         "a quoted argument comes back split, which is what flattening it lost",
     );
-    assert_eq!(cmd.remote_host.as_deref(), Some("build-box"));
+    assert_eq!(cmd.target.ssh_host(), Some("build-box"));
 }

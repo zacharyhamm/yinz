@@ -12,9 +12,9 @@ use crate::data::{
     FileToOpen, FloatingPaneCoordinates, GitCheckout, HighlightLayer, HighlightStyle, HttpVerb,
     InputMode, KeyModifier, KeyWithModifier, LayoutInfo, LayoutMetadata, MessageToPlugin, Mutation,
     NewPanePlacement, NewPluginArgs, OriginatingPlugin, OverlayKind, OverlayPlacement, PaneId,
-    PaneMetadata, PermissionType, PluginCommand, PluginMessage, PluginTag, RegexHighlight,
-    RemotePaneHandoff, Resize, ResizeStrategy, TabMetadata, UnblockCondition, WarpPlacement,
-    WarpedPane, WarpedTab, WatchMode,
+    PaneMetadata, PaneTarget, PermissionType, PluginCommand, PluginMessage, PluginTag,
+    RegexHighlight, RemotePaneHandoff, Resize, ResizeStrategy, TabMetadata, UnblockCondition,
+    WarpPlacement, WarpedPane, WarpedTab, WatchMode,
 };
 use crate::input::actions::{Action, ActionKind, SearchDirection, SearchOption};
 use crate::input::command::{OpenFilePayload, RunCommand, RunCommandAction};
@@ -385,11 +385,20 @@ pub(crate) fn run_command_actions(tc: &hegel::TestCase) -> RunCommandAction {
         hold_on_start: booleans(tc),
         originating_plugin: optional_originating_plugins(tc),
         use_terminal_title: booleans(tc),
-        remote_host: optional_strings(tc),
-        firecracker_vm: optional_strings(tc),
-        firecracker_image: optional_strings(tc),
-        firecracker_worktree: optional_paths(tc),
+        target: pane_targets(tc),
         remote_default_shell: booleans(tc),
+    }
+}
+
+pub(crate) fn pane_targets(tc: &hegel::TestCase) -> PaneTarget {
+    match tc.draw(generators::integers::<u8>().max_value(2)) {
+        0 => PaneTarget::Local,
+        1 => PaneTarget::Ssh { host: strings(tc) },
+        _ => PaneTarget::Firecracker {
+            vm: strings(tc),
+            image: optional_strings(tc),
+            worktree: optional_paths(tc),
+        },
     }
 }
 
@@ -406,10 +415,7 @@ pub(crate) fn run_commands(tc: &hegel::TestCase) -> RunCommand {
         hold_on_start: booleans(tc),
         originating_plugin: optional_originating_plugins(tc),
         use_terminal_title: booleans(tc),
-        remote_host: optional_strings(tc),
-        firecracker_vm: optional_strings(tc),
-        firecracker_image: optional_strings(tc),
-        firecracker_worktree: optional_paths(tc),
+        target: pane_targets(tc),
         remote_default_shell: booleans(tc),
     }
 }
@@ -1259,10 +1265,7 @@ pub(crate) fn commands_to_run(tc: &hegel::TestCase) -> CommandToRun {
         path: paths(tc),
         args: up_to(tc, 3, strings),
         cwd: optional_paths(tc),
-        remote_host: optional_strings(tc),
-        firecracker_vm: optional_strings(tc),
-        firecracker_image: optional_strings(tc),
-        firecracker_worktree: optional_paths(tc),
+        target: pane_targets(tc),
         remote_default_shell: booleans(tc),
     }
 }
