@@ -6,7 +6,10 @@ use std::{
     os::{fd::AsFd, unix::process::CommandExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -158,12 +161,17 @@ impl Provider {
         })
     }
 
+    /// Boot (or find) a VM. `cancel` is checked while the provider runs: a
+    /// session shutting down sets it, and the boot is killed rather than
+    /// waited out, so a server can exit without finishing a VM it is about to
+    /// stop.
     pub fn ensure(
         &self,
         session: &str,
         name: &str,
         image: Option<&str>,
         worktree: Option<&Path>,
+        cancel: &AtomicBool,
     ) -> Result<EnsureResponse> {
         validate_firecracker_vm_name(name).map_err(|e| anyhow!(e))?;
         if let Some(image) = image {
@@ -172,13 +180,16 @@ impl Provider {
         if worktree.is_some_and(|path| !path.is_absolute()) {
             return Err(anyhow!("firecracker_worktree must be an absolute path"));
         }
-        let response: EnsureResponse = self.invoke(Request::Ensure {
-            version: PROTOCOL_VERSION,
-            session: session.into(),
-            name: name.into(),
-            image: image.map(Cow::Borrowed),
-            worktree: worktree.map(Cow::Borrowed),
-        })?;
+        let response: EnsureResponse = self.invoke_cancellable(
+            Request::Ensure {
+                version: PROTOCOL_VERSION,
+                session: session.into(),
+                name: name.into(),
+                image: image.map(Cow::Borrowed),
+                worktree: worktree.map(Cow::Borrowed),
+            },
+            Some(cancel),
+        )?;
         self.check_version(response.version)?;
         if response.ssh_host.trim().is_empty() {
             return Err(anyhow!("firecracker provider returned an empty ssh_host"));
@@ -274,6 +285,14 @@ impl Provider {
     }
 
     fn invoke<T: for<'de> Deserialize<'de>>(&self, request: Request<'_>) -> Result<T> {
+        self.invoke_cancellable(request, None)
+    }
+
+    fn invoke_cancellable<T: for<'de> Deserialize<'de>>(
+        &self,
+        request: Request<'_>,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<T> {
         let request_json = serde_json::to_vec(&request)
             .context("failed to encode the firecracker provider request")?;
         let _invocation = self.invocation_lock.lock().to_anyhow()?;
@@ -327,6 +346,12 @@ impl Provider {
         let mut stdout_oversized = false;
         let mut stderr_oversized = false;
         loop {
+            if status.is_none() && cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+                kill_group(&mut child);
+                return Err(anyhow!(
+                    "the firecracker provider was cancelled: the session is shutting down"
+                ));
+            }
             if status.is_none() {
                 match child.try_wait() {
                     Ok(Some(exit_status)) => status = Some(exit_status),
@@ -517,10 +542,22 @@ esac
         let provider = Provider::new(path, Duration::from_secs(1)).unwrap();
 
         let first = provider
-            .ensure("work", "review", Some("rust"), Some(Path::new("/repo")))
+            .ensure(
+                "work",
+                "review",
+                Some("rust"),
+                Some(Path::new("/repo")),
+                &AtomicBool::new(false),
+            )
             .unwrap();
         let second = provider
-            .ensure("work", "review", Some("rust"), Some(Path::new("/repo")))
+            .ensure(
+                "work",
+                "review",
+                Some("rust"),
+                Some(Path::new("/repo")),
+                &AtomicBool::new(false),
+            )
             .unwrap();
         assert_eq!(first, second);
         assert_eq!(first.ssh_host, "ssh://zellij@127.0.0.1:2201");
@@ -578,7 +615,7 @@ esac
     fn malformed_provider_output_is_rejected() {
         let (_dir, provider) = provider_script("printf 'not json'", Duration::from_secs(1));
         let error = provider
-            .ensure("work", "review", None, None)
+            .ensure("work", "review", None, None, &AtomicBool::new(false))
             .unwrap_err()
             .to_string();
         assert!(error.contains("invalid JSON"), "{error}");
@@ -589,7 +626,7 @@ esac
         let (_dir, provider) =
             provider_script("printf 'broken' >&2; exit 7", Duration::from_secs(1));
         let error = provider
-            .ensure("work", "review", None, None)
+            .ensure("work", "review", None, None, &AtomicBool::new(false))
             .unwrap_err()
             .to_string();
         assert!(
@@ -604,7 +641,7 @@ esac
             provider_script("sleep 2 & while :; do :; done", Duration::from_millis(200));
         let started = Instant::now();
         let error = provider
-            .ensure("work", "review", None, None)
+            .ensure("work", "review", None, None, &AtomicBool::new(false))
             .unwrap_err()
             .to_string();
         assert!(error.contains("silent for"), "{error}");
@@ -683,7 +720,9 @@ printf '{"version":2}'"#,
              printf '{\"version\":2,\"ssh_host\":\"ssh://zellij@127.0.0.1:2201\"}'",
             Duration::from_secs(1),
         );
-        let response = provider.ensure("work", "review", None, None).unwrap();
+        let response = provider
+            .ensure("work", "review", None, None, &AtomicBool::new(false))
+            .unwrap();
         assert_eq!(response.ssh_host, "ssh://zellij@127.0.0.1:2201");
     }
 
@@ -751,7 +790,7 @@ printf '{"version":2}'"#,
 
         assert_eq!(
             provider
-                .ensure("work", "review", None, None)
+                .ensure("work", "review", None, None, &AtomicBool::new(false))
                 .unwrap()
                 .ssh_host,
             "build-box"
@@ -766,7 +805,7 @@ printf '{"version":2}'"#,
             Duration::from_secs(1),
         );
         let error = provider
-            .ensure("work", "review", None, None)
+            .ensure("work", "review", None, None, &AtomicBool::new(false))
             .unwrap_err()
             .to_string();
         assert!(error.contains("output exceeded"), "{error}");

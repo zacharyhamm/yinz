@@ -185,18 +185,39 @@ pub fn serve_connection(
     outcome.map(|_| ())
 }
 
+/// End a pane the server asked to end, and tell it so.
+///
+/// The exit is reported once: the output pump reports it too, the moment the
+/// pty drains after the child is gone, and whichever of the two gets there
+/// first claims it. A pane whose descendants keep the pty open never drains;
+/// that is an ordinary close (a backgrounded job holding the terminal), noted
+/// and finished, not an error on the broker.
 fn terminate_session(
     session: &Arc<PaneSession>,
     registry: &Arc<PaneRegistry>,
     wire: &Wire,
 ) -> Result<()> {
+    terminate_session_with_drain_timeout(session, registry, wire, TERMINATION_DRAIN_TIMEOUT)
+}
+
+fn terminate_session_with_drain_timeout(
+    session: &Arc<PaneSession>,
+    registry: &Arc<PaneRegistry>,
+    wire: &Wire,
+    drain_timeout: std::time::Duration,
+) -> Result<()> {
     session.terminate();
-    let drained = session.wait_for_output_drained(TERMINATION_DRAIN_TIMEOUT);
+    let drained = session.wait_for_output_drained(drain_timeout);
     registry.remove(&session.token);
     if !drained {
-        return Err(anyhow!(
-            "remote pane output did not drain within {TERMINATION_DRAIN_TIMEOUT:?} after termination"
-        ));
+        log::warn!(
+            "remote pane {} did not drain within {drain_timeout:?} after termination; \
+             something still holds its terminal open",
+            session.token
+        );
+    }
+    if !session.claim_exit_report() {
+        return Ok(());
     }
     send(
         wire,

@@ -3035,16 +3035,12 @@ impl Pty {
                 self.pending_firecracker_reruns.remove(&id);
                 self.firecracker_reruns_in_transport.remove(&id);
                 self.queued_firecracker_reruns.remove(&id);
-                let is_remote = self
-                    .bus
-                    .os_input
-                    .as_ref()
-                    .is_some_and(|os_input| os_input.is_remote_pane(id));
+                // Abort and move on. The reader stops at its next await point;
+                // nothing here reuses its socket, so there is nothing to wait
+                // for (the warp path, which does reuse it, waits in
+                // `stop_readers_for_warp`).
                 if let Some(handle) = self.task_handles.remove(&id) {
                     handle.abort();
-                    if is_remote {
-                        wait_for_reader_to_stop(id, handle);
-                    }
                 }
                 // Signal before forgetting the pid: the helper needs it, and for
                 // a remote pane there is no pid to forget in the first place.
@@ -4114,18 +4110,30 @@ impl Pty {
 }
 
 impl Drop for Pty {
+    /// Close every local pane and every Firecracker pane on the way out. A
+    /// plain ssh pane is deliberately not on the list: its broker keeps the
+    /// process, and `zellij pty-host adopt --host` can pick it up later. A
+    /// Firecracker pane's VM belongs to this session and is stopped with it,
+    /// so the process is over either way; terminating it first lets the
+    /// broker report the exit instead of the VM simply vanishing under it.
     fn drop(&mut self) {
+        let firecracker_ids = self
+            .bus
+            .os_input
+            .as_ref()
+            .map(|os_input| {
+                os_input
+                    .remote_pane_ids()
+                    .into_iter()
+                    .filter(|id| os_input.is_firecracker_pane(*id))
+                    .collect::<Vec<u32>>()
+            })
+            .unwrap_or_default();
         let child_ids: HashSet<u32> = self
             .id_to_child_pid
             .keys()
             .copied()
-            .chain(
-                self.bus
-                    .os_input
-                    .as_ref()
-                    .map(|os_input| os_input.remote_pane_ids())
-                    .unwrap_or_default(),
-            )
+            .chain(firecracker_ids)
             .collect();
         for id in child_ids {
             self.close_pane(PaneId::Terminal(id))
@@ -4228,7 +4236,8 @@ const GIVE_BACK_BUDGET: Duration = Duration::from_secs(1);
 const READER_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Wait for an already-cancelled reader to actually be gone, before its
-/// connection is handed to anyone else or used for synchronous teardown.
+/// connection is handed to anyone else. Only the warp/release path needs this;
+/// an ordinary close just aborts the reader and lets it stop on its own.
 ///
 /// `JoinHandle::abort` asks; it does not deliver. The task keeps running until
 /// it reaches an await point, and for a remote pane that window is long enough

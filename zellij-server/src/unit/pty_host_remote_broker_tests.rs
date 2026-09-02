@@ -304,6 +304,86 @@ fn termination_is_acknowledged_only_after_output_is_drained() {
     drop(pty.slave);
 }
 
+/// The output pump reports an exit the moment the pty drains after the child
+/// is gone; a terminate that lands after that must not report it again, or
+/// the server sees two `ChildExited` frames for one pane.
+#[test]
+fn a_termination_after_the_pump_reported_the_exit_does_not_report_it_again() {
+    use crate::pty_host::client::PtyHostHandle;
+
+    let pty = nix::pty::openpty(None, None).expect("openpty failed");
+    let (control, _control_peer) = UnixStream::pair().expect("socketpair failed");
+    let (mut ours, theirs) = UnixStream::pair().expect("socketpair failed");
+    let wire: Wire = Arc::new(Mutex::new(theirs));
+    let session = Arc::new(PaneSession::new(
+        "token".to_owned(),
+        "/bin/sh".to_owned(),
+        PtyHostHandle::for_test(control),
+        pty.master,
+        std::process::id(),
+    ));
+    let registry = Arc::new(PaneRegistry::new());
+    registry.insert(session.clone());
+    session.mark_output_drained();
+    assert!(
+        session.claim_exit_report(),
+        "the pump claims the report first"
+    );
+
+    terminate_session(&session, &registry, &wire).expect("termination failed");
+
+    ours.set_read_timeout(Some(std::time::Duration::from_millis(100)))
+        .expect("timeout failed");
+    assert!(
+        protocol::read_frame(&mut ours).is_err(),
+        "the broker reported the exit a second time"
+    );
+    assert!(registry.get(&session.token).is_none());
+    drop(pty.slave);
+}
+
+/// A pane whose terminal something still holds open never drains. That is an
+/// ordinary close, finished and reported, not an error on the broker.
+#[test]
+fn a_drain_timeout_still_finishes_and_reports_the_termination() {
+    use crate::pty_host::client::PtyHostHandle;
+
+    let pty = nix::pty::openpty(None, None).expect("openpty failed");
+    let (control, _control_peer) = UnixStream::pair().expect("socketpair failed");
+    let (mut ours, theirs) = UnixStream::pair().expect("socketpair failed");
+    let wire: Wire = Arc::new(Mutex::new(theirs));
+    let session = Arc::new(PaneSession::new(
+        "token".to_owned(),
+        "/bin/sh".to_owned(),
+        PtyHostHandle::for_test(control),
+        pty.master,
+        std::process::id(),
+    ));
+    let registry = Arc::new(PaneRegistry::new());
+    registry.insert(session.clone());
+
+    // Nothing ever marks the output drained.
+    terminate_session_with_drain_timeout(
+        &session,
+        &registry,
+        &wire,
+        std::time::Duration::from_millis(50),
+    )
+    .expect("a drain timeout is not a failed termination");
+
+    ours.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+        .expect("timeout failed");
+    assert!(matches!(
+        protocol::read_frame(&mut ours)
+            .expect("ack read failed")
+            .expect("broker closed before the ack")
+            .decode_control::<BrokerToServerMsg>(),
+        Ok(BrokerToServerMsg::ChildExited { status: None })
+    ));
+    assert!(registry.get(&session.token).is_none());
+    drop(pty.slave);
+}
+
 #[test]
 fn a_connection_that_just_ends_is_not_a_terminate() {
     let (ours, pump) = pump_on_a_pair();

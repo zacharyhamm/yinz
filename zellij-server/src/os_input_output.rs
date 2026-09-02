@@ -41,7 +41,7 @@ use std::{
     process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, RwLock,
     },
     time::{Duration, Instant},
 };
@@ -556,6 +556,95 @@ impl Drop for ClientSender {
     }
 }
 
+/// The Firecracker session renames waiting to be told to the provider.
+///
+/// One slot, one worker: a rename that arrives while an earlier one is still
+/// being applied replaces it, since the provider only needs to end up on the
+/// name the session has now. The worker starts with the first rename and runs
+/// until `close`, so two renames can never reach the provider out of order.
+#[derive(Default)]
+pub(crate) struct FirecrackerRenames {
+    state: Mutex<FirecrackerRenameState>,
+    wake: Condvar,
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+#[derive(Default)]
+struct FirecrackerRenameState {
+    pending: Option<String>,
+    closed: bool,
+}
+
+impl FirecrackerRenames {
+    /// Queue `session` as the name to rename to, starting the worker if this
+    /// is the first rename. `apply` runs on the worker for each name it takes.
+    fn push(
+        self: &Arc<Self>,
+        session: String,
+        apply: impl Fn(String) + Send + 'static,
+    ) -> Result<()> {
+        {
+            let mut state = self.state.lock().to_anyhow()?;
+            if state.closed {
+                return Ok(());
+            }
+            state.pending = Some(session);
+        }
+        self.wake.notify_one();
+        let mut worker = self.worker.lock().to_anyhow()?;
+        if worker.as_ref().is_some_and(|handle| !handle.is_finished()) {
+            return Ok(());
+        }
+        let renames = Arc::clone(self);
+        *worker = Some(
+            std::thread::Builder::new()
+                .name("firecracker-rename".to_owned())
+                .spawn(move || renames.run(apply))
+                .context("failed to start the Firecracker rename thread")?,
+        );
+        Ok(())
+    }
+
+    fn run(&self, apply: impl Fn(String)) {
+        loop {
+            let session = {
+                let Ok(mut state) = self.state.lock() else {
+                    return;
+                };
+                while state.pending.is_none() && !state.closed {
+                    match self.wake.wait(state) {
+                        Ok(next) => state = next,
+                        Err(_) => return,
+                    }
+                }
+                match state.pending.take() {
+                    Some(session) => session,
+                    None => return,
+                }
+            };
+            apply(session);
+        }
+    }
+
+    /// Stop taking renames; the worker exits after the one it is on.
+    fn close(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.closed = true;
+        }
+        self.wake.notify_all();
+    }
+
+    fn close_and_join(&self) {
+        self.close();
+        let handle = self.worker.lock().ok().and_then(|mut worker| worker.take());
+        if let Some(handle) = handle {
+            if handle.join().is_err() {
+                Err::<(), _>(anyhow!("the Firecracker rename thread panicked")).non_fatal();
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ServerOsInputOutput {
     pty_backend: PtyBackendImpl,
@@ -566,8 +655,15 @@ pub struct ServerOsInputOutput {
     /// ssh forwards to the machines this session has remote panes on. One per
     /// host and option set, shared by every matching pane.
     remote_hosts: Arc<RemoteHosts>,
-    firecracker: Arc<Mutex<Option<(crate::firecracker::Provider, String)>>>,
+    /// The provider and the session name it keys this session's VMs on. A read
+    /// guard is held across `ensure`, which can take minutes, so a rename (the
+    /// only writer of the name) orders after every boot in flight and no boot
+    /// ever runs under a stale name; a stop takes a read guard too, and relies
+    /// on `firecracker_stopping` to cut a running `ensure` short.
+    firecracker: Arc<RwLock<Option<(crate::firecracker::Provider, String)>>>,
     firecracker_stopping: Arc<AtomicBool>,
+    /// Renames, applied in order by one thread. See `rename_firecracker_session`.
+    firecracker_renames: Arc<FirecrackerRenames>,
 }
 
 #[cfg(not(windows))]
@@ -597,14 +693,20 @@ impl ServerOsInputOutput {
                 worktree,
             } => (vm.clone(), image.clone(), worktree.clone()),
         };
-        let firecracker = self.firecracker.lock().to_anyhow()?;
+        let firecracker = self.firecracker.read().to_anyhow()?;
         if self.firecracker_stopping.load(Ordering::Acquire) {
             return Err(anyhow!("the Firecracker session is shutting down"));
         }
         let (provider, session) = firecracker.as_ref().context(
             "Firecracker is not configured; set firecracker_provider in the session config",
         )?;
-        let ensured = provider.ensure(session, &name, image.as_deref(), worktree.as_deref())?;
+        let ensured = provider.ensure(
+            session,
+            &name,
+            image.as_deref(),
+            worktree.as_deref(),
+            &self.firecracker_stopping,
+        )?;
         if self.firecracker_stopping.load(Ordering::Acquire) {
             return Err(anyhow!("the Firecracker session is shutting down"));
         }
@@ -625,7 +727,7 @@ impl ServerOsInputOutput {
     /// request. A provider that refuses leaves both sides on the old name, so they still
     /// agree with each other - only the CLI's view differs, which the error says.
     fn rename_firecracker_session_now(&self, session: &str) -> Result<()> {
-        let mut firecracker = self.firecracker.lock().to_anyhow()?;
+        let mut firecracker = self.firecracker.write().to_anyhow()?;
         if self.firecracker_stopping.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -1502,13 +1604,17 @@ impl ServerOsApi for ServerOsInputOutput {
             .map(|path| crate::firecracker::provider_from_options(Some(path), timeout_secs))
             .transpose()?
             .map(|provider| (provider, session));
-        *self.firecracker.lock().to_anyhow()? = configured;
+        *self.firecracker.write().to_anyhow()? = configured;
         self.firecracker_stopping.store(false, Ordering::Release);
         Ok(())
     }
     fn stop_firecracker_session(&self) -> Result<()> {
         self.firecracker_stopping.store(true, Ordering::Release);
-        let guard = self.firecracker.lock().to_anyhow()?;
+        // Nothing queued behind the flag can still change the name, and the
+        // worker exits once it sees the queue closed; joining it here keeps
+        // its provider call from racing the stop below.
+        self.firecracker_renames.close_and_join();
+        let guard = self.firecracker.read().to_anyhow()?;
         if let Some((provider, session)) = guard.as_ref() {
             // The clients are gone by the time this runs, so the log is the only place a
             // merge conflict can be told; the `.guest` copies in the worktree are the other.
@@ -1519,26 +1625,29 @@ impl ServerOsApi for ServerOsInputOutput {
         Ok(())
     }
     fn rename_firecracker_session(&self, session: String) {
-        // `resolve_firecracker` holds the provider lock across an `ensure`, which can
-        // take minutes, and this is called from the screen thread.
+        // `resolve_target` holds the provider lock across an `ensure`, which can
+        // take minutes, and this is called from the screen thread. One worker
+        // applies renames in the order they were asked for; two quick renames
+        // collapse to the last name, which is the only one that matters.
         let server = self.clone();
-        std::thread::Builder::new()
-            .name("firecracker-rename".to_owned())
-            .spawn(move || server.rename_firecracker_session_now(&session).non_fatal())
-            .map(drop)
-            .context("failed to start the Firecracker rename thread")
+        self.firecracker_renames
+            .push(session, move |session| {
+                server.rename_firecracker_session_now(&session).non_fatal()
+            })
             .non_fatal();
     }
     fn begin_firecracker_shutdown(&self) {
         self.firecracker_stopping.store(true, Ordering::Release);
+        self.firecracker_renames.close();
     }
     #[cfg(not(windows))]
     fn shutdown_pty_hosts(&self) {
         self.pty_backend.shutdown_pty_hosts();
         // The ssh forwards go with them. The brokers and their panes on the far
-        // side survive by design — only an explicit terminate ends those — but
-        // leaving forwards behind would leak ssh processes and bound sockets on
-        // the way out.
+        // side survive by design — only an explicit terminate ends those, which
+        // `Pty::drop` sends for Firecracker panes alone, since their VM stops
+        // with the session — but leaving forwards behind would leak ssh
+        // processes and bound sockets on the way out.
         self.remote_hosts.shutdown();
     }
 
@@ -1647,8 +1756,9 @@ pub fn get_server_os_input() -> Result<ServerOsInputOutput, std::io::Error> {
     Ok(ServerOsInputOutput {
         pty_backend: PtyBackendImpl::new()?,
         remote_hosts: Arc::new(RemoteHosts::new()),
-        firecracker: Arc::new(Mutex::new(None)),
+        firecracker: Arc::new(RwLock::new(None)),
         firecracker_stopping: Arc::new(AtomicBool::new(false)),
+        firecracker_renames: Arc::new(FirecrackerRenames::default()),
         client_senders: Arc::new(Mutex::new(HashMap::new())),
         live_writers: Arc::new(LiveWriters::default()),
         cached_resizes: Arc::new(Mutex::new(None)),
