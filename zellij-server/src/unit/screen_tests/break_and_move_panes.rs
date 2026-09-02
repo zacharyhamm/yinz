@@ -985,6 +985,8 @@ pub fn send_cli_new_pane_in_place_with_close_replaced_pane() {
     let cli_action = CliAction::NewPane {
         remote_host: None,
         firecracker: None,
+        firecracker_image: None,
+        firecracker_worktree: None,
         direction: None,
         command: vec!["bash".into()],
         plugin: None,

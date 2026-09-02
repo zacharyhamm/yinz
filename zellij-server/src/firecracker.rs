@@ -365,6 +365,13 @@ impl Provider {
                 }
             ));
         }
+        // A provider that succeeded still has things to say - a VM started without host
+        // resource limits, a merge it could not decide - and this is the only place they
+        // can be said: the clients never see the provider's stderr.
+        let (_, message) = split_progress(&stderr_bytes);
+        if !message.is_empty() {
+            log::warn!("firecracker provider: {message}");
+        }
         serde_json::from_slice(&stdout_bytes).with_context(|| {
             format!(
                 "firecracker provider returned invalid JSON: {}",
@@ -656,6 +663,21 @@ printf '{"version":2}'"#,
             error.ends_with("(last: copying the worktree into the guest)"),
             "{error}"
         );
+    }
+
+    /// A provider that warns and still succeeds - a VM started without host resource
+    /// limits, say - keeps its response. The warning goes to the log; the caller sees
+    /// only the VM it asked for.
+    #[test]
+    fn a_warning_on_stderr_does_not_spoil_a_successful_response() {
+        let (_dir, provider) = provider_script(
+            "echo 'progress: booting the guest' >&2\n\
+             echo 'warning: this VM runs without host-side limits' >&2\n\
+             printf '{\"version\":2,\"ssh_host\":\"ssh://zellij@127.0.0.1:2201\"}'",
+            Duration::from_secs(1),
+        );
+        let response = provider.ensure("work", "review", None, None).unwrap();
+        assert_eq!(response.ssh_host, "ssh://zellij@127.0.0.1:2201");
     }
 
     #[test]

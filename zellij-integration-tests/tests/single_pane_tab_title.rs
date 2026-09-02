@@ -16,6 +16,8 @@ fn replace_pane_in_place_with_held_command(
         command: vec![command.to_string()],
         remote_host: None,
         firecracker: None,
+        firecracker_image: None,
+        firecracker_worktree: None,
         plugin: None,
         cwd: None,
         floating: false,

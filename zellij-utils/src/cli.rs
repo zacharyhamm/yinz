@@ -1110,6 +1110,14 @@ pub enum CliAction {
         /// Run the pane in a named Firecracker VM owned by this session.
         #[clap(long, value_parser, conflicts_with_all(["plugin", "remote_host"]))]
         firecracker: Option<String>,
+        /// Boot the VM from a named image built with
+        /// `zellij-firecracker image build --name`, rather than this machine's default
+        /// image. Only meaningful the first time a VM is started.
+        #[clap(long, value_parser, requires("firecracker"))]
+        firecracker_image: Option<String>,
+        /// Absolute path to a host worktree to mirror into the VM.
+        #[clap(long, value_parser, requires("firecracker"))]
+        firecracker_worktree: Option<PathBuf>,
         #[clap(long, value_parser)]
         configuration: Option<PluginUserConfiguration>,
         #[clap(long, value_parser)]
@@ -1931,6 +1939,48 @@ mod tests {
             "review",
             "--remote-host",
             "build-box",
+        ])
+        .is_err());
+
+        let with_image = try_parse_cli([
+            "zellij",
+            "action",
+            "new-pane",
+            "--firecracker",
+            "review",
+            "--firecracker-image",
+            "rust-dev",
+            "--firecracker-worktree",
+            "/home/me/src/project",
+        ])
+        .unwrap();
+        assert!(matches!(
+            with_image.command,
+            Some(Command::Action(action))
+                if matches!(*action, CliAction::NewPane {
+                    firecracker: Some(ref name),
+                    firecracker_image: Some(ref image),
+                    firecracker_worktree: Some(ref worktree),
+                    ..
+                } if name == "review"
+                    && image == "rust-dev"
+                    && worktree.to_str() == Some("/home/me/src/project"))
+        ));
+        // An image or a worktree names how to start a VM, so it needs one to start.
+        assert!(try_parse_cli([
+            "zellij",
+            "action",
+            "new-pane",
+            "--firecracker-image",
+            "rust-dev",
+        ])
+        .is_err());
+        assert!(try_parse_cli([
+            "zellij",
+            "action",
+            "new-pane",
+            "--firecracker-worktree",
+            "/home/me/src/project",
         ])
         .is_err());
 

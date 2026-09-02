@@ -2377,7 +2377,12 @@ fn init_session(
             let mut bus = Bus::new(
                 vec![pty_receiver],
                 Some(&to_screen_bounded),
-                None,
+                // The pty thread sends to itself: a Firecracker pane is resolved on a
+                // worker thread (booting a VM must not block this one) and hands its
+                // result back as a `Firecracker*Spawned` instruction. Without this
+                // sender that hand-back fails, and the pane - error pane included -
+                // is dropped without a trace.
+                Some(&to_pty),
                 Some(&to_plugin),
                 Some(&to_server),
                 Some(&to_pty_writer),

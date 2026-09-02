@@ -187,6 +187,8 @@ fn main() {
                 // reached through `zellij action new-pane --remote-host`.
                 remote_host: None,
                 firecracker: None,
+                firecracker_image: None,
+                firecracker_worktree: None,
                 plugin: None,
                 direction,
                 cwd,
@@ -247,6 +249,8 @@ fn main() {
                 command: vec![],
                 remote_host: None,
                 firecracker: None,
+                firecracker_image: None,
+                firecracker_worktree: None,
                 plugin: Some(url),
                 direction: None,
                 cwd,

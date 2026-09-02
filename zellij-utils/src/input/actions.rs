@@ -1286,6 +1286,8 @@ impl Action {
                 command,
                 remote_host,
                 firecracker,
+                firecracker_image,
+                firecracker_worktree,
                 plugin,
                 cwd,
                 floating,
@@ -1317,6 +1319,18 @@ impl Action {
             } => {
                 if let Some(name) = firecracker.as_deref() {
                     super::command::validate_firecracker_vm_name(name)?;
+                }
+                // The same rules a layout's `firecracker_image` and `firecracker_worktree`
+                // are held to, checked here for the same reason: a CLI error names the flag,
+                // a spawn error is a banner in a pane that already exists.
+                if let Some(image) = firecracker_image.as_deref() {
+                    super::command::validate_firecracker_vm_name(image)?;
+                }
+                if firecracker_worktree
+                    .as_ref()
+                    .is_some_and(|path| !path.is_absolute())
+                {
+                    return Err("--firecracker-worktree must be an absolute path".to_owned());
                 }
                 let pane_id_to_replace = match pane_id {
                     Some(pane_id_str) => match PaneId::from_str(&pane_id_str) {
@@ -1363,6 +1377,8 @@ impl Action {
                         hold_on_start: start_suspended,
                         remote_host: remote_host.clone(),
                         firecracker_vm: firecracker.clone(),
+                        firecracker_image: firecracker_image.clone(),
+                        firecracker_worktree: firecracker_worktree.clone(),
                         ..Default::default()
                     })
                 } else if remote_host.is_some() || firecracker.is_some() {
@@ -1379,6 +1395,8 @@ impl Action {
                         hold_on_start: false,
                         remote_host: remote_host.clone(),
                         firecracker_vm: firecracker.clone(),
+                        firecracker_image: firecracker_image.clone(),
+                        firecracker_worktree: firecracker_worktree.clone(),
                         remote_default_shell: true,
                         ..Default::default()
                     })
@@ -3528,6 +3546,8 @@ mod tests {
         CliAction::NewPane {
             remote_host: Some("build-box".to_owned()),
             firecracker: None,
+            firecracker_image: None,
+            firecracker_worktree: None,
             direction: None,
             command,
             plugin: None,
@@ -3653,6 +3673,71 @@ mod tests {
         assert!(error.contains("letters, digits"));
     }
 
+    /// Give a `firecracker_new_pane` action an image and a worktree, the way the two new
+    /// flags do.
+    fn with_image_and_worktree(
+        mut action: CliAction,
+        image: Option<&str>,
+        worktree: Option<&str>,
+    ) -> CliAction {
+        if let CliAction::NewPane {
+            firecracker_image,
+            firecracker_worktree,
+            ..
+        } = &mut action
+        {
+            *firecracker_image = image.map(ToOwned::to_owned);
+            *firecracker_worktree = worktree.map(PathBuf::from);
+        }
+        action
+    }
+
+    #[test]
+    fn a_firecracker_pane_carries_its_image_and_worktree() {
+        let shell = tiled_run_command(with_image_and_worktree(
+            firecracker_new_pane(vec![], None),
+            Some("rust-dev"),
+            Some("/home/me/src/project"),
+        ));
+        assert!(shell.remote_default_shell);
+        assert_eq!(shell.firecracker_image.as_deref(), Some("rust-dev"));
+        assert_eq!(
+            shell.firecracker_worktree,
+            Some(PathBuf::from("/home/me/src/project"))
+        );
+
+        let command = tiled_run_command(with_image_and_worktree(
+            firecracker_new_pane(vec!["pwd".to_owned()], None),
+            Some("rust-dev"),
+            Some("/home/me/src/project"),
+        ));
+        assert_eq!(command.command, PathBuf::from("pwd"));
+        assert_eq!(command.firecracker_image.as_deref(), Some("rust-dev"));
+        assert_eq!(
+            command.firecracker_worktree,
+            Some(PathBuf::from("/home/me/src/project"))
+        );
+    }
+
+    #[test]
+    fn an_invalid_firecracker_image_or_worktree_is_rejected() {
+        let bad_image =
+            with_image_and_worktree(firecracker_new_pane(vec![], None), Some("bad/image"), None);
+        let error = Action::actions_from_cli(bad_image, Box::new(|| PathBuf::from("/tmp")), None)
+            .unwrap_err();
+        assert!(error.contains("letters, digits"), "{error}");
+
+        let relative_worktree = with_image_and_worktree(
+            firecracker_new_pane(vec![], None),
+            None,
+            Some("src/project"),
+        );
+        let error =
+            Action::actions_from_cli(relative_worktree, Box::new(|| PathBuf::from("/tmp")), None)
+                .unwrap_err();
+        assert!(error.contains("absolute path"), "{error}");
+    }
+
     /// Without a host, no command still means no command — the local pane keeps
     /// getting its shell from the server, not from an empty `RunCommandAction`.
     #[test]
@@ -3677,6 +3762,8 @@ mod tests {
         let cli_action = CliAction::NewPane {
             remote_host: None,
             firecracker: None,
+            firecracker_image: None,
+            firecracker_worktree: None,
             direction: Some(Direction::Right),
             command: vec![],
             plugin: None,
@@ -3725,6 +3812,8 @@ mod tests {
         let cli_action = CliAction::NewPane {
             remote_host: None,
             firecracker: None,
+            firecracker_image: None,
+            firecracker_worktree: None,
             direction: None,
             command: vec![],
             plugin: None,
@@ -3773,6 +3862,8 @@ mod tests {
         let cli_action = CliAction::NewPane {
             remote_host: None,
             firecracker: None,
+            firecracker_image: None,
+            firecracker_worktree: None,
             direction: None,
             command: vec![],
             plugin: None,
@@ -3823,6 +3914,8 @@ mod tests {
         let cli_action = CliAction::NewPane {
             remote_host: None,
             firecracker: None,
+            firecracker_image: None,
+            firecracker_worktree: None,
             direction: None,
             command: vec![],
             plugin: None,
@@ -3864,6 +3957,8 @@ mod tests {
         let cli_action = CliAction::NewPane {
             remote_host: None,
             firecracker: None,
+            firecracker_image: None,
+            firecracker_worktree: None,
             direction: None,
             command: vec![],
             plugin: None,
@@ -3912,6 +4007,8 @@ mod tests {
         let cli_action = CliAction::NewPane {
             remote_host: None,
             firecracker: None,
+            firecracker_image: None,
+            firecracker_worktree: None,
             direction: None,
             command: vec!["ls".into()],
             plugin: None,
@@ -4275,6 +4372,8 @@ mod tests {
             let cli_action = CliAction::NewPane {
                 remote_host: None,
                 firecracker: None,
+                firecracker_image: None,
+                firecracker_worktree: None,
                 direction: None,
                 command: vec!["ls".into()],
                 plugin: None,
@@ -4340,6 +4439,8 @@ mod tests {
         let cli_action = CliAction::NewPane {
             remote_host: None,
             firecracker: None,
+            firecracker_image: None,
+            firecracker_worktree: None,
             direction: None,
             command: vec!["ls".into()],
             plugin: None,
@@ -4456,6 +4557,8 @@ mod tests {
         let cli_action = CliAction::NewPane {
             remote_host: None,
             firecracker: None,
+            firecracker_image: None,
+            firecracker_worktree: None,
             direction: None,
             command: vec![],
             plugin: Some("zellij:strider".into()),
@@ -4504,6 +4607,8 @@ mod tests {
         let cli_action = CliAction::NewPane {
             remote_host: None,
             firecracker: None,
+            firecracker_image: None,
+            firecracker_worktree: None,
             direction: None,
             command: vec![],
             plugin: Some("zellij:strider".into()),
