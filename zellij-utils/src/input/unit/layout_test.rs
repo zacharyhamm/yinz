@@ -2880,6 +2880,111 @@ fn layout_with_firecracker_panes() {
     );
 }
 
+/// A consumer that names only a VM parses as that VM's login shell; when its
+/// template names a command, the consumer meant that command in the VM.
+#[test]
+fn pane_template_command_survives_a_consumer_that_only_adds_a_firecracker_vm() {
+    use crate::input::command::RunCommand;
+    use std::path::PathBuf;
+    let kdl_layout = r#"
+        layout {
+            pane_template name="build" command="cargo" {
+                args "build"
+            }
+            build firecracker_vm="review"
+        }
+    "#;
+    let layout = Layout::from_kdl(kdl_layout, Some("layout_file_name".into()), None, None).unwrap();
+    let panes = &layout.template.as_ref().unwrap().0.children;
+    let runs: Vec<_> = panes.iter().map(|pane| pane.run.clone()).collect();
+    assert_eq!(
+        runs,
+        vec![Some(Run::Command(RunCommand {
+            command: PathBuf::from("cargo"),
+            args: vec!["build".to_owned()],
+            hold_on_close: true,
+            remote_default_shell: false,
+            target: PaneTarget::Firecracker {
+                vm: "review".to_owned(),
+                image: None,
+                worktree: None,
+            },
+            ..Default::default()
+        }))]
+    );
+}
+
+/// A consumer that names a different VM keeps the template's image and
+/// worktree, each on its own, the way `cwd` and `args` are inherited.
+#[test]
+fn a_consumer_vm_inherits_the_templates_image_and_worktree_individually() {
+    use crate::input::command::RunCommand;
+    use std::path::PathBuf;
+    let kdl_layout = r#"
+        layout {
+            pane_template name="guest" firecracker_vm="review" firecracker_image="rust-dev" firecracker_worktree="/home/me/src/project"
+            guest command="cargo" firecracker_vm="review-2"
+            guest command="cargo" firecracker_vm="review-3" firecracker_image="go"
+        }
+    "#;
+    let layout = Layout::from_kdl(kdl_layout, Some("layout_file_name".into()), None, None).unwrap();
+    let panes = &layout.template.as_ref().unwrap().0.children;
+    let runs: Vec<_> = panes.iter().map(|pane| pane.run.clone()).collect();
+    assert_eq!(
+        runs,
+        vec![
+            Some(Run::Command(RunCommand {
+                command: PathBuf::from("cargo"),
+                hold_on_close: true,
+                target: PaneTarget::Firecracker {
+                    vm: "review-2".to_owned(),
+                    image: Some("rust-dev".to_owned()),
+                    worktree: Some(PathBuf::from("/home/me/src/project")),
+                },
+                ..Default::default()
+            })),
+            Some(Run::Command(RunCommand {
+                command: PathBuf::from("cargo"),
+                hold_on_close: true,
+                target: PaneTarget::Firecracker {
+                    vm: "review-3".to_owned(),
+                    image: Some("go".to_owned()),
+                    worktree: Some(PathBuf::from("/home/me/src/project")),
+                },
+                ..Default::default()
+            })),
+        ]
+    );
+}
+
+/// With no template behind it, a bare `firecracker_vm` pane is the guest's
+/// login shell: no command, not held on close.
+#[test]
+fn a_bare_firecracker_pane_is_the_guests_login_shell() {
+    use crate::input::command::RunCommand;
+    let kdl_layout = r#"
+        layout {
+            pane firecracker_vm="review"
+        }
+    "#;
+    let layout = Layout::from_kdl(kdl_layout, Some("layout_file_name".into()), None, None).unwrap();
+    let panes = &layout.template.as_ref().unwrap().0.children;
+    let runs: Vec<_> = panes.iter().map(|pane| pane.run.clone()).collect();
+    assert_eq!(
+        runs,
+        vec![Some(Run::Command(RunCommand {
+            remote_default_shell: true,
+            hold_on_close: false,
+            target: PaneTarget::Firecracker {
+                vm: "review".to_owned(),
+                image: None,
+                worktree: None,
+            },
+            ..Default::default()
+        }))]
+    );
+}
+
 #[test]
 fn firecracker_pane_properties_are_validated() {
     for (layout, why) in [
