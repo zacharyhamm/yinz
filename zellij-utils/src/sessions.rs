@@ -492,12 +492,58 @@ pub fn kill_session(name: &str) -> io::Result<()> {
         .map_err(|e| io::Error::other(format!("{e:?}")))
 }
 
+/// How long `session_left` gives a server that was told to shut down.
+///
+/// A few probes' worth. A server that is turning unlinks its socket within
+/// milliseconds of the request, and one that is not will not do so however
+/// long this waits; the margin is for a thrashing machine, as `PROBE_TIMEOUT`'s
+/// is.
+pub const KILL_CONFIRM_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Whether a session's socket went away, polled for up to `within`.
+///
+/// For after a `KillSession` was delivered to a server a probe had already
+/// found unresponsive. Delivery proves nothing there: the router that accepted
+/// the frame only hands it on to the main loop, which is the loop whose
+/// silence made the probe say so. The server unlinks its socket on the way
+/// out, so the socket going is the shutdown having happened, and its staying
+/// is the request sitting in a queue nobody is draining.
+pub fn session_left(name: &str, within: Duration) -> Result<bool, io::ErrorKind> {
+    let deadline = Instant::now() + within;
+    loop {
+        if session_status(name)? == SessionProbe::Absent {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// What to tell a person whose `kill-session` could not reach the server.
 pub fn undeliverable_kill_message(name: &str) -> String {
     format!(
         "Could not reach the server for session {name:?} to ask it to shut down: \
-         it is not accepting connections.\n\n\
-         It has to be stopped from outside. Find it with:\n  \
+         it is not accepting connections.\n\n{}",
+        kill_from_outside_remedy(name)
+    )
+}
+
+/// What to tell a person whose `kill-session` reached the server and changed
+/// nothing: the request was accepted and then never acted on.
+pub fn unacted_kill_message(name: &str) -> String {
+    format!(
+        "Session {name:?} took the request to shut down but has not acted on it: \
+         its server accepts connections, but its main loop is not turning.\n\n{}",
+        kill_from_outside_remedy(name)
+    )
+}
+
+/// The one thing left to do about a server that cannot be told to stop.
+fn kill_from_outside_remedy(name: &str) -> String {
+    format!(
+        "It has to be stopped from outside. Find it with:\n  \
          pgrep -af 'zellij --server .*{name}'\n\
          and kill that process id, then `zellij delete-session --force {name}` \
          to clear the name."

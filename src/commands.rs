@@ -14,9 +14,9 @@ use zellij_utils::sessions::{
     generate_unique_session_name, get_active_session, get_resurrectable_sessions, get_sessions,
     get_sessions_sorted_by_mtime, get_sessions_with_status, kill_session as kill_session_impl,
     match_session_name, print_sessions, print_sessions_with_index, resurrection_layout,
-    session_listing_error_message, session_status, undeliverable_kill_message,
-    unresponsive_session_message, validate_session_name, ActiveSession, SessionListing,
-    SessionNameMatch, SessionProbe,
+    session_left, session_listing_error_message, session_status, unacted_kill_message,
+    undeliverable_kill_message, unresponsive_session_message, validate_session_name, ActiveSession,
+    SessionListing, SessionNameMatch, SessionProbe, KILL_CONFIRM_TIMEOUT,
 };
 
 use zellij_utils::consts::session_layout_cache_file_name;
@@ -142,31 +142,84 @@ fn sessions_to_delete(
         .collect())
 }
 
+/// What `kill-session` found, apart from what it says about it, so that the
+/// decision can be tested without a server.
+#[derive(Debug)]
+enum KillOutcome {
+    /// The server is gone, or was answering and took the request.
+    Killed,
+    Absent,
+    /// The server accepted no connection; the request never reached it.
+    Undeliverable(std::io::Error),
+    /// The request reached a server already known not to be turning, and its
+    /// socket is still there: it was queued for a loop that is not draining.
+    Unacted,
+    ListingError(std::io::ErrorKind),
+}
+
+/// Kill a session, and say only what is known to have happened.
+///
+/// Deliberately not `assert_session`, which refuses an unresponsive session
+/// and tells the caller to run `kill-session` — the command they are already
+/// running. A wedged server is the one this command most needs to work on, so
+/// the request is sent regardless. But delivering it to such a server proves
+/// nothing: the router accepts the frame and hands it to the main loop, which
+/// is the loop the probe found silent. So for an unresponsive server the
+/// socket has to be seen to go, `left`, before the kill is reported done.
+fn kill_outcome(
+    probe: Result<SessionProbe, std::io::ErrorKind>,
+    deliver: impl FnOnce() -> std::io::Result<()>,
+    left: impl FnOnce() -> Result<bool, std::io::ErrorKind>,
+) -> KillOutcome {
+    let probe = match probe {
+        Ok(SessionProbe::Absent) => return KillOutcome::Absent,
+        Ok(probe) => probe,
+        Err(kind) => return KillOutcome::ListingError(kind),
+    };
+    if let Err(e) = deliver() {
+        return KillOutcome::Undeliverable(e);
+    }
+    if probe == SessionProbe::Alive {
+        return KillOutcome::Killed;
+    }
+    match left() {
+        Ok(true) => KillOutcome::Killed,
+        Ok(false) => KillOutcome::Unacted,
+        Err(kind) => KillOutcome::ListingError(kind),
+    }
+}
+
 pub(crate) fn kill_session(target_session: &Option<String>) {
     match target_session {
         Some(target_session) => {
-            // Deliberately not `assert_session`, which refuses an unresponsive
-            // session and tells the caller to run `kill-session` — the command
-            // they are already running. A wedged server is the one this command
-            // most needs to work on, so try it and report honestly if the
-            // request could not be delivered.
-            match session_status(target_session) {
-                Ok(SessionProbe::Alive) | Ok(SessionProbe::Unresponsive) => {},
-                Ok(SessionProbe::Absent) => {
+            let outcome = kill_outcome(
+                session_status(target_session),
+                || kill_session_impl(target_session),
+                || session_left(target_session, KILL_CONFIRM_TIMEOUT),
+            );
+            match outcome {
+                KillOutcome::Killed => process::exit(0),
+                KillOutcome::Absent => {
                     println!("No session named {:?} found.", target_session);
                     process::exit(1);
                 },
-                Err(kind) => {
+                KillOutcome::Undeliverable(e) => {
+                    log::error!("failed to kill session {target_session:?}: {e}");
+                    eprintln!("{}", undeliverable_kill_message(target_session));
+                    process::exit(1);
+                },
+                KillOutcome::Unacted => {
+                    log::error!(
+                        "session {target_session:?} took the kill request but its socket is still there"
+                    );
+                    eprintln!("{}", unacted_kill_message(target_session));
+                    process::exit(1);
+                },
+                KillOutcome::ListingError(kind) => {
                     eprintln!("{}", session_listing_error_message(kind));
                     process::exit(1);
                 },
             }
-            if let Err(e) = kill_session_impl(target_session) {
-                log::error!("failed to kill session {target_session:?}: {e}");
-                eprintln!("{}", undeliverable_kill_message(target_session));
-                process::exit(1);
-            }
-            process::exit(0);
         },
         None => {
             println!("Please specify the session name to kill.");
@@ -1306,8 +1359,8 @@ fn format_duration(duration_us: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        named_session_exists_or_error, retarget_implicit_agent_report, sessions_to_delete,
-        sessions_to_kill,
+        kill_outcome, named_session_exists_or_error, retarget_implicit_agent_report,
+        sessions_to_delete, sessions_to_kill, KillOutcome,
     };
     use std::{cell::Cell, io, time::Duration};
     use zellij_server::pty_host::protocol::HostStatus;
@@ -1453,6 +1506,66 @@ mod tests {
         .unwrap();
 
         assert_eq!(sessions, vec![session("alive"), session("wedged")]);
+    }
+
+    /// An answering server takes the request and that is the end of it: no
+    /// wait, and no doubt. A server that did not answer the probe is only
+    /// killed once its socket has gone, because the request went to the very
+    /// loop that was not answering.
+    #[test]
+    fn a_kill_is_only_reported_done_when_the_server_is_known_to_have_gone() {
+        let delivered = || Ok(());
+        let never_asked = || panic!("an answering server is not waited for");
+
+        assert!(matches!(
+            kill_outcome(Ok(SessionProbe::Alive), delivered, never_asked),
+            KillOutcome::Killed
+        ));
+        assert!(matches!(
+            kill_outcome(Ok(SessionProbe::Unresponsive), delivered, || Ok(true)),
+            KillOutcome::Killed
+        ));
+        assert!(matches!(
+            kill_outcome(Ok(SessionProbe::Unresponsive), delivered, || Ok(false)),
+            KillOutcome::Unacted
+        ));
+        assert!(matches!(
+            kill_outcome(Ok(SessionProbe::Unresponsive), delivered, || Err(
+                io::ErrorKind::PermissionDenied
+            )),
+            KillOutcome::ListingError(io::ErrorKind::PermissionDenied)
+        ));
+    }
+
+    /// Nothing is sent to a session that is not there, or that could not be
+    /// looked for; and a request that could not be delivered is reported as
+    /// that, whatever the probe said.
+    #[test]
+    fn a_kill_that_never_reached_a_server_says_so() {
+        let never_sent = || panic!("nothing is sent to an absent session");
+        let never_asked = || panic!("nothing is waited for");
+        let refused = || Err(io::Error::from(io::ErrorKind::TimedOut));
+
+        assert!(matches!(
+            kill_outcome(Ok(SessionProbe::Absent), never_sent, never_asked),
+            KillOutcome::Absent
+        ));
+        assert!(matches!(
+            kill_outcome(
+                Err(io::ErrorKind::PermissionDenied),
+                never_sent,
+                never_asked
+            ),
+            KillOutcome::ListingError(io::ErrorKind::PermissionDenied)
+        ));
+        assert!(matches!(
+            kill_outcome(Ok(SessionProbe::Unresponsive), refused, never_asked),
+            KillOutcome::Undeliverable(e) if e.kind() == io::ErrorKind::TimedOut
+        ));
+        assert!(matches!(
+            kill_outcome(Ok(SessionProbe::Alive), refused, never_asked),
+            KillOutcome::Undeliverable(_)
+        ));
     }
 
     #[test]
