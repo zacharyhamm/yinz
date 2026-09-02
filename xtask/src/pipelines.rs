@@ -100,11 +100,38 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     {
         let provider = crate::target_dir().join("release/zellij-firecracker");
-        let provider_destination = destination.with_file_name("zellij-firecracker");
-        let provider_tmp = provider_destination.with_extension("xtask-install-tmp");
-        sh.copy_file(&provider, &provider_tmp)
-            .with_context(err_context)?;
-        std::fs::rename(provider_tmp, &provider_destination).with_context(err_context)?;
+        // The provider is an implicit bin of the root crate, so a plain build produces it - but
+        // forwarded args (`-- --bin zellij`, `--target ...`) can leave it absent or stale, and
+        // installing a provider from an earlier build would be worse than installing none.
+        let excluded_by_args = flags.args.iter().any(|arg| arg == "--bin")
+            && !flags
+                .args
+                .iter()
+                .any(|arg| arg == "zellij-firecracker" || arg == "--bin=zellij-firecracker");
+        let stale = match (provider.metadata(), binary.metadata()) {
+            (Ok(provider), Ok(binary)) => {
+                matches!((provider.modified(), binary.modified()), (Ok(p), Ok(b)) if p < b)
+            },
+            _ => true,
+        };
+        if excluded_by_args || stale {
+            println!(
+                "Skipping zellij-firecracker: {} (build it with 'cargo x build --release')",
+                if excluded_by_args {
+                    "not part of this build"
+                } else if provider.exists() {
+                    "older than the zellij binary just built"
+                } else {
+                    "not built"
+                }
+            );
+        } else {
+            let provider_destination = destination.with_file_name("zellij-firecracker");
+            let provider_tmp = provider_destination.with_extension("xtask-install-tmp");
+            sh.copy_file(&provider, &provider_tmp)
+                .with_context(err_context)?;
+            std::fs::rename(provider_tmp, &provider_destination).with_context(err_context)?;
+        }
     }
 
     if !flags.no_builtins {

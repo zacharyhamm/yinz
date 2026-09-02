@@ -228,6 +228,20 @@ struct LockedState {
     _lock: File,
 }
 
+const LOCK_WAIT_PHASE: &str = "waiting for the provider lock";
+
+/// Take the exclusive lock, reporting the wait as a phase for as long as it lasts. Another
+/// provider - a second session's `ensure`, a `zellij firecracker sync` from a shell - may
+/// hold the lock for minutes, and the server kills a provider that stays silent.
+fn lock_exclusively(lock: &File, progress: impl FnOnce() -> Progress) -> Result<()> {
+    let _progress = progress();
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("failed to lock Firecracker provider state");
+    }
+    Ok(())
+}
+
 impl LockedState {
     fn new() -> Result<Self> {
         let dir = state_dir();
@@ -239,11 +253,11 @@ impl LockedState {
             .truncate(false)
             .open(dir.join("lock"))
             .context("failed to open the Firecracker provider lock")?;
-        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return Err(std::io::Error::last_os_error())
-                .context("failed to lock Firecracker provider state");
+        lock_exclusively(&lock, || Progress::start(LOCK_WAIT_PHASE))?;
+        {
+            let _progress = Progress::start("pruning old recoveries");
+            prune_recoveries(&dir)?;
         }
-        prune_recoveries(&dir)?;
         Ok(Self { dir, _lock: lock })
     }
 
@@ -268,15 +282,11 @@ impl LockedState {
             if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
                 continue;
             }
-            match fs::read(&path)
-                .context("failed to read VM state")
-                .and_then(|bytes| serde_json::from_slice(&bytes).context("invalid VM state"))
-            {
-                Ok(state) => entries.push((path, state)),
-                Err(error) => eprintln!(
-                    "warning: ignored invalid VM state {}: {error:#}",
-                    path.display()
-                ),
+            // A file that cannot be read is not skipped: it may describe a running VM, and
+            // a request that cannot see it would reuse its TAP or write over its disk. The
+            // error names the file so the user can repair or remove it.
+            if let Some(state) = read_state_opt(&path)? {
+                entries.push((path, state));
             }
         }
         Ok(entries)
@@ -418,7 +428,7 @@ fn ensure(
     let state_path = locked.identity_path(session, name, worktree.as_deref());
     let entries = locked.entries()?;
     ensure_vm_identity_available(&entries, &state_path, session, name)?;
-    if let Ok(mut existing) = read_state(&state_path) {
+    if let Some(mut existing) = read_state_opt(&state_path)? {
         if vm_is_running(&existing) {
             match existing_vm_disposition(&existing, name, image) {
                 Disposition::Join => {
@@ -456,6 +466,11 @@ fn ensure(
         }
     }
 
+    // Whether this user may run the VM under a cgroup of its own is settled here, before
+    // the clone and the boot: a host that refuses is told so at once, not after the
+    // expensive work has been done and undone.
+    let cgroup_root = cgroup_root_or_skip(delegated_cgroup_root(), config.require_resource_limits)?;
+
     let baseline = {
         let _progress = Progress::start("hashing the worktree");
         worktree.as_deref().map(worktree_baseline).transpose()?
@@ -488,6 +503,11 @@ fn ensure(
         .context("invalid VM state path")?
         .to_owned();
     let vm_dir = locked.dir.join(&id);
+    // No state file names this directory, or it would have been handled above, so anything
+    // here is what an interrupted attempt left behind. It is moved aside rather than
+    // written over: a clone into a directory whose disk a VMM may still hold open would
+    // truncate that disk under it.
+    retain_orphaned_vm_dir(locked, &vm_dir)?;
     secure_dir(&vm_dir)?;
     if let Some(baseline) = &baseline {
         if let Err(error) = write_baseline(&vm_dir.join(BASELINE_FILE), baseline) {
@@ -588,7 +608,7 @@ fn ensure(
         pid,
         config.memory_mib,
         config.vcpu_count,
-        config.require_resource_limits,
+        cgroup_root.as_deref(),
     ) {
         Ok(cgroup) => cgroup,
         Err(error) => {
@@ -678,13 +698,18 @@ fn finish_provisioning(
         wait_for_ssh(child.as_deref_mut(), &vm, config.boot_timeout_secs)
     };
     if let Err(error) = booted {
-        let log = fs::read_to_string(&vm.log).unwrap_or_else(|read_error| {
+        // The tail is where a boot failure shows; the whole console log of a guest that
+        // looped on a panic would push the error past what the server keeps of stderr.
+        let log = tail_of_file(&vm.log, CONSOLE_LOG_TAIL).unwrap_or_else(|read_error| {
             format!("<failed to read {}: {read_error}>", vm.log.display())
         });
+        let log_path = vm.log.display().to_string();
         terminate(&vm, child.as_deref_mut());
         cleanup_files(&vm);
         let _ = fs::remove_file(state_path);
-        return Err(error).context(format!("Firecracker log:\n{log}"));
+        return Err(error).context(format!(
+            "Firecracker log (last {CONSOLE_LOG_TAIL} bytes, full log was at {log_path}):\n{log}"
+        ));
     }
     if let Err(error) = provision_guest(&vm, config) {
         terminate(&vm, child.as_deref_mut());
@@ -700,6 +725,27 @@ fn finish_provisioning(
         return Err(error);
     }
     Ok(response(config, &vm))
+}
+
+/// How much of a failed guest's console log an error carries.
+const CONSOLE_LOG_TAIL: u64 = 64 * 1024;
+
+/// The last `limit` bytes of a file, from the first whole line inside them.
+fn tail_of_file(path: &Path, limit: u64) -> std::io::Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    let mut bytes = Vec::new();
+    if len > limit {
+        file.seek(SeekFrom::Start(len - limit))?;
+        file.read_to_end(&mut bytes)?;
+        if let Some(newline) = bytes.iter().position(|byte| *byte == b'\n') {
+            bytes.drain(..=newline);
+        }
+    } else {
+        file.read_to_end(&mut bytes)?;
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn response(config: &Config, state: &VmState) -> EnsureResponse {
@@ -1640,6 +1686,25 @@ fn terminate(state: &VmState, mut child: Option<&mut Child>) {
         unsafe {
             libc::kill(state.pid, libc::SIGKILL);
         }
+        // Whoever called is about to remove the VM's cgroup and disk, and a process that
+        // has been signalled is not yet gone: the cgroup refuses to go while it is still a
+        // member, and the disk is still mapped. Give it the moment it needs.
+        wait_for_process_exit(state, Duration::from_secs(2));
+    }
+}
+
+/// Wait for a VM process that is not this provider's child to leave `/proc`, up to
+/// `timeout`. True once it has.
+fn wait_for_process_exit(state: &VmState, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if !vm_is_running(state) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -1700,18 +1765,19 @@ fn delegation_root(own: &Path, owned: &dyn Fn(&Path) -> bool) -> Result<PathBuf>
     Ok(root)
 }
 
-/// Put the VMM in a cgroup of its own, or report that it could not be. `Ok(None)` means
-/// the host has no cgroup subtree this user may manage and the config allows running
-/// without one: the guest's own RAM and vCPUs are still capped by Firecracker, but nothing
-/// bounds the VMM's page cache, threads or file descriptors.
+/// Put the VMM in a cgroup of its own under `root`, the delegated subtree `ensure` resolved
+/// before it did any expensive work. `None` means the host has no cgroup subtree this user
+/// may manage and the config allows running without one: the guest's own RAM and vCPUs are
+/// still capped by Firecracker, but nothing bounds the VMM's page cache, threads or file
+/// descriptors.
 fn place_in_cgroup(
     id: &str,
     pid: i32,
     memory_mib: usize,
     vcpu_count: u8,
-    require: bool,
+    root: Option<&Path>,
 ) -> Result<Option<PathBuf>> {
-    let Some(root) = cgroup_root_or_skip(delegated_cgroup_root(), require)? else {
+    let Some(root) = root else {
         return Ok(None);
     };
     let parent = root.join("zellij-firecracker");
@@ -1801,6 +1867,38 @@ fn retain_recovery(
     Ok(())
 }
 
+/// Move a VM directory that no state file describes into the recoveries, so a fresh attempt
+/// for the same identity starts from an empty directory. Nothing to do when it is absent.
+fn retain_orphaned_vm_dir(locked: &LockedState, vm_dir: &Path) -> Result<()> {
+    if !vm_dir.exists() {
+        return Ok(());
+    }
+    remove_staging(&vm_dir.join(STAGING_DIR))?;
+    let recovery = locked.dir.join("recovery");
+    secure_dir(&recovery)?;
+    let id = vm_dir
+        .file_name()
+        .and_then(|id| id.to_str())
+        .unwrap_or("vm");
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let destination = recovery.join(format!("{id}-{timestamp}-orphaned"));
+    fs::rename(vm_dir, &destination).with_context(|| {
+        format!(
+            "failed to move the orphaned Firecracker VM directory {} to {}",
+            vm_dir.display(),
+            destination.display()
+        )
+    })?;
+    fs::write(
+        destination.join(RECOVERY_NOTE_FILE),
+        serde_json::to_vec_pretty(&RecoveryNote {
+            reason: "orphaned".to_owned(),
+            retained_at: timestamp,
+        })?,
+    )?;
+    Ok(())
+}
+
 /// Remove the recoveries older than the retention period, aged by the note `retain_recovery`
 /// wrote: a directory's mtime changes whenever something inside it is looked at or copied
 /// out, so it only stands in for a directory whose note cannot be read.
@@ -1810,6 +1908,11 @@ fn prune_recoveries(state: &Path) -> Result<()> {
     let now = SystemTime::now();
     for entry in fs::read_dir(&recovery)? {
         let entry = entry?;
+        // Only directories are recoveries; a stray file here (an editor's swap file, a
+        // note) is nothing to remove, and `remove_dir_all` on it would fail every request.
+        if !entry.path().is_dir() {
+            continue;
+        }
         let retained_at = match read_recovery_note(&entry.path()) {
             Some(note) => Some(UNIX_EPOCH + Duration::from_secs(note.retained_at)),
             None => entry.metadata()?.modified().ok(),
@@ -1850,7 +1953,24 @@ fn wait_for_process_start(pid: i32, timeout: Duration) -> Result<u64> {
 }
 
 fn read_state(path: &Path) -> Result<VmState> {
-    serde_json::from_slice(&fs::read(path)?).context("invalid VM state")
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| {
+        format!(
+            "invalid VM state in {}; repair or remove it",
+            path.display()
+        )
+    })
+}
+
+/// A state file that is not there is a VM that is not there. One that is there but cannot
+/// be read or parsed is not: it may describe a VM that is running right now, and treating
+/// it as absent would hand the VM's slot and disk to a fresh attempt.
+fn read_state_opt(path: &Path) -> Result<Option<VmState>> {
+    match fs::metadata(path) {
+        Ok(_) => read_state(path).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+    }
 }
 
 fn write_state(path: &Path, state: &VmState) -> Result<()> {
@@ -3289,9 +3409,17 @@ fn network_apply_cli(args: &[String]) -> Result<()> {
 fn network_remove_cli(args: &[String]) -> Result<()> {
     require_root()?;
     let path = option_path(args, "--config")?.context("network remove requires --config PATH")?;
+    // `--uid` names whose recorded network the subnet cleanup may consult, as it does for
+    // `apply`; under sudo the effective uid is root's, which recorded nothing.
+    let uid = match option_value(args, "--uid")? {
+        Some(uid) => uid
+            .parse()
+            .context("network remove --uid must be a number")?,
+        None => unsafe { libc::geteuid() },
+    };
     let config: NetworkConfig = serde_json::from_slice(&fs::read(&path)?)?;
     validate_network_config(&config)?;
-    network_remove(unsafe { libc::geteuid() }, &config);
+    network_remove(uid, &config, FirewallScope::ThisNetwork);
     Ok(())
 }
 
@@ -3318,7 +3446,7 @@ fn rollback(uid: u32, config: &NetworkConfig, steps: Vec<Undo>) {
         match step {
             Undo::Firewall => {
                 let subnets = known_subnets(uid, config);
-                if let Err(error) = remove_firewall(&mut RealIptables, uid, config, &subnets) {
+                if let Err(error) = remove_firewall(&mut RealIptables, None, config, &subnets) {
                     eprintln!("warning: could not undo the Firecracker firewall rules: {error:#}");
                 }
             },
@@ -3628,7 +3756,10 @@ fn apply_firewall(
     config: &NetworkConfig,
     subnets: &[String],
 ) -> Result<()> {
-    let cleanup = remove_firewall(ipt, uid, config, subnets)?;
+    // Only rules of this network are swept: a rule that carries this user's tag but names
+    // another bridge belongs to another network of theirs - the real pool, while a test run
+    // applies a network of its own - and stays.
+    let cleanup = remove_firewall(ipt, None, config, subnets)?;
     cleanup.report();
     let chain = firewall_chain(config);
     if !chain_exists(&read_rules(ipt, None)?, &chain) {
@@ -3687,14 +3818,16 @@ impl FirewallCleanup {
 /// because the two drift: a rule written for one subnet cannot be deleted by a spec naming
 /// another, and the leftover jump then keeps the chain alive so that re-creating it fails with
 /// "Chain already exists".
+/// Remove the rules of `config`'s network: those naming its bridge or chain, and the
+/// MASQUERADE for any of `subnets`. With a `tag`, every rule carrying it goes too, whatever it
+/// names - the teardown of a user's whole setup, not the reconfiguration of one network.
 fn remove_firewall(
     ipt: &mut dyn Iptables,
-    uid: u32,
+    tag: Option<&str>,
     config: &NetworkConfig,
     subnets: &[String],
 ) -> Result<FirewallCleanup> {
     let chain = firewall_chain(config);
-    let tag = firewall_tag(uid);
     // Each -D removes one match, so duplicates need more than one pass; the bound just stops a
     // pathological table from looping forever.
     for _ in 0..32 {
@@ -3703,7 +3836,7 @@ fn remove_firewall(
             &read_rules(ipt, Some("nat"))?,
             &chain,
             &config.bridge,
-            &tag,
+            tag,
             subnets,
         );
         if ours.is_empty() {
@@ -3722,7 +3855,7 @@ fn remove_firewall(
     }
     let filter = read_rules(ipt, None)?;
     let nat = read_rules(ipt, Some("nat"))?;
-    let leftover = our_rules(&filter, &nat, &chain, &config.bridge, &tag, subnets);
+    let leftover = our_rules(&filter, &nat, &chain, &config.bridge, tag, subnets);
     if !leftover.is_empty() {
         return Err(anyhow!(
             "could not remove these Firecracker firewall rules: {}",
@@ -3749,15 +3882,21 @@ fn remove_firewall(
 }
 
 /// The subnets a rule of ours may name: the one we are configuring, and the one last recorded for
-/// this UID, which is what a run that changes the subnet has to clean up after.
+/// this UID, which is what a run that changes the subnet has to clean up after. The recorded one
+/// counts only when it describes the same network - a run applying a network of its own, as the
+/// test harness does, must not take the recorded pool's NAT rule with it.
 fn known_subnets(uid: u32, config: &NetworkConfig) -> Vec<String> {
-    let mut subnets = vec![config.subnet.clone()];
-    if let Some(recorded) = fs::read(network_config_path(uid))
+    let recorded = fs::read(network_config_path(uid))
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<NetworkConfig>(&bytes).ok())
-    {
-        if !subnets.contains(&recorded.subnet) {
-            subnets.push(recorded.subnet);
+        .and_then(|bytes| serde_json::from_slice::<NetworkConfig>(&bytes).ok());
+    known_subnets_with(config, recorded.as_ref())
+}
+
+fn known_subnets_with(config: &NetworkConfig, recorded: Option<&NetworkConfig>) -> Vec<String> {
+    let mut subnets = vec![config.subnet.clone()];
+    if let Some(recorded) = recorded {
+        if recorded.bridge == config.bridge && !subnets.contains(&recorded.subnet) {
+            subnets.push(recorded.subnet.clone());
         }
     }
     subnets
@@ -3811,7 +3950,7 @@ fn our_rules(
     nat: &[String],
     chain: &str,
     bridge: &str,
-    tag: &str,
+    tag: Option<&str>,
     subnets: &[String],
 ) -> Vec<OwnedRule> {
     let mut rules = Vec::new();
@@ -3838,12 +3977,18 @@ fn our_rules(
     rules
 }
 
-fn rule_is_ours(argv: &[String], chain: &str, bridge: &str, tag: &str, subnets: &[String]) -> bool {
+fn rule_is_ours(
+    argv: &[String],
+    chain: &str,
+    bridge: &str,
+    tag: Option<&str>,
+    subnets: &[String],
+) -> bool {
     let follows = |flag: &str, value: &str| {
         argv.windows(2)
             .any(|pair| pair[0] == flag && pair[1] == value)
     };
-    follows("--comment", tag)
+    tag.is_some_and(|tag| follows("--comment", tag))
         || follows("-j", chain)
         || follows("-i", bridge)
         || follows("-o", bridge)
@@ -3919,8 +4064,22 @@ fn network_remove_commands(config: &NetworkConfig) -> Vec<Vec<String>> {
         .collect()
 }
 
-fn network_remove(uid: u32, config: &NetworkConfig) {
-    match remove_firewall(&mut RealIptables, uid, config, &known_subnets(uid, config)) {
+/// How far `network_remove` reaches into the firewall.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FirewallScope {
+    /// The rules of the network `config` describes.
+    ThisNetwork,
+    /// Every rule this user's provider ever tagged, whatever network it was for.
+    EverythingTagged,
+}
+
+fn network_remove(uid: u32, config: &NetworkConfig, scope: FirewallScope) {
+    let tag = firewall_tag(uid);
+    let tag = match scope {
+        FirewallScope::ThisNetwork => None,
+        FirewallScope::EverythingTagged => Some(tag.as_str()),
+    };
+    match remove_firewall(&mut RealIptables, tag, config, &known_subnets(uid, config)) {
         Ok(cleanup) => cleanup.report(),
         Err(error) => eprintln!("warning: {error:#}"),
     }
@@ -3961,7 +4120,7 @@ fn network_teardown(args: &[String]) -> Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-    network_remove(uid, &config);
+    network_remove(uid, &config, FirewallScope::EverythingTagged);
     let _ = fs::remove_file(path);
     Ok(())
 }
@@ -6024,7 +6183,7 @@ mod tests {
         let config = uid_network_config();
 
         let cleanup =
-            remove_firewall(&mut fake, 1000, &config, &strings(&["10.3.232.0/24"])).unwrap();
+            remove_firewall(&mut fake, None, &config, &strings(&["10.3.232.0/24"])).unwrap();
 
         assert_eq!(
             cleanup.orphans,
@@ -6083,9 +6242,79 @@ mod tests {
             );
         }
 
-        remove_firewall(&mut fake, 1000, &config, &strings(&["10.3.232.0/24"])).unwrap();
+        remove_firewall(&mut fake, None, &config, &strings(&["10.3.232.0/24"])).unwrap();
 
         assert!(fake.lines("filter").is_empty());
+    }
+
+    /// The test harness applies a network of its own with the user's uid, so every rule it writes
+    /// carries the same tag as the user's real pool. Applying and removing that network must
+    /// leave the pool's rules - its INPUT/FORWARD rules, its jump and its NAT - exactly as found.
+    #[test]
+    fn applying_a_network_does_not_sweep_another_networks_rules() {
+        let pool = uid_network_config();
+        let harness = NetworkConfig {
+            bridge: "zfcb4d2".to_owned(),
+            tap_prefix: "zfct4d2-".to_owned(),
+            subnet: "10.204.210.0/24".to_owned(),
+            taps: 2,
+            dns: Ipv4Addr::new(1, 1, 1, 1),
+        };
+        let mut fake = FakeIptables::default();
+        apply_firewall(&mut fake, 1000, &pool, &strings(&[&pool.subnet])).unwrap();
+        let pool_filter = fake.lines("filter");
+        let pool_nat = fake.lines("nat");
+        assert!(!pool_filter.is_empty() && !pool_nat.is_empty());
+
+        apply_firewall(&mut fake, 1000, &harness, &strings(&[&harness.subnet])).unwrap();
+        for rule in pool_filter.iter().chain(&pool_nat) {
+            assert!(
+                fake.lines("filter").contains(rule) || fake.lines("nat").contains(rule),
+                "the pool's rule {rule:?} must survive another network's apply"
+            );
+        }
+
+        remove_firewall(&mut fake, None, &harness, &strings(&[&harness.subnet])).unwrap();
+        assert_eq!(fake.lines("filter"), pool_filter);
+        assert_eq!(fake.lines("nat"), pool_nat);
+
+        // Only a teardown by tag reaches the pool's rules.
+        let tag = firewall_tag(1000);
+        let ours = our_rules(
+            &fake.lines("filter"),
+            &fake.lines("nat"),
+            &firewall_chain(&harness),
+            &harness.bridge,
+            Some(&tag),
+            &strings(&[&harness.subnet]),
+        );
+        assert!(
+            !ours.is_empty(),
+            "a tagged sweep must still find the pool's rules"
+        );
+    }
+
+    /// A subnet recorded for the uid is swept only when it belongs to the network being applied.
+    #[test]
+    fn a_recorded_subnet_counts_only_for_the_same_bridge() {
+        let recorded = uid_network_config();
+        let same_bridge = NetworkConfig {
+            subnet: "10.9.9.0/24".to_owned(),
+            ..recorded.clone()
+        };
+        let other_bridge = NetworkConfig {
+            bridge: "zfcbeef".to_owned(),
+            subnet: "10.9.9.0/24".to_owned(),
+            ..recorded.clone()
+        };
+        assert_eq!(
+            known_subnets_with(&same_bridge, Some(&recorded)),
+            strings(&["10.9.9.0/24", "10.3.232.0/24"])
+        );
+        assert_eq!(
+            known_subnets_with(&other_bridge, Some(&recorded)),
+            strings(&["10.9.9.0/24"])
+        );
     }
 
     /// Rollback undoes this run's work and nothing else: a bridge that was already up belongs to
@@ -6284,6 +6513,147 @@ mod tests {
         assert!(!stale.exists(), "a note eight days old is past retention");
         assert!(recent.exists(), "a note from yesterday keeps the disk");
         assert!(!noteless.exists(), "without a note the mtime still counts");
+    }
+
+    /// Only directories are recoveries. A file left beside them - an editor's swap file, a
+    /// note - is not something to remove, and must not fail every provider request until
+    /// someone finds it.
+    #[test]
+    fn a_stray_file_among_the_recoveries_is_left_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let recovery = root.path().join("recovery");
+        fs::create_dir_all(&recovery).unwrap();
+        let day = Duration::from_secs(24 * 60 * 60);
+        let stray = recovery.join("notes.txt");
+        fs::write(&stray, "remember to look at this").unwrap();
+        set_modified(&stray, SystemTime::now() - 30 * day);
+
+        prune_recoveries(root.path()).unwrap();
+
+        assert!(stray.exists());
+    }
+
+    /// The VM directory of an attempt that died before it wrote a state file is moved aside,
+    /// never cloned over: a VMM may still hold its disk open.
+    #[test]
+    fn an_orphaned_vm_directory_is_retained_before_a_fresh_attempt_reuses_its_path() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let vm_dir = root.path().join("abc123");
+        fs::create_dir_all(&vm_dir).unwrap();
+        fs::write(vm_dir.join("rootfs.ext4"), "disk").unwrap();
+
+        retain_orphaned_vm_dir(&locked, &vm_dir).unwrap();
+
+        assert!(!vm_dir.exists());
+        let retained = recoveries(&locked);
+        assert_eq!(retained.len(), 1, "{retained:?}");
+        assert!(retained[0].ends_with("-orphaned"), "{retained:?}");
+        let note = read_recovery_note(&root.path().join("recovery").join(&retained[0])).unwrap();
+        assert_eq!(note.reason, "orphaned");
+        assert!(root
+            .path()
+            .join("recovery")
+            .join(&retained[0])
+            .join("rootfs.ext4")
+            .exists());
+
+        // Nothing there is nothing to do.
+        retain_orphaned_vm_dir(&locked, &vm_dir).unwrap();
+        assert_eq!(recoveries(&locked).len(), 1);
+    }
+
+    /// A state file that cannot be parsed may describe a running VM. It is an error that
+    /// names the file, not a VM that is not there.
+    #[test]
+    fn a_corrupt_state_file_is_an_error_rather_than_an_absent_vm() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let path = locked.path("work", "review");
+        fs::write(&path, "{ not json").unwrap();
+
+        let error = format!("{:#}", locked.entries().unwrap_err());
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        let error = format!("{:#}", read_state_opt(&path).unwrap_err());
+        assert!(error.contains("repair or remove"), "{error}");
+        assert!(read_state_opt(&root.path().join("missing.json"))
+            .unwrap()
+            .is_none());
+
+        let config = provider_config(root.path());
+        let error = format!(
+            "{:#}",
+            ensure(
+                &locked,
+                &config,
+                &network_config(),
+                "work",
+                "review",
+                None,
+                None
+            )
+            .unwrap_err()
+        );
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        assert!(!root.path().join(vm_id("work", "review")).exists());
+    }
+
+    /// Without a `Child` to reap, `terminate` has to watch the process leave: the caller is
+    /// about to remove its cgroup and its disk, and both are refused while it lingers.
+    #[test]
+    fn terminating_by_pid_waits_for_the_process_to_be_gone() {
+        let process = LiveProcess::spawn();
+        let mut state = vm_state(PathBuf::new(), PathBuf::new(), None);
+        state.pid = process.pid;
+        state.start_time = process.start_time;
+        assert!(vm_is_running(&state));
+
+        terminate(&state, None);
+
+        assert!(!vm_is_running(&state));
+    }
+
+    /// The wait for the lock is a phase like any other, reported from its first moment, so a
+    /// provider queued behind another's long `ensure` is not mistaken for a hung one.
+    #[test]
+    fn waiting_for_the_provider_lock_reports_progress() {
+        #[derive(Clone)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl Write for Sink {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("lock");
+        let holder = File::create(&path).unwrap();
+        assert_eq!(unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX) }, 0);
+
+        let sink = Sink(Arc::new(Mutex::new(vec![])));
+        let waiter = thread::spawn({
+            let sink = sink.clone();
+            let path = path.clone();
+            move || {
+                let lock = File::open(path).unwrap();
+                lock_exclusively(&lock, || {
+                    Progress::start_into(LOCK_WAIT_PHASE, Box::new(sink), Duration::from_secs(5))
+                })
+            }
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while sink.0.lock().unwrap().is_empty() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        let reported = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+        assert!(!waiter.is_finished(), "the lock is still held");
+        assert_eq!(reported, format!("{PROGRESS_PREFIX}{LOCK_WAIT_PHASE}\n"));
+
+        assert_eq!(unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_UN) }, 0);
+        waiter.join().unwrap().unwrap();
     }
 
     /// Guest worktrees kept as plain directories, one per VM name: what `release` and `sync`
