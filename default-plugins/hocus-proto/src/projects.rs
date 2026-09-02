@@ -610,33 +610,41 @@ pub fn discover(projects: &mut Registry, repositories: &[Repository]) -> Discove
     discovery
 }
 
+/// What `adopt` did: the project as it is now stored, and the discovered
+/// name that went away, if one did, so the caller can move the tabs that
+/// point at it.
+pub struct Adopted {
+    pub project: Project,
+    pub replaced: Option<String>,
+}
+
 /// Add a project the user named.
 ///
 /// A discovered project on the same folder goes away, because the user just
-/// gave that folder a better name. The name that went away comes back, so the
-/// caller can move the tabs that point at it.
-pub fn adopt(projects: &mut Registry, mut project: Project) -> Option<String> {
-    let stale = projects
+/// gave that folder a better name. Its image was set on the folder, not on
+/// the name a poll gave it, so it comes along too - unless the caller said
+/// what the image should be (`image_explicit`), in which case the caller's
+/// answer stands even when that answer is "none".
+pub fn adopt(projects: &mut Registry, mut project: Project, image_explicit: bool) -> Adopted {
+    let replaced = projects
         .values()
         .find(|other| other.discovered && other.root == project.root && other.name != project.name)
         .map(|other| {
             project.remote.clone_from(&other.remote);
             project.worktree_status = other.worktree_status;
             project.common_dir.clone_from(&other.common_dir);
-            // The image was set on the folder, not on the name a poll gave it, so
-            // it comes along unless the user named a different one.
-            if project.firecracker_image.is_none() {
+            if !image_explicit && project.firecracker_image.is_none() {
                 project
                     .firecracker_image
                     .clone_from(&other.firecracker_image);
             }
             other.name.clone()
         });
-    if let Some(name) = &stale {
+    if let Some(name) = &replaced {
         projects.remove(name);
     }
-    projects.insert(project.name.clone(), project);
-    stale
+    projects.insert(project.name.clone(), project.clone());
+    Adopted { project, replaced }
 }
 
 /// What to say for a project that was just forgotten.
@@ -1145,7 +1153,12 @@ mod tests {
                 WorktreeStatus::Primary,
             )],
         );
-        let stale = adopt(&mut projects, validate("pocus", "/work/hocus").unwrap());
+        let stale = adopt(
+            &mut projects,
+            validate("pocus", "/work/hocus").unwrap(),
+            false,
+        )
+        .replaced;
 
         assert_eq!(stale, Some("hocus".to_owned()));
         assert_eq!(projects.keys().collect::<Vec<_>>(), vec!["pocus"]);
@@ -1166,13 +1179,38 @@ mod tests {
         projects.get_mut("hocus").unwrap().firecracker_image = Some("rust".to_owned());
 
         let mut named = projects.clone();
-        adopt(&mut named, validate("pocus", "/work/hocus").unwrap());
+        let adopted = adopt(&mut named, validate("pocus", "/work/hocus").unwrap(), false);
         assert_eq!(named["pocus"].firecracker_image.as_deref(), Some("rust"));
+        assert_eq!(adopted.project.firecracker_image.as_deref(), Some("rust"));
+        assert_eq!(adopted.replaced.as_deref(), Some("hocus"));
 
         let mut own = validate("pocus", "/work/hocus").unwrap();
         own.firecracker_image = Some("ruby".to_owned());
-        adopt(&mut projects, own);
+        adopt(&mut projects, own, true);
         assert_eq!(projects["pocus"].firecracker_image.as_deref(), Some("ruby"));
+    }
+
+    /// Renaming a discovered project and clearing its image in the same call:
+    /// the clear is what the user said, so the discovered image must not creep
+    /// back in, and what is returned is what is stored.
+    #[test]
+    fn adopting_with_an_explicit_clear_drops_the_discovered_image() {
+        let mut projects = Registry::new();
+        discover(
+            &mut projects,
+            &[git("/work/hocus", None, WorktreeStatus::Primary)],
+        );
+        projects.get_mut("hocus").unwrap().firecracker_image = Some("rust".to_owned());
+
+        let adopted = adopt(
+            &mut projects,
+            validate("pocus", "/work/hocus").unwrap(),
+            true,
+        );
+        assert_eq!(projects["pocus"].firecracker_image, None);
+        assert_eq!(adopted.project.firecracker_image, None);
+        assert_eq!(adopted.project, projects["pocus"]);
+        assert_eq!(adopted.replaced.as_deref(), Some("hocus"));
     }
 
     #[test]

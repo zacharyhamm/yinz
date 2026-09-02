@@ -135,7 +135,7 @@ pub fn plan_mutate(
             // the diff turns that into the delete and the put — in one batch, so
             // no reader ever sees the project twice or not at all.
             let mut after = view.projects.clone();
-            let stale = projects::adopt(&mut after, project);
+            let stale = projects::adopt(&mut after, project, false).replaced;
             let message = match &stale {
                 Some(stale) => format!("remembered {name}, replacing discovered {stale}"),
                 None => format!("remembered {name}"),

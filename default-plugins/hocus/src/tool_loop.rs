@@ -1281,13 +1281,18 @@ impl State {
         let stored = self.projects.get(name).cloned();
         if let Some(root) = args.root.as_deref() {
             let mut project = projects::validate(name, root)?;
+            let image_explicit = image.is_some();
             project.firecracker_image = match image {
                 Some(image) => image,
                 None => stored.and_then(|project| project.firecracker_image),
             };
             let before = self.projects.clone();
             // The user just gave this folder a better name than a poll could.
-            if let Some(gone) = projects::adopt(&mut self.projects, project.clone()) {
+            // What comes back is the project as stored, which a rename may have
+            // filled in from the discovered entry.
+            let projects::Adopted { project, replaced } =
+                projects::adopt(&mut self.projects, project, image_explicit);
+            if let Some(gone) = replaced {
                 self.rename_project(&gone, &project.name);
             }
             // Applied to our copy first and written after: `project_open` needs
