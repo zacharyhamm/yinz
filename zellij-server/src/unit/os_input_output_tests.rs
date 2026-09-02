@@ -646,7 +646,7 @@ mod client_writer_flush {
     use super::super::{ClientSender, LiveWriters};
     use interprocess::local_socket::{prelude::*, ListenerOptions};
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use zellij_utils::ipc::{
         ClientToServerMsg, ExitReason, IpcReceiverWithContext, IpcRecv, IpcSenderWithContext,
         ServerToClientMsg,
@@ -821,5 +821,74 @@ mod client_writer_flush {
             "shutting the read half down should end the router's read as a hangup"
         );
         drop(client_end);
+    }
+
+    /// The other way a router can be freed of a peer that will never hang up:
+    /// a read deadline, applied by the router until the first message arrives,
+    /// so that a connection which never speaks does not hold its slot forever.
+    #[test]
+    fn a_silent_peer_reads_as_idle_once_the_deadline_passes() {
+        let (_guard, server_end, client_end) = socket_pair();
+        let mut receiver: IpcReceiverWithContext<ClientToServerMsg> =
+            IpcReceiverWithContext::new(server_end);
+        let deadline = Duration::from_millis(50);
+        receiver
+            .set_recv_timeout(Some(deadline))
+            .expect("setting a receive timeout failed");
+
+        // The client is kept alive and silent for the whole read: a hangup
+        // would be EOF, which is the case that already worked.
+        let started_at = Instant::now();
+        let outcome = receiver.recv_client_msg();
+        let waited = started_at.elapsed();
+
+        assert!(
+            matches!(outcome, IpcRecv::Idle),
+            "a read that ran out of time should be Idle, not a hangup or a bad frame"
+        );
+        assert!(
+            waited >= deadline,
+            "the read returned after {waited:?}, before its {deadline:?} deadline"
+        );
+        // Generous: the assertion is "bounded at all".
+        assert!(
+            waited < deadline * 40,
+            "the read should have given up near its {deadline:?} deadline, but took {waited:?}"
+        );
+        drop(client_end);
+    }
+
+    /// Lifting the deadline is what keeps it from ever cutting a real client's
+    /// frame short: once it is cleared, a message sent later than the old
+    /// deadline still arrives whole.
+    #[test]
+    fn a_lifted_deadline_no_longer_bounds_the_read() {
+        let (_guard, server_end, client_end) = socket_pair();
+        let mut receiver: IpcReceiverWithContext<ClientToServerMsg> =
+            IpcReceiverWithContext::new(server_end);
+        let deadline = Duration::from_millis(20);
+        receiver
+            .set_recv_timeout(Some(deadline))
+            .expect("setting a receive timeout failed");
+        receiver
+            .set_recv_timeout(None)
+            .expect("clearing the receive timeout failed");
+
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(deadline * 5);
+            let mut sender: IpcSenderWithContext<ClientToServerMsg> =
+                IpcSenderWithContext::new(client_end);
+            sender
+                .send_client_msg(ClientToServerMsg::ConnStatus)
+                .expect("send failed");
+            sender
+        });
+
+        let outcome = receiver.recv_client_msg();
+        assert!(
+            matches!(outcome, IpcRecv::Msg(ClientToServerMsg::ConnStatus, _)),
+            "a message sent after the lifted deadline should still arrive"
+        );
+        drop(writer.join().expect("the writer thread panicked"));
     }
 }

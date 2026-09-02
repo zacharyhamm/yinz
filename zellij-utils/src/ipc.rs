@@ -31,12 +31,26 @@ type SessionId = u64;
 /// A bidirectional byte stream that supports cloning for simultaneous read/write.
 pub trait IpcStream: Read + Write + Send + 'static {
     fn try_clone_stream(&self) -> io::Result<Box<dyn IpcStream>>;
+
+    /// Bound every read with `timeout`, or remove the bound with `None`.
+    ///
+    /// A read that runs out of time fails with `WouldBlock` (Linux) or
+    /// `TimedOut` (elsewhere), which `classify_read_error` reports as
+    /// [`IpcRecv::Idle`]. Note that a frame cut short by the deadline leaves
+    /// the stream desynchronised — the bytes already read are gone — so a
+    /// deadline is only safe while nothing is expected mid-frame.
+    fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()>;
 }
 
 impl IpcStream for LocalSocketStream {
     fn try_clone_stream(&self) -> io::Result<Box<dyn IpcStream>> {
         use interprocess::TryClone;
         Ok(Box::new(self.try_clone()?))
+    }
+
+    fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()> {
+        use interprocess::local_socket::traits::Stream as _;
+        self.set_recv_timeout(timeout)
     }
 }
 
@@ -443,6 +457,15 @@ where
             receiver: io::BufReader::new(receiver),
             _phantom: PhantomData,
         }
+    }
+
+    /// Bound every following read with `timeout`, or lift the bound with `None`.
+    ///
+    /// See [`IpcStream::set_read_timeout`] for what a read that runs out of
+    /// time returns, and for why this must not be set while a frame may be
+    /// in flight.
+    pub fn set_recv_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()> {
+        self.receiver.get_ref().set_read_timeout(timeout)
     }
 
     pub fn recv_client_msg(&mut self) -> IpcRecv<ClientToServerMsg> {

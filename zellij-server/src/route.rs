@@ -2496,16 +2496,35 @@ pub(crate) fn route_thread_main(
     to_server: SenderWithContext<ServerInstruction>,
     mut receiver: IpcReceiverWithContext<ClientToServerMsg>,
     client_id: ClientId,
+    first_message_timeout: Duration,
 ) -> Result<()> {
     let mut retry_queue = VecDeque::new();
     let err_context = || format!("failed to handle instruction for client {client_id}");
     let mut seen_cli_pipes = HashSet::new();
     let mut consecutive_malformed_messages_received = 0;
+    // Until the peer has said something the read is bounded, so that a
+    // connection which is never going to speak does not hold its thread and
+    // its connection slot for the life of the server. See
+    // `FIRST_CLIENT_MESSAGE_TIMEOUT` for why only the first read is bounded.
+    let mut received_first_message = false;
+    receiver
+        .set_recv_timeout(Some(first_message_timeout))
+        .with_context(|| format!("failed to bound the first read from client {client_id}"))
+        .non_fatal();
     'route_loop: loop {
         match receiver.recv_client_msg() {
             IpcRecv::Msg(instruction, err_ctx) => {
                 consecutive_malformed_messages_received = 0;
                 err_ctx.update_thread_ctx();
+                if !received_first_message {
+                    received_first_message = true;
+                    receiver
+                        .set_recv_timeout(None)
+                        .with_context(|| {
+                            format!("failed to lift the read deadline for client {client_id}")
+                        })
+                        .non_fatal();
+                }
 
                 let mut handle_instruction = |instruction: ClientToServerMsg,
                                               mut retry_queue: Option<
@@ -3171,7 +3190,16 @@ pub(crate) fn route_thread_main(
                 thread::sleep(MALFORMED_MESSAGE_BACKOFF);
                 continue 'route_loop;
             },
-            IpcRecv::Idle => continue 'route_loop,
+            IpcRecv::Idle => {
+                if !received_first_message {
+                    log::warn!(
+                        "client {client_id} connected but sent nothing within \
+                         {first_message_timeout:?}; dropping the connection"
+                    );
+                    break 'route_loop;
+                }
+                continue 'route_loop;
+            },
         }
 
         // signal to the client that the action has finished processing and it can either exit (if
