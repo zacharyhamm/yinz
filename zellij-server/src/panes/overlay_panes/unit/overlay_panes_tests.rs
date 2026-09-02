@@ -1147,6 +1147,24 @@ fn shrink(direction: Direction) -> ResizeStrategy {
     }
 }
 
+/// The strategy ctrl+MouseScroll sends: all four borders out, `geom_resized_within` halving
+/// the step for each.
+fn grow_all() -> ResizeStrategy {
+    ResizeStrategy {
+        resize: Resize::Increase,
+        direction: None,
+        invert_on_boundaries: false,
+    }
+}
+
+fn shrink_all() -> ResizeStrategy {
+    ResizeStrategy {
+        resize: Resize::Decrease,
+        direction: None,
+        invert_on_boundaries: false,
+    }
+}
+
 fn size(panes: &OverlayPanes, id: u32) -> (usize, usize) {
     let geom = panes
         .get(&PaneId::Terminal(id))
@@ -2560,4 +2578,228 @@ fn a_placement_that_keeps_the_pair_leaves_a_seam_drag_in_flight() {
 
     place(&mut panes, batch(&[(1, 2, 30), (2, 40, 30)]), false);
     assert!(!panes.seam_is_being_dragged());
+}
+
+/// Whether the halves of `linked_panel` carry a size claim and a position claim.
+fn claims(panes: &OverlayPanes, id: u32) -> (bool, bool) {
+    let carry = panes.carry_of(&PaneId::Terminal(id));
+    (carry.size_is_user_stated, carry.position_is_user_stated)
+}
+
+#[test]
+fn a_seam_side_resize_of_the_left_half_moves_the_seam() {
+    let mut panes = linked_panel();
+    assert!(panes
+        .resize_pane_with_strategies(PaneId::Terminal(1), &[grow(Direction::Right)], (5, 2))
+        .unwrap());
+    assert_eq!(geom(&panes, 1), (2, 2, 35, 10));
+    assert_eq!(
+        geom(&panes, 2),
+        (37, 2, 25, 10),
+        "the right half gave up what the left half took, and kept its outer edge"
+    );
+    assert_eq!(
+        claims(&panes, 1),
+        (false, false),
+        "a seam move is not a claim"
+    );
+    assert_eq!(claims(&panes, 2), (false, false));
+}
+
+#[test]
+fn a_seam_side_resize_of_the_right_half_moves_the_seam() {
+    let mut panes = linked_panel();
+    assert!(panes
+        .resize_pane_with_strategies(PaneId::Terminal(2), &[grow(Direction::Left)], (5, 2))
+        .unwrap());
+    assert_eq!(geom(&panes, 2), (27, 2, 35, 10));
+    assert_eq!(geom(&panes, 1), (2, 2, 25, 10));
+    assert_eq!(
+        claims(&panes, 2),
+        (false, false),
+        "the right half's x moved, but the panel did not"
+    );
+    assert_eq!(claims(&panes, 1), (false, false));
+}
+
+#[test]
+fn a_seam_side_shrink_moves_the_seam_the_other_way() {
+    let mut panes = linked_panel();
+    assert!(panes
+        .resize_pane_with_strategies(PaneId::Terminal(1), &[shrink(Direction::Right)], (5, 2))
+        .unwrap());
+    assert_eq!(geom(&panes, 1), (2, 2, 25, 10));
+    assert_eq!(geom(&panes, 2), (27, 2, 35, 10));
+    assert_eq!(claims(&panes, 1), (false, false));
+}
+
+#[test]
+fn a_seam_side_resize_stops_at_the_partner_s_floor() {
+    let mut panes = linked_panel();
+    for _ in 0..20 {
+        if !panes
+            .resize_pane_with_strategies(PaneId::Terminal(1), &[grow(Direction::Right)], (5, 2))
+            .unwrap()
+        {
+            break;
+        }
+    }
+    assert_eq!(geom(&panes, 1), (2, 2, 60 - MIN_TERMINAL_WIDTH, 10));
+    assert_eq!(
+        geom(&panes, 2),
+        (62 - MIN_TERMINAL_WIDTH, 2, MIN_TERMINAL_WIDTH, 10),
+        "the partner keeps the floor and its outer edge"
+    );
+    assert!(
+        !panes
+            .resize_pane_with_strategies(PaneId::Terminal(1), &[grow(Direction::Right)], (5, 2))
+            .unwrap(),
+        "at the floor there is nothing left to take"
+    );
+    assert_eq!(geom(&panes, 1), (2, 2, 60 - MIN_TERMINAL_WIDTH, 10));
+    assert_eq!(claims(&panes, 1), (false, false));
+}
+
+#[test]
+fn an_outer_edge_resize_sizes_the_panel() {
+    let mut panes = linked_panel();
+    assert!(panes
+        .resize_pane_with_strategies(PaneId::Terminal(1), &[grow(Direction::Left)], (5, 2))
+        .unwrap());
+    assert_eq!(geom(&panes, 1), (0, 2, 32, 10), "clamped to the surface");
+    assert_eq!(geom(&panes, 2), (32, 2, 30, 10), "the seam did not move");
+    for id in [1, 2] {
+        assert_eq!(
+            claims(&panes, id),
+            (true, true),
+            "the panel grew and its origin moved, and both halves say so"
+        );
+    }
+}
+
+/// Ctrl+MouseScroll over either half: the panel's four outer borders each move by half the
+/// step, as a lone overlay's would, and the seam keeps its share of the width. Which half the
+/// pointer was on does not matter.
+#[test]
+fn an_undirected_resize_grows_the_panel_and_keeps_the_split() {
+    for under_the_pointer in [1, 2] {
+        let mut panes = linked_panel();
+        assert!(panes
+            .resize_pane_with_strategies(PaneId::Terminal(under_the_pointer), &[grow_all()], (5, 2))
+            .unwrap());
+        assert_eq!(
+            geom(&panes, 1),
+            (0, 1, 32, 12),
+            "half {under_the_pointer}: the panel grew 2 columns and 1 row on every side"
+        );
+        assert_eq!(
+            geom(&panes, 2),
+            (32, 1, 32, 12),
+            "half {under_the_pointer}: the seam stayed at half the width"
+        );
+        assert!(panes.seam_at(&seam_cell(&panes)).is_some());
+        for id in [1, 2] {
+            assert_eq!(claims(&panes, id), (true, true));
+        }
+    }
+}
+
+#[test]
+fn an_undirected_shrink_shrinks_the_panel_and_keeps_the_split() {
+    let mut panes = linked_panel();
+    assert!(panes
+        .resize_pane_with_strategies(PaneId::Terminal(2), &[shrink_all()], (5, 2))
+        .unwrap());
+    assert_eq!(geom(&panes, 1), (4, 3, 28, 8));
+    assert_eq!(geom(&panes, 2), (32, 3, 28, 8));
+    for id in [1, 2] {
+        assert_eq!(claims(&panes, id), (true, true));
+    }
+}
+
+/// A split the user dragged off-centre is carried onto the new width in proportion, not reset
+/// and not moved by the step.
+#[test]
+fn an_undirected_resize_keeps_an_uneven_split_in_proportion() {
+    let mut panes = linked_panel();
+    let press = seam_cell(&panes);
+    panes.start_seam_drag(PaneId::Terminal(1), PaneId::Terminal(2), press);
+    panes.drag_seam_to(&Position::new(press.line() as i32, 21));
+    panes.stop_seam_drag(Position::new(press.line() as i32, 21));
+    assert_eq!(geom(&panes, 1), (2, 2, 20, 10), "the left half is 20 of 60");
+    assert_eq!(geom(&panes, 2), (22, 2, 40, 10));
+
+    assert!(panes
+        .resize_pane_with_strategies(PaneId::Terminal(1), &[grow_all()], (5, 2))
+        .unwrap());
+    // the seam at 20/60 of the old box lands at 21/64 of the new one
+    assert_eq!(geom(&panes, 1), (0, 1, 21, 12));
+    assert_eq!(geom(&panes, 2), (21, 1, 43, 12));
+    assert!(panes.seam_at(&seam_cell(&panes)).is_some());
+}
+
+/// Shrinking stops where a seam drag stops: each half keeps `MIN_TERMINAL_WIDTH`, and once the
+/// panel is two of those wide a further shrink takes rows only, then nothing.
+#[test]
+fn an_undirected_shrink_stops_at_the_halves_floor() {
+    let mut panes = linked_panel();
+    for _ in 0..40 {
+        if !panes
+            .resize_pane_with_strategies(PaneId::Terminal(1), &[shrink_all()], (5, 2))
+            .unwrap()
+        {
+            break;
+        }
+        let (left_x, _, left_cols, _) = geom(&panes, 1);
+        let (right_x, _, right_cols, _) = geom(&panes, 2);
+        assert_eq!(left_x + left_cols, right_x, "still abutting");
+        assert!(left_cols >= MIN_TERMINAL_WIDTH && right_cols >= MIN_TERMINAL_WIDTH);
+    }
+    let (_, _, left_cols, rows) = geom(&panes, 1);
+    let (_, _, right_cols, _) = geom(&panes, 2);
+    assert_eq!(left_cols + right_cols, 2 * MIN_TERMINAL_WIDTH);
+    assert_eq!(rows, MIN_TERMINAL_HEIGHT);
+    let before = (geom(&panes, 1), geom(&panes, 2));
+    assert!(
+        !panes
+            .resize_pane_with_strategies(PaneId::Terminal(2), &[shrink_all()], (5, 2))
+            .unwrap(),
+        "at the floor there is nothing left to take"
+    );
+    assert_eq!((geom(&panes, 1), geom(&panes, 2)), before);
+}
+
+#[test]
+fn a_pane_abutting_two_others_is_in_one_panel() {
+    let mut panes = overlay_panes(80, 20);
+    for (id, x) in [(1, 2), (2, 22), (3, 42)] {
+        add(
+            &mut panes,
+            id,
+            OverlayKind::Dismissible,
+            placed_coordinates(&x.to_string(), "2", "20", "10"),
+        );
+    }
+    let (a, b, c) = (
+        PaneId::Terminal(1),
+        PaneId::Terminal(2),
+        PaneId::Terminal(3),
+    );
+
+    panes.link_touching(&[a, b, c]);
+    assert_eq!(
+        panes.link_of(&b),
+        Some((a, b)),
+        "the first pair in the batch's order"
+    );
+    assert_eq!(panes.linked_partner(&a), Some(b));
+    assert_eq!(
+        panes.link_of(&c),
+        None,
+        "the pair that would name the middle pane again is not made"
+    );
+
+    panes.link_touching(&[c, b, a]);
+    assert_eq!(panes.link_of(&b), Some((b, c)));
+    assert_eq!(panes.link_of(&a), None);
 }
