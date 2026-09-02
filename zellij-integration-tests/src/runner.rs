@@ -174,6 +174,8 @@ fn new_pane_cli_action(
         // `zellij-server/tests/remote_pane_ssh.rs` is for.
         remote_host: None,
         firecracker: None,
+        firecracker_image: None,
+        firecracker_worktree: None,
         configuration: None,
         skip_plugin_cache: false,
         x: None,

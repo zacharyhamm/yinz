@@ -479,6 +479,14 @@ impl<T> std::fmt::Debug for OneShot<T> {
     }
 }
 
+/// A Firecracker worker could not hand its result back to the pty thread, so the pane it
+/// resolved - an error pane included - is gone with nothing on screen to say so. The only
+/// way this happens is a pty thread that has stopped listening or was never given a sender
+/// to itself; either way it is worth a line, because the symptom is silence.
+const LOST_FIRECRACKER_HANDBACK: &str =
+    "a Firecracker pane was resolved but could not be handed back to the pty thread; \
+     the pane has been dropped";
+
 fn is_unheld_firecracker_run(run: &Option<Run>) -> bool {
     matches!(
         run,
@@ -1758,6 +1766,7 @@ impl Pty {
                 ))
                 .is_err()
             {
+                log::error!("{}", LOST_FIRECRACKER_HANDBACK);
                 if let Some(terminal_id) = terminal_id {
                     os_input.clear_terminal_id(terminal_id).non_fatal();
                 }
@@ -1801,6 +1810,7 @@ impl Pty {
                 ))
                 .is_err()
             {
+                log::error!("{}", LOST_FIRECRACKER_HANDBACK);
                 if let Some(terminal_id) = terminal_id {
                     os_input.clear_terminal_id(terminal_id).non_fatal();
                 }
@@ -1864,6 +1874,7 @@ impl Pty {
                 ))
                 .is_err()
             {
+                log::error!("{}", LOST_FIRECRACKER_HANDBACK);
                 for terminal_id in terminal_ids {
                     os_input.clear_terminal_id(terminal_id).non_fatal();
                 }
@@ -1946,6 +1957,7 @@ impl Pty {
                 ))
                 .is_err()
             {
+                log::error!("{}", LOST_FIRECRACKER_HANDBACK);
                 for terminal_id in terminal_ids {
                     os_input.clear_terminal_id(terminal_id).non_fatal();
                 }
@@ -2044,6 +2056,7 @@ impl Pty {
                 ))
                 .is_err()
             {
+                log::error!("{}", LOST_FIRECRACKER_HANDBACK);
                 os_input.clear_terminal_id(terminal_id).non_fatal();
             }
         }));

@@ -12,6 +12,8 @@ fn no_focus_new_pane_action(command: &[&str]) -> CliAction {
         command: command.iter().map(|part| part.to_string()).collect(),
         remote_host: None,
         firecracker: None,
+        firecracker_image: None,
+        firecracker_worktree: None,
         plugin: None,
         cwd: None,
         floating: false,

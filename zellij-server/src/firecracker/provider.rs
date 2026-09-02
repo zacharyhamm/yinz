@@ -152,6 +152,12 @@ struct Config {
     guest_cwd: PathBuf,
     #[serde(default = "default_boot_timeout")]
     boot_timeout_secs: u64,
+    /// Refuse to start a VM that cannot be given host-side memory, CPU and process
+    /// limits. Off by default: a delegated cgroup subtree can only be granted by root,
+    /// and a developer host that has none should still be able to run VMs. Turn it on
+    /// to make the missing subtree fatal instead; see `place_in_cgroup`.
+    #[serde(default = "default_require_resource_limits")]
+    require_resource_limits: bool,
     #[serde(default)]
     network: Option<NetworkConfig>,
     #[serde(default)]
@@ -186,6 +192,9 @@ fn default_cwd() -> PathBuf {
 }
 fn default_boot_timeout() -> u64 {
     60
+}
+fn default_require_resource_limits() -> bool {
+    false
 }
 fn default_images_dir() -> PathBuf {
     data_dir().join("images")
@@ -574,8 +583,14 @@ fn ensure(
             return Err(error);
         },
     };
-    let cgroup = match place_in_cgroup(&id, pid, config.memory_mib, config.vcpu_count) {
-        Ok(cgroup) => Some(cgroup),
+    let cgroup = match place_in_cgroup(
+        &id,
+        pid,
+        config.memory_mib,
+        config.vcpu_count,
+        config.require_resource_limits,
+    ) {
+        Ok(cgroup) => cgroup,
         Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
@@ -1671,7 +1686,7 @@ fn delegation_root(own: &Path, owned: &dyn Fn(&Path) -> bool) -> Result<PathBuf>
     if !owned(own) {
         return Err(anyhow!(
             "cgroup {} is not delegated to this user, so a VM's memory, CPU and process \
-             limits cannot be applied; start Zellij from a systemd user session",
+             limits cannot be applied",
             own.display()
         ));
     }
@@ -1685,8 +1700,21 @@ fn delegation_root(own: &Path, owned: &dyn Fn(&Path) -> bool) -> Result<PathBuf>
     Ok(root)
 }
 
-fn place_in_cgroup(id: &str, pid: i32, memory_mib: usize, vcpu_count: u8) -> Result<PathBuf> {
-    let parent = delegated_cgroup_root()?.join("zellij-firecracker");
+/// Put the VMM in a cgroup of its own, or report that it could not be. `Ok(None)` means
+/// the host has no cgroup subtree this user may manage and the config allows running
+/// without one: the guest's own RAM and vCPUs are still capped by Firecracker, but nothing
+/// bounds the VMM's page cache, threads or file descriptors.
+fn place_in_cgroup(
+    id: &str,
+    pid: i32,
+    memory_mib: usize,
+    vcpu_count: u8,
+    require: bool,
+) -> Result<Option<PathBuf>> {
+    let Some(root) = cgroup_root_or_skip(delegated_cgroup_root(), require)? else {
+        return Ok(None);
+    };
+    let parent = root.join("zellij-firecracker");
     fs::create_dir_all(&parent)?;
     fs::write(parent.join("cgroup.subtree_control"), "+cpu +memory +pids").with_context(|| {
         format!(
@@ -1713,7 +1741,25 @@ fn place_in_cgroup(id: &str, pid: i32, memory_mib: usize, vcpu_count: u8) -> Res
         let _ = fs::remove_dir(&cgroup);
         return Err(error).context("failed to configure the Firecracker cgroup");
     }
-    Ok(cgroup)
+    Ok(Some(cgroup))
+}
+
+/// Only the *absence* of a delegated subtree is optional. A subtree that exists but cannot
+/// be written to is a broken host, not a missing feature, so those errors stay fatal in
+/// `place_in_cgroup` whatever the config says. Both arms speak for `doctor` as well as for
+/// a VM start, so neither says which one it is.
+fn cgroup_root_or_skip(root: Result<PathBuf>, require: bool) -> Result<Option<PathBuf>> {
+    match root {
+        Ok(root) => Ok(Some(root)),
+        Err(error) if !require => {
+            eprintln!("warning: {error:#}; running without them");
+            Ok(None)
+        },
+        Err(error) => Err(anyhow!(
+            "{error:#}; start Zellij from a systemd user session, or unset \
+             require_resource_limits in the provider config to run VMs without them"
+        )),
+    }
 }
 
 fn retain_recovery(
@@ -1825,18 +1871,32 @@ fn vm_id(session: &str, name: &str) -> String {
     format!("{:016x}", hasher.finalize64())
 }
 
-fn load_config() -> Result<Config> {
-    let path = env::var_os(CONFIG_ENV)
+/// Where the provider's own configuration lives. One answer for every reader and writer of
+/// it: `load_config` honoured `CONFIG_ENV` while the writers hardcoded the default path, so
+/// a run with the override set could verify one file and rewrite another.
+fn config_path() -> PathBuf {
+    env::var_os(CONFIG_ENV)
         .map(PathBuf::from)
-        .unwrap_or_else(|| config_dir().join("firecracker.json"));
+        .unwrap_or_else(|| config_dir().join("firecracker.json"))
+}
+
+fn load_config() -> Result<Config> {
+    let path = config_path();
     let config: Config = serde_json::from_slice(
         &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
     )
     .with_context(|| format!("invalid provider config {}", path.display()))?;
+    validate_config(&config)?;
+    Ok(config)
+}
+
+/// `rootfs` is only the default image for a VM that names none, so a dangling one is not
+/// this config's problem: `image_path` reports it where it is actually used, and until
+/// then a config whose named images are all present stays usable.
+fn validate_config(config: &Config) -> Result<()> {
     for (name, path) in [
         ("firecracker", &config.firecracker),
         ("kernel", &config.kernel),
-        ("rootfs", &config.rootfs),
         ("ssh_private_key", &config.ssh_private_key),
     ] {
         if !path.is_absolute() || !path.is_file() {
@@ -1846,15 +1906,20 @@ fn load_config() -> Result<Config> {
             ));
         }
     }
-    if !config.images_dir.is_absolute() {
-        return Err(anyhow!("provider config images_dir must be absolute"));
+    for (name, path) in [
+        ("rootfs", &config.rootfs),
+        ("images_dir", &config.images_dir),
+    ] {
+        if !path.is_absolute() {
+            return Err(anyhow!("provider config {name} must be absolute"));
+        }
     }
     validate_guest_path(&config.guest_cwd, "provider config guest_cwd")?;
     for credential in &config.credential_files {
         expand_home(&credential.host)?;
         validate_guest_path(&credential.guest, "credential guest path")?;
     }
-    Ok(config)
+    Ok(())
 }
 
 fn load_network(config: &Config) -> Result<NetworkConfig> {
@@ -1985,14 +2050,16 @@ trait SetupRuntime {
     fn zellij(&mut self, explicit: Option<&Path>) -> Result<PathBuf>;
     fn provider(&mut self) -> Result<(PathBuf, PathBuf)>;
     fn network(&mut self, provider: &Path) -> Result<()>;
+    /// Returns the image the step built or reused, so that `config` can make it this
+    /// machine's default.
     fn image(
         &mut self,
         options: &SetupOptions,
         project: &Path,
         zellij: &Path,
         current_provider: &Path,
-    ) -> Result<()>;
-    fn config(&mut self, provider: &Path) -> Result<()>;
+    ) -> Result<PathBuf>;
+    fn config(&mut self, provider: &Path, image: &Path) -> Result<()>;
     fn doctor(&mut self, provider: &Path) -> Result<()>;
 }
 
@@ -2042,11 +2109,14 @@ impl SetupRuntime for RealSetup {
         project: &Path,
         zellij: &Path,
         current_provider: &Path,
-    ) -> Result<()> {
+    ) -> Result<PathBuf> {
         setup_image(options, project, zellij, current_provider)
     }
 
-    fn config(&mut self, provider: &Path) -> Result<()> {
+    fn config(&mut self, provider: &Path, image: &Path) -> Result<()> {
+        // Before the credential prompts: this one is non-interactive, so a failure here
+        // does not throw away answers the user has already typed.
+        set_default_image(image)?;
         configure_credentials()?;
         let overlay_dir = zellij_utils::home::get_config_overlay_dir(Some(
             env::var_os(zellij_utils::consts::ZELLIJ_CONFIG_DIR_ENV)
@@ -2070,8 +2140,8 @@ fn setup_with(options: &SetupOptions, runtime: &mut impl SetupRuntime) -> Result
     let zellij = runtime.zellij(options.zellij.as_deref())?;
     let (current_provider, provider) = runtime.provider()?;
     runtime.network(&provider)?;
-    runtime.image(options, &project, &zellij, &current_provider)?;
-    runtime.config(&provider)?;
+    let image = runtime.image(options, &project, &zellij, &current_provider)?;
+    runtime.config(&provider, &image)?;
     runtime.doctor(&provider)?;
     println!(
         "Firecracker setup is ready. Use image {:?} for this project.",
@@ -2085,13 +2155,13 @@ fn setup_image(
     project: &Path,
     zellij: &Path,
     current_provider: &Path,
-) -> Result<()> {
+) -> Result<PathBuf> {
     setup_image_with(
         options,
         project,
         zellij,
         current_provider,
-        setup_image_is_valid,
+        setup_image_status,
         run,
     )
 }
@@ -2101,14 +2171,14 @@ fn setup_image_with<V, R>(
     project: &Path,
     zellij: &Path,
     current_provider: &Path,
-    mut image_is_valid: V,
+    mut image_status: V,
     mut execute: R,
-) -> Result<()>
+) -> Result<PathBuf>
 where
-    V: FnMut(&str) -> bool,
+    V: FnMut(&str) -> Result<PathBuf>,
     R: FnMut(&mut Command, &str) -> Result<()>,
 {
-    if should_build_image(options.rebuild, image_is_valid(&options.image)) {
+    if should_build_image(options.rebuild, image_status(&options.image).is_ok()) {
         let mut command = Command::new(current_provider);
         command
             .args(["image", "build", "--name", &options.image, "--project"])
@@ -2126,13 +2196,12 @@ where
             options.image
         );
     }
-    if !image_is_valid(&options.image) {
-        return Err(anyhow!(
+    image_status(&options.image).with_context(|| {
+        format!(
             "Firecracker image {:?} was not created correctly",
             options.image
-        ));
-    }
-    Ok(())
+        )
+    })
 }
 
 fn parse_setup_options(args: &[String]) -> Result<SetupOptions> {
@@ -2319,18 +2388,61 @@ fn current_user() -> Result<String> {
         .map(|user| user.trim().to_owned())
 }
 
-fn setup_image_is_valid(image: &str) -> bool {
-    load_config()
-        .and_then(|config| image_path(&config, Some(image)))
-        .is_ok()
+/// Which image a VM that names none should boot. A named build leaves an existing default
+/// alone, but adopts its own image when that default is gone: a machine whose only image is
+/// a named one is better served by a working default than by a dangling path.
+fn default_rootfs(existing: &Path, built: &Path, named: bool) -> PathBuf {
+    if named && existing.is_file() {
+        existing.to_owned()
+    } else {
+        built.to_owned()
+    }
+}
+
+fn setup_image_status(image: &str) -> Result<PathBuf> {
+    load_config().and_then(|config| image_path(&config, Some(image)))
 }
 
 fn should_build_image(rebuild: bool, valid: bool) -> bool {
     rebuild || !valid
 }
 
+/// Point this machine's default image at the one `setup` just built or reused.
+///
+/// `rootfs` is what a Firecracker pane that names no image boots, and until now nothing in
+/// `setup` maintained it: a build wrote it once through `default_rootfs`, and a reused image
+/// wrote nothing at all — so a default left over from an earlier layout survived every later
+/// run, pointing at a file that need not still exist. After this, `setup --name <image>` is
+/// how a machine picks its default.
+fn set_default_image(image: &Path) -> Result<()> {
+    set_default_image_at(&config_path(), image).map(|_| ())
+}
+
+/// The write behind [`set_default_image`], with the config path given so it can be tested.
+/// Returns whether the file changed.
+///
+/// The config is read raw rather than through `load_config`: this is a repair, and a
+/// validating read would let a config refuse to fix the very field that makes it unusable.
+fn set_default_image_at(path: &Path, image: &Path) -> Result<bool> {
+    let mut config: Config = serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("invalid provider config {}", path.display()))?;
+    if config.rootfs == image {
+        return Ok(false);
+    }
+    config.rootfs = image.to_owned();
+    fs::write(path, serde_json::to_vec_pretty(&config)?)
+        .with_context(|| format!("failed to update {}", path.display()))?;
+    println!(
+        "Firecracker VMs that name no image now boot {}.",
+        image.display()
+    );
+    Ok(true)
+}
+
 fn configure_credentials() -> Result<()> {
-    let path = config_dir().join("firecracker.json");
+    let path = config_path();
     let home = env::var_os("HOME").context("HOME is unavailable for credential setup")?;
     configure_credentials_at(&path, Path::new(&home), confirm)
 }
@@ -2428,8 +2540,28 @@ fn confirm(question: &str) -> Result<bool> {
     ))
 }
 
+/// The images `doctor` can see. `validate_config` deliberately tolerates a dangling default
+/// (a machine whose VMs all name an image keeps working without one), but `doctor` answers
+/// "is this machine ready", and it claims the image is, so it has to look.
+fn check_image_paths(config: &Config) -> Result<()> {
+    if !config.images_dir.is_dir() {
+        return Err(anyhow!(
+            "Firecracker images directory {} does not exist; run zellij-firecracker setup",
+            config.images_dir.display()
+        ));
+    }
+    if !config.rootfs.is_file() {
+        return Err(anyhow!(
+            "default Firecracker image {} does not exist; run zellij-firecracker setup",
+            config.rootfs.display()
+        ));
+    }
+    Ok(())
+}
+
 fn doctor() -> Result<()> {
     let config = load_config()?;
+    check_image_paths(&config)?;
     let network = load_network(&config)?;
     if !OpenOptions::new()
         .read(true)
@@ -2472,12 +2604,19 @@ fn doctor() -> Result<()> {
     if !output.status.success() {
         return Err(anyhow!("Firecracker --version failed"));
     }
-    let cgroup = delegated_cgroup_root()?;
-    println!(
-        "KVM, Firecracker, image, key, {} TAPs and the cgroup {} are ready.",
-        network.taps,
-        cgroup.display()
-    );
+    match cgroup_root_or_skip(delegated_cgroup_root(), config.require_resource_limits)? {
+        Some(cgroup) => println!(
+            "KVM, Firecracker, image, key, {} TAPs and the cgroup {} are ready.",
+            network.taps,
+            cgroup.display()
+        ),
+        // `cgroup_root_or_skip` has already said which cgroup is not delegated.
+        None => println!(
+            "KVM, Firecracker, image, key and {} TAPs are ready; VMs will run without \
+             host-side memory, CPU and process limits.",
+            network.taps
+        ),
+    }
     Ok(())
 }
 
@@ -2706,16 +2845,14 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
     let firecracker =
         find_in_path(Path::new("firecracker")).context("firecracker is not installed")?;
     secure_dir(&config_dir())?;
-    let config_path = config_dir().join("firecracker.json");
+    let config_path = config_path();
     let config = if config_path.exists() {
         let mut config: Config = serde_json::from_slice(&fs::read(&config_path)?)?;
         config.firecracker = firecracker;
         config.kernel = output.join("vmlinux-6.1.182");
         config.images_dir = output.join("images");
         config.ssh_private_key = private_key;
-        if image.is_none() {
-            config.rootfs = rootfs;
-        }
+        config.rootfs = default_rootfs(&config.rootfs, &rootfs, image.is_some());
         config
     } else {
         Config {
@@ -2728,6 +2865,7 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
             memory_mib: default_memory(),
             guest_cwd: default_cwd(),
             boot_timeout_secs: default_boot_timeout(),
+            require_resource_limits: default_require_resource_limits(),
             network: None,
             credential_files: vec![],
             extra: serde_json::Map::new(),
@@ -3960,9 +4098,14 @@ mod tests {
         Doctor,
     }
 
+    const RECORDED_IMAGE: &str = "/images/zellij-dev.ext4";
+
     struct RecordingSetup {
         stages: Vec<SetupStage>,
         fail: Option<SetupStage>,
+        /// The image the config stage was handed, so a test can check that it is the one
+        /// the image stage produced.
+        config_image: Option<PathBuf>,
     }
 
     impl RecordingSetup {
@@ -3970,6 +4113,7 @@ mod tests {
             Self {
                 stages: vec![],
                 fail,
+                config_image: None,
             }
         }
 
@@ -4008,11 +4152,13 @@ mod tests {
             _project: &Path,
             _zellij: &Path,
             _current_provider: &Path,
-        ) -> Result<()> {
-            self.stage(SetupStage::Image)
+        ) -> Result<PathBuf> {
+            self.stage(SetupStage::Image)?;
+            Ok(PathBuf::from(RECORDED_IMAGE))
         }
 
-        fn config(&mut self, _provider: &Path) -> Result<()> {
+        fn config(&mut self, _provider: &Path, image: &Path) -> Result<()> {
+            self.config_image = Some(image.to_owned());
             self.stage(SetupStage::Config)
         }
 
@@ -4052,6 +4198,7 @@ mod tests {
             memory_mib: default_memory(),
             guest_cwd: default_cwd(),
             boot_timeout_secs: default_boot_timeout(),
+            require_resource_limits: default_require_resource_limits(),
             network: None,
             credential_files: vec![],
             extra: serde_json::Map::new(),
@@ -4089,17 +4236,24 @@ mod tests {
     }
 
     #[test]
+    fn setup_hands_the_config_stage_the_image_it_used() {
+        let mut runtime = RecordingSetup::new(None);
+        setup_with(&setup_options(false), &mut runtime).unwrap();
+        assert_eq!(runtime.config_image, Some(PathBuf::from(RECORDED_IMAGE)));
+    }
+
+    #[test]
     fn setup_reuses_valid_images_and_rebuilds_with_exact_arguments() {
         let project = Path::new("/workspace/project");
         let zellij = Path::new("/build/zellij");
         let provider = Path::new("/build/zellij-firecracker");
         let mut commands = vec![];
-        setup_image_with(
+        let reused = setup_image_with(
             &setup_options(false),
             project,
             zellij,
             provider,
-            |_| true,
+            |image| Ok(PathBuf::from(format!("/images/{image}.ext4"))),
             |command, _| {
                 commands.push(
                     command
@@ -4112,13 +4266,16 @@ mod tests {
         )
         .unwrap();
         assert!(commands.is_empty());
+        // The reused image is reported just as a built one is: it is what the config step
+        // makes this machine's default.
+        assert_eq!(reused, PathBuf::from("/images/zellij-dev.ext4"));
 
-        setup_image_with(
+        let built = setup_image_with(
             &setup_options(true),
             project,
             zellij,
             provider,
-            |_| true,
+            |image| Ok(PathBuf::from(format!("/images/{image}.ext4"))),
             |command, _| {
                 assert_eq!(command.get_program(), provider);
                 commands.push(
@@ -4131,6 +4288,7 @@ mod tests {
             },
         )
         .unwrap();
+        assert_eq!(built, PathBuf::from("/images/zellij-dev.ext4"));
         assert_eq!(
             commands,
             vec![[
@@ -4149,6 +4307,93 @@ mod tests {
             .into_iter()
             .collect::<Vec<_>>()]
         );
+    }
+
+    #[test]
+    fn setup_reports_why_an_image_is_unusable_and_builds_once_to_fix_it() {
+        let project = Path::new("/workspace/project");
+        let zellij = Path::new("/build/zellij");
+        let provider = Path::new("/build/zellij-firecracker");
+
+        // The first probe fails, the build fixes it: one build, no error.
+        let mut probes = 0;
+        let mut builds = 0;
+        setup_image_with(
+            &setup_options(false),
+            project,
+            zellij,
+            provider,
+            |image| {
+                probes += 1;
+                (probes > 1)
+                    .then(|| PathBuf::from(format!("/images/{image}.ext4")))
+                    .context("no such image")
+            },
+            |_, _| {
+                builds += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!((probes, builds), (2, 1));
+
+        // A build that leaves the image unusable says why, rather than hiding the cause.
+        let error = setup_image_with(
+            &setup_options(false),
+            project,
+            zellij,
+            provider,
+            |_| {
+                Err(anyhow!(
+                    "provider config kernel must be an existing absolute file"
+                ))
+            },
+            |_, _| Ok(()),
+        )
+        .unwrap_err();
+        let report = format!("{error:#}");
+        assert!(report.contains("was not created correctly"), "{report}");
+        assert!(report.contains("provider config kernel"), "{report}");
+    }
+
+    #[test]
+    fn a_dangling_default_image_does_not_hide_a_named_one() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = provider_config(root.path());
+        for path in [&config.firecracker, &config.kernel, &config.ssh_private_key] {
+            fs::write(path, "file").unwrap();
+        }
+        fs::create_dir_all(&config.images_dir).unwrap();
+        fs::write(config.images_dir.join("zellij-dev.ext4"), "image").unwrap();
+        // The default image is gone, as it is on a machine that only ever built named ones.
+        assert!(!config.rootfs.exists());
+
+        validate_config(&config).unwrap();
+        assert_eq!(
+            image_path(&config, Some("zellij-dev")).unwrap(),
+            config.images_dir.join("zellij-dev.ext4")
+        );
+        // A VM that names no image still gets a precise error where it is actually used.
+        assert!(image_path(&config, None).is_err());
+
+        config.rootfs = PathBuf::from("relative.ext4");
+        assert!(validate_config(&config).is_err());
+        config = provider_config(root.path());
+        fs::remove_file(&config.kernel).unwrap();
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn a_named_build_adopts_the_default_image_only_when_there_is_none() {
+        let root = tempfile::tempdir().unwrap();
+        let existing = root.path().join("ubuntu-24.04.ext4");
+        let built = root.path().join("images/zellij-dev.ext4");
+
+        assert_eq!(default_rootfs(&existing, &built, true), built);
+        assert_eq!(default_rootfs(&existing, &built, false), built);
+        fs::write(&existing, "image").unwrap();
+        assert_eq!(default_rootfs(&existing, &built, true), existing);
+        assert_eq!(default_rootfs(&existing, &built, false), built);
     }
 
     #[test]
@@ -4439,6 +4684,87 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("prompt failed"));
         assert!(config.credential_files.is_empty());
+    }
+
+    #[test]
+    fn setup_repoints_a_dangling_default_at_the_image_it_reused() {
+        let root = tempfile::tempdir().unwrap();
+        let config_path = root.path().join("firecracker.json");
+        let mut config = provider_config(root.path());
+        // The bug: a default left over from an earlier layout, naming a file that is gone.
+        config.rootfs = root.path().join("ubuntu-24.04.ext4");
+        config.credential_files.push(CredentialFile {
+            host: PathBuf::from("~/.codex/auth.json"),
+            guest: PathBuf::from("/root/.codex/auth.json"),
+        });
+        config.extra.insert(
+            "future_setting".to_owned(),
+            serde_json::json!({"enabled": true}),
+        );
+        fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+        let image = root.path().join("images/zellij-dev.ext4");
+        fs::create_dir_all(image.parent().unwrap()).unwrap();
+        fs::write(&image, "image").unwrap();
+
+        assert!(set_default_image_at(&config_path, &image).unwrap());
+
+        let updated: serde_json::Value =
+            serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        assert_eq!(
+            updated["rootfs"],
+            serde_json::json!(image.to_str().unwrap())
+        );
+        assert_eq!(
+            updated["future_setting"],
+            serde_json::json!({"enabled": true})
+        );
+        assert_eq!(updated["credential_files"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn repointing_the_default_image_writes_only_when_it_moves() {
+        let root = tempfile::tempdir().unwrap();
+        let config_path = root.path().join("firecracker.json");
+        let image = root.path().join("images/zellij-dev.ext4");
+        let mut config = provider_config(root.path());
+        config.rootfs = image.clone();
+        // Deliberately not the bytes `to_vec_pretty` produces: a rewrite would normalise the
+        // trailing whitespace, so identical bytes afterwards prove nothing was written.
+        let mut bytes = serde_json::to_vec_pretty(&config).unwrap();
+        bytes.extend_from_slice(b"\n\n");
+        fs::write(&config_path, &bytes).unwrap();
+
+        assert!(!set_default_image_at(&config_path, &image).unwrap());
+
+        assert_eq!(fs::read(&config_path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_missing_provider_config_fails_the_repoint_instead_of_creating_one() {
+        let root = tempfile::tempdir().unwrap();
+        let config_path = root.path().join("firecracker.json");
+        let error = set_default_image_at(&config_path, Path::new("/images/zellij-dev.ext4"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("failed to read"), "{error}");
+        assert!(!config_path.exists());
+    }
+
+    #[test]
+    fn doctor_requires_the_default_image_and_the_images_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = provider_config(root.path());
+        config.rootfs = root.path().join("images/zellij-dev.ext4");
+        let error = check_image_paths(&config).unwrap_err().to_string();
+        assert!(error.contains("images directory"), "{error}");
+
+        fs::create_dir_all(root.path().join("images")).unwrap();
+        let error = check_image_paths(&config).unwrap_err().to_string();
+        assert!(error.contains("default Firecracker image"), "{error}");
+        assert!(error.contains("run zellij-firecracker setup"), "{error}");
+
+        fs::write(&config.rootfs, "image").unwrap();
+        check_image_paths(&config).unwrap();
     }
 
     #[test]
@@ -5841,7 +6167,7 @@ mod tests {
     }
 
     /// The delegation root is the top of the run of owned ancestors, and a process whose
-    /// own cgroup is not delegated gets told so rather than a VM without limits.
+    /// own cgroup is not delegated gets told so rather than silently ranging over the host.
     #[test]
     fn the_delegated_cgroup_root_is_the_highest_owned_ancestor() {
         let owned = |dir: &Path| {
@@ -5870,6 +6196,51 @@ mod tests {
         let error = delegation_root(session, &owned).unwrap_err().to_string();
         assert!(error.contains("not delegated to this user"), "{error}");
         assert!(error.contains("session-3.scope"), "{error}");
+    }
+
+    /// Only a host with nowhere to put the VM is optional. Whether limits are required
+    /// decides what an undelegated cgroup costs - the VM, or just the limits - and a
+    /// delegated one is used either way.
+    #[test]
+    fn an_undelegated_cgroup_stops_a_vm_only_while_limits_are_required() {
+        let root = PathBuf::from("/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service");
+        assert_eq!(
+            cgroup_root_or_skip(Ok(root.clone()), true).unwrap(),
+            Some(root.clone())
+        );
+        assert_eq!(
+            cgroup_root_or_skip(Ok(root.clone()), false).unwrap(),
+            Some(root)
+        );
+
+        let error = || {
+            Err(anyhow!(
+                "cgroup /session-3.scope is not delegated to this user"
+            ))
+        };
+        assert_eq!(cgroup_root_or_skip(error(), false).unwrap(), None);
+        let message = cgroup_root_or_skip(error(), true).unwrap_err().to_string();
+        assert!(message.contains("not delegated to this user"), "{message}");
+    }
+
+    /// A delegated cgroup subtree needs root to create, so a config that does not ask for
+    /// the limits gets VMs rather than an error; only an explicit `true` insists on them.
+    #[test]
+    fn resource_limits_are_optional_unless_the_config_asks_for_them() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = provider_config(root.path());
+        config.require_resource_limits = true;
+        let mut json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["require_resource_limits"], serde_json::json!(true));
+
+        let strict: Config = serde_json::from_value(json.clone()).unwrap();
+        assert!(strict.require_resource_limits);
+
+        json.as_object_mut()
+            .unwrap()
+            .remove("require_resource_limits");
+        let inherited: Config = serde_json::from_value(json).unwrap();
+        assert!(!inherited.require_resource_limits);
     }
 
     fn recovery_dir_with_note(recovery: &Path, name: &str, retained_at: SystemTime) -> PathBuf {

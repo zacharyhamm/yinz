@@ -16,6 +16,8 @@ The included provider supports x86_64 Linux. It requires:
 - `chroot`, `curl`, `git`, `rsync`, `sha256sum`, `ssh`, `ssh-keygen`, `ssh-keyscan`, `unshare`,
   `unsquashfs`, and `mkfs.ext4`
 - `ip`, `iptables`, and `systemd` for the one-time host network setup
+- optionally, a cgroup v2 subtree delegated to the user, which in practice means a systemd
+  user session - see "Resource limits" below
 
 From a Zellij checkout, install the binaries, then run the interactive setup explicitly:
 
@@ -32,6 +34,11 @@ For a development build instead, run `cargo x build` and
 project's `.zellij/firecracker-image.sh` as a 64 GiB sparse `zellij-dev` image. It also writes the
 provider and a 90-second inactivity timeout to Zellij's managed `config.d` fragment, then runs
 `doctor`. Every `sudo` operation is announced before it runs.
+
+A VM that names no image boots the machine's default one, `rootfs` in
+`$XDG_CONFIG_HOME/zellij/firecracker.json`. `setup` points that at the image it built or reused,
+so `setup --name <image>` is how a machine chooses its default, and it says so when the default
+moves. `doctor` refuses a default that does not exist.
 
 An existing valid `zellij-dev` image is reused. Rebuild it, including current Codex and Claude Code
 releases, with:
@@ -101,7 +108,8 @@ zellij-firecracker image build --name rust-dev --project /absolute/path/to/proje
 ```
 
 The builder runs the script inside the staged guest root file system. It writes the image to
-`$XDG_DATA_HOME/zellij/firecracker/images/rust-dev.ext4`.
+`$XDG_DATA_HOME/zellij/firecracker/images/rust-dev.ext4`. Unlike `setup`, `image build` leaves a
+working default image alone; it only adopts what it built as the default when there is none.
 
 The build is unprivileged: it re-execs itself under `unshare --user`, and the chroot itself runs in
 a further mount and PID namespace so the `/proc` and `/dev` mounts the script needs are gone before
@@ -174,6 +182,11 @@ Its rules were written for a different subnet, so the old cleanup could not matc
 leftover jump kept the chain referenced, and re-creating the chain failed on every run. Current
 versions recover on their own; nothing needs to be done by hand.
 
+**`cgroup ... is not delegated to this user`** - only appears when `require_resource_limits`
+is on. The provider has nowhere to put a VM's resource limits and was told not to start one
+without them. Either run Zellij under a delegated subtree or drop the key; both are covered
+under "Resource limits" below.
+
 **A warning about a NAT rule "that cannot be proven to be ours"** — a `POSTROUTING -s <subnet> -j
 MASQUERADE` for a subnet this host no longer uses. A NAT rule names no interface and, if it
 predates the tag, carries no identifying comment, so the provider refuses to guess and reports it
@@ -181,12 +194,49 @@ instead. It blocks nothing. Remove it with the `iptables -t nat -D ...` command 
 once you have confirmed it is not another tool's.
 
 This is a single-user developer provider. It is not a multi-user VM service. Each VM runs as the
-Zellij user in a user and mount namespace. Firecracker applies its seccomp filter. The provider
-also applies CPU, memory, and process limits through cgroup v2: each VM gets a child of the
-cgroup subtree systemd delegates to the user (`user@<uid>.service`), found from the provider's
-own cgroup. A provider started outside such a subtree, such as from a plain ssh login without a
-systemd user session, refuses to start VMs rather than run them without limits; `doctor`
-reports the subtree it would use.
+Zellij user in a user and mount namespace. Firecracker applies its seccomp filter.
+
+### Resource limits
+
+The provider also applies CPU, memory, and process limits through cgroup v2: each VM gets a
+child of the cgroup subtree systemd delegates to the user (`user@<uid>.service`), found from
+the provider's own cgroup. These bound the *host-side* Firecracker process - its page cache,
+threads, and file descriptors. The guest's own RAM and vCPUs are capped by Firecracker itself
+from `memory_mib` and `vcpu_count` either way.
+
+A delegated subtree can only be granted by root, and plenty of hosts have none - a plain ssh
+login, or a logind session scope, which systemd creates undelegated. So the limits are best
+effort by default: a provider that finds no subtree warns on stderr, which Zellij logs, and
+starts the VM anyway. `doctor` reports the subtree it would use, or says it will run without
+one, and succeeds either way.
+
+Set `require_resource_limits` in `firecracker.json` to make the missing subtree fatal instead,
+on a host where an unbounded VMM is not acceptable:
+
+```json
+{"require_resource_limits": true}
+```
+
+To satisfy it, run Zellij inside the user manager's tree, which needs no privileges:
+
+```sh
+systemd-run --user --scope -- zellij
+```
+
+or have root delegate a subtree once per boot (`/sys/fs/cgroup` is a fresh tmpfs at every
+boot). The leaf below is not optional: cgroup v2 forbids a cgroup from holding both processes
+and enabled subtree controllers.
+
+```sh
+sudo mkdir -p /sys/fs/cgroup/zellij/main
+sudo sh -c 'echo "+cpu +memory +pids" > /sys/fs/cgroup/zellij/cgroup.subtree_control'
+sudo chown -R "$USER" /sys/fs/cgroup/zellij
+sudo sh -c "echo $$ > /sys/fs/cgroup/zellij/main/cgroup.procs"
+```
+
+Without the limits, nothing bounds a Firecracker process that misbehaves. That is the default
+because the Zellij user is already a trusted boundary on the kind of host this provider is
+meant for - see the paragraph below - not because the limits do not matter.
 
 The network permits DNS through the configured resolver and outbound TCP ports 22, 80, and 443.
 It blocks guest access to the host and private networks. The provider does not use the privileged
@@ -210,10 +260,17 @@ Open a guest login shell or run a command in the guest:
 ```sh
 zellij action new-pane --firecracker review
 zellij action new-pane --firecracker review --cwd /workspace/repo -- cargo test
+zellij action new-pane --firecracker review --firecracker-image rust-dev \
+    --firecracker-worktree /home/me/src/project
 ```
 
 Names contain 1–64 ASCII letters, digits, `.`, `_`, or `-`. `--firecracker` cannot be combined
 with `--remote-host` or a plugin pane. Multiple panes can use the same VM.
+
+`--firecracker-image` boots the VM from a named image instead of the machine's default, and
+`--firecracker-worktree` names an absolute host path to mirror into it. Both need
+`--firecracker`. A pane joining a VM that is already running has to name the same image it was
+started with; naming a different one is refused rather than silently ignored.
 
 A layout names the VM with `firecracker_vm`, and optionally its image and the host worktree to
 mirror into it. A pane with `firecracker_vm` and no `command` opens the guest's login shell. A
