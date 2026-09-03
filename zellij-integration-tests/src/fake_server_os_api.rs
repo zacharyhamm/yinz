@@ -129,14 +129,16 @@ impl ServerOsApi for FakeServerOsApi {
     /// the warp fakes can tell it is remote.
     fn resolve_spawn(
         &self,
+        terminal_id: u32,
         terminal_action: TerminalAction,
         _default_editor: Option<PathBuf>,
+        _report_progress: &mut dyn FnMut(&str),
     ) -> Result<ResolvedSpawn> {
         let TerminalAction::RunCommand(command) = terminal_action else {
             return Err(anyhow!("only a command can run on another machine"));
         };
         Ok(ResolvedSpawn {
-            terminal_id: self.shared_ptys.next_terminal_id(),
+            terminal_id,
             rerun_command: command.clone(),
             endpoint: RemoteEndpoint {
                 host: command.target.display().unwrap_or_default(),
@@ -156,7 +158,12 @@ impl ServerOsApi for FakeServerOsApi {
             quit_cb,
         )
     }
-    fn resolve_rerun(&self, terminal_id: u32, command: RunCommand) -> Result<ResolvedSpawn> {
+    fn resolve_rerun(
+        &self,
+        terminal_id: u32,
+        command: RunCommand,
+        _report_progress: &mut dyn FnMut(&str),
+    ) -> Result<ResolvedSpawn> {
         Ok(ResolvedSpawn {
             terminal_id,
             rerun_command: command.clone(),

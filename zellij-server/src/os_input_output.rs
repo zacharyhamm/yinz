@@ -676,6 +676,7 @@ impl ServerOsInputOutput {
     fn resolve_target(
         &self,
         mut cmd: RunCommand,
+        report_progress: Option<&mut dyn FnMut(&str)>,
     ) -> Result<(RunCommand, RunCommand, Option<RemoteEndpoint>)> {
         let rerun_cmd = cmd.clone();
         let (name, image, worktree) = match &cmd.target {
@@ -700,13 +701,23 @@ impl ServerOsInputOutput {
         let (provider, session) = firecracker.as_ref().context(
             "Firecracker is not configured; set firecracker_provider in the session config",
         )?;
-        let ensured = provider.ensure(
-            session,
-            &name,
-            image.as_deref(),
-            worktree.as_deref(),
-            &self.firecracker_stopping,
-        )?;
+        let ensured = match report_progress {
+            Some(report_progress) => provider.ensure_with_progress(
+                session,
+                &name,
+                image.as_deref(),
+                worktree.as_deref(),
+                &self.firecracker_stopping,
+                report_progress,
+            ),
+            None => provider.ensure(
+                session,
+                &name,
+                image.as_deref(),
+                worktree.as_deref(),
+                &self.firecracker_stopping,
+            ),
+        }?;
         if self.firecracker_stopping.load(Ordering::Acquire) {
             return Err(anyhow!("the Firecracker session is shutting down"));
         }
@@ -749,23 +760,22 @@ impl ServerOsInputOutput {
 
     fn resolve_spawn(
         &self,
+        terminal_id: u32,
         terminal_action: TerminalAction,
         default_editor: Option<PathBuf>,
+        report_progress: &mut dyn FnMut(&str),
     ) -> Result<ResolvedSpawn> {
-        let terminal_id = self
-            .pty_backend
-            .next_terminal_id()
-            .context("no more terminal IDs left to allocate")?;
-        self.pty_backend.reserve_terminal_id(terminal_id);
         let (command, _) = build_command(terminal_action, default_editor);
         let display_host = command.display_host();
-        let (command, rerun_command, endpoint) = self.resolve_target(command).map_err(|error| {
-            pane_start_failed(
-                terminal_id,
-                display_host.as_deref().unwrap_or("firecracker"),
-                error,
-            )
-        })?;
+        let (command, rerun_command, endpoint) = self
+            .resolve_target(command, Some(report_progress))
+            .map_err(|error| {
+                pane_start_failed(
+                    terminal_id,
+                    display_host.as_deref().unwrap_or("firecracker"),
+                    error,
+                )
+            })?;
         let endpoint = endpoint.context("a local command has no endpoint to resolve")?;
         Ok(ResolvedSpawn {
             terminal_id,
@@ -813,15 +823,22 @@ impl ServerOsInputOutput {
             .with_context(|| format!("failed to open a pane on {host}"))
     }
 
-    fn resolve_rerun(&self, terminal_id: u32, command: RunCommand) -> Result<ResolvedSpawn> {
+    fn resolve_rerun(
+        &self,
+        terminal_id: u32,
+        command: RunCommand,
+        report_progress: &mut dyn FnMut(&str),
+    ) -> Result<ResolvedSpawn> {
         let display_host = command.display_host();
-        let (command, rerun_command, endpoint) = self.resolve_target(command).map_err(|error| {
-            pane_start_failed(
-                terminal_id,
-                display_host.as_deref().unwrap_or("firecracker"),
-                error,
-            )
-        })?;
+        let (command, rerun_command, endpoint) = self
+            .resolve_target(command, Some(report_progress))
+            .map_err(|error| {
+                pane_start_failed(
+                    terminal_id,
+                    display_host.as_deref().unwrap_or("firecracker"),
+                    error,
+                )
+            })?;
         let endpoint = endpoint.context("a local command has no endpoint to resolve")?;
         Ok(ResolvedSpawn {
             terminal_id,
@@ -987,8 +1004,10 @@ pub trait ServerOsApi: Send + Sync {
     ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)>;
     fn resolve_spawn(
         &self,
+        _terminal_id: u32,
         _terminal_action: TerminalAction,
         _default_editor: Option<PathBuf>,
+        _report_progress: &mut dyn FnMut(&str),
     ) -> Result<ResolvedSpawn> {
         Err(anyhow!("this backend does not support remote panes"))
     }
@@ -1063,7 +1082,12 @@ pub trait ServerOsApi: Send + Sync {
         run_command: RunCommand,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(Box<dyn AsyncReader>, Option<u32>)>;
-    fn resolve_rerun(&self, _terminal_id: u32, _run_command: RunCommand) -> Result<ResolvedSpawn> {
+    fn resolve_rerun(
+        &self,
+        _terminal_id: u32,
+        _run_command: RunCommand,
+        _report_progress: &mut dyn FnMut(&str),
+    ) -> Result<ResolvedSpawn> {
         Err(anyhow!("this backend does not support remote panes"))
     }
     fn rerun_resolved(
@@ -1242,7 +1266,7 @@ impl ServerOsApi for ServerOsInputOutput {
 
         let (cmd, failover_cmd) = build_command(terminal_action, default_editor);
         let display_host = cmd.display_host();
-        let (cmd, rerun_cmd, endpoint) = self.resolve_target(cmd).map_err(|e| {
+        let (cmd, rerun_cmd, endpoint) = self.resolve_target(cmd, None).map_err(|e| {
             pane_start_failed(
                 terminal_id,
                 display_host.as_deref().unwrap_or("firecracker"),
@@ -1272,10 +1296,18 @@ impl ServerOsApi for ServerOsInputOutput {
     }
     fn resolve_spawn(
         &self,
+        terminal_id: u32,
         terminal_action: TerminalAction,
         default_editor: Option<PathBuf>,
+        report_progress: &mut dyn FnMut(&str),
     ) -> Result<ResolvedSpawn> {
-        ServerOsInputOutput::resolve_spawn(self, terminal_action, default_editor)
+        ServerOsInputOutput::resolve_spawn(
+            self,
+            terminal_id,
+            terminal_action,
+            default_editor,
+            report_progress,
+        )
     }
     fn spawn_resolved(
         &self,
@@ -1529,7 +1561,7 @@ impl ServerOsApi for ServerOsInputOutput {
         // still open on the far machine would be left to the orphan timeout.
         let display_host = run_command.display_host();
         let (run_command, rerun_command, endpoint) =
-            self.resolve_target(run_command).map_err(|e| {
+            self.resolve_target(run_command, None).map_err(|e| {
                 pane_start_failed(
                     terminal_id,
                     display_host.as_deref().unwrap_or("firecracker"),
@@ -1554,8 +1586,13 @@ impl ServerOsApi for ServerOsInputOutput {
                 .spawn_terminal(run_command, None, quit_cb, terminal_id)?;
         Ok((async_reader, Some(child_fd as u32)))
     }
-    fn resolve_rerun(&self, terminal_id: u32, run_command: RunCommand) -> Result<ResolvedSpawn> {
-        ServerOsInputOutput::resolve_rerun(self, terminal_id, run_command)
+    fn resolve_rerun(
+        &self,
+        terminal_id: u32,
+        run_command: RunCommand,
+        report_progress: &mut dyn FnMut(&str),
+    ) -> Result<ResolvedSpawn> {
+        ServerOsInputOutput::resolve_rerun(self, terminal_id, run_command, report_progress)
     }
     fn rerun_resolved(
         &self,

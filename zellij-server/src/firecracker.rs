@@ -173,6 +173,18 @@ impl Provider {
         worktree: Option<&Path>,
         cancel: &AtomicBool,
     ) -> Result<EnsureResponse> {
+        self.ensure_with_progress(session, name, image, worktree, cancel, |_| {})
+    }
+
+    pub fn ensure_with_progress(
+        &self,
+        session: &str,
+        name: &str,
+        image: Option<&str>,
+        worktree: Option<&Path>,
+        cancel: &AtomicBool,
+        mut report_progress: impl FnMut(&str),
+    ) -> Result<EnsureResponse> {
         validate_firecracker_vm_name(name).map_err(|e| anyhow!(e))?;
         if let Some(image) = image {
             validate_firecracker_vm_name(image).map_err(|e| anyhow!(e))?;
@@ -189,6 +201,7 @@ impl Provider {
                 worktree: worktree.map(Cow::Borrowed),
             },
             Some(cancel),
+            Some(&mut report_progress),
         )?;
         self.check_version(response.version)?;
         if response.ssh_host.trim().is_empty() {
@@ -285,13 +298,14 @@ impl Provider {
     }
 
     fn invoke<T: for<'de> Deserialize<'de>>(&self, request: Request<'_>) -> Result<T> {
-        self.invoke_cancellable(request, None)
+        self.invoke_cancellable(request, None, None)
     }
 
     fn invoke_cancellable<T: for<'de> Deserialize<'de>>(
         &self,
         request: Request<'_>,
         cancel: Option<&AtomicBool>,
+        mut report_progress: Option<&mut dyn FnMut(&str)>,
     ) -> Result<T> {
         let request_json = serde_json::to_vec(&request)
             .context("failed to encode the firecracker provider request")?;
@@ -345,6 +359,8 @@ impl Provider {
         let mut stderr_bytes = Vec::new();
         let mut stdout_oversized = false;
         let mut stderr_oversized = false;
+        let mut reported_progress = None;
+        let mut progress_offset = 0;
         loop {
             if status.is_none() && cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
                 kill_group(&mut child);
@@ -363,10 +379,32 @@ impl Provider {
                 }
             }
 
-            let read_any = read_available(&mut stdout, &mut stdout_bytes, &mut stdout_oversized)
-                .context("failed reading firecracker provider stdout")?
-                | read_available(&mut stderr, &mut stderr_bytes, &mut stderr_oversized)
-                    .context("failed reading firecracker provider stderr")?;
+            let read_stdout = read_available(&mut stdout, &mut stdout_bytes, &mut stdout_oversized)
+                .context("failed reading firecracker provider stdout")?;
+            let read_stderr = read_available(&mut stderr, &mut stderr_bytes, &mut stderr_oversized)
+                .context("failed reading firecracker provider stderr")?;
+            if read_stderr {
+                if let Some(complete_len) = stderr_bytes.iter().rposition(|byte| *byte == b'\n') {
+                    let complete_len = complete_len + 1;
+                    for line in String::from_utf8_lossy(
+                        &stderr_bytes[progress_offset.min(complete_len)..complete_len],
+                    )
+                    .lines()
+                    {
+                        if let Some(progress) = line.strip_prefix(PROGRESS_PREFIX) {
+                            let progress = progress.trim();
+                            if reported_progress.as_deref() != Some(progress) {
+                                if let Some(report_progress) = report_progress.as_deref_mut() {
+                                    report_progress(progress);
+                                }
+                                reported_progress = Some(progress.to_owned());
+                            }
+                        }
+                    }
+                    progress_offset = complete_len;
+                }
+            }
+            let read_any = read_stdout | read_stderr;
             if status.is_some() && !read_any {
                 break;
             }
@@ -691,6 +729,27 @@ printf '{"version":2}'"#,
             Duration::from_millis(500),
         );
         provider.stop_session("work").unwrap();
+    }
+
+    #[test]
+    fn ensure_reports_each_complete_progress_phase() {
+        let (_dir, provider) = provider_script(
+            "printf 'progress: boot' >&2; sleep 0.05; printf 'ing the guest\\nprogress: syncing files\\n' >&2\n\
+             printf '{\"version\":2,\"ssh_host\":\"vm.example\"}'",
+            Duration::from_secs(1),
+        );
+        let mut phases = vec![];
+        provider
+            .ensure_with_progress(
+                "work",
+                "review",
+                None,
+                None,
+                &AtomicBool::new(false),
+                |phase| phases.push(phase.to_owned()),
+            )
+            .unwrap();
+        assert_eq!(phases, ["booting the guest", "syncing files"]);
     }
 
     #[test]

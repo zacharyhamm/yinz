@@ -41,7 +41,7 @@ use zellij_utils::{
     errors::prelude::*,
     errors::{ContextType, PtyContext},
     input::{
-        command::{OpenFilePayload, RunCommand, TerminalAction},
+        command::{OpenFilePayload, PaneTarget, RunCommand, TerminalAction},
         layout::{
             FloatingPaneLayout, Layout, Run, RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout,
             TabLayoutInfo, TiledPaneLayout,
@@ -369,7 +369,6 @@ pub type AdoptedTabTerminals = (Vec<AdoptedTabTerminal>, Vec<AdoptedTabTerminal>
 #[doc(hidden)]
 #[derive(Clone, Debug)]
 pub struct PendingTerminalSpawn {
-    terminal_action: Option<TerminalAction>,
     run_command: Option<RunCommand>,
     pane_title: Option<String>,
     open_file_payload: Option<OpenFilePayload>,
@@ -384,7 +383,6 @@ pub struct PendingTerminalSpawn {
 #[doc(hidden)]
 #[derive(Clone, Debug)]
 pub struct PendingInPlaceSpawn {
-    terminal_action: Option<TerminalAction>,
     run_command: Option<RunCommand>,
     pane_title: Option<String>,
     invoked_with: Option<Run>,
@@ -500,32 +498,24 @@ pub struct PendingRerun {
     requested_cwd: Option<PathBuf>,
 }
 
+#[derive(Clone, Debug)]
+pub struct PendingRemoteSpawn {
+    terminal_id: u32,
+    terminal_action: TerminalAction,
+}
+
 /// What a spawn worker was asked to do.
 enum SpawnJob {
-    Terminal(Box<PendingTerminalSpawn>),
-    InPlace(Box<PendingInPlaceSpawn>),
-    Layout(Box<PendingLayoutSpawn>),
-    LayoutOverride(Box<PendingLayoutOverride>),
+    Terminal(PendingRemoteSpawn),
     Rerun(Box<PendingRerun>),
 }
 
 /// What a spawn worker hands back: the job, plus its result in a `OneShot` so
-/// a non-`Clone` reader can ride a `PtyInstruction`. Layout results keep one
-/// slot per run instruction, `None` for the local ones, so positions line up
-/// with the layout when the pty thread applies it.
+/// a non-`Clone` reader can ride a `PtyInstruction`.
 #[doc(hidden)]
 #[derive(Debug, Clone)]
 pub enum PendingSpawn {
-    Terminal(Box<PendingTerminalSpawn>, OneShot<Result<SpawnedTerminal>>),
-    InPlace(Box<PendingInPlaceSpawn>, OneShot<Result<SpawnedTerminal>>),
-    Layout(
-        Box<PendingLayoutSpawn>,
-        OneShot<Vec<Option<Result<SpawnedTerminal>>>>,
-    ),
-    LayoutOverride(
-        Box<PendingLayoutOverride>,
-        OneShot<Vec<Vec<Option<Result<SpawnedTerminal>>>>>,
-    ),
+    Terminal(PendingRemoteSpawn, OneShot<Result<SpawnedTerminal>>),
     Rerun(Box<PendingRerun>, OneShot<Result<SpawnedRerun>>),
 }
 
@@ -596,74 +586,90 @@ const LOST_SPAWN_HANDBACK: &str =
     "a remote pane was started but could not be handed back to the pty thread; \
      the pane has been dropped";
 
-/// A layout slot whose spawn goes through a worker: a remote command that is
-/// not held on start.
-fn is_deferred_run(run: &Option<Run>) -> bool {
-    matches!(run, Some(Run::Command(command)) if command.defers_spawn())
+fn terminal_safe(text: &str) -> String {
+    text.chars().flat_map(char::escape_default).collect()
 }
 
-/// The run instructions a layout override will spawn for one tab, tiled then
-/// floating, in the order `spawn_terminals_for_layout_override` applies them.
-fn layout_override_runs(tab: &TabLayoutInfo) -> Vec<Option<Run>> {
-    tab.tiled_layout
-        .extract_run_instructions()
-        .into_iter()
-        .chain(
-            tab.floating_layouts
-                .iter()
-                .filter(|pane| !pane.already_running)
-                .map(|pane| pane.run.clone()),
-        )
-        .collect()
+fn remote_loading_screen(command: &RunCommand, status: &str) -> Vec<u8> {
+    let status = terminal_safe(status);
+    let body = match &command.target {
+        PaneTarget::Firecracker {
+            vm,
+            image,
+            worktree,
+        } => format!(
+            "\u{1b}[H\u{1b}[2J\u{1b}[1mStarting Firecracker VM\u{1b}[0m\r\n\r\nVM: {}\r\nImage: {}\r\nWorktree: {}\r\n\r\nStatus: {}",
+            terminal_safe(vm),
+            image.as_deref().map(terminal_safe).unwrap_or_else(|| "default".to_owned()),
+            worktree
+                .as_ref()
+                .map(|path| terminal_safe(&path.display().to_string()))
+                .unwrap_or_else(|| "none".to_owned()),
+            status,
+        ),
+        PaneTarget::Ssh { host } => format!(
+            "\u{1b}[H\u{1b}[2J\u{1b}[1mConnecting to remote host\u{1b}[0m\r\n\r\nHost: {}\r\n\r\nStatus: {}",
+            terminal_safe(host),
+            status,
+        ),
+        PaneTarget::Local => return vec![],
+    };
+    body.into_bytes()
 }
 
-/// The terminal id a spawn attempt reserved, whether or not it started: a
-/// failed start still holds its id until the pty thread closes it.
-fn started_terminal_id(spawned: &Result<SpawnedTerminal>) -> Option<u32> {
-    match spawned {
-        Ok(spawned) => Some(spawned.terminal_id),
-        Err(error) => pane_start_failure(error).map(|(terminal_id, _)| terminal_id),
-    }
+fn send_remote_status(
+    senders: &ThreadSenders,
+    terminal_id: u32,
+    command: &RunCommand,
+    status: &str,
+) -> Result<()> {
+    senders.send_to_screen(ScreenInstruction::PtyBytes(
+        terminal_id,
+        remote_loading_screen(command, status),
+    ))
 }
 
 /// Resolve where one command runs and start it there, off the pty thread.
 fn spawn_remote_terminal(
     os_input: &dyn ServerOsApi,
     senders: &ThreadSenders,
-    terminal_action: TerminalAction,
+    pending: &PendingRemoteSpawn,
     default_editor: Option<PathBuf>,
 ) -> Result<SpawnedTerminal> {
+    let terminal_action = pending.terminal_action.clone();
+    let command = match &terminal_action {
+        TerminalAction::RunCommand(command) => command.clone(),
+        TerminalAction::OpenFile(_) => return Err(anyhow!("a remote spawn must run a command")),
+    };
     let quit_cb = terminal_quit_callback(senders.clone(), &terminal_action);
+    let mut report_progress =
+        |phase: &str| send_remote_status(senders, pending.terminal_id, &command, phase).non_fatal();
     os_input
-        .resolve_spawn(terminal_action, default_editor)
-        .and_then(|resolved| os_input.spawn_resolved(resolved, quit_cb))
+        .resolve_spawn(
+            pending.terminal_id,
+            terminal_action,
+            default_editor,
+            &mut report_progress,
+        )
+        .and_then(|resolved| {
+            send_remote_status(
+                senders,
+                pending.terminal_id,
+                &command,
+                if command.target.is_firecracker() {
+                    "connecting to the guest"
+                } else {
+                    "starting the remote command"
+                },
+            )
+            .non_fatal();
+            os_input.spawn_resolved(resolved, quit_cb)
+        })
         .map(|(terminal_id, reader, child_pid)| SpawnedTerminal {
             terminal_id,
             reader,
             child_pid,
         })
-}
-
-/// Start the deferred runs of a layout, keeping a slot per run so the result
-/// lines up with the layout's instructions; local runs get `None` and are
-/// spawned on the pty thread when the layout is applied.
-fn spawn_remote_layout_runs(
-    os_input: &dyn ServerOsApi,
-    senders: &ThreadSenders,
-    runs: Vec<Option<Run>>,
-    default_editor: &Option<PathBuf>,
-) -> Vec<Option<Result<SpawnedTerminal>>> {
-    runs.into_iter()
-        .map(|run| match run {
-            Some(Run::Command(command)) if command.defers_spawn() => Some(spawn_remote_terminal(
-                os_input,
-                senders,
-                TerminalAction::RunCommand(command),
-                default_editor.clone(),
-            )),
-            _ => None,
-        })
-        .collect()
 }
 
 /// Do a spawn job's off-thread work. Returns what to hand back and the ids of
@@ -676,69 +682,10 @@ fn run_spawn_job(
 ) -> (PendingSpawn, Vec<u32>) {
     match job {
         SpawnJob::Terminal(pending) => {
-            let spawned = pending
-                .terminal_action
-                .clone()
-                .context("missing prepared command")
-                .and_then(|action| {
-                    spawn_remote_terminal(os_input, senders, action, default_editor)
-                });
-            let started = started_terminal_id(&spawned).into_iter().collect();
+            let spawned = spawn_remote_terminal(os_input, senders, &pending, default_editor);
+            let started = vec![pending.terminal_id];
             (
                 PendingSpawn::Terminal(pending, OneShot::new(spawned)),
-                started,
-            )
-        },
-        SpawnJob::InPlace(pending) => {
-            let spawned = pending
-                .terminal_action
-                .clone()
-                .context("missing prepared command")
-                .and_then(|action| {
-                    spawn_remote_terminal(os_input, senders, action, default_editor)
-                });
-            let started = started_terminal_id(&spawned).into_iter().collect();
-            (
-                PendingSpawn::InPlace(pending, OneShot::new(spawned)),
-                started,
-            )
-        },
-        SpawnJob::Layout(pending) => {
-            let runs = pending
-                .run_instructions
-                .iter()
-                .chain(&pending.floating_run_instructions)
-                .cloned()
-                .collect();
-            let spawns = spawn_remote_layout_runs(os_input, senders, runs, &default_editor);
-            let started = spawns
-                .iter()
-                .flatten()
-                .filter_map(started_terminal_id)
-                .collect();
-            (PendingSpawn::Layout(pending, OneShot::new(spawns)), started)
-        },
-        SpawnJob::LayoutOverride(pending) => {
-            let spawns: Vec<Vec<Option<Result<SpawnedTerminal>>>> = pending
-                .tabs
-                .iter()
-                .map(|(tab, _)| {
-                    spawn_remote_layout_runs(
-                        os_input,
-                        senders,
-                        layout_override_runs(tab),
-                        &default_editor,
-                    )
-                })
-                .collect();
-            let started = spawns
-                .iter()
-                .flatten()
-                .flatten()
-                .filter_map(started_terminal_id)
-                .collect();
-            (
-                PendingSpawn::LayoutOverride(pending, OneShot::new(spawns)),
                 started,
             )
         },
@@ -749,9 +696,30 @@ fn run_spawn_job(
                         senders.clone(),
                         &TerminalAction::RunCommand(pending.run_command.clone()),
                     );
+                    let mut report_progress = |phase: &str| {
+                        send_remote_status(senders, terminal_id, &pending.run_command, phase)
+                            .non_fatal()
+                    };
                     os_input
-                        .resolve_rerun(terminal_id, pending.run_command.clone())
-                        .and_then(|resolved| os_input.rerun_resolved(resolved, quit_cb))
+                        .resolve_rerun(
+                            terminal_id,
+                            pending.run_command.clone(),
+                            &mut report_progress,
+                        )
+                        .and_then(|resolved| {
+                            send_remote_status(
+                                senders,
+                                terminal_id,
+                                &pending.run_command,
+                                if pending.run_command.target.is_firecracker() {
+                                    "connecting to the guest"
+                                } else {
+                                    "starting the remote command"
+                                },
+                            )
+                            .non_fatal();
+                            os_input.rerun_resolved(resolved, quit_cb)
+                        })
                         .map(|(reader, child_pid)| SpawnedRerun { reader, child_pid })
                 },
                 PaneId::Plugin(_) => Err(anyhow!("cannot respawn plugin panes")),
@@ -1052,6 +1020,10 @@ pub(crate) struct Pty {
     /// Threads resolving and starting remote panes, so `Drop` need not wait
     /// for a boot; reaped as new ones start.
     spawn_workers: Vec<std::thread::JoinHandle<()>>,
+    /// Remote panes already placed on screen whose worker has not handed a
+    /// transport back yet. Closing the pane removes its id, so a late result
+    /// can only be torn down, never bring the pane back.
+    pending_remote_spawns: HashSet<u32>,
     /// Per pane, the rerun off-thread now and the ones waiting behind it.
     reruns: HashMap<u32, RerunState>,
     next_rerun_generation: u64,
@@ -1108,8 +1080,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     )),
                     _ => None,
                 };
-                let mut pending = PendingTerminalSpawn {
-                    terminal_action: terminal_action.clone(),
+                let pending = PendingTerminalSpawn {
                     run_command: run_command.clone(),
                     pane_title,
                     open_file_payload,
@@ -1121,42 +1092,22 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     set_blocking,
                 };
                 if run_command.as_ref().is_some_and(RunCommand::defers_spawn) {
-                    pending.terminal_action =
-                        Some(pty.prepare_terminal_action(terminal_action, client_or_tab_index));
-                    pty.defer_spawn(SpawnJob::Terminal(Box::new(pending)))?;
+                    let terminal_action =
+                        pty.prepare_terminal_action(terminal_action, client_or_tab_index);
+                    let terminal_id = pty.reserve_terminal_id()?;
+                    finish_terminal_spawn(&mut pty, pending, Ok((terminal_id, false)))?;
+                    pty.defer_spawn(SpawnJob::Terminal(PendingRemoteSpawn {
+                        terminal_id,
+                        terminal_action,
+                    }))?;
                     continue;
                 }
                 let result = pty.spawn_terminal(terminal_action, client_or_tab_index);
                 finish_terminal_spawn(&mut pty, pending, result)?;
             },
             PtyInstruction::SpawnResolved(resolved) => match resolved {
-                PendingSpawn::Terminal(mut pending, spawned) => {
-                    let result = pty.spawn_prepared_terminal(
-                        pending
-                            .terminal_action
-                            .take()
-                            .context("missing prepared command")?,
-                        pending.client_or_tab_index,
-                        Some(spawned.take()?),
-                    );
-                    finish_terminal_spawn(&mut pty, *pending, result)?;
-                },
-                PendingSpawn::InPlace(mut pending, spawned) => {
-                    let result = pty.spawn_prepared_terminal(
-                        pending
-                            .terminal_action
-                            .take()
-                            .context("missing prepared command")?,
-                        pending.client_or_tab_index,
-                        Some(spawned.take()?),
-                    );
-                    finish_in_place_spawn(&mut pty, *pending, result)?;
-                },
-                PendingSpawn::Layout(pending, spawns) => {
-                    pty.finish_layout_spawn(*pending, spawns.take()?)?;
-                },
-                PendingSpawn::LayoutOverride(pending, spawns) => {
-                    pty.finish_layout_override(*pending, spawns.take()?)?;
+                PendingSpawn::Terminal(pending, spawned) => {
+                    pty.handle_remote_spawned(pending, spawned)?;
                 },
                 PendingSpawn::Rerun(pending, spawned) => {
                     pty.handle_rerun_spawned(*pending, spawned)?;
@@ -1198,8 +1149,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     )),
                     _ => None,
                 };
-                let mut pending = PendingInPlaceSpawn {
-                    terminal_action: terminal_action.clone(),
+                let pending = PendingInPlaceSpawn {
                     run_command: run_command.clone(),
                     pane_title,
                     invoked_with,
@@ -1208,12 +1158,14 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     completion_tx,
                 };
                 if run_command.as_ref().is_some_and(RunCommand::defers_spawn) {
-                    pending.terminal_action =
-                        Some(pty.prepare_terminal_action(
-                            terminal_action,
-                            client_id_tab_index_or_pane_id,
-                        ));
-                    pty.defer_spawn(SpawnJob::InPlace(Box::new(pending)))?;
+                    let terminal_action = pty
+                        .prepare_terminal_action(terminal_action, client_id_tab_index_or_pane_id);
+                    let terminal_id = pty.reserve_terminal_id()?;
+                    finish_in_place_spawn(&mut pty, pending, Ok((terminal_id, false)))?;
+                    pty.defer_spawn(SpawnJob::Terminal(PendingRemoteSpawn {
+                        terminal_id,
+                        terminal_action,
+                    }))?;
                     continue;
                 }
                 let result = pty.spawn_terminal(terminal_action, client_id_tab_index_or_pane_id);
@@ -1317,15 +1269,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     client_id,
                     completion_tx,
                 };
-                if pending
-                    .tabs
-                    .iter()
-                    .any(|(tab, _)| layout_override_runs(tab).iter().any(is_deferred_run))
-                {
-                    pty.defer_spawn(SpawnJob::LayoutOverride(Box::new(pending)))?;
-                    continue;
-                }
-                pty.finish_layout_override(pending, vec![])?;
+                pty.finish_layout_override(pending)?;
             },
             PtyInstruction::ClosePane(id, _completion_tx) => {
                 pty.close_pane(id)
@@ -1754,6 +1698,7 @@ impl Pty {
             terminal_foreground_cmds: HashMap::new(),
             adopted_tabs: HashMap::new(),
             spawn_workers: vec![],
+            pending_remote_spawns: HashSet::new(),
             reruns: HashMap::new(),
             next_rerun_generation: 0,
         }
@@ -1887,7 +1832,7 @@ impl Pty {
         client_or_tab_index: ClientTabIndexOrPaneId,
     ) -> Result<(u32, bool)> {
         let terminal_action = self.prepare_terminal_action(terminal_action, client_or_tab_index);
-        self.spawn_prepared_terminal(terminal_action, client_or_tab_index, None)
+        self.spawn_prepared_terminal(terminal_action, client_or_tab_index)
     }
 
     fn prepare_terminal_action(
@@ -1928,6 +1873,37 @@ impl Pty {
             .box_clone();
         let default_editor = self.default_editor.clone();
         let senders = self.bus.senders.clone();
+        match &job {
+            SpawnJob::Terminal(pending) => {
+                self.pending_remote_spawns.insert(pending.terminal_id);
+                if let TerminalAction::RunCommand(command) = &pending.terminal_action {
+                    send_remote_status(
+                        &senders,
+                        pending.terminal_id,
+                        command,
+                        if command.target.is_firecracker() {
+                            "waiting for the Firecracker provider"
+                        } else {
+                            "connecting to the remote host"
+                        },
+                    )?;
+                }
+            },
+            SpawnJob::Rerun(pending) => {
+                if let PaneId::Terminal(terminal_id) = pending.pane_id {
+                    send_remote_status(
+                        &senders,
+                        terminal_id,
+                        &pending.run_command,
+                        if pending.run_command.target.is_firecracker() {
+                            "waiting for the Firecracker provider"
+                        } else {
+                            "connecting to the remote host"
+                        },
+                    )?;
+                }
+            },
+        }
         self.reap_spawn_workers();
         self.spawn_workers.push(std::thread::spawn(move || {
             let (resolved, started) = run_spawn_job(&*os_input, &senders, job, default_editor);
@@ -1999,6 +1975,66 @@ impl Pty {
         Ok(None)
     }
 
+    fn handle_remote_spawned(
+        &mut self,
+        pending: PendingRemoteSpawn,
+        spawned: OneShot<Result<SpawnedTerminal>>,
+    ) -> Result<()> {
+        let terminal_id = pending.terminal_id;
+        let spawned = spawned.take()?;
+        if !self.pending_remote_spawns.remove(&terminal_id) {
+            if spawned.is_ok() {
+                self.bus
+                    .os_input
+                    .as_ref()
+                    .context("no OS I/O interface found")?
+                    .clear_terminal_id(terminal_id)
+                    .with_context(|| {
+                        format!("failed to tear down the late spawn of closed pane {terminal_id}")
+                    })
+                    .non_fatal();
+            }
+            return Ok(());
+        }
+        let TerminalAction::RunCommand(command) = pending.terminal_action.clone() else {
+            return Err(anyhow!("a remote spawn must run a command"));
+        };
+        match spawned {
+            Ok(spawned) => {
+                self.bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::RemotePaneReady(terminal_id))?;
+                self.start_spawned_terminal(&pending.terminal_action, spawned);
+            },
+            Err(error) => {
+                self.bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::PtyBytes(
+                        terminal_id,
+                        b"\x1b[3J\x1b[2J\x1b[H".to_vec(),
+                    ))?;
+                if let Some(originating_plugin) = command.originating_plugin.as_ref() {
+                    self.bus
+                        .senders
+                        .send_to_plugin(PluginInstruction::Update(vec![(
+                            Some(originating_plugin.plugin_id),
+                            Some(originating_plugin.client_id),
+                            Event::CommandPaneExited(
+                                terminal_id,
+                                Some(2),
+                                originating_plugin.context.clone(),
+                            ),
+                        )]))?;
+                }
+                let message = pane_start_failure(&error)
+                    .map(|(_, message)| message)
+                    .unwrap_or_else(|| format!("{error:#}"));
+                send_pane_error_to_screen(self.bus.senders.clone(), terminal_id, message, command)?;
+            },
+        }
+        Ok(())
+    }
+
     /// The second half of a deferred rerun, once the worker has the command
     /// running.
     ///
@@ -2049,11 +2085,24 @@ impl Pty {
             .remove(&terminal_id)
             .map(|state| state.queued)
             .unwrap_or_default();
+        let spawned = spawned.take()?;
+        if spawned.is_ok() {
+            self.bus
+                .senders
+                .send_to_screen(ScreenInstruction::RemotePaneReady(terminal_id))?;
+        } else {
+            self.bus
+                .senders
+                .send_to_screen(ScreenInstruction::PtyBytes(
+                    terminal_id,
+                    b"\x1b[3J\x1b[2J\x1b[H".to_vec(),
+                ))?;
+        }
         let result = self.finish_rerun(
             pending.pane_id,
             pending.previous_host,
             pending.requested_cwd,
-            spawned.take()?,
+            spawned,
         );
         finish_command_rerun(self, pending.pane_id, pending.run_command, result)?;
         self.run_queued_reruns(pending.pane_id, queued)
@@ -2101,32 +2150,24 @@ impl Pty {
         self.spawn_workers = pending;
     }
 
-    /// A layout could not be applied past some slot. Everything the worker
-    /// started for the slots after it, and everything placed so far that Screen
-    /// has not been told about, is closed through the funnel; otherwise those
-    /// commands, transports and readers run until the session ends.
-    fn discard_layout_spawns(
-        &mut self,
-        remaining: std::vec::IntoIter<Option<Result<SpawnedTerminal>>>,
-        placed: Vec<u32>,
-    ) {
-        for terminal_id in placed {
-            self.close_pane(PaneId::Terminal(terminal_id))
-                .with_context(|| format!("failed to close pane {terminal_id} of a failed layout"))
+    fn reserve_terminal_id(&mut self) -> Result<u32> {
+        self.bus
+            .os_input
+            .as_mut()
+            .context("no OS I/O interface found")?
+            .reserve_terminal_id()
+    }
+
+    fn discard_deferred_spawns(&mut self, pending: &[PendingRemoteSpawn]) {
+        for spawn in pending {
+            self.close_pane(PaneId::Terminal(spawn.terminal_id))
+                .with_context(|| {
+                    format!(
+                        "failed to close reserved pane {} of a failed layout",
+                        spawn.terminal_id
+                    )
+                })
                 .non_fatal();
-        }
-        let Some(os_input) = self.bus.os_input.as_ref() else {
-            return;
-        };
-        for spawned in remaining.flatten() {
-            if let Some(terminal_id) = started_terminal_id(&spawned) {
-                os_input
-                    .clear_terminal_id(terminal_id)
-                    .with_context(|| {
-                        format!("failed to close unplaced pane {terminal_id} of a failed layout")
-                    })
-                    .non_fatal();
-            }
         }
     }
 
@@ -2134,7 +2175,6 @@ impl Pty {
         &mut self,
         terminal_action: TerminalAction,
         client_or_tab_index: ClientTabIndexOrPaneId,
-        spawned_remote: Option<Result<SpawnedTerminal>>,
     ) -> Result<(u32, bool)> {
         // bool is starts_held
         let err_context = || format!("failed to spawn terminal for {:?}", client_or_tab_index);
@@ -2156,36 +2196,45 @@ impl Pty {
             return Ok((terminal_id, starts_held));
         }
 
-        // Taken before the action is spawned and consumed. `fill_cwd` has already
-        // resolved it, so it is what the pane is about to start in — and it is
-        // the answer when the child has not forked far enough to be asked.
-        let requested_cwd = Self::action_cwd(&terminal_action);
         let quit_cb = terminal_quit_callback(self.bus.senders.clone(), &terminal_action);
+        let spawned = self
+            .bus
+            .os_input
+            .as_mut()
+            .context("no OS I/O interface found")
+            .and_then(|os_input| {
+                os_input.spawn_terminal(
+                    terminal_action.clone(),
+                    quit_cb,
+                    self.default_editor.clone(),
+                )
+            })
+            .map(|(terminal_id, reader, child_pid)| SpawnedTerminal {
+                terminal_id,
+                reader,
+                child_pid,
+            })
+            .with_context(err_context)?;
+        let terminal_id = spawned.terminal_id;
+        self.start_spawned_terminal(&terminal_action, spawned);
+
+        let starts_held = false;
+        Ok((terminal_id, starts_held))
+    }
+
+    fn start_spawned_terminal(
+        &mut self,
+        terminal_action: &TerminalAction,
+        spawned: SpawnedTerminal,
+    ) {
+        // `fill_cwd` has already resolved this, so it is the answer when the
+        // child has not forked far enough to be asked.
+        let requested_cwd = Self::action_cwd(terminal_action);
         let SpawnedTerminal {
             terminal_id,
             reader,
             child_pid,
-        } = match spawned_remote {
-            Some(spawned) => spawned,
-            None => self
-                .bus
-                .os_input
-                .as_mut()
-                .context("no OS I/O interface found")
-                .and_then(|os_input| {
-                    os_input.spawn_terminal(
-                        terminal_action.clone(),
-                        quit_cb,
-                        self.default_editor.clone(),
-                    )
-                })
-                .map(|(terminal_id, reader, child_pid)| SpawnedTerminal {
-                    terminal_id,
-                    reader,
-                    child_pid,
-                }),
-        }
-        .with_context(err_context)?;
+        } = spawned;
         let activity_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let terminal_bytes = async_runtime().spawn({
             let err_context =
@@ -2209,9 +2258,6 @@ impl Pty {
             self.id_to_child_pid.insert(terminal_id, child_pid);
             self.capture_initial_cwd(terminal_id, child_pid, requested_cwd);
         }
-
-        let starts_held = false;
-        Ok((terminal_id, starts_held))
     }
     pub fn spawn_terminals_for_layout(
         &mut self,
@@ -2292,22 +2338,10 @@ impl Pty {
             client_id,
             completion_tx,
         };
-        if pending
-            .run_instructions
-            .iter()
-            .chain(&pending.floating_run_instructions)
-            .any(is_deferred_run)
-        {
-            return self.defer_spawn(SpawnJob::Layout(Box::new(pending)));
-        }
-        self.finish_layout_spawn(pending, vec![])
+        self.finish_layout_spawn(pending)
     }
 
-    fn finish_layout_spawn(
-        &mut self,
-        pending: PendingLayoutSpawn,
-        spawns: Vec<Option<Result<SpawnedTerminal>>>,
-    ) -> Result<()> {
+    fn finish_layout_spawn(&mut self, pending: PendingLayoutSpawn) -> Result<()> {
         let err_context = || "failed to spawn terminals for layout for".to_string();
         let PendingLayoutSpawn {
             layout,
@@ -2323,23 +2357,22 @@ impl Pty {
             client_id,
             completion_tx,
         } = pending;
-        let mut spawns = spawns.into_iter();
-        let mut new_pane_pids: Vec<(u32, bool, Option<RunCommand>, Result<Box<dyn AsyncReader>>)> =
-            vec![]; // (terminal_id,
-                    // starts_held,
-                    // run_command,
-                    // file_descriptor)
+        let mut new_pane_pids: Vec<(
+            u32,
+            bool,
+            Option<RunCommand>,
+            Option<Result<Box<dyn AsyncReader>>>,
+        )> = vec![];
 
         let mut new_floating_panes_pids: Vec<(
             u32,
             bool,
             Option<RunCommand>,
-            Result<Box<dyn AsyncReader>>,
-        )> = vec![]; // same
-                     // as
-                     // new_pane_pids
+            Option<Result<Box<dyn AsyncReader>>>,
+        )> = vec![];
 
         let mut originating_plugins_to_inform = vec![];
+        let mut deferred_spawns = vec![];
 
         for run_instruction in extracted_run_instructions {
             let originating_plugin = run_instruction.as_ref().and_then(|r| {
@@ -2353,16 +2386,11 @@ impl Pty {
             let applied = match self.apply_run_instruction(
                 run_instruction,
                 default_shell.clone(),
-                spawns.next().flatten(),
+                &mut deferred_spawns,
             ) {
                 Ok(applied) => applied,
                 Err(error) => {
-                    let placed = new_pane_pids
-                        .iter()
-                        .chain(&new_floating_panes_pids)
-                        .map(|pane| pane.0)
-                        .collect();
-                    self.discard_layout_spawns(spawns, placed);
+                    self.discard_deferred_spawns(&deferred_spawns);
                     return Err(error);
                 },
             };
@@ -2387,16 +2415,11 @@ impl Pty {
             let applied = match self.apply_run_instruction(
                 run_instruction,
                 default_shell.clone(),
-                spawns.next().flatten(),
+                &mut deferred_spawns,
             ) {
                 Ok(applied) => applied,
                 Err(error) => {
-                    let placed = new_pane_pids
-                        .iter()
-                        .chain(&new_floating_panes_pids)
-                        .map(|pane| pane.0)
-                        .collect();
-                    self.discard_layout_spawns(spawns, placed);
+                    self.discard_deferred_spawns(&deferred_spawns);
                     return Err(error);
                 },
             };
@@ -2411,18 +2434,22 @@ impl Pty {
         }
 
         // Option<RunCommand> should only be Some if the pane starts held
-        let spawned_ids =
-            |pids: &Vec<(u32, bool, Option<RunCommand>, Result<Box<dyn AsyncReader>>)>| {
-                pids.iter()
-                    .map(|(terminal_id, starts_held, run_command, _)| {
-                        if *starts_held {
-                            (*terminal_id, run_command.clone())
-                        } else {
-                            (*terminal_id, None)
-                        }
-                    })
-                    .collect::<Vec<_>>()
-            };
+        let spawned_ids = |pids: &Vec<(
+            u32,
+            bool,
+            Option<RunCommand>,
+            Option<Result<Box<dyn AsyncReader>>>,
+        )>| {
+            pids.iter()
+                .map(|(terminal_id, starts_held, run_command, _)| {
+                    if *starts_held {
+                        (*terminal_id, run_command.clone())
+                    } else {
+                        (*terminal_id, None)
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
         let adopted_ids = |terminals: &[AdoptedTabTerminal]| {
             terminals
                 .iter()
@@ -2471,7 +2498,8 @@ impl Pty {
             new_tab_pane_ids.len(),
             new_tab_floating_pane_ids.len()
         );
-        self.bus
+        if let Err(error) = self
+            .bus
             .senders
             .send_to_screen(ScreenInstruction::ApplyLayout(
                 layout,
@@ -2486,7 +2514,10 @@ impl Pty {
                 direct_completion_tx,
                 blocking_terminal,
             ))
-            .with_context(err_context)?;
+        {
+            self.discard_deferred_spawns(&deferred_spawns);
+            return Err(error).with_context(err_context);
+        }
 
         // Behind the `ApplyLayout` on the same channel, so the panes exist by
         // the time these land. An adopted pane whose child is already gone is
@@ -2524,6 +2555,9 @@ impl Pty {
                 // we do not run a command or start listening for bytes on held panes
                 continue;
             }
+            let Some(reader_result) = reader_result else {
+                continue;
+            };
             match reader_result {
                 Ok(reader) => {
                     let activity_flag =
@@ -2578,16 +2612,15 @@ impl Pty {
         for (terminal_id, originating_plugin) in originating_plugins_to_inform {
             self.inform_originating_plugin_of_open(terminal_id, originating_plugin);
         }
+        for deferred in deferred_spawns {
+            self.defer_spawn(SpawnJob::Terminal(deferred))?;
+        }
         Ok(())
     }
-    fn finish_layout_override(
-        &mut self,
-        pending: PendingLayoutOverride,
-        spawns: Vec<Vec<Option<Result<SpawnedTerminal>>>>,
-    ) -> Result<()> {
+    fn finish_layout_override(&mut self, pending: PendingLayoutOverride) -> Result<()> {
         let err_context = || "failed to override layout";
-        let mut spawns = spawns.into_iter();
         let mut all_tab_results = vec![];
+        let mut deferred_spawns = vec![];
         for (tab, plugin_ids) in pending.tabs {
             let tab_index = tab.tab_index;
             match self.spawn_terminals_for_layout_override(
@@ -2603,24 +2636,34 @@ impl Pty {
                 tab.swap_floating_layouts,
                 pending.retain_existing_terminal_panes,
                 pending.retain_existing_plugin_panes,
-                spawns.next().unwrap_or_default(),
             ) {
-                Ok(tab_result) => all_tab_results.push(tab_result),
+                Ok((tab_result, mut tab_deferred_spawns)) => {
+                    all_tab_results.push(tab_result);
+                    deferred_spawns.append(&mut tab_deferred_spawns);
+                },
                 Err(error) => Err::<(), _>(error)
                     .with_context(|| format!("failed to spawn terminals for tab {tab_index}"))
                     .non_fatal(),
             }
         }
-        self.bus
-            .senders
-            .send_to_screen(ScreenInstruction::OverrideLayoutComplete(
-                all_tab_results,
-                pending.retain_existing_terminal_panes,
-                pending.retain_existing_plugin_panes,
-                pending.client_id,
-                pending.completion_tx,
-            ))
-            .with_context(err_context)
+        if let Err(error) =
+            self.bus
+                .senders
+                .send_to_screen(ScreenInstruction::OverrideLayoutComplete(
+                    all_tab_results,
+                    pending.retain_existing_terminal_panes,
+                    pending.retain_existing_plugin_panes,
+                    pending.client_id,
+                    pending.completion_tx,
+                ))
+        {
+            self.discard_deferred_spawns(&deferred_spawns);
+            return Err(error).with_context(err_context);
+        }
+        for deferred in deferred_spawns {
+            self.defer_spawn(SpawnJob::Terminal(deferred))?;
+        }
+        Ok(())
     }
 
     pub fn spawn_terminals_for_layout_override(
@@ -2637,8 +2680,7 @@ impl Pty {
         swap_floating_layouts: Option<Vec<SwapFloatingLayout>>,
         _retain_existing_terminal_panes: bool,
         _retain_existing_plugin_panes: bool,
-        spawns: Vec<Option<Result<SpawnedTerminal>>>,
-    ) -> Result<TabOverrideResult> {
+    ) -> Result<(TabOverrideResult, Vec<PendingRemoteSpawn>)> {
         let err_context = || "failed to spawn terminals for layout for".to_string();
 
         let mut default_shell =
@@ -2650,23 +2692,22 @@ impl Pty {
             .iter()
             .filter(|f| !f.already_running)
             .map(|f| f.run.clone());
-        let mut new_pane_pids: Vec<(u32, bool, Option<RunCommand>, Result<Box<dyn AsyncReader>>)> =
-            vec![]; // (terminal_id,
-                    // starts_held,
-                    // run_command,
-                    // file_descriptor)
+        let mut new_pane_pids: Vec<(
+            u32,
+            bool,
+            Option<RunCommand>,
+            Option<Result<Box<dyn AsyncReader>>>,
+        )> = vec![];
 
         let mut new_floating_panes_pids: Vec<(
             u32,
             bool,
             Option<RunCommand>,
-            Result<Box<dyn AsyncReader>>,
-        )> = vec![]; // same
-                     // as
-                     // new_pane_pids
+            Option<Result<Box<dyn AsyncReader>>>,
+        )> = vec![];
 
         let mut originating_plugins_to_inform = vec![];
-        let mut spawns = spawns.into_iter();
+        let mut deferred_spawns = vec![];
 
         for run_instruction in extracted_run_instructions {
             let originating_plugin = run_instruction.as_ref().and_then(|r| {
@@ -2680,16 +2721,11 @@ impl Pty {
             let applied = match self.apply_run_instruction(
                 run_instruction,
                 default_shell.clone(),
-                spawns.next().flatten(),
+                &mut deferred_spawns,
             ) {
                 Ok(applied) => applied,
                 Err(error) => {
-                    let placed = new_pane_pids
-                        .iter()
-                        .chain(&new_floating_panes_pids)
-                        .map(|pane| pane.0)
-                        .collect();
-                    self.discard_layout_spawns(spawns, placed);
+                    self.discard_deferred_spawns(&deferred_spawns);
                     return Err(error);
                 },
             };
@@ -2714,16 +2750,11 @@ impl Pty {
             let applied = match self.apply_run_instruction(
                 run_instruction,
                 default_shell.clone(),
-                spawns.next().flatten(),
+                &mut deferred_spawns,
             ) {
                 Ok(applied) => applied,
                 Err(error) => {
-                    let placed = new_pane_pids
-                        .iter()
-                        .chain(&new_floating_panes_pids)
-                        .map(|pane| pane.0)
-                        .collect();
-                    self.discard_layout_spawns(spawns, placed);
+                    self.discard_deferred_spawns(&deferred_spawns);
                     return Err(error);
                 },
             };
@@ -2780,6 +2811,9 @@ impl Pty {
                 // we do not run a command or start listening for bytes on held panes
                 continue;
             }
+            let Some(reader_result) = reader_result else {
+                continue;
+            };
             match reader_result {
                 Ok(reader) => {
                     let activity_flag =
@@ -2834,7 +2868,7 @@ impl Pty {
         for (terminal_id, originating_plugin) in originating_plugins_to_inform {
             self.inform_originating_plugin_of_open(terminal_id, originating_plugin);
         }
-        Ok(tab_result)
+        Ok((tab_result, deferred_spawns))
     }
     fn inform_originating_plugin_of_open(
         &mut self,
@@ -2858,8 +2892,15 @@ impl Pty {
         &mut self,
         run_instruction: Option<Run>,
         default_shell: TerminalAction,
-        spawned_remote: Option<Result<SpawnedTerminal>>,
-    ) -> Result<Option<(u32, bool, Option<RunCommand>, Result<Box<dyn AsyncReader>>)>> {
+        deferred_spawns: &mut Vec<PendingRemoteSpawn>,
+    ) -> Result<
+        Option<(
+            u32,
+            bool,
+            Option<RunCommand>,
+            Option<Result<Box<dyn AsyncReader>>>,
+        )>,
+    > {
         // terminal_id,
         // starts_held,
         // command
@@ -2903,31 +2944,33 @@ impl Pty {
                                 terminal_id,
                                 starts_held,
                                 Some(command.clone()),
-                                Ok(Box::new(NullAsyncReader) as Box<dyn AsyncReader>), // placeholder, never used for held panes
+                                Some(Ok(Box::new(NullAsyncReader) as Box<dyn AsyncReader>)), // placeholder, never used for held panes
                             )))
                         },
                         Err(e) => Err(e),
                     }
+                } else if command.defers_spawn() {
+                    let terminal_id = self.reserve_terminal_id()?;
+                    deferred_spawns.push(PendingRemoteSpawn {
+                        terminal_id,
+                        terminal_action: cmd,
+                    });
+                    Ok(Some((terminal_id, false, Some(command), None)))
                 } else {
                     let quit_cb = terminal_quit_callback(self.bus.senders.clone(), &cmd);
-                    let spawn_result = match spawned_remote {
-                        Some(spawned) => spawned.map(|spawned| {
-                            (spawned.terminal_id, spawned.reader, spawned.child_pid)
-                        }),
-                        None => self
-                            .bus
-                            .os_input
-                            .as_mut()
-                            .context("no OS I/O interface found")
-                            .and_then(|os_input| {
-                                os_input.spawn_terminal(
-                                    cmd.clone(),
-                                    quit_cb,
-                                    self.default_editor.clone(),
-                                )
-                            }),
-                    }
-                    .with_context(err_context);
+                    let spawn_result = self
+                        .bus
+                        .os_input
+                        .as_mut()
+                        .context("no OS I/O interface found")
+                        .and_then(|os_input| {
+                            os_input.spawn_terminal(
+                                cmd.clone(),
+                                quit_cb,
+                                self.default_editor.clone(),
+                            )
+                        })
+                        .with_context(err_context);
                     match spawn_result {
                         Ok((terminal_id, reader, child_pid)) => {
                             if let Some(child_pid) = child_pid {
@@ -2942,7 +2985,7 @@ impl Pty {
                                 terminal_id,
                                 starts_held,
                                 Some(command.clone()),
-                                Ok(reader),
+                                Some(Ok(reader)),
                             )))
                         },
                         Err(err) => match pane_start_failure(&err) {
@@ -2950,7 +2993,7 @@ impl Pty {
                                 terminal_id,
                                 starts_held,
                                 Some(command.clone()),
-                                Err(err),
+                                Some(Err(err)),
                             ))),
                             None => Err(err),
                         },
@@ -2975,11 +3018,11 @@ impl Pty {
                             self.id_to_child_pid.insert(terminal_id, child_pid);
                             self.capture_initial_cwd(terminal_id, child_pid, requested_cwd);
                         }
-                        Ok(Some((terminal_id, starts_held, None, Ok(reader))))
+                        Ok(Some((terminal_id, starts_held, None, Some(Ok(reader)))))
                     },
                     Err(err) => match pane_start_failure(&err) {
                         Some((terminal_id, _)) => {
-                            Ok(Some((terminal_id, starts_held, None, Err(err))))
+                            Ok(Some((terminal_id, starts_held, None, Some(Err(err)))))
                         },
                         None => Err(err),
                     },
@@ -3009,11 +3052,11 @@ impl Pty {
                             self.id_to_child_pid.insert(terminal_id, child_pid);
                             self.capture_initial_cwd(terminal_id, child_pid, cwd);
                         }
-                        Ok(Some((terminal_id, starts_held, None, Ok(reader))))
+                        Ok(Some((terminal_id, starts_held, None, Some(Ok(reader)))))
                     },
                     Err(err) => match pane_start_failure(&err) {
                         Some((terminal_id, _)) => {
-                            Ok(Some((terminal_id, starts_held, None, Err(err))))
+                            Ok(Some((terminal_id, starts_held, None, Some(Err(err)))))
                         },
                         None => Err(err),
                     },
@@ -3039,11 +3082,11 @@ impl Pty {
                                 Self::action_cwd(&default_shell),
                             );
                         }
-                        Ok(Some((terminal_id, starts_held, None, Ok(reader))))
+                        Ok(Some((terminal_id, starts_held, None, Some(Ok(reader)))))
                     },
                     Err(err) => match pane_start_failure(&err) {
                         Some((terminal_id, _)) => {
-                            Ok(Some((terminal_id, starts_held, None, Err(err))))
+                            Ok(Some((terminal_id, starts_held, None, Some(Err(err)))))
                         },
                         None => Err(err),
                     },
@@ -3094,6 +3137,7 @@ impl Pty {
         let err_context = || format!("failed to close for pane {id:?}");
         match id {
             PaneId::Terminal(id) => {
+                self.pending_remote_spawns.remove(&id);
                 // Dropping a queued rerun's completion notifies its waiter; the
                 // pane it asked about is gone.
                 self.reruns.remove(&id);

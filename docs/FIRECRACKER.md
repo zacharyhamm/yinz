@@ -268,8 +268,10 @@ firecracker_provider_timeout_secs 90
 
 Zellij resets the timeout whenever the provider writes anything. A provider reports a long phase
 with `progress: <what it is doing>` lines on stderr; Zellij keeps those out of error messages and
-names the last one when it reports a provider that went silent. A provider that says nothing for
-the whole timeout is killed together with every process it started.
+shows each phase in the pane while the VM starts. The pane is created immediately and shows its VM,
+image, worktree, and current phase until the guest terminal is connected; the loading text is then
+cleared. Zellij names the last phase when it reports a provider that went silent. A provider that
+says nothing for the whole timeout is killed together with every process it started.
 
 Open a guest login shell or run a command in the guest:
 
@@ -450,8 +452,8 @@ more than one session.
 
 A pane that was spawned for a tab or pane that closed while its VM booted has nowhere to go; the
 server closes it on the pty thread rather than leaving the guest command, its transport and its
-reader running until the session ends. Likewise a layout that cannot be applied past some pane
-closes the VM panes it had already started for the panes after it.
+reader running until the session ends. Likewise a layout that fails before it reaches the screen
+releases any remote pane IDs it reserved.
 
 The state directory holds one `<id>.json` per VM. A state file that cannot be read for any
 reason other than not existing fails the request naming the file, rather than being read as "no

@@ -328,6 +328,13 @@ pub(crate) fn screen_thread_main(
                     .senders
                     .send_to_background_jobs(BackgroundJob::RenderToClients);
             },
+            ScreenInstruction::RemotePaneReady(pid) => {
+                if let Some(tab) = screen.tab_containing_pane_mut(PaneId::Terminal(pid)) {
+                    tab.remote_pane_ready(pid)
+                        .context("failed to prepare remote pane")?;
+                }
+                screen.render(None)?;
+            },
             ScreenInstruction::PluginBytes(plugin_render_assets) => {
                 for plugin_render_asset in
                     screen.handle_plugin_render_assets(plugin_render_assets, true)?

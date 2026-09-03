@@ -4693,6 +4693,10 @@ impl Tab {
         }
         self.process_pty_bytes(pid, bytes).with_context(err_context)
     }
+    pub fn remote_pane_ready(&mut self, pid: u32) -> Result<()> {
+        self.pids_waiting_resize.insert(pid);
+        self.process_pty_bytes(pid, b"\x1b[3J\x1b[2J\x1b[H".to_vec())
+    }
     pub fn handle_plugin_bytes(
         &mut self,
         pid: u32,

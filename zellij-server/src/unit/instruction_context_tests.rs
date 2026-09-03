@@ -112,6 +112,7 @@ pin_context_to_instruction! {
     special: [
         "Resize",
         "PtyBytes",
+        "RemotePaneReady",
         "ClearAllPluginHighlights",
     ];
     only_special: [
