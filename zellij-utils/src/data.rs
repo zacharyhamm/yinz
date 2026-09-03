@@ -3540,7 +3540,6 @@ impl PaneTarget {
             _ => None,
         }
     }
-
     /// What to show a user for this target: `None` for a local pane, the ssh
     /// host, or `firecracker:<vm>`. The VM's ssh endpoint is a provider detail
     /// and never appears here.
@@ -4753,7 +4752,12 @@ pub enum PluginCommand {
     TogglePaneBorderless(PaneId),
     SetPaneBorderless(PaneId, bool),
     OpenCommandPaneNearPlugin(CommandToRun, Context),
-    OpenCommandPaneInGitCheckoutNearPlugin(CommandToRun, PathBuf, GitCheckout),
+    OpenCommandPaneInGitCheckoutNearPlugin(
+        CommandToRun,
+        PathBuf,
+        GitCheckout,
+        #[serde(default)] bool,
+    ),
     OpenTerminalNearPlugin(FileToOpen),
     OpenTerminalFloatingNearPlugin(FileToOpen, Option<FloatingPaneCoordinates>),
     OpenTerminalInPlaceOfPlugin(FileToOpen, bool), // bool -> close_plugin_after_replace

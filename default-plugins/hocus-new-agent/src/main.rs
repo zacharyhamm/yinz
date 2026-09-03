@@ -103,7 +103,7 @@ impl Default for State {
             // takes, so asking hocus for an agent and filling this in are the
             // same request said two ways.
             .field(PROMPT, "Prompt (optional)", TextInput::empty())
-            .field(FIRECRACKER, "Firecracker VM (optional)", TextInput::empty())
+            .checkbox(FIRECRACKER, "Run in Firecracker", Checkbox::new(false))
             .field(
                 FIRECRACKER_IMAGE,
                 "Firecracker image (optional)",
@@ -682,7 +682,7 @@ impl State {
             return;
         }
         let image = selected_project(self.dialog.form(), &self.projects)
-            .filter(|_| !self.dialog.form().text(FIRECRACKER).trim().is_empty())
+            .filter(|_| self.dialog.form().checked(FIRECRACKER))
             .and_then(|project| project.firecracker_image.clone())
             .unwrap_or_default();
         self.set_text(FIRECRACKER_IMAGE, &image);
@@ -734,10 +734,15 @@ fn hand_over_focus(pane_id: PaneId) {
 /// What the form is asking for, in the terms hocus asks for the same thing.
 ///
 /// Reading only — every default and every rule about what pairs with what lives in
-/// `launch`, which is also what `agent_spawn` calls. A blank field is left blank
-/// here and defaulted there, so a field the user cleared and a key the model omitted
-/// come out the same.
+/// `launch`, which is also what `agent_spawn` calls. The checkbox gets a valid
+/// placeholder here; the host replaces it after Git resolves the checkout.
 fn spec(form: &Form) -> launch::Spec {
+    let branch = form
+        .checked(CREATE_BRANCH)
+        .then(|| form.text(BRANCH).to_owned());
+    let firecracker = form
+        .checked(FIRECRACKER)
+        .then(launch::unique_firecracker_vm);
     launch::Spec {
         // The select's labels are the shared kinds, capitalised; `launch` lowercases.
         kind: Some(form.text(AGENT).to_owned()),
@@ -745,13 +750,11 @@ fn spec(form: &Form) -> launch::Spec {
         args: Vec::new(),
         model: Some(form.text(MODEL).to_owned()),
         prompt: Some(form.text(PROMPT).to_owned()),
-        firecracker: Some(form.text(FIRECRACKER).to_owned()),
+        firecracker,
         firecracker_image: Some(form.text(FIRECRACKER_IMAGE).to_owned()),
         // No branch is how `launch` is told to leave the repository alone, which is
         // exactly what an unchecked box means.
-        branch: form
-            .checked(CREATE_BRANCH)
-            .then(|| form.text(BRANCH).to_owned()),
+        branch,
         base: Some(form.text(BASE).to_owned()),
         // Only read while a branch is being created: the checkbox stays checked
         // underneath an unchecked `create_branch`, and reporting it there would ask
@@ -852,16 +855,21 @@ mod tests {
     }
 
     #[test]
-    fn choosing_a_firecracker_vm_keeps_host_worktree_setup() {
-        let mut state = State::default();
-        state.set_text(FIRECRACKER, "review");
+    fn choosing_firecracker_keeps_host_worktree_setup() {
+        let mut state = State {
+            projects: registry(),
+            source_directory: PathBuf::from("/work/zellij"),
+            ..Default::default()
+        };
+        state.fill_projects();
+        state.set_checked(FIRECRACKER, true);
         state.changed(FIRECRACKER);
         assert!(state.dialog.form().checked(CREATE_BRANCH));
         assert!(state.dialog.form().checked(WORKTREE));
         state.set_text(BRANCH, "topic");
         state.changed(BRANCH);
         let (command, checkout) = request(state.dialog.form()).unwrap();
-        assert_eq!(command.target.firecracker_vm(), Some("review"));
+        assert!(command.target.firecracker_vm().is_some());
         assert!(matches!(checkout, GitCheckout::NewWorktree { .. }));
     }
 
@@ -882,15 +890,28 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_vm_name_is_refused_on_submit() {
+    fn an_unprojected_agent_gets_its_own_valid_vm_name() {
         let mut state = State::default();
-        state.set_text(BRANCH, "topic");
-        state.changed(BRANCH);
-        state.set_text(FIRECRACKER, "no spaces");
+        state.set_checked(CREATE_BRANCH, false);
+        state.changed(CREATE_BRANCH);
+        state.set_checked(FIRECRACKER, true);
         state.changed(FIRECRACKER);
-        assert!(state.submit());
-        let error = state.error.clone().expect("the name was refused");
-        assert!(error.contains("invalid Firecracker VM name"), "{error}");
+        let first = request(state.dialog.form())
+            .unwrap()
+            .0
+            .target
+            .firecracker_vm()
+            .unwrap()
+            .to_owned();
+        let second = request(state.dialog.form())
+            .unwrap()
+            .0
+            .target
+            .firecracker_vm()
+            .unwrap()
+            .to_owned();
+        assert_ne!(first, second);
+        assert!(validate_firecracker_vm_name(&first).is_ok());
     }
 
     /// The point of the shared module: the modal's form and hocus's `agent_spawn`
@@ -1183,15 +1204,15 @@ mod tests {
         state.changed(PROJECT);
         assert_eq!(state.dialog.form().text(FIRECRACKER_IMAGE), "");
 
-        state.set_text(FIRECRACKER, "review");
+        state.set_checked(FIRECRACKER, true);
         state.changed(FIRECRACKER);
         assert_eq!(state.dialog.form().text(FIRECRACKER_IMAGE), "rust");
 
-        state.set_text(FIRECRACKER, "");
+        state.set_checked(FIRECRACKER, false);
         state.changed(FIRECRACKER);
         assert_eq!(state.dialog.form().text(FIRECRACKER_IMAGE), "");
 
-        state.set_text(FIRECRACKER, "review");
+        state.set_checked(FIRECRACKER, true);
         state.changed(FIRECRACKER);
 
         state

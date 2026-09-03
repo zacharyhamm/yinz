@@ -221,8 +221,9 @@ fn the_new_agent_modal_can_be_dragged_by_its_frame() {
     zellij.quit();
 }
 
-/// The two Firecracker rows, and the check that pairs them: an image names what a
-/// VM boots from, so one typed without a VM is refused in the modal's status row
+/// The Firecracker switch and image row, and the check that pairs them: an image
+/// names what a VM boots from, so one typed while the switch is off is refused
+/// in the modal's status row
 /// rather than reaching the host as a pane that cannot start.
 #[test]
 fn an_image_without_a_vm_is_refused_in_the_modals_status_row() {
@@ -242,8 +243,8 @@ fn an_image_without_a_vm_is_refused_in_the_modals_status_row() {
         snapshot.contains("Firecracker image") && snapshot.contains("[x]")
     });
     assert!(
-        snapshot.contains("Firecracker VM"),
-        "the VM row is missing from the modal:\n{}",
+        snapshot.contains("Run in Firecracker"),
+        "the VM switch is missing from the modal:\n{}",
         snapshot.text
     );
 

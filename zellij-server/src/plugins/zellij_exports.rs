@@ -336,11 +336,13 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 command_to_run,
                 source_directory,
                 checkout,
+                automatic_firecracker_vm,
             ) => open_command_pane_in_git_checkout_near_plugin(
                 env,
                 command_to_run,
                 source_directory,
                 checkout,
+                automatic_firecracker_vm,
             ),
             PluginCommand::OpenCommandPaneFloating(
                 command_to_run,
@@ -2472,14 +2474,11 @@ fn open_command_pane_in_git_checkout_near_plugin(
     mut command_to_run: CommandToRun,
     source_directory: PathBuf,
     checkout: GitCheckout,
+    automatic_firecracker_vm: bool,
 ) {
     let result: OpenCommandPaneInGitCheckoutResponse =
         prepare_git_checkout(env, source_directory, checkout).and_then(|cwd| {
-            if let PaneTarget::Firecracker { worktree, .. } = &mut command_to_run.target {
-                *worktree = Some(cwd);
-            } else {
-                command_to_run.cwd = Some(cwd);
-            }
+            apply_git_checkout_to_command(&mut command_to_run, cwd, automatic_firecracker_vm)?;
             // The marker's value is the agent's kind - the program - which is what the pane's
             // agent record starts from. See `agent_from_run` in `panes::terminal_pane`.
             let kind =
@@ -2496,6 +2495,25 @@ fn open_command_pane_in_git_checkout_near_plugin(
     wasi_write_object(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_command_pane_in_git_checkout response".to_string())
         .non_fatal();
+}
+
+fn apply_git_checkout_to_command(
+    command: &mut CommandToRun,
+    cwd: PathBuf,
+    automatic_firecracker_vm: bool,
+) -> Result<(), String> {
+    if let PaneTarget::Firecracker { vm, worktree, .. } = &mut command.target {
+        let cwd = cwd
+            .canonicalize()
+            .map_err(|error| format!("failed to resolve checkout {}: {error}", cwd.display()))?;
+        if automatic_firecracker_vm {
+            *vm = crate::firecracker::provider::worktree_vm_name(&cwd);
+        }
+        *worktree = Some(cwd);
+    } else {
+        command.cwd = Some(cwd);
+    }
+    Ok(())
 }
 
 fn prepare_git_checkout(
@@ -7536,6 +7554,79 @@ mod permission_tests {
     /// answers the physical one, so paths only compare after resolving.
     fn resolved(path: &std::path::Path) -> PathBuf {
         std::fs::canonicalize(path).unwrap()
+    }
+
+    fn firecracker_command(name: &str) -> CommandToRun {
+        CommandToRun {
+            target: PaneTarget::Firecracker {
+                vm: name.to_owned(),
+                image: None,
+                worktree: None,
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn automatic_firecracker_names_follow_the_resolved_checkout() {
+        let repository = repository();
+        let subdirectory = repository.path().join("src/nested");
+        std::fs::create_dir_all(&subdirectory).unwrap();
+        let checkout = prepare_git_checkout_in(subdirectory, GitCheckout::Current).unwrap();
+        let expected = crate::firecracker::provider::worktree_vm_name(&resolved(repository.path()));
+
+        for placeholder in ["first", "second"] {
+            let mut command = firecracker_command(placeholder);
+            apply_git_checkout_to_command(&mut command, checkout.clone(), true).unwrap();
+            assert_eq!(command.target.firecracker_vm(), Some(expected.as_str()));
+            assert_eq!(
+                command.target.firecracker_worktree(),
+                Some(resolved(repository.path()).as_path())
+            );
+        }
+
+        let mut manual = firecracker_command("review");
+        apply_git_checkout_to_command(&mut manual, checkout, false).unwrap();
+        assert_eq!(manual.target.firecracker_vm(), Some("review"));
+    }
+
+    #[test]
+    fn automatic_firecracker_names_follow_reused_branch_worktrees() {
+        let primary_repository = repository();
+        let checkout = GitCheckout::NewBranch {
+            branch: "topic".to_owned(),
+            base: "main".to_owned(),
+        };
+        let first = prepare_git_checkout_in(primary_repository.path().to_owned(), checkout.clone())
+            .unwrap();
+        let second =
+            prepare_git_checkout_in(primary_repository.path().to_owned(), checkout).unwrap();
+        let expected =
+            crate::firecracker::provider::worktree_vm_name(&resolved(primary_repository.path()));
+        for cwd in [first, second] {
+            let mut command = firecracker_command("placeholder");
+            apply_git_checkout_to_command(&mut command, cwd, true).unwrap();
+            assert_eq!(command.target.firecracker_vm(), Some(expected.as_str()));
+        }
+
+        let repository = repository();
+        let existing = worktree(repository.path(), "first", "topic");
+        let checkout = GitCheckout::NewBranch {
+            branch: "topic".to_owned(),
+            base: "main".to_owned(),
+        };
+        let first =
+            prepare_git_checkout_in(repository.path().to_owned(), checkout.clone()).unwrap();
+        let second = prepare_git_checkout_in(repository.path().to_owned(), checkout).unwrap();
+        assert_eq!(resolved(&first), resolved(&existing));
+        assert_eq!(resolved(&second), resolved(&existing));
+
+        let mut command = firecracker_command("placeholder");
+        apply_git_checkout_to_command(&mut command, first, true).unwrap();
+        assert_eq!(
+            command.target.firecracker_vm(),
+            Some(crate::firecracker::provider::worktree_vm_name(&resolved(&existing)).as_str())
+        );
     }
 
     #[test]

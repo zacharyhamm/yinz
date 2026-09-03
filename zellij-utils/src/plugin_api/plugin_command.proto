@@ -603,6 +603,7 @@ message OpenCommandPaneInGitCheckoutPayload {
     NewBranchGitCheckout new_branch = 4;
     NewWorktreeGitCheckout new_worktree = 5;
   }
+  bool automatic_firecracker_vm = 6;
 }
 
 message CurrentGitCheckout {}

@@ -314,13 +314,33 @@ fn new_pane_advertises_its_firecracker_fields() {
         .unwrap()["function"]["parameters"]
         .clone();
     let properties = parameters["properties"].as_object().unwrap();
-    for field in ["firecracker", "firecracker_image"] {
+    for field in ["firecracker_vm", "firecracker_image"] {
         assert!(
             properties.contains_key(field),
             "new_pane does not list {field}"
         );
         assert_eq!(properties[field]["type"], json!("string"), "{field}");
     }
+    assert!(properties["firecracker_image"]["description"]
+        .as_str()
+        .unwrap()
+        .contains("firecracker_vm"));
+}
+
+#[test]
+fn agent_spawn_advertises_an_automatic_firecracker_switch() {
+    let specs = specs();
+    let parameters = specs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|spec| spec["function"]["name"] == "agent_spawn")
+        .unwrap()["function"]["parameters"]
+        .clone();
+    assert_eq!(
+        parameters["properties"]["firecracker"]["type"],
+        json!("boolean")
+    );
 }
 
 /// The Linear tools are advertised whether or not a key is configured, the same

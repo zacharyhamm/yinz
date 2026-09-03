@@ -124,7 +124,7 @@ mod tests {
     use zellij_tile::prelude::{PaneInfo, PaneTarget};
 
     #[test]
-    fn terminal_panes_carry_the_location_and_firecracker_identity_reported() {
+    fn terminal_panes_carry_the_reported_firecracker_location() {
         let mut manifest = PaneManifest::default();
         manifest.panes.insert(
             0,

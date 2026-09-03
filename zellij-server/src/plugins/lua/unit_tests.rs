@@ -1332,7 +1332,7 @@ fn a_nested_enum_is_read_as_the_variant_it_names() {
     use zellij_utils::data::{GitCheckout, PluginCommand};
 
     let checkout = |expression: &str| match command_from_lua(expression) {
-        Ok(PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(_, source, checkout)) => {
+        Ok(PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(_, source, checkout, false)) => {
             (source, checkout)
         },
         Ok(other) => panic!("built the wrong command: {other:?}"),

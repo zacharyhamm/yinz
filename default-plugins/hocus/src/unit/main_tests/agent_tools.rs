@@ -351,7 +351,7 @@ fn a_firecracker_spawn_outside_a_project_refuses_a_host_cwd() {
     assert_eq!(
         state.run_local(&agent_call(
             "agent_spawn",
-            r#"{"agent":"claude","firecracker":"review","cwd":"/home/me/src"}"#
+            r#"{"agent":"claude","firecracker":true,"cwd":"/home/me/src"}"#
         )),
         Some(
             "cwd is a path on this machine, and a Firecracker agent starts in the VM's \
@@ -363,7 +363,7 @@ fn a_firecracker_spawn_outside_a_project_refuses_a_host_cwd() {
     assert_eq!(
         state.run_local(&agent_call(
             "agent_spawn",
-            r#"{"agent":"claude","firecracker":"review"}"#
+            r#"{"agent":"claude","firecracker":true}"#
         )),
         Some("tools are unavailable outside zellij".into()),
     );

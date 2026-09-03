@@ -1795,6 +1795,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
                 commands_to_run(tc),
                 paths(tc),
                 git_checkouts(tc),
+                booleans(tc),
             )
         },
         CommandType::OpenTerminalNearPlugin => {

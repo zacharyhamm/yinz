@@ -459,13 +459,13 @@ fn an_agents_own_arguments_survive_having_no_command_to_hang_off() {
 /// start.
 #[test]
 fn a_new_pane_firecracker_vm_name_is_checked_before_anything_opens() {
-    let args = Args::parse(r#"{"firecracker":"no spaces"}"#).unwrap();
+    let args = Args::parse(r#"{"firecracker_vm":"no spaces"}"#).unwrap();
     let error = args
         .firecracker_target()
         .expect_err("a space is not a VM name");
     assert!(error.contains("invalid Firecracker VM name"), "{error}");
 
-    let args = Args::parse(r#"{"firecracker":" review ","firecracker_image":"rust"}"#).unwrap();
+    let args = Args::parse(r#"{"firecracker_vm":" review ","firecracker_image":"rust"}"#).unwrap();
     assert_eq!(
         args.firecracker_target(),
         Ok(PaneTarget::Firecracker {
@@ -475,7 +475,7 @@ fn a_new_pane_firecracker_vm_name_is_checked_before_anything_opens() {
         })
     );
     // Blank is absent, the same as a key the model left out.
-    let args = Args::parse(r#"{"firecracker":"","firecracker_image":" "}"#).unwrap();
+    let args = Args::parse(r#"{"firecracker_vm":"","firecracker_image":" "}"#).unwrap();
     assert_eq!(args.firecracker_target(), Ok(PaneTarget::Local));
 }
 
@@ -488,7 +488,8 @@ fn a_new_pane_image_without_a_vm_is_refused() {
         args.firecracker_target(),
         Err("firecracker_image needs a firecracker_vm".to_owned())
     );
-    let args = Args::parse(r#"{"firecracker":"review","firecracker_image":"no/slashes"}"#).unwrap();
+    let args =
+        Args::parse(r#"{"firecracker_vm":"review","firecracker_image":"no/slashes"}"#).unwrap();
     let error = args
         .firecracker_target()
         .expect_err("an image name is checked like a VM name");

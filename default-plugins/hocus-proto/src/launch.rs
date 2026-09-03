@@ -16,7 +16,9 @@
 //! so it is gated the way [`crate::store::Host`] is, with a stub on the host triple that
 //! fails loudly rather than quietly answering nothing.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 use zellij_tile::prelude::{
     CommandToRun, GitCheckout, PaneId, PaneTarget, HOCUS_AGENT_PANE_CONTEXT,
 };
@@ -88,6 +90,23 @@ pub struct Spec {
     pub firecracker: Option<String>,
     /// Immutable project image selected for the Firecracker VM.
     pub firecracker_image: Option<String>,
+}
+
+/// A VM used by exactly one automatic agent when no worktree will be mirrored.
+pub fn unique_firecracker_vm() -> String {
+    thread_local! {
+        static SEQUENCE: Cell<u64> = const { Cell::new(0) };
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let sequence = SEQUENCE.with(|sequence| {
+        let next = sequence.get().wrapping_add(1);
+        sequence.set(next);
+        next
+    });
+    format!("hocus-agent-{now:x}-{sequence:x}")
 }
 
 /// The permission modes `claude --permission-mode` accepts, plus `skip` for
@@ -350,10 +369,11 @@ fn trimmed(value: &Option<String>) -> Option<&str> {
 #[cfg(target_family = "wasm")]
 pub fn open(spec: &Spec, source_directory: std::path::PathBuf) -> Result<PaneId, String> {
     let (command, checkout) = plan(spec)?;
-    zellij_tile::shim::open_command_pane_in_git_checkout_near_plugin(
+    zellij_tile::shim::open_command_pane_in_git_checkout_near_plugin_with_automatic_firecracker_vm(
         command,
         source_directory,
         checkout,
+        spec.firecracker.is_some(),
     )
 }
 

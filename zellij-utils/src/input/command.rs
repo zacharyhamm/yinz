@@ -256,7 +256,7 @@ mod tests {
             PaneTarget::Firecracker {
                 vm: "review".to_owned(),
                 image: None,
-                worktree: None
+                worktree: None,
             }
         );
         assert_eq!(
@@ -278,7 +278,7 @@ mod tests {
             PaneTarget::Firecracker {
                 vm: "review".to_owned(),
                 image: None,
-                worktree: None
+                worktree: None,
             }
         );
         assert!(PaneTarget::from_parts(Some("build-box"), Some("review"), None, None).is_err());
@@ -311,7 +311,7 @@ mod tests {
             PaneTarget::Firecracker {
                 vm: "review-2".to_owned(),
                 image: Some("rust-dev".to_owned()),
-                worktree: Some(PathBuf::from("/w"))
+                worktree: Some(PathBuf::from("/w")),
             }
         );
 

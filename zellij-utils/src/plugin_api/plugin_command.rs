@@ -937,6 +937,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                             command,
                             payload.source_directory.into(),
                             checkout,
+                            payload.automatic_firecracker_vm,
                         ))
                     },
                     _ => Err("Mismatched payload for OpenCommandPaneInGitCheckoutNearPlugin"),
@@ -3449,6 +3450,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 command_to_run,
                 source_directory,
                 checkout,
+                automatic_firecracker_vm,
             ) => {
                 let checkout = match checkout {
                     GitCheckout::Current => {
@@ -3478,6 +3480,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                             command_to_run: Some(command_to_run.try_into()?),
                             source_directory: source_directory.display().to_string(),
                             checkout: Some(checkout),
+                            automatic_firecracker_vm,
                         },
                     )),
                 })
@@ -6649,20 +6652,23 @@ mod tests {
 
     #[test]
     fn git_checkout_command_survives_the_wire() {
-        let command = PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(
-            CommandToRun::new("codex"),
-            PathBuf::from("/work/project"),
-            GitCheckout::NewWorktree {
-                branch: "topic".to_owned(),
-                base: "main".to_owned(),
-                path: PathBuf::from(".worktrees/topic"),
-            },
-        );
-        let protobuf: ProtobufPluginCommand = command.try_into().unwrap();
-        let decoded: PluginCommand = protobuf.try_into().unwrap();
-        assert!(matches!(decoded,
-            PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(_, source, GitCheckout::NewWorktree { branch, base, path })
-            if source == *"/work/project" && branch == "topic" && base == "main" && path == *".worktrees/topic"));
+        for automatic in [false, true] {
+            let command = PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(
+                CommandToRun::new("codex"),
+                PathBuf::from("/work/project"),
+                GitCheckout::NewWorktree {
+                    branch: "topic".to_owned(),
+                    base: "main".to_owned(),
+                    path: PathBuf::from(".worktrees/topic"),
+                },
+                automatic,
+            );
+            let protobuf: ProtobufPluginCommand = command.try_into().unwrap();
+            let decoded: PluginCommand = protobuf.try_into().unwrap();
+            assert!(matches!(decoded,
+                PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(_, source, GitCheckout::NewWorktree { branch, base, path }, decoded_automatic)
+                if source == *"/work/project" && branch == "topic" && base == "main" && path == *".worktrees/topic" && decoded_automatic == automatic));
+        }
     }
 
     #[test]
