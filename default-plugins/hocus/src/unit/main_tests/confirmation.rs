@@ -14,18 +14,16 @@ fn a_pane_closure_runs_without_confirmation() {
     assert!(state.pending.is_empty());
 }
 
-/// Every tool that moves a pane between sessions stops for a y/n. The pane
-/// leaves the screen, and a wrong target session puts it somewhere the user
-/// is not looking.
+/// Every tool that pulls something into this session runs without asking: what
+/// arrives lands in front of whoever asked for it, so the confirmation would be
+/// a prompt about a thing they are about to see anyway. There is no tool for the
+/// other direction — a push to a session nobody is watching — at all. The cost
+/// is borne by the source, which ends if it gave away its last tab; that is a
+/// choice, not an oversight.
 #[test]
-fn every_warp_stops_for_confirmation() {
+fn pulling_something_into_this_session_runs_without_asking() {
     for (name, arguments) in [
-        (
-            "warp_pane",
-            r#"{"pane_id":1,"is_plugin":false,"to_session":"other"}"#,
-        ),
         ("warp_pane_here", r#"{"from_session":"other","pane_id":1}"#),
-        ("warp_tab", r#"{"to_session":"other"}"#),
         ("warp_tab_here", r#"{"from_session":"other","tab_id":1}"#),
         ("adopt_orphaned_pane", r#"{"host_id":"abc123"}"#),
     ] {
@@ -35,12 +33,17 @@ fn every_warp_stops_for_confirmation() {
         state.on_chunk("hocus-1", b"", true, None);
 
         assert!(
-            matches!(state.status, Status::ConfirmingTool),
-            "{name} should ask before running"
+            !matches!(state.status, Status::ConfirmingTool),
+            "{name} should not ask before running"
+        );
+        assert_eq!(
+            tool_results(&state).len(),
+            1,
+            "{name} should have run and reported back"
         );
         assert!(
-            tool_results(&state).is_empty(),
-            "{name} should not have run yet"
+            state.pending.is_empty(),
+            "{name} should leave nothing pending"
         );
     }
 }

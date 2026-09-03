@@ -98,16 +98,10 @@ pub fn needs_confirmation(name: &str) -> bool {
             // The one tool that removes something the user meant to keep.
             | "project_forget"
             | "slack_post"
-            // Moving a pane is disruptive in a way the user cannot undo by
-            // looking away: the pane leaves the screen, and for a moment during
-            // the handoff it belongs to no session at all.
-            | "warp_pane"
-            | "warp_pane_here"
-            // The tab version of the above, with more at stake: every pane in
-            // the tab leaves at once, and warping a session's last tab ends it.
-            | "warp_tab"
-            | "warp_tab_here"
-            | "adopt_orphaned_pane"
+            // The inbound warps are deliberately absent, `warp_tab_here` included:
+            // what they bring arrives in front of whoever asked, so the prompt would
+            // describe something the user is about to see anyway. A source that gives
+            // away its last tab ends, and that is accepted rather than overlooked.
             // Putting code the model wrote into the user's config dir. `plugin_reload` is not
             // here: it re-runs a file approved one step earlier, and plugin-manager already
             // reloads a plugin on a keypress - so confirming both would cost two prompts per
@@ -235,23 +229,6 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
                 None => format!("posts to {channel} immediately, visible to everyone in it"),
             }
         },
-        "warp_pane" => {
-            let session = args.to_session.as_deref().unwrap_or("another session");
-            format!("moves {pane} out to {session}; it leaves this screen")
-        },
-        "warp_pane_here" => {
-            let session = args.from_session.as_deref().unwrap_or("another session");
-            format!("takes {pane} from {session} into this one")
-        },
-        "warp_tab" => {
-            let session = args.to_session.as_deref().unwrap_or("another session");
-            format!("moves a whole tab out to {session}; if it is the last tab, this session ends")
-        },
-        "warp_tab_here" => {
-            let session = args.from_session.as_deref().unwrap_or("another session");
-            format!("takes a tab from {session} into this one")
-        },
-        "adopt_orphaned_pane" => "takes an orphaned pane into this session".to_owned(),
         // Only the shape that stops: a bare pane (a shell, no command) is not
         // confirmed, so it has nothing to say here. See `call_needs_confirmation`.
         "new_pane" if names_a_command(call) => match args.program_and_args() {
@@ -489,9 +466,10 @@ pub const TOAST_HEADLINE: &str = "hocus needs confirmation";
 ///
 /// The prompt already says "types into pane 7"; this is what lets the session
 /// then go and show you pane 7. Only tools that act on a pane *already in this
-/// session* qualify — `warp_pane_here`, `warp_tab_here` and
-/// `adopt_orphaned_pane` all name something that is somewhere else, and there is
-/// nothing local to point at until after they run.
+/// session* qualify, and plenty of confirmable ones do not: `slack_post` names a
+/// channel, `project_forget` a project, `new_remote_pane` a machine of its own.
+/// That is what the `None` arm below is for — a confirmation with nothing local
+/// to point at, not an unreachable case.
 ///
 /// `None` for arguments that don't parse, matching `consequence`: the confirmation
 /// still goes up on a malformed call, it just goes up without a destination.
@@ -502,7 +480,7 @@ pub fn confirmation_target(call: &ToolCall) -> Option<PaneId> {
         // The agent tools address a terminal and say so: `agent_host_call`
         // rewrites them into pane-addressed primitives with `is_plugin: false`.
         "agent_send" | "agent_control" => Some(PaneId::Terminal(pane_id)),
-        "send_input" | "rerun_pane" | "clear_pane" | "warp_pane" => match args.is_plugin? {
+        "send_input" | "rerun_pane" | "clear_pane" => match args.is_plugin? {
             true => Some(PaneId::Plugin(pane_id)),
             false => Some(PaneId::Terminal(pane_id)),
         },
@@ -652,20 +630,6 @@ pub fn specs() -> Value {
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
-            "warp_pane",
-            "Move a terminal pane to another session; not plugins or the last pane.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "pane_id": pane["pane_id"],
-                    "is_plugin": pane["is_plugin"],
-                    "to_session": { "type": "string" },
-                    "placement": placement.clone(),
-                },
-                "required": ["pane_id", "is_plugin", "to_session"],
-            }),
-        ),
-        tool(
             "warp_pane_here",
             "Bring in a terminal pane listed by list_other_sessions.",
             json!({
@@ -679,22 +643,9 @@ pub fn specs() -> Value {
             }),
         ),
         tool(
-            "warp_tab",
-            "Move a tab from the current session, as listed by list_session, to another \
-             session; defaults to the focused tab. Can move the last tab, ending this session.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "tab_id": { "type": "integer", "description": "From list_session; defaults to the focused tab." },
-                    "to_session": { "type": "string" },
-                },
-                "required": ["to_session"],
-            }),
-        ),
-        tool(
             "warp_tab_here",
             "Bring a tab from another session, as listed by list_other_sessions, into the \
-             current session. Use this for requests phrased from another session or into here.",
+             current session.",
             json!({
                 "type": "object",
                 "properties": {
@@ -2054,9 +2005,8 @@ pub struct Args {
     pub from: Option<String>,
     pub to: Option<String>,
     pub thread: Option<String>,
-    // Moving panes between sessions. `to_session` rather than `to`, which the
-    // Slack tools already own.
-    pub to_session: Option<String>,
+    // Moving panes between sessions. `from_session` rather than `from`, which
+    // the Slack tools already own.
     pub from_session: Option<String>,
     pub placement: Option<String>,
     pub host_id: Option<String>,
@@ -3348,9 +3298,7 @@ mod host {
         match call.name.as_str() {
             "list_session" => list_session(),
             "list_other_sessions" => list_other_sessions(),
-            "warp_pane" => warp_pane(&args),
             "warp_pane_here" => warp_pane_here(&args),
-            "warp_tab" => warp_tab(&args),
             "warp_tab_here" => warp_tab_here(&args),
             "list_orphaned_panes" => list_orphaned_panes_tool(),
             "adopt_orphaned_pane" => adopt_orphaned_pane_tool(&args),
@@ -3531,38 +3479,6 @@ mod host {
             .any(|session| !session.is_current_session && session.name == name))
     }
 
-    fn warp_pane(args: &Args) -> String {
-        let Some(to_session) = args.to_session.as_deref() else {
-            return "to_session is required; call list_other_sessions for the names".to_owned();
-        };
-        let placement = match args.placement() {
-            Ok(placement) => placement,
-            Err(error) => return error,
-        };
-        match other_session_exists(to_session) {
-            Ok(false) => {
-                return format!(
-                    "no other session named {to_session:?} is running; call list_other_sessions"
-                )
-            },
-            Err(error) => return error,
-            Ok(true) => {},
-        }
-        with_pane(args, |pane| {
-            if let PaneId::Plugin(_) = pane {
-                // The same refusal the server would give, without spending a
-                // round trip to hear it.
-                return "this is a plugin pane; it has no process, so there is nothing to move"
-                    .to_owned();
-            }
-            match warp_pane_to_session(pane, to_session, placement) {
-                // Both halves are already prose written for whoever asked, and
-                // the failures carry their own recovery instructions.
-                Ok(message) | Err(message) => message,
-            }
-        })
-    }
-
     fn warp_pane_here(args: &Args) -> String {
         let Some(from_session) = args.from_session.as_deref() else {
             return "from_session is required; call list_other_sessions for the names".to_owned();
@@ -3585,64 +3501,6 @@ mod host {
             Ok(true) => {},
         }
         match warp_pane_from_session(PaneId::Terminal(pane_id), from_session, placement) {
-            Ok(message) | Err(message) => message,
-        }
-    }
-
-    /// The stable `tab_id` of a tab in *this* session, defaulting to whichever
-    /// tab is focused when the call named none.
-    ///
-    /// The warp path is keyed by tab id, not by display position: `Screen.tabs`
-    /// is "Keyed by tab.id (stable identifier)" and `check_tab_can_be_warped`
-    /// looks the value up there directly. Handing it a position warps whichever
-    /// tab happens to own that number as an id — a different tab entirely once
-    /// the session has closed one.
-    fn resolve_tab_id(target: Option<usize>) -> Result<usize, String> {
-        let snapshot =
-            get_session_list().map_err(|error| format!("could not list sessions: {error}"))?;
-        let session = snapshot
-            .live_sessions
-            .iter()
-            .find(|session| session.is_current_session)
-            .ok_or_else(|| "the current session is not in the session list".to_owned())?;
-        match target {
-            Some(id) => session
-                .tabs
-                .iter()
-                .find(|tab| tab.tab_id == id)
-                .map(|tab| tab.tab_id)
-                .ok_or_else(|| {
-                    format!("no tab with tab_id {id} in this session; call list_session for the current tab_ids, or use warp_tab_here if it came from list_other_sessions")
-                }),
-            None => session
-                .tabs
-                .iter()
-                .find(|tab| tab.active)
-                .map(|tab| tab.tab_id)
-                .ok_or_else(|| "no tab is focused".to_owned()),
-        }
-    }
-
-    fn warp_tab(args: &Args) -> String {
-        let Some(to_session) = args.to_session.as_deref() else {
-            return "to_session is required; call list_other_sessions for the names".to_owned();
-        };
-        // Unlike every other tab tool, `warp_tab` reads an absent tab as
-        // permission rather than an omission: it means "the tab in focus".
-        let tab_id = match resolve_tab_id(args.tab_id) {
-            Ok(id) => id,
-            Err(error) => return error,
-        };
-        match other_session_exists(to_session) {
-            Ok(false) => {
-                return format!(
-                    "no other session named {to_session:?} is running; call list_other_sessions"
-                )
-            },
-            Err(error) => return error,
-            Ok(true) => {},
-        }
-        match warp_tab_to_session(tab_id, to_session) {
             Ok(message) | Err(message) => message,
         }
     }
