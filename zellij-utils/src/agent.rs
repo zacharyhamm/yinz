@@ -872,6 +872,10 @@ pub fn hook_outcome(kind: &str, event: &HookEvent) -> HookOutcome {
             waiting_on: (state == AgentState::Waiting)
                 .then(|| waiting_detail(event))
                 .flatten(),
+            // Gated on the state for the same reason: a record that is not a wait has no
+            // wait for anybody to answer. `waiting_needs_a_person` is the one place the
+            // permission mode is read, so this is where its answer is written down.
+            wait_needs_a_person: state == AgentState::Waiting && waiting_needs_a_person(event),
             cwd: event.cwd.clone(),
             session_id: (!event.session_id.is_empty()).then(|| event.session_id.clone()),
             // A hook says everything the agent knows about itself, and the agent does not
@@ -1211,6 +1215,7 @@ mod tests {
                 source: AgentSource::Reported,
                 detail: Some("Bash cargo".to_owned()),
                 waiting_on: None,
+                wait_needs_a_person: false,
                 cwd: Some("/work".to_owned()),
                 session_id: Some("s1".to_owned()),
                 run_id: None,
@@ -1267,6 +1272,57 @@ mod tests {
         // And read the same way whoever asks, because every road that reads an event reads
         // this one function: a kind-keyed answer would reach the record and not the feed.
         assert_eq!(hook_state(&question), Some(AgentState::Waiting));
+    }
+
+    /// The record carries [`waiting_needs_a_person`]'s answer, because the pane that draws the
+    /// blinking bell is a long way from the event that decided it - and the event is gone by
+    /// the time the pane sees anything. Only a wait carries one, for the same reason only a
+    /// wait carries `waiting_on`: a record that has moved on has no wait for anybody to
+    /// answer.
+    #[test]
+    fn a_record_says_whether_its_wait_wants_a_person() {
+        let request = |tool: &str, mode: &str| HookEvent {
+            permission_mode: Some(mode.to_owned()),
+            tool_name: Some(tool.to_owned()),
+            ..event("PermissionRequest")
+        };
+        let reported = |event: &HookEvent| match hook_outcome("claude", event) {
+            HookOutcome::Reported(info) => info,
+            other => panic!("{other:?}"),
+        };
+
+        // The mode is about to answer this one itself. The record still says `waiting` - the
+        // agent said so, and the row draws what the agent said - but nothing blinks at
+        // anybody over it.
+        let accepted = reported(&request("Edit", "acceptEdits"));
+        assert_eq!(accepted.state, AgentState::Waiting);
+        assert!(!accepted.wait_needs_a_person);
+
+        // The same mode, a tool it does not answer.
+        let blocked = reported(&request("Bash", "acceptEdits"));
+        assert_eq!(blocked.state, AgentState::Waiting);
+        assert!(blocked.wait_needs_a_person);
+
+        // A question addressed to a person is one under every mode there is.
+        for mode in ["acceptEdits", "bypassPermissions", "dontAsk", "auto"] {
+            let asking = HookEvent {
+                tool_name: Some("AskUserQuestion".to_owned()),
+                permission_mode: Some(mode.to_owned()),
+                ..event("PreToolUse")
+            };
+            assert!(reported(&asking).wait_needs_a_person, "{mode}");
+        }
+
+        // And nothing that is not a wait carries one, whatever the mode around it.
+        for name in ["PreToolUse", "PostToolUse", "Stop"] {
+            let busy = HookEvent {
+                permission_mode: Some("default".to_owned()),
+                ..event(name)
+            };
+            let info = reported(&busy);
+            assert_ne!(info.state, AgentState::Waiting);
+            assert!(!info.wait_needs_a_person, "{name}");
+        }
     }
 
     /// A record that says `idle` and carries a question is a record that disagrees with
