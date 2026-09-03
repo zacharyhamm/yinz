@@ -2008,6 +2008,11 @@ impl Pty {
     /// must still go through the teardown funnel or both outlive the pane.
     /// Terminal ids come from a counter and are never reused, so a stale spawn
     /// cannot name anyone else's pane.
+    ///
+    /// A stale completion never fails this handler: the pty thread takes its
+    /// errors fatally, and there is nothing left to report a failure to, so a
+    /// spawn that failed on its way back to a closed pane is logged and
+    /// dropped.
     pub(crate) fn handle_rerun_spawned(
         &mut self,
         pending: PendingRerun,
@@ -2018,8 +2023,9 @@ impl Pty {
         };
         let current = self.reruns.get(&terminal_id).map(|state| state.generation);
         if current != Some(pending.generation) {
-            if spawned.take()?.is_ok() {
-                self.bus
+            match spawned.take().and_then(|spawned| spawned) {
+                Ok(_) => self
+                    .bus
                     .os_input
                     .as_ref()
                     .context("no OS I/O interface found")
@@ -2027,7 +2033,14 @@ impl Pty {
                     .with_context(|| {
                         format!("failed to tear down the late rerun of closed pane {terminal_id}")
                     })
-                    .non_fatal();
+                    .non_fatal(),
+                Err(err) => Err::<(), _>(err)
+                    .with_context(|| {
+                        format!(
+                            "the late rerun of closed pane {terminal_id} could not be completed"
+                        )
+                    })
+                    .non_fatal(),
             }
             return Ok(());
         }

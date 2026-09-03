@@ -253,6 +253,9 @@ impl ServerOsApi for MockOsApi {
     ) -> anyhow::Result<crate::os_input_output::ResolvedSpawn> {
         self.spawn_started.wait();
         self.spawn_release.wait();
+        if self.rerun_failures.lock().unwrap().contains(&terminal_id) {
+            return Err(anyhow!("injected rerun failure"));
+        }
         let rerun_command = command.clone();
         Ok(crate::os_input_output::ResolvedSpawn {
             terminal_id,
@@ -1282,6 +1285,75 @@ fn closing_a_pane_mid_transport_tears_down_the_late_spawn() {
     assert!(
         pty_rx.try_recv().is_err(),
         "no rerun may be started for a closed pane"
+    );
+}
+
+/// The same race, but the spawn that comes back failed. There is no pane left to hold the
+/// failure and no waiter to report it to, and the pty thread takes its errors fatally — so a
+/// stale failure must be logged and dropped rather than propagated out of the handler.
+#[test]
+fn a_failed_spawn_for_a_closed_pane_does_not_fail_the_pty_thread() {
+    let mut os_api = MockOsApi::new();
+    os_api.spawn_started = Arc::new(Barrier::new(2));
+    os_api.spawn_release = Arc::new(Barrier::new(2));
+    os_api.fail_rerun_of(41);
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let (pty_tx, pty_rx) = channels::unbounded();
+    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+
+    assert!(pty
+        .request_rerun(PaneId::Terminal(41), firecracker_command(), None)
+        .unwrap()
+        .is_none());
+    os_api.spawn_started.wait();
+    assert!(pty.close_pane(PaneId::Terminal(41)).is_ok());
+    let closed_at = os_api.cleared_terminal_ids.lock().unwrap().len();
+    os_api.spawn_release.wait();
+
+    let (pending, spawned) = resolved_rerun(&pty_rx);
+    pty.handle_rerun_spawned(pending, spawned)
+        .expect("a stale failure must not reach the pty thread");
+
+    assert!(
+        os_api.cleared_terminal_ids.lock().unwrap()[closed_at..].is_empty(),
+        "nothing started, so there is nothing to tear down"
+    );
+    assert!(!pty.reruns.contains_key(&41));
+    assert!(
+        pty_rx.try_recv().is_err(),
+        "no rerun may be started for a closed pane"
+    );
+}
+
+/// The other way a stale completion can fail: the slot it rides in is empty. `take` is
+/// fallible on its own, and its error used to travel out of the handler and through
+/// `pty_thread_main`, which takes it fatally — for a pane that is already gone.
+#[test]
+fn an_empty_spawn_slot_for_a_closed_pane_does_not_fail_the_pty_thread() {
+    let mut os_api = MockOsApi::new();
+    os_api.transport_started = Arc::new(Barrier::new(2));
+    os_api.transport_release = Arc::new(Barrier::new(2));
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let (pty_tx, pty_rx) = channels::unbounded();
+    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+
+    assert!(pty
+        .request_rerun(PaneId::Terminal(41), firecracker_command(), None)
+        .unwrap()
+        .is_none());
+    os_api.transport_started.wait();
+    assert!(pty.close_pane(PaneId::Terminal(41)).is_ok());
+    let closed_at = os_api.cleared_terminal_ids.lock().unwrap().len();
+    os_api.transport_release.wait();
+
+    let (pending, spawned) = resolved_rerun(&pty_rx);
+    // Drain the slot behind the handler's back, the way a double delivery would.
+    assert!(spawned.clone().take().is_ok());
+    pty.handle_rerun_spawned(pending, spawned)
+        .expect("an empty slot must not reach the pty thread");
+    assert!(
+        os_api.cleared_terminal_ids.lock().unwrap()[closed_at..].is_empty(),
+        "there is no reader to tear down when the slot is empty"
     );
 }
 
