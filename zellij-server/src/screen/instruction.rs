@@ -48,6 +48,7 @@ use zellij_utils::position::Position;
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum ScreenInstruction {
     PtyBytes(u32, VteBytes),
+    RemotePaneReady(u32),
     PluginBytes(Vec<PluginRenderAsset>),
     Render,
     RenderToClients,
@@ -878,7 +879,9 @@ impl From<&ScreenInstruction> for ScreenContext {
                 },
             },
             // Instructions whose context is named differently from the instruction itself.
-            ScreenInstruction::PtyBytes(..) => ScreenContext::HandlePtyBytes,
+            ScreenInstruction::PtyBytes(..) | ScreenInstruction::RemotePaneReady(..) => {
+                ScreenContext::HandlePtyBytes
+            },
             ScreenInstruction::ClearAllPluginHighlights(..) => ScreenContext::ClearPluginHighlights,
             other => {
                 let name: &'static str = other.into();

@@ -33,14 +33,14 @@ fn firecracker_resolution_keeps_an_unresolved_command_for_reruns() {
         ..Default::default()
     };
 
-    let (resolved, rerun, endpoint) = server.resolve_target(requested.clone()).unwrap();
+    let (resolved, rerun, endpoint) = server.resolve_target(requested.clone(), None).unwrap();
     let endpoint = endpoint.expect("a Firecracker command resolves to an endpoint");
     assert_eq!(endpoint.host, "build-box");
     assert_eq!(resolved.target, requested.target);
     assert_eq!(resolved.cwd, Some(PathBuf::from("/srv/project")));
     assert_eq!(rerun, requested);
     assert_eq!(endpoint.ssh_options, SshOptions::default());
-    assert!(server.resolve_target(rerun).is_ok());
+    assert!(server.resolve_target(rerun, None).is_ok());
 
     let explicit = RunCommand {
         command: PathBuf::from("claude"),
@@ -53,7 +53,7 @@ fn firecracker_resolution_keeps_an_unresolved_command_for_reruns() {
         ..Default::default()
     };
     assert_eq!(
-        server.resolve_target(explicit).unwrap().0.cwd,
+        server.resolve_target(explicit, None).unwrap().0.cwd,
         Some(PathBuf::from("/elsewhere"))
     );
 }
@@ -173,7 +173,7 @@ fn stopping_the_session_cancels_an_ensure_in_flight() {
 
     let resolver = {
         let server = server.clone();
-        std::thread::spawn(move || server.resolve_target(requested))
+        std::thread::spawn(move || server.resolve_target(requested, None))
     };
     std::thread::sleep(Duration::from_millis(200));
     let start = std::time::Instant::now();

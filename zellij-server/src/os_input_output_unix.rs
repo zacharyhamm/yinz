@@ -712,7 +712,10 @@ impl UnixPtyBackend {
         {
             Some(PaneTransport::Local(fd)) => Target::Local(*fd),
             Some(PaneTransport::Remote(conn)) => Target::Remote(conn.clone()),
-            Some(PaneTransport::Reserved) | None => {
+            // The pane is already visible while its remote transport starts;
+            // input typed into the loading screen is intentionally discarded.
+            Some(PaneTransport::Reserved) => return Ok(buf.len()),
+            None => {
                 return Err(anyhow!("could not find raw file descriptor")).with_context(err_context)
             },
         };
@@ -743,9 +746,8 @@ impl UnixPtyBackend {
             // calls this today; a remote pane says "drained" rather than
             // pretending to a synchronisation it cannot provide.
             Some(PaneTransport::Remote(_)) => Ok(()),
-            Some(PaneTransport::Reserved) | None => {
-                Err(anyhow!("could not find raw file descriptor")).with_context(err_context)
-            },
+            Some(PaneTransport::Reserved) => Ok(()),
+            None => Err(anyhow!("could not find raw file descriptor")).with_context(err_context),
         }
     }
 
