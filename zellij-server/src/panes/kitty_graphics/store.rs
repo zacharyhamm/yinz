@@ -543,7 +543,7 @@ impl KittyImageStore {
         match image.format {
             KittyFormat::Rgb24 => {
                 let mut rgba = Vec::with_capacity(image.bytes.len() / 3 * 4);
-                for pixel in image.bytes.chunks_exact(3) {
+                for pixel in image.bytes.as_chunks::<3>().0 {
                     rgba.extend_from_slice(pixel);
                     rgba.push(255);
                 }

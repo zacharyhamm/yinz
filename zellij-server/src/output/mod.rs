@@ -1820,7 +1820,7 @@ impl CharacterChunk {
         )
         .with_context(err_context)?;
         let mut terminal_characters: Vec<TerminalCharacter> =
-            self.terminal_characters.drain(..).collect();
+            std::mem::take(&mut self.terminal_characters);
         let mut characters_on_the_right: Vec<TerminalCharacter> = terminal_characters
             .drain(absolute_middle_end_index..)
             .collect();

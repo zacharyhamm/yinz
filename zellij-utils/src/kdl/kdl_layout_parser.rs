@@ -226,30 +226,29 @@ impl<'a> KdlLayoutParser<'a> {
             match SplitSize::from_str(size) {
                 Ok(size) => Ok(Some(size)),
                 Err(_e) => Err(kdl_parsing_error!(
-                    format!(
-                        "size should be a fixed number (eg. 1) or a quoted percent (eg. \"50%\")"
-                    ),
+                    "size should be a fixed number (eg. 1) or a quoted percent (eg. \"50%\")"
+                        .to_string(),
                     kdl_node
                 )),
             }
         } else if let Some(size) = kdl_get_int_property_or_child_value!(kdl_node, "size") {
             if size == 0 {
                 return Err(kdl_parsing_error!(
-                    format!("size should be greater than 0"),
+                    "size should be greater than 0".to_string(),
                     kdl_node
                 ));
             }
             Ok(Some(SplitSize::Fixed(size as usize)))
         } else if let Some(node) = kdl_property_or_child_value_node!(kdl_node, "size") {
             Err(kdl_parsing_error!(
-                format!("size should be a fixed number (eg. 1) or a quoted percent (eg. \"50%\")"),
+                "size should be a fixed number (eg. 1) or a quoted percent (eg. \"50%\")"
+                    .to_string(),
                 node
             ))
         } else if let Some(node) = kdl_child_with_name!(kdl_node, "size") {
             Err(kdl_parsing_error!(
-                format!(
-                    "size cannot be bare, it should have a value (eg. 'size 1', or 'size \"50%\"')"
-                ),
+                "size cannot be bare, it should have a value (eg. 'size 1', or 'size \"50%\"')"
+                    .to_string(),
                 node
             ))
         } else {
@@ -406,7 +405,7 @@ impl<'a> KdlLayoutParser<'a> {
         match kdl_get_child!(pane_node, "args") {
             Some(kdl_args) => {
                 if kdl_args.entries().is_empty() {
-                    return Err(kdl_parsing_error!(format!("args cannot be empty and should contain one or more command arguments (eg. args \"-h\" \"-v\")"), kdl_args));
+                    return Err(kdl_parsing_error!("args cannot be empty and should contain one or more command arguments (eg. args \"-h\" \"-v\")".to_string(), kdl_args));
                 }
                 Ok(Some(
                     kdl_string_arguments!(kdl_args)
@@ -1371,19 +1370,19 @@ impl<'a> KdlLayoutParser<'a> {
     ) -> Result<(), ConfigError> {
         if let (None, None, true) = (pane_run, pane_template_run, args.is_some()) {
             return Err(kdl_parsing_error!(
-                format!("args can only be specified if a command was specified either in the pane_template or in the pane"),
+                "args can only be specified if a command was specified either in the pane_template or in the pane".to_string(),
                 pane_node
             ));
         }
         if let (None, None, true) = (pane_run, pane_template_run, close_on_exit.is_some()) {
             return Err(kdl_parsing_error!(
-                format!("close_on_exit can only be specified if a command was specified either in the pane_template or in the pane"),
+                "close_on_exit can only be specified if a command was specified either in the pane_template or in the pane".to_string(),
                 pane_node
             ));
         }
         if let (None, None, true) = (pane_run, pane_template_run, start_suspended.is_some()) {
             return Err(kdl_parsing_error!(
-                format!("start_suspended can only be specified if a command was specified either in the pane_template or in the pane"),
+                "start_suspended can only be specified if a command was specified either in the pane_template or in the pane".to_string(),
                 pane_node
             ));
         }
@@ -2087,7 +2086,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         if constraint_count > 1 {
             return Err(kdl_parsing_error!(
-                format!("cannot have more than one constraint (eg. max_panes + min_panes)'"),
+                "cannot have more than one constraint (eg. max_panes + min_panes)'".to_string(),
                 layout_node
             ));
         }
