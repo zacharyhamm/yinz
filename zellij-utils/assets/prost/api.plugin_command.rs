@@ -658,6 +658,8 @@ pub struct OpenCommandPaneInGitCheckoutPayload {
     pub command_to_run: ::core::option::Option<super::command::Command>,
     #[prost(string, tag="2")]
     pub source_directory: ::prost::alloc::string::String,
+    #[prost(bool, tag="6")]
+    pub automatic_firecracker_vm: bool,
     #[prost(oneof="open_command_pane_in_git_checkout_payload::Checkout", tags="3, 4, 5")]
     pub checkout: ::core::option::Option<open_command_pane_in_git_checkout_payload::Checkout>,
 }

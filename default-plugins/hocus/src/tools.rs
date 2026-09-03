@@ -760,7 +760,7 @@ pub fn specs() -> Value {
                     "name": { "type": "string" },
                     "floating": { "type": "boolean" },
                     "in_new_tab": { "type": "boolean" },
-                    "firecracker": {
+                    "firecracker_vm": {
                         "type": "string",
                         "description": "VM name: the pane runs in it, cwd is a guest path, \
                                         and no command opens the guest's shell.",
@@ -768,7 +768,7 @@ pub fn specs() -> Value {
                     "firecracker_image": {
                         "type": "string",
                         "description": "Image from zellij-firecracker image build --name; \
-                                        needs firecracker.",
+                                        needs firecracker_vm.",
                     },
                 },
             }),
@@ -1468,9 +1468,9 @@ pub fn specs() -> Value {
                         "description": "claude reports its state via hooks; default true.",
                     },
                     "firecracker": {
-                        "type": "string",
-                        "description": "VM name; a project's worktree is mirrored into the VM's \
-                                        working directory (/workspace by default).",
+                        "type": "boolean",
+                        "description": "Run in an automatically named VM. Agents on the same \
+                                        resolved worktree share it; agents without one do not.",
                     },
                     "firecracker_image": {
                         "type": "string",
@@ -2064,7 +2064,8 @@ pub struct Args {
     pub replace_all: bool,
     pub cwd: Option<String>,
     pub remote_host: Option<String>,
-    pub firecracker: Option<String>,
+    pub firecracker: bool,
+    pub firecracker_vm: Option<String>,
     pub firecracker_image: Option<String>,
     pub command: Option<Value>,
     pub args: Vec<String>,
@@ -2301,7 +2302,7 @@ impl Args {
     pub fn firecracker_target(&self) -> Result<PaneTarget, String> {
         PaneTarget::from_parts(
             None,
-            self.firecracker.as_deref(),
+            self.firecracker_vm.as_deref(),
             self.firecracker_image.as_deref(),
             None,
         )
@@ -2336,7 +2337,7 @@ impl Args {
             permission_mode: self.permission_mode.clone(),
             resume: self.resume.clone(),
             hooks: self.hooks,
-            firecracker: self.firecracker.clone(),
+            firecracker: self.firecracker_vm.clone(),
             firecracker_image: self.firecracker_image.clone(),
         }
     }

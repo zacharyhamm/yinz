@@ -2509,13 +2509,20 @@ impl State {
     ///   failing, and `floating`/`in_new_tab` would quietly stop working.
     pub(crate) fn agent_spawn(&mut self, args: &tools::Args) -> String {
         let mut spec = args.launch_spec();
+        let selected_project = args.project.as_deref().or(self.active_project.as_deref());
+        let project = match selected_project {
+            Some(name) => match self.projects.get(name) {
+                Some(project) => Some(project),
+                None => return format!("unknown project {name}; call project_list"),
+            },
+            None => None,
+        };
+        if args.firecracker {
+            spec.firecracker = Some(launch::unique_firecracker_vm());
+        }
         apply_project_firecracker_image(
             &mut spec,
-            args.project
-                .as_deref()
-                .or(self.active_project.as_deref())
-                .and_then(|name| self.projects.get(name))
-                .and_then(|project| project.firecracker_image.clone()),
+            project.and_then(|project| project.firecracker_image.clone()),
         );
         let firecracker = spec
             .firecracker
@@ -2562,7 +2569,7 @@ impl State {
                 )),
                 args: command.args,
                 cwd,
-                firecracker: command.target.firecracker_vm().map(str::to_owned),
+                firecracker_vm: command.target.firecracker_vm().map(str::to_owned),
                 firecracker_image: command.target.firecracker_image().map(str::to_owned),
                 ..tools::Args::default()
             };
@@ -2573,6 +2580,7 @@ impl State {
             tools::new_pane_with_context(&pane, launch::agent_pane_context())
         } else {
             let mut configured = args.clone();
+            configured.firecracker_vm = spec.firecracker;
             configured.firecracker_image = spec.firecracker_image;
             tools::spawn_in_checkout(&configured, cwd)
         };

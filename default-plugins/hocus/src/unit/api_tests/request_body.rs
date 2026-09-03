@@ -209,8 +209,10 @@ fn request_body_advertises_registered_extension_tools() {
 /// one of eight, and three descriptions that have to say what a run, a revision and a hit are,
 /// since nothing else in the payload does.
 ///
-/// The five Firecracker properties consume ~660 bytes. Shortening duplicated `cwd` and `hooks`
-/// descriptions keeps them under the same 33kb ceiling.
+/// The five Firecracker properties (`firecracker_vm`/`firecracker_image` on `new_pane`,
+/// `firecracker`/`firecracker_image` on `agent_spawn`, and the `project_use` default) consume
+/// ~660 bytes. Shortening duplicated `cwd` and `hooks` descriptions keeps the payload under
+/// the same 33kb ceiling.
 #[test]
 fn hocus_prompt_contract_keeps_the_tool_payload_under_33_kb() {
     let mut cfg = test_config();

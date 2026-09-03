@@ -687,10 +687,27 @@ pub fn open_command_pane_in_git_checkout_near_plugin(
     source_directory: PathBuf,
     checkout: GitCheckout,
 ) -> Result<PaneId, String> {
+    open_command_pane_in_git_checkout_near_plugin_with_automatic_firecracker_vm(
+        command_to_run,
+        source_directory,
+        checkout,
+        false,
+    )
+}
+
+/// Perform local Git checkout setup on the host, name a Firecracker VM from the resolved
+/// worktree when requested, then open a command pane in its root.
+pub fn open_command_pane_in_git_checkout_near_plugin_with_automatic_firecracker_vm(
+    command_to_run: CommandToRun,
+    source_directory: PathBuf,
+    checkout: GitCheckout,
+    automatic_firecracker_vm: bool,
+) -> Result<PaneId, String> {
     let plugin_command = PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(
         command_to_run,
         source_directory,
         checkout,
+        automatic_firecracker_vm,
     );
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());

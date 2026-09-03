@@ -241,10 +241,9 @@ impl LockedState {
 
     fn identity_path(&self, session: &str, name: &str, worktree: Option<&Path>) -> PathBuf {
         match worktree {
-            Some(worktree) => self.dir.join(format!(
-                "{}.json",
-                vm_id("worktree", &worktree.to_string_lossy())
-            )),
+            Some(worktree) => self
+                .dir
+                .join(format!("{}.json", worktree_vm_name(worktree))),
             None => self.path(session, name),
         }
     }
@@ -2820,6 +2819,10 @@ fn vm_id(session: &str, name: &str) -> String {
     hasher.append(&[0]);
     hasher.append(name.as_bytes());
     format!("{:016x}", hasher.finalize64())
+}
+
+pub(crate) fn worktree_vm_name(worktree: &Path) -> String {
+    vm_id("worktree", &worktree.to_string_lossy())
 }
 
 /// Where the provider's own configuration lives. One answer for every reader and writer of

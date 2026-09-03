@@ -75,7 +75,8 @@ mappings; it never prints credential contents, preserves existing mappings, and 
 them on later runs.
 
 For Hocus, set the project's `firecracker_image` to `zellij-dev`, or select that image in the New
-Agent dialog. A Firecracker image selection requires a Firecracker VM name.
+Agent dialog, then enable **Run in Firecracker**. Hocus names the VM from the resolved host
+worktree. An agent without a mirrored checkout gets a VM of its own.
 
 ## Advanced and manual setup
 
@@ -145,7 +146,7 @@ the same character rules as VM names. The provider never builds a missing image 
 startup.
 
 A Hocus project can store `firecracker_image`. `agent_spawn` and the New Agent dialog can override
-that value for one agent. An image requires a Firecracker VM name.
+that value for one agent. The image does not enable Firecracker by itself.
 
 ## Configure credentials
 
@@ -462,9 +463,13 @@ VM" and having a fresh clone written over a running guest's disk; a stray plain 
 
 ## Agents
 
-The Hocus `agent_spawn` tool and New Agent dialog accept `firecracker` and `firecracker_image`.
-They also support project, branch, and worktree setup. Hocus creates the checkout on the host.
-The provider then synchronizes that checkout with the configured `guest_cwd` in the VM.
+The Hocus `agent_spawn` tool accepts `firecracker: true` and an optional `firecracker_image`; the
+New Agent dialog exposes the same choice as **Run in Firecracker**. Hocus creates the checkout on
+the host, and the provider synchronizes it with the configured `guest_cwd` in the VM. Agents on
+the same resolved worktree share a VM. An agent without a mirrored checkout gets a VM of its own
+and cannot pass a host `cwd`, because an arbitrary host path has no guest equivalent.
+Hocus's generic `new_pane` tool instead accepts an explicit `firecracker_vm` when panes should
+deliberately share a named VM.
 
 Claude hook events use a pane-scoped control sequence on the authenticated SSH terminal. Zellij
 updates the pane agent record and broadcasts the event to plugins. The control sequence does not

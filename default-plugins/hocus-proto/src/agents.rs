@@ -2876,7 +2876,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_pane_serialization_keeps_firecracker_identity() {
+    fn agent_pane_serialization_keeps_firecracker_location() {
         let pane = AgentPane {
             firecracker_image: Some("rust-dev".to_owned()),
             firecracker_worktree: Some("/host/work".to_owned()),
