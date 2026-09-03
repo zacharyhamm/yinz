@@ -56,6 +56,10 @@ const STAGING_DIR: &str = "staging";
 const RECOVERY_NOTE_FILE: &str = "recovery.json";
 /// The guest copy of a file both sides changed is written beside the host copy with this suffix.
 const GUEST_COPY_SUFFIX: &str = ".guest";
+/// Where a manual sync lands the merged paths in the guest before installing them.
+const GUEST_SYNC_STAGING: &str = "/tmp/zellij-sync";
+/// How many times a merge is attempted when the host changes under it.
+const MERGE_ATTEMPTS: u32 = 3;
 const KERNEL_URL: &str = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260826-761f88fbb951-0/x86_64/vmlinux-6.1.182";
 const KERNEL_SHA256: &str = "90f6c45a719c76c08f09ba5e80b4a7f1044e33152c92b9e45a22e87c0021bac5";
 const ROOTFS_URL: &str = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260826-761f88fbb951-0/x86_64/ubuntu-24.04.squashfs";
@@ -168,8 +172,13 @@ struct VmState {
     image: Option<String>,
     #[serde(default)]
     worktree: Option<PathBuf>,
-    pid: i32,
-    start_time: u64,
+    /// The VMM's pid and start time, absent while the record is provisional: written before
+    /// Firecracker is started so that a VMM can never outlive the provider unrecorded, and
+    /// filled in the moment it has a pid. See `settle_provisional_records`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pid: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    start_time: Option<u64>,
     slot: u8,
     guest_ip: Ipv4Addr,
     rootfs: PathBuf,
@@ -178,6 +187,13 @@ struct VmState {
     known_hosts: PathBuf,
     #[serde(default)]
     cgroup: Option<PathBuf>,
+}
+
+impl VmState {
+    /// The VMM process, once the record names one.
+    fn process(&self) -> Option<(i32, u64)> {
+        Some((self.pid?, self.start_time?))
+    }
 }
 
 struct LockedState {
@@ -214,6 +230,7 @@ impl LockedState {
         {
             let _progress = Progress::start("pruning old recoveries");
             prune_recoveries(&dir)?;
+            settle_provisional_records(&dir)?;
         }
         Ok(Self { dir, _lock: lock })
     }
@@ -386,6 +403,10 @@ fn ensure(
     let state_path = locked.identity_path(session, name, worktree.as_deref());
     let entries = locked.entries()?;
     ensure_vm_identity_available(&entries, &state_path, session, name)?;
+    // Whether this user may run the VM under a cgroup of its own is settled here, before
+    // the clone and the boot: a host that refuses is told so at once, not after the
+    // expensive work has been done and undone.
+    let cgroup_root = cgroup_root_or_skip(delegated_cgroup_root(), config.require_resource_limits)?;
     if let Some(mut existing) = read_state_opt(&state_path)? {
         if vm_is_running(&existing) {
             match existing_vm_disposition(&existing, name, image) {
@@ -403,6 +424,24 @@ fn ensure(
                         existing.leases.push(session.to_owned());
                     }
                     write_state(&state_path, &existing)?;
+                    // A VM adopted from an attempt that never got as far as its cgroup is
+                    // placed in one now, under the same rules as a fresh start.
+                    if existing.cgroup.is_none() {
+                        if let Some((pid, _)) = existing.process() {
+                            let id = state_path
+                                .file_stem()
+                                .and_then(|id| id.to_str())
+                                .context("invalid VM state path")?;
+                            existing.cgroup = place_in_cgroup(
+                                id,
+                                pid,
+                                config.memory_mib,
+                                config.vcpu_count,
+                                cgroup_root.as_deref(),
+                            )?;
+                            write_state(&state_path, &existing)?;
+                        }
+                    }
                     if let Some(worktree) = existing.worktree.as_deref() {
                         // The baseline has to describe what the guest is about to get,
                         // and the host may have moved on since the interrupted attempt.
@@ -419,15 +458,13 @@ fn ensure(
                 },
             }
         } else {
-            retain_recovery(locked, &state_path, &existing, "crashed")?;
+            // A record without a process is an attempt that died before Firecracker had a
+            // pid, and whose VMM `settle_provisional_records` could not find: nothing runs.
+            let reason = if existing.ready { "crashed" } else { "unready" };
+            retain_recovery(locked, &state_path, &existing, reason)?;
             let _ = fs::remove_file(&state_path);
         }
     }
-
-    // Whether this user may run the VM under a cgroup of its own is settled here, before
-    // the clone and the boot: a host that refuses is told so at once, not after the
-    // expensive work has been done and undone.
-    let cgroup_root = cgroup_root_or_skip(delegated_cgroup_root(), config.require_resource_limits)?;
 
     let baseline = {
         let _progress = Progress::start("hashing the worktree");
@@ -523,12 +560,38 @@ fn ensure(
     fs::write(&vm_config, serde_json::to_vec_pretty(&firecracker_config)?)
         .context("failed to write Firecracker VM config")?;
     let log_file = File::create(&log).context("failed to create Firecracker log")?;
+    // The record goes on disk before Firecracker exists. The server kills a provider with
+    // its whole process group, and the VMM sits in a group of its own, so a provider killed
+    // after the spawn leaves the VMM running; a record that already names its slot, disk and
+    // API socket lets the next request find and adopt it rather than start another on the
+    // same TAP. Until the pid is known the record is provisional.
+    let mut vm = VmState {
+        ready: false,
+        session: session.to_owned(),
+        leases: vec![session.to_owned()],
+        name: name.to_owned(),
+        image: image.map(str::to_owned),
+        worktree: worktree.clone(),
+        pid: None,
+        start_time: None,
+        slot,
+        guest_ip,
+        rootfs,
+        api_socket,
+        log,
+        known_hosts,
+        cgroup: None,
+    };
+    if let Err(error) = write_state(&state_path, &vm) {
+        cleanup_vm_paths(&vm.rootfs, &vm.api_socket);
+        return Err(error);
+    }
     let mut firecracker = Command::new("unshare");
     firecracker
         .args(["--user", "--map-current-user", "--mount", "--"])
         .arg(&config.firecracker)
         .arg("--api-sock")
-        .arg(&api_socket)
+        .arg(&vm.api_socket)
         .arg("--config-file")
         .arg(&vm_config)
         .stdin(Stdio::null())
@@ -550,52 +613,42 @@ fn ensure(
             Ok(())
         });
     }
-    let mut child = firecracker.spawn().context("failed to start Firecracker")?;
-    let pid = child.id() as i32;
-    let start_time = match wait_for_process_start(pid, Duration::from_secs(2)) {
-        Ok(start_time) => start_time,
+    let mut child = match firecracker.spawn().context("failed to start Firecracker") {
+        Ok(child) => child,
         Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            cleanup_vm_paths(&rootfs, &api_socket);
+            let _ = fs::remove_file(&state_path);
+            cleanup_vm_paths(&vm.rootfs, &vm.api_socket);
             return Err(error);
         },
     };
-    let cgroup = match place_in_cgroup(
+    let pid = child.id() as i32;
+    let recorded = wait_for_process_start(pid, Duration::from_secs(2)).and_then(|start_time| {
+        vm.pid = Some(pid);
+        vm.start_time = Some(start_time);
+        write_state(&state_path, &vm)
+    });
+    if let Err(error) = recorded {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = fs::remove_file(&state_path);
+        cleanup_vm_paths(&vm.rootfs, &vm.api_socket);
+        return Err(error);
+    }
+    let placed = place_in_cgroup(
         &id,
         pid,
         config.memory_mib,
         config.vcpu_count,
         cgroup_root.as_deref(),
-    ) {
-        Ok(cgroup) => cgroup,
-        Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            cleanup_vm_paths(&rootfs, &api_socket);
-            return Err(error);
-        },
-    };
-    let vm = VmState {
-        ready: false,
-        session: session.to_owned(),
-        leases: vec![session.to_owned()],
-        name: name.to_owned(),
-        image: image.map(str::to_owned),
-        worktree: worktree.clone(),
-        pid,
-        start_time,
-        slot,
-        guest_ip,
-        rootfs,
-        api_socket,
-        log,
-        known_hosts,
-        cgroup,
-    };
-    if let Err(error) = write_state(&state_path, &vm) {
+    )
+    .and_then(|cgroup| {
+        vm.cgroup = cgroup;
+        write_state(&state_path, &vm)
+    });
+    if let Err(error) = placed {
         terminate(&vm, Some(&mut child));
         cleanup_files(&vm);
+        let _ = fs::remove_file(&state_path);
         return Err(error);
     }
     finish_provisioning(locked, config, &state_path, vm, Some(&mut child))
@@ -852,16 +905,124 @@ trait GuestCopy {
     fn pull(&self, state: &VmState, config: &Config, dest: &Path) -> Result<()>;
     /// Copy `paths`, relative to `worktree`, into the guest's worktree, replacing whatever
     /// the guest holds at each. A directory is copied as an entry of its own, not with its
-    /// contents; the merge names every entry it wants.
+    /// contents; the merge names every entry it wants. Each path comes with what the pull
+    /// saw there; one the guest has changed since is left alone and returned.
     fn push_paths(
         &self,
         state: &VmState,
         config: &Config,
         worktree: &Path,
-        paths: &[String],
-    ) -> Result<()>;
-    /// Remove `paths`, relative to the guest's worktree, from the guest.
-    fn remove_paths(&self, state: &VmState, config: &Config, paths: &[String]) -> Result<()>;
+        paths: &[(String, GuestEntry)],
+    ) -> Result<Vec<String>>;
+    /// Remove `paths`, relative to the guest's worktree, from the guest, under the same
+    /// condition as `push_paths`: one the guest has changed since the pull stays and is
+    /// returned.
+    fn remove_paths(
+        &self,
+        state: &VmState,
+        config: &Config,
+        paths: &[(String, GuestEntry)],
+    ) -> Result<Vec<String>>;
+}
+
+/// What a pull saw at one guest path, in a form the guest can recompute for itself with
+/// `readlink`, `sha256sum` and a few tests. A manual sync replaces or removes a path only
+/// while the guest still holds exactly this; an agent that wrote to it after the pull keeps
+/// its write, and the next sync merges it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GuestEntry {
+    Absent,
+    Dir,
+    /// The link's target.
+    Symlink(String),
+    /// The file's SHA-256, in hex.
+    File(String),
+}
+
+impl GuestEntry {
+    /// The string the guest-side script computes and compares against.
+    fn fingerprint(&self) -> String {
+        match self {
+            GuestEntry::Absent => "absent".to_owned(),
+            GuestEntry::Dir => "dir".to_owned(),
+            GuestEntry::Symlink(target) => format!("link {target}"),
+            GuestEntry::File(digest) => format!("file {digest}"),
+        }
+    }
+}
+
+fn guest_entry(path: &Path) -> Result<GuestEntry> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(GuestEntry::Absent)
+        },
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", path.display()))
+        },
+    };
+    let kind = metadata.file_type();
+    if kind.is_symlink() {
+        let target = fs::read_link(path)
+            .with_context(|| format!("failed to read the link {}", path.display()))?;
+        Ok(GuestEntry::Symlink(target.to_string_lossy().into_owned()))
+    } else if kind.is_dir() {
+        Ok(GuestEntry::Dir)
+    } else {
+        Ok(GuestEntry::File(sha256_of(path)?))
+    }
+}
+
+/// The shell function the guest-side scripts use to fingerprint a path, mirroring
+/// `GuestEntry::fingerprint` shape for shape.
+const GUEST_FINGERPRINT_FN: &str =
+    "fp() { if [ -L \"$1\" ]; then printf 'link %s' \"$(readlink -- \"$1\")\"; \
+elif [ -d \"$1\" ]; then printf dir; \
+elif [ -f \"$1\" ]; then printf 'file %s' \"$(sha256sum < \"$1\" | cut -d' ' -f1)\"; \
+else printf absent; fi; }";
+
+/// A script that, for each path, runs `install` only when the guest still holds what the
+/// pull saw there, and prints the path otherwise. `install` is shell with `$p` bound to the
+/// quoted path and `$S` to the sync staging directory.
+fn guest_guarded_script(
+    config: &Config,
+    paths: &[(String, GuestEntry)],
+    install: &str,
+    epilogue: &str,
+) -> String {
+    let mut script = format!(
+        "cd {} && S={} && {}\n",
+        shell_quote(&config.guest_cwd.display().to_string()),
+        shell_quote(GUEST_SYNC_STAGING),
+        GUEST_FINGERPRINT_FN
+    );
+    for (path, entry) in paths {
+        script.push_str(&format!(
+            "p={}; if [ \"$(fp \"$p\")\" = {} ]; then {} || exit 1; else printf '%s\\n' \"$p\"; fi\n",
+            shell_quote(path),
+            shell_quote(&entry.fingerprint()),
+            install
+        ));
+    }
+    script.push_str(epilogue);
+    script
+}
+
+/// The install step of a push: a directory is created, or has its mode taken, in place; a
+/// file or link replaces whatever is there.
+const GUEST_INSTALL: &str = "if [ -d \"$S/$p\" ] && [ ! -L \"$S/$p\" ]; then \
+{ [ -d \"$p\" ] && [ ! -L \"$p\" ]; } || rm -rf -- \"$p\"; mkdir -p -- \"$p\" && chmod --reference=\"$S/$p\" -- \"$p\"; \
+else rm -rf -- \"$p\" && mv -T -- \"$S/$p\" \"$p\"; fi";
+
+const GUEST_REMOVE: &str = "rm -rf -- \"$p\"";
+
+/// The paths a guarded script printed: the ones it left alone.
+fn raced_paths(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 struct RsyncOverSsh;
@@ -885,54 +1046,73 @@ impl GuestCopy for RsyncOverSsh {
         state: &VmState,
         config: &Config,
         worktree: &Path,
-        paths: &[String],
-    ) -> Result<()> {
+        paths: &[(String, GuestEntry)],
+    ) -> Result<Vec<String>> {
         if paths.is_empty() {
-            return Ok(());
+            return Ok(vec![]);
         }
         let mut list = Vec::new();
-        for path in paths {
+        for (path, _) in paths {
             list.extend_from_slice(path.as_bytes());
             list.push(0);
         }
         // `--files-from` makes the list exact: a directory named in it is sent as an entry,
-        // not recursed into, and `--relative` recreates its parents. `--force` lets a file
-        // replace a directory the guest has already been told to empty.
+        // not recursed into, and `--relative` recreates its parents. The copy lands in a
+        // staging directory in the guest; the script below moves each path into place only
+        // if the guest still holds what the pull saw there, so a write the guest made in
+        // the meantime is never replaced.
         run_with_input(
             filtered_rsync()
-                .args([
-                    "-a",
-                    "--force",
-                    "--exclude=.git",
-                    "--files-from=-",
-                    "--from0",
-                ])
+                .args(["-a", "--exclude=.git", "--files-from=-", "--from0"])
                 .args(guest_rsync_args(state, config))
                 .arg(with_trailing_slash(worktree))
-                .arg(guest_workspace(state, config)),
+                .arg(format!("root@{}:{}/", state.guest_ip, GUEST_SYNC_STAGING)),
             &list,
             "failed to copy the merged paths into the guest",
-        )
+        )?;
+        let mut raced = Vec::new();
+        // A few hundred quoted paths per command keeps well inside the argument limit.
+        let chunks: Vec<_> = paths.chunks(256).collect();
+        for (index, chunk) in chunks.iter().enumerate() {
+            let epilogue = if index + 1 == chunks.len() {
+                "rm -rf -- \"$S\"\n"
+            } else {
+                ""
+            };
+            let output = run_capturing(
+                ssh_command(state, config).arg(guest_guarded_script(
+                    config,
+                    chunk,
+                    GUEST_INSTALL,
+                    epilogue,
+                )),
+                "failed to install the merged paths in the guest",
+            )?;
+            raced.extend(raced_paths(&output));
+        }
+        Ok(raced)
     }
 
-    fn remove_paths(&self, state: &VmState, config: &Config, paths: &[String]) -> Result<()> {
-        // A few hundred quoted paths per command keeps well inside the argument limit.
+    fn remove_paths(
+        &self,
+        state: &VmState,
+        config: &Config,
+        paths: &[(String, GuestEntry)],
+    ) -> Result<Vec<String>> {
+        let mut raced = Vec::new();
         for chunk in paths.chunks(256) {
-            let script = format!(
-                "cd {} && rm -rf -- {}",
-                shell_quote(&config.guest_cwd.display().to_string()),
-                chunk
-                    .iter()
-                    .map(|path| shell_quote(path))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            );
-            run(
-                ssh_command(state, config).arg(script),
+            let output = run_capturing(
+                ssh_command(state, config).arg(guest_guarded_script(
+                    config,
+                    chunk,
+                    GUEST_REMOVE,
+                    "",
+                )),
                 "failed to remove paths from the guest",
             )?;
+            raced.extend(raced_paths(&output));
         }
-        Ok(())
+        Ok(raced)
     }
 }
 
@@ -943,8 +1123,11 @@ struct GuestSync {
     report: MergeReport,
     /// `None` for a VM without a worktree.
     baseline: Option<Baseline>,
-    push: Vec<String>,
-    remove: Vec<String>,
+    /// The baseline the merge started from.
+    previous: Baseline,
+    /// Each path with what the pull saw at it in the guest.
+    push: Vec<(String, GuestEntry)>,
+    remove: Vec<(String, GuestEntry)>,
 }
 
 /// Pull the guest's copy of the worktree and merge it into the host's.
@@ -961,13 +1144,46 @@ fn sync_from_guest(state: &VmState, config: &Config, copy: &dyn GuestCopy) -> Re
         copy.pull(state, config, &guest)?;
     }
     let _progress = Progress::start("merging the guest's changes");
-    let merged = merge_worktrees(&baseline, worktree, &guest, &undo)?;
+    let merged = retry_on_host_change(MERGE_ATTEMPTS, || {
+        merge_worktrees(&baseline, worktree, &guest, &undo)
+    })?;
+    let with_entries = |paths: Vec<String>| -> Result<Vec<(String, GuestEntry)>> {
+        paths
+            .into_iter()
+            .map(|path| {
+                let entry = guest_entry(&guest.join(&path))?;
+                Ok((path, entry))
+            })
+            .collect()
+    };
     Ok(GuestSync {
         report: merged.report,
         baseline: Some(merged.baseline),
-        push: merged.push,
-        remove: merged.remove,
+        previous: baseline,
+        push: with_entries(merged.push)?,
+        remove: with_entries(merged.remove)?,
     })
+}
+
+/// Run `merge` again when the host changed under it, a few times over. A save landing
+/// between the staging of the worktree and the merge's write to that path is ordinary in a
+/// live worktree; the next attempt stages it as the host change it is. Any other failure,
+/// and the last attempt's, is returned as it is.
+fn retry_on_host_change(
+    attempts: u32,
+    mut merge: impl FnMut() -> Result<Merged>,
+) -> Result<Merged> {
+    let mut attempt = 1;
+    loop {
+        match merge() {
+            Err(error)
+                if attempt < attempts && error.chain().any(|cause| cause.is::<HostChanged>()) =>
+            {
+                attempt += 1;
+            },
+            result => return result,
+        }
+    }
 }
 
 /// A scratch directory beside the VM's disk for the copies in and out of the guest.
@@ -1072,6 +1288,58 @@ fn write_json_atomically<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     Ok(())
 }
 
+/// A file built beside its destination and renamed onto it by [`Staged::commit`]. Dropped
+/// uncommitted, the partial file is removed, so a failed or interrupted build leaves the
+/// previous file - an image VMs still clone, a kernel they still boot - untouched.
+#[derive(Debug)]
+struct Staged {
+    partial: PathBuf,
+    destination: PathBuf,
+    committed: bool,
+}
+
+/// Run `build` against `<destination>.partial`, replacing whatever an earlier attempt left there.
+fn stage_file<F>(destination: &Path, build: F) -> Result<Staged>
+where
+    F: FnOnce(&Path) -> Result<()>,
+{
+    let mut name = destination
+        .file_name()
+        .context("cannot stage a file with no name")?
+        .to_owned();
+    name.push(".partial");
+    let staged = Staged {
+        partial: destination.with_file_name(name),
+        destination: destination.to_owned(),
+        committed: false,
+    };
+    build(&staged.partial)
+        .with_context(|| format!("failed to build {}", staged.partial.display()))?;
+    Ok(staged)
+}
+
+impl Staged {
+    fn commit(mut self) -> Result<()> {
+        fs::rename(&self.partial, &self.destination).with_context(|| {
+            format!(
+                "failed to move {} into place at {}",
+                self.partial.display(),
+                self.destination.display()
+            )
+        })?;
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = fs::remove_file(&self.partial);
+        }
+    }
+}
+
 /// The baseline of a worktree as the guest sees it: staged through the gitignore filter
 /// first, so ignored outputs and `.git` are not part of it.
 fn worktree_baseline(worktree: &Path) -> Result<Baseline> {
@@ -1143,6 +1411,8 @@ struct MergeReport {
 #[derive(Debug, PartialEq, Eq)]
 struct Conflict {
     path: String,
+    /// `<path>.guest`, or `<path>.guest.N` when that name is already in use: a guest copy
+    /// never overwrites an existing path, an earlier conflict's copy included.
     guest_copy: Option<String>,
 }
 
@@ -1209,6 +1479,8 @@ fn plan_merge(baseline: &Baseline, host: &Baseline, guest: &Baseline) -> MergePl
         .chain(host.keys())
         .chain(guest.keys())
         .collect();
+    // Every name either tree holds, plus every guest copy the plan has handed out so far.
+    let mut taken: BTreeSet<String> = paths.iter().map(|path| (*path).clone()).collect();
     for path in paths {
         let before = baseline.get(path);
         let on_host = host.get(path);
@@ -1231,7 +1503,7 @@ fn plan_merge(baseline: &Baseline, host: &Baseline, guest: &Baseline) -> MergePl
             plan.applied.push(path.clone());
             continue;
         }
-        let guest_copy = on_guest.map(|_| format!("{path}{GUEST_COPY_SUFFIX}"));
+        let guest_copy = on_guest.map(|_| guest_copy_name(path, &mut taken));
         // The guest converges on the host's view of the path: the host copy where there is
         // one, nothing where the host deleted it - its own copy survives beside it.
         match on_host {
@@ -1253,13 +1525,45 @@ fn plan_merge(baseline: &Baseline, host: &Baseline, guest: &Baseline) -> MergePl
     plan
 }
 
+/// The name the guest copy of `path` is written under: `path.guest`, or the first numbered
+/// `path.guest.N` when that is `taken`. The name chosen joins `taken`.
+fn guest_copy_name(path: &str, taken: &mut BTreeSet<String>) -> String {
+    let base = format!("{path}{GUEST_COPY_SUFFIX}");
+    let mut name = base.clone();
+    let mut n = 1;
+    while taken.contains(&name) {
+        name = format!("{base}.{n}");
+        n += 1;
+    }
+    taken.insert(name.clone());
+    name
+}
+
 /// Refuse a plan that could not be carried out in full before any of it is. What is checked
-/// is what `apply_merge` would otherwise fail on halfway: a copy whose source has gone, and a
+/// is what `apply_merge` would otherwise fail on halfway: a copy whose source has gone, a
 /// file or link taking the place of a directory the plan does not empty - one still holding
 /// something the merge never sees, an ignored output say, which `copy_entry` refuses to
-/// remove.
+/// remove - and a destination that would be reached through a symlink on the host, which
+/// would land the copy wherever the link points. An ancestor the plan itself replaces with a
+/// directory from the guest is fine: copies go parents first, so the link is gone before
+/// anything is written under it.
 fn validate_merge(plan: &MergePlan, worktree: &Path, guest: &Path) -> Result<()> {
     let deletions: HashSet<&str> = plan.deletions.iter().map(String::as_str).collect();
+    let replaced_dirs: HashSet<&str> = plan
+        .copies
+        .iter()
+        .filter(|path| fs::symlink_metadata(guest.join(path)).is_ok_and(|entry| entry.is_dir()))
+        .map(String::as_str)
+        .collect();
+    let destinations = plan.copies.iter().chain(&plan.deletions).chain(
+        plan.conflicts
+            .iter()
+            .filter_map(|conflict| conflict.guest_copy.as_ref()),
+    );
+    for destination in destinations {
+        refuse_symlink_ancestors(worktree, destination, &replaced_dirs)
+            .context("nothing was merged")?;
+    }
     let sources = plan
         .copies
         .iter()
@@ -1308,6 +1612,53 @@ fn first_survivor(worktree: &Path, dir: &str, deletions: &HashSet<&str>) -> Resu
     Ok(None)
 }
 
+/// A host path that no longer matches the staged copy the merge was planned from: a save
+/// landed between the two. The merge is rolled back and, a few times over, tried again.
+#[derive(Debug)]
+struct HostChanged(String);
+
+impl std::fmt::Display for HostChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} changed on the host while the merge was being prepared",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for HostChanged {}
+
+/// Refuse to reach `relative` through a symlink: every ancestor below the worktree root has
+/// to be a directory or absent, or a copy meant for the worktree would land wherever the link
+/// points. Ancestors in `replaced` are ones the plan turns into directories before it gets
+/// here. The root itself may be a link; the worktree is wherever it says.
+fn refuse_symlink_ancestors(
+    worktree: &Path,
+    relative: &str,
+    replaced: &HashSet<&str>,
+) -> Result<()> {
+    let mut ancestor = String::new();
+    let components: Vec<&str> = relative.split('/').collect();
+    for component in &components[..components.len().saturating_sub(1)] {
+        if !ancestor.is_empty() {
+            ancestor.push('/');
+        }
+        ancestor.push_str(component);
+        if replaced.contains(ancestor.as_str()) {
+            continue;
+        }
+        let path = worktree.join(&ancestor);
+        if fs::symlink_metadata(&path).is_ok_and(|entry| entry.file_type().is_symlink()) {
+            return Err(anyhow!(
+                "refusing to write through the symlink {} on the host",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// One step of a merge, recorded before the step so it can be undone.
 #[derive(Debug)]
 enum UndoStep {
@@ -1320,21 +1671,44 @@ enum UndoStep {
     RestoreDir { path: PathBuf, mode: u32 },
 }
 
-fn snapshot(log: &mut Vec<UndoStep>, worktree: &Path, relative: &str, undo: &Path) -> Result<()> {
+/// Record what is at `relative` on the host before a step touches it, having checked that it
+/// is still what the plan was made from: `expected` is the staged host's hash of the path,
+/// or `None` when it had none. The live path has to be reached without following a symlink,
+/// whatever `validate_merge` saw earlier.
+fn snapshot(
+    log: &mut Vec<UndoStep>,
+    worktree: &Path,
+    relative: &str,
+    undo: &Path,
+    expected: Option<u64>,
+) -> Result<()> {
+    refuse_symlink_ancestors(worktree, relative, &HashSet::new())?;
     let path = worktree.join(relative);
+    let changed = || anyhow::Error::new(HostChanged(relative.to_owned()));
     let step = match fs::symlink_metadata(&path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => UndoStep::Remove(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if expected.is_some() {
+                return Err(changed());
+            }
+            UndoStep::Remove(path)
+        },
         Err(error) => {
             return Err(error).with_context(|| format!("failed to read {}", path.display()))
         },
-        Ok(metadata) if metadata.is_dir() => UndoStep::RestoreDir {
-            path,
-            mode: metadata.permissions().mode(),
-        },
-        Ok(_) => {
-            let saved = undo.join(relative);
-            copy_entry(&path, &saved)?;
-            UndoStep::RestoreFile { path, saved }
+        Ok(metadata) => {
+            if Some(entry_hash(&path, &metadata)?) != expected {
+                return Err(changed());
+            }
+            if metadata.is_dir() {
+                UndoStep::RestoreDir {
+                    path,
+                    mode: metadata.permissions().mode(),
+                }
+            } else {
+                let saved = undo.join(relative);
+                copy_entry(&path, &saved)?;
+                UndoStep::RestoreFile { path, saved }
+            }
         },
     };
     log.push(step);
@@ -1372,22 +1746,30 @@ fn roll_back(log: Vec<UndoStep>) -> Result<()> {
 
 /// Carry out the plan on the host worktree, or leave the worktree as it was. Every step is
 /// recorded before it is taken; the first that fails rolls the ones before it back, so a
-/// merge is applied whole or not at all.
-fn apply_merge(plan: &MergePlan, worktree: &Path, guest: &Path, undo: &Path) -> Result<()> {
+/// merge is applied whole or not at all. `host` is the staged host tree the plan was made
+/// from: a path that no longer matches it fails the step as `HostChanged`.
+fn apply_merge(
+    plan: &MergePlan,
+    host: &Baseline,
+    worktree: &Path,
+    guest: &Path,
+    undo: &Path,
+) -> Result<()> {
     let mut log = Vec::new();
+    let expected = |path: &str| host.get(path).copied();
     let applied = (|| -> Result<()> {
         for conflict in &plan.conflicts {
             if let Some(copy) = &conflict.guest_copy {
-                snapshot(&mut log, worktree, copy, undo)?;
+                snapshot(&mut log, worktree, copy, undo, expected(copy))?;
                 copy_entry(&guest.join(&conflict.path), &worktree.join(copy))?;
             }
         }
         for path in &plan.deletions {
-            snapshot(&mut log, worktree, path, undo)?;
+            snapshot(&mut log, worktree, path, undo, expected(path))?;
             remove_entry(&worktree.join(path))?;
         }
         for path in &plan.copies {
-            snapshot(&mut log, worktree, path, undo)?;
+            snapshot(&mut log, worktree, path, undo, expected(path))?;
             copy_entry(&guest.join(path), &worktree.join(path))?;
         }
         Ok(())
@@ -1448,7 +1830,7 @@ fn merge_worktrees(
     let guest_entries = worktree_baseline(guest)?;
     let plan = plan_merge(baseline, &host, &guest_entries);
     validate_merge(&plan, worktree, guest)?;
-    apply_merge(&plan, worktree, guest, undo)?;
+    apply_merge(&plan, &host, worktree, guest, undo)?;
     let baseline = merged_baseline(&plan, &host, &guest_entries, worktree);
     Ok(Merged {
         report: MergeReport {
@@ -1785,10 +2167,35 @@ fn stop_one(
 ///
 /// A VM identified by session and name lives at `path(session, name)`, so its state file
 /// moves; one identified by its worktree keeps its path and only its fields change. Every
-/// conflict is found before anything is written, so a refused rename changes nothing. The
-/// VM directory, disk and cgroup stay where they are - the state records them by absolute
-/// path and nothing derives them from the state file's name after creation.
+/// conflict is found before anything is written, so a refused rename changes nothing, and a
+/// write that fails part-way rolls the earlier ones back, so Zellij - which keeps using the
+/// old name - never loses sight of a VM. The VM directory, disk and cgroup stay where they
+/// are - the state records them by absolute path and nothing derives them from the state
+/// file's name after creation.
 fn rename_session(locked: &LockedState, from: &str, to: &str) -> Result<()> {
+    rename_session_with(locked, from, to, write_state, |path| {
+        fs::remove_file(path)
+            .with_context(|| format!("failed to remove the old state file {}", path.display()))
+    })
+}
+
+/// How to put one path back the way the rename found it.
+enum RenameUndo {
+    Rewrite(PathBuf, Box<VmState>),
+    Remove(PathBuf),
+}
+
+fn rename_session_with<W, R>(
+    locked: &LockedState,
+    from: &str,
+    to: &str,
+    mut write: W,
+    mut remove: R,
+) -> Result<()>
+where
+    W: FnMut(&Path, &VmState) -> Result<()>,
+    R: FnMut(&Path) -> Result<()>,
+{
     if from == to {
         return Ok(());
     }
@@ -1815,29 +2222,75 @@ fn rename_session(locked: &LockedState, from: &str, to: &str) -> Result<()> {
         };
         moves.push((path, state, destination));
     }
-    for (path, state, destination) in moves {
-        let mut state = state.clone();
-        if state.session == from {
-            state.session = to.to_owned();
-        }
-        for lease in &mut state.leases {
-            if lease == from {
-                *lease = to.to_owned();
+    // Every step records how to undo itself before the next is taken, so a failure leaves
+    // the state files exactly as the rename found them.
+    let mut undo = vec![];
+    let mut apply = || -> Result<()> {
+        for (path, original, destination) in &moves {
+            let renamed = renamed_state(original, from, to);
+            match destination {
+                Some(destination) => {
+                    write(destination, &renamed)?;
+                    undo.push(RenameUndo::Remove(destination.clone()));
+                    remove(path)?;
+                    undo.push(RenameUndo::Rewrite(
+                        (*path).clone(),
+                        Box::new((*original).clone()),
+                    ));
+                },
+                None => {
+                    write(path, &renamed)?;
+                    undo.push(RenameUndo::Rewrite(
+                        (*path).clone(),
+                        Box::new((*original).clone()),
+                    ));
+                },
             }
         }
-        let mut seen = HashSet::new();
-        state.leases.retain(|lease| seen.insert(lease.clone()));
-        match destination {
-            Some(destination) => {
-                write_state(&destination, &state)?;
-                fs::remove_file(path).with_context(|| {
-                    format!("failed to remove the old state file {}", path.display())
-                })?;
+        Ok(())
+    };
+    let Err(error) = apply() else {
+        return Ok(());
+    };
+    let mut error = error.context(format!(
+        "failed to rename session {from:?} to {to:?}; nothing was renamed"
+    ));
+    for step in undo.into_iter().rev() {
+        let (path, result) = match step {
+            RenameUndo::Rewrite(path, original) => {
+                let result = write(&path, &original);
+                (path, result)
             },
-            None => write_state(path, &state)?,
+            RenameUndo::Remove(path) => {
+                let result = remove(&path);
+                (path, result)
+            },
+        };
+        if let Err(rollback) = result {
+            error = error.context(format!(
+                "rolling back {} also failed: {rollback:#}",
+                path.display()
+            ));
         }
     }
-    Ok(())
+    Err(error)
+}
+
+/// `state` as it reads once `from` has become `to`: its owner and every lease `from` held,
+/// with a lease `to` already held folded into one.
+fn renamed_state(state: &VmState, from: &str, to: &str) -> VmState {
+    let mut state = state.clone();
+    if state.session == from {
+        state.session = to.to_owned();
+    }
+    for lease in &mut state.leases {
+        if lease == from {
+            *lease = to.to_owned();
+        }
+    }
+    let mut seen = HashSet::new();
+    state.leases.retain(|lease| seen.insert(lease.clone()));
+    state
 }
 
 /// Releases every VM the session holds, returning the merge warnings of all of them. One
@@ -1930,21 +2383,40 @@ fn sync_one(
         ));
     }
     let synced = sync_from_guest(&state, config, copy)?;
-    let (Some(worktree), Some(baseline)) = (state.worktree.as_deref(), synced.baseline) else {
+    let (Some(worktree), Some(mut baseline)) = (state.worktree.as_deref(), synced.baseline) else {
         return Ok(vec![]);
     };
     // Removals first: a directory the host turned into a file has to be emptied before the
     // file can take its place.
-    {
+    let mut raced = {
         let _progress = Progress::start("removing the host's deletions from the guest");
-        copy.remove_paths(&state, config, &synced.remove)?;
-    }
-    {
+        copy.remove_paths(&state, config, &synced.remove)?
+    };
+    raced.extend({
         let _progress = Progress::start("copying the merged paths into the guest");
-        copy.push_paths(&state, config, worktree, &synced.push)?;
+        copy.push_paths(&state, config, worktree, &synced.push)?
+    });
+    raced.sort();
+    raced.dedup();
+    // A path the guest changed after the pull was left as the guest has it. The baseline
+    // keeps what it said before the merge, so the next sync sees a change on both sides and
+    // keeps both copies, rather than reading the guest's write as the only change and
+    // letting it replace the host's.
+    for path in &raced {
+        match synced.previous.get(path) {
+            Some(hash) => baseline.insert(path.clone(), *hash),
+            None => baseline.remove(path),
+        };
     }
     write_baseline(&baseline_path(&state)?, &baseline)?;
-    Ok(synced.report.warnings(worktree))
+    let mut warnings = synced.report.warnings(worktree);
+    warnings.extend(raced.iter().map(|path| {
+        format!(
+            "{}: changed in the guest during the sync; kept the guest copy, it will be merged next time",
+            worktree.join(path).display()
+        )
+    }));
+    Ok(warnings)
 }
 
 fn terminate(state: &VmState, mut child: Option<&mut Child>) {
@@ -1954,7 +2426,10 @@ fn terminate(state: &VmState, mut child: Option<&mut Child>) {
         }
         return;
     }
-    unsafe { libc::kill(state.pid, libc::SIGTERM) };
+    let Some((pid, _)) = state.process() else {
+        return;
+    };
+    unsafe { libc::kill(pid, libc::SIGTERM) };
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         if let Some(child) = child.as_mut() {
@@ -1971,7 +2446,7 @@ fn terminate(state: &VmState, mut child: Option<&mut Child>) {
         let _ = child.wait();
     } else if vm_is_running(state) {
         unsafe {
-            libc::kill(state.pid, libc::SIGKILL);
+            libc::kill(pid, libc::SIGKILL);
         }
         // Whoever called is about to remove the VM's cgroup and disk, and a process that
         // has been signalled is not yet gone: the cgroup refuses to go while it is still a
@@ -2212,8 +2687,74 @@ fn prune_recoveries(state: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A provisional record - one with no pid yet - is not running: under the lock, the attempt
+/// that wrote it is gone, and `settle_provisional_records` has already looked for its VMM.
 fn vm_is_running(state: &VmState) -> bool {
-    process_start_time(state.pid) == Some(state.start_time)
+    state
+        .process()
+        .is_some_and(|(pid, start_time)| process_start_time(pid) == Some(start_time))
+}
+
+/// Give every provisional record its process, where one exists. A provider killed between
+/// writing the record and recording the pid leaves Firecracker running in its own process
+/// group; it is found by the `--api-sock <path>` in its argv, which names this record's
+/// socket and no other. A record whose VMM cannot be found stays provisional, and every
+/// reader treats it as a VM that is not running. Runs under the exclusive lock, so a
+/// provisional record can only belong to a provider that is no longer there.
+fn settle_provisional_records(dir: &Path) -> Result<()> {
+    for entry in fs::read_dir(dir).context("failed to read Firecracker state")? {
+        let path = entry?.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(mut state) = read_state_opt(&path)? else {
+            continue;
+        };
+        if state.process().is_some() {
+            continue;
+        }
+        let Some(pid) = find_vmm_by_api_socket(&state.api_socket) else {
+            continue;
+        };
+        let Some(start_time) = process_start_time(pid) else {
+            continue;
+        };
+        state.pid = Some(pid);
+        state.start_time = Some(start_time);
+        write_state(&path, &state)?;
+    }
+    Ok(())
+}
+
+/// The pid of a process whose argv carries `--api-sock <api_socket>`, if any.
+fn find_vmm_by_api_socket(api_socket: &Path) -> Option<i32> {
+    find_process_by_argv_pair(Path::new("/proc"), "--api-sock", api_socket)
+}
+
+fn find_process_by_argv_pair(proc: &Path, flag: &str, value: &Path) -> Option<i32> {
+    use std::os::unix::ffi::OsStrExt;
+    let wanted = value.as_os_str().as_bytes();
+    let entries = fs::read_dir(proc).ok()?;
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        let Ok(cmdline) = fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let args: Vec<&[u8]> = cmdline.split(|byte| *byte == 0).collect();
+        if args
+            .windows(2)
+            .any(|pair| pair[0] == flag.as_bytes() && pair[1] == wanted)
+        {
+            return Some(pid);
+        }
+    }
+    None
 }
 
 fn process_start_time(pid: i32) -> Option<u64> {
@@ -2241,12 +2782,21 @@ fn wait_for_process_start(pid: i32, timeout: Duration) -> Result<u64> {
 
 fn read_state(path: &Path) -> Result<VmState> {
     let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    serde_json::from_slice(&bytes).with_context(|| {
+    let state: VmState = serde_json::from_slice(&bytes).with_context(|| {
         format!(
             "invalid VM state in {}; repair or remove it",
             path.display()
         )
-    })
+    })?;
+    // A pid without its start time cannot be checked against /proc, and a start time
+    // without a pid names nothing: neither is a record this provider wrote.
+    if state.pid.is_some() != state.start_time.is_some() {
+        return Err(anyhow!(
+            "invalid VM state in {}: pid and start_time must be recorded together; repair or remove it",
+            path.display()
+        ));
+    }
+    Ok(state)
 }
 
 /// A state file that is not there is a VM that is not there. One that is there but cannot
@@ -3303,16 +3853,25 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
         },
         None => output.join("ubuntu-24.04.ext4"),
     };
-    let file = File::create(&rootfs)?;
-    file.set_len(disk_gib * 1024 * 1024 * 1024)?;
-    run(
-        Command::new("mkfs.ext4")
-            .args(["-q", "-F", "-d"])
-            .arg(&root)
-            .arg(&rootfs),
-        "failed to create the Firecracker ext4 image",
-    )?;
-    fs::copy(kernel, output.join("vmlinux-6.1.182"))?;
+    // The image and kernel are built beside their destinations and moved into place only
+    // once everything that can fail has passed: a rebuild that dies half-way must leave the
+    // image VMs are cloning right now, and the kernel they boot, as they were.
+    let staged_image = stage_file(&rootfs, |partial| {
+        File::create(partial)?.set_len(disk_gib * 1024 * 1024 * 1024)?;
+        run(
+            Command::new("mkfs.ext4")
+                .args(["-q", "-F", "-d"])
+                .arg(&root)
+                .arg(partial),
+            "failed to create the Firecracker ext4 image",
+        )
+    })?;
+    let kernel_destination = output.join("vmlinux-6.1.182");
+    let staged_kernel = stage_file(&kernel_destination, |partial| {
+        fs::copy(&kernel, partial)
+            .map(drop)
+            .context("failed to copy the kernel")
+    })?;
     let firecracker =
         find_in_path(Path::new("firecracker")).context("firecracker is not installed")?;
     ensure_secure_dir(&config_dir())?;
@@ -3320,7 +3879,7 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
     let config = if config_path.exists() {
         let mut config: Config = serde_json::from_slice(&fs::read(&config_path)?)?;
         config.firecracker = firecracker;
-        config.kernel = output.join("vmlinux-6.1.182");
+        config.kernel = kernel_destination;
         config.images_dir = output.join("images");
         config.ssh_private_key = private_key;
         config.rootfs = default_rootfs(&config.rootfs, &rootfs, image.is_some());
@@ -3328,7 +3887,7 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
     } else {
         Config {
             firecracker,
-            kernel: output.join("vmlinux-6.1.182"),
+            kernel: kernel_destination,
             rootfs,
             images_dir: output.join("images"),
             ssh_private_key: private_key,
@@ -3342,7 +3901,10 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
             extra: serde_json::Map::new(),
         }
     };
-    fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
+    staged_kernel.commit()?;
+    staged_image.commit()?;
+    write_json_atomically(&config_path, &config)
+        .with_context(|| format!("failed to write {}", config_path.display()))?;
     println!("Wrote image and key to {}", output.display());
     println!("Wrote provider config to {}", config_path.display());
     Ok(())
@@ -4530,6 +5092,18 @@ fn run(command: &mut Command, context: &str) -> Result<()> {
     }
 }
 
+/// `run`, returning what the command wrote to stdout. Stderr goes where the provider's does.
+fn run_capturing(command: &mut Command, context: &str) -> Result<String> {
+    let output = command
+        .stderr(Stdio::inherit())
+        .output()
+        .with_context(|| context.to_owned())?;
+    if !output.status.success() {
+        return Err(anyhow!("{context}: {}", output.status));
+    }
+    String::from_utf8(output.stdout).with_context(|| format!("{context}: non-UTF-8 output"))
+}
+
 /// `run`, with `input` on the command's stdin.
 fn run_with_input(command: &mut Command, input: &[u8], context: &str) -> Result<()> {
     let mut child = command
@@ -4704,8 +5278,8 @@ mod tests {
             name: "review".to_owned(),
             image: None,
             worktree: None,
-            pid: i32::MAX,
-            start_time: 0,
+            pid: Some(i32::MAX),
+            start_time: Some(0),
             slot: 0,
             guest_ip: Ipv4Addr::new(172, 31, 0, 2),
             rootfs,
@@ -4959,6 +5533,56 @@ mod tests {
         assert!(!should_build_image(false, true));
         assert!(should_build_image(false, false));
         assert!(should_build_image(true, true));
+    }
+
+    #[test]
+    fn staged_file_replaces_the_destination_only_on_commit() {
+        let root = tempfile::tempdir().unwrap();
+        let image = root.path().join("dev.ext4");
+        fs::write(&image, "old").unwrap();
+
+        let staged = stage_file(&image, |partial| {
+            assert_eq!(partial, root.path().join("dev.ext4.partial"));
+            fs::write(partial, "new").context("write")
+        })
+        .unwrap();
+        assert_eq!(fs::read_to_string(&image).unwrap(), "old");
+
+        staged.commit().unwrap();
+        assert_eq!(fs::read_to_string(&image).unwrap(), "new");
+        assert!(!root.path().join("dev.ext4.partial").exists());
+    }
+
+    #[test]
+    fn staged_file_failure_keeps_the_previous_file() {
+        let root = tempfile::tempdir().unwrap();
+        let image = root.path().join("dev.ext4");
+        fs::write(&image, "old").unwrap();
+
+        let error = stage_file(&image, |partial| {
+            fs::write(partial, "half").unwrap();
+            Err(anyhow!("mkfs failed"))
+        })
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("mkfs failed"));
+        assert_eq!(fs::read_to_string(&image).unwrap(), "old");
+        assert!(!root.path().join("dev.ext4.partial").exists());
+    }
+
+    #[test]
+    fn staged_file_dropped_without_commit_is_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let image = root.path().join("dev.ext4");
+        fs::write(&image, "old").unwrap();
+
+        let staged =
+            stage_file(&image, |partial| fs::write(partial, "new").context("write")).unwrap();
+        assert!(root.path().join("dev.ext4.partial").exists());
+        drop(staged);
+
+        assert_eq!(fs::read_to_string(&image).unwrap(), "old");
+        assert!(!root.path().join("dev.ext4.partial").exists());
     }
 
     #[test]
@@ -5389,8 +6013,9 @@ mod tests {
     fn terminating_an_owned_child_reaps_it_without_the_grace_period() {
         let mut child = Command::new("sleep").arg("30").spawn().unwrap();
         let mut state = vm_state(PathBuf::new(), PathBuf::new(), None);
-        state.pid = child.id() as i32;
-        state.start_time = wait_for_process_start(state.pid, Duration::from_secs(1)).unwrap();
+        let pid = child.id() as i32;
+        state.pid = Some(pid);
+        state.start_time = Some(wait_for_process_start(pid, Duration::from_secs(1)).unwrap());
 
         let started = Instant::now();
         terminate(&state, Some(&mut child));
@@ -5465,6 +6090,105 @@ mod tests {
             theirs
         );
         assert_eq!(read_state(&leased_path).unwrap(), leased);
+    }
+
+    /// Two owned VMs and a leased one, as `rename_session_with` finds them.
+    fn renamable_session(locked: &LockedState) -> Vec<(PathBuf, VmState)> {
+        let first = vm_state(PathBuf::from("a/rootfs.ext4"), PathBuf::new(), None);
+        let mut second = first.clone();
+        second.name = "second".to_owned();
+        let mut leased = first.clone();
+        leased.name = "shared".to_owned();
+        leased.worktree = Some(PathBuf::from("/repo"));
+        leased.leases = vec!["other".to_owned(), "work".to_owned()];
+        let entries = vec![
+            (locked.path("work", "review"), first),
+            (locked.path("work", "second"), second),
+            (
+                locked.identity_path("work", "shared", Some(Path::new("/repo"))),
+                leased,
+            ),
+        ];
+        for (path, state) in &entries {
+            write_state(path, state).unwrap();
+        }
+        entries
+    }
+
+    fn assert_untouched(locked: &LockedState, originals: &[(PathBuf, VmState)]) {
+        for (path, state) in originals {
+            assert_eq!(&read_state(path).unwrap(), state, "{}", path.display());
+        }
+        for name in ["review", "second"] {
+            assert!(!locked.path("renamed", name).exists(), "{name} was moved");
+        }
+    }
+
+    /// A write that fails after earlier entries have moved puts every one of them back, so
+    /// the old session name still finds all of its VMs.
+    #[test]
+    fn rename_session_rolls_back_when_a_later_write_fails() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let originals = renamable_session(&locked);
+        let mut writes = 0;
+
+        let error = rename_session_with(
+            &locked,
+            "work",
+            "renamed",
+            |path, state| {
+                writes += 1;
+                if writes == 3 {
+                    return Err(anyhow!("disk full"));
+                }
+                write_state(path, state)
+            },
+            |path| fs::remove_file(path).context("remove"),
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("disk full"), "{error:#}");
+        assert!(format!("{error:#}").contains("nothing was renamed"));
+        assert_untouched(&locked, &originals);
+    }
+
+    /// Failing to remove the old file removes the new one, and a rollback step that fails
+    /// itself is reported beside the original error rather than in its place.
+    #[test]
+    fn rename_session_rolls_back_when_removing_the_old_file_fails() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let originals = renamable_session(&locked);
+        let mut removes = 0;
+
+        let error = rename_session_with(&locked, "work", "renamed", write_state, |path| {
+            removes += 1;
+            match removes {
+                1 => Err(anyhow!("read-only state dir")),
+                2 => Err(anyhow!("still read-only")),
+                _ => fs::remove_file(path).context("remove"),
+            }
+        })
+        .unwrap_err();
+
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("read-only state dir"), "{rendered}");
+        assert!(rendered.contains("rolling back"), "{rendered}");
+        assert!(rendered.contains("still read-only"), "{rendered}");
+        for (path, state) in &originals {
+            assert_eq!(&read_state(path).unwrap(), state);
+        }
+        // The one rollback that failed was removing the moved copy, which therefore remains.
+        let moved: Vec<_> = ["review", "second"]
+            .iter()
+            .filter(|name| locked.path("renamed", name).exists())
+            .collect();
+        assert_eq!(
+            moved.len(),
+            1,
+            "exactly the copy whose removal failed remains"
+        );
     }
 
     #[test]
@@ -5947,6 +6671,274 @@ mod tests {
         );
     }
 
+    /// A guest copy is written under a name nothing holds yet: an earlier conflict's
+    /// `.guest` file, unchanged on both sides since, is not overwritten by the next one.
+    #[test]
+    fn a_guest_copy_never_overwrites_an_existing_host_file() {
+        let fixture = MergeFixture::new(&[("both.rs", "before"), ("both.rs.guest", "earlier")]);
+        fs::write(fixture.host.path().join("both.rs"), "host").unwrap();
+        fs::write(fixture.guest.path().join("both.rs"), "guest").unwrap();
+
+        let merged = fixture.merge_fully();
+
+        assert_eq!(
+            merged.report.conflicts,
+            [Conflict {
+                path: "both.rs".to_owned(),
+                guest_copy: Some("both.rs.guest.1".to_owned()),
+            }]
+        );
+        assert_eq!(fixture.host_file("both.rs").as_deref(), Some("host"));
+        assert_eq!(
+            fixture.host_file("both.rs.guest").as_deref(),
+            Some("earlier")
+        );
+        assert_eq!(
+            fixture.host_file("both.rs.guest.1").as_deref(),
+            Some("guest")
+        );
+        assert_eq!(merged.push, ["both.rs", "both.rs.guest.1"]);
+
+        // A name only the guest holds, or one the plan just handed out, is taken too.
+        let baseline = Baseline::from([("a".to_owned(), 1)]);
+        let host = Baseline::from([("a".to_owned(), 2)]);
+        let guest = Baseline::from([
+            ("a".to_owned(), 3),
+            ("a.guest".to_owned(), 4),
+            ("a.guest.1".to_owned(), 5),
+        ]);
+        let plan = plan_merge(&baseline, &host, &guest);
+        assert_eq!(plan.conflicts[0].guest_copy.as_deref(), Some("a.guest.2"));
+        let mut taken = BTreeSet::from(["b.guest".to_owned()]);
+        assert_eq!(guest_copy_name("b", &mut taken), "b.guest.1");
+        assert_eq!(guest_copy_name("b", &mut taken), "b.guest.2");
+    }
+
+    /// The host replaced a tracked directory with a symlink to somewhere else. A guest change
+    /// under that directory would otherwise be written wherever the link points; the merge is
+    /// refused before anything is touched.
+    #[test]
+    fn a_merge_refuses_to_write_through_a_symlinked_ancestor() {
+        let fixture = MergeFixture::new(&[("dir/a.rs", "before"), ("other.rs", "before")]);
+        let outside = tempfile::tempdir().unwrap();
+        fs::remove_dir_all(fixture.host.path().join("dir")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), fixture.host.path().join("dir")).unwrap();
+        fs::write(fixture.guest.path().join("dir/a.rs"), "guest").unwrap();
+        fs::write(fixture.guest.path().join("dir/new.rs"), "new").unwrap();
+        fs::write(fixture.guest.path().join("other.rs"), "guest").unwrap();
+        let before = fixture.host_tree();
+
+        let error = format!("{:#}", fixture.try_merge().unwrap_err());
+
+        assert!(error.contains("symlink"), "{error}");
+        assert!(error.contains("nothing was merged"), "{error}");
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+        assert_eq!(fixture.host_tree(), before);
+        assert_eq!(fixture.host_file("other.rs").as_deref(), Some("before"));
+    }
+
+    /// A symlink the guest turned into a real directory is replaced, parents first, so the
+    /// files the guest put in it land in the new directory and not through the link.
+    #[test]
+    fn a_merge_replaces_a_symlink_the_guest_turned_into_a_directory() {
+        let mut fixture = MergeFixture::new(&[("target/t.rs", "t")]);
+        for root in [fixture.host.path(), fixture.guest.path()] {
+            std::os::unix::fs::symlink("target", root.join("dir")).unwrap();
+        }
+        fixture.baseline = worktree_baseline(fixture.host.path()).unwrap();
+        fs::remove_file(fixture.guest.path().join("dir")).unwrap();
+        fs::create_dir(fixture.guest.path().join("dir")).unwrap();
+        fs::write(fixture.guest.path().join("dir/inner.rs"), "inner").unwrap();
+
+        let report = fixture.merge();
+
+        assert_eq!(report.applied, ["dir", "dir/inner.rs"]);
+        assert!(fs::symlink_metadata(fixture.host.path().join("dir"))
+            .unwrap()
+            .is_dir());
+        assert_eq!(fixture.host_file("dir/inner.rs").as_deref(), Some("inner"));
+        assert_eq!(fixture.host_file("target/inner.rs"), None);
+    }
+
+    /// A save that lands on the host between the staging of the worktree and the merge's
+    /// write to that path is not overwritten: the step fails as `HostChanged`, the steps
+    /// before it are undone, and the caller tries again from a fresh staging.
+    #[test]
+    fn a_host_change_made_while_the_merge_was_prepared_is_not_overwritten() {
+        let fixture = MergeFixture::new(&[("edited.rs", "before"), ("removed.rs", "gone")]);
+        fs::write(fixture.guest.path().join("edited.rs"), "guest").unwrap();
+        fs::remove_file(fixture.guest.path().join("removed.rs")).unwrap();
+        let host = worktree_baseline(fixture.host.path()).unwrap();
+        let guest = worktree_baseline(fixture.guest.path()).unwrap();
+        let plan = plan_merge(&fixture.baseline, &host, &guest);
+        assert_eq!(plan.copies, ["edited.rs"]);
+        fs::write(fixture.host.path().join("edited.rs"), "saved meanwhile").unwrap();
+
+        let error = apply_merge(
+            &plan,
+            &host,
+            fixture.host.path(),
+            fixture.guest.path(),
+            fixture.undo.path(),
+        )
+        .unwrap_err();
+
+        assert!(
+            error.chain().any(|cause| cause.is::<HostChanged>()),
+            "{error:#}"
+        );
+        assert!(format!("{error:#}").contains("rolled back"), "{error:#}");
+        assert_eq!(
+            fixture.host_file("edited.rs").as_deref(),
+            Some("saved meanwhile")
+        );
+        assert_eq!(fixture.host_file("removed.rs").as_deref(), Some("gone"));
+
+        // The whole merge, from a fresh staging, then reads the save as the host change it
+        // is and keeps it.
+        let merged = fixture.merge_fully();
+        assert_eq!(
+            merged.report.conflicts,
+            [Conflict {
+                path: "edited.rs".to_owned(),
+                guest_copy: Some("edited.rs.guest".to_owned()),
+            }]
+        );
+        assert_eq!(fixture.host_file("removed.rs"), None);
+    }
+
+    #[test]
+    fn a_merge_is_retried_when_the_host_changed_under_it() {
+        let host_changed = || anyhow::Error::new(HostChanged("a.rs".to_owned())).context("wrapped");
+        let mut attempts = 0;
+        let merged = retry_on_host_change(3, || {
+            attempts += 1;
+            if attempts < 3 {
+                Err(host_changed())
+            } else {
+                Ok(Merged::default())
+            }
+        });
+        assert!(merged.is_ok());
+        assert_eq!(attempts, 3);
+
+        let mut attempts = 0;
+        let error = retry_on_host_change(3, || {
+            attempts += 1;
+            Err(host_changed())
+        })
+        .unwrap_err();
+        assert_eq!(attempts, 3);
+        assert!(error.chain().any(|cause| cause.is::<HostChanged>()));
+
+        let mut attempts = 0;
+        let error = retry_on_host_change(3, || {
+            attempts += 1;
+            Err(anyhow!("something else"))
+        })
+        .unwrap_err();
+        assert_eq!(attempts, 1, "only a host change is retried");
+        assert_eq!(error.to_string(), "something else");
+    }
+
+    #[test]
+    fn guest_entries_describe_what_the_guest_can_recompute() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("f"), "hello\n").unwrap();
+        fs::create_dir(dir.path().join("d")).unwrap();
+        std::os::unix::fs::symlink("f", dir.path().join("l")).unwrap();
+        assert_eq!(
+            guest_entry(&dir.path().join("f")).unwrap(),
+            GuestEntry::File(
+                "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03".to_owned()
+            )
+        );
+        assert_eq!(guest_entry(&dir.path().join("d")).unwrap(), GuestEntry::Dir);
+        assert_eq!(
+            guest_entry(&dir.path().join("l")).unwrap(),
+            GuestEntry::Symlink("f".to_owned())
+        );
+        assert_eq!(
+            guest_entry(&dir.path().join("missing")).unwrap(),
+            GuestEntry::Absent
+        );
+        assert_eq!(GuestEntry::Absent.fingerprint(), "absent");
+        assert_eq!(GuestEntry::Symlink("f".to_owned()).fingerprint(), "link f");
+        assert_eq!(GuestEntry::File("ab".to_owned()).fingerprint(), "file ab");
+    }
+
+    /// The guest-side script computes the same fingerprints as `guest_entry`, and installs
+    /// or removes a path only while they agree. Run against a local directory with `sh`.
+    #[test]
+    fn the_guest_script_installs_only_what_still_matches_the_pull() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("ws");
+        let staging = root.path().join("stage");
+        for (path, content) in [
+            ("ws/same.rs", "same"),
+            ("ws/edited.rs", "before"),
+            ("ws/sub/x.rs", "x"),
+            ("stage/same.rs", "host"),
+            ("stage/edited.rs", "host"),
+            ("stage/added.rs", "host"),
+            ("stage/newdir/n.rs", "host"),
+        ] {
+            let path = root.path().join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, content).unwrap();
+        }
+        std::os::unix::fs::symlink("same.rs", cwd.join("link")).unwrap();
+        std::os::unix::fs::symlink("edited.rs", staging.join("link")).unwrap();
+        let mut config = provider_config(root.path());
+        config.guest_cwd = cwd.clone();
+        // What the pull saw, before the guest edited `edited.rs` and the directory the
+        // host deletes.
+        let push = [
+            (
+                "same.rs".to_owned(),
+                guest_entry(&cwd.join("same.rs")).unwrap(),
+            ),
+            (
+                "edited.rs".to_owned(),
+                guest_entry(&cwd.join("edited.rs")).unwrap(),
+            ),
+            ("added.rs".to_owned(), GuestEntry::Absent),
+            ("link".to_owned(), GuestEntry::Symlink("same.rs".to_owned())),
+            ("newdir".to_owned(), GuestEntry::Absent),
+            ("newdir/n.rs".to_owned(), GuestEntry::Absent),
+        ];
+        let remove = [("sub".to_owned(), GuestEntry::Dir)];
+        fs::write(cwd.join("edited.rs"), "guest wrote this").unwrap();
+        fs::remove_dir_all(cwd.join("sub")).unwrap();
+        fs::write(cwd.join("sub"), "now a file").unwrap();
+
+        let script = guest_guarded_script(&config, &push, GUEST_INSTALL, "rm -rf -- \"$S\"\n")
+            .replace(
+                &shell_quote(GUEST_SYNC_STAGING),
+                &shell_quote(&staging.display().to_string()),
+            );
+        let output = run_capturing(Command::new("sh").arg("-c").arg(&script), "push").unwrap();
+        assert_eq!(raced_paths(&output), ["edited.rs"]);
+        let script = guest_guarded_script(&config, &remove, GUEST_REMOVE, "");
+        let output = run_capturing(Command::new("sh").arg("-c").arg(&script), "remove").unwrap();
+        assert_eq!(raced_paths(&output), ["sub"]);
+
+        let read = |path: &str| fs::read_to_string(cwd.join(path)).ok();
+        assert_eq!(read("same.rs").as_deref(), Some("host"));
+        assert_eq!(read("edited.rs").as_deref(), Some("guest wrote this"));
+        assert_eq!(read("added.rs").as_deref(), Some("host"));
+        assert_eq!(read("newdir/n.rs").as_deref(), Some("host"));
+        assert_eq!(read("sub").as_deref(), Some("now a file"));
+        assert_eq!(
+            fs::read_link(cwd.join("link")).unwrap(),
+            PathBuf::from("edited.rs")
+        );
+        assert!(
+            !staging.exists(),
+            "the staging directory is cleared afterwards"
+        );
+    }
+
     #[test]
     fn guest_workspace_follows_the_configured_cwd() {
         let root = tempfile::tempdir().unwrap();
@@ -6037,14 +7029,205 @@ mod tests {
         assert!(serde_json::from_value::<VmState>(serialized).is_err());
     }
 
+    /// The record is written before Firecracker starts, so it has no pid until the VMM does.
+    /// Records from before that had one from the start, and still read.
+    #[test]
+    fn a_state_record_reads_with_or_without_its_process() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("vm.json");
+        let mut state = vm_state(PathBuf::from("rootfs"), PathBuf::from("api.sock"), None);
+        state.pid = None;
+        state.start_time = None;
+        write_state(&path, &state).unwrap();
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("\"pid\""), "{written}");
+        assert!(!written.contains("\"start_time\""), "{written}");
+        let read = read_state(&path).unwrap();
+        assert_eq!(read.process(), None);
+        assert!(!vm_is_running(&read));
+
+        state.pid = Some(4242);
+        state.start_time = Some(7);
+        write_state(&path, &state).unwrap();
+        assert_eq!(read_state(&path).unwrap().process(), Some((4242, 7)));
+
+        // An old-style record carries both fields as plain numbers.
+        let mut old: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        old["pid"] = json!(99);
+        old["start_time"] = json!(3);
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        assert_eq!(read_state(&path).unwrap().process(), Some((99, 3)));
+
+        // Half a process is not a record this provider wrote.
+        old.as_object_mut().unwrap().remove("start_time");
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let error = format!("{:#}", read_state(&path).unwrap_err());
+        assert!(error.contains("repair or remove"), "{error}");
+    }
+
+    /// A provider killed after starting Firecracker but before recording its pid leaves the
+    /// VMM running under a provisional record. The next request finds it by the API socket
+    /// in its argv and adopts it: it is running, it holds its TAP slot, and an `ensure` for
+    /// the same identity resumes it rather than starting another.
+    #[test]
+    fn a_provisional_record_adopts_the_vmm_that_outlived_its_provider() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let api_socket = root.path().join("outlived.sock");
+        let mut state = vm_state(
+            root.path().join("vm").join("rootfs.ext4"),
+            api_socket.clone(),
+            None,
+        );
+        state.pid = None;
+        state.start_time = None;
+        let path = locked.path("work", "review");
+        write_state(&path, &state).unwrap();
+        let vmm = LiveProcess::spawn_with_argv(&["--api-sock", api_socket.to_str().unwrap()]);
+        // Argv is scanned for the pair, not for the path alone.
+        let bystander =
+            LiveProcess::spawn_with_argv(&["--config-file", api_socket.to_str().unwrap()]);
+
+        settle_provisional_records(root.path()).unwrap();
+
+        let adopted = read_state(&path).unwrap();
+        assert_eq!(adopted.process(), Some((vmm.pid, vmm.start_time)));
+        assert_ne!(adopted.pid, Some(bystander.pid));
+        assert!(vm_is_running(&adopted));
+        assert_eq!(
+            existing_vm_disposition(&adopted, "review", None),
+            Disposition::Resume
+        );
+        let entries = locked.entries().unwrap();
+        assert!(entries
+            .iter()
+            .any(|(_, entry)| entry.slot == adopted.slot && vm_is_running(entry)));
+        assert_eq!(
+            list(&locked, None)
+                .unwrap()
+                .iter()
+                .map(|vm| vm.state.as_str())
+                .collect::<Vec<_>>(),
+            vec!["provisioning"]
+        );
+
+        // Settling is idempotent, and a record with a process is left alone.
+        settle_provisional_records(root.path()).unwrap();
+        assert_eq!(read_state(&path).unwrap(), adopted);
+        drop(vmm);
+    }
+
+    /// A provisional record whose VMM is nowhere describes nothing running: it keeps its
+    /// slot free, and the next `ensure` for its identity retains the directory as unready
+    /// and starts afresh.
+    #[test]
+    fn a_provisional_record_without_a_vmm_is_retained_by_the_next_ensure() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let path = locked.path("work", "review");
+        let vm_dir = root.path().join(vm_id("work", "review"));
+        fs::create_dir_all(&vm_dir).unwrap();
+        fs::write(vm_dir.join("rootfs.ext4"), "disk").unwrap();
+        let mut state = vm_state(
+            vm_dir.join("rootfs.ext4"),
+            root.path().join("gone.sock"),
+            None,
+        );
+        state.pid = None;
+        state.start_time = None;
+        write_state(&path, &state).unwrap();
+
+        settle_provisional_records(root.path()).unwrap();
+        let settled = read_state(&path).unwrap();
+        assert_eq!(settled.process(), None);
+        assert!(!vm_is_running(&settled));
+        assert_eq!(
+            list(&locked, None)
+                .unwrap()
+                .iter()
+                .map(|vm| vm.state.as_str())
+                .collect::<Vec<_>>(),
+            vec!["provisioning"]
+        );
+
+        // The fresh attempt fails further on (no TAP here), but only after the abandoned
+        // record has been retained as unready and its state file removed.
+        let config = provider_config(root.path());
+        let error = ensure(
+            &locked,
+            &config,
+            &network_config(),
+            "work",
+            "review",
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(!path.exists(), "{error:#}");
+        let retained = recoveries(&locked);
+        assert_eq!(retained.len(), 1, "{retained:?}");
+        assert!(retained[0].ends_with("-unready"), "{retained:?}");
+        assert!(root
+            .path()
+            .join("recovery")
+            .join(&retained[0])
+            .join("rootfs.ext4")
+            .exists());
+    }
+
+    /// Only the `--api-sock <path>` pair identifies a VMM; the path elsewhere in argv, or
+    /// the flag with another path, does not.
+    #[test]
+    fn a_vmm_is_found_by_its_api_socket_argument_pair() {
+        let root = tempfile::tempdir().unwrap();
+        let proc = root.path();
+        let entry = |pid: &str, argv: &[&str]| {
+            fs::create_dir_all(proc.join(pid)).unwrap();
+            fs::write(proc.join(pid).join("cmdline"), argv.join("\0") + "\0").unwrap();
+        };
+        entry(
+            "100",
+            &[
+                "firecracker",
+                "--api-sock",
+                "/run/other.sock",
+                "--config-file",
+                "/state/a.sock",
+            ],
+        );
+        entry(
+            "200",
+            &[
+                "firecracker",
+                "--api-sock",
+                "/state/a.sock",
+                "--config-file",
+                "/state/a/vm.json",
+            ],
+        );
+        entry("300", &["firecracker", "/state/a.sock", "--api-sock"]);
+        fs::create_dir_all(proc.join("self")).unwrap();
+
+        assert_eq!(
+            find_process_by_argv_pair(proc, "--api-sock", Path::new("/state/a.sock")),
+            Some(200)
+        );
+        assert_eq!(
+            find_process_by_argv_pair(proc, "--api-sock", Path::new("/state/b.sock")),
+            None
+        );
+    }
+
     #[test]
     fn vm_liveness_uses_pid_and_start_time_only() {
         let mut state = vm_state(PathBuf::new(), PathBuf::new(), None);
-        state.pid = std::process::id() as i32;
-        state.start_time = process_start_time(state.pid).unwrap();
+        let pid = std::process::id() as i32;
+        state.pid = Some(pid);
+        state.start_time = process_start_time(pid);
 
         assert!(vm_is_running(&state));
-        state.start_time = state.start_time.wrapping_add(1);
+        state.start_time = state.start_time.map(|start| start.wrapping_add(1));
         assert!(!vm_is_running(&state));
     }
 
@@ -7150,8 +8333,8 @@ mod tests {
     fn terminating_by_pid_waits_for_the_process_to_be_gone() {
         let process = LiveProcess::spawn();
         let mut state = vm_state(PathBuf::new(), PathBuf::new(), None);
-        state.pid = process.pid;
-        state.start_time = process.start_time;
+        state.pid = Some(process.pid);
+        state.start_time = Some(process.start_time);
         assert!(vm_is_running(&state));
 
         terminate(&state, None);
@@ -7212,6 +8395,8 @@ mod tests {
         /// What a sync told the guests to take and to drop.
         pushed: Mutex<Vec<String>>,
         removed: Mutex<Vec<String>>,
+        /// What a sync left alone because the guest had changed it since the pull.
+        raced: Mutex<Vec<String>>,
         /// Files a guest writes the moment its worktree has been pulled - what an agent
         /// still working in the guest does during a sync. `(vm name, path, content)`.
         late_writes: Mutex<Vec<(String, String, String)>>,
@@ -7240,34 +8425,51 @@ mod tests {
             state: &VmState,
             _config: &Config,
             worktree: &Path,
-            paths: &[String],
-        ) -> Result<()> {
+            paths: &[(String, GuestEntry)],
+        ) -> Result<Vec<String>> {
             let guest = self
                 .dirs
                 .get(&state.name)
                 .context("no fake guest for this VM")?;
-            self.pushed.lock().unwrap().extend(paths.iter().cloned());
-            for path in paths {
+            let mut raced = Vec::new();
+            for (path, expected) in paths {
+                self.pushed.lock().unwrap().push(path.clone());
+                if guest_entry(&guest.join(path))? != *expected {
+                    raced.push(path.clone());
+                    continue;
+                }
                 copy_entry(&worktree.join(path), &guest.join(path))?;
             }
-            Ok(())
+            self.raced.lock().unwrap().extend(raced.iter().cloned());
+            Ok(raced)
         }
 
-        fn remove_paths(&self, state: &VmState, _config: &Config, paths: &[String]) -> Result<()> {
+        fn remove_paths(
+            &self,
+            state: &VmState,
+            _config: &Config,
+            paths: &[(String, GuestEntry)],
+        ) -> Result<Vec<String>> {
             let guest = self
                 .dirs
                 .get(&state.name)
                 .context("no fake guest for this VM")?;
-            self.removed.lock().unwrap().extend(paths.iter().cloned());
-            for path in paths {
+            let mut raced = Vec::new();
+            for (path, expected) in paths {
+                self.removed.lock().unwrap().push(path.clone());
                 let target = guest.join(path);
+                if guest_entry(&target)? != *expected {
+                    raced.push(path.clone());
+                    continue;
+                }
                 match fs::symlink_metadata(&target) {
                     Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&target)?,
                     Ok(_) => fs::remove_file(&target)?,
                     Err(_) => {},
                 }
             }
-            Ok(())
+            self.raced.lock().unwrap().extend(raced.iter().cloned());
+            Ok(raced)
         }
     }
 
@@ -7566,8 +8768,21 @@ mod tests {
 
     impl LiveProcess {
         fn spawn() -> Self {
+            Self::spawn_with_argv(&[])
+        }
+
+        /// A process whose argv carries `extra` after the script, as `$0` and its
+        /// positional parameters; `settle_provisional_records` finds a VMM by argv.
+        fn spawn_with_argv(extra: &[&str]) -> Self {
+            // The pid echoed is the background job's, so the job is itself a `sh` carrying
+            // the extra argv after its script, where argv scanners can see it.
             let output = Command::new("sh")
-                .args(["-c", "sleep 60 </dev/null >/dev/null 2>&1 & echo $!"])
+                .args([
+                    "-c",
+                    "sh -c 'sleep 60' \"$@\" </dev/null >/dev/null 2>&1 & echo $!",
+                    "sh",
+                ])
+                .args(extra)
                 .output()
                 .unwrap();
             let pid = String::from_utf8(output.stdout)
@@ -7580,8 +8795,8 @@ mod tests {
         }
 
         fn attach(&self, vm: &mut LeasedVm) {
-            vm.state.pid = self.pid;
-            vm.state.start_time = self.start_time;
+            vm.state.pid = Some(self.pid);
+            vm.state.start_time = Some(self.start_time);
             vm.write_state();
         }
     }
@@ -7692,6 +8907,85 @@ mod tests {
             vm.host_file("late.rs").as_deref(),
             Some("written after the pull"),
             "the next sync merges it"
+        );
+    }
+
+    /// A path the host won that the guest writes to after the pull is left as the guest
+    /// has it, reported, and kept at the old baseline, so the next sync sees a change on
+    /// both sides and keeps both copies.
+    #[test]
+    fn sync_keeps_a_guest_edit_made_to_a_path_the_host_won_during_the_sync() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let mut guests = FakeGuests::default();
+        let mut vm = LeasedVm::new(
+            &locked,
+            &mut guests,
+            "review",
+            &[("host-edit.rs", "before"), ("gone.rs", "old")],
+        );
+        let live = LiveProcess::spawn();
+        live.attach(&mut vm);
+        let previous = read_baseline(&vm.state).unwrap();
+        fs::write(vm.host.join("host-edit.rs"), "host").unwrap();
+        fs::remove_file(vm.host.join("gone.rs")).unwrap();
+        for path in ["host-edit.rs", "gone.rs"] {
+            guests.late_writes.lock().unwrap().push((
+                "review".to_owned(),
+                path.to_owned(),
+                format!("late {path}"),
+            ));
+        }
+        let config = provider_config(root.path());
+
+        let warnings = sync_one(&locked, &config, &guests, "work", "review").unwrap();
+
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings[0].contains("changed in the guest during the sync"),
+            "{warnings:?}"
+        );
+        assert_eq!(*guests.raced.lock().unwrap(), ["gone.rs", "host-edit.rs"]);
+        assert_eq!(
+            vm.guest_file("host-edit.rs").as_deref(),
+            Some("late host-edit.rs")
+        );
+        assert_eq!(vm.guest_file("gone.rs").as_deref(), Some("late gone.rs"));
+        assert_eq!(vm.host_file("host-edit.rs").as_deref(), Some("host"));
+        let baseline = read_baseline(&vm.state).unwrap();
+        assert_eq!(baseline.get("host-edit.rs"), previous.get("host-edit.rs"));
+        assert_eq!(baseline.get("gone.rs"), previous.get("gone.rs"));
+
+        let warnings = sync_one(&locked, &config, &guests, "work", "review").unwrap();
+
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings.iter().all(|w| w.contains("changed on both sides")),
+            "{warnings:?}"
+        );
+        assert_eq!(vm.host_file("host-edit.rs").as_deref(), Some("host"));
+        assert_eq!(
+            vm.host_file("host-edit.rs.guest").as_deref(),
+            Some("late host-edit.rs")
+        );
+        assert_eq!(vm.host_file("gone.rs"), None);
+        assert_eq!(
+            vm.host_file("gone.rs.guest").as_deref(),
+            Some("late gone.rs")
+        );
+        assert_eq!(vm.guest_file("host-edit.rs").as_deref(), Some("host"));
+        assert_eq!(
+            vm.guest_file("host-edit.rs.guest").as_deref(),
+            Some("late host-edit.rs")
+        );
+        assert_eq!(vm.guest_file("gone.rs"), None);
+        assert_eq!(
+            vm.guest_file("gone.rs.guest").as_deref(),
+            Some("late gone.rs")
+        );
+        assert_eq!(
+            read_baseline(&vm.state).unwrap(),
+            worktree_baseline(&vm.host).unwrap()
         );
     }
 
