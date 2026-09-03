@@ -133,14 +133,11 @@ const PROSE: &[&str] = &[
 /// keeps the list complete without keeping it in sync by hand.
 ///
 /// Order matters: the first family to claim a name keeps it. That is what puts
-/// `warp_tab` under tabs rather than letting the pane family's `warp` take it,
-/// so the narrow families come before the broad ones.
+/// `warp_tab_here` under tabs rather than letting the pane family's `warp` take
+/// it, so the narrow families come before the broad ones.
 const FAMILIES: &[(&str, &[&str])] = &[
     ("session", &["list_session", "list_other_sessions"]),
-    (
-        "tabs",
-        &["new_tab", "close_tab", "warp_tab", "warp_tab_here"],
-    ),
+    ("tabs", &["new_tab", "close_tab", "warp_tab_here"]),
     (
         "panes",
         &[

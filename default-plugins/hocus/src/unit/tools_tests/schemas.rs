@@ -66,7 +66,6 @@ fn hocus_prompt_contract_keeps_tool_specific_routing_cues() {
             &["swap_panes", "set_floating_pane_geometry"][..],
         ),
         ("warp_pane_here", &["list_other_sessions"][..]),
-        ("warp_tab", &["current session", "list_session"][..]),
         (
             "warp_tab_here",
             &["another session", "list_other_sessions", "current session"][..],
@@ -129,7 +128,7 @@ fn swap_panes_schema_requires_exactly_two_complete_pane_refs() {
 #[test]
 fn every_warp_schema_has_a_closed_placement_set() {
     let specs = specs();
-    for name in ["warp_pane", "warp_pane_here", "adopt_orphaned_pane"] {
+    for name in ["warp_pane_here", "adopt_orphaned_pane"] {
         let spec = specs
             .as_array()
             .unwrap()
@@ -150,7 +149,6 @@ fn every_warp_schema_has_a_closed_placement_set() {
 fn the_warp_schemas_require_a_destination_and_a_pane() {
     let specs = specs();
     for (name, required) in [
-        ("warp_pane", json!(["pane_id", "is_plugin", "to_session"])),
         ("warp_pane_here", json!(["from_session", "pane_id"])),
         ("adopt_orphaned_pane", json!(["host_id"])),
         ("list_other_sessions", Value::Null),
@@ -179,15 +177,12 @@ fn the_warp_schemas_require_a_destination_and_a_pane() {
     );
 }
 
-/// The tab warps take no `placement`: a warped tab always lands as its own
+/// The tab warp takes no `placement`: a warped tab always lands as its own
 /// new tab in the receiving session, so there is nothing to choose.
 #[test]
-fn the_warp_tab_schemas_require_a_destination_and_take_no_placement() {
+fn the_warp_tab_schema_requires_a_destination_and_takes_no_placement() {
     let specs = specs();
-    for (name, required) in [
-        ("warp_tab", json!(["to_session"])),
-        ("warp_tab_here", json!(["from_session", "tab_id"])),
-    ] {
+    for (name, required) in [("warp_tab_here", json!(["from_session", "tab_id"]))] {
         let spec = specs
             .as_array()
             .unwrap()

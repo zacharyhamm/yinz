@@ -46,13 +46,13 @@ fn an_invented_placement_is_answered_with_the_ones_that_exist() {
     }
 }
 
-/// `to` belongs to the Slack tools; a warp that quietly read it would send
-/// the pane to a channel name.
+/// `from` belongs to the Slack tools; a warp that quietly read it would take
+/// the pane from a channel name.
 #[test]
 fn the_warp_arguments_do_not_collide_with_the_slack_ones() {
-    let args = Args::parse(r##"{"to":"#general","to_session":"other"}"##).unwrap();
-    assert_eq!(args.to, Some("#general".to_owned()));
-    assert_eq!(args.to_session, Some("other".to_owned()));
+    let args = Args::parse(r##"{"from":"#general","from_session":"other"}"##).unwrap();
+    assert_eq!(args.from, Some("#general".to_owned()));
+    assert_eq!(args.from_session, Some("other".to_owned()));
 }
 
 #[test]

@@ -12,11 +12,6 @@ fn confirmation_policy_lists_tools_correctly() {
         // something away.
         "project_forget",
         "slack_post",
-        // Moving a pane takes it off the screen, and briefly leaves it
-        // belonging to no session at all.
-        "warp_pane",
-        "warp_pane_here",
-        "adopt_orphaned_pane",
     ] {
         assert!(needs_confirmation(name), "{name} should be confirmed");
     }
@@ -28,6 +23,14 @@ fn confirmation_policy_lists_tools_correctly() {
         // Listing is always free, including the two that look outward.
         "list_other_sessions",
         "list_orphaned_panes",
+        // Pulling something in does not ask: it arrives in the session that
+        // asked, so the result is visible the moment it happens, and there is
+        // no destination to get wrong. The source can still lose by it — a
+        // session that gives away its last tab ends — and that is the accepted
+        // price of not stopping, not an omission.
+        "warp_pane_here",
+        "warp_tab_here",
+        "adopt_orphaned_pane",
         "read_pane",
         "new_pane",
         "new_tab",
@@ -93,9 +96,9 @@ fn every_advertised_tool_is_covered_by_the_confirmation_table() {
         .iter()
         .map(|spec| spec["function"]["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 80);
+    assert_eq!(names.len(), 78);
     let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
-    assert_eq!(confirmed, 18);
+    assert_eq!(confirmed, 13);
 }
 
 /// The invariant the name table cannot state on its own: whatever decides to
@@ -417,9 +420,9 @@ fn an_agent_call_targets_its_terminal_without_being_told() {
     );
 }
 
-/// Every confirmable tool that does *not* name a pane in this session. The
-/// `_here` warps and `adopt_orphaned_pane` all carry an id, but it belongs to
-/// another session and means nothing locally until after the call runs.
+/// Every confirmable tool that does *not* name a pane in this session: it acts
+/// on a channel, a project, a machine of its own, so there is nothing local for
+/// the session to go and show.
 #[test]
 fn a_tool_with_no_local_pane_has_no_target() {
     for (name, arguments) in [
@@ -427,10 +430,6 @@ fn a_tool_with_no_local_pane_has_no_target() {
         ("project_forget", r#"{"name":"thing"}"#),
         ("agent_spawn", r#"{"command":"claude"}"#),
         ("new_remote_pane", r#"{"remote_host":"box"}"#),
-        ("warp_pane_here", r#"{"from_session":"other","pane_id":1}"#),
-        ("warp_tab", r#"{"to_session":"other","tab_id":2}"#),
-        ("warp_tab_here", r#"{"from_session":"other","tab_id":1}"#),
-        ("adopt_orphaned_pane", r#"{"host_id":"abc123","pane_id":1}"#),
     ] {
         assert_eq!(
             confirmation_target(&call(name, arguments)),
