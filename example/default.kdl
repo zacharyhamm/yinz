@@ -179,11 +179,11 @@ keybinds {
             };
             SwitchToMode "Normal"
         }
-        // Land on the agent list, without going through the conversation
-        // first. The list is its own pane, the left half of the panel: this
-        // reveals it if it was hidden and opens one if there is none, and
-        // leaves the conversation as it was — hidden if it was hidden, cut
-        // back to its half of the panel if it is on screen.
+        // Bring the panel up with the keyboard on the agent list, rather than
+        // in the conversation. The list is its own pane, the left half of the
+        // panel: this reveals it if it was hidden and opens one if there is
+        // none. The conversation comes up beside it either way — the panel is
+        // one thing with one visibility — it simply does not take the focus.
         //
         // `awaits_placement` says hocus puts this pane where it goes, so don't
         // paint it at the centered default it is born with in the meantime —
@@ -199,9 +199,10 @@ keybinds {
             };
             SwitchToMode "Normal"
         }
-        // The conversation, the right half of the panel. Its own pane too:
-        // opening it cuts an open agent list back to its half rather than
-        // replacing it, and hidden, it leaves the list the whole panel.
+        // The same for the conversation, the right half of the panel: the whole
+        // panel comes up, cut at the split, with the keyboard here. An agent
+        // list that was hidden comes back with it, and a panel with no list at
+        // all — you closed its pane — opens one.
         bind "c" {
             LaunchOrFocusPlugin "hocus" {
                 floating true
@@ -353,10 +354,12 @@ plugins {
     //   pad     cells of clear screen left around the panel on every side.
     //           Default 3, capped at a quarter of the screen.
     //
-    // Esc hides the half you are in without unloading it — the conversation, the
-    // parked chats and anything still streaming are all still there — and the
-    // other half widens to fill the panel. `Ctrl e c` brings the conversation
-    // back, `Ctrl e a` the agent list, and either restores the split.
+    // Esc, in either half, puts the whole panel away without unloading it — the
+    // conversation, the parked chats and anything still streaming are all still
+    // there. `Ctrl e c` brings the whole of it back with the keyboard in the
+    // conversation and `Ctrl e a` with the keyboard on the agent list; either
+    // restores the split, and either opens the half that is missing if you
+    // closed one.
     //
     // Ctrl o, in either half, moves the whole panel clear of a different tiled
     // pane — the largest one you are not working in — and it stays clear of that
@@ -384,7 +387,7 @@ plugins {
         // api "chat"
     }
     // The agent list, bound to Ctrl e a above — the left half of the panel, or
-    // the whole of it while the conversation is hidden. Sized by hocus's `width`,
+    // the whole of it when there is no conversation beside it. Sized by hocus's `width`,
     // `height` and `split`, above.
     hocus-agents location="zellij:hocus-agents" {
         shared true

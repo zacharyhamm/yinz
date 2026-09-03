@@ -885,7 +885,9 @@ impl State {
         let mut fired = match self.tick_jobs(elapsed) {
             Some(Fired { show }) => {
                 if show {
-                    show_self(true);
+                    // The panel, not this pane: `show_self` alone leaves hocus believing it is
+                    // still hidden - see `State::show_panel`.
+                    self.show_panel();
                 }
                 true
             },
@@ -927,7 +929,7 @@ impl State {
         // switched to first, and then the pane shown.
         if let Some(tab) = show_tab {
             self.switch_to_tab(tab);
-            show_self(true);
+            self.show_panel();
         }
         let fired = self.poll_plugin_loads() || fired;
         let fired = self.poll_extension_scan() || fired;
