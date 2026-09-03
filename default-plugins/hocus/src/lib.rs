@@ -143,9 +143,12 @@ n             keep refining a plan hocus has written
               changes one
 
 In history or models:
+type          narrow the list to the rows containing what you type
+Tab           complete what you have typed as far as the matches agree
+Backspace, Ctrl+u  erase a character, or the whole filter
 Up / Down     choose
 Enter         select
-Esc           back
+Esc           clear the filter, or close the list once it is empty
 
 With the tab bar focused:
 Left / Right  choose (Tab / Shift+Tab too)

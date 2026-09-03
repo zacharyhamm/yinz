@@ -158,11 +158,11 @@ fn searching_state(query: &str) -> State {
 
 fn picker_state(titles: &[&str]) -> State {
     State {
-        picker: Some(Picker {
-            entries: titles.iter().map(|title| PickerRow::item(*title)).collect(),
-            selected: 0,
-            kind: PickerKind::Chats((1..=titles.len() as u64).collect()),
-        }),
+        picker: Some(Picker::new(
+            titles.iter().map(|title| PickerRow::item(*title)).collect(),
+            0,
+            PickerKind::Chats((1..=titles.len() as u64).collect()),
+        )),
         ..ready_state()
     }
 }
@@ -179,6 +179,23 @@ fn entry_texts(state: &State) -> Vec<&str> {
         .iter()
         .map(|row| row.text.as_str())
         .collect()
+}
+
+/// The rows the picker's filter leaves, which is what is drawn.
+fn visible_texts(state: &State) -> Vec<&str> {
+    let picker = picker(state);
+    picker
+        .visible()
+        .into_iter()
+        .map(|at| picker.entries[at].text.as_str())
+        .collect()
+}
+
+/// Type into the open picker's filter, a key at a time, as the user would.
+fn type_filter(state: &mut State, text: &str) {
+    for c in text.chars() {
+        state.picker_key(KeyWithModifier::new(BareKey::Char(c)));
+    }
 }
 
 /// The agent strip as it would be pushed to the hocus-agents pane, as
