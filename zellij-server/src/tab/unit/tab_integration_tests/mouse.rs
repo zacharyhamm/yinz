@@ -262,7 +262,7 @@ fn test_ctrl_drag_resizes_tiled_pane_horizontally() {
     );
 
     assert_ne!(snapshot_before, snapshot_after);
-    assert_snapshot!(format!("{}", snapshot_after));
+    assert_snapshot!(snapshot_after.to_string());
 }
 
 #[test]
@@ -325,7 +325,7 @@ fn test_ctrl_drag_resizes_tiled_pane_vertically() {
     );
 
     assert_ne!(snapshot_before, snapshot_after);
-    assert_snapshot!(format!("{}", snapshot_after));
+    assert_snapshot!(snapshot_after.to_string());
 }
 
 #[test]
@@ -391,7 +391,7 @@ fn test_ctrl_drag_resizes_unfocused_tiled_pane_vertically() {
 
     assert_ne!(focused_pane, new_pane_id, "resize did not change focus");
     assert_ne!(snapshot_before, snapshot_after);
-    assert_snapshot!(format!("{}", snapshot_after));
+    assert_snapshot!(snapshot_after.to_string());
 }
 
 #[test]
@@ -505,7 +505,7 @@ fn test_ctrl_drag_resizes_floating_pane_from_edge() {
     );
 
     assert_ne!(snapshot_before, snapshot_after);
-    assert_snapshot!(format!("{}", snapshot_after));
+    assert_snapshot!(snapshot_after.to_string());
 }
 
 #[test]
@@ -586,7 +586,7 @@ fn test_ctrl_drag_resizes_floating_pane_from_corner() {
     );
 
     assert_ne!(snapshot_before, snapshot_after);
-    assert_snapshot!(format!("{}", snapshot_after));
+    assert_snapshot!(snapshot_after.to_string());
 }
 
 #[test]
@@ -667,7 +667,7 @@ fn test_ctrl_drag_resizes_pinned_floating_pane_when_floating_panes_not_shown() {
 
     assert_ne!(snapshot_before, snapshot_after);
     eprintln!("{}", snapshot_after);
-    assert_snapshot!(format!("{}", snapshot_after));
+    assert_snapshot!(snapshot_after.to_string());
 }
 
 #[test]
@@ -728,7 +728,7 @@ fn test_ctrl_click_on_floating_pin_button_toggles_pin() {
     );
 
     // Snapshot should show pin indicator change
-    assert_snapshot!(format!("{}", snapshot_after));
+    assert_snapshot!(snapshot_after.to_string());
 }
 
 #[test]
@@ -849,7 +849,7 @@ fn test_left_drag_moves_floating_pane() {
 
     // Snapshots should be different
     assert_ne!(snapshot_before, snapshot_after);
-    assert_snapshot!(format!("{}", snapshot_after));
+    assert_snapshot!(snapshot_after.to_string());
 }
 
 #[test]
@@ -1008,7 +1008,7 @@ fn test_left_click_on_pinned_floating_pane() {
     );
 
     // Verify pinned pane is still visible in snapshot
-    assert_snapshot!(format!("{}", snapshot));
+    assert_snapshot!(snapshot.to_string());
 }
 
 #[test]
@@ -1425,7 +1425,7 @@ fn test_scroll_wheel_up_scrolls_pane() {
 
     // Snapshots should be different (viewport moved)
     assert_ne!(snapshot_before, snapshot_after);
-    assert_snapshot!(format!("{}", snapshot_after));
+    assert_snapshot!(snapshot_after.to_string());
 }
 
 #[test]
@@ -1493,7 +1493,7 @@ fn test_scroll_wheel_down_scrolls_pane() {
 
     // Snapshots should be different (viewport moved)
     assert_ne!(snapshot_before, snapshot_after);
-    assert_snapshot!(format!("{}", snapshot_after));
+    assert_snapshot!(snapshot_after.to_string());
 }
 
 #[test]
@@ -1558,7 +1558,7 @@ fn test_scroll_on_inactive_pane_scrolls_that_pane() {
 
     // Snapshots should be different (left pane scrolled)
     assert_ne!(snapshot_before, snapshot_after);
-    assert_snapshot!(format!("{}", snapshot_after));
+    assert_snapshot!(snapshot_after.to_string());
 }
 
 #[test]
@@ -1782,7 +1782,7 @@ fn test_resize_tiled_then_move_floating_sequence() {
         Palette::default(),
     );
 
-    assert_snapshot!(format!("{}", snapshot));
+    assert_snapshot!(snapshot.to_string());
 }
 
 #[test]
@@ -1923,7 +1923,7 @@ fn test_left_click_on_floating_frame_not_on_pin_moves_pane() {
     );
 
     assert_ne!(snapshot_before, snapshot_after);
-    assert_snapshot!(format!("{}", snapshot_after));
+    assert_snapshot!(snapshot_after.to_string());
 }
 
 #[test]
@@ -1973,7 +1973,7 @@ fn test_ctrl_scroll_up_on_active_tiled_pane_increases_pane_size() {
     );
 
     assert_ne!(snapshot_before, snapshot_after);
-    assert_snapshot!(format!("{}", snapshot_after));
+    assert_snapshot!(snapshot_after.to_string());
 }
 
 #[test]
@@ -2023,7 +2023,7 @@ fn test_ctrl_scroll_down_on_active_tiled_pane_decreases_pane_size() {
     );
 
     assert_ne!(snapshot_before, snapshot_after);
-    assert_snapshot!(format!("{}", snapshot_after));
+    assert_snapshot!(snapshot_after.to_string());
 }
 
 #[test]
@@ -2073,7 +2073,7 @@ fn test_ctrl_scroll_up_on_inactive_tiled_pane_increases_active_tiled_pane_size()
     );
 
     assert_ne!(snapshot_before, snapshot_after);
-    assert_snapshot!(format!("{}", snapshot_after));
+    assert_snapshot!(snapshot_after.to_string());
 }
 
 #[test]
@@ -2123,7 +2123,7 @@ fn test_ctrl_scroll_down_on_inactive_tiled_pane_decreases_active_tiled_pane_size
     );
 
     assert_ne!(snapshot_before, snapshot_after);
-    assert_snapshot!(format!("{}", snapshot_after));
+    assert_snapshot!(snapshot_after.to_string());
 }
 
 #[test]
@@ -2184,7 +2184,7 @@ fn test_ctrl_scroll_up_increases_floating_pane_size() {
     );
 
     assert_ne!(snapshot_before, snapshot_after);
-    assert_snapshot!(format!("{}", snapshot_after));
+    assert_snapshot!(snapshot_after.to_string());
 }
 
 #[test]
@@ -2245,7 +2245,7 @@ fn test_ctrl_scroll_down_decreases_floating_pane_size() {
     );
 
     assert_ne!(snapshot_before, snapshot_after);
-    assert_snapshot!(format!("{}", snapshot_after));
+    assert_snapshot!(snapshot_after.to_string());
 }
 
 #[test]
@@ -2313,7 +2313,7 @@ fn test_ctrl_scroll_up_increases_pinned_floating_pane_size_when_floating_panes_h
     );
 
     assert_ne!(snapshot_before, snapshot_after);
-    assert_snapshot!(format!("{}", snapshot_after));
+    assert_snapshot!(snapshot_after.to_string());
 }
 
 #[test]
@@ -2383,7 +2383,7 @@ fn test_ctrl_scroll_down_decreases_pinned_floating_pane_size_when_floating_panes
     assert_ne!(snapshot_before, snapshot_after);
     eprintln!("{}", snapshot_before);
     eprintln!("{}", snapshot_after);
-    assert_snapshot!(format!("{}", snapshot_after));
+    assert_snapshot!(snapshot_after.to_string());
 }
 
 #[test]

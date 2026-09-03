@@ -676,7 +676,7 @@ impl TextInput {
         }
         self.reset_history_position();
         self.cursor_position = 0;
-        self.buffer.drain(..).collect()
+        std::mem::take(&mut self.buffer)
     }
 }
 

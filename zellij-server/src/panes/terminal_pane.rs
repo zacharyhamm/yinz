@@ -855,18 +855,15 @@ impl Pane for TerminalPane {
         self.grid.cursor_shape().get_csi_str().to_string()
     }
     fn drain_messages_to_pty(&mut self) -> Vec<Vec<u8>> {
-        self.grid.pending_messages_to_pty.drain(..).collect()
+        std::mem::take(&mut self.grid.pending_messages_to_pty)
     }
 
     fn drain_forwarded_queries(&mut self) -> Vec<crate::host_query::HostQuery> {
-        self.grid.pending_forwarded_queries.drain(..).collect()
+        std::mem::take(&mut self.grid.pending_forwarded_queries)
     }
 
     fn drain_nested_session_messages(&mut self) -> Vec<NestedSessionMessage> {
-        self.grid
-            .pending_nested_session_messages
-            .drain(..)
-            .collect()
+        std::mem::take(&mut self.grid.pending_nested_session_messages)
     }
 
     fn is_nested_guest(&self) -> bool {
@@ -981,7 +978,7 @@ impl Pane for TerminalPane {
     }
 
     fn drain_desktop_notifications(&mut self) -> Vec<PendingNotification> {
-        self.grid.pending_desktop_notifications.drain(..).collect()
+        std::mem::take(&mut self.grid.pending_desktop_notifications)
     }
 
     fn drain_osc7_cwd(&mut self) -> Option<std::path::PathBuf> {
@@ -1429,7 +1426,7 @@ impl Pane for TerminalPane {
                 // won't leave a hole
                 self.grid.update_line_for_rendering(*y);
             }
-            Some(self.fake_cursor_locations.drain().collect())
+            Some(std::mem::take(&mut self.fake_cursor_locations))
         } else {
             None
         }

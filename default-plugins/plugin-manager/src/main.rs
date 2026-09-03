@@ -339,8 +339,8 @@ impl NewPluginScreen {
     fn add_edit_buffer_to_config(&mut self) {
         if !self.new_config_key.is_empty() || !self.new_config_val.is_empty() {
             self.new_plugin_config.push((
-                self.new_config_key.drain(..).collect(),
-                self.new_config_val.drain(..).collect(),
+                std::mem::take(&mut self.new_config_key),
+                std::mem::take(&mut self.new_config_val),
             ));
         }
     }
@@ -368,7 +368,7 @@ impl NewPluginScreen {
                     self.entering_plugin_url = true;
                     should_render = true;
                 } else {
-                    let plugin_url: String = self.new_plugin_url.drain(..).collect();
+                    let plugin_url: String = std::mem::take(&mut self.new_plugin_url);
                     self.add_edit_buffer_to_config();
                     let config = self.new_plugin_config.drain(..).collect();
                     let load_in_background = self.load_in_background;

@@ -857,7 +857,7 @@ fn decode_png(data: &[u8], echo: &EchoFields) -> Result<DecodedImage, KittyError
         png::ColorType::Rgba => buf,
         png::ColorType::Rgb => {
             let mut rgba = Vec::with_capacity(buf.len() / 3 * 4);
-            for pixel in buf.chunks_exact(3) {
+            for pixel in buf.as_chunks::<3>().0 {
                 rgba.extend_from_slice(pixel);
                 rgba.push(255);
             }
@@ -872,7 +872,7 @@ fn decode_png(data: &[u8], echo: &EchoFields) -> Result<DecodedImage, KittyError
         },
         png::ColorType::GrayscaleAlpha => {
             let mut rgba = Vec::with_capacity(buf.len() * 2);
-            for pixel in buf.chunks_exact(2) {
+            for pixel in buf.as_chunks::<2>().0 {
                 rgba.extend_from_slice(&[pixel[0], pixel[0], pixel[0], pixel[1]]);
             }
             rgba

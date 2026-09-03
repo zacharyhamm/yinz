@@ -2303,7 +2303,7 @@ impl Tab {
     }
     pub fn apply_buffered_instructions(&mut self) -> Result<()> {
         let buffered_instructions: Vec<BufferedTabInstruction> =
-            self.pending_instructions.drain(..).collect();
+            std::mem::take(&mut self.pending_instructions);
         for buffered_instruction in buffered_instructions {
             match buffered_instruction {
                 BufferedTabInstruction::SetPaneSelectable(pane_id, selectable) => {

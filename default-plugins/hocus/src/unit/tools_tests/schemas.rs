@@ -182,23 +182,23 @@ fn the_warp_schemas_require_a_destination_and_a_pane() {
 #[test]
 fn the_warp_tab_schema_requires_a_destination_and_takes_no_placement() {
     let specs = specs();
-    for (name, required) in [("warp_tab_here", json!(["from_session", "tab_id"]))] {
-        let spec = specs
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|spec| spec["function"]["name"] == name)
-            .unwrap_or_else(|| panic!("{name} should be advertised"));
-        assert_eq!(
-            spec["function"]["parameters"]["required"], required,
-            "{name} requires the wrong arguments",
-        );
-        assert_eq!(
-            spec["function"]["parameters"]["properties"]["placement"],
-            Value::Null,
-            "{name} should not offer a placement",
-        );
-    }
+    let name = "warp_tab_here";
+    let required = json!(["from_session", "tab_id"]);
+    let spec = specs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|spec| spec["function"]["name"] == name)
+        .unwrap_or_else(|| panic!("{name} should be advertised"));
+    assert_eq!(
+        spec["function"]["parameters"]["required"], required,
+        "{name} requires the wrong arguments",
+    );
+    assert_eq!(
+        spec["function"]["parameters"]["properties"]["placement"],
+        Value::Null,
+        "{name} should not offer a placement",
+    );
 }
 
 #[test]
