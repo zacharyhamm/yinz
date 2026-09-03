@@ -756,22 +756,19 @@ pub fn specs() -> Value {
                 "properties": {
                     "command": { "type": "string", "description": "Omit for a shell." },
                     "args": { "type": "array", "items": { "type": "string" } },
-                    "cwd": {
-                        "type": "string",
-                        "description": "Defaults to the focused pane's; a guest path with firecracker.",
-                    },
+                    "cwd": { "type": "string", "description": "Defaults to the focused pane's." },
                     "name": { "type": "string" },
                     "floating": { "type": "boolean" },
                     "in_new_tab": { "type": "boolean" },
                     "firecracker": {
                         "type": "string",
-                        "description": "Firecracker VM name; the pane's process runs in the VM, \
-                                        and omitting command opens the guest's login shell.",
+                        "description": "VM name: the pane runs in it, cwd is a guest path, \
+                                        and no command opens the guest's shell.",
                     },
                     "firecracker_image": {
                         "type": "string",
-                        "description": "Named immutable image built with zellij-firecracker image \
-                                        build --name; requires firecracker.",
+                        "description": "Image from zellij-firecracker image build --name; \
+                                        needs firecracker.",
                     },
                 },
             }),
@@ -1131,8 +1128,8 @@ pub fn specs() -> Value {
                     "root": { "type": "string", "description": "Absolute; required when new." },
                     "firecracker_image": {
                         "type": "string",
-                        "description": "Default named Firecracker image for this project. \
-                                        Omitted keeps the stored one; empty clears it.",
+                        "description": "The project's default Firecracker image; \
+                                        omitted keeps the stored one, empty clears it.",
                     },
                     "tab_name": { "type": "string", "description": "Defaults to the project name." },
                 },
@@ -1425,8 +1422,8 @@ pub fn specs() -> Value {
                     "model": { "type": "string" },
                     "cwd": {
                         "type": "string",
-                        "description": "Defaults to the focused pane's. A path on this machine, so \
-                                        not accepted with firecracker outside a project.",
+                        "description": "Defaults to the focused pane's. A host path, so not \
+                                        with firecracker outside a project.",
                     },
                     "project": { "type": "string", "description": "Defaults to the active project." },
                     "kind": {
@@ -1468,16 +1465,16 @@ pub fn specs() -> Value {
                     },
                     "hooks": {
                         "type": "boolean",
-                        "description": "claude reports its state via hooks; default true, on the host \
-                                        and in a Firecracker VM alike.",
+                        "description": "claude reports its state via hooks; default true.",
                     },
                     "firecracker": {
                         "type": "string",
-                        "description": "Firecracker VM name. With a project, its worktree is mirrored into the VM's configured working directory (/workspace by default).",
+                        "description": "VM name; a project's worktree is mirrored into the VM's \
+                                        working directory (/workspace by default).",
                     },
                     "firecracker_image": {
                         "type": "string",
-                        "description": "Named immutable image built with zellij-firecracker image build --name.",
+                        "description": "Image from zellij-firecracker image build --name.",
                     },
                 },
             }),
