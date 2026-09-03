@@ -4694,6 +4694,15 @@ impl Tab {
         self.process_pty_bytes(pid, bytes).with_context(err_context)
     }
     pub fn remote_pane_ready(&mut self, pid: u32) -> Result<()> {
+        // Anything buffered for this pane is loading-screen progress the clear
+        // below erases. A user who scrolled the loading pane left it marked
+        // scrolled with those frames queued; replaying them later would paint the
+        // loading screen over the live terminal, and leaving the scroll set would
+        // keep the command's own output buffering behind it.
+        self.pending_vte_events.remove(&pid);
+        if let Some(pane) = self.get_pane_with_id_mut(PaneId::Terminal(pid)) {
+            pane.clear_scroll();
+        }
         self.pids_waiting_resize.insert(pid);
         self.process_pty_bytes(pid, b"\x1b[3J\x1b[2J\x1b[H".to_vec())
     }

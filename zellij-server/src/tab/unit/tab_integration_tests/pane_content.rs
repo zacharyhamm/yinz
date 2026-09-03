@@ -1264,3 +1264,66 @@ fn pane_in_utf8_any_event_tracking_mouse_mode() {
         ]
     );
 }
+
+/// A remote pane the user scrolled while it was connecting has its loading
+/// frames sitting in `pending_vte_events`. Becoming ready must drop them and
+/// reset the scroll, or the loading screen replays over the live terminal and
+/// the command's own output keeps buffering behind it.
+#[test]
+fn a_remote_pane_that_becomes_ready_forgets_the_loading_screen_it_buffered() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    // enough lines to have somewhere to scroll to
+    for line in 0..40 {
+        tab.handle_pty_bytes(1, format!("line {line}\n\r").into_bytes())
+            .unwrap();
+    }
+    tab.scroll_active_terminal_up(client_id);
+    assert!(
+        tab.get_pane_with_id(PaneId::Terminal(1))
+            .map(|pane| pane.is_scrolled())
+            .unwrap_or(false),
+        "the pane is scrolled before the connection completes"
+    );
+
+    tab.handle_pty_bytes(1, Vec::from("Status: connecting to the guest".as_bytes()))
+        .unwrap();
+    assert!(
+        tab.pending_vte_events.contains_key(&1),
+        "the loading update was buffered rather than drawn"
+    );
+
+    tab.remote_pane_ready(1).unwrap();
+
+    assert!(
+        !tab.pending_vte_events.contains_key(&1),
+        "the buffered loading updates are dropped, not replayed later"
+    );
+    assert!(
+        !tab.get_pane_with_id(PaneId::Terminal(1))
+            .map(|pane| pane.is_scrolled())
+            .unwrap_or(true),
+        "the pane starts the live command unscrolled, so its output is not buffered"
+    );
+
+    let mut output = Output::default();
+    tab.render(&mut output, None).unwrap();
+    let snapshot = take_snapshot(
+        output.serialize().unwrap().get(&client_id).unwrap(),
+        size.rows,
+        size.cols,
+        Palette::default(),
+    );
+    assert!(
+        !snapshot.contains("Status: connecting to the guest"),
+        "the loading screen is gone: {snapshot}"
+    );
+    assert!(
+        !snapshot.contains("line 39"),
+        "the clear wiped the loading pane's scrollback view: {snapshot}"
+    );
+}
