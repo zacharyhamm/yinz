@@ -117,6 +117,9 @@ zellij-firecracker image build --name rust-dev --project /absolute/path/to/proje
 The builder runs the script inside the staged guest root file system. It writes the image to
 `$XDG_DATA_HOME/zellij/firecracker/images/rust-dev.ext4`. Unlike `setup`, `image build` leaves a
 working default image alone; it only adopts what it built as the default when there is none.
+A rebuild is written beside the existing image as `<name>.ext4.partial` and moved into place
+only once the whole build has succeeded, so a build that fails or is interrupted leaves the
+previous image, and the kernel, exactly as VMs were cloning and booting them.
 
 The build is unprivileged: it re-execs itself under `unshare --user`, and the chroot itself runs in
 a further mount and PID namespace so the `/proc` and `/dev` mounts the script needs are gone before
@@ -327,7 +330,8 @@ and known-hosts file:
 Zellij sends it when the session is renamed, because `zellij firecracker stop` and `sync`
 resolve the session by its current name. It is additive to version 2: a provider that rejects
 it keeps the VMs under the old name, Zellij keeps using that name for them, and the server log
-says so.
+says so. The rename is applied whole or not at all: a state file that cannot be written or
+removed rolls the earlier moves back, so the old name still finds every VM.
 
 `sync`, `stop`, and `stop_session` return `{"version":2}` plus, when the worktree merge kept
 the host copy of a file, one `warnings` line per such file:
@@ -366,7 +370,10 @@ going on. `boot_timeout_secs` in `firecracker.json` (60 by default) bounds only 
 guest's ssh; a copy that stalls fails through rsync's own 60-second I/O timeout. If the provider
 is killed part-way through provisioning, the VM stays up and is listed as `provisioning`; the
 next request for the same VM, image, and worktree resumes the copy, which is incremental, rather
-than starting a new disk. Releasing a VM that never finished provisioning retains its disk
+than starting a new disk. The state record is written before Firecracker is started, so a
+provider killed in the moment between starting it and recording its pid still leaves a record:
+the next request finds the VMM by the API socket in its arguments and adopts it, instead of
+starting a second guest on the same TAP beside one nothing manages. Releasing a VM that never finished provisioning retains its disk
 without merging anything back: a partial copy would read as deletions.
 
 When the last session releases the VM, the provider pulls the guest's copy and merges it into
@@ -375,9 +382,10 @@ the host worktree file by file against that baseline:
 - a file changed only in the guest, or deleted only there, is applied to the host;
 - a file changed only on the host is kept;
 - a file changed on both sides keeps the host copy, and the guest copy is written beside it as
-  `<file>.guest`. A file the host changed and the guest deleted keeps the host copy. Each such
-  file is reported as a warning, which `zellij firecracker stop` prints and a normal session
-  exit writes to the server log.
+  `<file>.guest`, or `<file>.guest.N` when that name is already taken - a guest copy never
+  overwrites an existing file, an earlier conflict's copy included. A file the host changed and
+  the guest deleted keeps the host copy. Each such file is reported as a warning, which
+  `zellij firecracker stop` prints and a normal session exit writes to the server log.
 
 Nothing the guest did is lost in a merge, so a merge conflict does not retain the disk. A merge
 that cannot be attempted at all — the guest unreachable, rsync failing — does.
@@ -385,13 +393,21 @@ that cannot be attempted at all — the guest unreachable, rsync failing — doe
 A merge is applied to the host worktree whole or not at all: every step is recorded before it
 is taken, and a step that fails - a directory the host has made read-only, say - rolls the
 earlier ones back. A guest that turned a directory into a file while the host still keeps
-ignored outputs in that directory is refused before anything is touched.
+ignored outputs in that directory is refused before anything is touched, and so is a guest
+change under a directory the host has since replaced with a symlink: the merge never writes
+through a link, so nothing lands outside the worktree. Every path is checked against the copy
+the merge was planned from just before it is written; a save that lands on the host in between
+makes the merge roll back and start again from a fresh copy, a few times over, so it is read as
+the host change it is rather than overwritten.
 
 A manual sync merges the same way while the VM keeps running, then tells the guest exactly
 what the merge decided - the host's own changes, the host copy of each conflict with the
 `.guest` copy beside it, and the host's deletions - and records the merged tree as the new
 baseline. Nothing else in the guest is touched, so a file an agent writes while the sync runs
-survives it and is merged by the next one:
+survives it and is merged by the next one. Each path the sync sends is installed in the guest
+only if the guest still holds exactly what the sync pulled; one the agent has written to in the
+meantime is left as the agent has it, reported as a warning, and kept at the old baseline, so
+the next sync treats it as changed on both sides and keeps both copies:
 
 ```sh
 zellij firecracker sync review [--session work]
