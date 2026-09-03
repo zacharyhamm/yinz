@@ -370,10 +370,79 @@ pub struct ScheduledRun {
 /// that used to share this type lives in the hocus-agents pane now.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Picker {
-    /// What is shown, one row per entry.
+    /// Every row the list holds, filtered or not. `selected` indexes this, and
+    /// so does the id vector `PickerKind::Chats` carries beside it, so the
+    /// filter narrows what is *drawn* and never what is stored.
     pub entries: Vec<PickerRow>,
     pub selected: usize,
     pub kind: PickerKind,
+    /// What has been typed to narrow the list. Matched case-insensitively,
+    /// anywhere in a row's text.
+    pub filter: String,
+}
+
+impl Picker {
+    /// A list with nothing typed into it yet.
+    pub fn new(entries: Vec<PickerRow>, selected: usize, kind: PickerKind) -> Self {
+        Self {
+            entries,
+            selected,
+            kind,
+            filter: String::new(),
+        }
+    }
+
+    /// The rows the filter leaves, as indices into `entries`. An empty filter
+    /// leaves every selectable row.
+    pub fn visible(&self) -> Vec<usize> {
+        let needle = self.filter.to_lowercase();
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.selectable() && row.text.to_lowercase().contains(&needle))
+            .map(|(at, _)| at)
+            .collect()
+    }
+
+    /// What Tab should append: the longest text every remaining match shares
+    /// after the part already typed. With one match left that is the rest of
+    /// the row, so Tab fills the whole id in.
+    pub fn completion(&self) -> Option<String> {
+        let needle = self.filter.to_lowercase();
+        let mut tails = self.visible().into_iter().map(|at| {
+            let text = &self.entries[at].text;
+            let at = text
+                .to_lowercase()
+                .find(&needle)
+                .expect("a visible row contains the filter");
+            text[at + needle.len()..].to_owned()
+        });
+        let mut common = tails.next()?;
+        for tail in tails {
+            let shared = common
+                .char_indices()
+                .zip(tail.char_indices())
+                .take_while(|((_, a), (_, b))| a.eq_ignore_ascii_case(b))
+                .map(|((at, c), _)| at + c.len_utf8())
+                .last()
+                .unwrap_or(0);
+            common.truncate(shared);
+        }
+        Some(common).filter(|common| !common.is_empty())
+    }
+
+    /// Put the selection back on a row that is actually drawn, after the filter
+    /// changed under it. A filter that matches nothing leaves it where it was,
+    /// so backspacing restores the row you were on.
+    pub fn resettle(&mut self) {
+        let visible = self.visible();
+        if visible.contains(&self.selected) {
+            return;
+        }
+        if let Some(first) = visible.first() {
+            self.selected = *first;
+        }
+    }
 }
 
 /// One line of a picker: what to draw, and whether the user can land on it.

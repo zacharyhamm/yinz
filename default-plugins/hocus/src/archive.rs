@@ -141,11 +141,7 @@ impl State {
                 (entry.id, PickerRow::item(title))
             })
             .unzip();
-        self.picker = Some(Picker {
-            entries: titles,
-            selected: 0,
-            kind: PickerKind::Chats(ids),
-        });
+        self.picker = Some(Picker::new(titles, 0, PickerKind::Chats(ids)));
     }
 
     /// How many other conversations are working off-screen — receiving a
@@ -194,11 +190,7 @@ impl State {
             BTreeMap::from([("models".to_owned(), "1".to_owned())]),
             None,
         );
-        self.picker = Some(Picker {
-            entries: Vec::new(),
-            selected: 0,
-            kind: PickerKind::Models,
-        });
+        self.picker = Some(Picker::new(Vec::new(), 0, PickerKind::Models));
     }
 
     /// The agent strip as the hocus-agents pane should draw it.
@@ -317,19 +309,64 @@ impl State {
             .as_ref()
             .map(|cfg| cfg.model.clone())
             .unwrap_or_default();
-        self.picker = Some(Picker {
-            selected: models.iter().position(|id| *id == current).unwrap_or(0),
-            entries: models.into_iter().map(PickerRow::item).collect(),
-            kind: PickerKind::Models,
-        });
+        self.picker = Some(Picker::new(
+            models.iter().cloned().map(PickerRow::item).collect(),
+            models.iter().position(|id| *id == current).unwrap_or(0),
+            PickerKind::Models,
+        ));
         true
     }
 
     /// Every key while the picker is open. Unhandled keys are swallowed rather
     /// than falling through to the input box hidden behind it.
+    ///
+    /// Printable keys type into the filter rather than doing nothing: a long
+    /// model list is reached by name, not by scrolling. The filter narrows what
+    /// is drawn; `selected` still indexes the whole list, which is what keeps
+    /// the ids `PickerKind::Chats` carries in step with it.
     pub(crate) fn picker_key(&mut self, key: KeyWithModifier) -> bool {
+        // The filter edits, taken first because they are typing: everything
+        // below is navigation.
+        if let Some(picker) = self.picker.as_mut() {
+            let typed = matches!(key.bare_key, BareKey::Char(_))
+                && (key.has_no_modifiers() || key.has_modifiers(&[KeyModifier::Shift]));
+            match key.bare_key {
+                BareKey::Char(c) if typed => {
+                    picker.filter.push(c);
+                    picker.resettle();
+                    return true;
+                },
+                BareKey::Backspace => {
+                    picker.filter.pop();
+                    picker.resettle();
+                    return true;
+                },
+                // The input box's line kill, for the same reason.
+                BareKey::Char('u') if key.has_modifiers(&[KeyModifier::Ctrl]) => {
+                    picker.filter.clear();
+                    picker.resettle();
+                    return true;
+                },
+                BareKey::Tab if key.has_no_modifiers() => {
+                    if let Some(rest) = picker.completion() {
+                        picker.filter.push_str(&rest);
+                        picker.resettle();
+                    }
+                    return true;
+                },
+                _ => {},
+            }
+        }
         match key.bare_key {
-            BareKey::Esc => self.picker = None,
+            // Esc undoes the narrowing before it closes the list: having typed
+            // your way into a corner, the way out is back to the full list.
+            BareKey::Esc => match self.picker.as_mut() {
+                Some(picker) if !picker.filter.is_empty() => {
+                    picker.filter.clear();
+                    picker.resettle();
+                },
+                _ => self.picker = None,
+            },
             BareKey::Enter => {
                 let Some(picker) = self.picker.take() else {
                     return false;
@@ -357,7 +394,7 @@ impl State {
                 let Some(picker) = self.picker.as_mut() else {
                     return false;
                 };
-                picker.selected = step(&picker.entries, picker.selected, key.bare_key);
+                picker.selected = step(&picker.visible(), picker.selected, key.bare_key);
             },
             _ => return false,
         }
@@ -560,10 +597,10 @@ pub(crate) fn unsent_asks_to_notices(
 /// Staying put when there is none is what makes the header the agent list opens
 /// with harmless — there is nothing above it to reach, so `Up` on the first
 /// agent is a no-op rather than a jump onto a line that means nothing.
-fn step(entries: &[PickerRow], selected: usize, direction: BareKey) -> usize {
+fn step(visible: &[usize], selected: usize, direction: BareKey) -> usize {
     let next = match direction {
-        BareKey::Up => (0..selected).rev().find(|at| entries[*at].selectable()),
-        _ => (selected.saturating_add(1)..entries.len()).find(|at| entries[*at].selectable()),
+        BareKey::Up => visible.iter().rev().find(|at| **at < selected),
+        _ => visible.iter().find(|at| **at > selected),
     };
-    next.unwrap_or(selected)
+    next.copied().unwrap_or(selected)
 }

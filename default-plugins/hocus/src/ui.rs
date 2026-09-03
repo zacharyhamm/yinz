@@ -859,8 +859,26 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
         .is_none()
         .then(|| chat_layout(state, body_rows, cols, chrome));
 
-    if state.picker.is_some() {
-        show_cursor(None);
+    // The picker's own geometry, wanted before anything is drawn because the
+    // cursor sits in its filter row.
+    let picker_geometry = state.picker.as_ref().map(|_| {
+        // Leave the chat enough room for both input rules and one text row -
+        // and, in a body too short for that, the one row the input box is on.
+        let rows = (body_rows / 2)
+            .max(1)
+            .min(body_rows.saturating_sub(3).max(1))
+            .min(body_rows.saturating_sub(1));
+        let ruled = rows > 1;
+        (rows, ruled, rows - usize::from(ruled))
+    });
+
+    if let (Some(picker), Some((_, _, drawn))) = (state.picker.as_ref(), picker_geometry) {
+        // The typed filter is where the keyboard is, so that is where the
+        // cursor goes - unless the list is too short to draw the filter row.
+        match filter_row(picker, drawn) {
+            true => show_cursor(Some((filter_prompt(picker).width(), body_y))),
+            false => show_cursor(None),
+        }
     } else if let Some(layout) = &layout {
         // Must precede any print_*: the host reads the cursor position out of
         // the render output stream in order.
@@ -874,15 +892,10 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
     }
 
     // History and models take the top half and leave the conversation visible.
-    if let Some(picker) = &state.picker {
-        // Leave the chat enough room for both input rules and one text row -
-        // and, in a body too short for that, the one row the input box is on.
-        let picker_rows = (body_rows / 2)
-            .max(1)
-            .min(body_rows.saturating_sub(3).max(1))
-            .min(body_rows.saturating_sub(1));
-        let ruled = picker_rows > 1;
-        render_picker(picker, body_y, picker_rows - usize::from(ruled), cols, true);
+    if let (Some(picker), Some((picker_rows, ruled, drawn))) =
+        (state.picker.as_ref(), picker_geometry)
+    {
+        render_picker(picker, body_y, drawn, cols, true);
         if ruled {
             print_text_with_coordinates(
                 Text::new("─".repeat(cols)).dim_range(..),
@@ -1549,8 +1562,20 @@ fn render_transcript(state: &mut State, y: usize, height: usize, cols: usize) {
     }
 }
 
+/// Whether the list has room for its filter row: two rows at least, and
+/// something to filter. The empty list is the fetch still in flight, and has
+/// nothing to type at.
+fn filter_row(picker: &Picker, height: usize) -> bool {
+    height > 1 && !picker.entries.is_empty()
+}
+
+/// The filter row up to the cursor — also what says where the cursor goes.
+fn filter_prompt(picker: &Picker) -> String {
+    format!("filter: {}", picker.filter)
+}
+
 /// The archive (one chat per row, titled by its opening question) or the model
-/// list (one id per row).
+/// list (one id per row), narrowed by whatever has been typed into the filter.
 fn render_picker(picker: &Picker, y: usize, height: usize, cols: usize, active: bool) {
     if picker.entries.is_empty() {
         // An empty model list is the fetch still being in flight — `finish_models`
@@ -1563,18 +1588,50 @@ fn render_picker(picker: &Picker, y: usize, height: usize, cols: usize, active: 
         return;
     }
 
+    let visible = picker.visible();
+    let (list_y, height) = match filter_row(picker, height) {
+        true => {
+            let prompt = filter_prompt(picker);
+            // The count goes at the far end, clear of the cursor: it is what
+            // says whether one more character would leave anything at all.
+            let count = format!("{}/{}", visible.len(), picker.entries.len());
+            let gap = cols
+                .saturating_sub(prompt.width() + count.width())
+                .max(usize::from(cols > prompt.width()));
+            let line = format!("{prompt}{}{count}", " ".repeat(gap));
+            print_text_with_coordinates(Text::new(line).dim_range(..), 0, y, Some(cols), None);
+            (y + 1, height - 1)
+        },
+        false => (y, height),
+    };
+
+    if visible.is_empty() {
+        print_text_with_coordinates(
+            Text::new("no matches").dim_range(..),
+            0,
+            list_y,
+            Some(cols),
+            None,
+        );
+        return;
+    }
+
     // Window the list around the selection rather than tracking a scroll offset:
     // keeping it near the middle means it is always visible and the list moves
     // by one row per keypress in both directions.
-    let start = picker
-        .selected
+    let at = visible
+        .iter()
+        .position(|entry| *entry == picker.selected)
+        .unwrap_or(0);
+    let start = at
         .saturating_sub(height / 2)
-        .min(picker.entries.len().saturating_sub(height));
+        .min(visible.len().saturating_sub(height));
 
-    for (index, entry) in picker.entries.iter().skip(start).take(height).enumerate() {
+    for (index, entry) in visible.iter().skip(start).take(height).enumerate() {
         // Titles are already stripped of control characters by `history::title`,
         // and the host clips to `cols`, so neither is repeated here.
-        let selected = active && start + index == picker.selected;
+        let entry = &picker.entries[*entry];
+        let selected = active && start + index == at;
         let text = match entry.kind {
             RowKind::Item => {
                 let line = Text::new(format!(
@@ -1588,7 +1645,7 @@ fn render_picker(picker: &Picker, y: usize, height: usize, cols: usize, active: 
                 }
             },
         };
-        print_text_with_coordinates(text, 0, y + index, Some(cols), None);
+        print_text_with_coordinates(text, 0, list_y + index, Some(cols), None);
     }
 }
 
@@ -1615,8 +1672,12 @@ fn help_line(state: &State) -> &'static str {
         return "<←→> choose  <Enter> switch  <x> close  <Ctrl l> new  <Esc> back";
     }
     match state.picker.as_ref().map(|picker| &picker.kind) {
-        Some(PickerKind::Chats(_)) => return "<↑↓> choose  <Enter> open  <Esc> back",
-        Some(PickerKind::Models) => return "<↑↓> choose  <Enter> use  <Esc> back",
+        Some(PickerKind::Chats(_)) => {
+            return "type to filter  <Tab> complete  <↑↓> choose  <Enter> open  <Esc> back"
+        },
+        Some(PickerKind::Models) => {
+            return "type to filter  <Tab> complete  <↑↓> choose  <Enter> use  <Esc> back"
+        },
         None => {},
     }
     // Ahead of the `Status` match: a plan waits on the user rather than on the
@@ -2042,11 +2103,11 @@ mod tests {
                 // this small used to say "too small" and draw nothing at all
                 super::render(&mut state, rows, cols);
                 let picker = state.picker.take();
-                state.picker = Some(Picker {
-                    entries: vec![crate::PickerRow::item("a model")],
-                    selected: 0,
-                    kind: PickerKind::Models,
-                });
+                state.picker = Some(Picker::new(
+                    vec![crate::PickerRow::item("a model")],
+                    0,
+                    PickerKind::Models,
+                ));
                 super::render(&mut state, rows, cols);
                 state.picker = picker;
             }
