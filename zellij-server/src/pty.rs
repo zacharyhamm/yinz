@@ -504,6 +504,16 @@ pub struct PendingRemoteSpawn {
     terminal_action: TerminalAction,
 }
 
+/// A pane a layout has spawned but not yet handed to Screen: its terminal id,
+/// whether it starts held, the command it holds for, and the reader its bytes
+/// will arrive on (`None` for a pane whose spawn was deferred).
+type SpawnedPane = (
+    u32,
+    bool,
+    Option<RunCommand>,
+    Option<Result<Box<dyn AsyncReader>>>,
+);
+
 /// What a spawn worker was asked to do.
 enum SpawnJob {
     Terminal(PendingRemoteSpawn),
@@ -2171,6 +2181,42 @@ impl Pty {
         }
     }
 
+    /// Release the panes a layout spawned but never handed to Screen.
+    ///
+    /// Screen only learns of a layout's panes through `ApplyLayout` or
+    /// `OverrideLayoutComplete`. A layout that fails before one of those is sent
+    /// still owns every child it started, and no `ClosePane` will ever arrive for
+    /// them, so they must be closed here or they outlive the layout that asked
+    /// for them.
+    fn discard_layout_panes(&mut self, terminal_ids: impl IntoIterator<Item = u32>) {
+        for terminal_id in terminal_ids {
+            self.close_pane(PaneId::Terminal(terminal_id))
+                .with_context(|| format!("failed to close pane {terminal_id} of a failed layout"))
+                .non_fatal();
+        }
+    }
+
+    /// Give up on a layout: close every pane it spawned, deferred or already
+    /// running, so a failure part-way through leaves nothing behind.
+    fn abandon_layout(
+        &mut self,
+        tiled: &[SpawnedPane],
+        floating: &[SpawnedPane],
+        deferred: &[PendingRemoteSpawn],
+    ) {
+        // A deferred pane holds a slot in both lists - close it once, through the
+        // deferred path, which names it in its own error context.
+        let deferred_ids: HashSet<u32> = deferred.iter().map(|spawn| spawn.terminal_id).collect();
+        let spawned: Vec<u32> = tiled
+            .iter()
+            .chain(floating)
+            .map(|(terminal_id, ..)| *terminal_id)
+            .filter(|terminal_id| !deferred_ids.contains(terminal_id))
+            .collect();
+        self.discard_layout_panes(spawned);
+        self.discard_deferred_spawns(deferred);
+    }
+
     fn spawn_prepared_terminal(
         &mut self,
         terminal_action: TerminalAction,
@@ -2390,7 +2436,7 @@ impl Pty {
             ) {
                 Ok(applied) => applied,
                 Err(error) => {
-                    self.discard_deferred_spawns(&deferred_spawns);
+                    self.abandon_layout(&new_pane_pids, &new_floating_panes_pids, &deferred_spawns);
                     return Err(error);
                 },
             };
@@ -2419,7 +2465,7 @@ impl Pty {
             ) {
                 Ok(applied) => applied,
                 Err(error) => {
-                    self.discard_deferred_spawns(&deferred_spawns);
+                    self.abandon_layout(&new_pane_pids, &new_floating_panes_pids, &deferred_spawns);
                     return Err(error);
                 },
             };
@@ -2515,7 +2561,7 @@ impl Pty {
                 blocking_terminal,
             ))
         {
-            self.discard_deferred_spawns(&deferred_spawns);
+            self.abandon_layout(&new_pane_pids, &new_floating_panes_pids, &deferred_spawns);
             return Err(error).with_context(err_context);
         }
 
@@ -2646,6 +2692,19 @@ impl Pty {
                     .non_fatal(),
             }
         }
+        // The results carry the panes away with them, so note the ids while they
+        // are still here: if the send fails, Screen never hears of these panes and
+        // this is the last chance to close them.
+        let spawned_ids: Vec<u32> = all_tab_results
+            .iter()
+            .flat_map(|tab_result| {
+                tab_result
+                    .new_terminal_pids
+                    .iter()
+                    .chain(&tab_result.new_floating_pane_pids)
+            })
+            .map(|(terminal_id, _)| *terminal_id)
+            .collect();
         if let Err(error) =
             self.bus
                 .senders
@@ -2657,6 +2716,15 @@ impl Pty {
                     pending.completion_tx,
                 ))
         {
+            let deferred_ids: HashSet<u32> = deferred_spawns
+                .iter()
+                .map(|spawn| spawn.terminal_id)
+                .collect();
+            self.discard_layout_panes(
+                spawned_ids
+                    .into_iter()
+                    .filter(|terminal_id| !deferred_ids.contains(terminal_id)),
+            );
             self.discard_deferred_spawns(&deferred_spawns);
             return Err(error).with_context(err_context);
         }
@@ -2725,7 +2793,7 @@ impl Pty {
             ) {
                 Ok(applied) => applied,
                 Err(error) => {
-                    self.discard_deferred_spawns(&deferred_spawns);
+                    self.abandon_layout(&new_pane_pids, &new_floating_panes_pids, &deferred_spawns);
                     return Err(error);
                 },
             };
@@ -2754,7 +2822,7 @@ impl Pty {
             ) {
                 Ok(applied) => applied,
                 Err(error) => {
-                    self.discard_deferred_spawns(&deferred_spawns);
+                    self.abandon_layout(&new_pane_pids, &new_floating_panes_pids, &deferred_spawns);
                     return Err(error);
                 },
             };

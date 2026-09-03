@@ -69,6 +69,10 @@ struct MockOsApi {
     /// When set, every local spawn fails with an ordinary error (not a pane
     /// start failure), the way an `openpty` that ran out of ptys would.
     fail_local_spawns: Arc<Mutex<bool>>,
+    /// How many local spawns still succeed before they start failing the way
+    /// `fail_local_spawns` makes them fail, so a test can spawn a pane for real
+    /// and then break the one after it.
+    local_spawns_to_allow: Arc<Mutex<usize>>,
 }
 
 impl MockOsApi {
@@ -100,6 +104,7 @@ impl MockOsApi {
             resolved_spawns: Arc::new(Mutex::new(vec![])),
             firecracker_panes: Arc::new(Mutex::new(std::collections::HashSet::new())),
             fail_local_spawns: Arc::new(Mutex::new(false)),
+            local_spawns_to_allow: Arc::new(Mutex::new(0)),
         }
     }
     fn mark_firecracker(&self, terminal_id: u32) {
@@ -198,6 +203,18 @@ impl ServerOsApi for MockOsApi {
         _: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         _: Option<PathBuf>,
     ) -> anyhow::Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
+        let mut allowed = self.local_spawns_to_allow.lock().unwrap();
+        if *allowed > 0 {
+            *allowed -= 1;
+            let terminal_id = self.next_terminal_id.fetch_add(1, Ordering::SeqCst);
+            // The child pid is the terminal id offset into a range of its own, so
+            // a test asserting on signals cannot confuse the two.
+            return Ok((
+                terminal_id,
+                Box::new(crate::os_input_output::NullAsyncReader),
+                Some(1000 + terminal_id),
+            ));
+        }
         if *self.fail_local_spawns.lock().unwrap() {
             return Err(anyhow!("injected local spawn failure"));
         }
@@ -1581,6 +1598,127 @@ fn a_failing_layout_pane_clears_its_reserved_remote_panes() {
         vec![0],
         "the reservation made before the local failure is released"
     );
+    assert!(pty.task_handles.is_empty());
+}
+
+/// A layout that fails part-way through must not leave the panes it already
+/// started running with nobody to close them: Screen never hears of a layout
+/// that does not reach `ApplyLayout`.
+#[test]
+fn a_failing_layout_closes_the_panes_it_already_spawned() {
+    let os_api = MockOsApi::new();
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let (pty_tx, _pty_rx) = channels::unbounded();
+    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    let local = || RunCommand {
+        command: PathBuf::from("sh"),
+        ..Default::default()
+    };
+    let layout = TiledPaneLayout {
+        children: vec![
+            TiledPaneLayout {
+                run: Some(Run::Command(local())),
+                ..Default::default()
+            },
+            TiledPaneLayout {
+                run: Some(Run::Command(firecracker_command())),
+                ..Default::default()
+            },
+            TiledPaneLayout {
+                run: Some(Run::Command(local())),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    // The first local pane starts for real, the second one fails.
+    *os_api.local_spawns_to_allow.lock().unwrap() = 1;
+    *os_api.fail_local_spawns.lock().unwrap() = true;
+
+    let result = pty.spawn_terminals_for_layout(
+        None,
+        layout,
+        vec![],
+        Some(TerminalAction::RunCommand(RunCommand::default())),
+        HashMap::new(),
+        None,
+        0,
+        false,
+        true,
+        1,
+        None,
+    );
+
+    assert!(result.is_err(), "the local failure is still reported");
+    let mut cleared = os_api.cleared_terminal_ids.lock().unwrap().clone();
+    cleared.sort_unstable();
+    assert_eq!(
+        cleared,
+        vec![0, 1],
+        "both the running local pane and the reserved remote one are released"
+    );
+    assert_eq!(
+        os_api.local_signals(),
+        vec![(1000, "SIGHUP")],
+        "the local child that was already running is hung up"
+    );
+    assert!(pty.id_to_child_pid.is_empty());
+    assert!(pty.task_handles.is_empty());
+}
+
+/// The same, for the layout-override path - whose caller logs the failure and
+/// carries on, so nothing else would ever notice the orphans.
+#[test]
+fn a_failing_layout_override_closes_the_panes_it_already_spawned() {
+    let os_api = MockOsApi::new();
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let (pty_tx, _pty_rx) = channels::unbounded();
+    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    let local = || RunCommand {
+        command: PathBuf::from("sh"),
+        ..Default::default()
+    };
+    let layout = TiledPaneLayout {
+        children: vec![
+            TiledPaneLayout {
+                run: Some(Run::Command(local())),
+                ..Default::default()
+            },
+            TiledPaneLayout {
+                run: Some(Run::Command(firecracker_command())),
+                ..Default::default()
+            },
+            TiledPaneLayout {
+                run: Some(Run::Command(local())),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    *os_api.local_spawns_to_allow.lock().unwrap() = 1;
+    *os_api.fail_local_spawns.lock().unwrap() = true;
+
+    let result = pty.spawn_terminals_for_layout_override(
+        None,
+        layout,
+        vec![],
+        Some(TerminalAction::RunCommand(RunCommand::default())),
+        HashMap::new(),
+        0,
+        None,
+        1,
+        None,
+        None,
+        false,
+        false,
+    );
+
+    assert!(result.is_err(), "the local failure is still reported");
+    let mut cleared = os_api.cleared_terminal_ids.lock().unwrap().clone();
+    cleared.sort_unstable();
+    assert_eq!(cleared, vec![0, 1]);
+    assert_eq!(os_api.local_signals(), vec![(1000, "SIGHUP")]);
+    assert!(pty.id_to_child_pid.is_empty());
     assert!(pty.task_handles.is_empty());
 }
 
