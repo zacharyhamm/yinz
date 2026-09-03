@@ -64,7 +64,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::str;
 use std::time::{Duration, Instant};
-use zellij_utils::animation::{Tween, FRAME_PERIOD};
+use zellij_utils::animation::{Tween, BLINK_TICK, FRAME_PERIOD};
 
 use crate::route::NotificationEnd;
 
@@ -694,6 +694,11 @@ pub(crate) struct Screen {
     /// get repainted while the colour moves - a pane whose contents are idle has nothing else to
     /// make it redraw - and so the animation clock knows when the last one is done.
     fading_frame_panes: HashSet<PaneId>,
+    /// Panes whose frame is blinking a bell because the agent in them is waiting on a person
+    /// who has not answered yet. Kept for the same two reasons as `fading_frame_panes`: an
+    /// idle pane produces no frames of its own, and the clock has to know when the last one
+    /// is done. Reaped in `advance_agent_attention_blinks`.
+    blinking_agent_panes: HashSet<PaneId>,
     /// Plugins whose loading indicator is taking frames from the shared clock. The dots themselves
     /// are derived from how long the load has been running, so this only records *which* plugins
     /// are still loading.
@@ -894,8 +899,10 @@ impl Screen {
     /// Derived from the animated state itself rather than from a registration list, which is what
     /// stops the clock getting stuck on and burning wakeups over an idle session.
     ///
-    /// Two cadences, because the surfaces genuinely differ. A toast sliding or a bell fading is
-    /// continuous motion and needs [`FRAME_PERIOD`]. The plugin loading dots are a four-character
+    /// Three cadences, because the surfaces genuinely differ. A toast sliding or a bell fading is
+    /// continuous motion and needs [`FRAME_PERIOD`]. A blinking agent-attention bell changes
+    /// twice a second and asks for [`BLINK_TICK`], half a phase, so no phase can be dropped.
+    /// The plugin loading dots are a four-character
     /// "still working" pulse that changes once every [`DOT_PERIOD`], and holding the clock at 60fps
     /// for them means a full `render_to_clients` - global panes, every tab's layout, every pane's
     /// composition - sixty times a second for the entire time any plugin is loading, which on a
@@ -907,6 +914,8 @@ impl Screen {
     pub(crate) fn animation_clock_period(&self, now: Instant) -> Option<Duration> {
         if self.notifications_are_animating(now) || !self.fading_frame_panes.is_empty() {
             Some(FRAME_PERIOD)
+        } else if !self.blinking_agent_panes.is_empty() {
+            Some(BLINK_TICK)
         } else if !self.animating_plugin_loads.is_empty() {
             Some(DOT_PERIOD)
         } else {
@@ -997,6 +1006,31 @@ impl Screen {
                 continue;
             }
             tab.set_pane_frame_should_render(pane_id);
+        }
+    }
+
+    /// Forget the panes whose agent-attention bell has been answered or has gone away, so the
+    /// shared clock stops once the last one is done.
+    ///
+    /// Unlike the bell fade above, this marks nothing for repaint: the blink phase is a field
+    /// of `PaneFrame`, so the frame diff already sees it move. The fade has to ask because its
+    /// strength is applied by the consumer and is invisible to that comparison.
+    ///
+    /// Reaping here rather than at every place a wait can end is what keeps the set honest:
+    /// input, focus, a report, a closed pane and a warp all take the indicator down, and none
+    /// of them has to remember to say so.
+    pub(crate) fn advance_agent_attention_blinks(&mut self) {
+        if self.blinking_agent_panes.is_empty() {
+            return;
+        }
+        let blinking: Vec<PaneId> = self.blinking_agent_panes.iter().copied().collect();
+        for pane_id in blinking {
+            let still_waiting = self
+                .tab_containing_pane(pane_id)
+                .is_some_and(|tab| tab.pane_wants_attention(pane_id));
+            if !still_waiting {
+                self.blinking_agent_panes.remove(&pane_id);
+            }
         }
     }
 }
@@ -1224,6 +1258,7 @@ impl Screen {
             unowned_strip_fill: HashMap::new(),
             last_notification_fill: HashMap::new(),
             fading_frame_panes: HashSet::new(),
+            blinking_agent_panes: HashSet::new(),
             animating_plugin_loads: HashSet::new(),
             animation_clock: None,
             global_last_active_tab_id: 0,

@@ -1704,7 +1704,13 @@ fn a_plugin_can_set_a_panes_agent_record() {
         function M.load()
             zellij.set_pane_agent {
                 pane_id = zellij.terminal_pane(3),
-                agent = { kind = "codex", state = "Waiting", source = "Reported", detail = "y/n" },
+                agent = {
+                    kind = "codex",
+                    state = "Waiting",
+                    source = "Reported",
+                    detail = "y/n",
+                    wait_needs_a_person = true,
+                },
             }
             zellij.set_pane_agent { pane_id = zellij.terminal_pane(3) }
             zellij.set_pane_agent_run {
@@ -1744,6 +1750,10 @@ fn a_plugin_can_set_a_panes_agent_record() {
             source: AgentSource::Reported,
             detail: Some("y/n".to_owned()),
             waiting_on: None,
+            // A plugin speaking for an agent says this for itself. It defaults to `false`
+            // rather than to the state, because a plugin *registering* a pane as an agent -
+            // hocus's `agent_register` - is not reporting a prompt anybody is looking at.
+            wait_needs_a_person: true,
             cwd: None,
             session_id: None,
             run_id: None,

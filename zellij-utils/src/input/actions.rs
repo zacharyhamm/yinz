@@ -2430,6 +2430,9 @@ impl Action {
                         // `--detail` is the tool hint; a script that wants to say what it is
                         // blocked on says it there, and the hook road fills this in itself.
                         waiting_on: None,
+                        // A script that troubles itself to say `waiting` is saying a person
+                        // is wanted; there is no permission mode here to answer for it.
+                        wait_needs_a_person: state == AgentState::Waiting,
                         cwd: cwd.map(|cwd| cwd.display().to_string()),
                         session_id: None,
                         // `None` is not "no run": a record that does not name one inherits
@@ -4147,6 +4150,7 @@ mod tests {
                     source: AgentSource::Reported,
                     detail: Some("rebasing".to_owned()),
                     waiting_on: None,
+                    wait_needs_a_person: true,
                     cwd: Some("/work/.worktrees/topic".to_owned()),
                     session_id: None,
                     run_id: None,
