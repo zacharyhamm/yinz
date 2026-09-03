@@ -744,10 +744,10 @@ fn a_quiet_job_that_fires_in_a_parked_tab_stays_there() {
 
 /// The bar's highlight would otherwise swallow every key on the next reveal.
 #[test]
-fn hiding_the_pane_gives_the_keyboard_back_from_the_bar() {
+fn hiding_the_panel_gives_the_keyboard_back_from_the_bar() {
     let mut state = three_tabs();
     state.on_key(shift_tab());
     assert!(state.chat_tab_focus.is_some());
-    state.hide_self_only();
+    state.hide_panel();
     assert_eq!(state.chat_tab_focus, None);
 }

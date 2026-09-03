@@ -65,20 +65,22 @@
 //! nothing else (`wire::AGENT_SUMMARIZE`): which of the two kinds of work that means is the
 //! daemon's to know, the same way the rows themselves are hocus's to compute.
 //!
-//! **The two panes are separate plugins in one panel, with one exception.** Esc
-//! here hides this pane and nothing else, and the conversation widens to take
-//! the whole panel; hocus's Esc hides hocus and this pane widens the same way.
+//! **The two panes are separate plugins with one visibility.** The panel is one
+//! thing to the user, so Esc here puts the whole of it away: this pane hides
+//! itself and hocus is asked for the other half
+//! (`wire::AGENT_STRIP_HIDE`), being the only one that knows both plugin ids.
+//! `Ctrl e a` brings the whole panel back with the keyboard here, `Ctrl e c`
+//! with the keyboard in the conversation; neither ever leaves one half alone.
 //! Ctrl-o moves the panel - both halves, split intact - clear of a tiled pane;
-//! hocus does the arithmetic, since it places both overlays, so the key is a
+//! hocus does the arithmetic, since it places both overlays, so that key is a
 //! request (`wire::AGENT_STRIP_REPOSITION`) rather than a move. Enter walks you
 //! to the selected agent and leaves the panel exactly where it is: the history
 //! half is worth reading beside the pane it is about, and dismissing is what
-//! Esc and Ctrl-` are for. Neither pane opens the other for the user. The exception is
-//! `say_hello_to_hocus`, which does carry hocus's url: this pane is a view over
-//! rows only hocus can compute, so a list with no hocus to ask has nothing to
-//! draw. The hocus that greeting launches starts **hidden** — `wire::OPENED_BY`
-//! is what tells it so — because the user asked for a list, not for a
-//! conversation.
+//! Esc is for. `say_hello_to_hocus` carries hocus's url, because this pane is a
+//! view over rows only hocus can compute and a list with no hocus to ask has
+//! nothing to draw; the hocus it launches appears beside us but does **not**
+//! take the focus - `wire::OPENED_BY` is what tells it so - because the user
+//! asked for a list.
 
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -540,18 +542,10 @@ impl State {
     }
 
     fn on_key(&mut self, key: KeyWithModifier) -> bool {
-        if key.bare_key == BareKey::Char('`') && key.has_modifiers(&[KeyModifier::Ctrl]) {
-            // puts this pane away - the same gesture that revealed it. This pane and
-            // nothing else: the conversation beside it, if there is one, is the user's
-            // to put away with its own Esc.
-            hide_self();
-            return false;
-        }
-        // The reader is the whole pane, so it answers every key that is not the gesture above:
-        // there is no list to steer and no half to move the focus between while it is up, and a
-        // key that fell through to them would act on a pane the user cannot see. Ctrl-` is the
-        // exception because it puts the pane away rather than acting inside it - and it leaves
-        // the reader open, so coming back lands where you were.
+        // The reader is the whole pane, so it answers every key: there is no list to steer and
+        // no half to move the focus between while it is up, and a key that fell through to them
+        // would act on a pane the user cannot see. That includes Esc, which closes the reader
+        // rather than dismissing the panel - one step back before the way out.
         if self.reading.is_some() {
             return self.read_key(key);
         }
@@ -626,7 +620,13 @@ impl State {
         }
         match key.bare_key {
             BareKey::Esc => {
+                // Put the whole panel away, not this pane: the list and the conversation are one
+                // thing to the user and have one visibility. This half goes on its own - it has
+                // its own id and no round trip is needed for it - and hocus is asked for the
+                // other, being the only half that knows both ids. Sent even when there may be no
+                // hocus listening: the message launches nobody, so it is free.
                 hide_self();
+                pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP_HIDE));
                 false
             },
             BareKey::Enter => {
@@ -647,7 +647,7 @@ impl State {
                 // Exactly what a click on the row does, and for the same reason it
                 // leaves the panel up: the history half under the list is about the
                 // agent you just walked into, so putting the panel away is the one
-                // thing Enter must not do. Esc and Ctrl-` are the dismissals.
+                // thing Enter must not do. Esc is the dismissal.
                 self.activate();
                 false
             },
@@ -1198,10 +1198,10 @@ impl State {
 
     /// A key with the reader up. Everything in here is about the one event on screen.
     ///
-    /// `Esc` closes the reader rather than hiding the pane: the pane's Esc is a dismissal, and
-    /// with a reader open the thing being dismissed is the reader. Every other key is
-    /// swallowed, because the list and the halves are not on screen and a key that steered them
-    /// would move something the user cannot see.
+    /// `Esc` closes the reader rather than dismissing the panel: the pane's Esc puts the whole
+    /// panel away, and with a reader open the thing being dismissed is the reader. Every other
+    /// key is swallowed, because the list and the halves are not on screen and a key that
+    /// steered them would move something the user cannot see.
     fn read_key(&mut self, key: KeyWithModifier) -> bool {
         match key.bare_key {
             BareKey::Esc => self.close_reader(),
@@ -1307,8 +1307,8 @@ impl State {
                 )]))
                 // Only read if a hocus actually has to be launched, which is the case this is
                 // for: the user asked for a list, so the keyboard stays here rather than
-                // jumping to a conversation they did not ask to see - and which, being opened
-                // this way, hides itself the moment it has a pane to hide.
+                // jumping to the conversation. It still *appears* - the panel is both halves
+                // or it is nothing - it simply does not take the focus.
                 .new_plugin_instance_should_not_be_focused(),
         );
     }

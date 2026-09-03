@@ -176,11 +176,11 @@ fn a_split_read_off_the_manifest_outranks_the_configured_one() {
     );
 }
 
-/// A hidden half gives its width to the other: the panel keeps one footprint, and whichever half
-/// is open fills it. The hidden half keeps the share it would have, so a reveal finds it where
-/// it belongs.
+/// A half with no sibling to share with takes the whole panel: the panel keeps one footprint
+/// whether it holds one half or two. The absent half is still placed, at the share it would
+/// have, so a panel that grows its other half finds it where it belongs.
 #[test]
-fn a_hidden_half_gives_its_width_to_the_other() {
+fn a_lone_half_takes_the_whole_panel() {
     let (both_chat, both_agents) = beside(&BTreeMap::new(), 50, 200);
     let panel = panel_of(&both_chat, &both_agents);
 
@@ -194,7 +194,7 @@ fn a_hidden_half_gives_its_width_to_the_other() {
     assert_eq!(
         rect(&agents),
         rect(&both_agents),
-        "the hidden list keeps its half, ready to come back to it"
+        "the absent list keeps its half, ready to arrive into it"
     );
 
     let (chat, agents) =
@@ -202,7 +202,8 @@ fn a_hidden_half_gives_its_width_to_the_other() {
     assert_eq!(rect(&agents), panel, "the list alone has the whole panel");
     assert_eq!(rect(&chat), rect(&both_chat));
 
-    // and with neither on screen the panel is placed as it will come back - cut
+    // and with neither half named the panel is cut as usual - which is what a hidden panel is
+    // placed as, since hiding takes both halves and gives the width back to nobody
     let neither = Shown {
         chat: false,
         agents: false,
@@ -397,14 +398,14 @@ fn a_pane_update_reporting_us_suppressed_confirms_the_hide() {
     let mut state = State {
         own_plugin_id: 7,
         hidden: true,
-        hide_pending: true,
+        hide_pending: 2,
         ..Default::default()
     };
 
     state.on_panes(manifest(0, vec![pane(7, true)]));
     assert!(state.hidden);
     assert!(
-        !state.hide_pending,
+        state.hide_pending == 0,
         "the hide we asked for has been seen to land"
     );
     assert_eq!(state.own_tab_index, Some(0), "and we learn where we are");
@@ -416,7 +417,7 @@ fn a_stale_frame_does_not_undo_a_hide() {
     let mut state = State {
         own_plugin_id: 7,
         hidden: true,
-        hide_pending: true,
+        hide_pending: 2,
         ..Default::default()
     };
 
@@ -426,7 +427,7 @@ fn a_stale_frame_does_not_undo_a_hide() {
         "reading a stale frame as a reveal would put the column back the instant Esc was pressed"
     );
     assert!(
-        state.hide_pending,
+        state.hide_pending > 0,
         "and we are still waiting to see the hide"
     );
 }
@@ -437,7 +438,7 @@ fn a_pane_update_after_the_hide_landed_is_a_reveal() {
         own_plugin_id: 7,
         // the hide has been seen to land, so nothing is outstanding
         hidden: true,
-        hide_pending: false,
+        hide_pending: 0,
         ..Default::default()
     };
 
@@ -993,7 +994,7 @@ fn a_reveal_stays_on_the_tab_the_server_put_us_on() {
         own_plugin_id: 7,
         own_tab_index: Some(3),
         hidden: true,
-        hide_pending: false,
+        hide_pending: 0,
         client: 1,
         client_tabs: BTreeMap::from([(1, 0), (2, 3)]),
         tabs: vec![TabInfo {
@@ -1015,31 +1016,58 @@ fn a_reveal_stays_on_the_tab_the_server_put_us_on() {
 }
 
 // ---------------------------------------------------------------------------
-// The two panes hide and show on their own
+// The two panes hide and show as one
 // ---------------------------------------------------------------------------
 
-/// The separation, from the conversation's side: a list revealed on its own - by `a`, or by the
-/// user - leaves a hidden conversation hidden. It used to bring the conversation back with it,
-/// which is exactly the coupling the panes no longer have.
+/// A list on screen beside a suppressed conversation is the `a` keybinding half-arrived: it
+/// reveals and focuses the half it names and leaves the other where it was. The panel has one
+/// visibility, so the conversation joins it - unfocused, since the user asked for the list.
+///
+/// This is the case the panes used to be *separated* over, and the separation is what has gone.
 #[test]
-fn a_visible_agent_list_does_not_bring_a_hidden_conversation_back() {
+fn a_visible_agent_list_brings_the_conversation_back_with_it() {
     let mut state = State {
         own_plugin_id: 7,
         agents_plugin: Some(9),
         own_tab_index: Some(3),
         hidden: true,
-        hide_pending: false,
+        hide_pending: 0,
         ..Default::default()
     };
 
     state.on_panes(manifest(3, vec![pane(7, true), pane(9, false)]));
 
-    assert!(state.hidden, "the conversation stays where the user put it");
-    assert!(
-        state.agents_visible,
-        "and the list beside it is noted as drawn, so a tab switch carries it"
-    );
+    assert!(!state.hidden, "the panel is up, so both halves are");
+    assert!(state.agents_visible);
     assert_eq!(state.own_tab_index, Some(3));
+}
+
+/// And the frame between the two hides landing is not that: one Esc suppresses both halves and
+/// they land on their own schedules, so a snapshot showing the list still standing beside an
+/// already-suppressed conversation is a dismissal in progress rather than a reveal.
+///
+/// Without `hide_pending` holding it, that frame would read exactly like the test above and put
+/// the panel straight back on the press that dismissed it.
+#[test]
+fn a_hide_only_half_landed_is_not_read_as_a_reveal() {
+    let mut state = State {
+        own_plugin_id: 7,
+        agents_plugin: Some(9),
+        own_tab_index: Some(3),
+        hidden: true,
+        hide_pending: 2,
+        ..Default::default()
+    };
+
+    state.on_panes(manifest(3, vec![pane(7, true), pane(9, false)]));
+
+    assert!(state.hidden, "still going away");
+    assert!(state.hide_pending > 0, "and still waiting to see it land");
+
+    // the list's own hide lands a frame later, and that is the whole panel down
+    state.on_panes(manifest(3, vec![pane(7, true), pane(9, true)]));
+    assert!(state.hidden);
+    assert_eq!(state.hide_pending, 0);
 }
 
 /// The same arm read the other way: our own hide landing is a hide, whatever the list is doing.
@@ -1049,7 +1077,7 @@ fn our_own_hide_landing_is_not_a_reveal() {
         own_plugin_id: 7,
         agents_plugin: Some(9),
         hidden: true,
-        hide_pending: true,
+        hide_pending: 2,
         ..Default::default()
     };
 
@@ -1057,7 +1085,7 @@ fn our_own_hide_landing_is_not_a_reveal() {
 
     assert!(state.hidden, "we are away, and stay away");
     assert!(
-        !state.hide_pending,
+        state.hide_pending == 0,
         "the hide we asked for has been seen to land"
     );
 }
@@ -1066,11 +1094,12 @@ fn our_own_hide_landing_is_not_a_reveal() {
 // A conversation the agent list launched
 // ---------------------------------------------------------------------------
 
-/// The list needs a hocus - it draws rows only hocus computes - but the user who opened a list
-/// asked for a list. A greeting arriving before our own first `PaneUpdate` is the launch that
-/// made us, and nothing else can be that early.
+/// The list needs a hocus - it draws rows only hocus computes - and the panel is both halves, so
+/// that conversation belongs on screen. What it must not do is go asking for a *second* list: a
+/// greeting arriving before our own first `PaneUpdate` is the launch that made us, and nothing
+/// else can be that early, so the list it came from is the one we already have.
 #[test]
-fn a_greeting_that_arrives_before_our_first_pane_update_means_we_were_launched_hidden() {
+fn a_greeting_that_arrives_before_our_first_pane_update_is_the_list_that_made_us() {
     let mut state = State {
         own_plugin_id: 7,
         ..Default::default()
@@ -1078,13 +1107,17 @@ fn a_greeting_that_arrives_before_our_first_pane_update_means_we_were_launched_h
     assert!(state.own_tab_index.is_none(), "no manifest yet");
 
     state.note_greeting_from_agents(true);
-    assert!(state.open_hidden);
+    assert!(
+        state.agents_open_requested,
+        "a list exists and is on its way to announcing itself"
+    );
+    assert!(!state.hidden, "and the conversation beside it is on screen");
 }
 
 /// And a hocus that was already open simply answers with the strip: the greeting is the list
 /// saying hello, not the list having opened us.
 #[test]
-fn a_greeting_to_a_conversation_that_was_already_open_hides_nothing() {
+fn a_greeting_to_a_conversation_that_was_already_open_claims_nothing() {
     let mut state = State {
         own_plugin_id: 7,
         own_tab_index: Some(0),
@@ -1092,7 +1125,7 @@ fn a_greeting_to_a_conversation_that_was_already_open_hides_nothing() {
     };
 
     state.note_greeting_from_agents(true);
-    assert!(!state.open_hidden);
+    assert!(!state.agents_open_requested);
 
     // nor does a greeting with no marker on it at all
     let mut state = State {
@@ -1100,27 +1133,68 @@ fn a_greeting_to_a_conversation_that_was_already_open_hides_nothing() {
         ..Default::default()
     };
     state.note_greeting_from_agents(false);
-    assert!(!state.open_hidden);
+    assert!(!state.agents_open_requested);
 }
 
-/// The hide itself waits for a pane to hide: `hide_self` before our pane is on a tab is dropped
-/// without a word, the same way a placement is.
+/// A list already asked for is not asked for again, however many manifests arrive while the
+/// launch is in flight. `agents_plugin` stays `None` for all of them - the id only arrives with
+/// `AGENT_SELECTION` - so without the claim every one of them would open another list.
 #[test]
-fn the_hide_lands_on_the_first_manifest_that_finds_our_pane() {
+fn a_list_already_asked_for_is_not_asked_for_twice() {
     let mut state = State {
         own_plugin_id: 7,
-        open_hidden: true,
+        ..Default::default()
+    };
+
+    // The panel is up with no other half, so the first manifest asks for one.
+    state.on_panes(manifest(0, vec![pane(7, false)]));
+    assert!(state.agents_open_requested, "asked once");
+    assert_eq!(state.agents_launches, 1);
+    assert!(!state.hidden);
+
+    // Every manifest until the list announces itself finds the same state, and asks nothing.
+    for _ in 0..3 {
+        state.on_panes(manifest(0, vec![pane(7, false)]));
+    }
+    assert!(state.agents_open_requested, "the claim still stands");
+    assert_eq!(
+        state.agents_launches, 1,
+        "and no manifest in between asked for a second list"
+    );
+}
+
+/// A launch that never announces itself - the plugin failed to load, or its pane was closed
+/// before `AGENT_SELECTION` went out - leaves the claim standing with no id to clear it against.
+/// Nothing in the plugin can see that, so the user's own gesture is the recovery: an explicit
+/// reveal drops the claim and asks again.
+#[test]
+fn a_list_that_never_arrives_is_asked_for_again_on_the_next_reveal() {
+    let mut state = State {
+        own_plugin_id: 7,
         ..Default::default()
     };
 
     state.on_panes(manifest(0, vec![pane(7, false)]));
+    assert_eq!(state.agents_launches, 1, "asked once, and it never arrives");
 
-    assert!(
-        state.hidden,
-        "put away as soon as there was something to put"
+    // Esc and `c`, with no manifest in between to clear anything.
+    state.hide_panel();
+    state.reveal_panel();
+
+    assert_eq!(
+        state.agents_launches, 2,
+        "the reveal grows the panel's missing half rather than waiting on a launch that is gone"
     );
-    assert!(state.hide_pending);
-    assert!(!state.open_hidden, "and asked for exactly once");
+
+    // And a reveal on its own does too - a dismissal is not what makes the claim recoverable.
+    let mut state = State {
+        own_plugin_id: 7,
+        ..Default::default()
+    };
+    state.on_panes(manifest(0, vec![pane(7, false)]));
+    state.hidden = true;
+    state.reveal_panel();
+    assert_eq!(state.agents_launches, 2);
 }
 
 // ---- which rectangle the panes are placed against ---------------------------------------------
@@ -2076,14 +2150,14 @@ fn arriving_on_another_tab_drops_the_anchor() {
 }
 
 #[test]
-fn a_hidden_conversation_keeps_its_anchor() {
+fn a_hidden_panel_keeps_its_anchor() {
     let mut state = two_pane_state();
     state.on_key(ctrl_o());
     let anchored = placed_chat(&state);
 
-    state.hide_self_only();
+    state.hide_panel();
     assert_eq!(state.panel.anchor, Some(PaneId::Terminal(2)));
-    state.reveal_self();
+    state.reveal_panel();
 
     assert_eq!(state.panel.anchor, Some(PaneId::Terminal(2)));
     assert_eq!(placed_chat(&state), anchored, "revealed where it was");
@@ -2111,6 +2185,19 @@ fn agents_beside_state() -> State {
     state.on_panes(manifest(0, list_beside()));
     state.last_placement = None;
     state
+}
+
+/// Esc in the agent list, as `hocus-agents` sends it: that pane hides itself and asks hocus for
+/// the other half, being the only one of the two that knows both plugin ids.
+fn list_hide() -> PipeMessage {
+    PipeMessage {
+        source: PipeSource::Plugin(9),
+        name: hocus_proto::wire::AGENT_STRIP_HIDE.to_owned(),
+        payload: None,
+        args: BTreeMap::new(),
+        is_private: true,
+        pane_id: None,
+    }
 }
 
 /// Ctrl-o in the agent list, as `hocus-agents` sends it: the pane has no geometry of its own, so
@@ -2170,10 +2257,14 @@ fn a_list_that_opens_is_placed_as_the_left_half_of_the_panel() {
     );
 }
 
-/// The list hiding on its own reaches hocus through the manifest, and the conversation takes the
-/// whole panel; the list coming back cuts it again.
+/// A half found suppressed on its own is put back, and the cut never moves for it.
+///
+/// Nothing in hocus hides one half any more, so a manifest that shows one is something outside
+/// the panel having suppressed it - and the repair is to bring it back rather than to widen the
+/// survivor over it. The rectangles are the evidence: both halves keep the share they had
+/// throughout, so the panel the user gets back is the panel they dismissed.
 #[test]
-fn the_list_hiding_gives_its_width_to_the_conversation() {
+fn a_list_suppressed_on_its_own_is_put_back_rather_than_widened_over() {
     let mut state = agents_beside_state();
 
     state.on_panes(manifest(
@@ -2188,7 +2279,28 @@ fn the_list_hiding_gives_its_width_to_the_conversation() {
             tiled(2, 100, 0, 100, 50, false),
         ],
     ));
-    assert!(!state.agents_visible);
+    assert!(!state.agents_visible, "the manifest is read");
+    assert!(!state.hidden, "and the panel is still up");
+    assert_eq!(
+        state.last_placement, None,
+        "the cut does not depend on what is suppressed, so nothing is placed"
+    );
+
+    // and the list coming back changes no rectangle either
+    state.on_panes(manifest(0, list_beside()));
+    assert!(state.agents_visible);
+    assert_eq!(state.last_placement, None);
+}
+
+/// What *does* move the cut is a half that stops existing. A list whose pane the user closed
+/// leaves the conversation nothing to share with, so it takes the whole panel.
+#[test]
+fn a_list_that_closes_gives_its_width_to_the_conversation() {
+    let mut state = agents_beside_state();
+
+    state.on_panes(manifest(0, two_panes()));
+
+    assert_eq!(state.shown(), only_chat(), "no list to hold a half");
     assert_eq!(
         placed_pane(&state, 7),
         Some((3, 14, 60, 33)),
@@ -2196,51 +2308,27 @@ fn the_list_hiding_gives_its_width_to_the_conversation() {
     );
     assert_eq!(
         placed_pane(&state, 9),
-        Some((3, 14, 30, 33)),
-        "and the hidden list keeps its half, for when it comes back"
-    );
-
-    state.last_placement = None;
-    state.on_panes(manifest(
-        0,
-        vec![
-            overlay_pane(9, 3, 14, 30, 33),
-            overlay_pane(7, 3, 14, 60, 33),
-            tiled(1, 0, 0, 100, 50, true),
-            tiled(2, 100, 0, 100, 50, false),
-        ],
-    ));
-    assert!(state.agents_visible);
-    assert_eq!(placed_pane(&state, 7), Some((33, 14, 30, 33)), "cut again");
-    assert_eq!(placed_pane(&state, 9), Some((3, 14, 30, 33)));
-
-    state.last_placement = None;
-    state.on_panes(manifest(0, list_beside()));
-    assert_eq!(
-        state.last_placement, None,
-        "and a manifest that changes nothing places nothing"
+        None,
+        "and a pane that is gone is not placed"
     );
 }
 
-/// The conversation's own hide does the same the other way round, and the reveal restores the
-/// split.
+/// Hiding the panel places nothing - both halves go together, so no rectangle changes - and the
+/// reveal brings it back exactly as it was.
 #[test]
-fn the_conversation_hiding_gives_its_width_to_the_list() {
+fn hiding_the_panel_moves_no_rectangle() {
     let mut state = agents_beside_state();
 
-    state.hide_self_only();
+    state.hide_panel();
+    assert!(state.hidden);
+    assert!(state.hide_pending > 0, "and waits to see the hide land");
     assert_eq!(
-        placed_pane(&state, 9),
-        Some((3, 14, 60, 33)),
-        "the list fills the panel"
-    );
-    assert_eq!(
-        placed_pane(&state, 7),
-        Some((33, 14, 30, 33)),
-        "the hidden half keeps its share"
+        state.last_placement, None,
+        "the cut is the same panel either way"
     );
 
-    state.reveal_self();
+    state.reveal_panel();
+    assert!(!state.hidden);
     assert_eq!(placed_pane(&state, 9), Some((3, 14, 30, 33)));
     assert_eq!(placed_pane(&state, 7), Some((33, 14, 30, 33)));
 }
@@ -2268,9 +2356,9 @@ fn a_dragged_divider_is_read_back_off_the_manifest_and_kept() {
     );
 
     // a placement for any other reason cuts the panel where the user left the divider - here the
-    // conversation hiding and coming back
-    state.hide_self_only();
-    state.reveal_self();
+    // panel being dismissed and brought back
+    state.hide_panel();
+    state.reveal_panel();
     assert_eq!(placed_pane(&state, 9), Some((3, 14, 32, 33)));
     assert_eq!(placed_pane(&state, 7), Some((35, 14, 28, 33)));
 
@@ -2555,4 +2643,272 @@ fn ctrl_o_keeps_the_panels_current_size() {
         (45, 35),
         "and the split the user dragged"
     );
+}
+
+// ---------------------------------------------------------------------------
+// One panel, one visibility
+// ---------------------------------------------------------------------------
+
+/// Esc in the conversation is the panel's dismissal, not this pane's.
+#[test]
+fn esc_in_the_conversation_puts_the_whole_panel_away() {
+    let mut state = agents_beside_state();
+    assert!(!state.hidden);
+
+    state.on_key(KeyWithModifier::new(BareKey::Esc));
+
+    assert!(state.hidden);
+    assert!(
+        state.hide_pending > 0,
+        "both hides are out and neither seen yet"
+    );
+}
+
+/// And Esc in the list arrives here, over the wire, to the same effect: the list has already
+/// hidden itself, so what this call is for is the conversation.
+#[test]
+fn esc_in_the_list_puts_the_whole_panel_away() {
+    let mut state = agents_beside_state();
+
+    state.pipe(list_hide());
+
+    assert!(state.hidden);
+    assert!(state.hide_pending > 0);
+}
+
+/// A dismissed panel asks for nothing. Without this the list `open_agents_pane` had claimed
+/// would arrive - unsuppressed, and alone - on top of a panel the user had just put away.
+#[test]
+fn hiding_the_panel_drops_a_list_it_had_asked_for() {
+    let mut state = two_pane_state();
+    state.open_agents_pane();
+    assert!(state.agents_open_requested);
+
+    state.hide_panel();
+
+    assert!(!state.agents_open_requested);
+}
+
+/// The panel that comes back is the whole panel: revealing the conversation with no list beside
+/// it asks for one rather than leaving the half open.
+#[test]
+fn revealing_the_conversation_asks_for_the_missing_half() {
+    let mut state = two_pane_state();
+    state.hide_panel();
+    state.hide_pending = 0;
+    assert!(state.agents_plugin.is_none(), "no list to unsuppress");
+
+    state.reveal_panel();
+
+    assert!(!state.hidden);
+    assert!(
+        state.agents_open_requested,
+        "so the panel grows its other half"
+    );
+}
+
+/// The `a` keybinding's side of the same rule: the list is already up and focused, so this half
+/// joins it and asks for nothing - a second list is the one thing this must not open.
+#[test]
+fn joining_a_revealed_list_opens_no_second_list() {
+    let mut state = agents_beside_state();
+    state.hide_panel();
+    state.hide_pending = 0;
+
+    state.reveal_self_beside_agents();
+
+    assert!(!state.hidden);
+    assert!(!state.agents_open_requested);
+    assert_eq!(
+        placed_pane(&state, 9),
+        Some((3, 14, 30, 33)),
+        "and the panel comes back at the split"
+    );
+    assert_eq!(placed_pane(&state, 7), Some((33, 14, 30, 33)));
+}
+
+/// A list asked for before the Esc still arrives afterwards - `hide_panel` has no id for it and
+/// so cannot hide it - and the moment it announces one is the moment it can be put down with the
+/// panel it belongs to. Without this it lands unsuppressed and alone, and the next manifest reads
+/// that half as a reveal and puts the whole panel back on the very press that dismissed it.
+#[test]
+fn a_list_that_arrives_after_the_esc_arrives_hidden() {
+    let mut state = two_pane_state();
+    state.open_agents_pane();
+    state.hide_panel();
+    state.visibility_calls.clear();
+
+    state.pipe(selection(9));
+
+    assert!(
+        state.visibility_calls.contains(&(PaneId::Plugin(9), false)),
+        "the half that could not be named at the Esc is named here"
+    );
+    assert!(!state.agents_visible, "so the panel is down, both halves");
+
+    // and the frame that follows is a hide landing, not a reveal
+    state.on_panes(manifest(0, vec![pane(7, true), pane(9, true)]));
+    assert!(state.hidden);
+    assert_eq!(state.hide_pending, 0);
+}
+
+/// A job that fires with `show: true` reveals the *panel*, and says so: `show_self` on its own
+/// left `hidden` true and any pending hide standing, so the manifest that followed was swallowed
+/// by the stale-hide guard and hocus sat on screen believing itself dismissed.
+#[test]
+fn a_job_showing_the_conversation_shows_the_whole_panel() {
+    let mut state = agents_beside_state();
+    state.hide_panel();
+    assert!(state.hide_pending > 0);
+    state.visibility_calls.clear();
+
+    state.show_panel();
+
+    assert!(!state.hidden, "the intent is flipped at the source");
+    assert!(state.hide_pending == 0, "so the hide it replaces is void");
+    assert!(state.visibility_calls.contains(&(PaneId::Plugin(7), true)));
+    assert!(
+        state.visibility_calls.contains(&(PaneId::Plugin(9), true)),
+        "and the list comes back with it"
+    );
+}
+
+/// Which is what keeps the guard from wedging: the late frame the two hides did produce is read
+/// as the disagreement it now is, rather than held against a panel that is up again.
+#[test]
+fn a_stale_hide_does_not_hold_a_panel_that_came_back() {
+    let mut state = agents_beside_state();
+    state.hide_panel();
+    state.show_panel();
+    state.visibility_calls.clear();
+
+    state.on_panes(manifest(0, vec![pane(7, false), pane(9, true)]));
+
+    assert!(
+        state.visibility_calls.contains(&(PaneId::Plugin(9), true)),
+        "the list is put back beside us rather than the frame being swallowed"
+    );
+    assert!(!state.hidden);
+}
+
+/// And a hide that lands on one half only is restated rather than waited on. This arm is the end
+/// of the line for such a frame - nothing else will report it again - so without the restatement
+/// `hide_pending` stands forever and every manifest after it is swallowed.
+#[test]
+fn a_hide_that_landed_on_one_half_is_restated_on_the_other() {
+    let mut state = agents_beside_state();
+    state.hide_panel();
+    state.visibility_calls.clear();
+
+    state.on_panes(manifest(0, vec![pane(7, true), pane(9, false)]));
+
+    assert!(
+        state.visibility_calls.contains(&(PaneId::Plugin(9), false)),
+        "the half still standing is asked down again"
+    );
+    assert!(state.hidden, "and the frame is not read as a reveal");
+    assert!(state.hide_pending > 0, "the hide is still not seen to land");
+
+    // which it then does, on both halves
+    state.on_panes(manifest(0, vec![pane(7, true), pane(9, true)]));
+    assert_eq!(state.hide_pending, 0);
+}
+
+/// A list the user closed is not a missing half to grow back. `agents_plugin` is cleared on the
+/// very manifest that reports the pane gone, so without remembering the closure the repair arm
+/// reads "no list" and launches another one - and the list cannot be closed at all.
+#[test]
+fn closing_the_list_does_not_launch_another_one() {
+    let mut state = agents_beside_state();
+    let launched = state.agents_launches;
+
+    state.on_panes(manifest(0, two_panes()));
+    assert!(state.agents_closed);
+    assert_eq!(
+        state.agents_launches, launched,
+        "the conversation takes the whole panel instead"
+    );
+
+    // and stays closed, however many manifests arrive
+    for _ in 0..3 {
+        state.on_panes(manifest(0, two_panes()));
+    }
+    assert_eq!(state.agents_launches, launched);
+
+    // until the user asks for a panel again
+    state.hide_panel();
+    state.reveal_panel();
+    assert_eq!(state.agents_launches, launched + 1);
+}
+
+/// A panel that has been put away does not chase tab switches - either half of it. `agents_visible`
+/// is set optimistically the moment a list announces itself, so reading it here as well made a
+/// dismissed panel drag both suppressed panes to whatever tab the user switched to.
+///
+/// `break_panes_to_tab_with_index` panics off wasm, so "no move was attempted" is assertable.
+#[test]
+fn a_dismissed_panel_does_not_follow_a_tab_switch() {
+    let mut state = State {
+        own_plugin_id: 7,
+        own_tab_index: Some(0),
+        agents_plugin: Some(9),
+        hidden: true,
+        agents_visible: true,
+        client: 1,
+        client_tabs: BTreeMap::from([(1, 0)]),
+        ..Default::default()
+    };
+
+    state.on_tabs(vec![
+        TabInfo {
+            position: 0,
+            tab_id: 0,
+            active: false,
+            display_area_rows: 50,
+            display_area_columns: 200,
+            ..TabInfo::default()
+        },
+        TabInfo {
+            position: 1,
+            tab_id: 1,
+            active: true,
+            display_area_rows: 50,
+            display_area_columns: 200,
+            ..TabInfo::default()
+        },
+    ]);
+
+    assert_eq!(
+        state.own_tab_index,
+        Some(0),
+        "the panel stays where it will be asked back from"
+    );
+}
+
+/// The stale-hide suppression has an end, and this is it. A `c` pressed on the heels of the Esc
+/// unsuppresses our pane from outside, which reaches hocus only as a manifest - and one of
+/// exactly the shape a hide that has not landed yet produces. Nothing tells them apart, so the
+/// budget does: a real hide lands within a frame or two, and the manifest after that is believed.
+///
+/// Held as a flag this never lapsed. The reveal was swallowed, so was every manifest after it,
+/// and the panel sat on screen believing itself dismissed - `hidden` true, no list beside it, no
+/// tab following - with only a second Esc to get out.
+#[test]
+fn a_hide_that_never_lands_stops_being_believed() {
+    let mut state = agents_beside_state();
+    state.hide_panel();
+
+    // The frames a dismissal is entitled to: our pane still standing in every one of them.
+    for _ in 0..HIDE_PENDING_FRAMES {
+        state.on_panes(manifest(0, list_beside()));
+        assert!(state.hidden, "the Esc is still being waited on");
+    }
+
+    state.on_panes(manifest(0, list_beside()));
+
+    assert!(
+        !state.hidden,
+        "the budget is spent, so the manifest is read at face value and the user's `c` wins"
+    );
+    assert_eq!(state.hide_pending, 0);
 }

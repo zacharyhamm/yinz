@@ -24,12 +24,16 @@
 //! count, so a terminal resize keeps the proportion the user chose. The configured `split` is
 //! only the starting point.
 //!
-//! **A hidden half gives its width to the other.** Either half hides on its own - Esc in the
-//! conversation, Esc in the list - and the panel keeps one footprint: whichever half is open
-//! fills it, and reopening the other cuts it at the split again. hocus is the half that knows
-//! both, so hocus does the arithmetic for both: its own hide and reveal come through
-//! `hide_self_only`/`reveal_self`, the list's through `on_panes` noticing that the list's
-//! suppression changed.
+//! **The panel has one visibility, not two.** Esc in either half puts the whole panel away and
+//! `Ctrl e a` / `Ctrl e c` bring the whole of it back, focused on the half they name - so a half
+//! is never on screen alone. hocus is the one that can act on that, being the only half that
+//! knows both plugin ids: `hide_panel` suppresses both, `reveal_panel` unsuppresses the list
+//! beside it (or `open_agents_pane` launches one if the panel has no other half), and
+//! `reveal_self_beside_agents` is the mirror for a list revealed by its own keybinding. Esc in
+//! the list reaches this through `wire::AGENT_STRIP_HIDE`; a reveal of the list reaches it
+//! through `on_panes` noticing the list's suppression changed. Because the two halves are
+//! always on screen together, hiding changes no rectangle: `split_panel` cuts a hidden panel
+//! exactly as it cuts the one that comes back.
 //!
 //! **The plugin computes the geometry, not the server.** `FloatingPaneCoordinates` measures `x`
 //! and `y` from the top-left corner only - there is no bottom or right anchoring - so "the bottom
@@ -73,7 +77,7 @@
 //! every later placement is a function of that corner, the screen and the config: a pane opening,
 //! a pane closing, a re-tile and a swap layout are not inputs to it. `track_anchor` still reads
 //! every `PaneUpdate`, but only to keep the anchor the *next* press ranks against - it places
-//! nothing. What places is a press, a hide, a reveal, a config change, and a terminal resize,
+//! nothing. What places is a press, a reveal, a config change, and a terminal resize,
 //! which resolves the same corner against the screen's new size.
 //!
 //! The config is where the *size* comes from, which is the one thing a placement does not carry
@@ -106,11 +110,22 @@ use std::collections::BTreeMap;
 
 use zellij_tile::prelude::*;
 
+use hocus_proto::launch;
+
 use crate::ui;
 use crate::State;
 
 /// Cells of clear screen left around the panel on every side.
 const DEFAULT_PAD: usize = 3;
+/// How many `PaneUpdate`s a dismissal may discount before the manifest is believed - see
+/// [`crate::State::hide_pending`].
+///
+/// One Esc sends two hides, on two panes, and the snapshots taken in between report the panel
+/// half up. Two frames covers that; the extra pair is slack for a busy screen thread. It is
+/// deliberately small: every frame of budget is a frame in which a `c` pressed on the heels of
+/// the Esc is read as the stale hide instead, and the panel does not come back until the next
+/// manifest. Two wrong frames is a flicker; a flag that never lapsed was a wedge.
+const HIDE_PENDING_FRAMES: u8 = 4;
 /// The panel's width, as a percentage of the display area. Wide enough for a chat message not
 /// to be wrapped every other word beside the agent list, and still well short of the whole
 /// screen, so the panel reads as something sitting on the work rather than a split of it.
@@ -149,12 +164,15 @@ fn resolve(value: Option<&String>, whole: usize, default_percent: usize) -> usiz
     }
 }
 
-/// Which halves of the panel are on screen.
+/// Which halves the panel has to hold.
 ///
-/// What a placement is told, and all it is told: the halves share the panel's width when both
-/// are shown and one of them takes the whole of it when it is alone. With neither shown the
-/// panel is placed as it will come back - cut at the split - since whichever half is revealed
-/// first re-places it anyway.
+/// What a placement is told, and all it is told: the halves share the panel's width when there
+/// are two of them and one takes the whole of it when it is alone.
+///
+/// **Not a visibility question.** Both halves hide and come back together, so the cut is the
+/// same whether the panel is up or down - a hidden panel is placed as it will return. What
+/// makes a half absent is that it does not *exist*: a conversation revealed before the list it
+/// asked for has loaded, or one the user closed the list's pane out from under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Shown {
     pub chat: bool,
@@ -214,11 +232,10 @@ pub(crate) fn overlay_rects(
 
 /// Cut `panel` into `(chat, agents)`.
 ///
-/// The list takes the left `agents_cols` columns and the conversation the rest. A half that is
-/// not shown keeps the share it would have, so it comes back to the split when it is revealed;
-/// the half that is shown alone takes the whole panel. Both are always placed - a hidden overlay
-/// is re-resolved by the server like any other - so a reveal finds its half already where it
-/// belongs, one placement away from the right width.
+/// The list takes the left `agents_cols` columns and the conversation the rest; a half with no
+/// sibling to share with takes the whole panel. Both are always placed - a hidden overlay is
+/// re-resolved by the server like any other - so a reveal finds its half already where it
+/// belongs rather than a placement behind.
 pub(crate) fn split_panel(
     config: &BTreeMap<String, String>,
     panel: Rect,
@@ -887,12 +904,23 @@ impl Panel {
 }
 
 impl State {
-    /// Which halves are on screen, as far as hocus knows: its own hide is tracked here, the
-    /// list's is read off the manifest. A list nobody has opened is not a half.
+    /// Which halves there are to cut the panel into.
+    ///
+    /// Not a visibility question any more - the two halves hide and come back together, so
+    /// hiding never changes the cut. What it answers is whether there is a *list*: one has to
+    /// exist before it can be given a share, and between a reveal and the launch landing there
+    /// is a conversation with nothing beside it.
+    ///
+    /// `chat` is unconditionally true, since this plugin *is* that half: it is a field rather
+    /// than an assumption because [`split_panel`] has to be told which of the two a lone half is,
+    /// and a test naming only a list is the case that says why.
+    ///
+    /// A hidden panel answers the same as a shown one. That is the point of hiding both halves
+    /// together: there is one cut, and it is the cut the panel comes back at.
     pub(crate) fn shown(&self) -> Shown {
         Shown {
-            chat: !self.hidden,
-            agents: self.agents_plugin.is_some() && self.agents_visible,
+            chat: true,
+            agents: self.agents_plugin.is_some(),
         }
     }
 
@@ -1224,28 +1252,52 @@ impl State {
         }
     }
 
-    /// Put the conversation away without unloading it, leaving the agent list on screen.
+    /// Put the **panel** away without unloading either half.
     ///
-    /// The two panes are separate surfaces, so Esc here means this pane and nothing else. What it
-    /// does reach is the list's *width*: with the conversation gone the list takes the whole
-    /// panel, and `apply_overlay_geometry` is what gives it to it.
-    pub(crate) fn hide_self_only(&mut self) {
+    /// One Esc, both halves: the panel is one thing to the user, so it has one visibility, and
+    /// hocus is the half that can act on that because it is the one that knows both plugin ids.
+    /// Esc in the list arrives here over `wire::AGENT_STRIP_HIDE` (that pane hides itself on the
+    /// same press, so this call finds nothing left to hide and says so harmlessly).
+    ///
+    /// Nothing is torn down: a stream keeps arriving into a suppressed pane, and a tool call
+    /// waiting on y/n is still waiting when the panel comes back.
+    ///
+    /// **No re-placement.** The cut no longer depends on what is hidden - both halves are on
+    /// screen together or neither is - so a hide changes no rectangle. Placing here would only
+    /// restate the geometry the panes already have.
+    ///
+    /// **A list still loading cannot be hidden here** - it has no id yet, so there is nothing to
+    /// name. `agents_open_requested` is dropped below so a *later* manifest does not read the
+    /// dismissed panel as owing itself a half, but the launch already in flight still arrives.
+    /// It is caught where its id first exists: `on_selection` hides a list that announces itself
+    /// to a panel that is down, so it joins at the panel's visibility rather than at its own.
+    pub(crate) fn hide_panel(&mut self) {
         hide_self();
+        self.note_visibility(PaneId::Plugin(self.own_plugin_id), false);
+        if let Some(agents_id) = self.agents_plugin {
+            hide_pane_with_id(PaneId::Plugin(agents_id));
+            self.note_visibility(PaneId::Plugin(agents_id), false);
+        }
         self.hidden = true;
-        self.hide_pending = true;
+        self.hide_pending = HIDE_PENDING_FRAMES;
+        // A list asked for while the panel was up is not wanted by a panel that is down: it would
+        // arrive, unsuppressed and alone, on top of a panel the user had just dismissed.
+        self.agents_open_requested = false;
+        // And a list the user closed before this is not held against the panel they ask back:
+        // the reveal below grows both halves, whatever became of the last one.
+        self.agents_closed = false;
         // The bar's highlight swallows every key it does not use, with nothing
         // on screen to say so once the pane is hidden. Shift+Tab is easy to hit
-        // on the way to the toggle key; the next reveal should type again.
+        // on the way to Esc; the next reveal should type again.
         self.chat_tab_focus = None;
-        self.apply_overlay_geometry();
     }
 
-    /// Put the conversation back, having been revealed from outside - the `c` keybinding, or
-    /// `show_self`.
+    /// Put the panel back, this half having been revealed from outside - the `c` keybinding, or
+    /// `show_self` from a tool.
     ///
-    /// Only this pane is revealed: an agent list the user put away stays away. The list does
-    /// change, though - the conversation is taking its half of the panel back, so the list is
-    /// cut down to the split.
+    /// **Both halves come back**, because the panel has one visibility: the list is unsuppressed
+    /// beside us, or launched if there is none. Without focus either way - the user named the
+    /// conversation, and the keyboard belongs where they put it.
     ///
     /// **No tab is followed here, and that is the whole of the correctness.** Both routes in have
     /// already put the pane and the client who asked for it on the same tab before hocus hears a
@@ -1258,10 +1310,70 @@ impl State {
     /// client and sends every one of them here, so `self.client` on the copy that happens to be
     /// processed first is an arbitrary client - not the one who pressed the key. Following *their*
     /// tab drags the freshly revealed pane off the summoner's screen.
-    pub(crate) fn reveal_self(&mut self) {
+    pub(crate) fn reveal_panel(&mut self) {
         self.hidden = false;
-        self.hide_pending = false;
+        self.hide_pending = 0;
+        // A launch that never announced itself would otherwise hold the claim for the rest of the
+        // session and every reveal after it would find the panel owing a half it can never ask
+        // for. Nothing in the plugin can see a load that failed, so the user's own gesture is the
+        // recovery: this is the one that re-asks. Before the `None` arm, which reads the flag.
+        self.agents_open_requested = false;
+        match self.agents_plugin {
+            Some(agents_id) => {
+                show_pane_with_id(PaneId::Plugin(agents_id), false, false);
+                self.note_visibility(PaneId::Plugin(agents_id), true);
+            },
+            // Nothing to unsuppress: the panel has to grow its other half first. The placement
+            // below still runs - the list announces itself with an id, and `on_panes` places it
+            // then.
+            None => self.open_agents_pane(),
+        }
         self.apply_overlay_geometry();
+    }
+
+    /// Put *this* half back beside a list that was revealed without us - the `a` keybinding.
+    ///
+    /// `show_self` is not what this wants: it lowers to `Action::FocusPluginPaneWithId`, which
+    /// would take the keyboard off the list the user just asked for. `show_pane_with_id` with
+    /// `should_focus_pane` false is the unsuppress on its own.
+    ///
+    /// Deliberately not the whole of `reveal_panel`: the list is already on screen, so there is
+    /// no other half to summon, and asking for one would be asking for a second list.
+    pub(crate) fn reveal_self_beside_agents(&mut self) {
+        self.hidden = false;
+        self.hide_pending = 0;
+        // The list on screen is the one that was asked for, whatever hocus last claimed - and a
+        // stale claim held here is a panel that can never grow its half again. See `reveal_panel`.
+        self.agents_open_requested = false;
+        show_pane_with_id(PaneId::Plugin(self.own_plugin_id), false, false);
+        self.note_visibility(PaneId::Plugin(self.own_plugin_id), true);
+        self.apply_overlay_geometry();
+    }
+
+    /// Put the panel back because *hocus* asked - a job that fired with `show: true`.
+    ///
+    /// `show_self` on its own is not enough, and that was a bug: it reveals this half through the
+    /// host and tells hocus nothing, so `hidden` stayed true and `hide_pending` - if an Esc had
+    /// just been pressed - stayed set. The manifest that followed then showed our pane on screen
+    /// while hocus still intended it hidden, which is exactly the shape the stale-hide guard in
+    /// `on_panes` swallows, so the reveal was eaten and the panel wedged: no list, no tab
+    /// following, and only another Esc to get out of it.
+    ///
+    /// So the intent is flipped here, at the source, and the rest is `reveal_panel`: both halves
+    /// come back, because a job showing the conversation is showing the panel.
+    pub(crate) fn show_panel(&mut self) {
+        show_self(true);
+        self.note_visibility(PaneId::Plugin(self.own_plugin_id), true);
+        self.reveal_panel();
+    }
+
+    /// Record a `show`/`hide` for the tests - see [`State::visibility_calls`]. Compiled away
+    /// outside them.
+    pub(crate) fn note_visibility(&mut self, pane: PaneId, shown: bool) {
+        #[cfg(test)]
+        self.visibility_calls.push((pane, shown));
+        #[cfg(not(test))]
+        let _ = (pane, shown);
     }
 
     /// Carry whichever panes are ours to `tab_index`.
@@ -1308,9 +1420,10 @@ impl State {
     /// none.
     ///
     /// The message carries no `plugin_url`, so it is delivered to whoever is listening and
-    /// launches nobody. That is the whole of the point: the `a` keybinding is the one thing that
-    /// opens a list, and a list the user did not ask for must not appear beside a conversation
-    /// they did.
+    /// launches nobody. That matters on load, which is when this is sent: nothing has yet said
+    /// whether the panel is up, and a list appearing beside a conversation the user has not
+    /// revealed would be the panel opening itself. [`State::open_agents_pane`] is the call that
+    /// does open one, made once the manifest has shown the panel on screen.
     ///
     /// It is still worth sending. A hocus that loaded after the list - a reload, a restore, the
     /// `a` keybinding having got here first - has no idea the list exists, and the list's plugin
@@ -1320,19 +1433,57 @@ impl State {
         pipe_message_to_plugin(MessageToPlugin::new(hocus_proto::wire::AGENT_STRIP_OPEN));
     }
 
-    /// Take an `AGENT_STRIP_HELLO` and decide whether it is the thing that made us.
+    /// Grow the panel's missing half: launch an agent list, or reveal one that is only hidden.
+    ///
+    /// The same message as [`State::greet_agents_pane`] with the url attached, which is what
+    /// makes the host launch-or-reuse rather than merely deliver - the mirror of
+    /// `hocus-agents::say_hello_to_hocus`. The config has to match the `a` keybinding's
+    /// character for character, since `overlay` and `awaits_placement` are part of plugin
+    /// identity: `launch::overlay_configuration` is the one copy of it.
+    ///
+    /// Unfocused, because every caller is a reveal the user asked for by naming the *other*
+    /// half. `awaits_placement` keeps the new pane unpainted until `apply_overlay_geometry`
+    /// names it, so it never flashes at the centered default it is born with.
+    ///
+    /// Asked for at most once per launch: `agents_open_requested` is what stops a manifest
+    /// arriving while the list is still loading from asking for a second one.
+    pub(crate) fn open_agents_pane(&mut self) {
+        if self.agents_open_requested {
+            return;
+        }
+        self.agents_open_requested = true;
+        // Whatever became of the last list, this is a new one: the closure `on_panes` remembered
+        // has been answered by the very act of asking again.
+        self.agents_closed = false;
+        #[cfg(test)]
+        {
+            self.agents_launches += 1;
+        }
+        pipe_message_to_plugin(
+            MessageToPlugin::new(hocus_proto::wire::AGENT_STRIP_OPEN)
+                .with_plugin_url(launch::HOCUS_AGENTS_ALIAS)
+                .with_plugin_config(launch::overlay_configuration())
+                .new_plugin_instance_should_not_be_focused(),
+        );
+    }
+
+    /// Take an `AGENT_STRIP_HELLO` and note that this instance is the one it launched.
     ///
     /// The greeting carries hocus's url, so it opens a hocus when there is none to ask - and the
-    /// user who opened a list asked for a list, not for a conversation. Nothing but that launch
-    /// can reach us before our own first `PaneUpdate`, so `own_tab_index` being unset is the whole
-    /// test; `from_agents` is the marker the greeting carries (`wire::OPENED_BY`), which keeps a
-    /// greeting from some other sender out of it.
+    /// panel is both halves, so that conversation belongs on screen. What it does *not* get is
+    /// the focus: the user pressed `a`, and the keyboard belongs on the list. The greeting says
+    /// so itself (`new_plugin_instance_should_not_be_focused`), so there is nothing to undo
+    /// here - what is recorded is that the list beside us is already open and already ours, so
+    /// the first manifest does not go asking for another one.
     ///
-    /// Only remembered here. `on_panes` does the hiding, because a `hide_self` issued before our
-    /// pane is on a tab is dropped without a word - the same silence a placement runs into.
+    /// Nothing but that launch can reach us before our own first `PaneUpdate`, so `own_tab_index`
+    /// being unset is the whole test; `from_agents` is the marker the greeting carries
+    /// (`wire::OPENED_BY`), which keeps a greeting from some other sender out of it.
     pub(crate) fn note_greeting_from_agents(&mut self, from_agents: bool) {
         if from_agents && self.own_tab_index.is_none() {
-            self.open_hidden = true;
+            // Not a launch we made, but the same claim: a list exists and is on its way to
+            // announcing its id, so `on_panes` must not ask for a second one in the meantime.
+            self.agents_open_requested = true;
         }
     }
 }

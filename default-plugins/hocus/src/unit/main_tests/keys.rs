@@ -9,14 +9,13 @@ fn ctrl_g_is_not_handled_by_hocus() {
     assert_eq!(state.jobs.len(), 1);
 }
 
+/// Ctrl-` was a second, hide-only dismissal beside Esc, bound in no shipped keymap. Esc is the
+/// whole of that gesture now, so the key is the terminal's again and hocus types it.
 #[test]
-fn ctrl_backtick_is_the_hocus_toggle_key() {
-    assert!(State::is_toggle_key(
-        &KeyWithModifier::new(BareKey::Char('`')).with_ctrl_modifier()
-    ));
-    assert!(!State::is_toggle_key(
-        &KeyWithModifier::new(BareKey::Char('g')).with_ctrl_modifier()
-    ));
+fn ctrl_backtick_is_not_a_hocus_gesture() {
+    let mut state = idle_state();
+    state.on_key(KeyWithModifier::new(BareKey::Char('`')).with_ctrl_modifier());
+    assert!(!state.hidden, "no longer a dismissal");
 }
 
 #[test]

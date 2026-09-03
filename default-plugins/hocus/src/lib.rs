@@ -120,16 +120,16 @@ const LOCAL_COMMANDS: [&str; 8] = [
 /// Full keybinding reference for `/keys`. The chat view has no persistent
 /// help line, so this is the one place all of these are written down.
 const KEYS_HELP: &str = "\
-Ctrl+`        toggle hocus
 Ctrl+l        new chat, in a new tab (also /clear)
-Ctrl+o        move hocus clear of a pane - the one it is covering, or the
+Ctrl+o        move the panel clear of a pane - the one it is covering, or the
               largest one you are not in (top right if it is the only pane)
 Shift+Tab     open chats: focus the tab bar
 Up / Down     previous / next message in history
 Tab           complete a /command or @agent
 Alt+Enter, Shift+Enter   insert a newline
 PageUp / PageDown        scroll the transcript
-Esc           hide hocus
+Esc           hide the panel - the agent list goes with it; Ctrl+e c or
+              Ctrl+e a brings the whole of it back
 Ctrl+c        cancel a stream or tool, keep refining a
               plan, or clear the prompt
 y / n         run the pending tool call, or decline it and stop
@@ -650,9 +650,12 @@ pub struct State {
     pub(crate) agents_tab_index: Option<usize>,
     /// Whether the agent list was drawn - not suppressed - in the last `PaneUpdate`.
     ///
-    /// Read by `on_tabs`, which has no manifest of its own: a hidden conversation beside a visible
-    /// list still has to carry that list to the tab the user switched to, and this is the only
-    /// thing that says there is one to carry.
+    /// Not a state hocus keeps in step with its own: both halves hide and reveal together, so
+    /// this and [`State::hidden`] agreeing is the invariant rather than the input. What it is
+    /// for is the two places the halves can be caught disagreeing - the `a` keybinding, which
+    /// reveals and focuses the list while this half is still suppressed, and anything outside
+    /// hocus that suppresses one pane on its own - which `on_panes` repairs by moving the other
+    /// half to match.
     pub(crate) agents_visible: bool,
     /// Where each attached client was looking, as of their last `TabUpdate`.
     ///
@@ -661,20 +664,32 @@ pub struct State {
     /// back and forth between them for as long as they stayed attached, each move provoking the
     /// report that causes the next one. See `overlay::tab_to_follow` for the rule this feeds.
     pub(crate) client_tabs: BTreeMap<ClientId, usize>,
-    /// Whether *this* pane has been set aside with Esc. The agent list hides on its own and is
-    /// not covered by this.
+    /// Whether the **panel** has been set aside with Esc - both halves, since there is only ever
+    /// one answer for the two of them.
     ///
-    /// Tracked here as well as server-side because it gates two things hocus decides for itself:
+    /// Tracked here as well as server-side because it gates what hocus decides for itself:
     /// whether to follow tab switches (a panel with nothing on screen does not chase the user
-    /// around), and where the agent list goes - the conversation owns the left-hand slot, so the
-    /// list sits beside it or in its place depending on this bit.
+    /// around), and whether a manifest reporting a half on screen is a reveal to complete or a
+    /// disagreement to repair.
     pub(crate) hidden: bool,
     /// A hide we have asked for and not yet seen take effect.
     ///
     /// `PaneUpdate` is a snapshot, and one taken before our `hide_self` reached the screen thread
     /// still reports us visible. Without this the transition test in `on_panes` would read that
     /// stale frame as a reveal and put the pane straight back.
-    pub(crate) hide_pending: bool,
+    ///
+    /// Covers **both** halves, because one Esc hides both and the two hides land on their own
+    /// schedules: a snapshot caught between them shows one half still up, which without this
+    /// would read as the `a` keybinding revealing the panel.
+    ///
+    /// **A count of manifests rather than a flag, because it has to be able to lapse.** Every
+    /// reveal hocus makes for itself clears it, but a reveal from *outside* - the `c` keybinding
+    /// landing in the window between the Esc and the hides - reaches hocus only as a manifest,
+    /// and is exactly the frame this suppresses. Held as a flag it never lapsed: that manifest
+    /// was swallowed, so was every one after it, and the panel wedged on screen believing itself
+    /// dismissed with only another Esc to get out. So the suppression is spent instead. See
+    /// [`overlay::HIDE_PENDING_FRAMES`] for what the budget buys.
+    pub(crate) hide_pending: u8,
     /// Whether the overlays' geometry has actually reached the server.
     ///
     /// A pane with no coordinates is born half the surface, *centered* - that is what
@@ -738,14 +753,40 @@ pub struct State {
     /// pane is only known by its id — a title is a name the user can change, and a url
     /// cannot tell two instances apart.
     agents_plugin: Option<u32>,
-    /// Whether this instance was launched by the agent list's greeting, and so has to put itself
-    /// away as soon as it has a pane to put away.
+    /// Whether a list has been asked for and not yet announced itself.
     ///
-    /// The list needs a hocus - it is a view over rows only hocus computes - but the user who
-    /// opened a list asked for a list. Set from `AGENT_STRIP_HELLO` arriving before our own first
-    /// `PaneUpdate`, which nothing but the launch that provoked it can be; acted on in `on_panes`,
-    /// because a `hide_self` before the pane is on a tab is dropped without a word.
-    pub(crate) open_hidden: bool,
+    /// The panel is both halves or it is nothing, so a revealed conversation with no list beside
+    /// it asks for one (`State::open_agents_pane`). A launch takes several events to arrive and
+    /// `agents_plugin` stays `None` for all of them, so without this every `PaneUpdate` in
+    /// between would ask again and the user would get a fistful of lists. Cleared the moment a
+    /// list announces itself, and by a hide - a panel put away asks for nothing.
+    ///
+    /// A launch that dies silently - the plugin fails to load, or its pane is closed before
+    /// `AGENT_SELECTION` goes out - never announces an id, so nothing in the manifest can clear
+    /// this and nothing in the plugin can observe the failure. Every *explicit* reveal clears it
+    /// too for that reason: Esc and `c` is the gesture that recovers a list that never arrived.
+    pub(crate) agents_open_requested: bool,
+    /// Whether the list's pane went away without hocus asking it to.
+    ///
+    /// The repair arm in `on_panes` grows the panel's missing half, which is right for a fresh
+    /// session and wrong for a list the user just closed: `agents_plugin` is cleared on the very
+    /// manifest that reports the pane gone, so without this the arm reads "no list" and launches
+    /// another one, over and over, and the list cannot be closed at all. A closure is remembered
+    /// instead, and the conversation takes the whole panel - see
+    /// `a_list_that_closes_gives_its_width_to_the_conversation`.
+    ///
+    /// Only until the user asks for a panel again: `open_agents_pane` and `hide_panel` both clear
+    /// it, so Esc and `c` grows the other half as `reveal_panel` intends.
+    pub(crate) agents_closed: bool,
+    /// Every `show`/`hide` this plugin asked the host for, as `(pane, shown)`.
+    ///
+    /// Test-only, for the same reason `last_placement` is: the host call has no reply off wasm,
+    /// so nothing else can tell a hide that was sent from one that was skipped.
+    #[cfg(test)]
+    pub(crate) visibility_calls: Vec<(PaneId, bool)>,
+    /// How many agent lists have been asked for. Test-only, same reason.
+    #[cfg(test)]
+    pub(crate) agents_launches: usize,
     /// The project of `last_focused_agent`, falling back to the active tab in
     /// `tabs`.
     active_project: Option<String>,
@@ -870,7 +911,7 @@ impl Default for State {
             agents_visible: false,
             client_tabs: BTreeMap::new(),
             hidden: false,
-            hide_pending: false,
+            hide_pending: 0,
             placed: false,
             agents_placed: true,
             #[cfg(test)]
@@ -881,7 +922,12 @@ impl Default for State {
             #[cfg(test)]
             last_placement: None,
             agents_plugin: None,
-            open_hidden: false,
+            agents_open_requested: false,
+            agents_closed: false,
+            #[cfg(test)]
+            visibility_calls: Vec::new(),
+            #[cfg(test)]
+            agents_launches: 0,
             active_project: None,
         };
         // In a plugin this waits for `load`, which is where the host is ready to
@@ -1040,11 +1086,12 @@ impl ZellijPlugin for State {
             wire::AGENT_STRIP_HELLO => {
                 // A freshly loaded (or restored) hocus-agents pane asking for the current rows.
                 //
-                // It carries a `plugin_url`, so it may also be what launched *this* instance -
-                // and in that case the user asked for a list, not for a conversation. Nothing but
-                // that launch can reach us before our own first `PaneUpdate`, so `own_tab_index`
-                // being unset is the test. `on_panes` does the hiding, once there is a pane to
-                // hide; see `State::open_hidden`.
+                // It carries a `plugin_url`, so it may also be what launched *this* instance.
+                // The panel is both halves, so that conversation belongs on screen - what it
+                // must not take is the focus, which the greeting itself settles. What is noted
+                // here is only that a list already exists, so the first manifest does not go
+                // asking for a second one. Nothing but that launch can reach us before our own
+                // first `PaneUpdate`, so `own_tab_index` being unset is the test.
                 self.note_greeting_from_agents(
                     pipe_message.args.get(wire::OPENED_BY).map(String::as_str)
                         == Some(wire::OPENED_BY_AGENTS),
@@ -1057,6 +1104,13 @@ impl ZellijPlugin for State {
                 // Ctrl-o in the agent list. hocus owns the panel's geometry, so the list asks
                 // rather than moves; nothing to redraw here, the move is the server's to paint.
                 self.reposition_from_list();
+                return false;
+            },
+            wire::AGENT_STRIP_HIDE => {
+                // Esc in the agent list. The panel has one visibility and hocus is the half that
+                // knows both plugin ids, so the list hides itself and asks for the rest. Nothing
+                // to redraw - a suppressed pane is not painted.
+                self.hide_panel();
                 return false;
             },
             wire::AGENT_ARCHIVE_MORE => {

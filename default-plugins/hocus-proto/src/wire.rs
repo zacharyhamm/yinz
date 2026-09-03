@@ -43,14 +43,16 @@ pub const AGENT_STRIP: &str = "agent_strip";
 ///
 /// Carries a `plugin_url`, so it opens a hocus when there is none to ask - the agent list is a
 /// view over rows only hocus can compute, and a list with nothing feeding it is not worth
-/// having. The hocus it opens that way starts **hidden**: the user asked for a list, not for a
-/// conversation. [`OPENED_BY`] is what says so.
+/// having. The hocus it opens that way is **visible but not focused**: the panel is one thing
+/// with one visibility, so a list on screen means a conversation on screen, but the user asked
+/// for the list and the keyboard stays where they put it. [`OPENED_BY`] is what says so.
 pub const AGENT_STRIP_HELLO: &str = "agent_strip_hello";
 /// The argument on [`AGENT_STRIP_HELLO`] naming who sent it.
 ///
 /// A hocus that receives the greeting *before its own first `PaneUpdate`* is the instance the
-/// greeting just launched - nothing else can be that early - and hides itself. One that has
-/// already heard from the server was open before the message and stays as it is.
+/// greeting just launched - nothing else can be that early - and knows not to take the focus
+/// back off the list. One that has already heard from the server was open before the message
+/// and stays as it is.
 pub const OPENED_BY: &str = "opened_by";
 /// The value of [`OPENED_BY`] on a greeting from the agent list.
 pub const OPENED_BY_AGENTS: &str = "agents";
@@ -61,11 +63,15 @@ pub const OPENED_BY_AGENTS: &str = "agents";
 /// after the user closed it. Nothing reads the payload - the message exists for the launch-or-reuse
 /// its url performs, and the pane answers with `AGENT_SELECTION` once it is up.
 ///
-/// Sent **without** a url by `State::greet_agents_pane` on hocus's load, which is the same
-/// question asked of an agent list that already exists without opening one that does not: the
-/// two panes are separate surfaces now, and hocus opening the list unbidden is exactly what
-/// that separation forbids. The `a` keybinding's own path is the one that carries the url, and
-/// the only thing that opens a list.
+/// Sent **without** a url by `State::greet_agents_pane` on hocus's load, which asks an agent
+/// list that already exists to announce itself without opening one that does not. On load there
+/// is nothing yet to say whether the panel is up, and a list appearing beside a hocus the user
+/// has not revealed would be the panel opening itself.
+///
+/// Sent **with** the url by `State::open_agents_pane`, which is how a revealed panel grows its
+/// missing half: the panel is both halves or it is nothing, so a conversation on screen with no
+/// list beside it is a state to repair rather than one to keep. The `a` keybinding carries the
+/// url too, and is the other thing that opens a list.
 pub const AGENT_STRIP_OPEN: &str = "agent_strip_open";
 /// hocus-agents → hocus: which row the cursor is on (`Selection` as JSON).
 ///
@@ -81,6 +87,16 @@ pub const AGENT_SELECTION: &str = "agent_selection";
 /// the pane says it was pressed and hocus answers by walking the list clear of a tiled pane,
 /// exactly as the same key does for the conversation.
 pub const AGENT_STRIP_REPOSITION: &str = "agent_strip_reposition";
+/// hocus-agents → hocus: "put the panel away" - Esc pressed in the list.
+///
+/// The panel is one thing with one visibility, and hocus is the half that can act on that: it
+/// knows both plugin ids, and the list knows only its own. So the key is a request rather than a
+/// hide of both, exactly as [`AGENT_STRIP_REPOSITION`] is for Ctrl-o. The list hides *itself*
+/// on the same press rather than waiting for the round trip, so the message is only ever about
+/// the other half.
+///
+/// Sent without a `plugin_url`: an Esc must never launch a hocus in order to hide one.
+pub const AGENT_STRIP_HIDE: &str = "agent_strip_hide";
 /// hocus → hocus-agents: the full history of the selected run.
 pub const AGENT_RUN_DETAIL: &str = "agent_run_detail";
 /// hocus-agents → hocus: fetch the next page of completed run headers.

@@ -311,7 +311,9 @@ back.
 shows. `j`/`k` do whatever the half they are in does with a line: walk the selection, or scroll
 the history. The arrows always walk the list, and PageUp/PageDown and the mouse wheel always
 scroll the history, from either half. Enter focuses a live agent's pane and leaves the panel up,
-so the history stays beside the pane it is about; `Esc` or ``Ctrl-` `` puts the panel away. An
+so the history stays beside the pane it is about; `Esc` puts the whole panel away — the list and
+the conversation beside it, which have one visibility between them. `Ctrl e a` brings it back
+with the keyboard here, `Ctrl e c` with the keyboard in the conversation. An
 archived row has no pane to focus. `s` asks for a summary of the row under the cursor — see
 below.
 

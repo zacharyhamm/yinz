@@ -2324,6 +2324,9 @@ impl State {
         let announced = self.agents_plugin != Some(selection.plugin_id);
         self.agents_plugin = Some(selection.plugin_id);
         if announced {
+            // There is a list again, whatever became of the last one - so the repair arm in
+            // `on_panes` is free to put this one back if something suppresses it.
+            self.agents_closed = false;
             // `agents_tab_index` was about the *previous* id and is the evidence
             // `apply_overlay_geometry` reads to decide whether a placement landed. Left standing it
             // would say this pane was already placed, and the retry that exists for exactly this
@@ -2333,7 +2336,20 @@ impl State {
             // so the placement below cuts the panel for two halves rather than handing the
             // conversation the whole of it for the one frame until the manifest says so. The
             // manifest corrects this if it is ever wrong.
-            self.agents_visible = true;
+            //
+            // Unless the panel is down, in which case this is the *only* moment the list can be
+            // put down with it. `hide_panel` could not: a list still loading has no id, so a
+            // launch asked for before an Esc lands afterwards, unsuppressed and alone, and the
+            // manifest that follows reads one half up as a reveal and puts the whole panel back
+            // on the very press that dismissed it. The id exists here, so it joins at the panel's
+            // visibility instead of at its own.
+            if self.hidden {
+                hide_pane_with_id(PaneId::Plugin(selection.plugin_id));
+                self.note_visibility(PaneId::Plugin(selection.plugin_id), false);
+                self.agents_visible = false;
+            } else {
+                self.agents_visible = true;
+            }
         }
         // This is the only word hocus gets of the list's id, and it can arrive after the
         // `TabUpdate` that placed the conversation - in which case that pass placed this pane

@@ -8,10 +8,6 @@ use zellij_tile::prelude::*;
 // ---------------------------------------------------------------------------
 
 impl State {
-    pub(crate) fn is_toggle_key(key: &KeyWithModifier) -> bool {
-        key.bare_key == BareKey::Char('`') && key.has_modifiers(&[KeyModifier::Ctrl])
-    }
-
     /// Ctrl-o: move the conversation somewhere else - clear of a tiled pane, or on round the
     /// corners once every pane has been offered. See `State::reposition`. The agent list takes
     /// the same key in its own pane, and asks hocus for it over `wire::AGENT_STRIP_REPOSITION`.
@@ -165,11 +161,16 @@ impl State {
             // because every client gets its own `TabUpdate` and obeying all of them puts two
             // clients on different tabs into a move loop with each other.
             let was_on = self.client_tabs.insert(self.client, position);
-            // Not while *both* panes are set aside: a panel the user has put away does not chase
-            // their tab switches, and comes back where it is asked for - see `on_panes`. A hidden
-            // conversation beside a visible list still follows, or the tab switch strands the list
-            // on the tab it was opened from.
-            if !self.hidden || self.agents_visible {
+            // Not while the panel is set aside: a panel the user has put away does not chase their
+            // tab switches, and comes back where it is asked for - see `on_panes`.
+            //
+            // `hidden` is the whole test, because it is the whole panel's: both halves go together
+            // now, so there is no hidden conversation beside a visible list to keep following.
+            // Reading `agents_visible` here as well was a leftover of the two-visibility model and
+            // wrong under this one - `on_selection` sets it optimistically the moment a list
+            // announces itself, so a panel the user had just dismissed would drag both suppressed
+            // panes to whatever tab they switched to.
+            if !self.hidden {
                 if let Some(target) = overlay::tab_to_follow(self.own_tab_index, was_on, position) {
                     self.follow_tab(target);
                 }
@@ -182,9 +183,9 @@ impl State {
             //
             // Placing a hidden pane is not painting one: the server re-resolves a hidden overlay
             // like any other (`OverlayPanes::reapply_coordinates`) and gates the paint separately
-            // (`stack_layer_ids`), and `hide_self_only` already places from behind the hide. It has
-            // to be hocus that restates it - these coordinates are `Fixed`, because the panes are
-            // anchored to the *bottom*, so nothing on the server can recompute them.
+            // (`stack_layer_ids`). It has to be hocus that restates it - these coordinates are
+            // `Fixed`, because the panes are anchored to the *bottom*, so nothing on the server
+            // can recompute them.
             //
             // `!placed` as well as `resized`: the first `TabUpdate` is the only one that ever
             // reports a *change* of display area, so a placement it could not land - our pane
@@ -568,6 +569,9 @@ impl State {
     /// url cannot tell two instances apart, so there would be nothing gained by matching on one.
     pub(crate) fn on_panes(&mut self, manifest: PaneManifest) -> bool {
         let own_id = self.own_plugin_id;
+        // Whether the panel had a second half before this manifest. The cut depends on that and
+        // on nothing else about the list, so this is what says the panel has to be placed again.
+        let had_agents = self.agents_plugin.is_some();
         // An agent list the user closed has to be forgotten, or `open_agents_pane` keeps
         // revealing a pane that is not there and never opens a new one. Cleared from the whole
         // manifest rather than from our own tab: the two halves can be on different tabs for as
@@ -591,19 +595,32 @@ impl State {
             });
             if self.agents_tab_index.is_none() {
                 self.agents_plugin = None;
+                // Nobody here asked for it to go, so it was closed from outside - and a closure is
+                // not a missing half to grow back. Without this the repair arm below would read
+                // the `None` this line just wrote as a panel owing itself a list and launch
+                // another one on the very manifest that reported the old one gone, which makes the
+                // list unclosable. Cleared by the next thing that asks for a panel.
+                self.agents_closed = true;
                 // A list that is gone is nothing to place. Said rather than left behind, because
                 // the next one the user opens is a fresh pane at the centered default and the
                 // retry that moves it out of the way reads this.
                 self.agents_placed = true;
+                // And nothing is on its way, either: whatever `open_agents_pane` last asked for
+                // has come and gone, so a panel that is up may ask again.
+                self.agents_open_requested = false;
+            } else {
+                // The list that answered is the one that was asked for, so the request is done.
+                self.agents_open_requested = false;
             }
         }
         // Held for `on_tabs`, which has no manifest of its own and has to know whether there is
-        // anything on screen to carry to the tab the user switched to. Whether it *changed* is
-        // read too: the list hides and comes back on its own, and this is the only word hocus
-        // gets of it - and the panel has to be cut again either way, since a hidden half gives
-        // its width to the other.
-        let agents_visibility_changed = agents_visible != self.agents_visible;
+        // anything on screen to carry to the tab the user switched to, and read below to catch
+        // the two halves disagreeing about whether the panel is up.
         self.agents_visible = agents_visible;
+        // The one thing about the list that reaches the *cut*: a panel with a second half is
+        // split, one without takes the whole width for the conversation. Visibility is not part
+        // of it any more - both halves hide together, so a hidden panel is cut as it will return.
+        let agents_presence_changed = had_agents != self.agents_plugin.is_some();
         for (tab_index, panes) in &manifest.panes {
             let Some(own) = panes
                 .iter()
@@ -634,28 +651,72 @@ impl State {
             // Either half, and the list's half is the one that had nowhere else to be caught:
             // `agents_tab_index` was read from this very manifest a few lines up, so this is the
             // first pass that can place a list which announced itself before it was on a tab.
-            if !self.placed || !self.agents_placed || agents_visibility_changed {
+            if !self.placed || !self.agents_placed || agents_presence_changed {
                 self.apply_overlay_geometry();
             }
-            if own.is_suppressed {
-                // the hide we asked for has landed. A suppressed conversation beside a visible
-                // list is an ordinary state now, not half of anything: the two panes hide
-                // separately, so there is nothing here to put back together.
-                self.hide_pending = false;
+            // The panel's visibility, reconciled against what the server actually reports. Both
+            // halves are on screen or neither is, so the manifest showing them disagree is
+            // either a reveal half-arrived (one of the two keybindings, which reveals only the
+            // half it names) or a suppression from outside hocus - and both are repaired by
+            // moving the other half to match.
+            if self.hide_pending > 0 && !(own.is_suppressed && !agents_visible) {
+                // A snapshot taken before one or both of our hides reached the server. Reading a
+                // half still standing in it as a reveal would put the panel straight back on the
+                // very Esc that dismissed it, so a hide we have asked for and not yet seen land
+                // in full suppresses exactly one thing: this inference.
+                //
+                // And spends a frame of the budget doing it. A reveal from *outside* - `c`
+                // pressed in the window between the Esc and the hides landing - reaches hocus
+                // only as a manifest of exactly this shape, so it is indistinguishable from the
+                // stale frame and there is no rule that tells them apart. What there is, is an
+                // end: a hide that is real lands within a frame or two, so once the budget is
+                // spent the next manifest is read at face value and the panel obeys the user
+                // rather than sitting wedged. See `overlay::HIDE_PENDING_FRAMES`.
+                self.hide_pending -= 1;
+                if own.is_suppressed && agents_visible {
+                    // Our half went down and the list's did not. Nothing else will say so again -
+                    // this arm is where such a frame ends - so the hide is restated rather than
+                    // waited on, and converges: the next manifest has both halves down and takes
+                    // the arm below.
+                    if let Some(agents_id) = self.agents_plugin {
+                        hide_pane_with_id(PaneId::Plugin(agents_id));
+                        self.note_visibility(PaneId::Plugin(agents_id), false);
+                    }
+                }
+            } else if own.is_suppressed && agents_visible {
+                // The list is up and we are not: the `a` keybinding, which reveals and focuses
+                // the half it names and leaves the other suppressed. Join it, without taking the
+                // keyboard off the pane the user asked for.
+                //
+                // Read as a reveal rather than as a stray half because nothing hides one half on
+                // purpose any more, and the budget above has already accounted for the one
+                // moment a dismissal looks like this - the frame between the two hides landing.
+                self.reveal_self_beside_agents();
+            } else if own.is_suppressed {
+                // The hide we asked for has landed, on both halves.
+                self.hide_pending = 0;
                 self.hidden = true;
-            } else if self.open_hidden {
-                // This instance was launched by the agent list's greeting, which asked for a list
-                // and not for a conversation. Done here rather than where the greeting arrived,
-                // because a `hide_self` issued before the pane is on a tab is dropped silently -
-                // the manifest finding our pane is the first moment it can land.
-                self.open_hidden = false;
-                self.hide_self_only();
-            } else if self.hide_pending {
-                // A snapshot taken before our hide reached the server. Reading this as a reveal
-                // would un-hide the pane the instant the user pressed Esc, so a hide we have
-                // asked for but not yet seen suppresses exactly one thing: this inference.
             } else if self.hidden {
-                self.reveal_self();
+                // We came back first: the `c` keybinding, or a tool's `show_self`. Bring the list
+                // back beside us, or open one if the panel has no other half.
+                self.reveal_panel();
+            } else if !agents_visible {
+                // The panel is up and its other half is not. Either there is a list that something
+                // outside hocus suppressed, or there is no list at all - and the panel is both
+                // halves, so both are repaired by putting the other one back.
+                //
+                // Except a list the user *closed*: that is not a half gone missing, it is a pane
+                // they got rid of, and the conversation takes the whole panel instead. See
+                // `State::agents_closed` - without it this arm relaunched the list on the same
+                // manifest that reported it closed.
+                match self.agents_plugin {
+                    Some(agents_id) => {
+                        show_pane_with_id(PaneId::Plugin(agents_id), false, false);
+                        self.note_visibility(PaneId::Plugin(agents_id), true);
+                    },
+                    None if !self.agents_closed => self.open_agents_pane(),
+                    None => {},
+                }
             }
             break;
         }
@@ -709,11 +770,6 @@ impl State {
     }
 
     pub(crate) fn on_key(&mut self, key: KeyWithModifier) -> bool {
-        if Self::is_toggle_key(&key) {
-            self.hide_self_only();
-            return false;
-        }
-
         // This must be caught before TextInput sees it. Its bare-key arm
         // doesn't check for modifiers, so it would take Ctrl-l as a literal 'l'
         // and Alt-Enter as a submit.
@@ -819,15 +875,16 @@ impl State {
         match self.input.handle_key(key) {
             InputAction::Submit => self.submit(),
             InputAction::Cancel => {
-                // Esc is unconditionally "put hocus away" now; Ctrl-c is the
+                // Esc is unconditionally "put the panel away"; Ctrl-c is the
                 // interrupt. Nothing is torn down by hiding: a stream keeps
                 // arriving into a suppressed pane and a tool call waiting on y/n
-                // is still waiting when the pane comes back.
+                // is still waiting when the panel comes back.
                 //
-                // Hidden, not unloaded; the agent list beside it, if there is one,
-                // stays. The launch binding restores the same plugin from any tab.
+                // Both halves, and hidden rather than unloaded: the agent list
+                // goes with the conversation, because the panel is one thing.
+                // Either launch binding restores the whole of it from any tab.
                 // Ctrl-l starts a new archived conversation.
-                self.hide_self_only();
+                self.hide_panel();
                 false
             },
             InputAction::Continue => true,
