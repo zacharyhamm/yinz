@@ -551,6 +551,7 @@ message AgentInfo {
     optional string session_id = 6;
     optional string waiting_on = 7;
     optional string run_id = 8;
+    bool wait_needs_a_person = 9;
 }
 
 enum AgentState {

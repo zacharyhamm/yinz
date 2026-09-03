@@ -973,6 +973,7 @@ fn test_client_messages() {
                     source: AgentSource::Reported,
                     detail: None,
                     waiting_on: Some("approval".to_owned()),
+                    wait_needs_a_person: true,
                     cwd: Some("/work".to_owned()),
                     session_id: Some("agent-session".to_owned()),
                     // The whole point of the field: a warp is where a run id has to survive
@@ -3529,6 +3530,7 @@ fn test_client_messages() {
                 source: AgentSource::Reported,
                 detail: Some("Bash cargo".to_owned()),
                 waiting_on: Some("Bash cargo".to_owned()),
+                wait_needs_a_person: true,
                 cwd: Some("/work".to_owned()),
                 session_id: Some("s1".to_owned()),
                 run_id: Some("claude:s1".to_owned()),

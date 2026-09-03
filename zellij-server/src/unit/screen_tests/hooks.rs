@@ -47,6 +47,9 @@ fn report(state: AgentState, session_id: Option<&str>) -> AgentInfo {
         source: AgentSource::Reported,
         detail: None,
         waiting_on: None,
+        // The blinking frame indicator is the only reader; a wait a person must answer is
+        // what the common case reports, so it is what the helper reports too.
+        wait_needs_a_person: state == AgentState::Waiting,
         cwd: Some("/work".to_owned()),
         session_id: session_id.map(str::to_owned),
         run_id: None,
@@ -732,6 +735,89 @@ fn the_edges_of_an_agent_record() {
             "{previous:?} -> {current:?}"
         );
     }
+}
+
+/// The blinking bell in a pane's corner is armed on the *edge* into a wait a person has to
+/// answer, and taken down by the person answering it — not by the agent getting round to
+/// saying it is busy again.
+///
+/// Three things it must not do, each of which it would do if it were driven off the record's
+/// state alone: restart on a repeat `waiting` report (a `PermissionRequest` and the
+/// `Notification` behind it are two reports of one prompt), light up for a wait the permission
+/// mode is about to answer itself, or keep the shared animation clock running after the wait
+/// is over.
+#[test]
+fn a_wait_a_person_must_answer_blinks_until_somebody_answers_it() {
+    let (mut screen, background_jobs) = screen_with_background_jobs(Size { cols: 80, rows: 20 });
+    new_tab(&mut screen, 1, 0);
+    drain_background_jobs(&background_jobs);
+    let pane_id = PaneId::Terminal(1);
+    let blinking_since = |screen: &Screen| {
+        screen
+            .tab_containing_pane(pane_id)
+            .and_then(|tab| tab.pane_agent_attention_since(pane_id))
+    };
+
+    // A wait the mode answers by itself is a wait everywhere it is *drawn* and nowhere it
+    // would interrupt: the record says `waiting`, and nothing blinks.
+    let mut quiet = report(AgentState::Waiting, Some("s1"));
+    quiet.wait_needs_a_person = false;
+    assert!(apply_pane_agent_report(&mut screen, pane_id, Some(quiet)).unwrap());
+    assert_eq!(blinking_since(&screen), None);
+    assert!(screen.blinking_agent_panes.is_empty());
+
+    assert!(apply_pane_agent_report(
+        &mut screen,
+        pane_id,
+        Some(report(AgentState::Busy, Some("s1")))
+    )
+    .unwrap());
+
+    // The real thing.
+    let waiting = report(AgentState::Waiting, Some("s1"));
+    assert!(apply_pane_agent_report(&mut screen, pane_id, Some(waiting.clone())).unwrap());
+    let armed_at = blinking_since(&screen).expect("the wait is blinking");
+    assert!(screen.blinking_agent_panes.contains(&pane_id));
+
+    // The same prompt reported again — the backstop `Notification` behind a
+    // `PermissionRequest` — is the same wait, and must not restart the blink half way
+    // through a phase.
+    let mut again = waiting.clone();
+    again.waiting_on = Some("Bash rm".to_owned());
+    assert!(apply_pane_agent_report(&mut screen, pane_id, Some(again)).unwrap());
+    assert_eq!(
+        blinking_since(&screen),
+        Some(armed_at),
+        "a repeat report is the same wait"
+    );
+
+    // Somebody types here. The record is untouched — the agent has not said anything — but
+    // the wait has been noticed, so the corner goes quiet.
+    screen
+        .tab_containing_pane_mut(pane_id)
+        .expect("pane exists")
+        .write_to_pane_id(
+            &Some(KeyWithModifier::new(BareKey::Char('y'))),
+            b"y".to_vec(),
+            false,
+            pane_id,
+            None,
+            None,
+        )
+        .expect("the write lands");
+    assert_eq!(blinking_since(&screen), None);
+    assert_eq!(
+        screen
+            .tab_containing_pane(pane_id)
+            .and_then(|tab| tab.pane_agent_info(pane_id))
+            .map(|agent| agent.state),
+        Some(AgentState::Waiting),
+        "answering the prompt is not the agent saying anything"
+    );
+
+    // And the clock lets go of the pane, so an idle session stops waking up for it.
+    screen.advance_agent_attention_blinks();
+    assert!(screen.blinking_agent_panes.is_empty());
 }
 
 /// A launch with an environment is `env K=V codex …`; `env` execs, so the pane runs the agent,

@@ -511,6 +511,20 @@ pub trait Pane {
     fn set_agent_info(&mut self, _agent: Option<AgentInfo>) -> bool {
         false
     }
+    /// When this pane's agent entered a wait a person has to answer, while nobody has yet.
+    /// `None` once it has been answered, and for every pane that is not an unanswered wait.
+    fn agent_attention_since(&self) -> Option<Instant> {
+        None
+    }
+    /// The wait has been noticed: somebody typed here, or focused the pane. Answers whether
+    /// there was anything to take down, so a caller can stop asking for frames.
+    ///
+    /// Deliberately not a change to the agent record. The record is what the *agent* said,
+    /// and a person answering the prompt is not the agent saying anything - the next hook
+    /// will say it, and until then the row and the manifest are right to read `waiting`.
+    fn acknowledge_agent_attention(&mut self) -> bool {
+        false
+    }
 
     fn right_boundary_x_coords(&self) -> usize {
         self.x() + self.cols()
@@ -4396,6 +4410,25 @@ impl Tab {
             .or_else(|| self.suppressed_panes.get_mut(&pane_id).map(|p| &mut p.pane));
         pane.map(|pane| pane.set_agent_info(agent)).unwrap_or(false)
     }
+    /// Whether `pane_id`'s agent is still waiting on a person who has not answered yet -
+    /// which is exactly the condition the blinking frame indicator draws.
+    pub fn pane_wants_attention(&self, pane_id: PaneId) -> bool {
+        self.tiled_panes
+            .get_pane(pane_id)
+            .or_else(|| self.floating_panes.get_pane(pane_id))
+            .or_else(|| self.overlay_panes.get_pane(pane_id))
+            .is_some_and(|pane| pane.agent_attention_since().is_some())
+    }
+    /// When `pane_id`'s unanswered wait started, for a test that needs to tell one blink from
+    /// a restarted one.
+    #[cfg(test)]
+    pub fn pane_agent_attention_since(&self, pane_id: PaneId) -> Option<Instant> {
+        self.tiled_panes
+            .get_pane(pane_id)
+            .or_else(|| self.floating_panes.get_pane(pane_id))
+            .or_else(|| self.overlay_panes.get_pane(pane_id))
+            .and_then(|pane| pane.agent_attention_since())
+    }
     /// Whether `pane_id` has an agent record, whoever wrote it.
     pub fn pane_is_agent(&self, pane_id: PaneId) -> bool {
         self.pane_agent_info(pane_id).is_some()
@@ -4931,6 +4964,11 @@ impl Tab {
         if should_not_write_to_terminal {
             return Ok(should_update_ui);
         }
+
+        // Somebody is answering. Whatever the agent here was waiting for, it is no longer
+        // waiting on being *noticed* - so the indicator comes down now rather than when the
+        // agent gets round to reporting that it is busy again.
+        active_pane.acknowledge_agent_attention();
 
         match pane_id {
             PaneId::Terminal(active_terminal_id) => {
