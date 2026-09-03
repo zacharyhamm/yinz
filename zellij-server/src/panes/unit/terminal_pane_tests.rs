@@ -3,13 +3,14 @@ use crate::panes::kitty_graphics::{test_support::apc_b64, KittyImageStore};
 use crate::panes::sixel::SixelImageStore;
 use crate::panes::LinkHandler;
 use crate::tab::Pane;
+use crate::ui::pane_boundaries_frame::FrameParams;
 use insta::assert_snapshot;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use zellij_utils::{
-    data::{Palette, Style},
+    data::{AgentInfo, AgentSource, AgentState, InputMode, Palette, Style},
     input::command::RunCommand,
     pane_size::{Offset, PaneGeom, SizeInPixels},
     position::Position,
@@ -1474,4 +1475,112 @@ fn a_resumed_pane_forwards_input_again() {
         press_key(&mut pane, BareKey::Char('x'), 1),
         Some(AdjustedInput::WriteBytesToTerminal(_))
     ));
+}
+
+/// The wait's indicator is taken down by the client that is *looking* at the pane, in the
+/// frame it draws for them.
+///
+/// Focus reaches a pane by a dozen routes - tiled, floating, fullscreen, a mouse click, a
+/// plugin - and the frame is the one place that knows the answer for certain. The corollary
+/// is deliberate: a wait that arrives while the user is already in the pane never blinks at
+/// all, which is the same rule the waiting toast keeps.
+#[test]
+pub fn focusing_a_pane_takes_down_its_waiting_agents_bell() {
+    let waiting = AgentInfo {
+        kind: "claude".to_owned(),
+        state: AgentState::Waiting,
+        source: AgentSource::Reported,
+        detail: None,
+        waiting_on: Some("Bash rm".to_owned()),
+        wait_needs_a_person: true,
+        cwd: None,
+        session_id: Some("s1".to_owned()),
+        run_id: None,
+    };
+
+    // A client the pane is *not* focused for leaves the wait up: it is drawing the bell, not
+    // answering it.
+    let mut pane = agent_pane();
+    assert!(pane.set_agent_info(Some(waiting.clone())));
+    assert!(pane.agent_attention_since().is_some());
+    pane.render_frame(1, frame_params(false), InputMode::Normal)
+        .expect("the frame renders");
+    assert!(
+        pane.agent_attention_since().is_some(),
+        "somebody else's frame is not somebody answering"
+    );
+
+    // The focused client's is.
+    pane.render_frame(1, frame_params(true), InputMode::Normal)
+        .expect("the frame renders");
+    assert!(pane.agent_attention_since().is_none());
+
+    // And a wait that arrives while they are already there never goes up.
+    let mut busy = waiting.clone();
+    busy.state = AgentState::Busy;
+    busy.waiting_on = None;
+    busy.wait_needs_a_person = false;
+    assert!(pane.set_agent_info(Some(busy)));
+    assert!(pane.set_agent_info(Some(waiting)));
+    assert!(pane.agent_attention_since().is_some());
+    pane.render_frame(1, frame_params(true), InputMode::Normal)
+        .expect("the frame renders");
+    assert!(pane.agent_attention_since().is_none());
+}
+
+fn agent_pane() -> TerminalPane {
+    let mut geom = PaneGeom::default();
+    geom.cols.set_inner(80);
+    geom.rows.set_inner(20);
+    TerminalPane::new(
+        1,
+        geom,
+        Style::default(),
+        0,
+        String::new(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        Rc::new(RefCell::new(None)),
+        Rc::new(RefCell::new(SixelImageStore::default())),
+        Rc::new(RefCell::new(KittyImageStore::default())),
+        Rc::new(RefCell::new(Palette::default())),
+        Rc::new(RefCell::new(HashMap::new())),
+        None,
+        None,
+        false, // debug
+        true,  // arrow_fonts
+        true,  // styled_underlines
+        true,  // osc8_hyperlinks
+        false, // explicitly_disable_kitty_keyboard_protocol
+        None,
+    )
+}
+
+fn frame_params(is_main_client: bool) -> FrameParams {
+    FrameParams {
+        focused_client: is_main_client.then_some(1),
+        is_main_client,
+        other_focused_clients: vec![],
+        style: Style::default(),
+        color: None,
+        other_cursors_exist_in_session: false,
+        pane_is_stacked_over: false,
+        pane_is_stacked_under: false,
+        pane_is_stacked: false,
+        should_draw_pane_frames: true,
+        pane_is_floating: false,
+        show_pinned_indication: false,
+        show_scroll_indication: false,
+        content_offset: Offset::default(),
+        mouse_is_hovering_over_pane: false,
+        pane_is_selectable: true,
+        show_help_text: false,
+        highlight_tooltip: None,
+        omit_title: false,
+        frame_geom_override: None,
+        stack_list_entry: None,
+        blank_title: false,
+        mouse_scroll_resize: false,
+        dimmed: false,
+        guest_choice_indicator: None,
+    }
 }

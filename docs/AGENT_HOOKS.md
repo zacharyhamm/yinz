@@ -395,6 +395,39 @@ on its own:
   (`suppressed_waits` in the daemon) until something spends it: the backstop toasts on the
   question the request itself worded, or the agent goes back to work and the wait is over.
 
+### And the pane itself says so
+
+A toast is over whatever pane you are in, and the sidebar row is somewhere else again. The
+third surface is the pane the wait is actually in: while an agent there is blocked on a person,
+its frame blinks a 🔔 in the top-right corner, beside where SCROLL and PIN are drawn.
+
+- **It is armed on the edge, like everything else here.** The not-waiting → waiting edge, so
+  the `Notification` behind a `PermissionRequest` — the same prompt, reported twice — does not
+  restart the blink half way through a phase.
+- **`waiting_needs_a_person` decides, and now the record carries its answer.** A prompt that
+  `bypassPermissions` or `acceptEdits` is about to answer itself is a wait everywhere it is
+  *drawn* — the row and the manifest take the agent at its word — and blinks at nobody. That is
+  a seventh reported field, `AgentInfo::wait_needs_a_person`: the event that decided it is long
+  gone by the time a pane draws anything, so the answer travels with the record and warps with
+  it. The two roads that are not a hook say it for themselves: `agent-report --state waiting`
+  sets it (a script that troubles itself to say `waiting` means a person), and a plugin's
+  `set_pane_agent` leaves it `false` unless it names it, because registering a pane *as* an
+  agent is not reporting a prompt anybody is looking at.
+- **Answering it takes it down, not the agent noticing.** Typing into the pane, or simply
+  focusing it, ends the blink at once rather than waiting for the next hook to say `busy`. The
+  record is untouched by either — a person answering the prompt is not the agent saying
+  anything, and until the agent says so the row is right to read `waiting`.
+- **A wait that arrives while you are already in the pane never blinks**, which is the rule the
+  toast keeps too: if you are focused there, you can see it.
+- It needs frames. A layout with `pane_frames false` has no title line to draw in, and gets the
+  toast and the row as before.
+
+The blink runs on the shared animation clock, at its own cadence between the 60fps one a toast
+slides at and the half-second one the plugin loading dots pulse at — see
+`Screen::animation_clock_period`. An idle session renders nothing at all, so the clock is what
+makes a corner move in a pane that is producing no output; it stops on its own once the last
+wait is answered.
+
 ## When a feed ends
 
 Nothing here expires on a clock, and that is deliberate: a permission prompt can sit
@@ -426,6 +459,7 @@ added. `zellij hocus hooks status` says when the installed script is old.
 | Event → record, and every rule for reading one | `zellij-utils/src/agent.rs` (`HookEvent`, `hook_state`, `hook_detail`, `waiting_detail`, `waiting_needs_a_person`, `hook_outcome`, `WAITING_TOOLS`, `CLAUDE_HOOK_EVENTS`, `CODEX_HOOK_EVENTS`, `AGENT_HOOK_PIPE`) |
 | The action, the fan-out, and the installer | `zellij-utils/src/cli.rs` (`AgentReport`), `zellij-utils/src/input/actions.rs`, `src/hocus_hooks.rs` |
 | Carrying it on the pane | `zellij-server/src/panes/terminal_pane.rs` (`agent`, `agent_from_run`), `screen/thread_main.rs` (`SetPaneAgent`), `screen/mod.rs` (`fire_agent_exit_hook`, `fire_agent_state_hooks`, `agent_hook_edges`) |
+| The blinking bell in the pane's corner | `zellij-server/src/panes/terminal_pane.rs` (`agent_attention_since`, `acknowledge_agent_attention`), `ui/pane_boundaries_frame.rs` (`render_agent_attention`), `screen/mod.rs` (`blinking_agent_panes`, `animation_clock_period`, `advance_agent_attention_blinks`), `zellij-utils/src/animation.rs` (`blink_is_lit`, `BLINK_PERIOD`) |
 | What a row draws | `default-plugins/hocus-proto/src/agents.rs` (`HookFeed::from_agent`, `status_cell`, `waiting_marker`, `kind_cell`, `HOOK_MARKER`) |
 | What a wait says, and the summary | same (`waiting_toast`, `turn_summary_request_body`, `local_summary`) |
 | Run types, reduction and rendering | same (`AgentRun`, `run_entry`, `run_history`, `rows::run_mutations`, `rows::hydrate_entries`) |

@@ -76,6 +76,17 @@ pub(crate) fn apply_pane_agent_report(
     // A report that repeats itself costs nothing; a changed one is news to every reader of the
     // manifest.
     if changed {
+        // The pane decides whether it is now blinking - it holds the edge, and whether the
+        // wait has already been noticed. The screen only has to know that somebody wants
+        // frames, so the shared clock runs while they do. `advance_agent_attention_blinks`
+        // takes the pane back out again when the wait ends.
+        if screen
+            .tab_containing_pane(pane_id)
+            .is_some_and(|tab| tab.pane_wants_attention(pane_id))
+        {
+            screen.blinking_agent_panes.insert(pane_id);
+            screen.sync_animation_clock(Instant::now())?;
+        }
         screen.fire_agent_state_hooks(pane_id, previous.as_ref(), agent.as_ref());
         // Rebuild only the pane state. `SessionInfo` embeds that manifest and is synchronized by
         // `report_pane_state`, but the tab state did not change.

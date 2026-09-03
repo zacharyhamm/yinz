@@ -2627,6 +2627,15 @@ pub struct AgentInfo {
     /// this names a question to somebody who has to answer it.
     #[serde(default)]
     pub waiting_on: Option<String>,
+    /// Whether this wait is one a person has to answer, when the state is `Waiting`.
+    ///
+    /// `false` where the permission mode is about to answer the prompt itself — see
+    /// `agent::waiting_needs_a_person`, which is where this is decided, and which is the
+    /// only place it is worked out. Read by whatever would interrupt somebody over the
+    /// wait; the state, the record and the agent strip all take the agent at its word
+    /// regardless, so a suppressed wait is still a wait everywhere it is drawn.
+    #[serde(default)]
+    pub wait_needs_a_person: bool,
     /// The folder the agent is working in, which is not always the pane's: an agent told to
     /// work in a worktree moved without the shell under it hearing.
     #[serde(default)]
@@ -2648,6 +2657,17 @@ pub struct AgentInfo {
     /// pane's, and only clearing the whole record clears it. See `apply_pane_agent_report`.
     #[serde(default)]
     pub run_id: Option<String>,
+}
+
+impl AgentInfo {
+    /// Whether this record is a wait that a person has to answer.
+    ///
+    /// The two halves have to be read together: `wait_needs_a_person` is only meaningful while
+    /// the state is `Waiting`, and a record that has moved on carries whatever the last report
+    /// happened to set.
+    pub fn is_waiting_on_a_person(&self) -> bool {
+        self.state == AgentState::Waiting && self.wait_needs_a_person
+    }
 }
 
 impl AgentSource {
