@@ -163,6 +163,14 @@ pub fn color_index_character(
                                          // from previous indices
     }
 
+    // Level 8, applied on top of the colour rather than instead of it: a struck run keeps
+    // whatever `style_of_index` chose. No explicit reset is needed on the way out - the
+    // base style is derived from `RESET_STYLES`, which carries `strike: Reset`, and it is
+    // written after every character.
+    if text.is_struck_at(index) {
+        character_style = character_style.strike(Some(AnsiCode::On));
+    }
+
     format!("{}{}{}", character_style, character, base_text_style)
 }
 
@@ -221,6 +229,18 @@ impl Text {
         const UNBOLD_LEVEL: usize = 5;
         self.indices
             .get(UNBOLD_LEVEL)
+            .map(|indices| indices.contains(&index))
+            .unwrap_or(false)
+    }
+
+    /// Whether this character was asked for with `Text::strike_range` and friends.
+    ///
+    /// Level 8 rather than one of the levels below it because striking is orthogonal to
+    /// colour: it is applied on top of whatever `style_of_index` chose, not instead of it.
+    pub fn is_struck_at(&self, index: usize) -> bool {
+        const STRIKE_LEVEL: usize = 8;
+        self.indices
+            .get(STRIKE_LEVEL)
             .map(|indices| indices.contains(&index))
             .unwrap_or(false)
     }
@@ -318,5 +338,25 @@ mod tests {
     fn missing_param_still_yields_nothing() {
         let mut params: Vec<String> = vec![];
         assert!(parse_text_params(params.iter_mut()).is_empty());
+    }
+
+    /// Level 8 crosses a character out and leaves the levels below it alone: a struck run
+    /// keeps whatever colour it was given, and the characters around it are not struck.
+    #[test]
+    fn the_strike_level_crosses_out_only_the_indices_it_names() {
+        // Eight empty index groups, then level 8 naming characters 1 and 2, then the text
+        // as the comma-joined bytes the plugin serializes it to.
+        let mut params = ["$$$$$$$$1,2$97,98,99,100".to_owned()];
+        let parsed = parse_text_params(params.iter_mut());
+        assert_eq!(parsed.len(), 1);
+        let text = &parsed[0];
+        assert_eq!(text.text, "abcd");
+        assert!(!text.is_struck_at(0));
+        assert!(text.is_struck_at(1));
+        assert!(text.is_struck_at(2));
+        assert!(!text.is_struck_at(3));
+        // and it is not read as one of the levels below it
+        assert!(!text.is_dimmed_at(1));
+        assert!(!text.is_unbold_at(1));
     }
 }

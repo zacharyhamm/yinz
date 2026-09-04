@@ -15,10 +15,11 @@ fn a_session_listing_becomes_tabs_of_panes() {
     assert!(shown.starts_with("## session work\n\n"), "{shown}");
     // The heading carries the number the tab bar shows, not the position.
     assert!(shown.contains("**1: edit** — active"), "{shown}");
-    // The ids lead, because they are what the next command needs, and the
-    // columns line up under them.
-    assert!(shown.contains("3   *  vim    running"), "{shown}");
-    assert!(shown.contains("4      build  exited 1"), "{shown}");
+    // The ids lead, because they are what the next command needs. Lining the
+    // columns up is the renderer's job now that this emits a real table.
+    assert!(shown.contains("| id |  | title | status |"), "{shown}");
+    assert!(shown.contains("| 3 | \\* | vim | running |"), "{shown}");
+    assert!(shown.contains("| 4 |  | build | exited 1 |"), "{shown}");
     // The marks column is only readable with a key, and only one pane here
     // is marked at all.
     assert!(shown.contains("_* focused_"), "{shown}");
@@ -35,7 +36,7 @@ fn a_listing_renders_its_tabs_and_their_panes() {
            "command":"vim","exit_status":null}]}]}"#;
     let shown = present(&call("list_session", "{}"), raw).expect("presented");
     assert!(!shown.contains("hidden"), "{shown}");
-    assert!(shown.contains("3   *  vim    running"), "{shown}");
+    assert!(shown.contains("| 3 | \\* | vim | running |"), "{shown}");
 }
 
 #[test]

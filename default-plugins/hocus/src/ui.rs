@@ -2341,6 +2341,30 @@ mod tests {
         assert!(lines.iter().all(|line| line.text.width() <= 8));
     }
 
+    /// A model's pipe table reaches the pane as columns, not as pipes. The renderer does the
+    /// layout; this is the end-to-end check that the conversation asks it to.
+    #[test]
+    fn a_reply_containing_a_table_renders_as_columns() {
+        let lines = transcript_lines(
+            &[Message::assistant(
+                "| pane | status |\n|---|---|\n| 1 | running |\n| 2 | idle |",
+            )],
+            40,
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "pane │ status ",
+                "─────┼────────",
+                "1    │ running",
+                "2    │ idle   ",
+            ]
+        );
+    }
+
     #[test]
     fn links_images_html_and_tables_have_readable_fallbacks() {
         let lines = transcript_lines(

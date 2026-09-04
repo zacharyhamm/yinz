@@ -23,7 +23,13 @@ fn a_newline_in_a_value_cannot_break_the_list_item() {
 #[test]
 fn an_underscore_is_left_alone() {
     assert_eq!(inline("pane_id"), "pane_id");
-    assert_eq!(inline("a|b~c"), "a|b~c");
+}
+
+/// `|` and `~` were on that list until the renderer learned tables and
+/// strikethrough. A pipe in a pane title is a cell boundary now.
+#[test]
+fn a_pipe_and_a_tilde_are_escaped() {
+    assert_eq!(inline("a|b~~c~~"), r"a\|b\~\~c\~\~");
 }
 
 /// A backtick in a value must not be able to open a code span that swallows
@@ -50,19 +56,28 @@ fn fence_of_a_plain_body_is_the_usual_three() {
     assert_eq!(fence("hello"), "```\nhello\n```\n");
 }
 
-/// A listing is the likeliest place for a hostile pane title to land, and
-/// the table is fenced precisely so it cannot matter.
+/// A listing is the likeliest place for a hostile pane title to land. The table
+/// it goes in used to be fenced, which is what made the title inert; the table
+/// is real markdown now, so the escaping is what has to do it instead - the
+/// title must stay one cell, and none of its markup may reach the renderer.
 #[test]
 fn a_pane_title_full_of_markup_cannot_restyle_the_transcript() {
     let raw = r##"{"session":"s","tabs":[{"tab_number":1,"tab_id":1,"name":"t","active":false,
-        "panes":[{"pane_id":1,"title":"# **x** ```","focused":false}]}]}"##;
+        "panes":[{"pane_id":1,"title":"# **x** ``` | y","focused":false}]}]}"##;
     let shown = present(&call("list_session", "{}"), raw).expect("presented");
-    let fence_line = shown
+    let row = shown
         .lines()
-        .find(|line| line.starts_with("```"))
-        .expect("a fence");
-    assert!(
-        fence_line.len() > 3,
-        "the title's own backticks must not close the fence: {fence_line:?}"
+        .find(|line| line.contains('x'))
+        .expect("the pane's row");
+    assert!(row.contains(r"\# \*\*x\*\* \`\`\` \| y"), "{row}");
+    // Four columns in the header, and the title's pipe has not made a fifth.
+    let header = shown
+        .lines()
+        .find(|line| line.contains("title"))
+        .expect("the header");
+    assert_eq!(
+        row.matches(" | ").count(),
+        header.matches(" | ").count(),
+        "{row}"
     );
 }

@@ -27,8 +27,10 @@ const COLS: usize = 100;
 /// Roughly what one 10 Hz frame's worth of tokens looks like.
 const DELTA: &str = " and then the next few tokens arrive on the end of the reply,";
 
-/// A reply with the markdown hocus actually renders — headings, prose, a list and a fenced block,
-/// so the parser and the wrapper both do real work rather than walking a single paragraph.
+/// A reply with the markdown hocus actually renders — headings, prose, a list, a fenced block
+/// and a table, so the parser and the wrapper both do real work rather than walking a single
+/// paragraph. The table is here because it is the one block laid out at *wrap* time: it is
+/// re-fitted on every rewrap, which is exactly what `streaming_frame` is watching for.
 fn reply(n: usize) -> String {
     format!(
         "## Finding {n}\n\nThe `render_transcript` path rewraps every message it is given, which \
@@ -36,7 +38,7 @@ fn reply(n: usize) -> String {
          wrapper has to break it across several display lines.\n\n- it parses markdown\n- it wraps \
          each block to the pane width\n- it builds a style vector per character\n\n```rust\nfn \
          message_lines(message: &Message, cols: usize) -> Vec<VLine> {{\n    todo!(\"{n}\")\n}}\n\
-         ```\n\nAnd a closing paragraph, because a reply rarely ends on a code fence."
+         ```\n\n| block | wrapped at | cost\n|---|---|---:|\n| paragraph | wrap time | one pass          |\n| table | wrap time | one pass per cell |\n\nAnd a closing paragraph, because a reply rarely ends on a code fence."
     )
 }
 

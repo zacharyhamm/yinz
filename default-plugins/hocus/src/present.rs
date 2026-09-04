@@ -16,13 +16,14 @@
 //! nested lists, bold, code blocks — so emitting markdown buys all of that
 //! without a second renderer. Two limits of it shape everything below:
 //!
-//! - **No tables.** The parser runs with `Options::empty()` and there is no
-//!   `Tag::Table` arm, so pipe rows would word-wrap into mush. Anything that
-//!   wants columns goes in a fenced block, via [`table`].
 //! - **Untrusted text restyles the transcript.** Pane titles, branch names and
-//!   Slack messages all reach here, and a title containing `#` or `*` would be
-//!   read as markup. Everything interpolated goes through [`fence`] or
-//!   [`inline`].
+//!   Slack messages all reach here, and a title containing `#`, `*` or - now
+//!   that the renderer parses tables - `|` would be read as markup. Everything
+//!   interpolated goes through [`fence`] or [`inline`].
+//! - **Rows are cheap, columns are not.** The renderer draws a real table now
+//!   ([`table`] emits one), but it shrinks the columns to the pane and wraps
+//!   inside them, so a listing of ten columns becomes a very tall table on a
+//!   narrow pane. Pick the columns a person actually reads.
 //!
 //! ## Why `Option`
 //!
@@ -1206,15 +1207,23 @@ fn leaf(value: &Value) -> Option<String> {
 /// branch, a todo, a Slack message. Backslash-escaping the characters the
 /// renderer acts on is what stops one of them restyling the rest of the
 /// transcript.
-/// Not escaped, deliberately: `_`, `|` and `~`. An underscore inside a word is
-/// literal in CommonMark, so escaping it would only turn every `pane_id` and
-/// `slack_status` into `pane\_id`; `|` and `~` mean nothing with the table and
-/// strikethrough extensions off, which they are. The worst any of them can do
-/// is a stray italic, against a backslash on every identifier we print.
+/// Not escaped, deliberately: `_`. An underscore inside a word is literal in
+/// CommonMark, so escaping it would only turn every `pane_id` and
+/// `slack_status` into `pane\_id`. The worst it can do is a stray italic,
+/// against a backslash on every identifier we print.
+///
+/// `|` and `~` used to be on that list, on the grounds that they mean nothing
+/// with the table and strikethrough extensions off. They are on now, so a pipe
+/// in a pane title is a cell boundary and a pair of tildes strikes out whatever
+/// is between them. Both are ASCII punctuation, so `\|` and `\~` read as
+/// themselves wherever they land.
 pub fn inline(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
-        if matches!(ch, '\\' | '`' | '*' | '[' | ']' | '<' | '>' | '#') {
+        if matches!(
+            ch,
+            '\\' | '`' | '*' | '[' | ']' | '<' | '>' | '#' | '|' | '~'
+        ) {
             out.push('\\');
         }
         // A newline inside a value would end the list item it sits in.
@@ -1239,52 +1248,40 @@ pub fn fence(body: &str) -> String {
     format!("{ticks}\n{}\n{ticks}\n", body.trim_end_matches('\n'))
 }
 
-/// Rows as aligned columns inside a fenced block.
+/// Rows as a markdown table.
 ///
-/// The substitute for a markdown table, which the renderer does not parse. The
-/// fence also means nothing in a cell can restyle anything, so cells are *not*
-/// passed through `inline` — they are shown literally, which is what a listing
-/// of titles and commands wants.
+/// Used to be aligned columns inside a fence, because the renderer did not parse
+/// tables. It does, and a real table is the better answer for the reason the
+/// fence was always the worse one: a fenced block hard-wraps, so a pane narrower
+/// than the longest row lost its right-hand columns mid-word, while a table
+/// shrinks its columns to the pane and wraps inside them.
+///
+/// Cells go through [`inline`] — the fence used to be doing that work, and now
+/// nothing else is. Every column is left-aligned: the callers here list titles
+/// and commands, which read down their left edge.
 pub fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
     if rows.is_empty() {
         return String::new();
     }
-    let widths: Vec<usize> = headers
-        .iter()
-        .enumerate()
-        .map(|(column, header)| {
-            rows.iter()
-                .filter_map(|row| row.get(column))
-                .map(|cell| display_width(cell))
-                .chain(std::iter::once(header.chars().count()))
-                .max()
-                .unwrap_or_default()
-        })
-        .collect();
-
     let mut out = String::new();
-    for row in std::iter::once(&headers.iter().map(|h| (*h).to_owned()).collect()).chain(rows) {
-        let mut line = String::new();
-        for (column, width) in widths.iter().enumerate() {
-            let cell = row.get(column).map(String::as_str).unwrap_or_default();
-            line.push_str(cell);
-            // No padding after the last column: trailing spaces are invisible
-            // and would only widen the block.
-            if column + 1 < widths.len() {
-                line.push_str(&" ".repeat(width.saturating_sub(display_width(cell)) + 2));
-            }
+    let row_of = |cells: &mut dyn Iterator<Item = String>| {
+        let mut line = "|".to_owned();
+        for cell in cells {
+            line.push(' ');
+            line.push_str(&cell);
+            line.push_str(" |");
         }
-        out.push_str(line.trim_end());
-        out.push('\n');
+        line.push('\n');
+        line
+    };
+    out.push_str(&row_of(&mut headers.iter().map(|header| inline(header))));
+    out.push_str(&row_of(&mut headers.iter().map(|_| "---".to_owned())));
+    for row in rows {
+        out.push_str(&row_of(&mut (0..headers.len()).map(|column| {
+            row.get(column).map(|cell| inline(cell)).unwrap_or_default()
+        })));
     }
-    fence(out.trim_end_matches('\n'))
-}
-
-/// Columns a cell occupies. Wide characters take two, which is what keeps a
-/// CJK pane title from skewing every column to its right.
-fn display_width(text: &str) -> usize {
-    use unicode_width::UnicodeWidthChar;
-    text.chars().map(|ch| ch.width().unwrap_or(0)).sum()
+    out
 }
 
 /// A markdown heading naming the command that produced the block below it.

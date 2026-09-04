@@ -3,31 +3,38 @@ use super::*;
 // -- table --------------------------------------------------------------
 
 #[test]
-fn table_aligns_its_columns() {
+fn table_is_a_markdown_table() {
     let rows = vec![
         vec!["1".to_owned(), "short".to_owned()],
         vec!["22".to_owned(), "longer".to_owned()],
     ];
     assert_eq!(
         table(&["id", "title"], &rows),
-        "```\nid  title\n1   short\n22  longer\n```\n"
+        "| id | title |\n| --- | --- |\n| 1 | short |\n| 22 | longer |\n"
     );
 }
 
-/// A CJK title is two columns per character; measuring it in `char`s would
-/// skew every column to its right.
+/// Columns are the renderer's job now, so this only has to hand it a cell per
+/// column: a row short of cells is padded rather than left ragged, or every row
+/// after it would be read into the wrong column.
 #[test]
-fn table_measures_wide_characters_by_display_width() {
-    let rows = vec![
-        vec!["日本".to_owned(), "a".to_owned()],
-        vec!["ab".to_owned(), "b".to_owned()],
-    ];
-    let rendered = table(&["name", "x"], &rows);
-    for line in rendered.lines().filter(|line| !line.starts_with("```")) {
-        let column = line.find(['a', 'b', 'x']).map(|_| ());
-        assert!(column.is_some(), "{line:?}");
-    }
-    assert!(rendered.contains("日本  a"), "{rendered}");
+fn a_short_row_still_fills_its_columns() {
+    let rows = vec![vec!["1".to_owned()]];
+    assert_eq!(
+        table(&["id", "title"], &rows),
+        "| id | title |\n| --- | --- |\n| 1 |  |\n"
+    );
+}
+
+/// The fence used to be what stopped a hostile title restyling the transcript.
+/// Nothing is fenced now, so every cell goes through `inline` - and a pipe in a
+/// title would otherwise open a cell of its own.
+#[test]
+fn a_cell_is_escaped_now_that_nothing_fences_it() {
+    let rows = vec![vec!["a|b".to_owned(), "# **x**".to_owned()]];
+    let rendered = table(&["id", "title"], &rows);
+    assert!(rendered.contains(r"a\|b"), "{rendered}");
+    assert!(rendered.contains(r"\# \*\*x\*\*"), "{rendered}");
 }
 
 #[test]
