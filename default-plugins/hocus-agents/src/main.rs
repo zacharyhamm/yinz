@@ -74,6 +74,20 @@
 //! nothing else (`wire::AGENT_SUMMARIZE`): which of the two kinds of work that means is the
 //! daemon's to know, the same way the rows themselves are hocus's to compute.
 //!
+//! **`r` resumes the archived run under the cursor**, behind a `y`/`n` on the divider. A run
+//! in the archive is named for the agent's own session id — `AgentRun.id` is
+//! `"{kind}:{session id}"` — which is exactly what `claude --resume` and `codex resume` take,
+//! so the one thing missing was a key. It asks first because it is the only key here that
+//! starts a process, and it sits next to the ones the list is walked with. Archived rows
+//! only: a live agent already has a pane, and a second process on its session id would be two
+//! agents writing one conversation. Like everything else in this pane it names the row and no
+//! more (`wire::AGENT_RESUME`) — which agent, which folder and which machine are hocus's to
+//! know. Unlike everything else it is told when it is refused
+//! (`wire::AGENT_RESUME_RESULT`), because an answered confirmation that does nothing at all
+//! is worse than never having asked. A resumed agent keeps its session id and its hooks, so
+//! the daemon adopts the same run back: the row leaves the archive rather than a second one
+//! appearing beside it.
+//!
 //! **The two panes are separate plugins with one visibility.** The panel is one
 //! thing to the user, so Esc here puts the whole of it away: this pane hides
 //! itself and hocus is asked for the other half
@@ -163,6 +177,12 @@ struct State {
     /// yield that was sent from one this pane declined to make.
     #[cfg(test)]
     ring_yields: Vec<&'static str>,
+    /// Every run this pane has asked hocus to resume, in order.
+    ///
+    /// Test-only, for `ring_yields`' reason: off wasm the message goes nowhere, and a
+    /// confirmation that starts nothing looks exactly like one that was declined.
+    #[cfg(test)]
+    resume_requests: Vec<String>,
     /// Index into `rows`. Always on an `Agent` row when one exists.
     selected: usize,
     /// The last pane hocus reported focused, agent or not.
@@ -217,6 +237,23 @@ struct State {
     /// failed - a refusal in the daemon is silent by design - so the only honest lifetime is
     /// one the user can end themselves.
     summarizing: Option<String>,
+    /// The row an `r` has armed a resume confirmation on, as a `selection_key`.
+    ///
+    /// A confirmation because this is the one key here that starts a process. Everything
+    /// else the pane does is a move, a fetch or a redraw, all of them free to get wrong;
+    /// `r` next to `j` and `k` is a keystroke away from the keys the list is walked with.
+    ///
+    /// Held as the key rather than a flag for `summarizing`'s reason and one more: an armed
+    /// confirmation names the row it was armed on, so a strip that arrives and moves the
+    /// selection cannot leave a `y` pointing at a run the user never looked at.
+    confirming_resume: Option<String>,
+    /// Why the last resume was refused, and which row it was about.
+    ///
+    /// Unlike `summarizing`, this one *is* told when the request fails
+    /// (`wire::AGENT_RESUME_RESULT`): the user answered a confirmation, and an answered
+    /// confirmation that silently does nothing is worse than no confirmation at all. It
+    /// still ends when the cursor walks away, because it is an account of a row.
+    resume_note: Option<(String, String)>,
 }
 
 /// Everything [`State::history_lines`] reads, as one comparable value.
@@ -331,6 +368,31 @@ impl ZellijPlugin for State {
             // the arriving keys belong to.
             return self
                 .take_ring_stop(pipe_message.args.get(wire::PANEL_STOP).map(String::as_str));
+        }
+        if pipe_message.name == wire::AGENT_RESUME_RESULT {
+            let Some(result) = pipe_message
+                .payload
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<wire::ResumeResult>(json).ok())
+            else {
+                return false;
+            };
+            // Named by the run rather than by the cursor, and dropped when the two disagree:
+            // the answer is about the row that was asked about, and a user who walked on
+            // while it was out has ended the question themselves - the same lifetime every
+            // other hint on this divider has. Keeping it would mean a stale refusal waiting
+            // to reappear the next time the cursor came back to the row.
+            let row = format!("run:{}", result.run_id);
+            if self.selection_key() != Some(row.clone()) {
+                return false;
+            }
+            // Empty detail is success. The pane has the focus by now and the next strip
+            // moves the row out of the archive, so there is nothing left for the divider to
+            // say - only a note from an earlier attempt to take down.
+            let note = (!result.detail.is_empty()).then_some((row, result.detail));
+            let changed = self.resume_note != note;
+            self.resume_note = note;
+            return changed;
         }
         if pipe_message.name == wire::AGENT_RUN_DETAIL {
             let Some(run) = pipe_message
@@ -497,6 +559,19 @@ fn render_divider(label: &str, above: usize, below: usize, focused: bool, y: usi
     print_text_with_coordinates(text, 0, y, Some(cols), None);
 }
 
+/// What the divider has to say about the row under the cursor beyond naming it, and how much
+/// of the row it is worth.
+///
+/// The divider is one line, `fit_label` cuts it from the tail, and an agents pane is narrow -
+/// so what shares the row with the label and what takes the whole of it is a decision, not a
+/// detail. A hint about something still happening rides `Beside` the label; a refusal, which
+/// is longer than either and is the only one the user has not already seen, takes the row
+/// `Instead`.
+enum Hint {
+    Beside(String),
+    Instead(String),
+}
+
 /// The row the divider draws, never wider than `cols`.
 ///
 /// Split out from the drawing because it is the one line in the pane that has to fit three
@@ -577,6 +652,8 @@ impl State {
         self.history_scroll = 0;
         self.history_cursor = 0;
         self.summarizing = None;
+        self.confirming_resume = None;
+        self.resume_note = None;
         self.close_reader();
     }
 
@@ -587,6 +664,13 @@ impl State {
         // rather than dismissing the panel - one step back before the way out.
         if self.reading.is_some() {
             return self.read_key(key);
+        }
+        // An armed confirmation answers the next key, whichever it is. Not a modal - the
+        // list is still drawn and still says which row is being asked about - but the
+        // question is answered before anything else happens, so a `j` typed at it cannot
+        // both cancel and move in a way that leaves the user unsure which they did.
+        if self.confirming_resume.is_some() {
+            return self.answer_resume(key);
         }
         if key.bare_key == BareKey::Char('o') && key.has_modifiers(&[KeyModifier::Ctrl]) {
             // Move this pane out of the way of whatever it is covering - the same gesture the
@@ -687,6 +771,8 @@ impl State {
                 // half the keys are in, and the answer arrives in the half below either
                 // way.
                 BareKey::Char('s') => return self.request_summary(),
+                // Ask before starting a process. See `confirming_resume`.
+                BareKey::Char('r') => return self.arm_resume(),
                 BareKey::PageUp => return self.scroll_history(self.page() as isize),
                 BareKey::PageDown => return self.scroll_history(-(self.page() as isize)),
                 _ => {},
@@ -830,9 +916,80 @@ impl State {
         };
         pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUMMARIZE).with_payload(payload));
         let asked = self.selection_key();
-        let changed = self.summarizing != asked;
+        // A refusal outranks `summarising…` on the divider and lives until the cursor leaves
+        // the row, so leaving it up here would make `s` on a row that has just refused an `r`
+        // look like a key that does nothing. The note is an account of a question that has
+        // been overtaken - `arm_resume` takes it down for the same reason.
+        let changed = self.summarizing != asked || self.resume_note.is_some();
+        self.resume_note = None;
         self.summarizing = asked;
         changed
+    }
+
+    /// Ask whether to resume the archived run under the cursor, and say whether the divider
+    /// changed.
+    ///
+    /// Archived rows only. A live agent already has its pane - `Enter` walks to it - and
+    /// handing its session id to a second process would put two agents on one conversation,
+    /// each unaware of what the other wrote. So `r` is inert on every other kind of row, the
+    /// same way `Enter` is on a project header.
+    fn arm_resume(&mut self) -> bool {
+        if !matches!(self.rows.get(self.selected), Some(StripRow::Run { .. })) {
+            return false;
+        }
+        // A previous refusal is about a question that has just been asked again.
+        self.resume_note = None;
+        self.confirming_resume = self.selection_key();
+        self.confirming_resume.is_some()
+    }
+
+    /// Take the answer to an armed resume confirmation.
+    ///
+    /// `y` starts it; `n` and `Esc` drop it and stop there - `Esc` deliberately does *not*
+    /// fall through to hiding the panel, which is the reader's rule too: one step back before
+    /// the way out. Anything else drops the question and then means what it always means, so
+    /// a user who typed `r` by mistake and carried on walking the list is not made to
+    /// acknowledge it first.
+    fn answer_resume(&mut self, key: KeyWithModifier) -> bool {
+        let armed = self.confirming_resume.take();
+        if key.has_no_modifiers() && key.bare_key == BareKey::Char('y') {
+            // Against the selection rather than blindly: a strip that arrived between the
+            // question and the answer can have moved the cursor, and a `y` must never start
+            // a run the user was not looking at when they were asked.
+            if armed.is_some() && armed == self.selection_key() {
+                self.request_resume();
+            }
+            return true;
+        }
+        if key.bare_key == BareKey::Esc
+            || (key.has_no_modifiers() && key.bare_key == BareKey::Char('n'))
+        {
+            return true;
+        }
+        // Cleared above, so this cannot come back here. The answer is always a redraw,
+        // whatever the key itself decides: the question has come off the divider.
+        self.on_key(key);
+        true
+    }
+
+    /// Name the archived run under the cursor to hocus, which knows what resuming one means.
+    ///
+    /// Nothing is expected back except `wire::AGENT_RESUME_RESULT`, which is only ever read
+    /// for its refusal: a resume that worked shows up as a pane taking the focus, and then as
+    /// the row leaving the archive on the next strip.
+    fn request_resume(&mut self) {
+        let Some(StripRow::Run { run_id, .. }) = self.rows.get(self.selected) else {
+            return;
+        };
+        let request = wire::ResumeRequest {
+            run_id: run_id.clone(),
+        };
+        let Ok(payload) = serde_json::to_string(&request) else {
+            return;
+        };
+        #[cfg(test)]
+        self.resume_requests.push(request.run_id.clone());
+        pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_RESUME).with_payload(payload));
     }
 
     fn activate(&self) {
@@ -1118,15 +1275,49 @@ impl State {
     /// claim the row under the cursor is doing something it is not.
     fn history_label(&self) -> String {
         let label = &self.history().label;
-        if self.summarizing.is_none() || self.summarizing != self.selection_key() {
-            return label.clone();
+        match self.divider_hint() {
+            None => label.clone(),
+            // A refusal is the longest thing the divider ever says and the only one that is
+            // news, and `fit_label` cuts from the tail: sharing the row with a label is what
+            // loses the half of it that says what went wrong.
+            Some(Hint::Instead(hint)) => hint,
+            Some(Hint::Beside(hint)) => match label.is_empty() {
+                // A selected agent with neither a run nor a summary yet has no label at all,
+                // and the first thing it ever says should not open with a separator.
+                true => hint,
+                false => format!("{label} · {hint}"),
+            },
         }
-        match label.is_empty() {
-            // A selected agent with neither a run nor a summary yet has no label at all, and
-            // the first thing it ever says should not open with a separator.
-            true => "summarising…".to_owned(),
-            false => format!("{label} · summarising…"),
+    }
+
+    /// What the divider has to say about the row under the cursor beyond naming it, if
+    /// anything.
+    ///
+    /// At most one, and the question comes before the answer: an armed confirmation is what
+    /// the user is being asked *now*, and a note from a refused resume is about a question
+    /// already answered. `arm_resume` clears the note anyway, so the two can only overlap
+    /// for as long as it takes a `y` to come back refused, but the order says which wins.
+    ///
+    /// Every arm is compared against the selection rather than read as a flag: `summarizing`
+    /// and both resume fields are cleared when the cursor moves, so this can only differ from
+    /// them in the moment between a strip arriving and the selection being re-sent. Belt and
+    /// braces on a hint that must never claim the row under the cursor is doing something it
+    /// is not.
+    fn divider_hint(&self) -> Option<Hint> {
+        let selection = self.selection_key();
+        selection.as_ref()?;
+        if self.confirming_resume == selection {
+            return Some(Hint::Beside("resume this run? y/n".to_owned()));
         }
+        if let Some((row, detail)) = self.resume_note.as_ref() {
+            if Some(row) == selection.as_ref() {
+                return Some(Hint::Instead(format!("resume failed: {detail}")));
+            }
+        }
+        if self.summarizing == selection {
+            return Some(Hint::Beside("summarising…".to_owned()));
+        }
+        None
     }
 
     /// [`Self::history_lines`], computed once per thing it depends on.
@@ -2298,6 +2489,277 @@ mod tests {
             "`load older runs…` is Enter's, and names nothing to describe"
         );
         assert!(state.summarizing.is_none());
+    }
+
+    /// One archive row, for the resume tests: the shape hocus pushes for a completed run.
+    fn archive() -> Vec<StripRow> {
+        vec![
+            StripRow::Project("archive".to_owned()),
+            StripRow::Run {
+                run_id: "claude:session-1".to_owned(),
+                text: "claude · hook history".to_owned(),
+                kind: "claude".to_owned(),
+            },
+            StripRow::MoreRuns,
+        ]
+    }
+
+    /// `r` is the one key here that starts a process, so it is taken on exactly the rows that
+    /// name something resumable and nowhere else. A live agent is deliberately not one of
+    /// them: `Enter` already walks to its pane, and a second process on its session id would
+    /// be two agents writing one conversation.
+    #[test]
+    fn r_arms_a_confirmation_on_an_archived_run_and_nowhere_else() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+
+        state.selected = 0;
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Char('r'))));
+        assert!(state.confirming_resume.is_none(), "a project header");
+
+        state.selected = 2;
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Char('r'))));
+        assert!(
+            state.confirming_resume.is_none(),
+            "a live agent has its pane"
+        );
+
+        state.set_rows(unfocused(archive()));
+        state.selected = 2;
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Char('r'))));
+        assert!(state.confirming_resume.is_none(), "`load older runs…`");
+
+        state.selected = 1;
+        assert!(
+            state.on_key(KeyWithModifier::new(BareKey::Char('r'))),
+            "an archived run does, and the divider says so"
+        );
+        assert_eq!(
+            state.confirming_resume.as_deref(),
+            Some("run:claude:session-1")
+        );
+        assert!(
+            state.resume_requests.is_empty(),
+            "and nothing has been started yet - that is the whole point of asking"
+        );
+    }
+
+    /// `r` is a letter, so a modified one belongs to whatever the modifiers are bound to.
+    /// `Ctrl-r` in particular is already this pane's refresh.
+    #[test]
+    fn a_modified_r_is_left_alone() {
+        let mut state = State::default();
+        state.set_rows(unfocused(archive()));
+        state.selected = 1;
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier()));
+        assert!(state.confirming_resume.is_none());
+    }
+
+    /// `y` is the only key that starts it. Everything else drops the question, and the two
+    /// that mean "no" stop there rather than also doing whatever they normally do.
+    #[test]
+    fn only_y_answers_the_resume_confirmation() {
+        let arm = |key: KeyWithModifier| {
+            let mut state = State::default();
+            state.set_rows(unfocused(archive()));
+            state.selected = 1;
+            state.on_key(KeyWithModifier::new(BareKey::Char('r')));
+            state.on_key(key);
+            state
+        };
+
+        let state = arm(KeyWithModifier::new(BareKey::Char('y')));
+        assert_eq!(state.resume_requests, ["claude:session-1"]);
+        assert!(state.confirming_resume.is_none(), "asked and answered");
+
+        for key in [
+            KeyWithModifier::new(BareKey::Char('n')),
+            KeyWithModifier::new(BareKey::Esc),
+            KeyWithModifier::new(BareKey::Char('Y')).with_shift_modifier(),
+        ] {
+            let state = arm(key.clone());
+            assert!(state.resume_requests.is_empty(), "{key} started something");
+            assert!(
+                state.confirming_resume.is_none(),
+                "{key} left the question up"
+            );
+        }
+    }
+
+    /// `Esc` at the question is one step back, not the way out: the panel stays up, exactly
+    /// as it does for an `Esc` that closes the reader.
+    #[test]
+    fn esc_at_the_question_drops_it_rather_than_the_panel() {
+        let mut state = State::default();
+        state.set_rows(unfocused(archive()));
+        state.selected = 1;
+        state.on_key(KeyWithModifier::new(BareKey::Char('r')));
+        assert!(
+            state.on_key(KeyWithModifier::new(BareKey::Esc)),
+            "the divider changed, so the pane redraws"
+        );
+        assert!(state.confirming_resume.is_none());
+
+        // and a second Esc, with nothing to take back, is the dismissal it always was
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Esc)));
+    }
+
+    /// A key that is neither yes nor no drops the question and then means what it always
+    /// means. Someone who typed `r` by mistake and carried on walking the list should not
+    /// have to acknowledge it first - and the cursor moving is itself what ends the question,
+    /// so the two cannot disagree about which row is being asked about.
+    #[test]
+    fn walking_off_the_question_drops_it_and_still_walks() {
+        let mut state = State::default();
+        state.set_rows(unfocused(archive()));
+        state.selected = 1;
+        state.on_key(KeyWithModifier::new(BareKey::Char('r')));
+
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Down)));
+        assert!(state.confirming_resume.is_none());
+        assert_eq!(state.selected, 2, "and the arrow moved");
+        assert!(state.resume_requests.is_empty());
+
+        // A `y` now is a `y` at no question at all, and starts nothing.
+        state.selected = 1;
+        state.on_key(KeyWithModifier::new(BareKey::Char('y')));
+        assert!(state.resume_requests.is_empty());
+    }
+
+    /// A strip arriving between the question and the answer can move the cursor. The
+    /// confirmation names the row it was armed on, so a `y` cannot start a run the user was
+    /// not looking at when they were asked.
+    #[test]
+    fn a_y_after_the_cursor_moved_under_it_starts_nothing() {
+        let mut state = State::default();
+        state.set_rows(unfocused(archive()));
+        state.selected = 1;
+        state.on_key(KeyWithModifier::new(BareKey::Char('r')));
+
+        // Same shape, different run: the archive gained a newer row above this one.
+        let mut rows = archive();
+        rows.insert(
+            1,
+            StripRow::Run {
+                run_id: "claude:session-2".to_owned(),
+                text: "claude · newer".to_owned(),
+                kind: "claude".to_owned(),
+            },
+        );
+        state.rows = rows;
+
+        state.on_key(KeyWithModifier::new(BareKey::Char('y')));
+        assert!(
+            state.resume_requests.is_empty(),
+            "the row under the cursor is not the row that was asked about"
+        );
+    }
+
+    /// The divider carries the question, and then whatever came back. A refusal is shown
+    /// because the user answered a confirmation: a `y` that silently does nothing is worse
+    /// than never having been asked. Like every other hint here it ends when the cursor
+    /// walks off the row it is about.
+    #[test]
+    fn the_divider_asks_and_then_says_why_it_was_refused() {
+        let mut state = State::default();
+        state.set_rows(unfocused(archive()));
+        state.selected = 1;
+        state.fill_history_cache(48);
+        assert_eq!(state.history_label(), "");
+
+        state.on_key(KeyWithModifier::new(BareKey::Char('r')));
+        assert_eq!(state.history_label(), "resume this run? y/n");
+
+        state.on_key(KeyWithModifier::new(BareKey::Char('y')));
+        assert_eq!(state.history_label(), "", "the question has been answered");
+
+        let refuse = |state: &mut State, run_id: &str, detail: &str| {
+            let result = wire::ResumeResult {
+                run_id: run_id.to_owned(),
+                detail: detail.to_owned(),
+            };
+            state.pipe(PipeMessage::new(
+                PipeSource::Plugin(0),
+                wire::AGENT_RESUME_RESULT,
+                &Some(serde_json::to_string(&result).expect("encoded")),
+                &None,
+                false,
+            ))
+        };
+
+        assert!(refuse(
+            &mut state,
+            "claude:session-1",
+            "this run recorded no session id to resume"
+        ));
+        assert_eq!(
+            state.history_label(),
+            "resume failed: this run recorded no session id to resume"
+        );
+
+        // An answer about a row the cursor is not on says nothing about the row it is on.
+        state.on_key(KeyWithModifier::new(BareKey::Down));
+        state.fill_history_cache(48);
+        assert_eq!(state.history_label(), "", "walking off ends it");
+        assert!(!refuse(&mut state, "claude:session-1", "gone"));
+        assert_eq!(state.history_label(), "");
+    }
+
+    /// Asking again clears the last refusal: the note is about a question that has just been
+    /// asked a second time, and leaving it up beside the new one would read as an answer to
+    /// it.
+    #[test]
+    fn asking_again_clears_the_last_refusal() {
+        let mut state = State::default();
+        state.set_rows(unfocused(archive()));
+        state.selected = 1;
+        state.resume_note = Some((
+            "run:claude:session-1".to_owned(),
+            "the pane could not be opened".to_owned(),
+        ));
+        state.fill_history_cache(48);
+        assert!(state.history_label().starts_with("resume failed"));
+
+        state.on_key(KeyWithModifier::new(BareKey::Char('r')));
+        assert!(state.resume_note.is_none());
+        assert_eq!(state.history_label(), "resume this run? y/n");
+    }
+
+    /// A refusal takes the whole divider rather than sharing it with the label: it is the
+    /// longest thing this row ever says, `fit_label` cuts from the tail, and the half that
+    /// would be lost is the half that says what went wrong.
+    ///
+    /// And it comes down for the next request the row makes, `s` as much as `r`. It outranks
+    /// `summarising…` and outlives it, so leaving it up would make `s` on a row that has just
+    /// refused an `r` look like a key that does nothing at all.
+    #[test]
+    fn a_refusal_takes_the_whole_divider_until_the_row_asks_for_something_else() {
+        let mut state = State::default();
+        state.set_rows(unfocused(archive()));
+        state.selected = 1;
+        state.pipe(PipeMessage::new(
+            PipeSource::Plugin(0),
+            wire::AGENT_RUN_DETAIL,
+            &Some(serde_json::to_string(&a_run()).expect("encoded")),
+            &None,
+            false,
+        ));
+        state.fill_history_cache(48);
+        let label = state.history_label();
+        assert!(!label.is_empty(), "the row names the run it is about");
+
+        state.resume_note = Some((
+            "run:claude:session-1".to_owned(),
+            "hocus cannot open a pane under /tmp: the plugin mounts claim it".to_owned(),
+        ));
+        assert_eq!(
+            state.history_label(),
+            "resume failed: hocus cannot open a pane under /tmp: the plugin mounts claim it"
+        );
+
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('s'))));
+        assert!(state.resume_note.is_none());
+        assert_eq!(state.history_label(), format!("{label} · summarising…"));
     }
 
     /// `s` is a letter, so it must not be taken from whatever the modifiers are bound to,

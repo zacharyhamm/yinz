@@ -813,6 +813,107 @@ impl State {
         );
     }
 
+    /// Start an archived run again, resuming the session it recorded.
+    ///
+    /// hocus rather than the daemon, and hocus rather than the panel, for the reason every
+    /// other row action is hocus's: the run's kind, session id, folder and machine are all
+    /// facts this plugin already holds — `archived_runs` is the very list the rows were
+    /// built from — and the panel carries nothing but the run id it was drawn with.
+    ///
+    /// Answered either way (`wire::AGENT_RESUME_RESULT`). The panel put a confirmation in
+    /// front of this, so the user has already said yes to something; a refusal that never
+    /// arrives would leave that yes looking like a key that does nothing.
+    pub(crate) fn resume_run(&mut self, plugin_id: u32, run_id: &str) {
+        let answer = |detail: String| {
+            let Ok(payload) = serde_json::to_string(&wire::ResumeResult {
+                run_id: run_id.to_owned(),
+                detail,
+            }) else {
+                return;
+            };
+            pipe_message_to_plugin(
+                MessageToPlugin::new(wire::AGENT_RESUME_RESULT)
+                    .with_destination_plugin_id(plugin_id)
+                    .with_payload(payload),
+            );
+        };
+        let command = match self.resume_plan(run_id) {
+            Ok(command) => command,
+            Err(error) => {
+                answer(error);
+                return;
+            },
+        };
+        // `agent_pane_context` by hand: the host sets the marker itself only on the
+        // git-checkout call, and this route has no checkout to make. Without it the pane is
+        // one the host cannot tell from any other command pane, and `agent_exit` would never
+        // fire for the agent in it.
+        match open_command_pane_near_plugin(command, launch::agent_pane_context()) {
+            Some(pane_id) => {
+                // Walking to it is the point: a resumed conversation is one you carry on.
+                focus_pane_with_id(pane_id, false, false);
+                answer(String::new());
+            },
+            None => answer("the pane could not be opened".to_owned()),
+        }
+    }
+
+    /// What resuming the run the panel named would run, or why it cannot be.
+    ///
+    /// Split from `resume_run` for the reason `launch::plan` is split from `launch::open`:
+    /// everything decided here is decidable without a host, and everything after it is a
+    /// host call and nothing else.
+    pub(crate) fn resume_plan(&self, run_id: &str) -> Result<CommandToRun, String> {
+        // A run that has gone live since the strip was drawn — someone resumed it elsewhere,
+        // or a warp adopted its pane into this session. The archive row the user pressed `r`
+        // on is stale by a beat, and starting a second process on the session id would be two
+        // agents writing one conversation, neither aware of the other. `Enter` on the live
+        // row is what they want, and it is already there.
+        if let Some((pane_id, _)) = self
+            .active_runs
+            .iter()
+            .find(|(_, header)| header.id == run_id)
+        {
+            return Err(format!("that run is live again in pane {pane_id}"));
+        }
+        let header = self.stored_run_header(run_id)?;
+        // The same staleness one zellij session further out: another session sharing the
+        // store resumed this run, or warped its pane in, and `adopt_stored_run` cleared the
+        // record's end. `active_runs` above cannot see that - it is this session's live runs
+        // - and the stored record is the only thing that can. `ended_at_ms` rather than
+        // `outcome`, because `ended_at_ms.is_none()` is exactly what the `active` column the
+        // archive is paged by is written from: a row with an end and a stale `Active`
+        // outcome is shown in the archive, and has to stay resumable.
+        if header.ended_at_ms.is_none() {
+            return Err("that run is live again in another session".to_owned());
+        }
+        launch::resume_command(
+            &header.kind,
+            &header.session_id,
+            header.cwd.as_deref(),
+            header.host.as_deref(),
+        )
+    }
+
+    /// The stored record for a run the panel named, as the store holds it now.
+    ///
+    /// The store rather than `archived_runs`, which is where the row itself came from: that
+    /// list is a snapshot taken when the page was loaded, and a run adopted since - by
+    /// another zellij session sharing this store, or by a warp - still looks ended in it.
+    /// Reading it back is also what covers the panel pointing at a row this instance never
+    /// loaded, which the paged archive makes real rather than defensive.
+    pub(crate) fn stored_run_header(&self, run_id: &str) -> Result<agents::AgentRunHeader, String> {
+        let rows = self
+            .store()
+            .fetch(&agents::rows::run_by_id_request(run_id))
+            .map_err(|_| "that run's record could not be read".to_owned())?;
+        agents::rows::runs_from_rows(&rows)
+            .into_iter()
+            .next()
+            .map(|run| run.header())
+            .ok_or_else(|| "that run is no longer in the archive".to_owned())
+    }
+
     pub(crate) fn persist_job(&mut self, row: jobs::JobRow) {
         self.write_store_quietly("job", vec![jobs::to_mutation(&row)]);
     }

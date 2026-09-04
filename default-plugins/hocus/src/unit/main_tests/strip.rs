@@ -1,4 +1,5 @@
 use super::*;
+use hocus_proto::store::Backend;
 
 /// The strip rows hocus pushes to the agents pane: agents grouped under the
 /// project and branch headers, computed from the snapshot it holds.
@@ -173,6 +174,122 @@ fn completed_runs_are_nested_under_the_archive_and_page_on_demand() {
             if run_id == "claude:session-1" && text == "claude · hook history"
     ));
     assert!(matches!(rows.last(), Some(agents::StripRow::MoreRuns)));
+}
+
+/// One archive header, as `load_more_agent_runs` puts them in `archived_runs`.
+fn header(session_id: &str, host: Option<&str>) -> agents::AgentRunHeader {
+    agents::AgentRunHeader {
+        id: agents::run_id("claude", 3, session_id, 10),
+        pane_id: 3,
+        session_id: session_id.to_owned(),
+        kind: "claude".to_owned(),
+        cwd: Some("/work/hocus".to_owned()),
+        host: host.map(str::to_owned),
+        started_at_ms: 10,
+        ended_at_ms: Some(20),
+        outcome: agents::RunOutcome::Completed,
+        revision: 4,
+        summary: None,
+        title: "hook history".to_owned(),
+    }
+}
+
+/// The same run in the store, where a resume is decided from: `archived_runs` is a snapshot
+/// of the page that was loaded, and only the record can say that another session has since
+/// picked the run back up. Written through the mutations hocus-agentd writes, against the
+/// temporary store, so nothing here stands in for the daemon.
+fn seed_run(state: &State, session_id: &str, host: Option<&str>, ended: bool) {
+    let run = agents::AgentRun {
+        id: agents::run_id("claude", 3, session_id, 10),
+        pane_id: 3,
+        zellij_session_name: "main".to_owned(),
+        session_id: session_id.to_owned(),
+        kind: "claude".to_owned(),
+        cwd: Some("/work/hocus".to_owned()),
+        host: host.map(str::to_owned),
+        started_at_ms: 10,
+        ended_at_ms: ended.then_some(20),
+        outcome: match ended {
+            true => agents::RunOutcome::Completed,
+            false => agents::RunOutcome::Active,
+        },
+        revision: 4,
+        summarized_revision: 0,
+        summary: None,
+        entries: Vec::new(),
+    };
+    state
+        .store()
+        .apply(agents::rows::run_mutations(&run))
+        .expect("seeded the run");
+}
+
+/// `r` then `y` in the panel: the row carries a run id and nothing else, so hocus is what
+/// turns it into a command. The record it reads back has every part of that.
+#[test]
+fn an_archived_run_resumes_as_its_own_agent_in_its_own_folder() {
+    let state = state_with_panes();
+    seed_run(&state, "session-1", None, true);
+
+    let command = state.resume_plan("claude:session-1").expect("planned");
+    assert_eq!(command.path, std::path::PathBuf::from("claude"));
+    assert!(
+        command
+            .args
+            .starts_with(&["--resume".to_owned(), "session-1".to_owned()]),
+        "{:?}",
+        command.args
+    );
+    assert_eq!(command.cwd, Some(std::path::PathBuf::from("/work/hocus")));
+}
+
+/// The refusals the panel puts on its divider. Two of them are the run's own doing and one
+/// is the archive's - and none of them is silence, because the user answered a confirmation
+/// to get here.
+#[test]
+fn a_run_that_cannot_be_resumed_says_why() {
+    let state = state_with_panes();
+    // A hook script that reported no session id: the run is keyed by pane and start time,
+    // and there is nothing in that to resume.
+    seed_run(&state, "", None, true);
+    let refused = state
+        .resume_plan(&agents::run_id("claude", 3, "", 10))
+        .unwrap_err();
+    assert!(refused.contains("no session id"), "{refused}");
+
+    // A VM that is gone, and cannot be rebuilt from what the run recorded.
+    seed_run(&state, "session-2", Some("firecracker:vm-1"), true);
+    let refused = state.resume_plan("claude:session-2").unwrap_err();
+    assert!(refused.contains("vm-1"), "{refused}");
+
+    // And a row this hocus has never loaded and the store has never held.
+    let refused = state.resume_plan("claude:never-heard-of-it").unwrap_err();
+    assert!(refused.contains("archive"), "{refused}");
+}
+
+/// A run can go live between the strip being drawn and the `y` — someone resumed it in
+/// another session, or a warp brought its pane here. The archive row is stale by a beat, and
+/// honouring it would put two processes on one conversation.
+///
+/// Both halves of that: a pane in *this* session, which `active_runs` names, and a run the
+/// record says is open again, which only the store can say - the cached header a row was
+/// drawn from goes on claiming the run ended.
+#[test]
+fn a_run_that_went_live_under_the_row_is_not_resumed_twice() {
+    let mut state = state_with_panes();
+    seed_run(&state, "session-1", None, true);
+    state.archived_runs.push(header("session-1", None));
+    assert!(state.resume_plan("claude:session-1").is_ok());
+
+    state.active_runs.insert(7, header("session-1", None));
+    let refused = state.resume_plan("claude:session-1").unwrap_err();
+    assert!(refused.contains("pane 7"), "{refused}");
+
+    // The pane is elsewhere, so this session knows nothing about it - but the record does.
+    state.active_runs.clear();
+    seed_run(&state, "session-1", None, false);
+    let refused = state.resume_plan("claude:session-1").unwrap_err();
+    assert!(refused.contains("another session"), "{refused}");
 }
 
 /// What is carried is the *last* thing the daemon made of an agent, so one that
