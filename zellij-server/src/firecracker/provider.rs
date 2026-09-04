@@ -4,7 +4,10 @@
 //! small state directory, and leaves the Firecracker process running on its
 //! own. The privileged part is a one-time pool of user-owned TAP devices.
 
-use super::{vm_id, EnsureResponse, RecoveryEntry, VmEntry, PROGRESS_PREFIX, PROTOCOL_VERSION};
+use super::{
+    vm_id, worktree_vm_name, EnsureResponse, RecoveryEntry, VmEntry, PROGRESS_PREFIX,
+    PROTOCOL_VERSION,
+};
 use crate::pty_host::ensure_secure_dir;
 use crate::pty_host::remote::ssh::SshOptions;
 use highway::{HighwayHash, Key, PortableHash};
