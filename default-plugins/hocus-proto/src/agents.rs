@@ -308,8 +308,8 @@ fn tokens(text: &str) -> impl Iterator<Item = &str> {
 /// like it started working nor lose the hash an in-flight summary is stamped against.
 ///
 /// The first poll of a pane is [`Observed::Busy`] whatever it is showing — one reading
-/// cannot tell "working" from "sitting still", and claiming an edge here would summarise
-/// every agent the instant the daemon noticed it.
+/// cannot tell "working" from "sitting still", and claiming an edge here would call every
+/// agent busy the instant the daemon noticed it.
 pub fn observe(activity: &mut Activity, pane_id: u32, sample: Sample) -> Observed {
     let text = match sample {
         Sample::Text(text) => text,
@@ -336,31 +336,6 @@ pub fn observe(activity: &mut Activity, pane_id: u32, sample: Sample) -> Observe
             Observed::Busy
         },
     }
-}
-
-/// Whether a pane has turned over enough of its words since `previous` to be worth asking
-/// about again — at least one word in `factor`.
-///
-/// Words rather than lines: the same output rewrapped at a new width is not new work, and a
-/// line-wise comparison would call every resize a fresh screen.
-pub fn changed_materially(previous: &str, current: &str, factor: usize) -> bool {
-    let mut before: BTreeMap<&str, usize> = BTreeMap::new();
-    for token in tokens(previous) {
-        *before.entry(token).or_default() += 1;
-    }
-    let mut total = 0usize;
-    let mut shared = 0usize;
-    for token in tokens(current) {
-        total += 1;
-        if let Some(count) = before.get_mut(token).filter(|count| **count > 0) {
-            *count -= 1;
-            shared += 1;
-        }
-    }
-    if total == 0 {
-        return false;
-    }
-    (total - shared) * factor >= total
 }
 
 /// The content hash the activity map holds for a pane, if it has one.
@@ -411,9 +386,9 @@ impl HookPhase {
 /// What one pane's own hooks have last reported.
 ///
 /// A pane with one of these is not guessed at. The screen-diff heuristic beside it
-/// — [`observe`], [`Activity`] and the idle summary the daemon buys on the busy→idle
-/// edge — is inference from a picture; this is the agent saying so. Where the two
-/// disagree, this wins.
+/// — [`observe`] and [`Activity`] — is inference from a picture, and all it is still
+/// trusted for is the idle clock; this is the agent saying so. Where the two disagree,
+/// this wins.
 ///
 /// The session carries the record itself (`PaneInfo::agent`), whichever road a report took;
 /// a feed is that record read back off the manifest, so nothing here expires on a clock and
@@ -583,31 +558,39 @@ its work; and \"title\", at most four words naming the task the agent is working
 no trailing punctuation, to be used as the name of the pane. A completed task is not \
 awaiting. A permission prompt, a yes/no question, or a menu of choices is awaiting.";
 
-/// The prompt for a turn the agent described itself.
+/// The prompt for a run the agent described itself.
 ///
 /// Two differences from [`SUMMARY_SYSTEM_PROMPT`], and both are the point of the hook
-/// feed. The input is the agent's *own last message* rather than a photograph of a
-/// terminal, so the model is reading prose written for a person rather than inferring
-/// intent from a redraw. And `awaiting` is not asked for at all: the feed already knows
-/// whether the agent is blocked on the user, and a second opinion would only be a
-/// disagreement to resolve — see `finish_summary_with`, which overwrites it either way.
-const TURN_SUMMARY_SYSTEM_PROMPT: &str = "A coding agent has just finished a turn. You \
-will be shown what the user asked for, if anything, plus the prior run summary and key \
-events since it. \
+/// feed. The input is the agent's *own account of the session* — the events it reported
+/// as it worked — rather than a photograph of a terminal, so the model is reading prose
+/// written for a person rather than inferring intent from a redraw. And `awaiting` is not
+/// asked for at all: the feed already knows whether the agent is blocked on the user, and
+/// a second opinion would only be a disagreement to resolve — see `finish_summary_with`,
+/// which overwrites it either way.
+///
+/// It asks about the session rather than the last turn of one because that is what both
+/// remaining callers send: `run_delta` carries the whole run, prompts included, and leaves
+/// the run's own prior summary out on purpose.
+const RUN_SUMMARY_SYSTEM_PROMPT: &str = "You will be shown a coding agent's session: what \
+the user asked for, if anything, followed by the history of what the agent did. \
 Reply with a single JSON object and nothing else - no prose, no markdown, no code \
 fences. The object has exactly two keys: \"summary\", one or two plain sentences \
 describing what the agent did and where the session now stands; and \"title\", at most \
 four words naming the task, with no trailing punctuation, to be used as the name of the \
-pane. Write about the work, not about the message: do not begin with \"the agent\" or \
-quote the message back.";
+pane. Write about the work, not about the history: do not begin with \"the agent\" or \
+quote the events back.";
 
-/// The body of one completion asking what a turn that just ended was.
+/// The body of one completion asking what a run has been, or was.
 ///
 /// The counterpart of [`summary_request_body`] for a pane that reports for itself.
 /// Carries the same header — kind, folder, branch — so the two paths give the model the
 /// same context, and adds the user's request where one was seen: a description of an
 /// answer written without sight of the question is half a description.
-pub fn turn_summary_request_body(
+///
+/// `prompt` is carried beside the history rather than left to be found inside it, because
+/// `message` is tailed from the newest end: the question a long run opened with is exactly
+/// what the tail drops. So the caller must pass the prompt the tail is most likely to lose.
+pub fn run_summary_request_body(
     model: &str,
     kind: &str,
     cwd: Option<&str>,
@@ -631,7 +614,7 @@ pub fn turn_summary_request_body(
         "model": model,
         "stream": false,
         "messages": [
-            { "role": "system", "content": TURN_SUMMARY_SYSTEM_PROMPT },
+            { "role": "system", "content": RUN_SUMMARY_SYSTEM_PROMPT },
             { "role": "user", "content": user },
         ],
     });
@@ -3252,33 +3235,6 @@ mod tests {
     }
 
     #[test]
-    fn changed_materially_wants_a_fifth_of_the_words_turned_over() {
-        let before = (1..=20).fold(String::new(), |mut all, line| {
-            all.push_str(&format!("line {line}\n"));
-            all
-        });
-        let scrolled = format!("{before}line 21\n");
-        assert!(
-            !changed_materially(&before, &scrolled, 5),
-            "one new line in twenty is not a new screen"
-        );
-        let rewrapped = before.replace('\n', " ");
-        assert!(
-            !changed_materially(&before, &rewrapped, 5),
-            "a rewrap turns over nothing"
-        );
-        let after = (1..=20).fold(String::new(), |mut all, line| {
-            all.push_str(&format!("other {line}\n"));
-            all
-        });
-        assert!(changed_materially(&before, &after, 5));
-        assert!(
-            !changed_materially(&before, "", 5),
-            "an empty screen is not news"
-        );
-    }
-
-    #[test]
     fn activity_hash_is_the_hash_the_poll_recorded() {
         let mut activity = Activity::new();
         assert_eq!(activity_hash(&activity, 3), None);
@@ -3599,12 +3555,12 @@ mod tests {
         assert!(summary.text.ends_with('…'));
     }
 
-    /// What the model is shown for a turn: the agent's own message, and the question it
-    /// was answering. A description of an answer written without sight of the question is
-    /// half a description.
+    /// What the model is shown for a run: the history the agent reported as it worked, and
+    /// the question it was answering. A description of an answer written without sight of
+    /// the question is half a description.
     #[test]
-    fn a_turn_summary_asks_about_the_reply_and_the_request_behind_it() {
-        let body = turn_summary_request_body(
+    fn a_run_summary_asks_about_the_history_and_the_request_behind_it() {
+        let body = run_summary_request_body(
             "gpt-4o-mini",
             "claude",
             Some("/work"),
@@ -3626,9 +3582,9 @@ mod tests {
         assert!(system.contains("\"summary\"") && system.contains("\"title\""));
         assert!(!system.contains("awaiting"));
 
-        // A turn with no prompt behind it - a resumed session, a hook-driven
+        // A run with no prompt behind it - a resumed session, a hook-driven
         // continuation - is summarised without one rather than against a stale question.
-        let body = turn_summary_request_body("m", "claude", None, None, None, "Done.");
+        let body = run_summary_request_body("m", "claude", None, None, None, "Done.");
         let body: serde_json::Value = serde_json::from_slice(&body).expect("valid JSON");
         let user = body["messages"][1]["content"].as_str().expect("a string");
         assert_eq!(user, "Agent: claude.\n\n--- run history ---\nDone.");

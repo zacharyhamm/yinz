@@ -52,8 +52,9 @@ pub const CLAUDE_HOOK_EVENTS: &[&str] = &[
     // have `PermissionRequest`, and the only signal for an MCP form or a background
     // session wanting input.
     "Notification",
-    // The turn ended. Carries `last_assistant_message`, which is what an idle summary
-    // is made from - see `docs/AGENT_HOOKS.md`.
+    // The turn ended: what moves the record back to `idle`. It also carries
+    // `last_assistant_message`, which nothing buys a summary from any more - a summary is
+    // bought once, on `SessionEnd`. See `docs/AGENT_HOOKS.md`.
     "Stop",
     // The turn ended in an API error. Carries the same message field, and is the only
     // thing that says so: without it a failed turn leaves the record on `busy` until the
@@ -103,8 +104,8 @@ pub const CLAUDE_HOOK_REPORT_COMMAND: &str = "zellij action agent-report --hook-
 ///
 /// `agent-report --hook-json` sets the pane's record *and* hands the event itself to whatever
 /// plugin wants more than a record holds - hocus's daemon reads `last_assistant_message` off a
-/// `Stop` to make a summary, and `permission_mode` off a `PermissionRequest` to decide whether
-/// a wait is worth interrupting somebody over. Spelled here rather than in the plugin crate so
+/// `SessionEnd` to know a run is over and worth summarising, and `permission_mode` off a
+/// `PermissionRequest` to decide whether a wait is worth interrupting somebody over. Spelled here rather than in the plugin crate so
 /// the two ends cannot drift: a pipe name that does not match is silent.
 ///
 /// The kind travels because the payload cannot carry it: a hook event is the agent's own JSON
@@ -296,9 +297,9 @@ const PRUNED_HISTORY_STRING_CHARS: usize = 8 * 1024;
 const PRUNED_INPUT_BUDGET: usize = 32 * 1024;
 
 /// The longest prose a pruned event keeps, per field. `last_assistant_message` is the one
-/// genuinely used at length — it is what a turn summary is made of — and its reader cuts it
-/// again to six thousand characters, so this is set above that: a prune takes nothing the
-/// summary was going to keep.
+/// genuinely used at length — it is kept on the run's timeline, and the run is what a summary
+/// is made of — and its reader cuts it again to six thousand characters, so this is set above
+/// that: a prune takes nothing the summary was going to keep.
 const PRUNED_MESSAGE_CHARS: usize = 8 * 1024;
 
 /// A Claude Code hook event, as its JSON arrives.
@@ -341,9 +342,10 @@ pub struct HookEvent {
     /// What the agent said last, on a `Stop` or a `StopFailure`.
     ///
     /// Claude Code's own description of the field is "avoids the need to read and parse the
-    /// transcript file", and that is exactly what it buys here: an idle summary made from the
-    /// agent's own words rather than from a photograph of its terminal. Optional in Claude
-    /// Code's schema, so a turn that ended without one falls back.
+    /// transcript file", and that is exactly what it buys here: a run's timeline keeps the
+    /// agent's own words rather than a photograph of its terminal, and the summary made at
+    /// the end of the session is made of those. Optional in Claude Code's schema, so a turn
+    /// that ended without one contributes nothing.
     ///
     /// Too big for the pane's record - this is read by a plugin off the broadcast event, not
     /// carried on [`AgentInfo`].
