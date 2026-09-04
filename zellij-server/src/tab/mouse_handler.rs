@@ -1838,9 +1838,10 @@ impl MouseHandler {
                         position: event.position,
                     });
                 }
-                // a modal is not user-resizable, so a ctrl-drag on one is nothing at all rather
-                // than falling through to `start_pane_resize_with_mouse` - which would find it in
-                // neither the floating nor the tiled collection and error the whole mouse event
+                // a modal is not user-resizable, and neither is an overlay expanded over the
+                // screen, so a ctrl-drag on one is nothing at all rather than falling through to
+                // `start_pane_resize_with_mouse` - which would find it in neither the floating nor
+                // the tiled collection and error the whole mouse event
                 let may_resize = !details.is_overlay || details.overlay_is_resizable;
                 if may_resize {
                     if let Some(edge) = details.edge {

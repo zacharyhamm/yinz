@@ -41,10 +41,41 @@
 //!   `reapply_coordinates`) deliberately does not: a hidden overlay is still an overlay that a
 //!   `LaunchOrFocusPlugin` has to be able to find, and still one whose geometry has to keep up
 //!   with the surface so it comes back where it belongs rather than where it last was.
-//! - **No `fullscreen_pane_id`.** What a fullscreen overlay would mean is undefined - an overlay
-//!   is drawn over the whole session surface already. It is not reachable from here, and since
-//!   Phase 4 `Tab`'s fullscreen paths refuse an overlay outright rather than falling through to
-//!   the tiled collection, which used to fullscreen the pane *behind* the overlay.
+//! - ~~**No `fullscreen_pane_id`.**~~ This was on the list, as "what a fullscreen overlay would
+//!   mean is undefined - an overlay is drawn over the whole session surface already". It is here
+//!   now, as `fullscreen`, and - per the note at the end of this list - said out loud rather than
+//!   added quietly. What was undefined was only ever *size*, and an overlay has one: hocus's
+//!   panel is a corner-sized window onto a conversation, and wanting it to fill the screen for a
+//!   minute and then go back is the same wish a tiled pane's fullscreen answers. `Ctrl+p f`
+//!   expands an overlay over the tab's viewport - the chrome stays, exactly as it does for a
+//!   tiled pane - and `Ctrl+p Shift+f` over the whole surface.
+//!
+//!   **It is a geometry override, not a placement**, and that is what keeps the sentence above -
+//!   geometry is a function of coordinates and the surface - true of an expanded overlay. The
+//!   coordinates, the user's claims on them and the link to a partner are all untouched
+//!   underneath, so there is nothing to restore from a memory of its own: dropping the override
+//!   *is* the way back, and the way back is therefore exact even if the surface changed size or
+//!   the owning plugin re-placed the overlay while it was expanded. The one place this shows is
+//!   `pane_info`, which reports the rectangle *underneath* an expansion together with
+//!   `is_fullscreen` - the same split `hidden` makes between what a pane is and what is painted,
+//!   and load-bearing here: hocus takes its panel's size from the manifest, and would otherwise
+//!   answer an expansion by re-placing the panel at the size of the screen, overwriting the very
+//!   rectangle the expansion exists to come back to.
+//!
+//!   The upkeep is one function, `refresh_fullscreen`, called from `set_pane_frames` - which
+//!   every path that moves, resizes, places or replaces an overlay already ends in. So a terminal
+//!   resize, a placement batch, a re-cut divider and a pane swapped into the slot all keep the
+//!   expansion filling the screen without knowing it exists, and none of them can leave a stale
+//!   override behind, because that one function owns every override in the collection. A linked
+//!   pair is expanded as a panel, divider at its share, as it is dragged and resized as one.
+//!
+//!   Unlike the floating layer's, this fullscreen does **not** filter `stack_layer_ids`: a live
+//!   modal must still draw above an expanded overlay, and the identity between that list and
+//!   `render` is what this module stakes its "cannot drift" claim on. The expanded geometry
+//!   occludes what is below it through `layers`, which is the whole job. A **modal** cannot be
+//!   expanded, for the reason it cannot be resized. And an expansion is not carried across tabs -
+//!   see [`OverlayCarry`], which carries what a pane *is*, where being expanded is where the user
+//!   is looking.
 //! - **No `desired_pane_positions`.** A floating pane remembers where the user dragged it in a
 //!   second map beside the panes. An overlay has no such history *beside* itself: a mouse drag
 //!   rewrites the overlay's own stored `coordinates` (`move_pane_to_position`), and so does a
@@ -139,10 +170,12 @@
 //! because none of these bits is placement.
 //!
 //! If one of the remaining absences turns out to be needed, that is a signal that the concept is
-//! not as clean as assumed. Say so rather than adding it quietly. Per-pane suppression is the one
-//! that has been needed so far, and the bullet above is that saying-so: the concept survived, but
-//! only because suppression turned out to be nameable in the same terms - one pane, its focus and
-//! its drag released with it, read at one point.
+//! not as clean as assumed. Say so rather than adding it quietly. Two have been needed so far -
+//! per-pane suppression and fullscreen - and the two struck-through bullets above are that
+//! saying-so. The concept survived both, and in each case only because the new thing turned out
+//! to be nameable in the terms the module already had: suppression as one pane with its focus and
+//! its drag released with it, read at one point; fullscreen as one override over a geometry that
+//! is still a function of coordinates and the surface, re-derived at one point.
 //!
 //! One thing suppression is *not*, and must not become: a way for a *reveal* to be silently
 //! undone. The cross-tab paths carry `hidden` deliberately, and the two that mean "the user asked
@@ -200,6 +233,12 @@ pub struct OverlayPane {
 
 /// The half of an overlay's wrapper that is *not* placement: whether it is set aside, and whether
 /// where it sits is the user's doing.
+///
+/// Being expanded over the screen is deliberately *not* here, though it is in-memory and not
+/// placement either. What this struct carries is what the pane **is** - the user set it aside,
+/// the user put it there, the user made it that size - and all of that should survive the pane
+/// being moved to another tab. Fullscreen is where the user is *looking*, which the tab they left
+/// is the whole context for, so an overlay carried elsewhere arrives at its coordinates.
 ///
 /// Both are in-memory only, which is why neither is in `OverlayPlacement` - that struct crosses
 /// the protobuf boundary. `extract_pane` drops this wrapper on the way to another tab, so a mover
@@ -276,6 +315,12 @@ pub struct OverlayPanes {
     /// pointer. The offset rather than the last pointer position, so the seam is placed from
     /// where the pointer *is* and never drifts from it past a clamp.
     seam_being_dragged: Option<(PaneId, PaneId, isize)>,
+    /// `(the overlay the user expanded over the screen, whether it covers the chrome too)`.
+    ///
+    /// One id even for a linked panel, both halves of which are expanded: which panes that is
+    /// comes off the link as it is now (`fullscreen_pane_ids`), so the expansion survives its
+    /// panel being re-cut or unlinked underneath it. See the module doc.
+    fullscreen: Option<(PaneId, bool)>,
     display_area: Rc<RefCell<Size>>,
     /// The tab's own viewport, needed only to answer whether an overlay owns cells outside it -
     /// which, drawn over the session, it almost always does.
@@ -330,6 +375,7 @@ impl OverlayPanes {
             pane_being_moved_with_mouse: None,
             linked: vec![],
             seam_being_dragged: None,
+            fullscreen: None,
         }
     }
 
@@ -456,6 +502,10 @@ impl OverlayPanes {
         // a hidden half has no seam to drag, but it is still half of its panel: the link stays,
         // so the placement that reveals it finds the pair - see the module doc
         self.release_seam_drag_of(pane_id);
+        // setting the pane the user is looking at in full aside is asking for it to go away, not
+        // for the panel to carry on expanded without it - and an expansion anchored to a pane
+        // nobody can see is a screenful of overlay with no way back
+        self.release_fullscreen_of(pane_id);
         if self.is_modal(&pane_id) {
             // A modal's clients may not simply fall to whatever is underneath. While this modal
             // was on screen `may_be_focused` refused every non-modal overlay the keyboard, and
@@ -550,6 +600,9 @@ impl OverlayPanes {
             self.pane_being_moved_with_mouse = None;
         }
         self.unlink(pane_id);
+        // and an expansion holding it puts the whole panel back, for the same reason: a panel
+        // half of which no longer exists is no state to leave the survivor in
+        self.release_fullscreen_of(pane_id);
         self.panes.remove(&pane_id).map(|overlay| overlay.pane)
     }
 
@@ -577,7 +630,10 @@ impl OverlayPanes {
         } else {
             with_pane.set_content_offset(Offset::frame(1));
         }
-        with_pane.set_geom(removed.pane.current_geom());
+        // the *base* geometry, not `current_geom`: an expansion is an override over the top of
+        // it, and baking that in would leave the replacement with nothing to come back to. The
+        // `set_pane_frames` below puts the override back on the new pane.
+        with_pane.set_geom(removed.pane.position_and_size());
         self.panes.insert(
             with_pane_id,
             OverlayPane {
@@ -604,6 +660,14 @@ impl OverlayPanes {
             }
             if *right == pane_id {
                 *right = with_pane_id;
+            }
+        }
+        // and its place in an expansion: a pane swapped into an expanded overlay is expanded.
+        // `set_pane_frames` below re-derives the override itself, so only the anchor is fixed up
+        // here - the same shape as the `z_indices` and `linked` fixups above.
+        if let Some((anchor, _)) = self.fullscreen.as_mut() {
+            if *anchor == pane_id {
+                *anchor = with_pane_id;
             }
         }
         self.move_clients_between_panes(pane_id, with_pane_id);
@@ -693,14 +757,22 @@ impl OverlayPanes {
     pub fn is_modal(&self, pane_id: &PaneId) -> bool {
         self.kind_of(pane_id).is_some_and(|kind| kind.is_modal())
     }
-    /// Whether the user may resize this overlay: it is one, and it is not a modal.
+    /// Whether the user may resize this overlay: it is one, it is not a modal, and it is not
+    /// expanded over the screen.
     ///
     /// A modal keeps the size its plugin asked for. It is drawn *because* something needs an
     /// answer right now, its content is sized to that question, and unlike a dismissible overlay
     /// there is no case of it sitting over something the user is trying to read.
+    ///
+    /// An expanded overlay is already the size of the screen, and the rectangle underneath it is
+    /// the one it comes back to - a resize there would change a size the user cannot see, and
+    /// write it into the coordinates as the user's. This one answer is what refuses the keyboard
+    /// resize, ctrl+MouseScroll and the ctrl-drag of a border alike, and what stops the frame
+    /// offering any of them.
     pub fn is_resizable(&self, pane_id: &PaneId) -> bool {
         self.kind_of(pane_id)
             .is_some_and(|kind| !matches!(kind, OverlayKind::Modal))
+            && !self.pane_is_fullscreen(pane_id)
     }
     /// The last overlay a client could be sent to, bottom-of-stack-last. Used when focus has to
     /// land somewhere in this collection and nobody said where.
@@ -724,21 +796,66 @@ impl OverlayPanes {
     /// that. Changing the contract is a separate question from moving the pane.
     pub fn pane_info(&self, current_pane_group: &HashMap<ClientId, Vec<PaneId>>) -> Vec<PaneInfo> {
         self.panes
-            .iter()
-            .map(|(pane_id, overlay)| {
-                let mut pane_info_for_pane =
-                    pane_info_for_pane(pane_id, overlay.pane.as_ref(), current_pane_group);
-                pane_info_for_pane.is_floating = true;
-                // a hidden overlay is set aside exactly as a suppressed tab pane is, and that is
-                // the field every consumer already reads to mean "here but not on screen"
-                pane_info_for_pane.is_suppressed = overlay.carry.hidden;
-                pane_info_for_pane.is_focused =
-                    !overlay.carry.hidden && self.active_panes.pane_id_is_focused(pane_id);
-                // an overlay cannot go fullscreen - there is no `fullscreen_pane_id` here
-                pane_info_for_pane.is_fullscreen = false;
-                pane_info_for_pane
-            })
+            .keys()
+            .filter_map(|pane_id| self.pane_info_of(pane_id, current_pane_group))
             .collect()
+    }
+
+    /// One overlay's `PaneInfo`, the singular half of `pane_info` - `Tab`'s by-id lookup uses
+    /// this rather than spelling the fields again beside it.
+    pub fn pane_info_of(
+        &self,
+        pane_id: &PaneId,
+        current_pane_group: &HashMap<ClientId, Vec<PaneId>>,
+    ) -> Option<PaneInfo> {
+        let overlay = self.panes.get(pane_id)?;
+        let mut pane_info_for_pane =
+            pane_info_for_pane(pane_id, overlay.pane.as_ref(), current_pane_group);
+        pane_info_for_pane.is_floating = true;
+        // a hidden overlay is set aside exactly as a suppressed tab pane is, and that is
+        // the field every consumer already reads to mean "here but not on screen"
+        pane_info_for_pane.is_suppressed = overlay.carry.hidden;
+        pane_info_for_pane.is_focused =
+            !overlay.carry.hidden && self.active_panes.pane_id_is_focused(pane_id);
+        pane_info_for_pane.is_fullscreen = self.pane_is_fullscreen(pane_id);
+        if pane_info_for_pane.is_fullscreen {
+            // The *base* rectangle, not the expanded one. An expansion is the user looking at
+            // this overlay closely for a moment; it is not a placement, and it must not read as
+            // one to the plugin that owns the overlay. hocus takes its panel's size from this
+            // manifest - that is how a user resize reaches it - and would answer an expansion by
+            // re-placing the panel at the size of the screen, overwriting the very rectangle the
+            // expansion is there to come back to. `is_fullscreen` above is how a plugin that
+            // cares learns the difference.
+            Self::report_base_geometry(&mut pane_info_for_pane, overlay);
+        }
+        Some(pane_info_for_pane)
+    }
+
+    /// Overwrite the geometry `pane_info_for_pane` read off an expanded pane with the rectangle
+    /// underneath the expansion, content area included.
+    fn report_base_geometry(pane_info: &mut PaneInfo, overlay: &OverlayPane) {
+        let geom = overlay.pane.position_and_size();
+        // the offset the frame loop would give this pane were it not expanded - the expanded one
+        // is on the pane itself and belongs to a rectangle we are not reporting
+        let offset = if overlay.pane.borderless() {
+            Offset::default()
+        } else {
+            Offset::frame(1)
+        };
+        pane_info.pane_x = geom.x;
+        pane_info.pane_y = geom.y;
+        pane_info.pane_columns = geom.cols.as_usize();
+        pane_info.pane_rows = geom.rows.as_usize();
+        pane_info.pane_content_x = geom.x + offset.left;
+        pane_info.pane_content_y = geom.y + offset.top;
+        pane_info.pane_content_columns = geom
+            .cols
+            .as_usize()
+            .saturating_sub(offset.left + offset.right);
+        pane_info.pane_content_rows = geom
+            .rows
+            .as_usize()
+            .saturating_sub(offset.top + offset.bottom);
     }
 
     // ---- z-order and occlusion ------------------------------------------------------------
@@ -774,10 +891,15 @@ impl OverlayPanes {
     ///
     /// Bare geoms rather than a `FloatingPanesStack`: the tab concatenates its floating layers and
     /// then these into one flat list, so that an overlay clips above every floating pane.
+    ///
+    /// `current_geom` rather than `position_and_size`: an expanded overlay covers what is under it
+    /// with the rectangle it is *drawn* with, not the one it will come back to. This is the
+    /// visibility-shaped side of the split the module doc draws - the placement-shaped readers
+    /// keep reading the base.
     pub fn layers(&self) -> Vec<PaneGeom> {
         self.stack_layer_ids()
             .iter()
-            .filter_map(|pane_id| self.get(pane_id).map(|pane| pane.position_and_size()))
+            .filter_map(|pane_id| self.get(pane_id).map(|pane| pane.current_geom()))
             .collect()
     }
 
@@ -1586,18 +1708,12 @@ impl OverlayPanes {
         }
 
         let panel_right = panel.x + panel.cols.as_usize();
-        // a panel narrower than two floors (a tiny surface) is cut evenly rather than not at all
-        let half_floor = floor.min(panel.cols.as_usize() / 2).max(1);
-        let seam_at_least = panel.x + half_floor;
-        let seam_at_most = panel_right.saturating_sub(half_floor).max(seam_at_least);
-        let seam = map_edge(
+        let seam = seam_mapped_onto(
             left_before.x + left_before.cols.as_usize(),
-            panel_before.x,
-            panel_before.cols.as_usize(),
+            panel_before,
             panel.x,
             panel.cols.as_usize(),
-        )
-        .clamp(seam_at_least, seam_at_most);
+        );
         let mut left_geom = left_before;
         left_geom.x = panel.x;
         left_geom.y = panel.y;
@@ -1669,6 +1785,281 @@ impl OverlayPanes {
             overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x));
             overlay.coordinates.y = Some(PercentOrFixed::Fixed(geom.y));
             overlay.carry.position_is_user_stated = true;
+        }
+    }
+
+    // ---- being expanded over the screen -------------------------------------------------------
+
+    /// Whether an overlay is expanded over the screen right now.
+    pub fn fullscreen_is_active(&self) -> bool {
+        self.fullscreen.is_some()
+    }
+
+    /// The overlay the expansion is anchored to, if any. A linked panel is named by the half the
+    /// user pressed on; `fullscreen_pane_ids` is what answers with the whole panel.
+    pub fn fullscreen_pane_id(&self) -> Option<PaneId> {
+        self.fullscreen.map(|(pane_id, _)| pane_id)
+    }
+
+    /// Whether the expansion covers the tab bar and the status bar as well as the panes.
+    pub fn fullscreen_covers_ui(&self) -> bool {
+        self.fullscreen.is_some_and(|(_, covers_ui)| covers_ui)
+    }
+
+    /// Whether `pane_id` is drawn expanded - the anchor, or the other half of its panel.
+    pub fn pane_is_fullscreen(&self, pane_id: &PaneId) -> bool {
+        self.fullscreen_pane_ids().contains(pane_id)
+    }
+
+    /// The panes the expansion is drawing over the screen: one overlay, or both halves of a
+    /// linked panel. Empty when nothing is expanded.
+    ///
+    /// Derived from the link *now* rather than remembered from the keystroke, which is what makes
+    /// the expansion survive its panel being re-cut, re-linked or unlinked underneath it - see
+    /// `refresh_fullscreen`.
+    pub fn fullscreen_pane_ids(&self) -> Vec<PaneId> {
+        let Some((pane_id, _)) = self.fullscreen else {
+            return vec![];
+        };
+        match self.link_of(&pane_id) {
+            Some((left, right)) if !self.is_hidden(&left) && !self.is_hidden(&right) => {
+                vec![left, right]
+            },
+            // A pair with a hidden half is the shown half taking the whole panel, which is how
+            // every other placement already reads that shape.
+            _ => vec![pane_id],
+        }
+    }
+
+    /// The area an expansion fills: the tab's own viewport, or - `covers_ui` - the whole surface.
+    ///
+    /// The viewport rather than the surface for the plain keystroke, so that `Ctrl+p f` on an
+    /// overlay leaves the tab bar and the status bar where `Ctrl+p f` on a tiled pane leaves
+    /// them. An overlay may be *drawn* over the chrome, but being able to fill the screen without
+    /// losing the chrome is the whole difference between the two keystrokes.
+    fn fullscreen_area(&self, covers_ui: bool) -> Viewport {
+        if covers_ui {
+            self.surface()
+        } else {
+            *self.viewport.borrow()
+        }
+    }
+
+    /// Whether `pane_id` may be expanded at all.
+    ///
+    /// A modal is refused for the reason it is not resizable: it is drawn because something needs
+    /// an answer now and it is sized to that question. A hidden pane and one still awaiting its
+    /// placement are refused because neither is on screen to expand.
+    ///
+    /// Spelled against `is_modal` rather than `is_resizable`, which an expanded overlay already
+    /// answers `false` to: this is also the test `refresh_fullscreen` re-applies on every frame,
+    /// and reading resizability there would have the expansion drop itself the moment it began.
+    fn may_be_fullscreen(&self, pane_id: &PaneId) -> bool {
+        !self.is_modal(pane_id)
+            && self
+                .panes
+                .get(pane_id)
+                .is_some_and(|overlay| !overlay.carry.hidden && !overlay.carry.awaiting_placement)
+    }
+
+    /// The geometry each member of the expansion is drawn with, against the area as it is now.
+    fn fullscreen_geoms(&self) -> Vec<(PaneId, PaneGeom)> {
+        let Some((_, covers_ui)) = self.fullscreen else {
+            return vec![];
+        };
+        let area = self.fullscreen_area(covers_ui);
+        let expanded = |geom: PaneGeom, x: usize, cols: usize| {
+            let mut expanded = geom;
+            expanded.x = x;
+            expanded.y = area.y;
+            expanded.cols.set_inner(cols);
+            expanded.rows.set_inner(area.rows);
+            expanded
+        };
+        match self.fullscreen_pane_ids().as_slice() {
+            // A linked pair is one panel to every gesture, and this is a gesture: both halves
+            // grow, and the divider lands at the share of the panel it had - the same
+            // proportional step an undirected resize of the panel makes, so an uneven split
+            // stays uneven.
+            [left, right] => {
+                let (Some(left_pane), Some(right_pane)) = (self.get(left), self.get(right)) else {
+                    return vec![];
+                };
+                let left_geom = left_pane.position_and_size();
+                let right_geom = right_pane.position_and_size();
+                let panel = union_of(left_geom, right_geom);
+                let seam = seam_mapped_onto(
+                    left_geom.x + left_geom.cols.as_usize(),
+                    panel,
+                    area.x,
+                    area.cols,
+                );
+                vec![
+                    (*left, expanded(left_geom, area.x, seam - area.x)),
+                    (
+                        *right,
+                        expanded(right_geom, seam, (area.x + area.cols) - seam),
+                    ),
+                ]
+            },
+            [pane_id] => match self.get(pane_id) {
+                Some(pane) => vec![(
+                    *pane_id,
+                    expanded(pane.position_and_size(), area.x, area.cols),
+                )],
+                None => vec![],
+            },
+            _ => vec![],
+        }
+    }
+
+    /// Re-derive every expanded geometry from the bases as they are now, and drop the overrides
+    /// of everything else.
+    ///
+    /// This is the whole of the expansion's upkeep, and it is called from `set_pane_frames`,
+    /// which every path that touches an overlay's geometry already ends in. So a terminal resize,
+    /// a placement batch from the owning plugin, a re-cut divider and a pane swapped into the
+    /// slot all keep the expansion filling the screen without any of them knowing it exists -
+    /// and none of them can leave a stale override behind, because the second loop below owns
+    /// every override in the collection.
+    ///
+    /// It is also where an expansion that has stopped making sense is dropped: an anchor that was
+    /// closed, set aside or is no longer expandable takes the expansion with it.
+    fn refresh_fullscreen(&mut self) {
+        if self
+            .fullscreen
+            .is_some_and(|(pane_id, _)| !self.may_be_fullscreen(&pane_id))
+        {
+            self.fullscreen = None;
+        }
+        let geoms = self.fullscreen_geoms();
+        let members: HashSet<PaneId> = geoms.iter().map(|(pane_id, _)| *pane_id).collect();
+        for (pane_id, overlay) in self.panes.iter_mut() {
+            if !members.contains(pane_id) && overlay.pane.geom_override().is_some() {
+                overlay.pane.reset_size_and_position_override();
+            }
+        }
+        for (pane_id, geom) in geoms {
+            if let Some(overlay) = self.panes.get_mut(&pane_id) {
+                overlay.pane.set_geom_override(geom);
+            }
+        }
+    }
+
+    /// Expand `pane_id` - or the panel it is half of - over the screen; `true` => it is now.
+    ///
+    /// The expansion is a geometry *override* and nothing else. Coordinates, the user's claims on
+    /// them and the link to a partner are all left as they are underneath, so `unset_fullscreen`
+    /// has nothing to restore from a memory of its own: it drops the override and what was always
+    /// there comes back - re-resolved against the surface as it is by then, if that changed.
+    ///
+    /// Focus is deliberately not moved, unlike `FloatingPanes::set_fullscreen`'s
+    /// `focus_pane_for_all_clients`: the keyboard path is already on this pane, and a live modal
+    /// must not have the keyboard taken from it by someone else's keystroke.
+    fn set_fullscreen(&mut self, pane_id: PaneId, covers_ui: bool) -> bool {
+        if !self.may_be_fullscreen(&pane_id) {
+            return false;
+        }
+        self.fullscreen = Some((pane_id, covers_ui));
+        // so a sibling overlay opened earlier cannot be painted over the pane the user just asked
+        // to see in full. A live modal still outranks it - `raise_within_class` is what says so,
+        // and a fullscreen keystroke does not suspend the modal lock.
+        for member_id in self.fullscreen_pane_ids() {
+            self.raise_within_class(member_id);
+        }
+        self.set_pane_frames().non_fatal();
+        self.set_force_render();
+        true
+    }
+
+    /// The frame an expanded overlay wears, matching the floating layer's: none at all when it
+    /// covers the chrome, there being nothing beside it for a border to separate it from.
+    fn set_fullscreen_frame(
+        pane: &mut Box<dyn Pane>,
+        pane_frame_style: PaneFrameStyle,
+        covers_ui: bool,
+    ) {
+        if covers_ui || pane.borderless() || !pane_frame_style.draws_full_frames() {
+            pane.set_frame(false);
+            pane.set_content_offset(Offset::default());
+        } else {
+            pane.set_frame(true);
+            pane.set_content_offset(Offset::frame(1));
+        }
+    }
+
+    /// Put an expanded overlay back where its coordinates say it belongs; `true` => one was.
+    pub fn unset_fullscreen(&mut self) -> bool {
+        if self.fullscreen.take().is_none() {
+            return false;
+        }
+        // `set_pane_frames` drops the overrides and puts the frames back: it is the one place
+        // that decides what an overlay's geometry and frame are, expanded or not.
+        self.set_pane_frames().non_fatal();
+        self.set_force_render();
+        true
+    }
+
+    /// Expand `pane_id` over the viewport, or put it back; `true` => the keystroke was ours.
+    pub fn toggle_pane_fullscreen(&mut self, pane_id: PaneId) -> bool {
+        self.toggle_fullscreen_of(pane_id, false)
+    }
+
+    /// Expand `pane_id` over the whole screen, chrome included, or put it back.
+    pub fn toggle_pane_no_ui_fullscreen(&mut self, pane_id: PaneId) -> bool {
+        self.toggle_fullscreen_of(pane_id, true)
+    }
+
+    /// The two toggles, which differ only in how much they cover. Pressing the *other* one while
+    /// expanded switches between the two rather than collapsing, as the floating layer's do.
+    fn toggle_fullscreen_of(&mut self, pane_id: PaneId, covers_ui: bool) -> bool {
+        match self.fullscreen {
+            Some((_, was_covering_ui)) => {
+                self.unset_fullscreen();
+                if was_covering_ui == covers_ui {
+                    true
+                } else {
+                    self.set_fullscreen(pane_id, covers_ui)
+                }
+            },
+            None => self.set_fullscreen(pane_id, covers_ui),
+        }
+    }
+
+    /// This client's overlay, expanded over the viewport or put back; `true` => ours.
+    pub fn toggle_active_pane_fullscreen(&mut self, client_id: ClientId) -> bool {
+        match self.fullscreen_target(client_id) {
+            Some(pane_id) => self.toggle_pane_fullscreen(pane_id),
+            None => false,
+        }
+    }
+
+    /// This client's overlay, expanded over the whole screen or put back; `true` => ours.
+    pub fn toggle_active_pane_no_ui_fullscreen(&mut self, client_id: ClientId) -> bool {
+        match self.fullscreen_target(client_id) {
+            Some(pane_id) => self.toggle_pane_no_ui_fullscreen(pane_id),
+            None => false,
+        }
+    }
+
+    /// What a keystroke from `client_id` is about: the expanded overlay if there is one, else the
+    /// overlay this client is on. The expanded one comes first so that a second press collapses
+    /// it even if focus moved to another overlay in between - an overlay the user cannot get out
+    /// of full screen is the failure this ordering exists to prevent.
+    fn fullscreen_target(&self, client_id: ClientId) -> Option<PaneId> {
+        self.fullscreen_pane_id()
+            .or_else(|| self.active_pane_id(client_id))
+    }
+
+    /// Drop the expansion if it is drawing `pane_id`, putting every member back.
+    ///
+    /// Called where a member stops being something that can be expanded - it is closed, or the
+    /// user sets it aside. `refresh_fullscreen` would drop an anchor in that state on its own,
+    /// but only at the next `set_pane_frames`, and both those paths need the collection honest
+    /// before they go on to move clients off the pane.
+    fn release_fullscreen_of(&mut self, pane_id: PaneId) {
+        if self.pane_is_fullscreen(&pane_id) {
+            self.unset_fullscreen();
         }
     }
 
@@ -1769,6 +2160,11 @@ impl OverlayPanes {
         let Some(pane_id) = self.visible_pane_id_at(&position) else {
             return false;
         };
+        if self.pane_is_fullscreen(&pane_id) {
+            // an expanded overlay fills the screen, so there is nowhere to move it to, and the
+            // rectangle a drag would write is the one it comes back to
+            return false;
+        }
         let on_frame = self
             .panes
             .get(&pane_id)
@@ -1945,6 +2341,12 @@ impl OverlayPanes {
     /// never found underneath an overlay covering it.
     pub fn seam_at(&self, position: &Position) -> Option<(PaneId, PaneId)> {
         let pane_id = self.visible_pane_id_at(position)?;
+        // An expanded panel's divider is drawn from an override, while the seam arithmetic below
+        // reads the bases: the two disagree, and a drag would write a base the user cannot see
+        // back as the user's. The panel is re-cut when it comes back, not while it is expanded.
+        if self.pane_is_fullscreen(&pane_id) {
+            return None;
+        }
         if !self.get(&pane_id)?.position_is_on_frame(position) {
             return None;
         }
@@ -2068,7 +2470,9 @@ impl OverlayPanes {
             .iter()
             .filter(|(_, overlay)| !overlay.carry.hidden)
             .filter_map(|(pane_id, overlay)| {
-                let geom = overlay.pane.position_and_size();
+                // the geometry it is *drawn* with: an overlay expanded over the whole screen owns
+                // the chrome's cells, and this is the question of which cells are owned
+                let geom = overlay.pane.current_geom();
                 geom_is_outside_viewport(&geom, &viewport).then_some((*pane_id, geom))
             })
             .collect()
@@ -2078,7 +2482,7 @@ impl OverlayPanes {
         self.panes
             .values()
             .filter(|overlay| !overlay.carry.hidden)
-            .any(|overlay| geom_is_outside_viewport(&overlay.pane.position_and_size(), &viewport))
+            .any(|overlay| geom_is_outside_viewport(&overlay.pane.current_geom(), &viewport))
     }
 
     pub fn update_pane_themes(&mut self, theme: Styling) {
@@ -2133,7 +2537,7 @@ impl OverlayPanes {
     /// unnarrowed version did - re-serializes grids that never had a toast anywhere near them.
     pub fn force_render_panes_intersecting(&mut self, damage: &[CellRect]) {
         for overlay in self.panes.values_mut() {
-            let geom = overlay.pane.position_and_size();
+            let geom = overlay.pane.current_geom();
             if !damage.iter().any(|rect| rect.intersects_geom(&geom)) {
                 continue;
             }
@@ -2142,14 +2546,24 @@ impl OverlayPanes {
             overlay.pane.render_full_viewport();
         }
     }
-    /// An overlay always has a frame unless it explicitly asked not to. There is no fullscreen
-    /// branch here because an overlay cannot go fullscreen.
+    /// Every overlay's frame, its content offset and its pty size, from its geometry.
+    ///
+    /// The one place that decides what an overlay's geometry *is*, expansion included: every path
+    /// that moves, resizes, places or replaces an overlay ends here, so `refresh_fullscreen`
+    /// running first is what keeps an expanded overlay expanded across all of them - and what
+    /// stops the frame loop below putting a border back on one that covers the chrome.
     pub fn set_pane_frames(&mut self) -> Result<()> {
         let err_context =
             |pane_id: &PaneId| format!("failed to activate frame on overlay {pane_id:?}");
-        for overlay in self.panes.values_mut() {
+        self.refresh_fullscreen();
+        let fullscreen: HashSet<PaneId> = self.fullscreen_pane_ids().into_iter().collect();
+        let covers_ui = self.fullscreen_covers_ui();
+        let pane_frame_style = self.pane_frame_style;
+        for (pane_id, overlay) in self.panes.iter_mut() {
             let pane = &mut overlay.pane;
-            if !pane.borderless() {
+            if fullscreen.contains(pane_id) {
+                Self::set_fullscreen_frame(pane, pane_frame_style, covers_ui);
+            } else if !pane.borderless() {
                 pane.set_frame(true);
                 pane.set_content_offset(Offset::frame(1));
             } else {
@@ -2283,6 +2697,7 @@ impl OverlayPanes {
             .collect();
         active_panes.retain(|c_id, _| self.connected_clients.borrow().contains(c_id));
 
+        let fullscreen: HashSet<PaneId> = self.fullscreen_pane_ids().into_iter().collect();
         // derived from `stack_layer_ids` rather than from a second filter over `self.panes`, so
         // the index a pane is drawn with is always its index in the occlusion stack
         for (index, pane_id) in self.stack_layer_ids().into_iter().enumerate() {
@@ -2295,12 +2710,14 @@ impl OverlayPanes {
             let pane_has_guest_modal = pane.has_guest_modal_for_any_client();
             // +1 because 0 is reserved for non-floating panes
             let z_index = Some(z_index_offset + index + 1);
-            // The frame's help text is nothing but the resize hint, and a modal is not resizable
-            // (`is_resizable`), so withholding it is exactly the right amount of silence: an
-            // overlay must not offer a `Ctrl <MouseScroll>` / `Ctrl <drag borders>` that both
-            // paths then refuse. Read off `kind` rather than `self.is_resizable`, which would want
+            // The frame's help text is nothing but the resize hint, and neither a modal nor an
+            // overlay expanded over the screen is resizable (`is_resizable`), so withholding it is
+            // exactly the right amount of silence: an overlay must not offer a
+            // `Ctrl <MouseScroll>` / `Ctrl <drag borders>` that both paths then refuse. Computed
+            // before the loop rather than from `self.is_resizable` inside it, which would want
             // `self` back while `overlay` still holds it.
-            let is_resizable = !matches!(kind, OverlayKind::Modal);
+            let is_resizable =
+                !matches!(kind, OverlayKind::Modal) && !fullscreen.contains(&pane_id);
             let show_help_text = is_resizable
                 && active_panes.iter().any(|(client_id, active_id)| {
                     active_id == &pane.pid()
@@ -2395,6 +2812,27 @@ fn map_edge(edge: usize, from: usize, from_len: usize, to: usize, to_len: usize)
         return to;
     }
     to + edge.saturating_sub(from) * to_len / from_len
+}
+
+/// Where the divider of a panel goes when the panel becomes the rectangle `x .. x + cols`: at the
+/// share of the width it had, and never closer than `MIN_TERMINAL_WIDTH` to either outer edge.
+///
+/// The one answer to "the seam keeps its share", shared by the undirected resize of a panel and
+/// by a panel expanded over the screen, so a divider cannot land in two different places
+/// depending on which gesture grew the panel.
+fn seam_mapped_onto(seam_before: usize, panel_before: PaneGeom, x: usize, cols: usize) -> usize {
+    // a panel narrower than two floors (a tiny surface) is cut evenly rather than not at all
+    let half_floor = MIN_TERMINAL_WIDTH.min(cols / 2).max(1);
+    let seam_at_least = x + half_floor;
+    let seam_at_most = (x + cols).saturating_sub(half_floor).max(seam_at_least);
+    map_edge(
+        seam_before,
+        panel_before.x,
+        panel_before.cols.as_usize(),
+        x,
+        cols,
+    )
+    .clamp(seam_at_least, seam_at_most)
 }
 
 /// The smallest rectangle holding both geometries - what a linked pair is clamped against when

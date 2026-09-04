@@ -568,7 +568,10 @@ fn an_overlay_answers_the_singular_pane_info_lookup() {
         pane_info.is_floating,
         "every consumer reads `is_floating` as `not tiled`, which an overlay is"
     );
-    assert!(!pane_info.is_fullscreen, "an overlay cannot go fullscreen");
+    assert!(
+        !pane_info.is_fullscreen,
+        "a modal cannot be expanded over the screen"
+    );
     assert!(!pane_info.is_suppressed);
 
     assert!(
@@ -1146,12 +1149,14 @@ mod invariant_props {
         ShowFloatingLayer,
         HideFloatingLayer,
         FocusFirstTiledPane,
+        ToggleFullscreen,
+        ToggleNoUiFullscreen,
         Resize(u16),
     }
 
     #[hegel::composite]
     fn op(tc: &hegel::TestCase) -> Op {
-        match tc.draw(generators::integers::<u8>().max_value(8)) {
+        match tc.draw(generators::integers::<u8>().max_value(10)) {
             0 => Op::NewTiledPane,
             1 => Op::NewFloatingPane,
             2 => Op::NewOverlay,
@@ -1160,6 +1165,8 @@ mod invariant_props {
             5 => Op::ShowFloatingLayer,
             6 => Op::HideFloatingLayer,
             7 => Op::FocusFirstTiledPane,
+            8 => Op::ToggleFullscreen,
+            9 => Op::ToggleNoUiFullscreen,
             _ => Op::Resize(tc.draw(generators::integers::<u16>().min_value(40).max_value(160))),
         }
     }
@@ -1192,6 +1199,11 @@ mod invariant_props {
                 .get_active_tab_mut(1)
                 .unwrap()
                 .are_floating_panes_visible();
+            let on_an_overlay = {
+                let tab = screen.get_active_tab_mut(1).unwrap();
+                tab.get_active_pane_id(1)
+                    .is_some_and(|pane_id| tab.pane_is_overlay(pane_id))
+            };
             let op_may_move_the_layer = matches!(
                 op,
                 Op::NewTiledPane
@@ -1201,7 +1213,17 @@ mod invariant_props {
                     | Op::HideFloatingLayer
                     | Op::FocusFirstTiledPane
                     | Op::Resize(_)
-            );
+            ) ||
+                // A fullscreen keystroke aimed at a *tiled* pane may legitimately change this
+                // reading: "the floating layer is visible" is `show_panes && !fullscreen_covers_ui`
+                // (`FloatingPanes::all_panes_are_visible`), so collapsing a UI-covering tiled
+                // fullscreen puts the layer back on screen without anything having raised it.
+                //
+                // Aimed at an *overlay* it may not, and that is not exempted: an overlay's
+                // expansion is an override on its own panes and touches neither of those two
+                // terms. The assertion below is what says so on every random sequence that reaches
+                // the keystroke with an overlay focused.
+                (matches!(op, Op::ToggleFullscreen | Op::ToggleNoUiFullscreen) && !on_an_overlay);
             match op {
                 Op::NewTiledPane | Op::NewFloatingPane | Op::NewOverlay => {
                     let pane_id = PaneId::Terminal(next_id);
@@ -1261,6 +1283,18 @@ mod invariant_props {
                         false,
                         1,
                     );
+                },
+                Op::ToggleFullscreen => {
+                    screen
+                        .get_active_tab_mut(1)
+                        .unwrap()
+                        .toggle_active_pane_fullscreen(1);
+                },
+                Op::ToggleNoUiFullscreen => {
+                    screen
+                        .get_active_tab_mut(1)
+                        .unwrap()
+                        .toggle_active_pane_no_ui_fullscreen(1);
                 },
                 Op::Resize(cols) => {
                     screen
@@ -2079,6 +2113,131 @@ fn a_resize_keystroke_reaches_an_overlay_over_a_fullscreen_floating_pane() {
             .expect("TEST")
             .position_and_size(),
         "the fullscreen floating pane behind it is untouched"
+    );
+}
+
+/// The fullscreen keystroke, end to end, with an overlay holding the keyboard. It used to be
+/// refused outright - and before that it fullscreened the tiled pane *behind* the overlay, which
+/// is the pane the user was not looking at.
+#[test]
+fn a_fullscreen_keystroke_expands_the_overlay_that_has_the_keyboard() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_with(&mut screen, 2, overlay_coordinates());
+
+    let tiled_before = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(1))
+        .expect("TEST")
+        .position_and_size();
+    let before = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .toggle_active_pane_fullscreen(1);
+
+    let tab = &screen.tabs[&0];
+    assert!(
+        tab.get_pane_info(PaneId::Terminal(2))
+            .expect("TEST")
+            .is_fullscreen,
+        "the overlay is the pane the keystroke was about"
+    );
+    let expanded = tab
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .current_geom();
+    assert_eq!(
+        (
+            expanded.x,
+            expanded.y,
+            expanded.cols.as_usize(),
+            expanded.rows.as_usize()
+        ),
+        (
+            tiled_before.x,
+            tiled_before.y,
+            tiled_before.cols.as_usize(),
+            tiled_before.rows.as_usize()
+        ),
+        "and it fills the viewport, which the lone tiled pane behind it also fills"
+    );
+    assert!(
+        !tab.is_fullscreen_active(),
+        "while the tab's own layout was never in question"
+    );
+    assert_eq!(
+        tiled_before,
+        tab.get_pane_with_id(PaneId::Terminal(1))
+            .expect("TEST")
+            .position_and_size(),
+        "and the pane behind it is untouched"
+    );
+
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .toggle_active_pane_fullscreen(1);
+    assert_eq!(
+        before,
+        screen.tabs[&0]
+            .get_pane_with_id(PaneId::Terminal(2))
+            .expect("TEST")
+            .position_and_size(),
+        "and the second press puts it back where its coordinates said"
+    );
+}
+
+/// The same keystroke with a fullscreen floating pane underneath - the twin of
+/// `a_resize_keystroke_reaches_an_overlay_over_a_fullscreen_floating_pane`, and the state where
+/// the floating branch would happily have answered a keystroke that was never about it.
+#[test]
+fn a_fullscreen_keystroke_on_an_overlay_leaves_a_fullscreen_floating_pane_alone() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_floating_pane(&mut screen, 0, 2, "FLOATING", false);
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .toggle_active_pane_fullscreen(1);
+    open_overlay_with(&mut screen, 3, overlay_coordinates());
+
+    let floating_before = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .toggle_active_pane_fullscreen(1);
+
+    assert!(
+        screen.tabs[&0]
+            .get_pane_info(PaneId::Terminal(3))
+            .expect("TEST")
+            .is_fullscreen,
+        "the overlay is what the keystroke expanded"
+    );
+    assert!(
+        screen.tabs[&0]
+            .get_pane_info(PaneId::Terminal(2))
+            .expect("TEST")
+            .is_fullscreen,
+        "and the floating pane is still the floating layer's fullscreen"
+    );
+    assert_eq!(
+        floating_before,
+        screen.tabs[&0]
+            .get_pane_with_id(PaneId::Terminal(2))
+            .expect("TEST")
+            .position_and_size(),
+        "and it is untouched"
     );
 }
 

@@ -2803,3 +2803,399 @@ fn a_pane_abutting_two_others_is_in_one_panel() {
     assert_eq!(panes.link_of(&b), Some((b, c)));
     assert_eq!(panes.link_of(&a), None);
 }
+
+// ---- expanded over the screen ---------------------------------------------------------------
+
+/// A tab whose chrome takes a row off the top and one off the bottom, which is what makes the
+/// difference between the two fullscreen keystrokes visible.
+fn overlay_panes_with_chrome(cols: usize, rows: usize) -> OverlayPanes {
+    overlay_panes_with(
+        cols,
+        rows,
+        Viewport {
+            x: 0,
+            y: 1,
+            cols,
+            rows: rows - 2,
+        },
+    )
+    .0
+}
+
+/// The rectangle a pane is *drawn* with, override included - what `geom` is to the base.
+fn drawn(panes: &OverlayPanes, id: u32) -> (usize, usize, usize, usize) {
+    let geom = panes.get(&PaneId::Terminal(id)).unwrap().current_geom();
+    (geom.x, geom.y, geom.cols.as_usize(), geom.rows.as_usize())
+}
+
+#[test]
+fn an_expanded_overlay_fills_the_viewport_and_leaves_the_chrome() {
+    let mut panes = overlay_panes_with_chrome(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        placed_coordinates("10", "5", "30", "8"),
+    );
+
+    assert!(panes.toggle_pane_fullscreen(PaneId::Terminal(1)));
+
+    assert_eq!(
+        drawn(&panes, 1),
+        (0, 1, 80, 18),
+        "the tab bar and the status bar keep their rows, as they do for a tiled pane"
+    );
+    assert!(panes.pane_is_fullscreen(&PaneId::Terminal(1)));
+    assert!(!panes.fullscreen_covers_ui());
+}
+
+#[test]
+fn the_other_keystroke_covers_the_chrome_too() {
+    let mut panes = overlay_panes_with_chrome(80, 20);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        placed_coordinates("10", "5", "30", "8"),
+    );
+
+    assert!(panes.toggle_pane_no_ui_fullscreen(PaneId::Terminal(1)));
+
+    assert_eq!(drawn(&panes, 1), (0, 0, 80, 20));
+    assert!(panes.fullscreen_covers_ui());
+}
+
+/// Pressing the *other* keystroke while expanded switches between the two rather than collapsing,
+/// as the floating layer's pair does.
+#[test]
+fn the_two_keystrokes_switch_between_each_other() {
+    let mut panes = overlay_panes_with_chrome(80, 20);
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+    panes.toggle_pane_no_ui_fullscreen(PaneId::Terminal(1));
+    assert!(panes.fullscreen_covers_ui());
+    assert_eq!(drawn(&panes, 1), (0, 0, 80, 20));
+
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+    assert!(panes.fullscreen_is_active());
+    assert!(!panes.fullscreen_covers_ui());
+    assert_eq!(drawn(&panes, 1), (0, 1, 80, 18));
+
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+    assert!(!panes.fullscreen_is_active());
+}
+
+/// The claim the whole design rests on: an expansion is an override over a geometry that is still
+/// a function of the overlay's coordinates and the surface, so the way back is exact - even when
+/// the surface changed size while it was expanded.
+#[test]
+fn the_way_back_is_the_rectangle_the_coordinates_always_said() {
+    let mut panes = overlay_panes(80, 20);
+    let mut untouched = overlay_panes(80, 20);
+    for panes in [&mut panes, &mut untouched] {
+        add(
+            panes,
+            1,
+            OverlayKind::Dismissible,
+            coordinates("50%", "40%"),
+        );
+    }
+
+    // the no-UI keystroke, whose area is the surface itself, so that growing the surface under
+    // it is the whole of the change
+    panes.toggle_pane_no_ui_fullscreen(PaneId::Terminal(1));
+    *panes.display_area.borrow_mut() = Size {
+        cols: 120,
+        rows: 40,
+    };
+    *untouched.display_area.borrow_mut() = Size {
+        cols: 120,
+        rows: 40,
+    };
+    panes.reapply_coordinates();
+    untouched.reapply_coordinates();
+    assert_eq!(
+        drawn(&panes, 1),
+        (0, 0, 120, 40),
+        "the expansion follows the surface while it lasts"
+    );
+
+    panes.toggle_pane_no_ui_fullscreen(PaneId::Terminal(1));
+
+    assert_eq!(
+        geom(&panes, 1),
+        geom(&untouched, 1),
+        "and what comes back is what a never-expanded twin resolved to on the same surface"
+    );
+    assert_eq!(drawn(&panes, 1), geom(&panes, 1), "with no override left");
+}
+
+/// An expansion is not a placement, so it claims nothing: the plugin that owns the overlay keeps
+/// placing it, and what it places is the rectangle the expansion comes back to.
+#[test]
+fn an_expansion_claims_nothing_and_a_plugin_keeps_placing_underneath_it() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+    assert_eq!(
+        claims(&panes, 1),
+        (false, false),
+        "an expansion claims nothing"
+    );
+
+    panes
+        .change_pane_coordinates(
+            PaneId::Terminal(1),
+            placed_coordinates("40", "6", "20", "6"),
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        drawn(&panes, 1),
+        (0, 0, 80, 20),
+        "the placement lands underneath, and the overlay is still expanded"
+    );
+    assert_eq!(geom(&panes, 1), (40, 6, 20, 6));
+
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+    assert_eq!(
+        geom(&panes, 1),
+        (40, 6, 20, 6),
+        "so the way back is where the plugin last put it, not where it was when it was expanded"
+    );
+}
+
+/// hocus takes its panel's *size* from the manifest - that is how a user resize reaches it - so an
+/// expansion reported as a rectangle would be answered by re-placing the panel at the size of the
+/// screen, overwriting the very rectangle the expansion exists to come back to.
+#[test]
+fn an_expanded_overlay_reports_the_rectangle_underneath_it() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+    let group = HashMap::new();
+
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+
+    let info = panes.pane_info(&group).into_iter().next().unwrap();
+    assert!(info.is_fullscreen, "it says that it is expanded");
+    assert_eq!(
+        (info.pane_x, info.pane_y, info.pane_columns, info.pane_rows),
+        (2, 2, 30, 10),
+        "and reports the rectangle it will come back to, not the one it is drawn with"
+    );
+    assert_eq!(
+        (
+            info.pane_content_x,
+            info.pane_content_y,
+            info.pane_content_columns,
+            info.pane_content_rows
+        ),
+        (3, 3, 28, 8),
+        "content area included - the frame it would wear there, not the one it wears now"
+    );
+}
+
+#[test]
+fn a_modal_may_not_be_expanded() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Modal, half(2));
+
+    assert!(!panes.toggle_pane_fullscreen(PaneId::Terminal(1)));
+    assert!(!panes.fullscreen_is_active());
+    assert_eq!(drawn(&panes, 1), geom(&panes, 1));
+}
+
+#[test]
+fn a_hidden_overlay_may_not_be_expanded() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+    panes.hide_pane(PaneId::Terminal(1));
+
+    assert!(!panes.toggle_pane_fullscreen(PaneId::Terminal(1)));
+    assert!(!panes.fullscreen_is_active());
+}
+
+/// Setting the pane the user is looking at aside is asking for it to go away, not for a screenful
+/// of overlay with no way back.
+#[test]
+fn setting_an_expanded_overlay_aside_puts_it_back_first() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+
+    panes.hide_pane(PaneId::Terminal(1));
+
+    assert!(!panes.fullscreen_is_active());
+    assert_eq!(geom(&panes, 1), (2, 2, 30, 10));
+    assert_eq!(drawn(&panes, 1), geom(&panes, 1));
+}
+
+#[test]
+fn closing_an_expanded_overlay_ends_the_expansion() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+    add(&mut panes, 2, OverlayKind::Dismissible, half(40));
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+
+    panes.remove_pane(PaneId::Terminal(1));
+
+    assert!(!panes.fullscreen_is_active());
+    assert_eq!(
+        drawn(&panes, 2),
+        geom(&panes, 2),
+        "and the overlay it was covering is drawn as itself again"
+    );
+}
+
+/// A pane swapped into an expanded slot is expanded, and the slot still knows where to come back
+/// to - the base geometry travels, not the override.
+#[test]
+fn a_pane_swapped_into_an_expanded_slot_is_expanded() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+
+    panes
+        .replace_pane(PaneId::Terminal(1), mock_pane(PaneId::Terminal(9)))
+        .unwrap();
+
+    assert!(panes.pane_is_fullscreen(&PaneId::Terminal(9)));
+    assert_eq!(drawn(&panes, 9), (0, 0, 80, 20));
+
+    panes.toggle_pane_fullscreen(PaneId::Terminal(9));
+    assert_eq!(geom(&panes, 9), (2, 2, 30, 10));
+}
+
+#[test]
+fn an_expanded_overlay_is_not_dragged_resized_or_seam_dragged() {
+    let mut panes = linked_panel();
+    let seam = seam_cell(&panes);
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+    let before = (geom(&panes, 1), geom(&panes, 2));
+
+    assert!(
+        !panes.move_pane_with_mouse(Position::new(0, 0)),
+        "there is nowhere to move a pane that fills the screen"
+    );
+    assert!(!panes.is_resizable(&PaneId::Terminal(1)));
+    assert!(!panes
+        .resize_pane_with_id(PaneId::Terminal(1), grow(Direction::Right))
+        .unwrap());
+    assert_eq!(panes.seam_at(&seam), None, "and no divider to drag");
+
+    assert_eq!(
+        (geom(&panes, 1), geom(&panes, 2)),
+        before,
+        "so the rectangle underneath is exactly as it was"
+    );
+}
+
+/// A linked pair is one panel to every gesture, and this is a gesture.
+#[test]
+fn a_linked_panel_is_expanded_as_a_panel() {
+    let mut panes = linked_panel();
+
+    panes.toggle_pane_fullscreen(PaneId::Terminal(2));
+
+    assert_eq!(
+        (drawn(&panes, 1), drawn(&panes, 2)),
+        ((0, 0, 40, 20), (40, 0, 40, 20)),
+        "both halves grow, and the divider keeps its share of the panel"
+    );
+    assert!(panes.pane_is_fullscreen(&PaneId::Terminal(1)));
+
+    panes.toggle_pane_fullscreen(PaneId::Terminal(2));
+    assert_eq!(
+        (geom(&panes, 1), geom(&panes, 2)),
+        ((2, 2, 30, 10), (32, 2, 30, 10)),
+        "and the panel comes back whole"
+    );
+}
+
+/// An uneven split stays uneven: the divider is carried in proportion, exactly as an undirected
+/// resize of the panel carries it.
+#[test]
+fn an_expanded_panel_keeps_an_uneven_split_in_proportion() {
+    let mut panes = linked_panel();
+    place(&mut panes, batch(&[(1, 2, 45), (2, 47, 15)]), false);
+
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+
+    assert_eq!(
+        (drawn(&panes, 1).2, drawn(&panes, 2).2),
+        (60, 20),
+        "three quarters and one quarter of the panel become three quarters and one of the screen"
+    );
+}
+
+/// The owning plugin keeps re-cutting the panel while it is expanded, and the expansion follows -
+/// this is the same `set_pane_frames` step that keeps it filling a screen that changed size.
+#[test]
+fn a_batch_that_re_cuts_an_expanded_panel_moves_its_divider() {
+    let mut panes = linked_panel();
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+
+    place(&mut panes, batch(&[(1, 2, 45), (2, 47, 15)]), false);
+
+    assert_eq!(
+        (drawn(&panes, 1).2, drawn(&panes, 2).2),
+        (60, 20),
+        "the divider is re-cut where the batch asked, at the size of the screen"
+    );
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+    assert_eq!(
+        (geom(&panes, 1), geom(&panes, 2)),
+        ((2, 2, 45, 10), (47, 2, 15, 10)),
+        "and the way back is the batch's, not the rectangle from before it"
+    );
+}
+
+/// A pair with a hidden half is the shown half taking the whole panel, which is how every other
+/// placement already reads that shape.
+#[test]
+fn a_panel_with_a_hidden_half_is_expanded_as_the_shown_half() {
+    let mut panes = linked_panel();
+    panes.hide_pane(PaneId::Terminal(1));
+
+    panes.toggle_pane_fullscreen(PaneId::Terminal(2));
+
+    assert_eq!(drawn(&panes, 2), (0, 0, 80, 20));
+    assert_eq!(
+        drawn(&panes, 1),
+        geom(&panes, 1),
+        "the hidden half keeps the rectangle it will come back to"
+    );
+    assert!(!panes.pane_is_fullscreen(&PaneId::Terminal(1)));
+}
+
+/// A modal is drawn because something needs an answer now, and a keystroke that fills the screen
+/// with something else does not suspend that.
+#[test]
+fn an_expanded_overlay_does_not_cover_a_live_modal() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+    add(&mut panes, 2, OverlayKind::Modal, half(40));
+
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+
+    assert_eq!(
+        panes.stack_layer_ids(),
+        vec![PaneId::Terminal(1), PaneId::Terminal(2)],
+        "the modal is still the top of the stack"
+    );
+}
+
+/// The frame is nothing but the resize hint, and an expanded overlay is not resizable, so it must
+/// not offer one.
+#[test]
+fn an_expanded_overlay_stops_offering_a_resize() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+    assert!(panes.is_resizable(&PaneId::Terminal(1)));
+
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+
+    assert!(!panes.is_resizable(&PaneId::Terminal(1)));
+}
