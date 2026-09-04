@@ -353,8 +353,12 @@ computed where each is wanted:
 |---|---|---|
 | `digest` | `agents::run_history` | markdown for the timeline row: status glyph, short task id, summary, and a row saying what is folded away |
 | `title` | `agents::prompt_title`, `run_title` | `task · Agent "…" finished`, for the tab bar and the archive row |
-| `question` | `hocus-agentd`'s `prompts` map and `run_delta` | a sentence for the summariser, with the note and the path dropped |
+| `question` | `hocus-agentd`'s `kept_prompt` and `run_delta` | a sentence for the summariser, with the note and the path dropped. Both the header a request carries and the run history under it go through it, so one request cannot say two things about what the turn was for |
 | `sections` | the agents pane's reader | the folds `Enter` opens, `o` opens a file from, and `y` copies |
+
+`digest` and `sections` are both asked only of a `prompt:` entry, which is the one kind a harness
+writes as well as a person. An agent's own message quoting a `<system-reminder>` at the start of a
+line is prose *about* markup: the timeline draws it as it arrived, and the reader opens it whole.
 
 A run's title prefers the first prompt carrying any **prose**, so a run woken by a task and later
 typed into by a person is named for what the person typed.
