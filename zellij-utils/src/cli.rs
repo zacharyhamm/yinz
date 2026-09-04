@@ -392,6 +392,12 @@ pub enum Firecracker {
         #[clap(long)]
         session: Option<String>,
     },
+    /// Count paths changed in a running VM since its last worktree sync.
+    Changes {
+        name: String,
+        #[clap(long)]
+        session: Option<String>,
+    },
 }
 
 #[derive(Debug, Parser, Clone, Serialize, Deserialize)]
@@ -2004,6 +2010,22 @@ mod tests {
         assert!(matches!(
             stop.command,
             Some(Command::Firecracker(Firecracker::Stop {
+                ref name,
+                session: Some(ref session),
+            })) if name == "review" && session == "work"
+        ));
+        let changes = try_parse_cli([
+            "zellij",
+            "firecracker",
+            "changes",
+            "review",
+            "--session",
+            "work",
+        ])
+        .unwrap();
+        assert!(matches!(
+            changes.command,
+            Some(Command::Firecracker(Firecracker::Changes {
                 ref name,
                 session: Some(ref session),
             })) if name == "review" && session == "work"

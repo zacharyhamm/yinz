@@ -9,6 +9,7 @@
 use super::*;
 use crate::screen::{agent_hook_edges, apply_pane_agent_report};
 use std::collections::BTreeMap;
+use std::path::Path;
 use zellij_utils::data::OriginatingPlugin;
 use zellij_utils::data::HOCUS_AGENT_PANE_CONTEXT;
 use zellij_utils::data::{AgentInfo, AgentSource, AgentState, BareKey, KeyWithModifier};
@@ -86,8 +87,18 @@ fn run_command_in_pane(pane_id: u32, run_command: RunCommand) -> ScreenInstructi
 /// order. The screen drains its instructions in order and `teardown` waits for the last one, so
 /// nothing here needs a sleep.
 fn hooks_fired_by(steps: Vec<ScreenInstruction>) -> Vec<Fired> {
+    hooks_fired_by_with_config(steps, None, None)
+}
+
+fn hooks_fired_by_with_config(
+    steps: Vec<ScreenInstruction>,
+    config_file_path: Option<PathBuf>,
+    config_dir: Option<PathBuf>,
+) -> Vec<Fired> {
     let size = Size { cols: 80, rows: 20 };
     let mut mock_screen = MockScreen::new(size);
+    mock_screen.session_metadata.config_file_path = config_file_path;
+    mock_screen.session_metadata.config_dir = config_dir;
     let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
     let screen_thread = mock_screen.run(None, vec![]);
     for step in steps {
@@ -353,6 +364,40 @@ fn an_exiting_agent_pane_fires_the_agent_exit_hook() {
         payload.get("agent_exit_code").map(String::as_str),
         Some("0")
     );
+}
+
+#[test]
+fn a_firecracker_worktree_agent_exit_identifies_the_vm_to_the_hook() {
+    let mut command = agent_command("/workspace");
+    command.target = zellij_utils::data::PaneTarget::firecracker(
+        "review",
+        Some("rust-dev"),
+        Some(Path::new("/work/.worktrees/topic")),
+    )
+    .unwrap();
+    let fired = hooks_fired_by_with_config(
+        vec![new_pane(2, None), hold(2, command)],
+        Some(PathBuf::from("/config/config.kdl")),
+        Some(PathBuf::from("/config")),
+    );
+    let payload = &fired
+        .iter()
+        .find(|(point, _, _)| *point == HookPoint::AgentExit)
+        .unwrap()
+        .2;
+
+    assert_eq!(payload.get("agent_firecracker_vm").unwrap(), "review");
+    assert_eq!(
+        payload.get("agent_firecracker_worktree").unwrap(),
+        "/work/.worktrees/topic"
+    );
+    assert_eq!(payload.get("agent_session").unwrap(), "zellij-test");
+    assert!(payload.contains_key("agent_zellij_executable"));
+    assert_eq!(
+        payload.get("agent_zellij_config_file").unwrap(),
+        "/config/config.kdl"
+    );
+    assert_eq!(payload.get("agent_zellij_config_dir").unwrap(), "/config");
 }
 
 #[test]

@@ -2426,6 +2426,8 @@ fn init_session(
             let debug = cli_assets.is_debug;
             let layout = layout.clone();
             let config = config.clone();
+            let config_file_path = cli_assets.config_file_path.clone();
+            let config_dir = cli_assets.config_dir.clone();
             move || {
                 screen_thread_main(
                     screen_bus,
@@ -2433,6 +2435,8 @@ fn init_session(
                     client_attributes_clone,
                     config,
                     debug,
+                    config_file_path,
+                    config_dir,
                     layout,
                 )
                 .fatal();

@@ -1052,6 +1052,17 @@ empty:
 | `agent_cwd` | where the agent was working |
 | `agent_exit_code` | absent if the command was killed by a signal |
 | `agent_command` | the command that exited, for display |
+| `agent_firecracker_vm` | VM name, for a worktree-backed Firecracker pane only |
+| `agent_firecracker_worktree` | host worktree, for a worktree-backed Firecracker pane only |
+| `agent_session` | owning session, for a worktree-backed Firecracker pane only |
+| `agent_zellij_executable` | exact host binary used for Firecracker management commands |
+| `agent_zellij_config_file` | selected config file, forwarded as `ZELLIJ_CONFIG_FILE` |
+| `agent_zellij_config_dir` | selected config directory, forwarded as `ZELLIJ_CONFIG_DIR` |
+
+For a worktree-backed Firecracker pane, the shipped hook checks the guest against its last sync
+baseline. It adds `<S> sync` only when guest paths changed, including the file results of commits
+as well as uncommitted edits. A sync leaves the hook open and reports completion or merge warnings;
+Enter and Esc remain available while the check or sync runs.
 
 ### Headless hooks
 

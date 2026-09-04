@@ -29,6 +29,7 @@ local M = {}
 
 local QUESTION = "Agent exited. Create another agent in the same directory?"
 local CONTROLS = "<ENTER> create another agent  <ESC> close pane"
+local MAX_OUTPUT = 8192
 
 --- The pane this hook stands in for. Supplied by the host in the hook payload; nil
 --- means the plugin was launched by hand rather than by the hook, in which case
@@ -51,13 +52,43 @@ local function centered(text, cols)
   return string.rep(" ", padding) .. text
 end
 
+local function run(step, args)
+  zellij.run_command {
+    command = args,
+    env_variables = M.env_variables,
+    cwd = "/",
+    context = { step = step },
+    max_bytes_returned = MAX_OUTPUT,
+  }
+end
+
+local function output(bytes)
+  local text = zellij.bytes_to_string(bytes):gsub("%s+$", "")
+  return text
+end
+
 function M.load(config)
   -- Arrives as a string: the payload is a plugin configuration map, which is
   -- `BTreeMap<String, String>` on the host side. The `agent_` prefix is not decoration -
   -- `PluginUserConfiguration::new` drops a reserved word such as a bare `cwd`.
   M.pane_id = tonumber(config.agent_pane_id)
   M.cwd = config.agent_cwd or ""
-  zellij.subscribe { "key" }
+  M.vm = config.agent_firecracker_vm
+  M.worktree = config.agent_firecracker_worktree
+  M.session = config.agent_session
+  M.zellij = config.agent_zellij_executable or "zellij"
+  M.env_variables = {}
+  if config.agent_zellij_config_file then
+    M.env_variables.ZELLIJ_CONFIG_FILE = config.agent_zellij_config_file
+  end
+  if config.agent_zellij_config_dir then
+    M.env_variables.ZELLIJ_CONFIG_DIR = config.agent_zellij_config_dir
+  end
+  zellij.subscribe { "key", "run_command_result" }
+  if M.vm and M.worktree and M.session then
+    M.status = "Checking VM worktree for changes..."
+    run("check", { M.zellij, "firecracker", "changes", M.vm, "--session", M.session })
+  end
 end
 
 zellij.on("key", function(event)
@@ -77,6 +108,50 @@ zellij.on("key", function(event)
       zellij.close_terminal_pane(pane_id())
     end
     zellij.close_self()
+  elseif event.key == "s" and M.changes and M.changes > 0 and not M.syncing then
+    M.syncing = true
+    M.status = "Syncing VM worktree..."
+    run("sync", { M.zellij, "firecracker", "sync", M.vm, "--session", M.session })
+    return true
+  end
+end)
+
+zellij.on("run_command_result", function(event)
+  local exit_code, stdout, stderr, context = table.unpack(event.value)
+  local step = context and context.step
+  if step == "check" or step == "recheck" then
+    local changes = exit_code == 0 and tonumber(output(stdout)) or nil
+    if changes then
+      M.changes = changes
+      if step == "check" then
+        M.status = changes > 0 and ("%d changed %s in the VM."):format(
+          changes,
+          changes == 1 and "path" or "paths"
+        ) or nil
+      elseif changes > 0 then
+        M.status = ("VM worktree synced, but %d changed %s."):format(
+          changes,
+          changes == 1 and "path remains" or "paths remain"
+        )
+      end
+    else
+      M.status = (step == "recheck" and "Could not recheck VM changes: " or
+        "Could not check VM changes: ") .. output(stderr)
+    end
+    if step == "recheck" then
+      M.syncing = false
+    end
+    return true
+  elseif step == "sync" then
+    if exit_code == 0 then
+      local warnings = output(stderr):gsub("%s*\n%s*", " ")
+      M.status = warnings == "" and "VM worktree synced." or "VM worktree synced. " .. warnings
+      run("recheck", { M.zellij, "firecracker", "changes", M.vm, "--session", M.session })
+    else
+      M.syncing = false
+      M.status = "VM worktree sync failed: " .. output(stderr)
+    end
+    return true
   end
 end)
 
@@ -86,12 +161,17 @@ function M.render(rows, cols)
   for _ = 1, math.max(middle - 2, 0) do
     table.insert(lines, "")
   end
-  table.insert(lines, "\27[1m" .. centered(QUESTION, cols) .. "\27[0m")
+  local question = M.changes and M.changes > 0 and "Agent exited. What next?" or QUESTION
+  table.insert(lines, "\27[1m" .. centered(question, cols) .. "\27[0m")
   table.insert(lines, "")
   table.insert(lines, centered("Directory: " .. M.cwd, cols))
+  table.insert(lines, centered(zellij.text.truncate(M.status or "", cols), cols))
   table.insert(lines, "")
-  table.insert(lines, "")
-  table.insert(lines, "\27[1m" .. centered(CONTROLS, cols) .. "\27[0m")
+  local controls = CONTROLS
+  if M.changes and M.changes > 0 then
+    controls = ("<ENTER> restart  <S> sync %d  <ESC> close pane"):format(M.changes)
+  end
+  table.insert(lines, "\27[1m" .. centered(controls, cols) .. "\27[0m")
   return table.concat(lines, "\n")
 end
 

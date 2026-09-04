@@ -77,6 +77,11 @@ pub(crate) enum Request<'a> {
         session: Cow<'a, str>,
         name: Cow<'a, str>,
     },
+    Changes {
+        version: u32,
+        session: Cow<'a, str>,
+        name: Cow<'a, str>,
+    },
     RenameSession {
         version: u32,
         from: Cow<'a, str>,
@@ -93,6 +98,7 @@ impl Request<'_> {
             | Self::StopSession { version, .. }
             | Self::List { version, .. }
             | Self::Sync { version, .. }
+            | Self::Changes { version, .. }
             | Self::RenameSession { version, .. } => *version,
         }
     }
@@ -153,6 +159,12 @@ struct WarningsResponse {
     version: u32,
     #[serde(default)]
     warnings: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChangesResponse {
+    version: u32,
+    changes: usize,
 }
 
 impl Provider {
@@ -299,6 +311,18 @@ impl Provider {
         })?;
         self.check_version(response.version)?;
         Ok(response.warnings)
+    }
+
+    /// Count guest paths changed since the last worktree sync without changing either tree.
+    pub fn changes(&self, session: &str, name: &str) -> Result<usize> {
+        validate_firecracker_vm_name(name).map_err(|e| anyhow!(e))?;
+        let response: ChangesResponse = self.invoke(Request::Changes {
+            version: PROTOCOL_VERSION,
+            session: session.into(),
+            name: name.into(),
+        })?;
+        self.check_version(response.version)?;
+        Ok(response.changes)
     }
 
     fn check_version(&self, version: u32) -> Result<()> {
@@ -591,6 +615,7 @@ printf '%s\n' "$request" >> '{}'
 case "$request" in
   *'"action":"ensure"'*) printf '%s' '{{"version":2,"ssh_host":"ssh://zellij@127.0.0.1:2201","cwd":"/workspace"}}' ;;
   *'"action":"list"'*) printf '%s' '{{"version":2,"vms":[{{"session":"work","name":"review","state":"running"}}],"recoveries":[{{"path":"/state/recovery/abc-1-sync-failed","reason":"sync-failed","retained_at":1,"session":"work","name":"review","worktree":"/repo"}}]}}' ;;
+  *'"action":"changes"'*) printf '%s' '{{"version":2,"changes":3}}' ;;
   *'"action":"sync"'*) printf '%s' '{{"version":2,"warnings":["/repo/a.rs: changed on both sides; kept the host copy, the guest copy is /repo/a.rs.guest"]}}' ;;
   *) printf '%s' '{{"version":2}}' ;;
 esac
@@ -650,6 +675,7 @@ esac
             provider.sync("work", "review").unwrap(),
             ["/repo/a.rs: changed on both sides; kept the host copy, the guest copy is /repo/a.rs.guest"]
         );
+        assert_eq!(provider.changes("work", "review").unwrap(), 3);
         assert_eq!(provider.stop_session("work").unwrap(), Vec::<String>::new());
 
         let requests: Vec<serde_json::Value> = fs::read_to_string(log)
@@ -665,6 +691,7 @@ esac
                 json!({"version": 2, "action": "list", "session": null}),
                 json!({"version": 2, "action": "stop", "session": "work", "name": "review"}),
                 json!({"version": 2, "action": "sync", "session": "work", "name": "review"}),
+                json!({"version": 2, "action": "changes", "session": "work", "name": "review"}),
                 json!({"version": 2, "action": "stop_session", "session": "work"}),
             ]
         );

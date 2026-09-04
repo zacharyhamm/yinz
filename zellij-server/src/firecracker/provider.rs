@@ -372,6 +372,10 @@ fn handle_request(
             "version": PROTOCOL_VERSION,
             "warnings": sync_one(state, config, copy, &session, &name)?,
         }),
+        Request::Changes { session, name, .. } => json!({
+            "version": PROTOCOL_VERSION,
+            "changes": changes_one(state, config, copy, &session, &name)?,
+        }),
         Request::RenameSession { from, to, .. } => {
             rename_session(state, &from, &to)?;
             json!({ "version": PROTOCOL_VERSION })
@@ -2424,6 +2428,50 @@ fn sync_one(
         )
     }));
     Ok(warnings)
+}
+
+/// Count paths whose guest copy differs from the last shared baseline. Git metadata and ignored
+/// files are absent from the pull, so this sees the same tree a sync would merge regardless of
+/// whether the agent committed its changes.
+fn changes_one(
+    locked: &LockedState,
+    config: &Config,
+    copy: &dyn GuestCopy,
+    session: &str,
+    name: &str,
+) -> Result<usize> {
+    validate_firecracker_vm_name(name).map_err(|error| anyhow!(error))?;
+    let Some((_, state)) = find_vm(&locked.entries()?, session, name)? else {
+        return Err(anyhow!(
+            "Firecracker VM {name:?} is not running for session {session:?}"
+        ));
+    };
+    if !vm_is_running(&state) {
+        return Err(anyhow!("Firecracker VM {name:?} is not running"));
+    }
+    if !state.ready {
+        return Err(anyhow!(
+            "Firecracker VM {name:?} is still being provisioned; open a pane in it first"
+        ));
+    }
+    if state.worktree.is_none() {
+        return Ok(0);
+    }
+    let baseline = read_baseline(&state)?;
+    let staging = Staging::fresh(&state)?;
+    let guest = staging.subdir("guest")?;
+    {
+        let _progress = Progress::start("checking the guest for worktree changes");
+        copy.pull(&state, config, &guest)?;
+    }
+    let guest = worktree_baseline(&guest)?;
+    Ok(baseline
+        .keys()
+        .chain(guest.keys())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|path| baseline.get(*path) != guest.get(*path))
+        .count())
 }
 
 fn terminate(state: &VmState, mut child: Option<&mut Child>) {
@@ -8802,6 +8850,64 @@ mod tests {
     }
 
     #[test]
+    fn changes_counts_guest_paths_without_mutating_either_worktree() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let mut guests = FakeGuests::default();
+        let mut vm = LeasedVm::new(
+            &locked,
+            &mut guests,
+            "review",
+            &[
+                ("changed.rs", "before"),
+                ("deleted.rs", "before"),
+                ("same.rs", "same"),
+            ],
+        );
+        let live = LiveProcess::spawn();
+        live.attach(&mut vm);
+        let baseline = read_baseline(&vm.state).unwrap();
+        let config = provider_config(root.path());
+        assert_eq!(
+            changes_one(&locked, &config, &guests, "work", "review").unwrap(),
+            0
+        );
+        fs::write(vm.guest.join("changed.rs"), "guest").unwrap();
+        fs::remove_file(vm.guest.join("deleted.rs")).unwrap();
+        fs::write(vm.guest.join("added.rs"), "guest").unwrap();
+        fs::create_dir(vm.guest.join(".git")).unwrap();
+        fs::write(vm.guest.join(".git/COMMIT_EDITMSG"), "committed").unwrap();
+        fs::write(vm.host.join("host-only.rs"), "host").unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                changes_one(&locked, &config, &guests, "work", "review").unwrap(),
+                3,
+                "only guest content changes count; git metadata and host-only edits do not"
+            );
+        }
+        assert_eq!(vm.host_file("changed.rs").as_deref(), Some("before"));
+        assert_eq!(vm.guest_file("changed.rs").as_deref(), Some("guest"));
+        assert_eq!(read_baseline(&vm.state).unwrap(), baseline);
+
+        let response = handle_request(
+            &locked,
+            &config,
+            &network_config(),
+            &guests,
+            Request::Changes {
+                version: PROTOCOL_VERSION,
+                session: "work".into(),
+                name: "review".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            response,
+            json!({ "version": PROTOCOL_VERSION, "changes": 3 })
+        );
+    }
+
+    #[test]
     fn sync_merges_the_guest_pushes_the_result_back_and_rewrites_the_baseline() {
         let root = tempfile::tempdir().unwrap();
         let locked = locked_state_in(root.path());
@@ -9001,6 +9107,13 @@ mod tests {
         let error = sync_one(&locked, &config, &guests, "work", "missing").unwrap_err();
         assert!(error.to_string().contains("is not running"), "{error}");
         let error = sync_one(&locked, &config, &guests, "other", "review").unwrap_err();
+        assert!(error.to_string().contains("is not running"), "{error}");
+        let error = changes_one(&locked, &config, &guests, "work", "review").unwrap_err();
+        assert!(
+            error.to_string().contains("still being provisioned"),
+            "{error}"
+        );
+        let error = changes_one(&locked, &config, &guests, "work", "missing").unwrap_err();
         assert!(error.to_string().contains("is not running"), "{error}");
         assert_eq!(vm.host_file("edited.rs").as_deref(), Some("before"));
     }
