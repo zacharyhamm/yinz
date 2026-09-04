@@ -78,6 +78,10 @@ fn hold(pane_id: u32, run_command: RunCommand) -> ScreenInstruction {
     ScreenInstruction::HoldPane(PaneId::Terminal(pane_id), Some(0), run_command)
 }
 
+fn run_command_in_pane(pane_id: u32, run_command: RunCommand) -> ScreenInstruction {
+    ScreenInstruction::RunCommandInPane(pane_id, run_command, false)
+}
+
 /// Drive the screen through `steps` and return every hook it asked the plugin thread for, in
 /// order. The screen drains its instructions in order and `teardown` waits for the last one, so
 /// nothing here needs a sleep.
@@ -388,6 +392,119 @@ fn a_pane_whose_agent_reported_for_itself_fires_the_hook_on_exit() {
         "got: {fired:?}"
     );
     assert_eq!(fired[2].1, Some(PaneId::Terminal(3)));
+}
+
+/// The shape of a pane warped in from another session: no originating plugin - the supervisor
+/// drops one that names a plugin in the session the pane left - and a record cleared by the
+/// agent's own `SessionEnd` a moment before its process exits. The pane remembers it was an
+/// agent, so the exit still reaches the hook.
+#[test]
+fn a_pane_whose_record_was_cleared_before_it_exited_still_fires_agent_exit() {
+    let adopted = RunCommand {
+        command: PathBuf::from("claude"),
+        cwd: Some(PathBuf::from("/work")),
+        hold_on_close: true,
+        originating_plugin: None,
+        ..Default::default()
+    };
+    let fired = hooks_fired_by(vec![
+        new_pane(3, None),
+        set_agent(3, Some(report(AgentState::Busy, Some("s1")))),
+        set_agent(3, None),
+        hold(3, adopted),
+    ]);
+    assert_eq!(
+        points(&fired),
+        vec![
+            HookPoint::AgentStart,
+            HookPoint::PaneExit,
+            HookPoint::AgentExit
+        ],
+        "got: {fired:?}"
+    );
+    assert_eq!(fired[2].1, Some(PaneId::Terminal(3)));
+}
+
+/// Clearing a record a pane never had says nothing about the pane, so it must not arm the
+/// memory the test above relies on.
+#[test]
+fn clearing_a_record_a_pane_never_had_does_not_make_it_an_agent() {
+    let fired = hooks_fired_by(vec![
+        new_pane(2, None),
+        set_agent(2, None),
+        hold(2, echo_command()),
+    ]);
+    assert_eq!(points(&fired), vec![HookPoint::PaneExit], "got: {fired:?}");
+}
+
+/// A held agent pane put to a different command is no longer that agent's pane. Neither the
+/// record nor the memory of one says anything true about `npm test`, so the second exit is an
+/// ordinary command pane's - `pane_exit` and nothing else.
+#[test]
+fn a_pane_re_run_with_a_different_command_stops_being_an_agent_pane() {
+    let agent = RunCommand {
+        command: PathBuf::from("claude"),
+        cwd: Some(PathBuf::from("/work")),
+        hold_on_close: true,
+        // No marker: the memory is what is under test, and the context road would answer for
+        // the pane on its own.
+        originating_plugin: None,
+        ..Default::default()
+    };
+    let fired = hooks_fired_by(vec![
+        new_pane(3, None),
+        set_agent(3, Some(report(AgentState::Busy, Some("s1")))),
+        hold(3, agent),
+        run_command_in_pane(3, echo_command()),
+        hold(3, echo_command()),
+    ]);
+    assert_eq!(
+        points(&fired),
+        vec![
+            HookPoint::AgentStart,
+            HookPoint::PaneExit,
+            HookPoint::AgentExit,
+            HookPoint::PaneExit
+        ],
+        "got: {fired:?}"
+    );
+}
+
+/// The same road with the agent's own command: a plugin restarting the agent builds a fresh
+/// `RunCommand`, so the comparison reads the command and its arguments and not the fields
+/// around them. The pane is still the agent's, and its next exit still fires the hook.
+#[test]
+fn a_pane_re_run_with_its_own_command_is_still_an_agent_pane() {
+    let agent = RunCommand {
+        command: PathBuf::from("claude"),
+        cwd: Some(PathBuf::from("/work")),
+        hold_on_close: true,
+        originating_plugin: None,
+        ..Default::default()
+    };
+    let restarted = RunCommand {
+        hold_on_close: false,
+        ..agent.clone()
+    };
+    let fired = hooks_fired_by(vec![
+        new_pane(3, None),
+        set_agent(3, Some(report(AgentState::Busy, Some("s1")))),
+        hold(3, agent.clone()),
+        run_command_in_pane(3, restarted),
+        hold(3, agent),
+    ]);
+    assert_eq!(
+        points(&fired),
+        vec![
+            HookPoint::AgentStart,
+            HookPoint::PaneExit,
+            HookPoint::AgentExit,
+            HookPoint::AgentStart,
+            HookPoint::PaneExit,
+            HookPoint::AgentExit
+        ],
+        "got: {fired:?}"
+    );
 }
 
 #[test]

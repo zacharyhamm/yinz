@@ -90,7 +90,13 @@ The other half is in hocus-agentd. The session that *loses* a warped pane cannot
 from a `kill -9` — a pane simply stops being in the manifest — so it writes the weaker of the
 two claims: *if nobody else has taken this run, it is over*, as a store update predicated on
 the run still being under its own session name. The session that *gains* the pane looks the run
-up by id the moment the pane appears, and reopens it under its own name. Whichever of those two
+up by id the moment the pane appears, and reopens it under its own name.
+
+The record is also what arms `agent_exit` in the session that gains the pane. The other road
+into that hook — the `hocus_agent_pane` marker on the pane's originating plugin — is gone by
+construction after a warp: the supervisor clears an `originating_plugin` that names a plugin and
+a client in the session the pane left. So the transferred record, and the pane's memory of it,
+are the whole of what makes a warped agent's exit fire the hook. Whichever of those two
 writes lands second, the history survives: the guard matches nothing once the row has moved,
 and adoption keeps every entry, the summary and the original start time.
 
@@ -123,7 +129,13 @@ question with one answer: the spawn path, when a plugin opens a pane *as* an age
 speaking for an agent — hocus's `agent_register` is one such plugin, writing
 `AgentSource::Registered` with the kind a person gave and `idle` as a placeholder state. A pane with a record fires the `agent_exit` hook when its command exits,
 however the record got there — `claude` typed at a shell becomes an agent pane the moment it
-reports for itself. The record's edges fire hooks of their own: `agent_start` when a record
+reports for itself. **The memory of a record is enough**: a pane that has ever held one fires
+the hook even if the record has since been cleared, because a clean exit clears it first —
+`SessionEnd` runs a moment before the process does — and a pane that disarmed itself on the
+tidiest of exits would fire the hook only for agents that were killed. The one thing that takes
+the memory back is a pane re-run with a *different* command — a plugin reusing a held pane for
+`npm test` is not that agent's pane any more, and forgets both the record and the memory of it.
+The record's edges fire hooks of their own: `agent_start` when a record
 appears (or comes back after `exited`, or changes `session_id`), `agent_waiting` when it moves
 to `waiting`. Both go to a headless plugin as `Event::Hook` — see `docs/LUA_PLUGINS.md`,
 "Headless hooks". `zellij action agent-report --state waiting --detail "y/n"` is the same road
@@ -155,7 +167,7 @@ safe to run.
 | `Stop` | both | idle | Every turn end. **Carries `last_assistant_message`** |
 | `StopFailure` | claude | idle | The turn died on an API error — the only thing that says so |
 | `Interrupt` | codex | idle | A turn the user cancelled, which ends it just as flatly |
-| `SessionEnd` | both | — | Clears the record, and ends the feed |
+| `SessionEnd` | both | — | Clears the record, and ends the feed. `agent_exit` still fires |
 
 The reading is by event and tool name, never by agent: one function answers for both, because
 the record `agent-report` writes and the feed hocus draws are two different readers of it, and

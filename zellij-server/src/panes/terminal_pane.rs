@@ -162,6 +162,13 @@ pub struct TerminalPane {
     /// The agent running here, if the session knows of one. Starts as what the spawn path
     /// said; replaced whole by every report, and moved to `Exited`/`Busy` by hold and re-run.
     agent: Option<AgentInfo>,
+    /// Whether this pane has ever held an agent record, however it got there.
+    ///
+    /// Sticky, and deliberately not derived from `agent`: a `SessionEnd` hook clears the
+    /// record a moment before the agent's process exits, so a pane that gates `agent_exit` on
+    /// the live record would disarm itself on every clean exit. The record is what the agent
+    /// says now; this is that it was ever an agent at all.
+    was_an_agent: bool,
     /// When the agent here entered a wait a person has to answer, while nobody has answered
     /// it yet. Drives the blinking indicator in the frame's top-right corner, and nothing
     /// else.
@@ -1311,7 +1318,13 @@ impl Pane for TerminalPane {
     fn agent_info(&self) -> Option<&AgentInfo> {
         self.agent.as_ref()
     }
+    fn was_an_agent(&self) -> bool {
+        self.was_an_agent
+    }
     fn set_agent_info(&mut self, agent: Option<AgentInfo>) -> bool {
+        // Before the equality check: a record that repeats itself still says this is an agent
+        // pane, and the memory is set once and never taken back.
+        self.was_an_agent |= agent.is_some();
         if self.agent == agent {
             return false;
         }
@@ -1436,6 +1449,23 @@ impl Pane for TerminalPane {
             self.remove_banner();
             match replacement {
                 Some(replacement) => {
+                    // A pane re-run with a *different* command is not the same pane's work
+                    // any more, and neither the record nor the memory of one says anything
+                    // true about it. Left alone, a plugin reusing a held agent pane for `npm
+                    // test` would fire `agent_exit` on that command's exit, naming it as the
+                    // agent's - and the sticky memory would make it unrecoverable, because
+                    // clearing the record no longer disarms the hook.
+                    //
+                    // `command` and `args` rather than the whole `RunCommand`: a plugin
+                    // re-running the same agent builds a fresh one, whose `hold_on_close`,
+                    // `originating_plugin` and the rest may differ incidentally, and reading
+                    // that as a new command would forget a live agent.
+                    if replacement.command != run_command.command
+                        || replacement.args != run_command.args
+                    {
+                        self.agent = None;
+                        self.was_an_agent = false;
+                    }
                     self.invoked_with = Some(Run::Command(replacement.clone()));
                     replacement
                 },
@@ -1713,6 +1743,7 @@ impl TerminalPane {
             prev_pane_name: pane_name,
             remote_host: None,
             title_prefix: None,
+            was_an_agent: agent.is_some(),
             agent,
             // A pane the spawn path opened as an agent pane starts `Busy`, so there is
             // never a wait to draw before the first report arrives.
