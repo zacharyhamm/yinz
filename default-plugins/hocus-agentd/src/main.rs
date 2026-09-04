@@ -973,6 +973,11 @@ impl State {
         }
         // Read after the adoption above: a run it picked up is not a new one.
         let new_run = !self.runs.contains_key(&pane_id);
+        // The machine the pane's process is on, read out here because the entry below borrows
+        // `self.runs`. A hook reports the agent's folder and nothing about where that folder
+        // is; the pane is the only thing that knows, and without it a run recorded on a build
+        // box is indistinguishable from one recorded here.
+        let host = self.hosts.get(&pane_id).cloned();
         let run = self
             .runs
             .entry(pane_id)
@@ -983,6 +988,7 @@ impl State {
                 session_id: event.session_id.clone(),
                 kind: kind.to_owned(),
                 cwd: event.cwd.clone(),
+                host: host.clone(),
                 started_at_ms: now_ms,
                 ended_at_ms: None,
                 outcome: agents::RunOutcome::Active,
@@ -1001,6 +1007,12 @@ impl State {
                 run.cwd = Some(cwd.clone());
                 changed = true;
             }
+        }
+        // Kept level with the pane on every hook and not only at the start, so a run whose
+        // pane was warped to another machine stops claiming the folder it had here.
+        if run.host != host {
+            run.host = host;
+            changed = true;
         }
         if let Some((kind, text)) = agents::run_entry(event) {
             let event_id = agents::run_event_id(event);
@@ -3183,6 +3195,7 @@ mod tests {
             session_id: "cc-session-1".to_owned(),
             kind: CLAUDE.to_owned(),
             cwd: Some("/work".to_owned()),
+            host: None,
             started_at_ms: 10,
             ended_at_ms: Some(20),
             outcome: agents::RunOutcome::Closed,
@@ -5584,6 +5597,7 @@ mod tests {
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
+            host: None,
             started_at_ms: 1,
             ended_at_ms: None,
             outcome: agents::RunOutcome::Active,
@@ -6742,6 +6756,27 @@ mod tests {
         );
     }
 
+    /// A run records the machine its pane is on, not only the folder the agent reported.
+    /// Without it, a run on a build box in `/work/hocus` is indistinguishable from one here,
+    /// and a project filter reading the history claims work nobody did on this machine.
+    #[test]
+    fn a_run_records_the_machine_its_pane_is_on() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        state.hosts.insert(7, "build-box".to_owned());
+        feed(&mut state, 7, &prompt("rewrite the retry backoff"), None);
+        let run = state.runs.get(&7).expect("the pane's run");
+        assert_eq!(run.host.as_deref(), Some("build-box"));
+
+        // And it follows the pane: a warp back to this machine repairs it.
+        state.hosts.remove(&7);
+        feed(&mut state, 7, &prompt("and now the timeout"), None);
+        let run = state.runs.get(&7).expect("the pane's run");
+        assert_eq!(run.host, None);
+    }
+
     /// Two presses against an agent that has not moved produce the same sentence twice, and
     /// two identical paragraphs one under the other read as a bug rather than as a history.
     #[test]
@@ -6792,6 +6827,7 @@ mod tests {
             session_id: "cc-session-1".to_owned(),
             kind: CLAUDE.to_owned(),
             cwd: Some("/work".to_owned()),
+            host: None,
             started_at_ms: 10,
             ended_at_ms: None,
             outcome: agents::RunOutcome::Active,
@@ -6829,6 +6865,7 @@ mod tests {
             session_id: "cc-session-1".to_owned(),
             kind: CLAUDE.to_owned(),
             cwd: Some("/work".to_owned()),
+            host: None,
             started_at_ms: 10,
             ended_at_ms: Some(20),
             outcome: agents::RunOutcome::Completed,

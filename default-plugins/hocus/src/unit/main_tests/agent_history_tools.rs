@@ -21,6 +21,23 @@ fn entry(revision: u64, kind: RunEntryKind, text: &str) -> RunEntry {
 }
 
 fn seed(state: &State, id: &str, kind: &str, session: &str, cwd: &str, entries: Vec<RunEntry>) {
+    seed_run(state, id, kind, session, cwd, None, entries);
+}
+
+/// The same, for a run whose pane is on another machine.
+fn seed_on_host(state: &State, id: &str, cwd: &str, host: &str) {
+    seed_run(state, id, "claude", "main", cwd, Some(host), Vec::new());
+}
+
+fn seed_run(
+    state: &State,
+    id: &str,
+    kind: &str,
+    session: &str,
+    cwd: &str,
+    host: Option<&str>,
+    entries: Vec<RunEntry>,
+) {
     let run = AgentRun {
         id: id.to_owned(),
         pane_id: 7,
@@ -28,6 +45,7 @@ fn seed(state: &State, id: &str, kind: &str, session: &str, cwd: &str, entries: 
         session_id: id.to_owned(),
         kind: kind.to_owned(),
         cwd: Some(cwd.to_owned()),
+        host: host.map(str::to_owned),
         started_at_ms: 1_000,
         ended_at_ms: None,
         outcome: RunOutcome::Active,
@@ -130,6 +148,27 @@ fn a_listing_narrows_by_kind_and_by_project() {
     assert_eq!(by_project["runs"][0]["project"], "hocus");
 }
 
+/// A folder on a build box that spells the same path as a local project is not that
+/// project: the run is neither listed under it nor annotated with its name.
+#[test]
+fn a_run_from_another_machine_belongs_to_no_local_project() {
+    let mut state = state_with_runs();
+    seed_on_host(&state, "claude:remote", "/work/hocus", "build-box");
+
+    let by_project = tool(&mut state, "agent_runs", r#"{"project":"hocus"}"#);
+    assert_eq!(by_project["count"], 1);
+    assert_eq!(by_project["runs"][0]["run_id"], "claude:one");
+
+    let listed = tool(&mut state, "agent_runs", "{}");
+    let remote = listed["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|run| run["run_id"] == "claude:remote")
+        .expect("the remote run is still listed");
+    assert_eq!(remote["project"], serde_json::Value::Null);
+}
+
 #[test]
 fn a_listing_names_an_unknown_project_rather_than_answering_emptily() {
     let mut state = state_with_runs();
@@ -154,7 +193,9 @@ fn an_unparseable_window_names_the_forms_it_accepts() {
     let refused = error(&mut state, "agent_runs", r#"{"since":"last tuesday"}"#);
     assert!(refused.contains("30m"), "{refused}");
     assert!(refused.contains("7d"), "{refused}");
-    for bad in ["0d", "-1d", "5", "5y"] {
+    // The last two are refused rather than crashing: their unit is a multi-byte
+    // character, and a window is split on its last *character* for that reason.
+    for bad in ["0d", "-1d", "5", "5y", "3ч", "7日"] {
         let refused = error(&mut state, "agent_runs", &format!(r#"{{"since":"{bad}"}}"#));
         assert!(refused.starts_with("since must be"), "{bad}: {refused}");
     }
