@@ -80,10 +80,15 @@ fn deferred_families_match_the_dispatch_consts() {
     assert_eq!(tools_in("slack"), SLACK_TOOLS.into_iter().collect());
     assert_eq!(tools_in("skill"), SKILL_TOOLS.into_iter().collect());
     assert_eq!(tools_in("linear"), LINEAR_TOOLS.into_iter().collect());
-    // The always-on `code` family is `PROJECT_READ_TOOLS` under a different name:
-    // that const is the dispatch route, not a family, and the names differ so the
-    // `project` family is not confused with it.
-    assert_eq!(tools_in("code"), PROJECT_READ_TOOLS.into_iter().collect());
+    // The always-on `code` family is `PROJECT_READ_TOOLS` under a different name,
+    // plus `project_list`: that const is the dispatch route, not a family, and the
+    // names differ so the `project` family is not confused with it. `project_list`
+    // is disclosed with the readers whose "no active project" it clears, but it
+    // runs through `run_local` rather than `start_project_read`, so it is in the
+    // family without being in the const.
+    let mut code: BTreeSet<&'static str> = PROJECT_READ_TOOLS.into_iter().collect();
+    code.insert("project_list");
+    assert_eq!(tools_in("code"), code);
 }
 
 #[test]
@@ -96,6 +101,17 @@ fn a_fresh_conversation_is_told_only_about_the_always_on_families() {
         }
     }
     assert!(shown.iter().any(|name| name == LOAD_TOOL));
+}
+
+/// `project_target` and `todo_target` answer "no active project; … call
+/// project_list", and a backend that constrains generation to the advertised set
+/// can only follow that if `project_list` is in it from the start. A family
+/// shuffle that defers it again should fail here rather than in a conversation
+/// that has no way out of the error it was just given.
+#[test]
+fn a_fresh_conversation_can_call_project_list() {
+    let shown = advertised(&specs_for(&BTreeSet::new()));
+    assert!(shown.iter().any(|name| name == "project_list"));
 }
 
 #[test]
@@ -165,6 +181,27 @@ fn a_load_of_something_that_is_not_a_deferred_family_loads_nothing() {
     ] {
         let calls = [call(LOAD_TOOL, arguments)];
         assert!(families_of(&calls).is_empty(), "{arguments}");
+    }
+}
+
+/// The two paths that read a family name have to agree, and the padding a model
+/// leaves around a JSON string value is where they used to part: the loader
+/// trimmed and answered "loaded", the derivation did not and advertised nothing,
+/// so the model was told it had tools it never got. Asserted together, because
+/// either half passing alone is exactly the bug.
+#[test]
+fn a_padded_family_name_loads_the_family_it_names() {
+    for (arguments, padded) in [
+        (r#"{"family":"slack "}"#, "slack "),
+        (r#"{"family":" slack"}"#, " slack"),
+        (r#"{"family":"\nslack\n"}"#, "\nslack\n"),
+    ] {
+        let calls = [call(LOAD_TOOL, arguments)];
+        assert_eq!(families_of(&calls), loaded(&["slack"]), "{padded:?}");
+        assert!(
+            load_family(Some(padded), false).starts_with("slack loaded"),
+            "{padded:?}",
+        );
     }
 }
 
