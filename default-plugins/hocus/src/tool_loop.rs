@@ -3,6 +3,7 @@ use crate::worker::read_pane_text;
 use crate::*;
 use hocus_proto::location::Location;
 use hocus_proto::notes;
+use hocus_proto::run_history;
 use hocus_proto::store::Backend;
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
@@ -1219,6 +1220,9 @@ impl State {
                 | "note_search"
                 | "agent_register"
                 | "agent_list"
+                | "agent_runs"
+                | "agent_run"
+                | "agent_history_search"
                 | "agent_send"
                 | "agent_control"
                 | "agent_spawn"
@@ -1243,6 +1247,9 @@ impl State {
             "note_search" => self.note_search(&args),
             "agent_register" => self.agent_register(&args),
             "agent_list" => self.agent_list(&args),
+            "agent_runs" => self.agent_runs(&args),
+            "agent_run" => self.agent_run(&args),
+            "agent_history_search" => self.agent_history_search(&args),
             "agent_spawn" => self.agent_spawn(&args),
             _ => self.agent_act(call, &args),
         })
@@ -2136,6 +2143,301 @@ impl State {
             &self.hooks,
             read_pane_text,
         )
+    }
+
+    // -- reading what agents have already done -------------------------
+    //
+    // Three tools over `run_history`, and one filter between them. They read the
+    // shared store directly and synchronously, as the note and todo tools do, so
+    // none of them defers: there is no daemon in the path and nothing to wait for.
+
+    /// The filter these three share, and a phrase naming what it selected.
+    ///
+    /// The label is not decoration. Machine-wide is the default, so an answer with
+    /// four runs in it has to say whether that is four runs on this machine or four
+    /// in this session — otherwise an empty result reads as "this never happened"
+    /// when it means "not here".
+    fn run_filter(&self, args: &tools::Args) -> Result<(run_history::Filter, String), String> {
+        let mut scope = Vec::new();
+        let zellij_session_name = match args.this_session {
+            false => None,
+            true => {
+                // Empty until the daemon's first poll reply names it. Matching on
+                // `""` would silently select every run that never had a session
+                // name written, which is the opposite of what was asked for.
+                let name = self.zellij_session_name.trim();
+                if name.is_empty() {
+                    return Err(
+                        "this session is not named yet; retry in a moment, or drop this_session \
+                         to search every session on this machine"
+                            .to_owned(),
+                    );
+                }
+                scope.push(format!("session {name}"));
+                Some(name.to_owned())
+            },
+        };
+        if !args.this_session {
+            scope.push("all sessions".to_owned());
+        }
+        let root = match args
+            .project
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+        {
+            None => None,
+            Some(name) => {
+                let Some(project) = self.projects.get(name) else {
+                    return Err(format!("unknown project {name}; call project_list"));
+                };
+                scope.push(project.name.clone());
+                Some(project.root.clone())
+            },
+        };
+        let kind = args
+            .kind
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty());
+        if let Some(kind) = kind {
+            scope.push(kind.to_owned());
+        }
+        let since_ms = args.since_ms(agents::now_ms())?;
+        if let Some(since) = args.since.as_deref().filter(|_| since_ms.is_some()) {
+            scope.push(since.trim().to_owned());
+        }
+        if let Some(active) = args.active {
+            scope.push(match active {
+                true => "running".to_owned(),
+                false => "finished".to_owned(),
+            });
+        }
+        Ok((
+            run_history::Filter {
+                zellij_session_name,
+                root,
+                kind: kind.map(str::to_owned),
+                since_ms,
+                active: args.active,
+            },
+            scope.join(" · "),
+        ))
+    }
+
+    /// One run's header, as a reply object. Shared by all three tools so a run
+    /// describes itself the same way wherever it appears.
+    fn run_reply(&self, header: &agents::AgentRunHeader, now_ms: i64) -> serde_json::Value {
+        serde_json::json!({
+            "run_id": header.id,
+            "kind": header.kind,
+            "title": header.title,
+            "pane_id": header.pane_id,
+            "cwd": header.cwd,
+            "project": header
+                .cwd
+                .as_deref()
+                .and_then(|cwd| projects::for_cwd(&self.projects, &Location::local(cwd)))
+                .map(|project| project.name.clone()),
+            "active": matches!(header.outcome, agents::RunOutcome::Active),
+            "outcome": match header.outcome {
+                agents::RunOutcome::Active => "active",
+                agents::RunOutcome::Completed => "completed",
+                agents::RunOutcome::Closed => "closed",
+                agents::RunOutcome::Replaced => "replaced",
+            },
+            "started_at_ms": header.started_at_ms,
+            "ended_at_ms": header.ended_at_ms,
+            "age": agents::short_age(now_ms, header.started_at_ms),
+            "entries": header.revision,
+            "summary": header.summary.as_ref().map(|summary| summary.text.clone()),
+        })
+    }
+
+    pub(crate) fn agent_runs(&self, args: &tools::Args) -> String {
+        let (filter, scope) = match self.run_filter(args) {
+            Ok(found) => found,
+            Err(error) => return error,
+        };
+        let limit = args.limit.unwrap_or(20);
+        let offset = args.offset.unwrap_or(0);
+        let (headers, more) = match run_history::list_runs(&self.store(), &filter, limit, offset) {
+            Ok(found) => found,
+            Err(error) => return error,
+        };
+        let now_ms = agents::now_ms();
+        let runs: Vec<serde_json::Value> = headers
+            .iter()
+            .map(|header| self.run_reply(header, now_ms))
+            .collect();
+        serde_json::json!({
+            "scope": scope,
+            "count": runs.len(),
+            "offset": offset,
+            "more": more,
+            "next_offset": more.then(|| offset.saturating_add(runs.len())),
+            "runs": runs,
+        })
+        .to_string()
+    }
+
+    /// Read one run's timeline.
+    ///
+    /// Three ways to say where to start, and they answer different questions:
+    /// `revision` is a hit to read *around* and comes with a lead-in, so a result
+    /// arrives with the prompt behind it; `from_revision` is plain forward paging,
+    /// fed from the previous reply's `next_revision`; and neither means the end of
+    /// the run, which is where a run that is still going has got to.
+    pub(crate) fn agent_run(&self, args: &tools::Args) -> String {
+        let backend = self.store();
+        let run_id = match self.named_run(args) {
+            Ok(run_id) => run_id,
+            Err(error) => return error,
+        };
+        let Some(header) = (match run_history::run_header(&backend, &run_id) {
+            Ok(header) => header,
+            Err(error) => return error,
+        }) else {
+            return format!("no such run {run_id}; call agent_runs");
+        };
+        let from = args
+            .from_revision
+            .or_else(|| args.revision.map(run_history::anchored_from));
+        let page = match run_history::entry_page(&backend, &run_id, from, args.limit.unwrap_or(20))
+        {
+            Ok(page) => page,
+            Err(error) => return error,
+        };
+        let now_ms = agents::now_ms();
+        let entries: Vec<serde_json::Value> = page
+            .entries
+            .iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "revision": entry.revision,
+                    "kind": entry.kind.label(),
+                    "created_at_ms": entry.created_at_ms,
+                    "age": entry
+                        .created_at_ms
+                        .map(|at| agents::short_age(now_ms, at)),
+                    "text": entry.text,
+                })
+            })
+            .collect();
+        let mut reply = self.run_reply(&header, now_ms);
+        if let Some(object) = reply.as_object_mut() {
+            object.insert("entry_count".to_owned(), serde_json::json!(page.total));
+            object.insert("shown".to_owned(), serde_json::json!(entries.len()));
+            object.insert("earlier".to_owned(), serde_json::json!(page.earlier));
+            object.insert(
+                "next_revision".to_owned(),
+                serde_json::json!(page.next_revision),
+            );
+            // The exact call that reads the rest, for the reason `read_answer`
+            // names one: a model holding a fragment it believes is whole draws
+            // conclusions from the part it happened to get.
+            object.insert(
+                "more".to_owned(),
+                serde_json::json!(page
+                    .next_revision
+                    .map(|next| format!("agent_run run_id={run_id} from_revision={next}"))),
+            );
+            object.insert("entries".to_owned(), serde_json::json!(entries));
+        }
+        reply.to_string()
+    }
+
+    /// Which run `agent_run` was asked for: named outright, or the one in a pane.
+    ///
+    /// A pane is the second way in because the live case is the common one — "what
+    /// has the agent in pane 4 been doing" is asked without a run id in hand, and
+    /// `agent_list` gives pane ids rather than run ids.
+    fn named_run(&self, args: &tools::Args) -> Result<String, String> {
+        if let Some(run_id) = args
+            .run_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            return Ok(run_id.to_owned());
+        }
+        let Some(pane_id) = args.pane_id else {
+            return Err(
+                "run_id is required; call agent_runs, or pass pane_id for a live agent".to_owned(),
+            );
+        };
+        // What the panel already knows, then the pane's own record — a pane whose
+        // run the archive pager has not loaded still names it on its `AgentInfo`.
+        if let Some(header) = self.active_runs.get(&pane_id) {
+            return Ok(header.id.clone());
+        }
+        self.panes
+            .iter()
+            .find(|pane| pane.pane_id == pane_id)
+            .and_then(|pane| pane.agent.as_ref())
+            .and_then(|agent| agents::stored_run_id(agent, pane_id))
+            .ok_or_else(|| format!("pane {pane_id} has no agent run; call agent_runs"))
+    }
+
+    pub(crate) fn agent_history_search(&self, args: &tools::Args) -> String {
+        let Some(query) = args
+            .query
+            .as_deref()
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+        else {
+            return "query is required".to_owned();
+        };
+        let (filter, scope) = match self.run_filter(args) {
+            Ok(found) => found,
+            Err(error) => return error,
+        };
+        let run_id = args
+            .run_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty());
+        let found = match run_history::search(
+            &self.store(),
+            &filter,
+            run_id,
+            query,
+            args.limit.unwrap_or(25),
+        ) {
+            Ok(found) => found,
+            Err(error) => return error,
+        };
+        let now_ms = agents::now_ms();
+        let matches: Vec<serde_json::Value> = found
+            .hits
+            .iter()
+            .map(|hit| {
+                let run = found.runs.get(&hit.run_id);
+                serde_json::json!({
+                    "run_id": hit.run_id,
+                    "revision": hit.revision,
+                    "kind": hit.kind.label(),
+                    "created_at_ms": hit.created_at_ms,
+                    "age": hit.created_at_ms.map(|at| agents::short_age(now_ms, at)),
+                    "snippet": hit.snippet,
+                    "run_title": run.map(|run| run.title.clone()),
+                    "agent": run.map(|run| run.kind.clone()),
+                    // Both halves of the address, as the call that uses them.
+                    "read": format!(
+                        "agent_run run_id={} revision={}",
+                        hit.run_id, hit.revision
+                    ),
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "query": query,
+            "scope": scope,
+            "count": matches.len(),
+            "truncated": found.truncated,
+            "matches": matches,
+        })
+        .to_string()
     }
 
     /// `agent_send` and `agent_control`, which do their own work through the tool

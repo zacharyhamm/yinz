@@ -7,6 +7,7 @@
 
 mod poll;
 
+use hocus_proto::agents::now_ms;
 use hocus_proto::llm::Endpoint;
 use hocus_proto::location::Location;
 use hocus_proto::panes::{focused_pane, focused_plugin_pane, manifest_pane_ids, terminal_panes};
@@ -14,7 +15,6 @@ use hocus_proto::store::{self, Backend};
 use hocus_proto::wire::{self, PollReply, PollRequest};
 use hocus_proto::{agents, projects};
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::{SystemTime, UNIX_EPOCH};
 use zellij_tile::prelude::*;
 
 const ACTIVITY_SECONDS: f64 = 5.0;
@@ -314,13 +314,6 @@ fn run_delta(run: &agents::AgentRun) -> Option<String> {
         agents::SUMMARY_LINES,
         agents::SUMMARY_CHARS,
     ))
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or_default()
 }
 
 #[derive(Default)]

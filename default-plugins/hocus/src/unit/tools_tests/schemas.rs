@@ -46,6 +46,76 @@ fn agent_schemas_require_a_pane_and_never_a_pane_kind() {
     }
 }
 
+/// The three history tools carry the same filter block, because they take it from
+/// one function. Pinned so that a filter added to one cannot quietly miss the
+/// others — the failure that would cause is a `since` the model passes to
+/// `agent_history_search` and that is silently ignored.
+#[test]
+fn every_agent_history_tool_offers_the_same_filter() {
+    let specs = specs();
+    let properties = |name: &str| {
+        specs
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|spec| spec["function"]["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is not advertised"))["function"]["parameters"]
+            ["properties"]
+            .clone()
+    };
+    for name in ["agent_runs", "agent_history_search"] {
+        let properties = properties(name);
+        for filter in ["kind", "project", "this_session", "since", "active"] {
+            assert!(
+                !properties[filter].is_null(),
+                "{name} is missing the {filter} filter"
+            );
+        }
+    }
+}
+
+/// `agent_history_search` needs a query and nothing else. The other two take
+/// alternatives JSON Schema cannot express — `run_id` *or* `pane_id` — so they
+/// require nothing at the schema and dispatch says which is missing, exactly as
+/// `agent_spawn` does with `agent` and `command`.
+#[test]
+fn the_agent_history_tools_require_only_what_they_cannot_default() {
+    let specs = specs();
+    for (name, required) in [
+        ("agent_runs", Value::Null),
+        ("agent_run", Value::Null),
+        ("agent_history_search", json!(["query"])),
+    ] {
+        let parameters = specs
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|spec| spec["function"]["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is not advertised"))["function"]["parameters"]
+            .clone();
+        assert_eq!(parameters["required"], required, "{name}");
+    }
+}
+
+/// They read rows another process wrote and change nothing, so planning mode
+/// gets them. The generic tests cover that the names are real and unconfirmed;
+/// this one pins that they are on the list at all.
+#[test]
+fn the_agent_history_tools_are_available_when_planning() {
+    let listed: Vec<String> = read_only_specs()
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|spec| spec["function"]["name"].as_str().map(str::to_owned))
+        .collect();
+    for name in ["agent_runs", "agent_run", "agent_history_search"] {
+        assert!(
+            listed.contains(&name.to_owned()),
+            "{name} cannot be planned with"
+        );
+    }
+}
+
 #[test]
 fn every_spec_has_a_description_and_an_object_schema() {
     for spec in specs().as_array().unwrap() {

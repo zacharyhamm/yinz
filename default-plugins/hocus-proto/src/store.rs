@@ -253,11 +253,14 @@ pub fn agent_summary_def() -> EntityDef {
 /// One hook-backed agent session. Archive pages fetch `header`; only the selected row fetches
 /// `payload`, while the scalar columns provide cheap predicates and ordering.
 pub fn agent_run_def() -> EntityDef {
-    EntityDef::new("agent_run", 1)
+    EntityDef::new("agent_run", 2)
         .attr(AttrDef::int("pane_id").indexed().required())
         .attr(AttrDef::text("session_id").indexed().required().default(""))
         .attr(AttrDef::text("zellij_session_name").indexed())
-        .attr(AttrDef::text("kind").required())
+        // Indexed so a listing can ask for one agent's runs. `cwd` deliberately is not a
+        // column at all: it lives in `header`, and narrowing by project is a guest-side pass
+        // over the page rather than a predicate.
+        .attr(AttrDef::text("kind").indexed().required())
         .attr(
             AttrDef::boolean("active")
                 .indexed()
@@ -281,18 +284,25 @@ pub fn agent_run_def() -> EntityDef {
 /// `revision` is the run's own monotonic counter, which is what orders the timeline; `id`
 /// order agrees with it, since a row is written when its entry is made.
 pub fn agent_run_entry_def() -> EntityDef {
-    EntityDef::new("agent_run_entry", 1)
+    EntityDef::new("agent_run_entry", 2)
         .attr(AttrDef::text("run_id").indexed().required())
         .attr(AttrDef::int("revision").required())
         // The provider's own id for the event behind this entry, where it has one. Nullable:
         // an entry the daemon made itself — a summary somebody asked for — has no event.
         .attr(AttrDef::text("event_id"))
-        .attr(AttrDef::text("kind").required())
-        .attr(AttrDef::text("text").required())
+        .attr(AttrDef::text("kind").indexed().required())
+        // Full-text, which is what makes a machine's whole agent history answerable: the
+        // panel only ever reads one run's newest entries, but the model is asked things like
+        // "have I had an agent look at this before", and that is a search over every entry
+        // ever recorded. The index is external-content — it stores no second copy of the
+        // text — and `rebuild_full_text` backfills every row already in the table when the
+        // migration runs, so history recorded before this existed is searchable too.
+        .attr(AttrDef::text("text").full_text().required())
         // Epoch milliseconds this entry was recorded. Nullable: an entry written before this
         // attribute existed has no value for it, and migration only fills new columns in for
-        // rows written after the column exists.
-        .attr(AttrDef::int("created_at_ms"))
+        // rows written after the column exists. Indexed for the time-window filter and for
+        // the ordering the substring fallback needs.
+        .attr(AttrDef::int("created_at_ms").indexed())
 }
 
 /// Every entity in [`SHARED`]. Both plugins declare all of them on load — the

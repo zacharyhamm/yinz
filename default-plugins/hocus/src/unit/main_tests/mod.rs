@@ -735,6 +735,7 @@ fn user_messages(state: &State) -> Vec<&str> {
         .collect()
 }
 
+mod agent_history_tools;
 mod agent_snapshots;
 mod agent_tools;
 mod chat_tabs;

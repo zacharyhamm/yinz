@@ -2105,6 +2105,19 @@ fn age_gutter(now_ms: i64, then_ms: Option<i64>) -> String {
 /// every label starts in the same column. That is what caps the day count: past `99d` the
 /// answer is "older than this column can say", and a run three months gone is history, where
 /// the exact day is not what the column is being read for.
+/// Now, as an epoch millisecond.
+///
+/// Here rather than in each plugin because three of them wanted it and each had written its
+/// own identical copy. It is the unit every timestamp in this module is in — a run's
+/// `started_at_ms`, an entry's `created_at_ms`, [`short_age`]'s two arguments — so the clock
+/// that produces it belongs beside them.
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or_default()
+}
+
 pub fn short_age(now_ms: i64, then_ms: i64) -> String {
     let seconds = now_ms.saturating_sub(then_ms).max(0) / 1000;
     match seconds {

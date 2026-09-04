@@ -78,6 +78,40 @@ plugin data store — one SQLite file per *machine*, not per session, so a run w
 session is legible in another. What a warped pane needs is not the history but its *name*, and
 that is what travels.
 
+### Reading it back
+
+"Legible in another" was for a long time only true in principle: the agents panel drew the
+newest entries of the run it had selected, and nothing could look anything up. The in-session
+model can now ask, through three read-only tools in `hocus`:
+
+| Tool | Answers |
+|---|---|
+| `agent_runs` | Which runs exist — newest first, with filters. The way in. |
+| `agent_run` | One run's timeline, in order, paged. Takes a `run_id` or a live `pane_id`. |
+| `agent_history_search` | Full-text over every entry ever recorded. |
+
+**The default scope is the machine, not the session**, which is the store's shape rather than a
+choice: one database holds every zellij server on the machine, so a run recorded in a session
+that has since been closed is as readable as one still going. `this_session`, `project`, `kind`,
+`since` and `active` narrow it.
+
+A search hit names a `run_id` and a `revision` — together the entry's own row key,
+`"{run_id}#{revision}"` — and `agent_run` takes both, reading a short lead-in *before* the
+anchor so a result arrives with the prompt it was answering. That round trip is the whole
+navigation model, and it is exact rather than heuristic.
+
+What makes the search possible is one attribute: `agent_run_entry.text` is declared
+`.full_text()` (`hocus-proto/src/store.rs`). Declaring it migrates the entity, and the
+migration rebuilds the FTS index from the rows already in the table — so history recorded
+before the index existed is searchable the first time a new build loads, with no import step.
+The index is external-content, so it stores no second copy of the text.
+
+The reading half lives in `hocus-proto/src/run_history.rs`, apart from `agents.rs` because
+reading is a different job from recording. It never writes. Its one discipline worth knowing:
+a local tool result is not passed through hocus's `MAX_TOOL_OUTPUT`, so each page budgets its
+own size, cutting entries to a per-entry cap once a page holds more than one — and a page of
+*one* is exempt, which is how a single enormous plan is read whole.
+
 For a claude or a codex the name needs no help: a run is `"{kind}:{the agent's own session
 id}"`, and the session id does not change when the pane moves, so the adopting session derives
 the same id the losing one used. `run_id` is for everything else — a hand-rolled

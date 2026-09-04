@@ -607,11 +607,42 @@ fn slack_properties() -> Value {
     })
 }
 
+/// How the agent-history tools narrow a question. Shared by all three of them,
+/// so a filter cannot come to mean one thing to a listing and another to a
+/// search.
+///
+/// Every one of them is optional and the default is the whole machine, which is
+/// the store's own shape rather than a choice made here: there is one database
+/// per machine and not per session, so a run recorded in a session that has
+/// since been closed is as readable as one still going.
+fn run_filter_properties() -> Value {
+    json!({
+        "kind": { "type": "string", "description": "claude, codex." },
+        "project": { "type": "string" },
+        "this_session": { "type": "boolean" },
+        "since": { "type": "string", "description": "A window back: 30m, 6h, 7d." },
+        "active": { "type": "boolean" },
+    })
+}
+
 /// The `tools` array sent with every request.
 pub fn specs() -> Value {
     let pane = pane_properties();
     let input = input_properties();
     let slack = slack_properties();
+    let run_filter = run_filter_properties();
+    // The filter block plus the tool's own properties. `json!` cannot splice one
+    // object into another, and repeating the five keys three times is exactly
+    // the drift `run_filter_properties` exists to prevent.
+    let with_run_filter = |extra: Value| {
+        let mut properties = run_filter.clone();
+        if let (Some(properties), Some(extra)) = (properties.as_object_mut(), extra.as_object()) {
+            for (key, value) in extra {
+                properties.insert(key.clone(), value.clone());
+            }
+        }
+        properties
+    };
     let placement = placement_property();
     let pane_ref = json!({
         "type": "object",
@@ -1300,6 +1331,50 @@ pub fn specs() -> Value {
             }),
         ),
         tool(
+            "agent_runs",
+            "List agent runs, newest first, from every session on this machine. The way in to \
+             agent_run.",
+            json!({
+                "type": "object",
+                "properties": with_run_filter(json!({
+                    "limit": { "type": "integer", "description": "Default 20, max 50." },
+                    "offset": { "type": "integer" },
+                })),
+            }),
+        ),
+        tool(
+            "agent_run",
+            "Read one run's timeline of prompts, plans, questions and results. Takes run_id or \
+             pane_id; no revision reads the end of it.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "run_id": { "type": "string" },
+                    "pane_id": pane["pane_id"],
+                    "revision": { "type": "integer", "description": "A hit to read around." },
+                    "from_revision": { "type": "integer", "description": "Page on from next_revision." },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Default 20, max 100. Use 1 to read one long entry whole.",
+                    },
+                },
+            }),
+        ),
+        tool(
+            "agent_history_search",
+            "Search what agents were asked and said, across every run on this machine. A hit's \
+             run_id and revision go to agent_run to read around it.",
+            json!({
+                "type": "object",
+                "properties": with_run_filter(json!({
+                    "query": { "type": "string" },
+                    "run_id": { "type": "string", "description": "Search one run." },
+                    "limit": { "type": "integer", "description": "Default 25, max 50." },
+                })),
+                "required": ["query"],
+            }),
+        ),
+        tool(
             "agent_spawn",
             "Start a coding agent in a new pane; `branch` cuts a git worktree for it first. Not \
              for writing Zellij Lua plugins - use plugin_write.",
@@ -1677,6 +1752,12 @@ pub const READ_ONLY: &[&str] = &[
     "list_orphaned_panes",
     "read_pane",
     "agent_list",
+    // What every agent on this machine has already been asked and has already
+    // said. Read-only in the strongest sense available: these three never write,
+    // and the rows they read are another process's record.
+    "agent_runs",
+    "agent_run",
+    "agent_history_search",
     // The active project's code and history.
     "project_list",
     "find_files",
@@ -2042,6 +2123,23 @@ pub struct Args {
     pub section: Option<String>,
     // Skill tier. Separate from `source`, which is the complete file text.
     pub scope: Option<String>,
+    // Reading agent run history. `query`, `kind`, `project` and `limit` above
+    // are theirs as well — `kind` in the same sense `agent_register` uses it.
+    // `run_id` is spelled out because `id` is the todo and note tools' integer
+    // and a run id is a string.
+    pub run_id: Option<String>,
+    /// An entry to read *around*, from a search hit. Distinct from
+    /// `from_revision`, which is where a page begins: an anchor carries a
+    /// lead-in so a result arrives with the prompt it answered, and a caller
+    /// paging forward wants neither the lead-in nor the arithmetic.
+    pub revision: Option<u64>,
+    pub from_revision: Option<u64>,
+    pub this_session: bool,
+    pub since: Option<String>,
+    /// `Option` rather than a bare `bool` because absent means *either*, not
+    /// false — the plain flags in this struct all default to false.
+    pub active: Option<bool>,
+    pub offset: Option<usize>,
 }
 
 impl Args {
@@ -2053,6 +2151,48 @@ impl Args {
             return Ok(Args::default());
         }
         serde_json::from_str(arguments).map_err(|error| format!("bad arguments: {error}"))
+    }
+
+    /// How far back an agent-history question reaches, as an epoch millisecond.
+    ///
+    /// A relative window only — `30m`, `6h`, `7d`, `3w` — and deliberately not a
+    /// calendar date. Turning `2026-09-01` into an instant needs a timezone the
+    /// plugin does not have and civil-date arithmetic nothing in this workspace
+    /// carries; `linear`'s `is_iso_date` only checks the *shape* of a string it
+    /// hands to a server that does the conversion. A window is also what the
+    /// question actually is: "what have the agents been doing today".
+    ///
+    /// The error names the accepted forms rather than being silently ignored,
+    /// because a window nobody applied looks exactly like an empty history.
+    pub fn since_ms(&self, now_ms: i64) -> Result<Option<i64>, String> {
+        let Some(since) = self
+            .since
+            .as_deref()
+            .map(str::trim)
+            .filter(|since| !since.is_empty())
+        else {
+            return Ok(None);
+        };
+        let refuse = || {
+            Err(format!(
+                "since must be a window such as 30m, 6h, 7d or 3w, not {since:?}"
+            ))
+        };
+        let (count, unit) = since.split_at(since.len().saturating_sub(1));
+        let Ok(count) = count.parse::<i64>() else {
+            return refuse();
+        };
+        let ms = match unit {
+            "m" => 60_000,
+            "h" => 3_600_000,
+            "d" => 86_400_000,
+            "w" => 7 * 86_400_000,
+            _ => return refuse(),
+        };
+        if count <= 0 {
+            return refuse();
+        }
+        Ok(Some(now_ms.saturating_sub(count.saturating_mul(ms))))
     }
 
     /// Where a warped pane should land. Absent means a tab of its own: the only

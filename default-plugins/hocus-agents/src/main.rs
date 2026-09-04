@@ -83,9 +83,8 @@
 //! asked for a list.
 
 use std::collections::BTreeMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use hocus_proto::agents::{self, Strip, StripRow, Summaries};
+use hocus_proto::agents::{self, now_ms, Strip, StripRow, Summaries};
 use hocus_proto::launch;
 use hocus_proto::markdown;
 use hocus_proto::wire;
@@ -478,13 +477,6 @@ fn divider_line(label: &str, above: usize, below: usize, cols: usize) -> String 
     line.push_str(&"─".repeat(rule));
     line.push_str(&position);
     line
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or_default()
 }
 
 /// How the pane divides: `(list_rows, history_rows)`, with the divider on the row between
