@@ -16,6 +16,7 @@ mod log;
 mod lua_docs;
 mod message;
 mod overlay;
+mod plugin_source;
 mod present;
 mod skills;
 mod tool_loop;

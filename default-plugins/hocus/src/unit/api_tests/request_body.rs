@@ -74,7 +74,7 @@ fn request_body_adds_the_tool_first_policy_when_tools_are_enabled() {
 fn hocus_prompt_contract_keeps_global_routing_rules() {
     assert_eq!(
         TOOL_FIRST_PROMPT,
-        "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_pane_here`/`warp_tab_here` bring a listed pane or tab from another session into this one; there is no tool for the other direction, so a request to send one out is answered by asking hocus in the destination session. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. Past agent work, every session on this machine: `agent_history_search` finds it, `agent_runs` lists runs, `agent_run` reads one - a hit's `run_id` and `revision` read around it. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` is authoritative, so read only the relevant sections. `plugin_write` creates one (its confirmation grants the permissions it asks for); to change one that exists, `plugin_read` then `plugin_edit` - never re-send a whole file you did not just write. `plugin_check` compiles without writing. `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list`/`plugin_read` read the user's plugin folder. Firecracker VMs: `vm_list` for every VM and its worktree and branch, then `vm_changes`/`vm_sync`/`vm_close` by name. Not every tool named here is in the tools array: the rest are loaded on demand, and calling one by name loads its family and runs it, so call the tool you want rather than asking for it. `tools_load` is there for when you do not know the name. Make independent calls together."
+        "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_pane_here`/`warp_tab_here` bring a listed pane or tab from another session into this one; there is no tool for the other direction, so a request to send one out is answered by asking hocus in the destination session. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. Past agent work, every session on this machine: `agent_history_search` finds it, `agent_runs` lists runs, `agent_run` reads one - a hit's `run_id` and `revision` read around it. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` is authoritative - `query=` it for a spelling before fetching a section. `plugin_write` creates one (its confirmation grants the permissions it asks for); to change one that exists, `plugin_outline`/`plugin_search` find the lines, `plugin_read` reads that range, `plugin_edit` changes it (`edits` batches several) - never re-send a whole file you did not just write. `plugin_check` compiles without writing. `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list` is the user's plugin folder. Firecracker VMs: `vm_list` for every VM and its worktree and branch, then `vm_changes`/`vm_sync`/`vm_close` by name. Not every tool named here is in the tools array: the rest are loaded on demand, and calling one by name loads its family and runs it, so call the tool you want rather than asking for it. `tools_load` is there for when you do not know the name. Make independent calls together."
     );
 }
 
@@ -204,9 +204,10 @@ fn the_tool_payload_floor_stays_under_20_kb() {
 
 /// The other end: what a conversation pays once it has asked for every family. Loose
 /// enough that a new domain tool lands here rather than on the floor, and tight enough
-/// that the whole set cannot quietly double.
+/// that the whole set cannot quietly double. The last move was the two orienting plugin
+/// tools and `plugin_edit`'s batch form, ~1 KB between them.
 #[test]
-fn the_fully_loaded_tool_payload_stays_under_35_kb() {
+fn the_fully_loaded_tool_payload_stays_under_36_kb() {
     let mut cfg = test_config();
     cfg.tools = true;
     // A load of every deferred family, which is what puts them in the array — the
@@ -231,7 +232,7 @@ fn the_fully_loaded_tool_payload_stays_under_35_kb() {
     // and a real conversation's transcript is not this one.
     let tools_bytes = serde_json::to_vec(&value["tools"]).unwrap().len();
     assert!(
-        tools_bytes < 35_000,
+        tools_bytes < 36_000,
         "the fully loaded tool payload grew to {tools_bytes} bytes",
     );
 }
@@ -636,13 +637,23 @@ fn acting_sends_the_body_it_always_did() {
 /// has to be the one the prompt names.
 #[test]
 fn the_system_prompt_names_the_cheap_authoring_path() {
-    for tool in ["plugin_edit", "plugin_check", "plugin_read"] {
+    for tool in [
+        "plugin_edit",
+        "plugin_check",
+        "plugin_read",
+        "plugin_outline",
+        "plugin_search",
+        "`edits`",
+        "`query=`",
+    ] {
         assert!(TOOL_FIRST_PROMPT.contains(tool), "{tool} is not named");
     }
+    let outline = TOOL_FIRST_PROMPT.find("plugin_outline").expect("named");
+    let read = TOOL_FIRST_PROMPT.find("plugin_read").expect("named");
     let edit = TOOL_FIRST_PROMPT.find("plugin_edit").expect("named");
     let reload = TOOL_FIRST_PROMPT.find("plugin_reload").expect("named");
     assert!(
-        edit < reload,
-        "editing comes before reloading, as it does in the loop"
+        outline < read && read < edit && edit < reload,
+        "orient, read the range, edit, reload - in the order the loop runs"
     );
 }

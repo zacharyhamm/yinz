@@ -657,3 +657,300 @@ fn a_realistic_authoring_transcript_is_a_fraction_of_what_it_was() {
         "the transcript should go out at under half its stored size: {sent} vs {stored}"
     );
 }
+
+/// A search is a picture of the plugin it looked through. A later edit of that plugin makes it
+/// a picture of something that is no longer there, and the placeholder says to search again.
+#[test]
+fn a_search_is_superseded_by_a_later_edit_of_the_plugin_it_searched() {
+    let cfg = test_config();
+    let transcript = vec![
+        plugin_call(
+            "c1",
+            "plugin_search",
+            serde_json::json!({ "name": "todo.lua", "query": "render" }),
+        ),
+        result("c1", &bulky("todo.lua:12:function M.render()")),
+        write("c2", "todo.lua", &draft(FINAL)),
+        result("c2", "wrote todo.lua"),
+    ];
+
+    let results = wire_tool_results(&body_value(&cfg, &transcript));
+
+    assert!(!results[0].contains("function M.render"), "{}", results[0]);
+    assert!(results[0].contains("out of date"), "{}", results[0]);
+}
+
+/// A search of the folder is about every plugin, so any later write stales it; one confined to
+/// a plugin is stale only when that plugin changes.
+#[test]
+fn a_folder_wide_search_is_superseded_by_any_later_write_but_a_named_one_only_by_its_own() {
+    let cfg = test_config();
+    let transcript = vec![
+        plugin_call(
+            "c1",
+            "plugin_search",
+            serde_json::json!({ "query": "render" }),
+        ),
+        result("c1", &bulky("every render")),
+        plugin_call(
+            "c2",
+            "plugin_search",
+            serde_json::json!({ "name": "todo", "query": "render" }),
+        ),
+        result("c2", &bulky("todo's render")),
+        write("c3", "clock.lua", &draft("the clock")),
+        result("c3", "wrote clock.lua"),
+    ];
+
+    let results = wire_tool_results(&body_value(&cfg, &transcript));
+
+    assert!(!results[0].contains("every render"), "{}", results[0]);
+    assert!(results[1].contains("todo's render"), "{}", results[1]);
+}
+
+/// The same words looked for twice are the same search whatever context was asked for, and the
+/// later answer is the one kept; different words are a different search and stay.
+#[test]
+fn the_same_search_twice_is_sent_once_whatever_its_context() {
+    let cfg = test_config();
+    let transcript = vec![
+        plugin_call(
+            "c1",
+            "plugin_search",
+            serde_json::json!({ "query": "render", "context": 2 }),
+        ),
+        result("c1", &bulky("first look")),
+        plugin_call(
+            "c2",
+            "plugin_search",
+            serde_json::json!({ "query": "on\\(", "context": 2 }),
+        ),
+        result("c2", &bulky("the handlers")),
+        plugin_call(
+            "c3",
+            "plugin_search",
+            serde_json::json!({ "query": "render" }),
+        ),
+        result("c3", &bulky("second look")),
+    ];
+
+    let results = wire_tool_results(&body_value(&cfg, &transcript));
+
+    assert!(!results[0].contains("first look"), "{}", results[0]);
+    assert!(results[0].contains("appears again below"), "{}", results[0]);
+    assert!(results[1].contains("the handlers"), "{}", results[1]);
+    assert!(results[2].contains("second look"), "{}", results[2]);
+}
+
+/// An outline is a map of the file as it was; an edit redraws it, and another plugin's outline
+/// is another map altogether.
+#[test]
+fn an_outline_is_superseded_by_a_later_edit_of_the_same_plugin() {
+    let cfg = test_config();
+    let transcript = vec![
+        plugin_call(
+            "c1",
+            "plugin_outline",
+            serde_json::json!({ "name": "todo.lua" }),
+        ),
+        result("c1", &bulky("the old map")),
+        plugin_call(
+            "c2",
+            "plugin_edit",
+            serde_json::json!({
+                "name": "todo",
+                "old_string": "return M",
+                "new_string": draft("setmetatable"),
+            }),
+        ),
+        result(
+            "c2",
+            "edited todo.lua at line 60 (now 64 lines); call plugin_reload to load it",
+        ),
+        plugin_call(
+            "c3",
+            "plugin_outline",
+            serde_json::json!({ "name": "clock" }),
+        ),
+        result("c3", &bulky("the clock's map")),
+    ];
+
+    let results = wire_tool_results(&body_value(&cfg, &transcript));
+
+    assert!(!results[0].contains("the old map"), "{}", results[0]);
+    assert!(
+        results[0].contains("plugin_outline name=todo"),
+        "{}",
+        results[0]
+    );
+    assert!(
+        results[2].contains("the clock's map"),
+        "another plugin's outline stays"
+    );
+}
+
+/// A listing is of the folder, and a write adds to the folder.
+#[test]
+fn a_listing_is_superseded_by_a_later_write_or_listing() {
+    let cfg = test_config();
+    let transcript = vec![
+        plugin_call("c1", "plugin_list", serde_json::json!({})),
+        result("c1", &bulky("the old folder")),
+        write("c2", "clock.lua", &draft("the clock")),
+        result("c2", "wrote clock.lua"),
+        plugin_call("c3", "plugin_list", serde_json::json!({})),
+        result("c3", &bulky("the new folder")),
+    ];
+
+    let results = wire_tool_results(&body_value(&cfg, &transcript));
+
+    assert!(!results[0].contains("the old folder"), "{}", results[0]);
+    assert!(results[2].contains("the new folder"), "{}", results[2]);
+}
+
+/// A docs query is keyed by what it looked for and where: the same one again is sent once, and
+/// one confined to a section is not the same as one over the whole guide. Pages of a section
+/// are kept alongside each other, as a plugin's pages are.
+#[test]
+fn a_repeated_docs_query_is_sent_once_and_pages_of_a_section_are_kept() {
+    let cfg = test_config();
+    let transcript = vec![
+        plugin_call(
+            "c1",
+            "plugin_docs",
+            serde_json::json!({ "query": "run_command" }),
+        ),
+        result("c1", &bulky("every spelling")),
+        plugin_call(
+            "c2",
+            "plugin_docs",
+            serde_json::json!({ "query": "run_command", "section": "prelude_commands" }),
+        ),
+        result("c2", &bulky("the prelude's spelling")),
+        plugin_call(
+            "c3",
+            "plugin_docs",
+            serde_json::json!({ "section": "prelude_commands", "start_line": 1, "line_count": 100 }),
+        ),
+        result("c3", &bulky("page one")),
+        plugin_call(
+            "c4",
+            "plugin_docs",
+            serde_json::json!({ "section": "prelude_commands", "start_line": 101, "line_count": 100 }),
+        ),
+        result("c4", &bulky("page two")),
+        plugin_call(
+            "c5",
+            "plugin_docs",
+            serde_json::json!({ "query": "run_command" }),
+        ),
+        result("c5", &bulky("every spelling again")),
+    ];
+
+    let results = wire_tool_results(&body_value(&cfg, &transcript));
+
+    assert!(!results[0].contains("every spelling"), "{}", results[0]);
+    assert!(
+        results[1].contains("the prelude's spelling"),
+        "{}",
+        results[1]
+    );
+    assert!(results[2].contains("page one"), "{}", results[2]);
+    assert!(results[3].contains("page two"), "{}", results[3]);
+    assert!(
+        results[4].contains("every spelling again"),
+        "{}",
+        results[4]
+    );
+}
+
+/// `data.lua` is a plugin and `data` is a section, and a page of one is not a page of the other.
+#[test]
+fn a_docs_page_and_a_plugin_page_of_the_same_name_are_different_subjects() {
+    let cfg = test_config();
+    let transcript = vec![
+        plugin_call(
+            "c1",
+            "plugin_read",
+            serde_json::json!({ "name": "data.lua", "start_line": 1, "line_count": 100 }),
+        ),
+        result("c1", &bulky("the plugin")),
+        plugin_call(
+            "c2",
+            "plugin_docs",
+            serde_json::json!({ "section": "data", "start_line": 1, "line_count": 100 }),
+        ),
+        result("c2", &bulky("the section")),
+    ];
+
+    let results = wire_tool_results(&body_value(&cfg, &transcript));
+
+    assert!(results[0].contains("the plugin"), "{}", results[0]);
+    assert!(results[1].contains("the section"), "{}", results[1]);
+}
+
+/// A batch carries as much code as a write does, in `edits`, and a later write replaces it the
+/// same way: the array goes and the name stays, so the call still says which file it was about
+/// and the arguments are still an object.
+#[test]
+fn a_superseded_batch_edit_sends_a_placeholder_instead_of_its_edits() {
+    let cfg = test_config();
+    let transcript = vec![
+        plugin_call(
+            "c1",
+            "plugin_edit",
+            serde_json::json!({
+                "name": "todo.lua",
+                "edits": [
+                    { "old_string": "return M", "new_string": draft("setmetatable") },
+                    { "old_string": "local M = {}", "new_string": "local M = { tick = 0 }" },
+                ],
+            }),
+        ),
+        result(
+            "c1",
+            "edited todo.lua at lines 2-64, line 70 (now 130 lines); call plugin_reload to load it",
+        ),
+        write("c2", "todo.lua", &draft(FINAL)),
+        result("c2", "wrote todo.lua"),
+    ];
+
+    let arguments = wire_arguments_in(&body_value(&cfg, &transcript));
+
+    assert!(!arguments[0].contains("setmetatable"), "{}", arguments[0]);
+    let elided: serde_json::Value = serde_json::from_str(&arguments[0]).unwrap();
+    assert_eq!(elided["name"], "todo.lua");
+    assert!(
+        elided["edits"].is_string(),
+        "the array became the placeholder: {}",
+        arguments[0]
+    );
+    assert!(arguments[1].contains(FINAL), "{}", arguments[1]);
+}
+
+/// And a batch is itself the newest statement about a file, so the write before it goes.
+#[test]
+fn a_batch_edit_is_the_newest_statement_about_a_file() {
+    let cfg = test_config();
+    let transcript = vec![
+        write("c1", "todo.lua", &draft(DRAFT)),
+        result("c1", "wrote todo.lua"),
+        plugin_call(
+            "c2",
+            "plugin_edit",
+            serde_json::json!({
+                "name": "todo.lua",
+                "edits": [{ "old_string": "return M", "new_string": draft("setmetatable") }],
+            }),
+        ),
+        result(
+            "c2",
+            "edited todo.lua at lines 2-64 (now 130 lines); call plugin_reload to load it",
+        ),
+    ];
+
+    let arguments = wire_arguments_in(&body_value(&cfg, &transcript));
+
+    assert!(!arguments[0].contains(DRAFT), "{}", arguments[0]);
+    assert!(arguments[1].contains("setmetatable"), "{}", arguments[1]);
+}

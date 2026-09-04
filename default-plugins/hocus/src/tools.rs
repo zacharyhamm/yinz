@@ -26,6 +26,7 @@ use zellij_tile::prelude::{
 
 use crate::log::truncate_str;
 use crate::lua_docs;
+use crate::plugin_source::{self, EditPair, Edited};
 
 /// One complete call requested by the model, reassembled from stream fragments.
 ///
@@ -154,17 +155,16 @@ pub fn summarize(call: &ToolCall) -> String {
     if call.name == "plugin_edit" {
         let args = Args::parse(&call.arguments).unwrap_or_default();
         let name = args.name.as_deref().unwrap_or("?");
-        let lines = args
-            .new_string
-            .as_deref()
-            .map(|s| s.lines().count())
-            .unwrap_or(0);
-        let was = args
-            .old_string
-            .as_deref()
-            .map(|s| s.lines().count())
-            .unwrap_or(0);
-        return format!("plugin_edit {name} ({was} lines -> {lines})");
+        let edits = args.edit_batch().unwrap_or_default();
+        let count = |text: fn(&EditPair) -> &str| -> usize {
+            edits.iter().map(|edit| text(edit).lines().count()).sum()
+        };
+        let was = count(|edit| edit.old_string.as_str());
+        let lines = count(|edit| edit.new_string.as_str());
+        return match edits.len() {
+            0 | 1 => format!("plugin_edit {name} ({was} lines -> {lines})"),
+            n => format!("plugin_edit {name} ({n} edits, {was} lines -> {lines})"),
+        };
     }
     if arguments.is_empty() || arguments == "{}" {
         call.name.clone()
@@ -307,7 +307,12 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
         // and applying the edit to the complete source.
         "plugin_edit" => {
             let name = args.name.as_deref().unwrap_or("a plugin");
-            format!("changes {name}.lua in your Zellij plugin folder")
+            match args.edits.as_ref().map_or(1, Vec::len) {
+                n if n > 1 => {
+                    format!("changes {name}.lua in your Zellij plugin folder in {n} places")
+                },
+                _ => format!("changes {name}.lua in your Zellij plugin folder"),
+            }
         },
         "skill_write" => {
             let name = args.name.as_deref().unwrap_or("a skill");
@@ -345,15 +350,10 @@ pub fn requested_permissions(source: &str) -> Vec<PermissionType> {
 pub fn edit_source_and_permissions(
     source: &str,
     args: &Args,
-) -> Result<(String, Vec<PermissionType>), String> {
-    let edited = apply_edit(
-        source,
-        args.old_string.as_deref().unwrap_or_default(),
-        args.new_string.as_deref().unwrap_or_default(),
-        args.replace_all,
-    )?;
+) -> Result<(Edited, Vec<PermissionType>), String> {
+    let edited = plugin_source::apply_edits(source, &args.edit_batch()?)?;
     let before = requested_permissions(source);
-    let added = requested_permissions(&edited)
+    let added = requested_permissions(&edited.source)
         .into_iter()
         .filter(|permission| !before.contains(permission))
         .collect();
@@ -417,24 +417,68 @@ fn argument_lines_with_source_limit(call: &ToolCall, source_limit: Option<usize>
             // Code and other multiline values read as a block. `split` keeps a trailing empty
             // row, which matters for inputs where the final newline is part of what will run.
             Value::String(text) if key == "source" || text.contains('\n') => {
-                let mut lines = vec![format!("{key}:")];
-                let mut text_lines = text.split('\n');
-                lines.extend(
-                    text_lines
-                        .by_ref()
-                        .take(source_limit.unwrap_or(usize::MAX))
-                        .map(|line| format!("  {line}")),
-                );
-                let hidden = text_lines.count();
-                if hidden > 0 {
-                    lines.push(format!("  … {hidden} more lines"));
-                }
-                lines
+                block_lines(key, text, source_limit)
             },
             Value::String(text) => vec![format!("{key}: {text}")],
+            // A batch of edits, each pair as two blocks of its own, so what is being agreed to
+            // reads as code rather than as one line of JSON.
+            Value::Array(edits) if key == "edits" => edit_lines(edits, source_limit),
             value => vec![format!("{key}: {value}")],
         })
         .collect()
+}
+
+/// One multiline argument as a labelled block, cut to `limit` lines with a count of the rest.
+fn block_lines(label: &str, text: &str, limit: Option<usize>) -> Vec<String> {
+    let mut lines = vec![format!("{label}:")];
+    let mut text_lines = text.split('\n');
+    lines.extend(
+        text_lines
+            .by_ref()
+            .take(limit.unwrap_or(usize::MAX))
+            .map(|line| format!("  {line}")),
+    );
+    let hidden = text_lines.count();
+    if hidden > 0 {
+        lines.push(format!("  … {hidden} more lines"));
+    }
+    lines
+}
+
+/// How many edits of a batch a toast shows before counting the rest. The pane prompt shows
+/// every one; a toast is a glance.
+const EDITS_PREVIEW: usize = 3;
+
+/// The pairs of an `edits` batch, numbered, each `old_string` and `new_string` a block of its
+/// own. With a `limit` - the toast - the batch itself is cut after a few as well.
+fn edit_lines(edits: &[Value], limit: Option<usize>) -> Vec<String> {
+    let shown = match limit {
+        Some(_) => edits.len().min(EDITS_PREVIEW),
+        None => edits.len(),
+    };
+    let mut lines: Vec<String> = edits
+        .iter()
+        .take(shown)
+        .enumerate()
+        .flat_map(|(index, edit)| {
+            let n = index + 1;
+            let text = |key: &str| edit[key].as_str().unwrap_or_default();
+            let mut lines = block_lines(&format!("edit {n} old_string"), text("old_string"), limit);
+            lines.extend(block_lines(
+                &format!("edit {n} new_string"),
+                text("new_string"),
+                limit,
+            ));
+            if edit["replace_all"] == true {
+                lines.push(format!("edit {n} replace_all: true"));
+            }
+            lines
+        })
+        .collect();
+    if shown < edits.len() {
+        lines.push(format!("… {} more edits", edits.len() - shown));
+    }
+    lines
 }
 
 pub fn argument_lines(call: &ToolCall) -> Vec<String> {
@@ -1701,24 +1745,64 @@ pub fn specs() -> Value {
         tool(
             "plugin_docs",
             "How to write a Zellij Lua plugin. Call before writing one. `section` defaults to \
-             index, which lists the rest.",
+             index, which lists the rest with sizes. `query` (a regex) searches every section, \
+             or only `section`, answering section:LINE:text - find where something is spelled \
+             before fetching a section; `start_line`/`line_count` then read that part of it.",
             json!({
                 "type": "object",
                 "properties": {
                     "section": { "type": "string", "enum": lua_docs::SECTIONS.as_slice() },
+                    "query": { "type": "string" },
+                    "case_insensitive": { "type": "boolean" },
+                    "context": { "type": "integer" },
+                    "start_line": { "type": "integer" },
+                    "line_count": { "type": "integer" },
                 },
             }),
         ),
         tool(
             "plugin_list",
-            "List the user's Lua plugins.",
+            "List the user's Lua plugins with their length, and which have a .bak from an \
+             earlier edit.",
             json!({ "type": "object", "properties": {} }),
+        ),
+        tool(
+            "plugin_outline",
+            "One plugin's shape without its body: every function, zellij.on handler, require, \
+             permission request, data.define and hocus tool registration with its line number, \
+             so the plugin_read after it can be a range. `name` as for plugin_read.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                },
+                "required": ["name"],
+            }),
+        ),
+        tool(
+            "plugin_search",
+            "Regex search over the user's Lua plugins, or only `name`. Answers file:LINE:text \
+             per hit, file-LINE-text for `context` lines (default 0), `--` between groups. The \
+             text after the second separator is the line verbatim: copy that, never the prefix, \
+             into plugin_edit old_string. `max_results` defaults to 40. Search or outline before \
+             you read; a range read is cheaper than a page.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "name": { "type": "string" },
+                    "case_insensitive": { "type": "boolean" },
+                    "context": { "type": "integer" },
+                    "max_results": { "type": "integer" },
+                },
+                "required": ["query"],
+            }),
         ),
         tool(
             "plugin_read",
             "Read one of the user's Lua plugins. `name` is a file name, .lua optional. 300 \
-             lines from `start_line` (default 1); `line_count` changes the span. Read before \
-             you edit.",
+             lines from `start_line` (default 1); `line_count` changes the span. Read the range \
+             you will change before you edit; plugin_outline and plugin_search say where.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1764,9 +1848,11 @@ pub fn specs() -> Value {
         tool(
             "plugin_edit",
             "Change part of a plugin in place: `old_string` becomes `new_string`, matching the \
-             file exactly and once unless replace_all. Compiled before it is written, and not \
-             written at all if it would not compile; the version replaced is kept as \
-             <name>.bak.",
+             file exactly and once unless replace_all - or `edits`, a list of {old_string, \
+             new_string, replace_all} applied in order, each against the text the one before \
+             produced, under one confirmation. Compiled before it is written, and not written \
+             at all if any edit misses or it would not compile; the version replaced is kept as \
+             <name>.bak. The answer names the lines that changed.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1774,8 +1860,20 @@ pub fn specs() -> Value {
                     "old_string": { "type": "string" },
                     "new_string": { "type": "string" },
                     "replace_all": { "type": "boolean" },
+                    "edits": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old_string": { "type": "string" },
+                                "new_string": { "type": "string" },
+                                "replace_all": { "type": "boolean" },
+                            },
+                            "required": ["old_string", "new_string"],
+                        },
+                    },
                 },
-                "required": ["name", "old_string", "new_string"],
+                "required": ["name"],
             }),
         ),
         tool(
@@ -1931,6 +2029,8 @@ pub const READ_ONLY: &[&str] = &[
     "plugin_check",
     "plugin_list",
     "plugin_read",
+    "plugin_outline",
+    "plugin_search",
     "plugin_log",
     "skill_list",
     "skill_read",
@@ -2102,12 +2202,14 @@ pub const FAMILIES: &[Family] = &[
     },
     Family {
         name: "plugin",
-        summary: "write, check, reload and read Zellij Lua plugins",
+        summary: "write, edit, search, check, reload and read Zellij Lua plugins",
         deferred: true,
         tools: &[
             "plugin_docs",
             "plugin_list",
             "plugin_read",
+            "plugin_outline",
+            "plugin_search",
             "plugin_check",
             "plugin_write",
             "plugin_edit",
@@ -2529,6 +2631,11 @@ pub struct Args {
     pub new_string: Option<String>,
     #[serde(default)]
     pub replace_all: bool,
+    /// Several replacements in one `plugin_edit`, applied in order. `Option<Vec>` so an absent
+    /// list - the single form - and an empty one, which is a mistake, are told apart.
+    pub edits: Option<Vec<EditPair>>,
+    /// Lines either side of a `plugin_search` or `plugin_docs query=` hit.
+    pub context: Option<usize>,
     pub cwd: Option<String>,
     pub remote_host: Option<String>,
     pub firecracker: bool,
@@ -2672,6 +2779,24 @@ impl Args {
             return Ok(Args::default());
         }
         serde_json::from_str(arguments).map_err(|error| format!("bad arguments: {error}"))
+    }
+
+    /// The replacements a `plugin_edit` carries, in one shape: the single form as a one-element
+    /// batch. Exactly one form per call - both is refused, as is an empty `edits`.
+    pub fn edit_batch(&self) -> Result<Vec<EditPair>, String> {
+        let single = self.old_string.is_some() || self.new_string.is_some();
+        match (&self.edits, single) {
+            (Some(_), true) => {
+                Err("pass either old_string/new_string or edits, not both".to_owned())
+            },
+            (Some(edits), false) if edits.is_empty() => Err(plugin_source::EMPTY_BATCH.to_owned()),
+            (Some(edits), false) => Ok(edits.clone()),
+            (None, _) => Ok(vec![EditPair {
+                old_string: self.old_string.clone().unwrap_or_default(),
+                new_string: self.new_string.clone().unwrap_or_default(),
+                replace_all: self.replace_all,
+            }]),
+        }
     }
 
     /// How far back an agent-history question reaches, as an epoch millisecond.
@@ -3149,11 +3274,13 @@ pub const SKILL_FILE_TOOLS: [&str; 4] =
 /// `get_user_plugin_dir`, for the reload URL and the permission grant). None runs a command;
 /// every one but `plugin_reload` answers at once - a reload is fire-and-forget on the host, so
 /// that one defers until the pane has had time to show what happened.
-pub const PLUGIN_TOOLS: [&str; 8] = [
+pub const PLUGIN_TOOLS: [&str; 10] = [
     "plugin_docs",
     "plugin_check",
     "plugin_list",
     "plugin_read",
+    "plugin_outline",
+    "plugin_search",
     "plugin_write",
     "plugin_edit",
     "plugin_reload",
@@ -3375,8 +3502,12 @@ pub fn read_range(args: &Args) -> (usize, usize) {
 /// Deliberately *not* per-line numbers. They would cost ~6 bytes a line - 1.8KB on a default
 /// read, re-sent every later round, which is the cost this whole effort is about - and worse,
 /// they would poison `plugin_edit`: `old_string` has to match the file exactly, and a model
-/// copying numbered text into it misses every time.
-pub fn read_answer(contents: &str, start: usize, end: usize) -> String {
+/// copying numbered text into it misses every time. Where a line is wanted, `plugin_outline`
+/// and `plugin_search` say.
+///
+/// `fetch` is the call that reads more of this text, without its `start_line`: `plugin_read
+/// name=keys`, or `plugin_docs section=prelude_commands`.
+pub fn read_answer(contents: &str, start: usize, end: usize, fetch: &str) -> String {
     let total = contents.lines().count();
     let lines = lines_in_range(contents, start, end);
     if lines.is_empty() {
@@ -3394,7 +3525,7 @@ pub fn read_answer(contents: &str, start: usize, end: usize) -> String {
         return format!("{header}{lines}");
     }
     format!(
-        "{header}{lines}\n… {remaining} more lines (plugin_read start_line={})",
+        "{header}{lines}\n… {remaining} more lines ({fetch} start_line={})",
         last + 1
     )
 }
@@ -3504,44 +3635,82 @@ pub fn write_report(name: &str, granted: &[PermissionType], backup: &Kept) -> St
     )
 }
 
-/// What a `plugin_edit` answers once the file has changed.
-pub fn edit_report(name: &str, granted: &[PermissionType], backup: &Kept) -> String {
+/// What a `plugin_edit` answers once the file has changed: where, so the model can verify or
+/// chain the next edit with a range read rather than a page, and how long the file is now.
+pub fn edit_report(
+    name: &str,
+    granted: &[PermissionType],
+    backup: &Kept,
+    edited: &Edited,
+) -> String {
     let name = name.trim().trim_end_matches(".lua");
     let kept = kept_sentence(backup);
-    if granted.is_empty() {
-        return format!("edited {name}.lua; call plugin_reload to load it{kept}");
-    }
+    let total = edited.source.lines().count();
+    let at = match edited.changed.is_empty() {
+        true => String::new(),
+        false => format!(" at {}", plugin_source::span_list(&edited.changed)),
+    };
+    let granted = match granted.is_empty() {
+        true => String::new(),
+        false => format!(" and granted it {}", permission_names(granted).join(", ")),
+    };
     format!(
-        "edited {name}.lua and granted it {}; call plugin_reload to load it{kept}",
-        permission_names(granted).join(", ")
+        "edited {name}.lua{at} (now {total} lines){granted}; call plugin_reload to load it{kept}"
     )
 }
 
-/// `source` with `old` replaced by `new`, or why the edit does not apply.
-///
-/// One occurrence unless `replace_all`, which is what makes an edit a safe alternative to
-/// re-sending the file: a model that matched the wrong line is told so rather than silently
-/// changing the first of several.
-pub fn apply_edit(source: &str, old: &str, new: &str, replace_all: bool) -> Result<String, String> {
-    if old.is_empty() {
-        return Err("old_string is required: the exact text to replace".to_owned());
+/// A `plugin_search` or a `plugin_docs query=` as the model asked for it, clamped to what a
+/// tool answer should cost.
+pub fn search_options(args: &Args) -> Result<plugin_source::Search<'_>, String> {
+    let query = args
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|query| !query.is_empty())
+        .ok_or("query is required and must not be empty")?;
+    Ok(plugin_source::Search {
+        query,
+        case_insensitive: args.case_insensitive,
+        context: args.context.unwrap_or(0).min(plugin_source::MAX_CONTEXT),
+        max_hits: args
+            .max_results
+            .unwrap_or(plugin_source::SEARCH_HITS)
+            .clamp(1, plugin_source::MAX_SEARCH_HITS),
+    })
+}
+
+/// What a search that found nothing says, naming what it searched so "no matches" is not read
+/// as "no plugins".
+pub fn no_matches(name: Option<&str>, files: usize) -> String {
+    match name {
+        Some(name) => format!("no matches in {}", plugin_source::file_name(name)),
+        None => match files {
+            1 => "no matches in the one plugin there is".to_owned(),
+            n => format!("no matches in {n} plugins"),
+        },
     }
-    if old == new {
-        return Err("old_string and new_string are the same; nothing to do".to_owned());
-    }
-    match source.matches(old).count() {
-        0 => Err(
-            "old_string is not in the file. plugin_read it and copy the text to replace \
-             exactly, whitespace included."
-                .to_owned(),
-        ),
-        1 => Ok(source.replacen(old, new, 1)),
-        _ if replace_all => Ok(source.replace(old, new)),
-        n => Err(format!(
-            "old_string appears {n} times. Include enough surrounding lines to name one of \
-             them, or pass replace_all=true to change every one."
-        )),
-    }
+}
+
+/// How many plugins a folder-wide read - `plugin_list`, a `plugin_search` with no `name` -
+/// opens before stopping. The host's reads answer inline on the plugin thread, so this bounds
+/// how long one call can hold it.
+pub const FOLDER_FILES_CAP: usize = 64;
+/// The most of one plugin such a read takes. A plugin is kilobytes; the host's own cap is 8 MB.
+pub const FOLDER_READ_BYTES: usize = 1 << 20;
+
+/// The plugins that have a backup, by the name a listing prints: `keys.bak.lua` under `root`
+/// says `keys.lua` does.
+pub fn backed_up_names(root: &str, entries: &[zellij_tile::prelude::FsEntry]) -> Vec<String> {
+    let prefix = format!("{}/", root.trim_end_matches('/'));
+    entries
+        .iter()
+        .filter(|entry| plugin_authoring::is_backup_name(&entry.path))
+        .filter_map(|entry| {
+            let name = entry.path.strip_prefix(&prefix).unwrap_or(&entry.path);
+            name.strip_suffix(".bak.lua")
+                .map(|stem| format!("{stem}.lua"))
+        })
+        .collect()
 }
 
 /// What a `plugin_write` says about a file that is already there.
@@ -4012,6 +4181,14 @@ mod host {
     /// A plugin's source at `path` under `/plugins`.
     pub fn plugin_fs_read(path: &str) -> Result<String, String> {
         let bytes = zellij_tile::shim::fs_read(std::path::Path::new(path), None)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// The same, refusing a file past `max_bytes` - for a read of the whole folder, where one
+    /// enormous file must not be what stalls the plugin thread. The host checks the size before
+    /// reading, so an oversize file is an error rather than a truncated source.
+    pub fn plugin_fs_read_capped(path: &str, max_bytes: usize) -> Result<String, String> {
+        let bytes = zellij_tile::shim::fs_read(std::path::Path::new(path), Some(max_bytes))?;
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
@@ -4817,8 +4994,8 @@ mod host {
 #[cfg(target_arch = "wasm32")]
 pub use host::{
     current_session_info, dispatch, grant_permissions, new_pane_with_context, observe_plugin,
-    plugin_fs_exists, plugin_fs_list, plugin_fs_read, plugin_fs_write, plugin_log_tail,
-    reload_plugin, report_pane_agent, spawn_in_checkout,
+    plugin_fs_exists, plugin_fs_list, plugin_fs_read, plugin_fs_read_capped, plugin_fs_write,
+    plugin_log_tail, reload_plugin, report_pane_agent, spawn_in_checkout,
 };
 
 /// What a `plugin_reload` found when it went to look: the plugin's pane, and its text.
@@ -4986,6 +5163,11 @@ pub fn plugin_fs_read(_path: &str) -> Result<String, String> {
     test_seams::PLUGIN_SOURCE
         .with_borrow(Clone::clone)
         .ok_or_else(|| PLUGIN_FOLDER_UNREACHABLE.to_owned())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn plugin_fs_read_capped(path: &str, _max_bytes: usize) -> Result<String, String> {
+    plugin_fs_read(path)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

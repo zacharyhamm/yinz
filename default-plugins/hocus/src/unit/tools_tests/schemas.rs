@@ -158,8 +158,20 @@ fn hocus_prompt_contract_keeps_tool_specific_routing_cues() {
         // is on every request, so the copy went. What has to stay is the next step - and, since
         // this is the tool a whole-file rewrite goes through, the cheaper tool beside it.
         ("plugin_write", &["plugin_reload", "plugin_edit"][..]),
-        ("plugin_edit", &["old_string", "not written at all"][..]),
-        ("plugin_read", &["start_line", "before you edit"][..]),
+        (
+            "plugin_edit",
+            &["old_string", "not written at all", "edits"][..],
+        ),
+        (
+            "plugin_read",
+            &["start_line", "before you edit", "plugin_outline"][..],
+        ),
+        // The orienting tools: a hit's text is what an edit is built from, so the description
+        // has to say which part of a hit to copy; an outline exists so the read after it can
+        // be a range; and a docs query is the grain to try before buying a section.
+        ("plugin_search", &["old_string", "never the prefix"][..]),
+        ("plugin_outline", &["plugin_read", "range"][..]),
+        ("plugin_docs", &["query", "start_line"][..]),
         ("plugin_reload", &["plugin_log"][..]),
         ("agent_spawn", &["plugin_write"][..]),
     ] {
@@ -495,4 +507,93 @@ fn the_vm_tools_address_a_vm_by_vm_and_not_by_name() {
         );
         assert!(parameters["properties"].get("session").is_none(), "{name}");
     }
+}
+
+// -- the orienting plugin tools ----------------------------------------------
+
+/// The orienting tools ask for little - a query, or a name. `plugin_docs` keeps its closed
+/// section enum, so a name outside it is refused with the list, and gains the query and the
+/// page beside it; `plugin_edit` admits a batch beside the single form, so only the name is
+/// required and the exactly-one rule is `Args::edit_batch`'s.
+#[test]
+fn the_orienting_tools_and_the_batch_edit_have_the_schemas_the_prompt_promises() {
+    let specs = specs();
+    let spec = |name: &str| {
+        specs
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|spec| spec["function"]["name"] == name)
+            .unwrap_or_else(|| panic!("no {name}"))["function"]["parameters"]
+            .clone()
+    };
+    let search = spec("plugin_search");
+    assert_eq!(search["required"], json!(["query"]));
+    for key in [
+        "query",
+        "name",
+        "case_insensitive",
+        "context",
+        "max_results",
+    ] {
+        assert!(
+            search["properties"].get(key).is_some(),
+            "plugin_search.{key}"
+        );
+    }
+    let outline = spec("plugin_outline");
+    assert_eq!(outline["required"], json!(["name"]));
+    let docs = spec("plugin_docs");
+    assert_eq!(
+        docs["properties"]["section"]["enum"],
+        json!(lua_docs::SECTIONS.as_slice())
+    );
+    for key in [
+        "query",
+        "start_line",
+        "line_count",
+        "context",
+        "case_insensitive",
+    ] {
+        assert!(docs["properties"].get(key).is_some(), "plugin_docs.{key}");
+    }
+    assert!(docs.get("required").is_none());
+    let edit = spec("plugin_edit");
+    assert_eq!(edit["required"], json!(["name"]));
+    assert_eq!(
+        edit["properties"]["edits"]["items"]["required"],
+        json!(["old_string", "new_string"])
+    );
+    assert_eq!(
+        edit["properties"]["edits"]["items"]["properties"]["replace_all"]["type"],
+        "boolean"
+    );
+}
+
+/// A plan about a plugin is researched with the tools that only read, and finding is reading.
+#[test]
+fn the_orienting_plugin_tools_are_available_when_planning() {
+    for tool in ["plugin_search", "plugin_outline"] {
+        assert!(READ_ONLY.contains(&tool), "{tool} is not read-only");
+    }
+    assert!(!READ_ONLY.contains(&"plugin_edit"));
+    let planning = read_only_specs_for(&["plugin"].into_iter().collect());
+    let listed: Vec<String> = planning
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|spec| spec["function"]["name"].as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        listed.iter().any(|name| name == "plugin_search"),
+        "{listed:?}"
+    );
+    assert!(
+        listed.iter().any(|name| name == "plugin_outline"),
+        "{listed:?}"
+    );
+    assert!(
+        !listed.iter().any(|name| name == "plugin_edit"),
+        "{listed:?}"
+    );
 }

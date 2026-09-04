@@ -54,13 +54,19 @@ fn a_plugin_tool_without_a_folder_refuses_instead_of_running_anything() {
     for name in [
         "plugin_list",
         "plugin_read",
+        "plugin_outline",
+        "plugin_search",
         "plugin_write",
         "plugin_reload",
         "plugin_log",
     ] {
         let mut state = ready_state();
         assert!(
-            run_file_tool(&mut state, name, r#"{"name":"keys","source":"x"}"#),
+            run_file_tool(
+                &mut state,
+                name,
+                r#"{"name":"keys","source":"x","query":"x"}"#
+            ),
             "{name} must answer rather than defer"
         );
         let results = tool_results(&state);
@@ -178,6 +184,9 @@ fn the_file_tools_and_the_log_answer_at_once() {
     for (name, arguments) in [
         ("plugin_list", "{}"),
         ("plugin_read", r#"{"name":"keys"}"#),
+        ("plugin_outline", r#"{"name":"keys"}"#),
+        ("plugin_search", r#"{"query":"x"}"#),
+        ("plugin_search", r#"{"name":"keys","query":"x"}"#),
         ("plugin_write", r#"{"name":"keys","source":"local M = {}"}"#),
         ("plugin_reload", r#"{"name":"keys"}"#),
         ("plugin_log", r#"{"name":"keys"}"#),
@@ -402,4 +411,162 @@ fn an_awaited_plugin_load_can_be_aborted() {
     state.timer_armed = false;
     state.on_timer(1.0);
     assert_eq!(tool_results(&state).len(), 1);
+}
+
+/// One batch is one confirmation, and the permissions it grants are the difference between the
+/// source before and the source after every edit - not those of any one edit.
+#[test]
+fn a_batch_edit_asks_once_and_grants_before_versus_final() {
+    crate::tools::test_seams::reset();
+    crate::tools::test_seams::set_plugin_source(
+        "zellij.request_permission { \"read_files\" }\nreturn {}\n",
+    );
+    let mut state = plugin_state();
+    state.pending = vec![ToolCall {
+        id: "edit".into(),
+        name: "plugin_edit".into(),
+        arguments: serde_json::json!({
+            "name": "keys",
+            "edits": [
+                { "old_string": "\"read_files\"", "new_string": "\"read_files\", \"write_files\"" },
+                { "old_string": "\"write_files\"", "new_string": "\"write_files\", \"run_commands\"" },
+            ],
+        })
+        .to_string(),
+    }]
+    .into();
+
+    state.pump_tools();
+    let prompt = state.confirmation_prompt().expect("confirmation");
+    let consequence = &prompt.detail[0].0;
+    assert!(consequence.contains("in 2 places"), "{consequence}");
+    assert!(
+        consequence.contains("grants it: write_files, run_commands"),
+        "{consequence}"
+    );
+
+    state.confirm_tool();
+
+    assert_eq!(
+        crate::tools::test_seams::granted_permissions(),
+        vec![PermissionType::WriteFiles, PermissionType::RunCommands]
+    );
+    let results = tool_results(&state);
+    assert_eq!(results.len(), 1, "one confirmation, one answer");
+    let report = &results[0].content;
+    assert!(
+        report.starts_with(
+            "edited keys.lua at line 1 (now 2 lines) and granted it write_files, run_commands;"
+        ),
+        "{report}"
+    );
+    crate::tools::test_seams::reset();
+}
+
+/// A miss anywhere in a batch is refused before anyone is asked to approve it - the diagnosis is
+/// the whole answer - and nothing is written or granted.
+#[test]
+fn a_batch_whose_second_edit_misses_is_refused_before_the_prompt() {
+    crate::tools::test_seams::reset();
+    crate::tools::test_seams::set_plugin_source(
+        "zellij.request_permission { \"read_files\" }\nreturn {}\n",
+    );
+    let mut state = plugin_state();
+    state.pending = vec![ToolCall {
+        id: "edit".into(),
+        name: "plugin_edit".into(),
+        arguments: serde_json::json!({
+            "name": "keys",
+            "edits": [
+                { "old_string": "\"read_files\"", "new_string": "\"read_files\", \"write_files\"" },
+                { "old_string": "nothing like this", "new_string": "x" },
+            ],
+        })
+        .to_string(),
+    }]
+    .into();
+
+    state.pump_tools();
+
+    assert!(
+        state.confirmation_prompt().is_none(),
+        "a miss is refused before anyone is asked"
+    );
+    let results = tool_results(&state);
+    assert_eq!(results.len(), 1);
+    assert!(
+        results[0]
+            .content
+            .starts_with("edit 2 of 2: old_string is not in the file"),
+        "{}",
+        results[0].content
+    );
+    assert!(crate::tools::test_seams::granted_permissions().is_empty());
+    crate::tools::test_seams::reset();
+}
+
+/// The outline and a search confined to one plugin read that plugin through the host and answer
+/// at once, in the shapes the pure tests pin.
+#[test]
+fn an_outline_and_a_named_search_are_answered_from_the_plugin_source() {
+    crate::tools::test_seams::reset();
+    crate::tools::test_seams::set_plugin_source(
+        "local M = {}\nfunction M.render()\n  return \"hi\"\nend\nreturn M\n",
+    );
+    let mut state = plugin_state();
+    assert!(run_file_tool(
+        &mut state,
+        "plugin_outline",
+        r#"{"name":"keys"}"#
+    ));
+    assert_eq!(
+        tool_results(&state)[0].content,
+        "keys.lua: 5 lines\n2: function M.render()"
+    );
+
+    let mut state = plugin_state();
+    assert!(run_file_tool(
+        &mut state,
+        "plugin_search",
+        r#"{"name":"keys","query":"render"}"#
+    ));
+    assert_eq!(
+        tool_results(&state)[0].content,
+        "keys.lua:2:function M.render()"
+    );
+
+    let mut state = plugin_state();
+    assert!(run_file_tool(
+        &mut state,
+        "plugin_search",
+        r#"{"name":"keys","query":"zzz"}"#
+    ));
+    assert_eq!(tool_results(&state)[0].content, "no matches in keys.lua");
+    crate::tools::test_seams::reset();
+}
+
+/// The docs are compiled in, so a query or a page of them needs no plugin folder either.
+#[test]
+fn a_docs_query_and_a_docs_page_need_no_plugin_folder() {
+    let mut state = ready_state();
+    assert!(run_file_tool(
+        &mut state,
+        "plugin_docs",
+        r#"{"query":"run_command"}"#
+    ));
+    let hits = &tool_results(&state)[0].content;
+    assert!(hits.contains("prelude_commands:"), "{hits}");
+
+    let mut state = ready_state();
+    assert!(run_file_tool(
+        &mut state,
+        "plugin_docs",
+        r#"{"section":"events","start_line":1,"line_count":3}"#
+    ));
+    let page = &tool_results(&state)[0].content;
+    assert!(page.starts_with("lines 1-3 of "), "{page}");
+    assert!(
+        page.contains("(plugin_docs section=events start_line=4)"),
+        "{page}"
+    );
 }

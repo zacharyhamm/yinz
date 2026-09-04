@@ -6,6 +6,10 @@
 //! plugin folder, or a write with nothing to write, is refused without a file being touched.
 
 use super::*;
+use crate::plugin_source::{
+    apply_edits, listing, missing_report, outline_answer, search, span_list, EditPair, Edited,
+    LineSpan, Listed, Search, MAX_CONTEXT, MAX_SEARCH_HITS, SEARCH_HITS,
+};
 use zellij_tile::prelude::{FileMetadata, FsEntry};
 
 const DIR: &str = "/home/someone/.config/zellij/plugins";
@@ -400,12 +404,16 @@ fn a_write_report_names_the_next_step_and_what_it_granted() {
     // makes that true for the model rather than only for the disk.
     let replaced = write_report("probe", &[], &Kept::At(backup_name("probe")));
     assert!(replaced.contains("probe.bak"), "{replaced}");
-    let edited = edit_report("probe", &[], &Kept::At(backup_name("probe")));
+    let changed = Edited {
+        source: "return {}\n".to_owned(),
+        changed: vec![LineSpan { first: 1, last: 1 }],
+    };
+    let edited = edit_report("probe", &[], &Kept::At(backup_name("probe")), &changed);
     assert!(edited.contains("edited probe.lua"), "{edited}");
     assert!(edited.contains("probe.bak"), "{edited}");
     // And a backup that could not be written is said out loud: everything else in this report
     // tells the model the old version is one read away.
-    let unkept = edit_report("probe", &[], &Kept::Failed);
+    let unkept = edit_report("probe", &[], &Kept::Failed, &changed);
     assert!(unkept.contains("no backup to read"), "{unkept}");
 }
 
@@ -424,23 +432,43 @@ fn a_write_that_changes_nothing_keeps_nothing() {
     );
 }
 
+fn pair(old: &str, new: &str) -> EditPair {
+    EditPair {
+        old_string: old.to_owned(),
+        new_string: new.to_owned(),
+        replace_all: false,
+    }
+}
+
 /// An edit is the alternative to re-sending a file from memory, so it has to be exact: the two
-/// ways it can be ambiguous are refusals, not guesses.
+/// ways it can be ambiguous are refusals, not guesses - and the refusal for several says where
+/// each one is, so the next old_string can carry the lines around the one that was meant.
 #[test]
 fn an_edit_applies_once_or_says_why_it_cannot() {
     let source = "local M = {}\nM.tick = 1\nreturn M\n";
-    assert_eq!(
-        apply_edit(source, "M.tick = 1", "M.tick = 5", false).unwrap(),
-        "local M = {}\nM.tick = 5\nreturn M\n"
-    );
-    let missing = apply_edit(source, "M.tock = 1", "x", false).unwrap_err();
+    let edited = apply_edits(source, &[pair("M.tick = 1", "M.tick = 5")]).unwrap();
+    assert_eq!(edited.source, "local M = {}\nM.tick = 5\nreturn M\n");
+    assert_eq!(edited.changed, vec![LineSpan { first: 2, last: 2 }]);
+    let missing = apply_edits(source, &[pair("M.tock = 1", "x")]).unwrap_err();
     assert!(missing.contains("plugin_read"), "{missing}");
     let twice = "a\na\n";
-    let ambiguous = apply_edit(twice, "a", "b", false).unwrap_err();
-    assert!(ambiguous.contains("appears 2 times"), "{ambiguous}");
-    assert_eq!(apply_edit(twice, "a", "b", true).unwrap(), "b\nb\n");
-    assert!(apply_edit(source, "", "x", false).is_err());
-    assert!(apply_edit(source, "M.tick = 1", "M.tick = 1", false).is_err());
+    let ambiguous = apply_edits(twice, &[pair("a", "b")]).unwrap_err();
+    assert!(
+        ambiguous.contains("appears 2 times, at lines 1 and 2"),
+        "{ambiguous}"
+    );
+    let all = apply_edits(
+        twice,
+        &[EditPair {
+            replace_all: true,
+            ..pair("a", "b")
+        }],
+    )
+    .unwrap();
+    assert_eq!(all.source, "b\nb\n");
+    assert_eq!(all.changed, vec![LineSpan { first: 1, last: 2 }]);
+    assert!(apply_edits(source, &[pair("", "x")]).is_err());
+    assert!(apply_edits(source, &[pair("M.tick = 1", "M.tick = 1")]).is_err());
 }
 
 /// The findings ride under the verdict, never over it, and a source with nothing wrong with it
@@ -649,13 +677,13 @@ fn numbered_lines(count: usize) -> String {
 fn a_partial_read_says_how_much_is_left_and_how_to_get_it() {
     let file = numbered_lines(900);
 
-    let answer = read_answer(&file, 1, 300);
+    let answer = read_answer(&file, 1, 300, "plugin_read name=keys");
 
     assert!(answer.starts_with("lines 1-300 of 900\n"), "{answer}");
     assert!(answer.contains("line 300"));
     assert!(!answer.contains("line 301"));
     assert!(
-        answer.contains("… 600 more lines (plugin_read start_line=301)"),
+        answer.contains("… 600 more lines (plugin_read name=keys start_line=301)"),
         "{answer}"
     );
 }
@@ -664,7 +692,7 @@ fn a_partial_read_says_how_much_is_left_and_how_to_get_it() {
 /// suggestion would send the model on a round trip for an empty page.
 #[test]
 fn a_whole_file_read_has_no_more_lines_marker() {
-    let answer = read_answer(&numbered_lines(12), 1, 300);
+    let answer = read_answer(&numbered_lines(12), 1, 300, "plugin_read name=keys");
 
     assert!(answer.starts_with("lines 1-12 of 12\n"), "{answer}");
     assert!(!answer.contains("more lines"), "{answer}");
@@ -673,7 +701,7 @@ fn a_whole_file_read_has_no_more_lines_marker() {
 /// The last page ends exactly where the file does.
 #[test]
 fn the_final_page_reports_the_real_last_line() {
-    let answer = read_answer(&numbered_lines(350), 301, 600);
+    let answer = read_answer(&numbered_lines(350), 301, 600, "plugin_read name=keys");
 
     assert!(answer.starts_with("lines 301-350 of 350\n"), "{answer}");
     assert!(!answer.contains("more lines"), "{answer}");
@@ -684,10 +712,13 @@ fn the_final_page_reports_the_real_last_line() {
 #[test]
 fn a_read_past_the_end_says_how_long_the_file_actually_is() {
     assert_eq!(
-        read_answer(&numbered_lines(40), 900, 1200),
+        read_answer(&numbered_lines(40), 900, 1200, "plugin_read name=keys"),
         "no lines there: the file has 40 lines"
     );
-    assert_eq!(read_answer("", 1, 300), "the file is empty");
+    assert_eq!(
+        read_answer("", 1, 300, "plugin_read name=keys"),
+        "the file is empty"
+    );
 }
 
 /// Line numbers are deliberately absent: `plugin_edit` matches `old_string` against the file
@@ -696,7 +727,7 @@ fn a_read_past_the_end_says_how_long_the_file_actually_is() {
 fn the_lines_are_returned_verbatim_so_an_edit_can_match_them() {
     let file = "local M = {}\nreturn M\n";
 
-    let answer = read_answer(file, 1, 300);
+    let answer = read_answer(file, 1, 300, "plugin_read name=keys");
 
     let body = answer.split_once('\n').expect("a header").1;
     assert_eq!(body, "local M = {}\nreturn M");
@@ -725,4 +756,469 @@ fn no_plugin_refusal_asks_for_the_whole_file_again() {
     let missing = plugin_source(&args("{}")).expect_err("no source");
     assert!(missing.contains("plugin_edit"), "{missing}");
     assert!(!missing.contains("not a patch"), "{missing}");
+}
+
+// -- searching a plugin ---------------------------------------------------
+
+fn search_with(query: &str, context: usize) -> Search<'_> {
+    Search {
+        query,
+        case_insensitive: false,
+        context,
+        max_hits: SEARCH_HITS,
+    }
+}
+
+/// The shape is ripgrep's, which the model already reads from `search_files`: a hit carries its
+/// file and line, a context line the same with dashes, and groups that do not touch are kept
+/// apart - so a hit can be told from its surroundings, and its text copied as it is.
+#[test]
+fn a_search_answers_in_the_shape_search_files_does() {
+    let keys = "local M = {}\nfunction M.load()\n  zellij.subscribe { \"key\" }\nend\nreturn M\n";
+    let clock = "local M = {}\nfunction M.render()\n  return os.date()\nend\nreturn M\n";
+    let files = [("keys.lua", keys), ("clock.lua", clock)];
+
+    let hits = search(&files, &search_with("^function", 0))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        hits,
+        "keys.lua:2:function M.load()\nclock.lua:2:function M.render()"
+    );
+
+    let with_context = search(&files, &search_with("^function", 1))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        with_context,
+        "keys.lua-1-local M = {}\nkeys.lua:2:function M.load()\nkeys.lua-3-  zellij.subscribe { \
+         \"key\" }\n--\nclock.lua-1-local M = {}\nclock.lua:2:function M.render()\nclock.lua-3-  \
+         return os.date()"
+    );
+}
+
+/// What follows the second separator is the line as it is in the file, indentation included:
+/// that is what makes a hit something a `plugin_edit` can be built from without a read.
+#[test]
+fn a_search_hit_is_verbatim_after_the_second_separator() {
+    let source = "function M.load()\n\t  zellij.subscribe { \"key\" }  \nend\n";
+    let hits = search(&[("keys.lua", source)], &search_with("subscribe", 0))
+        .unwrap()
+        .unwrap();
+    assert_eq!(hits, "keys.lua:2:\t  zellij.subscribe { \"key\" }  ");
+}
+
+/// Two hits whose context windows overlap or touch print once, as one group with no separator
+/// between them - rg's rule, and the one that keeps a line from appearing twice.
+#[test]
+fn context_lines_never_repeat_a_hit_and_touching_groups_merge() {
+    let source = "a\nb\nhit one\nc\nhit two\nd\ne\nf\nhit three\n";
+    let hits = search(&[("x.lua", source)], &search_with("^hit", 1))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        hits,
+        "x.lua-2-b\nx.lua:3:hit one\nx.lua-4-c\nx.lua:5:hit two\nx.lua-6-d\n--\nx.lua-8-f\nx.lua:9:hit three"
+    );
+}
+
+/// Every hit is re-sent on every later turn, so a search that matches half the folder is cut,
+/// and the cut says how much it left out and how to see it.
+#[test]
+fn a_search_is_capped_and_says_how_many_it_left_out() {
+    let source = "x\n".repeat(100);
+    let hits = search(&[("x.lua", &source)], &search_with("x", 0))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        hits.lines()
+            .filter(|line| line.starts_with("x.lua:"))
+            .count(),
+        SEARCH_HITS
+    );
+    assert!(
+        hits.ends_with(
+            "… 40 of 100 matching lines shown; raise max_results, or narrow the query or name"
+        ),
+        "{hits}"
+    );
+}
+
+/// Nothing is `None`, so the caller says what was searched: "no matches" alone reads as "no
+/// plugins".
+#[test]
+fn a_search_with_no_hits_is_none_so_the_caller_can_say_what_it_searched() {
+    assert_eq!(
+        search(&[("x.lua", "return {}\n")], &search_with("zzz", 0)).unwrap(),
+        None
+    );
+    assert_eq!(no_matches(Some("keys"), 1), "no matches in keys.lua");
+    assert_eq!(no_matches(None, 7), "no matches in 7 plugins");
+}
+
+/// A bad pattern is answered with the regex's own error, which names the problem, rather than
+/// with "no matches", which would send the model looking for a plugin that is not there.
+#[test]
+fn an_invalid_regex_is_answered_with_the_regex_error() {
+    let error = search(&[("x.lua", "return {}\n")], &search_with("(", 0)).unwrap_err();
+    assert!(error.contains("regex parse error"), "{error}");
+}
+
+#[test]
+fn a_case_insensitive_search_finds_either_case() {
+    let files = [("x.lua", "Render\nrender\n")];
+    let mut options = search_with("render", 0);
+    assert_eq!(search(&files, &options).unwrap().unwrap(), "x.lua:2:render");
+    options.case_insensitive = true;
+    assert_eq!(
+        search(&files, &options).unwrap().unwrap(),
+        "x.lua:1:Render\nx.lua:2:render"
+    );
+}
+
+/// The options are clamped to what a tool answer should cost, and an empty query is refused
+/// rather than matching every line of every plugin.
+#[test]
+fn search_options_clamp_context_and_max_results_and_refuse_an_empty_query() {
+    let clamped = args(r#"{"query":" render ","context":99,"max_results":9999}"#);
+    let options = search_options(&clamped).unwrap();
+    assert_eq!(options.query, "render");
+    assert_eq!(options.context, MAX_CONTEXT);
+    assert_eq!(options.max_hits, MAX_SEARCH_HITS);
+    let plain = args(r#"{"query":"x"}"#);
+    let defaults = search_options(&plain).unwrap();
+    assert_eq!(
+        (
+            defaults.context,
+            defaults.max_hits,
+            defaults.case_insensitive
+        ),
+        (0, SEARCH_HITS, false)
+    );
+    assert!(search_options(&args(r#"{"query":"  "}"#)).is_err());
+    assert!(search_options(&args("{}")).is_err());
+}
+
+// -- the outline -----------------------------------------------------------
+
+/// The outline is the cheap first read: one line per thing defined, with its line number, so
+/// the page that follows can be a range. Numbers align so the column reads.
+#[test]
+fn an_outline_answer_numbers_every_entry_and_states_the_length() {
+    let source = "local zellij = require(\"zellij\")\nlocal M = {}\n\nfunction M.load(config)\n  \
+                  zellij.request_permission { \"read_files\" }\nend\n\nzellij.on(\"key\", \
+                  function(event)\n  return true\nend)\n\nM.render = function(rows, cols)\n  \
+                  return \"hi\"\nend\nreturn M\n";
+    let answer = outline_answer("keys", source);
+    assert_eq!(
+        answer,
+        "keys.lua: 15 lines\n 1: require \"zellij\"\n 4: function M.load(config)\n 5: \
+         request_permission { \"read_files\" }\n 8: on \"key\"\n12: M.render = function(rows, cols)"
+    );
+}
+
+/// A plugin with nothing in it to outline still says how long it is, and an empty file says it
+/// is empty - the two are different things to be told.
+#[test]
+fn an_outline_of_a_plugin_with_nothing_in_it_still_states_its_length() {
+    let answer = outline_answer("probe.lua", "-- just a note\nreturn {}\n");
+    assert!(
+        answer.starts_with("probe.lua: 2 lines; nothing to outline"),
+        "{answer}"
+    );
+    assert_eq!(outline_answer("probe", ""), "the file is empty");
+}
+
+// -- listing ---------------------------------------------------------------
+
+/// A listing says how long each plugin is, so the model can tell a 40-line one from a 900-line
+/// one before deciding how to read it, and names the backup where there is one.
+#[test]
+fn a_listing_states_each_plugins_length_and_whether_a_backup_exists() {
+    let listed = [
+        Listed {
+            name: "keys.lua",
+            lines: Ok(412),
+            backup: true,
+        },
+        Listed {
+            name: "app/ui.lua",
+            lines: Ok(1),
+            backup: false,
+        },
+        Listed {
+            name: "broken.lua",
+            lines: Err("too big".to_owned()),
+            backup: false,
+        },
+    ];
+    assert_eq!(
+        listing(&listed),
+        "keys.lua  412 lines  (keys.bak kept from an earlier edit)\napp/ui.lua  1 line\n\
+         broken.lua  unreadable: too big"
+    );
+    assert_eq!(listing(&[]), "no plugins yet");
+}
+
+#[test]
+fn backed_up_names_reads_the_bak_suffix_back_to_the_plugin() {
+    let entry = |path: &str| FsEntry {
+        path: path.to_owned(),
+        metadata: None,
+    };
+    let entries = [
+        entry("/plugins/keys.bak.lua"),
+        entry("/plugins/keys.lua"),
+        entry("/plugins/app/ui.bak.lua"),
+    ];
+    assert_eq!(
+        backed_up_names("/plugins", &entries),
+        vec!["keys.lua", "app/ui.lua"]
+    );
+}
+
+// -- where an edit landed, and why one missed ----------------------------------
+
+/// The answer says where the file changed and how long it is now, which is what lets the next
+/// call be a range read - or the next edit - rather than a page.
+#[test]
+fn an_edit_report_says_where_the_file_changed() {
+    let edited = Edited {
+        source: "a\n".repeat(12),
+        changed: vec![LineSpan { first: 2, last: 4 }],
+    };
+    assert_eq!(
+        edit_report("keys", &[], &Kept::Nothing, &edited),
+        "edited keys.lua at lines 2-4 (now 12 lines); call plugin_reload to load it"
+    );
+    let two = Edited {
+        source: "a\n".repeat(12),
+        changed: vec![
+            LineSpan { first: 2, last: 2 },
+            LineSpan { first: 9, last: 10 },
+        ],
+    };
+    let report = edit_report("keys", &[PermissionType::ReadFiles], &Kept::Nothing, &two);
+    assert!(
+        report.starts_with(
+            "edited keys.lua at line 2, lines 9-10 (now 12 lines) and granted it read_files;"
+        ),
+        "{report}"
+    );
+}
+
+/// A deletion has no text to point at, so it is named by the line it was made on; past five
+/// spans the rest are counted, since the report rides on every later turn.
+#[test]
+fn span_list_names_a_deletion_by_its_line_and_caps_at_five() {
+    let deleted = apply_edits("a\nb\nc\n", &[pair("b\n", "")]).unwrap();
+    assert_eq!(deleted.source, "a\nc\n");
+    assert_eq!(deleted.changed, vec![LineSpan { first: 2, last: 2 }]);
+    let many: Vec<LineSpan> = (1..=7)
+        .map(|n| LineSpan {
+            first: n * 3,
+            last: n * 3,
+        })
+        .collect();
+    assert_eq!(
+        span_list(&many),
+        "line 3, line 6, line 9, line 12, line 15, … and 2 more"
+    );
+}
+
+/// The commonest miss is whitespace: tabs against spaces, or a trailing space the model did not
+/// see. Saying where the near-match is and quoting it verbatim saves the read that used to be
+/// the only recovery.
+#[test]
+fn a_missing_old_string_that_differs_only_in_whitespace_is_located_and_quoted() {
+    let source =
+        "local M = {}\nfunction M.load()\n\tzellij.subscribe { \"key\" }\n\treturn true\nend\n";
+    let report = missing_report(
+        source,
+        "function M.load()\n  zellij.subscribe { \"key\" }\n  return true",
+    );
+    assert!(
+        report.starts_with(
+            "old_string is not in the file exactly, but lines 2-4 match it apart from whitespace."
+        ),
+        "{report}"
+    );
+    assert!(
+        report.ends_with("function M.load()\n\tzellij.subscribe { \"key\" }\n\treturn true"),
+        "{report}"
+    );
+    assert!(!report.contains("plugin_read"), "{report}");
+    // A one-line old_string is found anywhere in its line.
+    let one = missing_report(source, "subscribe  {  \"key\"  }");
+    assert!(
+        one.starts_with(
+            "old_string is not in the file exactly, but line 3 matches it apart from whitespace."
+        ),
+        "{one}"
+    );
+}
+
+/// When the first line is right and the rest is not, the miss is anchored there and the file's
+/// own text from that point is quoted, so the next old_string can be copied rather than guessed.
+#[test]
+fn a_missing_old_string_whose_first_line_exists_is_anchored_there() {
+    let source = "local M = {}\nfunction M.load()\n  zellij.subscribe { \"key\" }\nend\nreturn M\n";
+    let report = missing_report(
+        source,
+        "function M.load()\n  zellij.subscribe { \"timer\" }",
+    );
+    assert_eq!(
+        report,
+        "old_string is not in the file. Its first line is at line 2; the file reads from line \
+         2:\nfunction M.load()\n  zellij.subscribe { \"key\" }\nend\nreturn M"
+    );
+}
+
+#[test]
+fn a_missing_old_string_with_no_anchor_falls_back_to_the_read_advice() {
+    let report = missing_report("local M = {}\nreturn M\n", "nothing like this\nat all");
+    assert!(report.contains("plugin_read"), "{report}");
+}
+
+// -- batches -----------------------------------------------------------------
+
+/// Edits apply in order, each against the text the one before it produced: the second may name
+/// what the first wrote.
+#[test]
+fn edits_apply_in_order_against_the_text_the_previous_one_produced() {
+    let edited = apply_edits("a\n", &[pair("a", "b"), pair("b", "c")]).unwrap();
+    assert_eq!(edited.source, "c\n");
+}
+
+/// The spans are of the edited text, not the original: an edit that adds lines moves everything
+/// after it, and a report in the old numbering would send a range read to the wrong place.
+#[test]
+fn a_batch_reports_spans_against_the_final_text() {
+    let source: String = (1..=10).map(|n| format!("line {n}\n")).collect();
+    let edited = apply_edits(
+        &source,
+        &[
+            pair("line 8\n", "line eight\n"),
+            pair("line 2\n", "two a\ntwo b\ntwo c\n"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        edited.changed,
+        vec![
+            LineSpan { first: 2, last: 4 },
+            LineSpan {
+                first: 10,
+                last: 10
+            },
+        ]
+    );
+    assert_eq!(edited.source.lines().nth(9), Some("line eight"));
+}
+
+/// One miss refuses the whole batch and nothing is written; the refusal names which edit, with
+/// the same diagnosis a single edit gets, and says the file is unchanged.
+#[test]
+fn a_failing_edit_in_a_batch_refuses_the_whole_batch_and_names_it() {
+    let error = apply_edits(
+        "a\nb\n",
+        &[pair("a", "x"), pair("zzz", "y"), pair("b", "z")],
+    )
+    .unwrap_err();
+    assert!(
+        error.starts_with("edit 2 of 3: old_string is not in the file"),
+        "{error}"
+    );
+    assert!(
+        error.ends_with("Nothing was written; the file is unchanged."),
+        "{error}"
+    );
+}
+
+/// The two forms are one code path, and exactly one of them per call.
+#[test]
+fn the_single_form_is_a_one_element_batch_and_the_forms_do_not_mix() {
+    let single = args(r#"{"name":"keys","old_string":"a","new_string":"b","replace_all":true}"#)
+        .edit_batch()
+        .unwrap();
+    assert_eq!(
+        single,
+        vec![EditPair {
+            replace_all: true,
+            ..pair("a", "b")
+        }]
+    );
+    let batch = args(
+        r#"{"name":"keys","edits":[{"old_string":"a","new_string":"b"},{"old_string":"c","new_string":"d","replace_all":true}]}"#,
+    )
+    .edit_batch()
+    .unwrap();
+    assert_eq!(batch.len(), 2);
+    assert!(batch[1].replace_all);
+    let mixed = args(r#"{"name":"keys","old_string":"a","new_string":"b","edits":[]}"#)
+        .edit_batch()
+        .unwrap_err();
+    assert!(mixed.contains("not both"), "{mixed}");
+    let empty = args(r#"{"name":"keys","edits":[]}"#)
+        .edit_batch()
+        .unwrap_err();
+    assert!(empty.contains("edits is empty"), "{empty}");
+    // Neither form is the single form's own refusal, once it is applied.
+    let neither =
+        apply_edits("a\n", &args(r#"{"name":"keys"}"#).edit_batch().unwrap()).unwrap_err();
+    assert!(neither.contains("old_string is required"), "{neither}");
+}
+
+/// The transcript line counts the batch, not its code.
+#[test]
+fn a_batch_is_summarized_by_its_count() {
+    let summary = summarize(&call(
+        "plugin_edit",
+        r#"{"name":"keys","edits":[{"old_string":"a\nb","new_string":"c"},{"old_string":"d","new_string":"e\nf\ng"}]}"#,
+    ));
+    assert_eq!(summary, "plugin_edit keys (2 edits, 3 lines -> 4)");
+    let single = summarize(&call(
+        "plugin_edit",
+        r#"{"name":"keys","old_string":"a","new_string":"b\nc"}"#,
+    ));
+    assert_eq!(single, "plugin_edit keys (1 lines -> 2)");
+}
+
+/// A batch is agreed to pair by pair: each old and new string is a block of its own under the
+/// edit's number, in the prompt in full and in the toast cut short - after a few edits as well
+/// as within each one.
+#[test]
+fn a_batch_edit_renders_each_pair_as_its_own_block() {
+    let long: Vec<String> = (0..30).map(|n| format!("-- line {n}")).collect();
+    let edits: Vec<serde_json::Value> = (1..=5)
+        .map(|n| {
+            serde_json::json!({
+                "old_string": format!("old {n}"),
+                "new_string": long.join("\n"),
+                "replace_all": n == 2,
+            })
+        })
+        .collect();
+    let edit = call(
+        "plugin_edit",
+        &serde_json::json!({ "name": "keys", "edits": edits }).to_string(),
+    );
+    let detail = confirmation_detail(&edit).join("\n");
+    assert!(
+        detail.contains("changes keys.lua in your Zellij plugin folder in 5 places"),
+        "{detail}"
+    );
+    assert!(
+        detail.contains("edit 1 old_string:\n    old 1\n  edit 1 new_string:\n    -- line 0"),
+        "{detail}"
+    );
+    assert!(detail.contains("edit 2 replace_all: true"), "{detail}");
+    assert!(!detail.contains("edit 1 replace_all"), "{detail}");
+    assert!(detail.contains("edit 5 old_string:"), "{detail}");
+    assert!(!detail.contains("more edits"), "{detail}");
+    let toast = confirmation_toast(&edit);
+    assert!(toast.contains("edit 3 old_string:"), "{toast}");
+    assert!(!toast.contains("edit 4 old_string:"), "{toast}");
+    assert!(toast.contains("… 2 more edits"), "{toast}");
+    assert!(toast.contains("10 more lines"), "{toast}");
 }
