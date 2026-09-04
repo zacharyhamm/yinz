@@ -36,10 +36,12 @@ impl TestBridge {
             should_silently_fail: true,
         };
         let data_dir = tempdir().unwrap();
+        let data_access = Arc::new(DataAccess::sqlite(data_dir.path()));
         let bridge = WasmBridge::new(
             senders,
             Engine::default(),
             data_dir.path().to_path_buf(),
+            data_access,
             PathBuf::from("."),
             PathBuf::from("."),
             BTreeMap::new(),

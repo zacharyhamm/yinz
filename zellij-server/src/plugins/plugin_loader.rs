@@ -27,7 +27,7 @@ use crate::{
     ui::loading_indication::LoadingIndication, ClientId,
 };
 
-use zellij_utils::plugin_data_store::PluginDataStore;
+use zellij_utils::data_access::DataAccess;
 
 use crate::plugins::queues::Queues;
 use zellij_utils::{
@@ -110,7 +110,7 @@ pub struct PluginLoader<'a> {
     default_mode: InputMode,
     keybinds: Keybinds,
     zellij_data_dir: PathBuf,
-    plugin_data_store: Arc<PluginDataStore>,
+    data_access: Arc<DataAccess>,
     queues: Arc<Mutex<Queues>>,
     size: Size,
     cancel: Arc<AtomicBool>,
@@ -157,7 +157,7 @@ impl<'a> PluginLoader<'a> {
             default_mode: loading_context.default_mode,
             keybinds: loading_context.keybinds,
             zellij_data_dir: loading_context.zellij_data_dir,
-            plugin_data_store: loading_context.plugin_data_store,
+            data_access: loading_context.data_access,
             queues: loading_context.queues,
             size: loading_context.size,
             cancel: loading_context.cancel,
@@ -363,8 +363,7 @@ impl<'a> PluginLoader<'a> {
             senders: self.senders.clone(),
             wasi_ctx,
             plugin_own_data_dir: self.plugin_own_data_dir.clone(),
-            zellij_data_dir: self.zellij_data_dir.clone(),
-            plugin_data_store: self.plugin_data_store.clone(),
+            data_access: self.data_access.clone(),
             queues: self.queues.clone(),
             plugin_own_cache_dir: self.plugin_own_cache_dir.clone(),
             tab_index: self.tab_index,
@@ -531,8 +530,7 @@ impl<'a> PluginLoader<'a> {
             senders: self.senders.clone(),
             wasi_ctx: Some(wasi_ctx),
             plugin_own_data_dir: self.plugin_own_data_dir.clone(),
-            zellij_data_dir: self.zellij_data_dir.clone(),
-            plugin_data_store: self.plugin_data_store.clone(),
+            data_access: self.data_access.clone(),
             queues: self.queues.clone(),
             plugin_own_cache_dir: self.plugin_own_cache_dir.clone(),
             tab_index: self.tab_index,

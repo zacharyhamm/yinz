@@ -43,11 +43,12 @@ mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, TransactionBehavior};
 
 use crate::data::ClientId;
+use crate::data_access::PluginDataBackend;
 use crate::plugin_data::{
     ApplyReport, DataEntityInfo, DataError, DataRows, DataSchemaInfo, DataWatchHandle, EntityDef,
     FetchRequest, Mutation, WatchMode,
@@ -106,22 +107,18 @@ pub(crate) fn is_shared_namespace(namespace: &str) -> bool {
     namespace.starts_with(crate::plugin_data::SHARED_NAMESPACE_PREFIX)
 }
 
-/// The plugin data store: one SQLite file shared by every plugin, partitioned by namespace.
-///
-/// Cheap to construct and does no IO until first use, so a session whose plugins never touch the
-/// store never creates the file.
-pub struct PluginDataStore {
+/// The SQLite plugin-data backend. It opens its database lazily on first use.
+pub struct SqlitePluginDataBackend {
     db_path: PathBuf,
     connection: Mutex<Option<Connection>>,
-    watches: WatchRegistry,
 }
 
-impl std::fmt::Debug for PluginDataStore {
+impl std::fmt::Debug for SqlitePluginDataBackend {
     /// Shows the path and whether the file has been opened. Deliberately does not touch the
     /// connection mutex: this is reached through `LoadingContext`'s derived `Debug`, and a
     /// formatter that can block on a lock held by a running query is a hazard in a log line.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PluginDataStore")
+        f.debug_struct("SqlitePluginDataBackend")
             .field("db_path", &self.db_path)
             .field(
                 "open",
@@ -135,13 +132,12 @@ impl std::fmt::Debug for PluginDataStore {
     }
 }
 
-impl PluginDataStore {
+impl SqlitePluginDataBackend {
     /// Point the store at a data dir. Opens nothing.
     pub fn new(data_dir: &Path) -> Self {
-        PluginDataStore {
+        Self {
             db_path: data_dir.join(DB_FILENAME),
             connection: Mutex::new(None),
-            watches: WatchRegistry::new(),
         }
     }
 
@@ -180,7 +176,6 @@ impl PluginDataStore {
         def: &EntityDef,
         allow_destructive: bool,
     ) -> Result<DataSchemaInfo, DataError> {
-        def.validate()?;
         self.with_conn(|conn| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -201,16 +196,6 @@ impl PluginDataStore {
         })
     }
 
-    /// The definition currently stored for an entity, if it has been declared.
-    #[cfg(test)]
-    pub(crate) fn entity_definition(
-        &self,
-        namespace: &str,
-        entity: &str,
-    ) -> Result<Option<EntityDef>, DataError> {
-        self.with_conn(|conn| Ok(load_entity(conn, namespace, entity)?.map(|schema| schema.def)))
-    }
-
     /// Every entity the store holds, or only those of one namespace.
     ///
     /// The seam behind `DataCatalog`. Filtering to what a plugin may see is the caller's job:
@@ -223,7 +208,6 @@ impl PluginDataStore {
 
     /// Run a fetch.
     pub fn fetch(&self, namespace: &str, request: &FetchRequest) -> Result<DataRows, DataError> {
-        request.validate()?;
         self.with_conn(|conn| {
             let schema = require_entity(conn, namespace, &request.entity)?;
             run_fetch_with_search_fallback(conn, &schema, request)
@@ -232,7 +216,6 @@ impl PluginDataStore {
 
     /// Count the rows a fetch would match, ignoring its limit, offset and cursor.
     pub fn count(&self, namespace: &str, request: &FetchRequest) -> Result<u64, DataError> {
-        request.validate()?;
         self.with_conn(|conn| {
             let schema = require_entity(conn, namespace, &request.entity)?;
             with_search_fallback(request, |search| {
@@ -250,6 +233,127 @@ impl PluginDataStore {
     // ---------------------------------------------------------------- writes
 
     /// Apply a batch of mutations in one transaction, all or nothing.
+    pub fn apply(&self, namespace: &str, mutations: &[Mutation]) -> Result<ApplyReport, DataError> {
+        if mutations.is_empty() {
+            return Ok(ApplyReport::default());
+        }
+        self.with_conn(|conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .ctx("failed to begin a write transaction")?;
+            let now = now_ms();
+            let mut report = ApplyReport::default();
+            // Schemas are looked up once per entity per batch. Not cached across calls: another
+            // zellij server sharing this file could have migrated an entity since, and one
+            // indexed lookup is nothing beside the wasm and protobuf hops this call already cost.
+            let mut schemas: BTreeMap<String, EntitySchema> = BTreeMap::new();
+            for mutation in mutations {
+                let entity = mutation.entity();
+                if !schemas.contains_key(entity) {
+                    schemas.insert(entity.to_owned(), require_entity(&tx, namespace, entity)?);
+                }
+                let schema = &schemas[entity];
+                apply_one(&tx, schema, mutation, now, &mut report)?;
+            }
+            tx.commit().ctx("failed to commit the write")?;
+            Ok(report)
+        })
+    }
+}
+
+impl PluginDataBackend for SqlitePluginDataBackend {
+    fn define_entity(
+        &self,
+        namespace: &str,
+        owner_plugin: &str,
+        def: &EntityDef,
+        allow_destructive: bool,
+    ) -> Result<DataSchemaInfo, DataError> {
+        self.define_entity(namespace, owner_plugin, def, allow_destructive)
+    }
+
+    fn catalog(&self, namespace: Option<&str>) -> Result<Vec<DataEntityInfo>, DataError> {
+        self.catalog(namespace)
+    }
+
+    fn fetch(&self, namespace: &str, request: &FetchRequest) -> Result<DataRows, DataError> {
+        self.fetch(namespace, request)
+    }
+
+    fn count(&self, namespace: &str, request: &FetchRequest) -> Result<u64, DataError> {
+        self.count(namespace, request)
+    }
+
+    fn apply(&self, namespace: &str, mutations: &[Mutation]) -> Result<ApplyReport, DataError> {
+        self.apply(namespace, mutations)
+    }
+}
+
+/// Public plugin-data façade. Validation and watches do not depend on the storage backend.
+pub struct PluginDataStore {
+    backend: Arc<dyn PluginDataBackend>,
+    /// Serializes registration with writes so a watch cannot miss the update between its initial
+    /// fetch and insertion into the registry.
+    operation: Mutex<()>,
+    watches: WatchRegistry,
+}
+
+impl std::fmt::Debug for PluginDataStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginDataStore").finish_non_exhaustive()
+    }
+}
+
+impl PluginDataStore {
+    /// SQLite-compatible constructor retained for callers that only need plugin data.
+    pub fn new(data_dir: &Path) -> Self {
+        Self::from_backend(Arc::new(SqlitePluginDataBackend::new(data_dir)))
+    }
+
+    pub fn from_backend(backend: Arc<dyn PluginDataBackend>) -> Self {
+        Self {
+            backend,
+            operation: Mutex::new(()),
+            watches: WatchRegistry::new(),
+        }
+    }
+
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, ()>, DataError> {
+        self.operation.lock().map_err(|_| {
+            DataError::Storage("the plugin data store operation lock is poisoned".to_owned())
+        })
+    }
+
+    pub fn define_entity(
+        &self,
+        namespace: &str,
+        owner_plugin: &str,
+        def: &EntityDef,
+        allow_destructive: bool,
+    ) -> Result<DataSchemaInfo, DataError> {
+        def.validate()?;
+        let _guard = self.lock()?;
+        self.backend
+            .define_entity(namespace, owner_plugin, def, allow_destructive)
+    }
+
+    pub fn catalog(&self, namespace: Option<&str>) -> Result<Vec<DataEntityInfo>, DataError> {
+        let _guard = self.lock()?;
+        self.backend.catalog(namespace)
+    }
+
+    pub fn fetch(&self, namespace: &str, request: &FetchRequest) -> Result<DataRows, DataError> {
+        request.validate()?;
+        let _guard = self.lock()?;
+        self.backend.fetch(namespace, request)
+    }
+
+    pub fn count(&self, namespace: &str, request: &FetchRequest) -> Result<u64, DataError> {
+        request.validate()?;
+        let _guard = self.lock()?;
+        self.backend.count(namespace, request)
+    }
+
     pub fn apply(
         &self,
         namespace: &str,
@@ -261,31 +365,17 @@ impl PluginDataStore {
         if mutations.is_empty() {
             return Ok(ApplyOutcome::default());
         }
-        self.with_conn(|conn| {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .ctx("failed to begin a write transaction")?;
-            let now = now_ms();
-            let mut outcome = ApplyOutcome::default();
-            // Schemas are looked up once per entity per batch. Not cached across calls: another
-            // zellij server sharing this file could have migrated an entity since, and one
-            // indexed lookup is nothing beside the wasm and protobuf hops this call already cost.
-            let mut schemas: BTreeMap<String, EntitySchema> = BTreeMap::new();
-            for mutation in mutations {
-                let entity = mutation.entity();
-                if !schemas.contains_key(entity) {
-                    schemas.insert(entity.to_owned(), require_entity(&tx, namespace, entity)?);
-                }
-                let schema = &schemas[entity];
-                apply_one(&tx, schema, mutation, now, &mut outcome.report)?;
-                outcome.touched_entities.insert(entity.to_owned());
-            }
-            tx.commit().ctx("failed to commit the write")?;
-            Ok(outcome)
+        let _guard = self.lock()?;
+        let report = self.backend.apply(namespace, mutations)?;
+        let touched_entities = mutations
+            .iter()
+            .map(|mutation| mutation.entity().to_owned())
+            .collect();
+        Ok(ApplyOutcome {
+            report,
+            touched_entities,
         })
     }
-
-    // --------------------------------------------------------------- watches
 
     /// Register a standing fetch and return its current results.
     ///
@@ -301,10 +391,10 @@ impl PluginDataStore {
     ) -> Result<DataWatchHandle, DataError> {
         request.validate()?;
         let request = apply_watch_mode(request, mode);
-        self.with_conn(|conn| {
-            self.watches
-                .register(conn, namespace, plugin_id, client_id, request)
-        })
+        let _guard = self.lock()?;
+        let rows = self.backend.fetch(namespace, &request)?;
+        self.watches
+            .register(namespace, plugin_id, client_id, request, rows)
     }
 
     /// Cancel a watch. A plugin may only cancel its own.
@@ -332,7 +422,11 @@ impl PluginDataStore {
         if !self.watches.any_watching(namespace, touched_entities)? {
             return Ok(Vec::new());
         }
-        self.with_conn(|conn| self.watches.refresh(conn, namespace, touched_entities))
+        let _guard = self.lock()?;
+        self.watches
+            .refresh(namespace, touched_entities, |namespace, request| {
+                self.backend.fetch(namespace, request)
+            })
     }
 
     /// How many watches are registered.

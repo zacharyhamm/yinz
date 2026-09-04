@@ -25,6 +25,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use wasmi::Engine;
@@ -35,6 +36,7 @@ use crate::screen::ScreenInstruction;
 use crate::session_layout_metadata::SessionLayoutMetadata;
 use crate::{pty::PtyInstruction, thread_bus::Bus, ClientId, ServerInstruction};
 use zellij_utils::data::PaneRenderReport;
+use zellij_utils::data_access::DataAccess;
 use zellij_utils::input::context_menu::ContextMenu;
 use zellij_utils::input::hooks::{HookPoint, HookShape, Hooks};
 use zellij_utils::input::layout::TabLayoutInfo;
@@ -347,6 +349,7 @@ pub(crate) fn plugin_thread_main(
     bus: Bus<PluginInstruction>,
     engine: Engine,
     data_dir: PathBuf,
+    data_access: Arc<DataAccess>,
     mut layout: Box<Layout>,
     layout_dir: Option<PathBuf>,
     user_plugin_dir: Option<PathBuf>,
@@ -384,6 +387,7 @@ pub(crate) fn plugin_thread_main(
         bus.senders.clone(),
         engine,
         zellij_data_dir,
+        data_access,
         path_to_default_shell,
         zellij_cwd.clone(),
         session_env_vars,

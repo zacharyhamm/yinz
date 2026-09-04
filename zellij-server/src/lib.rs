@@ -121,6 +121,7 @@ impl Drop for ConnectionSlot {
         self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
+use zellij_utils::data_access::DataAccess;
 use zellij_utils::envs;
 use zellij_utils::pane_size::Size;
 
@@ -2282,6 +2283,7 @@ fn init_session(
 
     // Determine and initialize the data directory
     let data_dir = cli_assets.data_dir.unwrap_or_else(get_default_data_dir);
+    let data_access = Arc::new(DataAccess::sqlite(&data_dir));
 
     let recording_enabled = config.options.session_recording.unwrap_or(false);
     let input_enabled = config.options.session_recording_input.unwrap_or(false);
@@ -2300,6 +2302,7 @@ fn init_session(
             .or_else(|| config.options.session_name.clone())
             .unwrap_or_else(|| "default".to_string());
         match crate::session_recorder::spawn_session_recorder(
+            data_access.clone(),
             data_dir.clone(),
             session_name,
             capture_input,
@@ -2459,11 +2462,13 @@ fn init_session(
             let hooks = config.hooks.clone();
             let context_menu = config.context_menu.clone();
             let session_env_vars = session_env_vars.clone();
+            let data_access = data_access.clone();
             move || {
                 plugin_thread_main(
                     plugin_bus,
                     engine,
                     data_dir,
+                    data_access,
                     layout,
                     layout_dir,
                     user_plugin_dir,

@@ -3,15 +3,10 @@
 use std::collections::BTreeSet;
 use std::sync::{Mutex, MutexGuard};
 
-use rusqlite::Connection;
-
 use crate::data::ClientId;
 use crate::plugin_data::{
     DataError, DataRows, DataValue, DataWatchHandle, FetchRequest, WatchMode,
 };
-
-use super::query::run_fetch_with_search_fallback;
-use super::registry::require_entity;
 
 /// A standing fetch, and what its results looked like the last time anyone checked.
 #[derive(Debug, Clone)]
@@ -32,10 +27,8 @@ struct Watch {
 /// Not persisted: a watch belongs to a running plugin instance, and a plugin that has been
 /// reloaded has to register again anyway.
 ///
-/// The lock inside is always taken *within* the store's connection lock, so the two are taken in
-/// the same order everywhere and cannot deadlock against each other. That is why [`Self::refresh`]
-/// and [`Self::register`] take a `&Connection` rather than reaching for one: the caller can only
-/// have got one by holding the connection lock already.
+/// The façade takes its operation lock before this lock, so registration is atomic with its
+/// initial fetch and writes cannot slip through that gap.
 #[derive(Debug, Default)]
 pub(super) struct WatchRegistry {
     watches: Mutex<(Vec<Watch>, u64)>,
@@ -57,14 +50,12 @@ impl WatchRegistry {
     /// Register a standing fetch and return its current results.
     pub(super) fn register(
         &self,
-        conn: &Connection,
         namespace: &str,
         plugin_id: u32,
         client_id: ClientId,
         request: FetchRequest,
+        rows: DataRows,
     ) -> Result<DataWatchHandle, DataError> {
-        let schema = require_entity(conn, namespace, &request.entity)?;
-        let rows = run_fetch_with_search_fallback(conn, &schema, &request)?;
         let mut guard = self.lock()?;
         let (watches, next_id) = &mut *guard;
         let watch_id = *next_id;
@@ -126,9 +117,9 @@ impl WatchRegistry {
     /// silent — a plugin that re-puts the same row does not wake every watcher.
     pub(super) fn refresh(
         &self,
-        conn: &Connection,
         namespace: &str,
         touched_entities: &BTreeSet<String>,
+        mut fetch: impl FnMut(&str, &FetchRequest) -> Result<DataRows, DataError>,
     ) -> Result<Vec<WatchChange>, DataError> {
         let mut guard = self.lock()?;
         let (watches, _) = &mut *guard;
@@ -139,10 +130,7 @@ impl WatchRegistry {
             }
             // A watch whose entity has since been dropped, or whose fetch has become invalid, is
             // skipped rather than failing the write that triggered this.
-            let Ok(schema) = require_entity(conn, &watch.namespace, &watch.entity) else {
-                continue;
-            };
-            let Ok(rows) = run_fetch_with_search_fallback(conn, &schema, &watch.request) else {
+            let Ok(rows) = fetch(&watch.namespace, &watch.request) else {
                 continue;
             };
             let digest = digest_rows(&rows);

@@ -1,6 +1,8 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+
+use crate::data_access::{RecordingBackend, RecordingSession};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventKind {
@@ -65,13 +67,31 @@ pub struct PaneMetadata {
     pub rows: usize,
 }
 
-pub struct RecordingStore {
+struct SqliteRecordingSession {
     connection: rusqlite::Connection,
     session_id: i64,
 }
 
-impl RecordingStore {
-    pub fn open(
+/// SQLite-compatible façade retained for callers that manage one recording directly.
+pub struct RecordingStore {
+    session: Box<dyn RecordingSession>,
+}
+
+/// SQLite recording backend. It keeps only the directory until an operation needs the database.
+pub struct SqliteRecordingBackend {
+    data_dir: PathBuf,
+}
+
+impl SqliteRecordingBackend {
+    pub fn new(data_dir: &Path) -> Self {
+        Self {
+            data_dir: data_dir.to_owned(),
+        }
+    }
+}
+
+impl SqliteRecordingSession {
+    fn open(
         data_dir: &Path,
         session_name: &str,
         capture_input: bool,
@@ -292,6 +312,93 @@ impl RecordingStore {
             rusqlite::params![message, self.session_id],
         )?;
         Ok(())
+    }
+}
+
+impl RecordingSession for SqliteRecordingSession {
+    fn record_events(&mut self, events: &[RecordedEvent]) -> Result<()> {
+        SqliteRecordingSession::record_events(self, events)
+    }
+
+    fn update_panes(&mut self, panes: &[PaneMetadata], elapsed_us: i64) -> Result<()> {
+        SqliteRecordingSession::update_panes(self, panes, elapsed_us)
+    }
+
+    fn finish_pane(&mut self, terminal_id: u32, elapsed_us: i64) -> Result<()> {
+        SqliteRecordingSession::finish_pane(self, terminal_id, elapsed_us)
+    }
+
+    fn finish_session(&mut self, ended_at_us: i64, ended_elapsed_us: i64) -> Result<()> {
+        SqliteRecordingSession::finish_session(self, ended_at_us, ended_elapsed_us)
+    }
+
+    fn mark_incomplete(&mut self, message: &str) -> Result<()> {
+        SqliteRecordingSession::mark_incomplete(self, message)
+    }
+}
+
+impl RecordingStore {
+    pub fn open(
+        data_dir: &Path,
+        session_name: &str,
+        capture_input: bool,
+        started_at_us: i64,
+    ) -> Result<Self> {
+        Ok(Self {
+            session: SqliteRecordingBackend::new(data_dir).start_recording(
+                session_name,
+                capture_input,
+                started_at_us,
+            )?,
+        })
+    }
+
+    pub fn record_events(&mut self, events: &[RecordedEvent]) -> Result<()> {
+        self.session.record_events(events)
+    }
+
+    pub fn update_panes(&mut self, panes: &[PaneMetadata], elapsed_us: i64) -> Result<()> {
+        self.session.update_panes(panes, elapsed_us)
+    }
+
+    pub fn finish_pane(&mut self, terminal_id: u32, elapsed_us: i64) -> Result<()> {
+        self.session.finish_pane(terminal_id, elapsed_us)
+    }
+
+    pub fn finish_session(&mut self, ended_at_us: i64, ended_elapsed_us: i64) -> Result<()> {
+        self.session.finish_session(ended_at_us, ended_elapsed_us)
+    }
+
+    pub fn mark_incomplete(&mut self, message: &str) -> Result<()> {
+        self.session.mark_incomplete(message)
+    }
+}
+
+impl RecordingBackend for SqliteRecordingBackend {
+    fn start_recording(
+        &self,
+        session_name: &str,
+        capture_input: bool,
+        started_at_us: i64,
+    ) -> Result<Box<dyn RecordingSession>> {
+        Ok(Box::new(SqliteRecordingSession::open(
+            &self.data_dir,
+            session_name,
+            capture_input,
+            started_at_us,
+        )?))
+    }
+
+    fn list(&self) -> Result<Vec<RecordingSummary>> {
+        sqlite_list_recordings(&self.data_dir)
+    }
+
+    fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+        sqlite_search_recordings(&self.data_dir, query, limit)
+    }
+
+    fn export(&self, recording_id: i64, output: &mut dyn std::io::Write) -> Result<()> {
+        sqlite_export_recording(&self.data_dir, recording_id, output)
     }
 }
 
@@ -541,6 +648,10 @@ mod tests {
 pub use crate::data::{RecordingSummary, SearchHit};
 
 pub fn list_recordings(data_dir: &Path) -> Result<Vec<RecordingSummary>> {
+    SqliteRecordingBackend::new(data_dir).list()
+}
+
+fn sqlite_list_recordings(data_dir: &Path) -> Result<Vec<RecordingSummary>> {
     let db_path = data_dir.join("session-recordings.db");
     if !db_path.exists() {
         return Ok(Vec::new());
@@ -649,6 +760,14 @@ pub fn list_recordings(data_dir: &Path) -> Result<Vec<RecordingSummary>> {
 type RecordedPaneRow = (i64, i64, i64, i64, i64, String, String, i64, String);
 
 pub fn export_recording(
+    data_dir: &Path,
+    recording_id: i64,
+    output: &mut dyn std::io::Write,
+) -> Result<()> {
+    SqliteRecordingBackend::new(data_dir).export(recording_id, output)
+}
+
+fn sqlite_export_recording(
     data_dir: &Path,
     recording_id: i64,
     output: &mut dyn std::io::Write,
@@ -776,6 +895,10 @@ fn format_interval(secs: f64) -> String {
 ///
 /// `query` is FTS5 syntax; if it doesn't parse as such it is retried as a literal phrase.
 pub fn search_recordings(data_dir: &Path, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+    SqliteRecordingBackend::new(data_dir).search(query, limit)
+}
+
+fn sqlite_search_recordings(data_dir: &Path, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
     let db_path = data_dir.join("session-recordings.db");
     if !db_path.exists() {
         return Ok(Vec::new());

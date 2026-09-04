@@ -1,4 +1,69 @@
 use super::*;
+use crate::data_access::PluginDataBackend;
+use std::sync::{Arc, Mutex};
+
+struct MemoryBackend(Mutex<bool>);
+
+impl PluginDataBackend for MemoryBackend {
+    fn define_entity(
+        &self,
+        _: &str,
+        _: &str,
+        _: &EntityDef,
+        _: bool,
+    ) -> Result<DataSchemaInfo, DataError> {
+        Ok(DataSchemaInfo::default())
+    }
+
+    fn catalog(&self, _: Option<&str>) -> Result<Vec<DataEntityInfo>, DataError> {
+        Ok(Vec::new())
+    }
+
+    fn fetch(&self, _: &str, _: &FetchRequest) -> Result<DataRows, DataError> {
+        let present = *self.0.lock().unwrap();
+        Ok(DataRows {
+            columns: vec!["id".to_owned()],
+            rows: present
+                .then(|| vec![DataValue::Int(1)])
+                .into_iter()
+                .collect(),
+            truncated: false,
+            next_cursor: None,
+        })
+    }
+
+    fn count(&self, _: &str, _: &FetchRequest) -> Result<u64, DataError> {
+        Ok(*self.0.lock().unwrap() as u64)
+    }
+
+    fn apply(&self, _: &str, _: &[Mutation]) -> Result<ApplyReport, DataError> {
+        *self.0.lock().unwrap() = true;
+        Ok(ApplyReport::default())
+    }
+}
+
+#[test]
+fn watches_work_with_a_backend_that_has_no_sqlite_types() {
+    let store = PluginDataStore::from_backend(Arc::new(MemoryBackend(Mutex::new(false))));
+    let handle = store
+        .register_watch(
+            NS,
+            PLUGIN,
+            CLIENT,
+            FetchRequest::entity("thing"),
+            WatchMode::Rows,
+        )
+        .unwrap();
+    assert!(handle.rows.is_empty());
+
+    let outcome = store
+        .apply(NS, &[Mutation::put("thing").set("name", "new").build()])
+        .unwrap();
+    let changes = store
+        .refresh_watches(NS, &outcome.touched_entities)
+        .unwrap();
+    assert_eq!(changes[0].rows.rows, vec![vec![DataValue::Int(1)]]);
+}
 
 #[test]
 fn a_watch_returns_the_current_rows_when_it_is_registered() {
