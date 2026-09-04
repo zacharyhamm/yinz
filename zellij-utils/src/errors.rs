@@ -282,6 +282,7 @@ pub enum ScreenContext {
     SelectCommandAtScrollPosition,
     CopyLastCommandOutput,
     MoveTextSelection,
+    SwapTextSelectionEnds,
     ClearCommandOutputFlash,
     PageScrollUp,
     PageScrollDown,

@@ -737,9 +737,11 @@ impl Pane for TerminalPane {
     ) -> Option<String> {
         let mut vte_output = None;
         if let Some((cursor_x, cursor_y, true)) = self.cursor_coordinates() {
+            // the character at the cell we are about to draw on, which is not necessarily the
+            // one under the pty cursor (a keyboard selection moves the cursor to its live end)
             let mut character_under_cursor = self
                 .grid
-                .get_character_under_cursor()
+                .get_character_at(cursor_x, cursor_y)
                 .unwrap_or(EMPTY_TERMINAL_CHARACTER);
             character_under_cursor.styles.update(|styles| {
                 styles.background = Some(cursor_color.into());
@@ -1073,6 +1075,11 @@ impl Pane for TerminalPane {
 
     fn move_text_selection(&mut self, direction: Direction, _client_id: ClientId) {
         self.grid.move_text_selection(direction);
+        self.set_should_render(true);
+    }
+
+    fn swap_text_selection_ends(&mut self, _client_id: ClientId) {
+        self.grid.swap_text_selection_ends();
         self.set_should_render(true);
     }
 

@@ -327,6 +327,17 @@ impl Pane for PluginPane {
         let own_content_columns = self.get_content_columns();
         let own_content_rows = self.get_content_rows();
         let Offset { top, left, .. } = self.content_offset;
+        if let Some((x, y)) = client_id
+            .and_then(|client_id| self.grids.get(&client_id))
+            .and_then(|grid| grid.text_selection_cursor())
+        {
+            // a keyboard selection puts the cursor on the end being moved, so that swapping the
+            // ends is visible here too
+            if x >= own_content_columns || y >= own_content_rows {
+                return None;
+            }
+            return Some((x + left, y + top, true));
+        }
         if let Some(coordinates) =
             client_id.and_then(|client_id| self.cursor_visibility.get(&client_id))
         {
@@ -775,6 +786,14 @@ impl Pane for PluginPane {
         if self.supports_mouse_selection {
             if let Some(grid) = self.grids.get_mut(&client_id) {
                 grid.move_text_selection(direction);
+                self.set_should_render(true);
+            }
+        }
+    }
+    fn swap_text_selection_ends(&mut self, client_id: ClientId) {
+        if self.supports_mouse_selection {
+            if let Some(grid) = self.grids.get_mut(&client_id) {
+                grid.swap_text_selection_ends();
                 self.set_should_render(true);
             }
         }
@@ -1248,6 +1267,46 @@ mod tests {
         assert_eq!(
             pane.cursor_coordinates(Some(1)),
             Some((last_content_column + 1, 0, true))
+        );
+    }
+
+    #[test]
+    fn a_keyboard_selection_moves_the_cursor_to_the_end_being_moved() {
+        let mut pane = test_plugin_pane(
+            10,
+            10,
+            Offset {
+                top: 1,
+                bottom: 0,
+                left: 1,
+                right: 0,
+            },
+        );
+        pane.set_mouse_selection_support(true);
+        pane.handle_plugin_bytes(1, b"abcdef".to_vec());
+        pane.show_cursor(1, Some((0, 0)));
+
+        pane.start_text_selection(1);
+        pane.move_text_selection(Direction::Right, 1);
+        pane.move_text_selection(Direction::Right, 1);
+        assert_eq!(
+            pane.cursor_coordinates(Some(1)),
+            Some((3, 1, true)),
+            "the cursor follows the selection's live end, offset by the frame"
+        );
+
+        pane.swap_text_selection_ends(1);
+        assert_eq!(
+            pane.cursor_coordinates(Some(1)),
+            Some((1, 1, true)),
+            "swapping the ends is visible on a plugin pane too"
+        );
+
+        pane.finish_text_selection(1);
+        assert_eq!(
+            pane.cursor_coordinates(Some(1)),
+            Some((1, 1, true)),
+            "the plugin's own cursor is back once the selection is finished"
         );
     }
 

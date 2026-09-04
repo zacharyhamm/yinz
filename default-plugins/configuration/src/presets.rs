@@ -48,6 +48,7 @@ keybinds clear-defaults=true {{
         bind "j" "Down" {{ MoveTextSelection "Down"; }}
         bind "k" "Up" {{ MoveTextSelection "Up"; }}
         bind "l" "Right" {{ MoveTextSelection "Right"; }}
+        bind "o" {{ SwapTextSelectionEnds; }}
         bind "Enter" {{ Copy; SwitchToMode "Locked"; }}
         bind "Ctrl c" {{ SwitchToMode "Locked"; }}
     }}
@@ -283,6 +284,7 @@ keybinds clear-defaults=true {{
         bind "j" "Down" {{ MoveTextSelection "Down"; }}
         bind "k" "Up" {{ MoveTextSelection "Up"; }}
         bind "l" "Right" {{ MoveTextSelection "Right"; }}
+        bind "o" {{ SwapTextSelectionEnds; }}
         bind "Enter" {{ Copy; SwitchToMode "Normal"; }}
         bind "Ctrl c" {{ SwitchToMode "Normal"; }}
     }}
@@ -529,6 +531,7 @@ keybinds clear-defaults=true {{
         bind "j" "Down" {{ MoveTextSelection "Down"; }}
         bind "k" "Up" {{ MoveTextSelection "Up"; }}
         bind "l" "Right" {{ MoveTextSelection "Right"; }}
+        bind "o" {{ SwapTextSelectionEnds; }}
         bind "Enter" {{ Copy; SwitchToMode "Normal"; }}
         bind "Ctrl c" {{ SwitchToMode "Normal"; }}
     }}
@@ -746,6 +749,7 @@ keybinds clear-defaults=true {{
         bind "j" "Down" {{ MoveTextSelection "Down"; }}
         bind "k" "Up" {{ MoveTextSelection "Up"; }}
         bind "l" "Right" {{ MoveTextSelection "Right"; }}
+        bind "o" {{ SwapTextSelectionEnds; }}
         bind "Enter" {{ Copy; SwitchToMode "Normal"; }}
         bind "Ctrl c" {{ SwitchToMode "Normal"; }}
     }}
@@ -969,6 +973,7 @@ keybinds clear-defaults=true {
         bind "j" "Down" { MoveTextSelection "Down"; }
         bind "k" "Up" { MoveTextSelection "Up"; }
         bind "l" "Right" { MoveTextSelection "Right"; }
+        bind "o" { SwapTextSelectionEnds; }
         bind "Enter" { Copy; SwitchToMode "Normal"; }
         bind "Ctrl c" { SwitchToMode "Normal"; }
     }
@@ -1168,6 +1173,7 @@ keybinds clear-defaults=true {{
         bind "j" "Down" {{ MoveTextSelection "Down"; }}
         bind "k" "Up" {{ MoveTextSelection "Up"; }}
         bind "l" "Right" {{ MoveTextSelection "Right"; }}
+        bind "o" {{ SwapTextSelectionEnds; }}
         bind "Enter" {{ Copy; SwitchToMode "Normal"; }}
         bind "Ctrl c" {{ SwitchToMode "Normal"; }}
     }}
@@ -1376,6 +1382,7 @@ mod tests {
     fn assert_selection_bindings(config: String, exit_mode: &str) {
         assert!(config.contains(r#"bind "v" { SwitchToMode "Select"; }"#));
         assert_eq!(config.matches("MoveTextSelection").count(), 4);
+        assert_eq!(config.matches("SwapTextSelectionEnds").count(), 1);
         assert!(config.contains(&format!(
             r#"bind "Enter" {{ Copy; SwitchToMode "{exit_mode}"; }}"#
         )));

@@ -316,6 +316,12 @@ impl TryFrom<ProtobufAction> for Action {
                 },
                 _ => Err("Wrong payload for Action::MoveTextSelection"),
             },
+            Some(ProtobufActionName::SwapTextSelectionEnds) => {
+                match protobuf_action.optional_payload {
+                    Some(_) => Err("SwapTextSelectionEnds should not have a payload"),
+                    None => Ok(Action::SwapTextSelectionEnds),
+                }
+            },
             Some(ProtobufActionName::PageScrollUp) => match protobuf_action.optional_payload {
                 Some(_) => Err("PageScrollUp should not have a payload"),
                 None => Ok(Action::PageScrollUp),
@@ -1442,6 +1448,10 @@ impl TryFrom<Action> for ProtobufAction {
                     )),
                 })
             },
+            Action::SwapTextSelectionEnds => Ok(ProtobufAction {
+                name: ProtobufActionName::SwapTextSelectionEnds as i32,
+                optional_payload: None,
+            }),
             Action::PageScrollUp => Ok(ProtobufAction {
                 name: ProtobufActionName::PageScrollUp as i32,
                 optional_payload: None,
@@ -3665,6 +3675,7 @@ pub(crate) mod tests {
                 | Action::SelectCommandAtScrollPosition
                 | Action::CopyLastCommandOutput
                 | Action::MoveTextSelection { .. }
+                | Action::SwapTextSelectionEnds
                 | Action::PageScrollUp
                 | Action::PageScrollDown
                 | Action::HalfPageScrollUp

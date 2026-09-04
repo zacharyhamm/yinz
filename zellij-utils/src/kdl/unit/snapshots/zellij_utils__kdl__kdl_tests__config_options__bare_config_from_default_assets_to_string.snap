@@ -314,6 +314,7 @@ keybinds clear-defaults=true {
         bind "j" { MoveTextSelection "down"; }
         bind "k" { MoveTextSelection "up"; }
         bind "l" { MoveTextSelection "right"; }
+        bind "o" { SwapTextSelectionEnds; }
         bind "enter" { Copy; SwitchToMode "normal"; }
     }
 }

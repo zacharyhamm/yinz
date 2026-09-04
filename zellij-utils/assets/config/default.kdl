@@ -47,6 +47,7 @@ keybinds {
         bind "j" "Down" { MoveTextSelection "Down"; }
         bind "k" "Up" { MoveTextSelection "Up"; }
         bind "l" "Right" { MoveTextSelection "Right"; }
+        bind "o" { SwapTextSelectionEnds; }
         bind "Enter" { Copy; SwitchToMode "Normal"; }
         bind "Ctrl c" { SwitchToMode "Normal"; }
     }

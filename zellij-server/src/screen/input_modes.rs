@@ -30,8 +30,12 @@ impl Screen {
             active_tab!(self, client_id, |tab: &mut Tab| tab
                 .start_text_selection(client_id));
         } else if previous_mode == InputMode::Select && new_mode != InputMode::Select {
-            active_tab!(self, client_id, |tab: &mut Tab| tab
-                .finish_text_selection(client_id));
+            // every tab, not just the active one: the selection is finished on the tab it was
+            // started on even if focus moved to another tab in the meantime (a tab with no
+            // keyboard selection for this client is a no-op)
+            for tab in self.tabs.values_mut() {
+                tab.finish_text_selection(client_id);
+            }
         }
 
         // If we leave the Search-related modes, we need to clear all previous searches

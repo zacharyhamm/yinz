@@ -749,6 +749,7 @@ pub(crate) fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
         ActionKind::MoveTextSelection => Action::MoveTextSelection {
             direction: directions(tc),
         },
+        ActionKind::SwapTextSelectionEnds => Action::SwapTextSelectionEnds,
         ActionKind::PageScrollUp => Action::PageScrollUp,
         ActionKind::PageScrollDown => Action::PageScrollDown,
         ActionKind::HalfPageScrollUp => Action::HalfPageScrollUp,

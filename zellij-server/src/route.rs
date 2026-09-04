@@ -722,6 +722,14 @@ pub(crate) fn route_action(
                 ))
                 .with_context(err_context)?;
         },
+        Action::SwapTextSelectionEnds => {
+            senders
+                .send_to_screen(ScreenInstruction::SwapTextSelectionEnds(
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
         Action::PageScrollUp => {
             senders
                 .send_to_screen(ScreenInstruction::PageScrollUp(

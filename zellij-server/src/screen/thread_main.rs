@@ -1415,6 +1415,14 @@ pub(crate) fn screen_thread_main(
                 );
                 screen.render(None)?;
             },
+            ScreenInstruction::SwapTextSelectionEnds(client_id, _completion_tx) => {
+                active_tab_and_connected_client_id!(
+                    screen,
+                    client_id,
+                    |tab: &mut Tab, client_id: ClientId| tab.swap_text_selection_ends(client_id)
+                );
+                screen.render(None)?;
+            },
             ScreenInstruction::ClearCommandOutputFlash(pane_id) => {
                 if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
                     tab.clear_command_output_flash(pane_id);

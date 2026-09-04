@@ -200,6 +200,12 @@ impl Selection {
         self.active
     }
 
+    /// Exchange the anchor and the moving end, so subsequent movement drives the other side.
+    /// `end` stays the live point by construction, which keeps `move_up`/`move_down` correct.
+    pub fn swap_ends(&mut self) {
+        std::mem::swap(&mut self.start, &mut self.end);
+    }
+
     pub fn reset(&mut self) {
         self.active = false;
         self.start = Position::new(0, 0);

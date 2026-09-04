@@ -225,6 +225,9 @@ pub enum Action {
     MoveTextSelection {
         direction: Direction,
     },
+    /// Swap the anchor and the moving end of the active text selection, so that subsequent
+    /// `MoveTextSelection`s move what used to be the anchor.
+    SwapTextSelectionEnds,
     /// Scroll up one page in focus pane.
     PageScrollUp,
     /// Scroll down one page in focus pane.
