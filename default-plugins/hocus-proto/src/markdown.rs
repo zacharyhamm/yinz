@@ -232,6 +232,40 @@ pub fn style_over(mut painted: Text, styles: &[MdStyle], dim: bool) -> Text {
     painted
 }
 
+/// `text` as a markdown *value*: every character the renderer acts on backslash-escaped, so a
+/// string we did not write cannot restyle the line it lands in.
+///
+/// Every caller is interpolating something from outside — a pane title, a branch, a todo, an
+/// agent's own summary of a background task — into markdown source that this module will then
+/// parse. Escaping here is what keeps that string one value rather than markup.
+///
+/// Not escaped, deliberately: `_`. An underscore inside a word is literal in CommonMark, so
+/// escaping it would only turn every `pane_id` and `session_id` into `pane\_id`. The worst it
+/// can do is a stray italic, against a backslash on every identifier we print.
+///
+/// `|` and `~` *are* on the list, because [`parse`] enables tables and strikethrough: a pipe in
+/// a pane title is a cell boundary and a pair of tildes strikes out whatever is between them.
+/// Both are ASCII punctuation, so `\|` and `\~` read as themselves wherever they land.
+///
+/// Lived in `hocus::present::inline` while hocus was the only crate producing markdown. The
+/// agents pane's timeline produces it now — `crate::envelope` builds a row out of what a
+/// harness wrote at an agent — and one escaper beside the parser it escapes for is the same
+/// move [`crate::text`] and this module each record above.
+pub fn escape_inline(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if matches!(
+            ch,
+            '\\' | '`' | '*' | '[' | ']' | '<' | '>' | '#' | '|' | '~'
+        ) {
+            out.push('\\');
+        }
+        // A newline inside a value would end the list item or the table row it sits in.
+        out.push(if ch == '\n' || ch == '\r' { ' ' } else { ch });
+    }
+    out
+}
+
 /// One block of markdown: a run of styled characters, and the prefixes its first and
 /// subsequent rows carry — a list marker, a quote bar, the indent under either.
 #[derive(Default)]
@@ -1111,6 +1145,22 @@ mod tests {
 
     fn texts(lines: &[MdLine]) -> Vec<&str> {
         lines.iter().map(|line| line.text.as_str()).collect()
+    }
+
+    /// The escaper's whole contract in one pass: every character the parser acts on comes
+    /// back inert, an identifier comes back intact, and a newline cannot end the row the
+    /// value is sitting in. Round-tripped through [`render`] as well as compared, because
+    /// what matters is not the backslashes but that nothing survives them as markup.
+    #[test]
+    fn escape_inline_neutralises_every_character_the_renderer_acts_on() {
+        assert_eq!(escape_inline("pane_id"), "pane_id");
+        assert_eq!(escape_inline("a|b~~c~~"), r"a\|b\~\~c\~\~");
+        assert_eq!(escape_inline("a `b` c"), r"a \`b\` c");
+        assert_eq!(escape_inline("one\ntwo"), "one two");
+
+        let hostile = "# **x** ``` | y <b> [z](w) ~~struck~~";
+        let lines = render(&escape_inline(hostile), 200, Options::default());
+        assert_eq!(texts(&lines), [hostile], "nothing survived as markup");
     }
 
     /// The whole dialect in one pass: a heading is bold, emphasis and code take colours,

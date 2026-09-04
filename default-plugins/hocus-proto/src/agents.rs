@@ -14,6 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use unicode_width::UnicodeWidthStr;
@@ -1104,14 +1105,75 @@ pub fn run_entry(event: &zellij_tile::agent::HookEvent) -> Option<(RunEntryKind,
     (!text.is_empty()).then(|| (kind, text.to_owned()))
 }
 
-/// The provider-level identity of a retained hook event. The event name keeps a failed tool's
-/// completion distinct from the `PreToolUse` carrying the same call id.
-pub fn run_event_id(event: &zellij_tile::agent::HookEvent) -> Option<String> {
-    event
+/// The hook event a prompt entry is recorded from, and the name its identity is spelled with.
+///
+/// A constant because [`run_event_id`] writes that spelling when the event arrives and
+/// [`entry_event_id`] reads it back when a stored entry is compared, and the two have to agree.
+const PROMPT_EVENT: &str = "UserPromptSubmit";
+
+/// The identity of the entry a retained hook event is recorded as. The event name keeps a
+/// failed tool's completion distinct from the `PreToolUse` carrying the same call id.
+///
+/// Two roads to one thing. A tool call has the provider's own `tool_use_id`. A
+/// `UserPromptSubmit` carries none, so a prompt used to have no identity at all and the ingest
+/// path could only compare it against the entry immediately before it. That is the right rule
+/// for something a person typed — two identical prompts an hour apart are two prompts — but not
+/// for a harness redelivering the same envelope, which can arrive with anything in between.
+/// Where the prompt *is* an envelope with an identity of its own,
+/// [`crate::envelope::dedupe_id`] supplies one and the whole-run comparison applies to it.
+///
+/// `recorded` is the text [`run_entry`] returned rather than the event's own `prompt`, and the
+/// difference is the whole point. The id is stored beside that text and compared against ids
+/// computed from other entries' text, so an id derived from anything else describes a string
+/// nothing keeps: it can never be recomputed, audited or backfilled. It is a better reading
+/// besides — `crate::text::sanitize` drops the `\r` that leaves a CRLF notification looking cut
+/// to the scanner, and expands the tabs that would otherwise make one delivery differ from the
+/// next. Stable for exactly as long as `sanitize` and [`crate::envelope`] are.
+pub fn run_event_id(event: &zellij_tile::agent::HookEvent, recorded: &str) -> Option<String> {
+    if let Some(id) = event
         .tool_use_id
         .as_deref()
         .filter(|id| !id.is_empty())
         .map(|id| format!("{}:{id}", event.hook_event_name))
+    {
+        return Some(id);
+    }
+    // A prompt and nothing else. A `Stop` whose `last_assistant_message` quotes the
+    // notification that woke the agent — which is what an agent describing its own wake-up
+    // writes — would otherwise take on that notification's identity and suppress the real one
+    // when it arrives.
+    (event.hook_event_name == PROMPT_EVENT)
+        .then(|| prompt_event_id(recorded))
+        .flatten()
+}
+
+/// The identity of a prompt recorded as `recorded`, in the one spelling both roads to it use.
+fn prompt_event_id(recorded: &str) -> Option<String> {
+    crate::envelope::dedupe_id(recorded).map(|id| format!("{PROMPT_EVENT}:{id}"))
+}
+
+/// What to compare a stored entry by: the id it was given, or — for a prompt recorded before
+/// that field existed — the id its text still yields.
+///
+/// A run older than the entry-row split has no `agent_run_entry` rows to hydrate from and comes
+/// back out of the JSON `payload` blob, where `event_id` is absent and `serde(default)` makes it
+/// `None`. Compared as stored, such a run matches nothing ever, so a redelivery lands twice
+/// against precisely the oldest runs — the ones with the most history to be confused by it.
+/// Recomputing is possible at all only because the id is a function of the recorded text; see
+/// [`run_event_id`].
+///
+/// Only a prompt can be recomputed. A tool call's identity is its `tool_use_id`, which the
+/// entry's text never held, and a summary's `None` is a statement rather than a gap: there is no
+/// provider event behind one to deduplicate deliveries of. Both stay `None` here.
+///
+/// Costs nothing until an event that has an id arrives, and `envelope::parse` returns on the
+/// first byte of a prompt with no `<` in it, which is nearly every prompt.
+pub fn entry_event_id(entry: &RunEntry) -> Option<Cow<'_, str>> {
+    match (&entry.event_id, entry.kind) {
+        (Some(id), _) => Some(Cow::Borrowed(id.as_str())),
+        (None, RunEntryKind::Prompt) => prompt_event_id(&entry.text).map(Cow::Owned),
+        (None, _) => None,
+    }
 }
 
 /// A short archive-row label, preferring the endpoint's title and then the first prompt.
@@ -1121,18 +1183,35 @@ pub fn run_title(run: &AgentRun) -> String {
         .as_ref()
         .and_then(|summary| rename_title(summary))
         .map(str::to_owned)
-        .or_else(|| {
-            run.entries
-                .iter()
-                .find(|entry| entry.kind == RunEntryKind::Prompt)
-                .map(|entry| entry.text.lines().next().unwrap_or_default().to_owned())
-        })
+        .or_else(|| first_prompt_title(run))
         .unwrap_or_else(|| "agent run".to_owned());
     let mut title: String = title.chars().take(SUMMARY_TITLE_CHARS).collect();
     if title.is_empty() {
         title = "agent run".to_owned();
     }
     title
+}
+
+/// What the run's prompts call it, for an archive row with no summary to use.
+///
+/// The first prompt that carries any **prose** wins, rather than simply the first prompt: a run
+/// woken by a background task and later typed into by a person is about what the person typed,
+/// and only a run whose every prompt was machinery is named after the machinery. The fallback
+/// is `envelope::title`, which is a sentence rather than the `<task-notification>` the first
+/// line of such a prompt literally is.
+fn first_prompt_title(run: &AgentRun) -> Option<String> {
+    let prompts = || {
+        run.entries
+            .iter()
+            .filter(|entry| entry.kind == RunEntryKind::Prompt)
+    };
+    prompts()
+        .find_map(|entry| {
+            let prose = crate::envelope::parse(&entry.text).prose;
+            let first = prose.lines().next().unwrap_or_default().trim().to_owned();
+            (!first.is_empty()).then_some(first)
+        })
+        .or_else(|| prompts().find_map(|entry| crate::envelope::title(&entry.text)))
 }
 
 /// Put a summary somebody asked for onto the run's timeline, and say whether it went on.
@@ -1686,7 +1765,14 @@ pub fn rename_title(summary: &Summary) -> Option<&str> {
 /// `None` for a prompt with nothing in it, which is the same answer [`rename_title`] gives an
 /// empty title: there is no name in it to take.
 pub fn prompt_title(prompt: &str) -> Option<String> {
-    zellij_tile::agent::clean_line(prompt)
+    // A prompt a harness wrote is named by what it says rather than by its markup: without
+    // this a pane woken by a background task spends the whole turn titled
+    // `<task-notification> <task-id>a10fe836…`. `clean_line` still does the collapsing and the
+    // cut either way, so a title shortens from a sentence rather than from a temp path.
+    crate::envelope::title(prompt)
+        .as_deref()
+        .and_then(zellij_tile::agent::clean_line)
+        .or_else(|| zellij_tile::agent::clean_line(prompt))
 }
 
 /// One summary as the toast the daemon shows the moment it is made.
@@ -1880,10 +1966,16 @@ pub fn run_history(
     let mut events: Vec<HistoryEvent> = Vec::new();
     // Walked rather than `flat_map`ped: each event's rows have to be counted before the next
     // one's begin, which is the whole of what a span is.
-    let mut push = |text: &str, kind: &str, created_at_ms, style| {
+    //
+    // `drawn` and `raw` diverge for exactly one kind: a prompt carrying a hook envelope is
+    // *drawn* as `crate::envelope`'s reading of it and *recorded* as what arrived. Everything
+    // else passes the same text twice. Keeping the two apart here is what lets the timeline
+    // read as prose while `HistoryEvent::text` keeps its contract — the whole of what it said,
+    // which is what the reader shows and what `r` shows raw.
+    let mut push = |drawn: &str, raw: &str, kind: &str, created_at_ms, style| {
         let gutter = age_gutter(now_ms, created_at_ms);
         let rows = cap_rows(
-            labelled(text, kind, &gutter, inner, style).0,
+            labelled(drawn, kind, &gutter, inner, style).0,
             gutter.width(),
         );
         events.push(HistoryEvent {
@@ -1891,7 +1983,7 @@ pub fn run_history(
             len: rows.len(),
             kind: kind.to_owned(),
             created_at_ms,
-            text: text.to_owned(),
+            text: raw.to_owned(),
         });
         entries.extend(rows);
     };
@@ -1910,7 +2002,20 @@ pub fn run_history(
             RunEntryKind::Summary => SUMMARY_LABEL_STYLE,
             _ => LABEL_STYLE,
         };
-        push(&entry.text, entry.kind.label(), entry.created_at_ms, style);
+        // A prompt is the one kind a harness writes as well as a person. `digest` is `None` for
+        // everything a person typed, which is the common case and the one that must cost
+        // nothing; the label stays `prompt:` either way, because a prompt is what it is however
+        // it was written.
+        let drawn = matches!(entry.kind, RunEntryKind::Prompt)
+            .then(|| crate::envelope::digest(&entry.text))
+            .flatten();
+        push(
+            drawn.as_deref().unwrap_or(&entry.text),
+            &entry.text,
+            entry.kind.label(),
+            entry.created_at_ms,
+            style,
+        );
     }
     if let Some(summary) = run
         .summary
@@ -1918,6 +2023,7 @@ pub fn run_history(
         .filter(|summary| !repeats_newest(run, summary))
     {
         push(
+            &summary.text,
             &summary.text,
             "summary",
             summary.created_at_ms,
@@ -6690,5 +6796,339 @@ mod tests {
 
         // And a divider with no room for a label at all keeps the rule.
         assert!(fit_label("claude · active".to_owned(), 3).is_empty());
+    }
+    // -- prompts that a harness wrote ----------------------------------------
+
+    /// A notification of the shape Claude Code actually submits, with `result` as long as the
+    /// caller asks for.
+    fn task_notification(result_lines: usize) -> String {
+        format!(
+            "<task-notification>\n\
+             <task-id>a10fe836c6a9fa4ca</task-id>\n\
+             <output-file>/private/tmp/claude-501/x/a10fe836c6a9fa4ca.output</output-file>\n\
+             <status>completed</status>\n\
+             <summary>Agent \"/code-review high up to 3 subagents unstaged code\" finished</summary>\n\
+             <note>A task-notification fires each time this agent stops.\n\
+             The same task-id may notify more than once.</note>\n\
+             <result>{}</result>\n\
+             </task-notification>",
+            "a line of the review\n".repeat(result_lines)
+        )
+    }
+
+    fn run_of_prompts(prompts: &[&str]) -> AgentRun {
+        let mut run = a_pane_run();
+        run.entries = prompts
+            .iter()
+            .enumerate()
+            .map(|(index, text)| RunEntry {
+                revision: index as u64 + 1,
+                event_id: None,
+                kind: RunEntryKind::Prompt,
+                text: (*text).to_owned(),
+                created_at_ms: Some(10),
+            })
+            .collect();
+        run.revision = run.entries.len() as u64;
+        run
+    }
+
+    /// The whole point, in one assertion: the rows say what happened rather than which tags it
+    /// arrived in.
+    #[test]
+    fn a_task_notification_on_the_timeline_reads_as_what_it_is() {
+        let history = run_history(&run_of_prompts(&[&task_notification(3)]), 52, 10, 0);
+        let rows = texts(&history.entries).join("\n");
+
+        assert!(rows.contains("prompt:"), "{rows}");
+        assert!(rows.contains('✓'), "{rows}");
+        assert!(rows.contains("a10fe836"), "{rows}");
+        assert!(rows.contains("/code-review"), "{rows}");
+        assert!(rows.contains("▸ result 3 lines"), "{rows}");
+        // None of what made the row unreadable survives.
+        assert!(!rows.contains('<'), "{rows}");
+        assert!(!rows.contains("/private/tmp"), "{rows}");
+        assert!(!rows.contains("notify more than once"), "{rows}");
+    }
+
+    /// The load-bearing one. `MAX_ENTRY_ROWS` is four, and the row that says what `Enter` would
+    /// show is the one worth protecting: `DIGEST_SUMMARY_COLS` is sized so `cap_rows` never
+    /// eats it at a width a half-pane actually has.
+    #[test]
+    fn the_digest_fits_the_rows_a_timeline_entry_gets() {
+        for width in [HISTORY_MIN_COLS + 2, 30, 46, 52, 80] {
+            let history = run_history(&run_of_prompts(&[&task_notification(400)]), width, 10, 0);
+            assert_eq!(history.events.len(), 1, "at {width}");
+            assert!(
+                history.events[0].len <= MAX_ENTRY_ROWS,
+                "{} rows at {width}",
+                history.events[0].len
+            );
+            assert_eq!(history.entries.len(), history.events[0].len, "at {width}");
+            if width >= 46 {
+                let rows = texts(&history.entries).join("\n");
+                assert!(
+                    rows.contains('▸'),
+                    "the affordances row was cut at {width}: {rows}"
+                );
+            }
+        }
+    }
+
+    /// The same guarantee in a script that spends two columns to the character. Cut by
+    /// character rather than by column, this summary is twice as wide as the budget says: it
+    /// takes a third row, and `cap_rows` eats the affordances row to fit.
+    #[test]
+    fn a_digest_of_wide_characters_fits_the_same_rows() {
+        let wide = format!(
+            "<task-notification>\n\
+             <task-id>a10fe836c6a9fa4ca</task-id>\n\
+             <status>completed</status>\n\
+             <summary>{}</summary>\n\
+             <result>{}</result>\n\
+             </task-notification>",
+            "代理审查了这个补丁 ".repeat(6),
+            "a line of the review\n".repeat(400),
+        );
+        for width in [HISTORY_MIN_COLS + 2, 30, 46, 52, 80] {
+            let history = run_history(&run_of_prompts(&[&wide]), width, 10, 0);
+            assert_eq!(history.events.len(), 1, "at {width}");
+            assert!(
+                history.events[0].len <= MAX_ENTRY_ROWS,
+                "{} rows at {width}",
+                history.events[0].len
+            );
+            if width >= 46 {
+                let rows = texts(&history.entries).join("\n");
+                assert!(
+                    rows.contains('▸'),
+                    "the affordances row was cut at {width}: {rows}"
+                );
+            }
+        }
+    }
+
+    /// The invariant this design is most likely to break by accident, and the one that keeps it
+    /// a rendering change rather than a record change: the digest is drawn, the prompt is kept.
+    #[test]
+    fn the_history_event_behind_a_digest_still_carries_the_raw_prompt() {
+        let raw = task_notification(3);
+        let history = run_history(&run_of_prompts(&[&raw]), 52, 10, 0);
+        assert_eq!(history.events[0].text, raw);
+        assert_eq!(history.events[0].kind, "prompt");
+    }
+
+    /// Every row belongs to one event and no row to two — still true once an event's rows come
+    /// from somewhere other than its own text.
+    #[test]
+    fn an_events_spans_still_tile_the_entries() {
+        let run = run_of_prompts(&[&task_notification(3), "plain prose", &task_notification(1)]);
+        let history = run_history(&run, 52, 10, 0);
+        let mut at = 0;
+        for event in &history.events {
+            assert_eq!(event.start, at, "{:?}", history.events);
+            at = event.end();
+        }
+        assert_eq!(at, history.entries.len());
+    }
+
+    /// The regression guard that matters most: nothing a person typed goes anywhere near the
+    /// scanner's output.
+    #[test]
+    fn a_plain_prompt_is_rendered_exactly_as_before() {
+        let prose = "fix the flaky reconnect test\n\n- check the timeout\n- check the retry";
+        let run = run_of_prompts(&[prose]);
+        let history = run_history(&run, 52, 10, 0);
+        assert_eq!(history.events[0].text, prose);
+
+        // Byte for byte what an entry of any other kind renders to.
+        let mut same = a_pane_run();
+        same.entries = vec![RunEntry {
+            kind: RunEntryKind::Question,
+            ..run.entries[0].clone()
+        }];
+        let expected = run_history(&same, 52, 10, 0);
+        assert_eq!(
+            texts(&history.entries)
+                .iter()
+                .map(|row| row.replacen("prompt", "question", 1))
+                .collect::<Vec<_>>(),
+            texts(&expected.entries)
+        );
+    }
+
+    /// Before this the tab bar spent a whole woken turn reading
+    /// `<task-notification> <task-id>a10fe836…`.
+    #[test]
+    fn a_pane_woken_by_a_task_is_named_for_the_task() {
+        let title = prompt_title(&task_notification(3)).expect("a title");
+        assert!(title.starts_with("task · Agent \"/code-review"), "{title}");
+        assert!(!title.contains('<'), "{title}");
+
+        // And a person's prompt is named exactly as it was.
+        assert_eq!(
+            prompt_title("fix the flaky test").as_deref(),
+            Some("fix the flaky test")
+        );
+    }
+
+    /// An archive row is a sentence now rather than the opening tag the first line of such a
+    /// prompt literally is.
+    #[test]
+    fn a_run_woken_by_a_task_is_titled_by_the_task_and_not_by_its_tags() {
+        let title = run_title(&run_of_prompts(&[&task_notification(3)]));
+        assert!(title.starts_with("task · Agent"), "{title}");
+        assert!(!title.contains('<'), "{title}");
+    }
+
+    /// A run woken by a background task and later typed into by a person is about what the
+    /// person typed, wherever in the run they typed it.
+    #[test]
+    fn a_run_that_a_person_later_typed_into_is_titled_by_what_they_typed() {
+        let run = run_of_prompts(&[
+            &task_notification(3),
+            "rebase onto main and rerun the suite",
+        ]);
+        assert_eq!(run_title(&run), "rebase onto main and rerun the suite");
+    }
+
+    fn prompt_event(prompt: &str) -> zellij_tile::agent::HookEvent {
+        zellij_tile::agent::HookEvent {
+            hook_event_name: "UserPromptSubmit".to_owned(),
+            prompt: Some(prompt.to_owned()),
+            ..Default::default()
+        }
+    }
+
+    /// The id of a prompt, composed exactly as the ingest path composes it: the text the entry
+    /// will keep is what the id is taken from.
+    fn id_of(prompt: &str) -> Option<String> {
+        let event = prompt_event(prompt);
+        let (_, text) = run_entry(&event)?;
+        run_event_id(&event, &text)
+    }
+
+    /// A prompt has no `tool_use_id`, so before this the ingest path could only compare one
+    /// against the entry immediately before it and a redelivery with anything in between landed
+    /// twice. A second notification for the same task still does, because it is a second thing
+    /// happening — see `envelope::task_id`.
+    #[test]
+    fn a_redelivered_notification_does_not_land_twice() {
+        let first = id_of(&task_notification(3)).expect("an id");
+        assert_eq!(id_of(&task_notification(3)), Some(first.clone()));
+        assert!(
+            first.starts_with("UserPromptSubmit:task-notification:"),
+            "{first}"
+        );
+        assert_ne!(id_of(&task_notification(4)), Some(first));
+
+        // A person's prompt keeps today's adjacent-only rule, which is the right one for it.
+        assert_eq!(id_of("fix the flaky test"), None);
+    }
+
+    /// The premise of the cut rule, driven through the real mechanism rather than a hand-cut
+    /// string: a `UserPromptSubmit` carries no `tool_input`, so the first prune always fits and
+    /// every cut prompt is cut at the same 8192 characters. Two reports of one task that agree
+    /// up to there arrive identical, and an id would have dropped the second for good.
+    #[test]
+    fn a_notification_cut_by_the_broadcast_cap_gets_no_id() {
+        // Five hundred lines of result is comfortably over the cap, and 501 differs from 500
+        // only in a line appended past it.
+        let (first, second) = (
+            prompt_event(&task_notification(500)).pruned(),
+            prompt_event(&task_notification(501)).pruned(),
+        );
+        assert_ne!(
+            id_of(&task_notification(500)),
+            id_of(&task_notification(501))
+        );
+        assert_eq!(
+            first.prompt, second.prompt,
+            "the cap took the difference between them"
+        );
+
+        for event in [&first, &second] {
+            let (_, text) = run_entry(event).expect("an entry");
+            assert_eq!(run_event_id(event, &text), None);
+        }
+    }
+
+    /// Finding 2, in the form that bites: the id has to be taken from the text the entry keeps,
+    /// or it is a hash of a string nothing has.
+    #[test]
+    fn an_entrys_id_is_a_function_of_the_text_it_stores() {
+        let typed = task_notification(3);
+        let expected = id_of(&typed).expect("an id");
+
+        // `sanitize` drops a bare control character, so both deliveries record the same text —
+        // and an id taken from the raw prompt would have called them two different events.
+        let belled = typed.replace("a line", "a\u{7} line");
+        assert_ne!(belled, typed);
+        assert_eq!(id_of(&belled).as_deref(), Some(expected.as_str()));
+
+        // And the whole point of taking it from there: it can be computed again from the entry.
+        let (_, text) = run_entry(&prompt_event(&typed)).expect("an entry");
+        let stored = RunEntry {
+            revision: 1,
+            event_id: None,
+            kind: RunEntryKind::Prompt,
+            text,
+            created_at_ms: None,
+        };
+        assert_eq!(entry_event_id(&stored).as_deref(), Some(expected.as_str()));
+    }
+
+    /// The reading the raw prompt gets wrong. `next_closing` wants the closing tag to end a
+    /// line, and under CRLF the byte after it is `\r`, so the element reads as cut and loses its
+    /// identity — while the text actually recorded, with the carriage returns dropped, is whole.
+    #[test]
+    fn a_notification_with_windows_line_endings_is_still_one_notification() {
+        let crlf = task_notification(3).replace('\n', "\r\n");
+        let expected = id_of(&task_notification(3)).expect("an id");
+        assert_eq!(
+            id_of(&crlf).as_deref(),
+            Some(expected.as_str()),
+            "the same notification, delivered by a harness that ends its lines differently"
+        );
+    }
+
+    /// A run older than the entry-row split comes back out of its JSON `payload` blob, where
+    /// there were no ids to come back with. Compared as stored it matches nothing ever, so the
+    /// oldest runs — the ones with the most history — were the ones a redelivery landed twice
+    /// against.
+    #[test]
+    fn a_run_recorded_before_ids_existed_is_still_compared_by_one() {
+        let (_, text) = run_entry(&prompt_event(&task_notification(3))).expect("an entry");
+        let legacy = |kind, text: &str| RunEntry {
+            revision: 1,
+            event_id: None,
+            kind,
+            text: text.to_owned(),
+            created_at_ms: None,
+        };
+        assert_eq!(
+            entry_event_id(&legacy(RunEntryKind::Prompt, &text)),
+            id_of(&task_notification(3)).map(Cow::Owned),
+        );
+
+        // Only a prompt. A tool call's identity was never in its text, and a summary's `None`
+        // is a statement rather than a gap — see `push_summary_entry`.
+        assert_eq!(entry_event_id(&legacy(RunEntryKind::Result, &text)), None);
+        assert_eq!(entry_event_id(&legacy(RunEntryKind::Summary, &text)), None);
+        assert_eq!(
+            entry_event_id(&legacy(RunEntryKind::Prompt, "fix the flaky test")),
+            None,
+            "and a prompt with no envelope in it still has no identity"
+        );
+
+        // An id it was given is the one it keeps, whatever its text now says.
+        let stored = RunEntry {
+            event_id: Some("UserPromptSubmit:given".to_owned()),
+            ..legacy(RunEntryKind::Prompt, &text)
+        };
+        assert_eq!(
+            entry_event_id(&stored).as_deref(),
+            Some("UserPromptSubmit:given")
+        );
     }
 }

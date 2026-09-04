@@ -34,6 +34,7 @@
 //! a tool added later from being made *worse* than it is today.
 
 use crate::tools::{self, ToolCall};
+use hocus_proto::markdown;
 use serde_json::Value;
 
 /// The markdown a raw tool result should be shown as, or `None` to show the raw
@@ -1298,29 +1299,13 @@ fn leaf(value: &Value) -> Option<String> {
 /// branch, a todo, a Slack message. Backslash-escaping the characters the
 /// renderer acts on is what stops one of them restyling the rest of the
 /// transcript.
-/// Not escaped, deliberately: `_`. An underscore inside a word is literal in
-/// CommonMark, so escaping it would only turn every `pane_id` and
-/// `slack_status` into `pane\_id`. The worst it can do is a stray italic,
-/// against a backslash on every identifier we print.
 ///
-/// `|` and `~` used to be on that list, on the grounds that they mean nothing
-/// with the table and strikethrough extensions off. They are on now, so a pipe
-/// in a pane title is a cell boundary and a pair of tildes strikes out whatever
-/// is between them. Both are ASCII punctuation, so `\|` and `\~` read as
-/// themselves wherever they land.
+/// The rule itself lives in [`markdown::escape_inline`] now, beside the parser
+/// it escapes for: the agents pane's timeline builds markdown out of what a
+/// harness wrote at an agent, and that pane cannot depend on this crate. This
+/// is kept as the name the presenter's forty-odd call sites already use.
 pub fn inline(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for ch in text.chars() {
-        if matches!(
-            ch,
-            '\\' | '`' | '*' | '[' | ']' | '<' | '>' | '#' | '|' | '~'
-        ) {
-            out.push('\\');
-        }
-        // A newline inside a value would end the list item it sits in.
-        out.push(if ch == '\n' || ch == '\r' { ' ' } else { ch });
-    }
-    out
+    markdown::escape_inline(text)
 }
 
 /// `body` in a fenced code block, with a fence long enough that `body` cannot

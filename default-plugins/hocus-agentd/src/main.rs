@@ -8,12 +8,14 @@
 mod poll;
 
 use hocus_proto::agents::now_ms;
+use hocus_proto::envelope;
 use hocus_proto::llm::Endpoint;
 use hocus_proto::location::Location;
 use hocus_proto::panes::{focused_pane, focused_plugin_pane, manifest_pane_ids, terminal_panes};
 use hocus_proto::store::{self, Backend};
 use hocus_proto::wire::{self, PollReply, PollRequest};
 use hocus_proto::{agents, projects};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use zellij_tile::prelude::*;
 
@@ -304,7 +306,17 @@ fn run_delta(run: &agents::AgentRun) -> Option<String> {
                     | agents::RunEntryKind::Prompt
             )
         })
-        .map(|entry| format!("{}: {}", entry.kind.label(), entry.text))
+        // A prompt goes through `envelope::question`, which is a no-op for anything a person
+        // typed and reduces a harness's envelope to the sentence in it. The same function the
+        // `prompts` map uses, so the summariser's two inputs cannot disagree about what the
+        // turn was for.
+        .map(|entry| {
+            let text = match entry.kind {
+                agents::RunEntryKind::Prompt => Cow::Owned(envelope::question(&entry.text)),
+                _ => Cow::Borrowed(entry.text.as_str()),
+            };
+            format!("{}: {text}", entry.kind.label())
+        })
         .collect::<Vec<_>>()
         .join("\n");
     if delta.is_empty() {
@@ -841,8 +853,17 @@ impl State {
                 .filter(|p| !p.is_empty())
             {
                 Some(prompt) => {
-                    self.prompts
-                        .insert(pane_id, prompt.chars().take(PROMPT_CHARS).collect());
+                    // What is kept is the *question*, not the prompt: an envelope's first six
+                    // hundred characters are opening tags and a temp path, and a model asked
+                    // what an agent is doing cannot answer from those. A prompt somebody typed
+                    // passes through untouched, which is every prompt before this existed.
+                    self.prompts.insert(
+                        pane_id,
+                        envelope::question(prompt)
+                            .chars()
+                            .take(PROMPT_CHARS)
+                            .collect(),
+                    );
                     // And the pane is named after it, now rather than at the end of the
                     // turn. Until this, a pane got a name only when `finish_summary_with`
                     // renamed it to the model's title — so the whole time an agent was
@@ -1020,12 +1041,16 @@ impl State {
             changed = true;
         }
         if let Some((kind, text)) = agents::run_entry(event) {
-            let event_id = agents::run_event_id(event);
-            let duplicate = match event_id.as_ref() {
+            // The text the entry will keep, not the event's own prompt: the id is stored beside
+            // that text and compared against ids taken from other entries' text, and
+            // `entry_event_id` is what takes them - including from an entry recorded before the
+            // field existed, which has none of its own.
+            let event_id = agents::run_event_id(event, &text);
+            let duplicate = match event_id.as_deref() {
                 Some(event_id) => run
                     .entries
                     .iter()
-                    .any(|entry| entry.event_id.as_ref() == Some(event_id)),
+                    .any(|entry| agents::entry_event_id(entry).as_deref() == Some(event_id)),
                 None => run
                     .entries
                     .last()
@@ -4636,6 +4661,100 @@ mod tests {
         );
     }
 
+    /// A notification of the shape Claude Code submits when a background task wakes an agent.
+    fn task_notification() -> String {
+        [
+            "<task-notification>",
+            "<task-id>a10fe836c6a9fa4ca</task-id>",
+            "<output-file>/private/tmp/claude-501/x/a10fe836c6a9fa4ca.output</output-file>",
+            "<status>completed</status>",
+            "<summary>Agent \"/code-review\" finished</summary>",
+            "<note>A task-notification fires each time this agent stops.",
+            "The same task-id may notify more than once.</note>",
+            "<result>The review found four issues.</result>",
+            "</task-notification>",
+        ]
+        .join("\n")
+    }
+
+    /// A pane woken by a background task is named for the task, and the question kept for its
+    /// summary is a sentence. Before this the tab bar read `<task-notification> <task-id>a10f…`
+    /// for the whole of the turn, and the model was handed six hundred characters of opening
+    /// tags and a temp path as the question the turn was about.
+    #[test]
+    fn a_pane_woken_by_a_task_is_named_and_questioned_in_words() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+
+        let named = feed_naming(&mut state, 7, &prompt(&task_notification()));
+
+        let title = &named.first().expect("a rename").1;
+        assert!(
+            title.starts_with("task · Agent \"/code-review\""),
+            "{title}"
+        );
+        assert!(!title.contains('<'), "{title}");
+
+        let kept = state.prompts.get(&7).expect("a question").as_str();
+        assert!(
+            kept.starts_with("background task a10fe836 completed:"),
+            "{kept}"
+        );
+        assert!(kept.contains("The review found four issues."), "{kept}");
+        assert!(!kept.contains('<'), "{kept}");
+        // The note is boilerplate addressed to the agent, and the path is one the model cannot
+        // read. Neither is worth any of the six hundred characters.
+        assert!(!kept.contains("notify more than once"), "{kept}");
+        assert!(!kept.contains("/private/tmp"), "{kept}");
+    }
+
+    /// The other reader of the same reduction. Both go through `envelope::question`, so the two
+    /// inputs to one summary cannot disagree about what the turn was for.
+    #[test]
+    fn a_run_delta_carries_a_task_notification_as_a_sentence() {
+        let mut run = agents::AgentRun {
+            id: "claude:s".to_owned(),
+            pane_id: 7,
+            zellij_session_name: "here".to_owned(),
+            session_id: "s".to_owned(),
+            kind: CLAUDE.to_owned(),
+            cwd: None,
+            host: None,
+            started_at_ms: 0,
+            ended_at_ms: None,
+            outcome: agents::RunOutcome::Active,
+            revision: 1,
+            summarized_revision: 0,
+            summary: None,
+            entries: Vec::new(),
+        };
+        run.entries.push(agents::RunEntry {
+            revision: 1,
+            event_id: None,
+            kind: agents::RunEntryKind::Prompt,
+            text: task_notification(),
+            created_at_ms: Some(10),
+        });
+
+        let delta = run_delta(&run).expect("there is a prompt to describe");
+
+        assert!(
+            delta.starts_with("prompt: background task a10fe836 completed:"),
+            "{delta}"
+        );
+        assert!(!delta.contains('<'), "{delta}");
+
+        // And a prompt somebody typed is carried exactly as it was, which is every prompt this
+        // path saw before the reduction existed.
+        run.entries[0].text = "fix the flaky reconnect test".to_owned();
+        assert_eq!(
+            run_delta(&run).expect("a delta"),
+            "prompt: fix the flaky reconnect test"
+        );
+    }
+
     /// A `UserPromptSubmit` with nothing in it says nothing to name a pane after, and
     /// clearing a name it did not write is not this path's business.
     #[test]
@@ -5838,6 +5957,105 @@ mod tests {
         assert_eq!(run.entries[0].text, "Which library?");
         assert_eq!(run.entries[1].text, "Which library?");
         assert_ne!(run.entries[0].event_id, run.entries[1].event_id);
+    }
+
+    /// A notification of the shape Claude Code submits when a background task wakes an agent,
+    /// with a result as long as the caller asks for.
+    fn notification(result: &str) -> String {
+        format!(
+            "<task-notification>\n\
+             <task-id>a10fe836c6a9fa4ca</task-id>\n\
+             <status>completed</status>\n\
+             <summary>Agent \"/code-review\" finished</summary>\n\
+             <result>{result}</result>\n\
+             </task-notification>"
+        )
+    }
+
+    fn prompts_of(state: &State, pane_id: u32) -> Vec<&str> {
+        state.runs[&pane_id]
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == agents::RunEntryKind::Prompt)
+            .map(|entry| entry.text.as_str())
+            .collect()
+    }
+
+    /// The whole reason a prompt was given an identity. A person's prompt is compared against
+    /// the entry before it, which is right for something typed twice — but a harness
+    /// redelivering the envelope that woke an agent can put a whole turn in between, and the
+    /// adjacent rule never saw it.
+    #[test]
+    fn a_redelivered_notification_is_dropped_however_far_apart_it_arrives() {
+        let mut state = State::default();
+        let woken = notification("The review found four issues.");
+
+        feed(&mut state, 7, &prompt(&woken), None);
+        feed(&mut state, 7, &stop_saying(REPLY), None);
+        feed(&mut state, 7, &prompt(&woken), None);
+        assert_eq!(
+            prompts_of(&state, 7).len(),
+            1,
+            "the redelivery landed across an intervening turn"
+        );
+
+        // A second report for the same task is a second thing happening, not a second
+        // delivery of the first - the envelope's own note says so.
+        feed(
+            &mut state,
+            7,
+            &prompt(&notification("The review found one issue.")),
+            None,
+        );
+        assert_eq!(prompts_of(&state, 7).len(), 2);
+    }
+
+    /// The cost of refusing to guess, stated rather than hidden. A cut notification has no
+    /// identity, so it keeps the adjacent-only rule: two deliveries back to back still collapse,
+    /// and two separated by a turn land twice. A visible duplicate is the right way round -
+    /// the alternative was dropping a real report because the bytes telling it apart from
+    /// another one were the bytes the broadcast cap took.
+    #[test]
+    fn a_cut_notification_is_kept_rather_than_dropped() {
+        let mut state = State::default();
+        let shared = "a line of the review\n".repeat(20);
+        let first = notification(&format!("{shared}four issues"));
+        let second = notification(&format!("{shared}one issue"));
+        let (first, second) = (first[..300].to_owned(), second[..300].to_owned());
+        assert_eq!(first, second, "the cut took the difference between them");
+
+        feed(&mut state, 7, &prompt(&first), None);
+        feed(&mut state, 7, &prompt(&first), None);
+        assert_eq!(
+            prompts_of(&state, 7).len(),
+            1,
+            "back to back, the adjacent rule still catches it"
+        );
+
+        feed(&mut state, 7, &stop_saying(REPLY), None);
+        feed(&mut state, 7, &prompt(&second), None);
+        assert_eq!(prompts_of(&state, 7).len(), 2);
+    }
+
+    /// A run recorded before `event_id` existed comes back out of its JSON `payload` blob with
+    /// no ids on its entries, so the whole-run comparison against it used to match nothing at
+    /// all, and the oldest runs — the ones with the most history to be confused by a repeat —
+    /// were exactly the ones a redelivery landed twice against. The id is a function of the
+    /// text now, so it can be worked out again.
+    #[test]
+    fn a_legacy_entry_with_no_id_still_absorbs_a_redelivery() {
+        let mut state = State::default();
+        let woken = notification("The review found four issues.");
+
+        feed(&mut state, 7, &prompt(&woken), None);
+        let entry = &mut state.runs.get_mut(&7).expect("a run").entries[0];
+        assert!(entry.event_id.is_some(), "it was given one on the way in");
+        // What a timeline hydrated from the old blob looks like.
+        entry.event_id = None;
+
+        feed(&mut state, 7, &stop_saying(REPLY), None);
+        feed(&mut state, 7, &prompt(&woken), None);
+        assert_eq!(prompts_of(&state, 7).len(), 1);
     }
 
     #[test]
