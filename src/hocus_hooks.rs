@@ -33,8 +33,12 @@ const CODEX_EVENTS: &[&str] = zellij_utils::agent::CODEX_HOOK_EVENTS;
 
 /// Bumped whenever [`script`] changes, or whenever the set of events wired around it does, so
 /// `status` can say the installed copy is old. v4 was the seventeen-event table; v5 is the one
-/// that names the agent it was written for.
-const SCRIPT_VERSION: u32 = 5;
+/// that names the agent it was written for; v6 is the one with a remote route, picking it by
+/// the pane token rather than reporting to a session that need not exist on this machine.
+///
+/// A missed bump is silent and total: `status` calls the old script current, and every event
+/// on a machine installed before the change goes nowhere.
+const SCRIPT_VERSION: u32 = 6;
 
 /// What marks an entry in the settings file as ours, and nothing else as ours.
 ///

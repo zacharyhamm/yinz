@@ -1169,6 +1169,12 @@ fn start_session(
             command.env_remove(name);
         }
     }
+    // A nested zellij inside a remote pane inherits that pane's broker token, and unlike the
+    // supervisor reference it sits beside a `ZELLIJ_PANE_ID` that *is* this machine's. A hook
+    // in the inner session tests the token first - by design, because in a remote pane the
+    // pane id is the asking session's - so an inherited one would report the outer pane. Only
+    // a spawn that names a token gets one, and the broker names it in `vars`, just below.
+    command.env_remove(crate::pty_host::remote::broker::PANE_TOKEN_ENV);
     for (name, value) in child_env.vars {
         command.env(name, value);
     }

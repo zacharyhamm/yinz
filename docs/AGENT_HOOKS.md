@@ -262,11 +262,16 @@ This is the branch the installed script takes by itself, so `zellij hocus hooks 
 far machine is all a remote pane needs. **A Firecracker VM installs it without being asked**: the
 provider runs the install in the guest when the VM is provisioned (`provision_guest` in
 `zellij-server/src/firecracker/provider.rs`), wiring both agents, so a `claude` or a `codex`
-typed at a shell in a VM pane reports like any other. Codex still has to be told to trust what
-was written - `/hooks`, once per VM.
+typed at a shell in a VM pane reports like any other. The install runs again whenever a session
+*joins* a VM that is already up, which is the only moment a VM left running across a Zellij
+upgrade meets the new one; it rewrites rather than appends, so joining a current VM changes
+nothing. Codex still has to be told to trust what was written - `/hooks`, once per VM.
 
-The broker put `ZELLIJ_REMOTE_PANE_TOKEN` in every pane's environment; the report names the pane
-by it, on a connection of its own, and the broker relays the event to the pane's server on the
+The broker put `ZELLIJ_REMOTE_PANE_TOKEN` in every pane's environment - and only in a pane it
+minted one for: a pane's spawn drops any token it would otherwise inherit, so a zellij session
+started *inside* a remote pane gives its own panes none, and an agent in one of them reports
+that pane rather than the VM pane around it. The report names the pane by the token, on a
+connection of its own, and the broker relays the event to the pane's server on the
 pane's control channel (`BrokerToServerMsg::AgentReport`). The server applies it exactly as it
 would a local report: the pane's agent record is set and the event goes to the plugins on the
 hook pipe. Because the event arrives over the transport rather than out of the pane's bytes,

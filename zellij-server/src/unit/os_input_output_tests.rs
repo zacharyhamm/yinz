@@ -372,12 +372,16 @@ fn spawn_and_read_output() {
         crate::pty_host::PANE_REF_ENV_KEY,
         "an-outer-panes-reference",
     );
+    let token = crate::pty_host::remote::broker::PANE_TOKEN_ENV;
+    std::env::set_var(token, "an-outer-panes-token");
 
     let cmd = RunCommand {
         command: PathBuf::from("sh"),
         args: vec![
             "-c".to_owned(),
-            format!("echo {test_message} ref=[$ZELLIJ_PANE_REF]"),
+            // Both before the message the read loop waits for, so seeing it is proof
+            // the whole line arrived.
+            format!("echo ref=[$ZELLIJ_PANE_REF] token=[${token}] {test_message}"),
         ],
         ..Default::default()
     };
@@ -438,7 +442,14 @@ fn spawn_and_read_output() {
         output_str.contains("ref=[]"),
         "an in-process pane reused an outer pane's supervisor: {output_str:?}"
     );
+    // A server running inside a remote pane would otherwise hand every pane the outer
+    // pane's token, which a coding agent's hook reads before the pane id.
+    assert!(
+        output_str.contains("token=[]"),
+        "an in-process pane reused an outer pane's broker token: {output_str:?}"
+    );
     std::env::remove_var(crate::pty_host::PANE_REF_ENV_KEY);
+    std::env::remove_var(token);
 }
 
 #[cfg(unix)]

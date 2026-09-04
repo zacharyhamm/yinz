@@ -1482,6 +1482,57 @@ fn a_local_pane_inherits_its_stable_supervisor_reference() {
     host.join();
 }
 
+/// A zellij session started *inside* a remote pane spawns panes of its own, and they
+/// inherit that pane's broker token from its shell. Unlike a supervisor reference the
+/// token sits beside a `ZELLIJ_PANE_ID` that really is this machine's, so nothing else
+/// would catch it: a coding agent's hook reads the token first - it has to, because in a
+/// remote pane the pane id is the *asking* session's - and would report the outer pane.
+#[test]
+fn a_pane_does_not_inherit_an_outer_panes_broker_token() {
+    let token = crate::pty_host::remote::broker::PANE_TOKEN_ENV;
+    std::env::set_var(token, "an-outer-panes-token");
+    let (mut host, _host_id, _sock) = TestHost::start();
+    let (_child_pid, mut master) = host.spawn(sh(&format!("echo token=[${token}]")));
+
+    let output = read_until(&mut master, "token=");
+    assert!(
+        output.contains("token=[]"),
+        "a pane reused an outer pane's broker token: {output:?}"
+    );
+
+    host.send(&ServerToHostMsg::Terminate);
+    host.join();
+    std::env::remove_var(token);
+}
+
+/// The other half of that: a real remote pane is *given* its token by the broker, which
+/// mints one per pane and names it in the spawn. The scrub above runs first for exactly
+/// this reason - it must not be able to take back what the spawn asked for.
+#[test]
+fn a_spawn_that_names_a_broker_token_keeps_it() {
+    let token = crate::pty_host::remote::broker::PANE_TOKEN_ENV;
+    std::env::set_var(token, "an-outer-panes-token");
+    let (mut host, _host_id, _sock) = TestHost::start();
+    let (_child_pid, mut master) = host.spawn_with_env(
+        sh(&format!("echo token=[${token}]")),
+        None,
+        None,
+        None,
+        vec![(token.to_owned(), "this-panes-token".to_owned())],
+        true,
+    );
+
+    let output = read_until(&mut master, "token=");
+    assert!(
+        output.contains("token=[this-panes-token]"),
+        "a remote pane lost the token its broker minted for it: {output:?}"
+    );
+
+    host.send(&ServerToHostMsg::Terminate);
+    host.join();
+    std::env::remove_var(token);
+}
+
 /// The frozen `SSH_*` of whichever ssh session started the broker are inherited
 /// by every pane on that machine. They describe a connection this pane has no
 /// part in, so a remote login drops them rather than passing them on.

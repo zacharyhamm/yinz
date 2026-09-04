@@ -279,8 +279,12 @@ fn handle_openpty(
         command
             .args(&cmd.args)
             // The server may itself be running in a supervised pane. This
-            // in-process fallback has no stable supervisor reference of its own.
+            // in-process fallback has no stable supervisor reference of its own,
+            // and no broker token either: a server running inside a remote pane
+            // would otherwise hand every pane the outer pane's token, and a hook
+            // reads that before the pane id.
             .env_remove(crate::pty_host::PANE_REF_ENV_KEY)
+            .env_remove(crate::pty_host::remote::broker::PANE_TOKEN_ENV)
             .env("ZELLIJ_PANE_ID", format!("{}", terminal_id))
             .pre_exec(move || -> io::Result<()> {
                 if libc::login_tty(pid_secondary) != 0 {
