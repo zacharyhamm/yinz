@@ -5215,24 +5215,32 @@ impl Tab {
     }
     /// The same, for the collection's own idea of which pane this client's keystroke is about -
     /// the expanded overlay if there is one, so a second press always collapses it.
+    ///
+    /// A client whose keyboard is *not* on an overlay may only ever **collapse** an expansion,
+    /// never begin one and never switch between the two variants: an overlay is expanded over the
+    /// tab, so the other clients on it are looking at a screenful of someone else's pane, and the
+    /// keystroke that gets it off their screen must exist. What must not is a bystander re-sizing
+    /// an expansion they never asked for - so once it is put back, the next press falls through
+    /// to the layers underneath and fullscreens the pane this client is actually on.
     fn active_overlay_takes_fullscreen(&mut self, client_id: ClientId, covers_ui: bool) -> bool {
         let on_an_overlay = self
             .get_active_pane_id(client_id)
             .is_some_and(|pane_id| self.overlay_panes.panes_contain(&pane_id));
-        if !on_an_overlay && !self.overlay_panes.fullscreen_is_active() {
-            return false;
-        }
-        let toggled = if covers_ui {
-            self.overlay_panes
-                .toggle_active_pane_no_ui_fullscreen(client_id)
+        let claimed = if on_an_overlay {
+            if covers_ui {
+                self.overlay_panes
+                    .toggle_active_pane_no_ui_fullscreen(client_id)
+            } else {
+                self.overlay_panes.toggle_active_pane_fullscreen(client_id)
+            }
         } else {
-            self.overlay_panes.toggle_active_pane_fullscreen(client_id)
+            self.overlay_panes.unset_fullscreen()
         };
-        if toggled {
+        if claimed {
             self.set_force_render();
             self.set_should_clear_display_before_rendering();
         }
-        on_an_overlay || toggled
+        on_an_overlay || claimed
     }
     pub fn toggle_active_pane_fullscreen(&mut self, client_id: ClientId) {
         if self.active_overlay_takes_fullscreen(client_id, false) {
@@ -5312,13 +5320,18 @@ impl Tab {
             log::error!("No tiled pane with id: {:?} found", pane_id);
         }
     }
+    /// Put back *everything* that is expanded: an overlay over the screen, and the fullscreen of
+    /// whichever layer underneath it has one.
+    ///
+    /// Not a dispatch, unlike the four toggles above - this is the "there must be nothing
+    /// fullscreen after this" statement its callers make before they relayout, so an overlay
+    /// collapsing must not stand in for the tiled pane they were asking about. The two split
+    /// paths guard on `tiled_panes.fullscreen_is_active()` and then split into a layout that is
+    /// still collapsed to one pane if this returned early.
     pub fn unset_fullscreen(&mut self) {
-        // an overlay outranks the layers underneath it here as it does everywhere else: if one is
-        // expanded over the screen, that is the fullscreen the user means
         if self.overlay_panes.unset_fullscreen() {
             self.set_force_render();
             self.set_should_clear_display_before_rendering();
-            return;
         }
         if self.floating_panes.fullscreen_is_active() {
             self.floating_panes.unset_fullscreen();
@@ -5339,17 +5352,41 @@ impl Tab {
     ///
     /// The overlays are in here, unlike in `is_fullscreen_active` above: this is a question about
     /// what is painted, which an expanded overlay is as much a part of as a fullscreen tiled pane.
-    /// The readers that mean "the tiled layout is collapsed" ask `tiled_panes` directly.
+    /// The readers that mean "the tiled layout is collapsed" ask `tiled_panes` directly, and the
+    /// one that means "this guest pane's own fullscreen" asks `tiled_or_floating_fullscreen`
+    /// below - which is why this pair is at present read only by the tests that assert it.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn fullscreen_covers_ui(&self) -> bool {
         self.tiled_panes.fullscreen_covers_ui()
             || self.floating_panes.fullscreen_covers_ui()
             || self.overlay_panes.fullscreen_covers_ui()
     }
+    /// The pane a fullscreen is drawn for, whichever collection holds it - the tab-wide question,
+    /// as `fullscreen_covers_ui` above is. See its note on who reads them.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn fullscreen_pane_id(&self) -> Option<PaneId> {
         self.overlay_panes
             .fullscreen_pane_id()
             .or_else(|| self.tiled_panes.fullscreen_pane_id())
             .or_else(|| self.floating_panes.fullscreen_pane_id())
+    }
+    /// The tiled or floating pane that is fullscreen, and whether *its* fullscreen covers the
+    /// chrome - asked of the collection that owns it rather than of the tab-wide disjunctions
+    /// above, which mix the layers and would answer about one pane's fullscreen with another's.
+    ///
+    /// This is what a **nested guest**'s fullscreen state is about. A guest is a terminal pane and
+    /// never an overlay, so an expanded overlay is neither a fullscreen the guest protocol should
+    /// report nor one it should displace - and an overlay drawn over a fullscreen guest does not
+    /// make the guest any less fullscreen.
+    pub fn tiled_or_floating_fullscreen(&self) -> Option<(PaneId, bool)> {
+        self.tiled_panes
+            .fullscreen_pane_id()
+            .map(|pane_id| (pane_id, self.tiled_panes.fullscreen_covers_ui()))
+            .or_else(|| {
+                self.floating_panes
+                    .fullscreen_pane_id()
+                    .map(|pane_id| (pane_id, self.floating_panes.fullscreen_covers_ui()))
+            })
     }
     pub fn are_floating_panes_visible(&self) -> bool {
         self.floating_panes.all_panes_are_visible()
@@ -6005,6 +6042,14 @@ impl Tab {
                     self.floating_panes.toggle_pane_fullscreen(pane_id);
                 }
             }
+        }
+        // `reapply_coordinates` above re-derived any expansion against `self.viewport` as it was
+        // *before* `LayoutApplier::offset_viewport` recomputed it, so an overlay expanded over the
+        // viewport - rather than over the whole surface - kept the rectangle the old chrome left.
+        // `set_pane_frames` is `refresh_fullscreen`'s one caller, and the viewport is final here:
+        // the fullscreen restores above are the last thing that can move it.
+        if self.overlay_panes.fullscreen_is_active() {
+            self.overlay_panes.set_pane_frames().non_fatal();
         }
         self.resize_all_stack_list_hidden_members();
         Ok(())

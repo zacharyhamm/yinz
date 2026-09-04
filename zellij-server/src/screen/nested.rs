@@ -736,10 +736,13 @@ impl Screen {
         let mut actually_fullscreen = false;
         let mut displaced_pane_id = None;
         if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
+            // `tiled_or_floating_fullscreen` rather than the tab-wide `fullscreen_pane_id`: a
+            // guest is never an overlay, and an overlay expanded over the screen is neither this
+            // guest's fullscreen to report nor another's to displace
             let currently_fullscreen =
-                tab.fullscreen_pane_id() == Some(pane_id) && tab.fullscreen_covers_ui();
+                matches!(tab.tiled_or_floating_fullscreen(), Some((id, true)) if id == pane_id);
             if fullscreen && !currently_fullscreen {
-                let existing_fullscreen = tab.fullscreen_pane_id();
+                let existing_fullscreen = tab.tiled_or_floating_fullscreen().map(|(id, _)| id);
                 if existing_fullscreen.is_some() && existing_fullscreen != Some(pane_id) {
                     displaced_pane_id = existing_fullscreen;
                     tab.toggle_pane_no_ui_fullscreen(existing_fullscreen.unwrap());
@@ -749,7 +752,7 @@ impl Screen {
                 tab.toggle_pane_no_ui_fullscreen(pane_id);
             }
             actually_fullscreen =
-                tab.fullscreen_pane_id() == Some(pane_id) && tab.fullscreen_covers_ui();
+                matches!(tab.tiled_or_floating_fullscreen(), Some((id, true)) if id == pane_id);
         }
         if let Some(displaced_pane_id) = displaced_pane_id {
             self.nested_fullscreen_panes.remove(&displaced_pane_id);
@@ -783,13 +786,12 @@ impl Screen {
     pub(super) fn sync_nested_guest_fullscreen_state(&mut self) {
         let mut actual: HashMap<PaneId, bool> = HashMap::new();
         for tab in self.tabs.values() {
-            let fullscreen_pane_id = tab.fullscreen_pane_id();
-            let covers_ui = tab.fullscreen_covers_ui();
+            let tab_fullscreen = tab.tiled_or_floating_fullscreen();
             for pane_id in tab.nested_guest_pane_ids() {
                 if !self.nested_guest_tracker.is_tracked(pane_id) {
                     continue;
                 }
-                let is_fullscreen = covers_ui && fullscreen_pane_id == Some(pane_id);
+                let is_fullscreen = matches!(tab_fullscreen, Some((id, true)) if id == pane_id);
                 actual.insert(pane_id, is_fullscreen);
             }
         }

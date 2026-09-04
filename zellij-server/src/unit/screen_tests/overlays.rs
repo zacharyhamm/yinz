@@ -4722,3 +4722,125 @@ fn an_overlay_is_torn_down_when_its_destination_is_reaped_too() {
         "the overlay is re-homed into the first tab and then torn down with it: {torn_down:?}"
     );
 }
+
+/// An overlay is expanded over the *tab*, so the clients that did not ask for it are looking at a
+/// screenful of someone else's pane and the keystroke that gets it off their screen has to exist.
+/// What must not is a bystander re-sizing an expansion they never asked for - so the press puts it
+/// back and goes no further, and the next one is about the pane this client is actually on.
+#[test]
+fn a_client_that_is_not_on_an_overlay_may_only_put_the_expansion_back() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    screen.add_client(2).expect("TEST");
+    // a second tiled pane, so that the tiled collection has a fullscreen to give client 2 at all
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .new_pane(
+            PaneId::Terminal(2),
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::default(),
+            Some(1),
+            None,
+        )
+        .expect("TEST");
+    open_overlay_with(&mut screen, 3, overlay_coordinates());
+    let _ = screen.get_active_tab_mut(2).unwrap().focus_pane_with_id(
+        PaneId::Terminal(1),
+        false,
+        false,
+        2,
+    );
+
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .toggle_active_pane_fullscreen(1);
+    assert!(
+        screen.tabs[&0]
+            .get_pane_info(PaneId::Terminal(3))
+            .expect("TEST")
+            .is_fullscreen,
+        "the client that is on the overlay expanded it"
+    );
+
+    screen
+        .get_active_tab_mut(2)
+        .unwrap()
+        .toggle_active_pane_fullscreen(2);
+    assert!(
+        !screen.tabs[&0]
+            .get_pane_info(PaneId::Terminal(3))
+            .expect("TEST")
+            .is_fullscreen,
+        "the other client's press put it back"
+    );
+    assert!(
+        !screen.tabs[&0].is_fullscreen_active(),
+        "and went no further than that - the tiled pane it is on is untouched"
+    );
+
+    screen
+        .get_active_tab_mut(2)
+        .unwrap()
+        .toggle_active_pane_fullscreen(2);
+    assert_eq!(
+        screen.tabs[&0].fullscreen_pane_id(),
+        Some(PaneId::Terminal(1)),
+        "now that the screen is its own again, the next press is about its own pane"
+    );
+}
+
+/// `Tab::resize_whole_tab_locally` re-derives the expansion from the tab's viewport, and
+/// `LayoutApplier::offset_viewport` recomputes that viewport later in the same function - so an
+/// overlay expanded over the viewport, rather than over the whole surface, kept the rectangle the
+/// chrome left before the resize.
+#[test]
+fn an_expanded_overlay_fills_the_viewport_a_resize_leaves() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    open_overlay_with(&mut screen, 2, overlay_coordinates());
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .toggle_active_pane_fullscreen(1);
+
+    screen
+        .resize_to_screen(Size {
+            cols: 120,
+            rows: 30,
+        })
+        .expect("TEST");
+
+    let tab = &screen.tabs[&0];
+    // the lone tiled pane fills the viewport, so it is what the expansion should have grown to
+    let viewport = tab
+        .get_pane_with_id(PaneId::Terminal(1))
+        .expect("TEST")
+        .position_and_size();
+    let expanded = tab
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .current_geom();
+    assert_eq!(
+        (
+            expanded.x,
+            expanded.y,
+            expanded.cols.as_usize(),
+            expanded.rows.as_usize()
+        ),
+        (
+            viewport.x,
+            viewport.y,
+            viewport.cols.as_usize(),
+            viewport.rows.as_usize()
+        ),
+        "it fills the viewport as it is now, not as it was before the resize"
+    );
+    assert_eq!(expanded.cols.as_usize(), 120, "which is the wider screen");
+}

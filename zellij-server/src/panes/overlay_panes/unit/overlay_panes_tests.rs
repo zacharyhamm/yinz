@@ -3199,3 +3199,154 @@ fn an_expanded_overlay_stops_offering_a_resize() {
 
     assert!(!panes.is_resizable(&PaneId::Terminal(1)));
 }
+
+/// A fullscreen press names a pane, and it is that pane that is expanded. The expansion used to
+/// be dropped and the requested pane never expanded at all, so a second overlay could not be
+/// looked at closely without first putting the first one back by hand.
+#[test]
+fn a_fullscreen_press_on_another_overlay_expands_that_one() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+    add(&mut panes, 2, OverlayKind::Dismissible, half(40));
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+
+    assert!(panes.toggle_pane_fullscreen(PaneId::Terminal(2)));
+
+    assert!(panes.pane_is_fullscreen(&PaneId::Terminal(2)));
+    assert_eq!(drawn(&panes, 2), (0, 0, 80, 20));
+    assert!(!panes.pane_is_fullscreen(&PaneId::Terminal(1)));
+    assert_eq!(
+        drawn(&panes, 1),
+        geom(&panes, 1),
+        "and the one that was expanded is back where its coordinates say"
+    );
+
+    assert!(panes.toggle_pane_fullscreen(PaneId::Terminal(2)));
+    assert!(
+        !panes.fullscreen_is_active(),
+        "a press naming the expanded panel still collapses it"
+    );
+}
+
+/// A drag in flight has nothing left to carry once the pane fills the screen, and leaving it in
+/// flight would swallow every mouse event until the release.
+#[test]
+fn expanding_an_overlay_releases_a_drag_in_flight() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+    assert!(panes.move_pane_with_mouse(frame_corner(&panes, 1)));
+    assert!(panes.pane_is_being_moved_with_mouse());
+
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+
+    assert!(!panes.pane_is_being_moved_with_mouse());
+}
+
+/// And the mover refuses a step of its own, for a drag whose state the caller is holding: the
+/// rectangle it would write is the one the expansion comes back to.
+#[test]
+fn an_expanded_overlay_is_not_carried_by_a_drag_that_outlived_the_press() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+    let before = geom(&panes, 1);
+
+    panes.set_pane_being_moved_with_mouse(PaneId::Terminal(1), Position::new(2, 2));
+
+    assert!(!panes.move_pane_to_position(&Position::new(9, 40)));
+    assert_eq!(geom(&panes, 1), before);
+}
+
+/// The same for the divider: `seam_at` refuses to start one, this refuses to continue one that
+/// was in flight when the expansion began.
+#[test]
+fn expanding_a_panel_releases_a_seam_drag_and_refuses_the_next_step() {
+    let mut panes = linked_panel();
+    let seam = seam_cell(&panes);
+    let (left, right) = panes.seam_at(&seam).unwrap();
+    panes.start_seam_drag(left, right, seam);
+    assert!(panes.seam_is_being_dragged());
+
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+    assert!(!panes.seam_is_being_dragged());
+
+    let before = (geom(&panes, 1), geom(&panes, 2));
+    panes.start_seam_drag(left, right, seam);
+    assert!(!panes.drag_seam_to(&Position::new(5, 10)));
+    assert_eq!(
+        (geom(&panes, 1), geom(&panes, 2)),
+        before,
+        "the split underneath is untouched"
+    );
+}
+
+/// Either half. The guard used to run after `unlink`, and `fullscreen_pane_ids` is derived from
+/// the link - so once the pair was forgotten it named the anchor alone and the other half slipped
+/// past, leaving a panel expanded with one half of it gone.
+#[test]
+fn closing_the_other_half_of_an_expanded_panel_ends_the_expansion() {
+    let mut panes = linked_panel();
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+
+    panes.remove_pane(PaneId::Terminal(2));
+
+    assert!(!panes.fullscreen_is_active());
+    assert_eq!(
+        drawn(&panes, 1),
+        geom(&panes, 1),
+        "and the half that is left is drawn as itself again"
+    );
+}
+
+/// The pane handed back to the caller is out of the collection, so `refresh_fullscreen`'s reset
+/// loop - which owns every override here - can no longer reach it. It must not leave wearing one.
+#[test]
+fn a_pane_taken_out_of_an_expanded_slot_comes_back_without_the_expansion() {
+    let mut panes = overlay_panes(80, 20);
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+
+    let removed = panes
+        .replace_pane(PaneId::Terminal(1), mock_pane(PaneId::Terminal(9)))
+        .unwrap();
+
+    assert!(removed.geom_override().is_none());
+    assert_eq!(
+        removed.position_and_size(),
+        removed.current_geom(),
+        "so it is drawn at the rectangle it always had"
+    );
+}
+
+/// A surface with no columns has no room for a divider either: `seam_mapped_onto` clamps its
+/// answer to a column that is already past the right edge, and the right half's width was an
+/// unguarded `usize` subtraction.
+#[test]
+fn an_expanded_panel_on_a_surface_with_no_columns_is_drawn_at_nothing() {
+    let (mut panes, display_area) = overlay_panes_with(
+        80,
+        20,
+        Viewport {
+            x: 0,
+            y: 0,
+            cols: 80,
+            rows: 20,
+        },
+    );
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+    add(&mut panes, 2, OverlayKind::Dismissible, half(32));
+    panes.link_touching(&[PaneId::Terminal(1), PaneId::Terminal(2)]);
+    panes.toggle_pane_no_ui_fullscreen(PaneId::Terminal(1));
+
+    *display_area.borrow_mut() = Size { cols: 0, rows: 0 };
+    panes.set_pane_frames().unwrap();
+
+    assert!(
+        panes
+            .get(&PaneId::Terminal(1))
+            .unwrap()
+            .geom_override()
+            .is_none(),
+        "nothing is expanded into a surface this size"
+    );
+}

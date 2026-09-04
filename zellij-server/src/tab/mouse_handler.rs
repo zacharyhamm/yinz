@@ -311,9 +311,13 @@ struct ClickedPaneDetails {
     /// branches below had no way to tell an overlay from a tiled pane and treated it as one.
     is_overlay: bool,
     /// An overlay the user may resize - one that is not a modal. Separate from `is_overlay`
-    /// because the two frame branches answer differently: every overlay is draggable, only a
-    /// non-modal one is resizable.
+    /// because the two frame branches answer differently: only a non-modal one is resizable.
     overlay_is_resizable: bool,
+    /// An overlay the user may drag - one that is not expanded over the screen. A modal is
+    /// draggable but not resizable and an expanded overlay is neither, which is why this is not
+    /// the same field as `overlay_is_resizable`: an expansion fills the screen, so there is
+    /// nowhere to carry it to and the rectangle a drag would write is the one it comes back to.
+    overlay_is_movable: bool,
     /// The linked pair whose seam the press landed on, when the frame cell under the pointer
     /// is the divider between two overlays placed together (`OverlayPanes::seam_at`). A press
     /// there drags the divider rather than the panel.
@@ -633,6 +637,7 @@ impl MouseHandler {
         let is_floating = tab.floating_panes.panes_contain(&pane_id);
         let is_overlay = tab.pane_is_overlay(pane_id);
         let overlay_is_resizable = tab.overlay_panes.is_resizable(&pane_id);
+        let overlay_is_movable = !tab.overlay_panes.pane_is_fullscreen(&pane_id);
         let on_seam = tab.overlay_panes.seam_at(position);
         let is_hidden_stack_list_member = tab.pane_is_hidden_stack_list_member(&pane_id);
         let pane = Self::get_pane_at(tab, position, false).ok()??;
@@ -660,6 +665,7 @@ impl MouseHandler {
             is_floating,
             is_overlay,
             overlay_is_resizable,
+            overlay_is_movable,
             on_seam,
             terminal_wants_mouse,
             terminal_emulator_wants_mouse,
@@ -1902,7 +1908,19 @@ impl MouseHandler {
                     });
                 }
                 if details.is_overlay {
-                    return Ok(MouseAction::StartMovingOverlay {
+                    if details.overlay_is_movable {
+                        return Ok(MouseAction::StartMovingOverlay {
+                            position: event.position,
+                        });
+                    }
+                    // An expanded overlay has nowhere to move to, so `move_pane_with_mouse`
+                    // refuses the drag and nothing would ever be set moving - the press would be
+                    // swallowed and the click never land. It is an ordinary click on the pane
+                    // instead. Spelled out rather than left to fall through, because the next
+                    // branch is the floating one, and routing an overlay into it is the very bug
+                    // the comment above records.
+                    return Ok(MouseAction::FocusPane {
+                        pane_id: details.pane_id,
                         position: event.position,
                     });
                 }
@@ -2440,6 +2458,7 @@ mod tests {
             is_floating: false,
             is_overlay,
             overlay_is_resizable: is_overlay,
+            overlay_is_movable: true,
             on_seam: None,
             terminal_wants_mouse: false,
             terminal_emulator_wants_mouse: false,
@@ -2483,6 +2502,35 @@ mod tests {
             MouseHandler::determine_mouse_action(&event, &context).unwrap(),
             MouseAction::StartMovingFloatingPane { .. }
         ));
+    }
+
+    /// An expanded overlay fills the screen, so `OverlayPanes::move_pane_with_mouse` refuses the
+    /// drag: routing the press there anyway set nothing moving, and the click that followed was
+    /// swallowed by a drag that had never started. It is an ordinary click on the pane instead -
+    /// and in particular not a fall-through to the floating branch, which would drag whatever the
+    /// overlay is covering.
+    #[test]
+    fn a_press_on_an_expanded_overlay_s_frame_is_a_click_and_not_a_move() {
+        let overlay = PaneId::Terminal(9);
+        let mut context = mouse_event_context(false);
+        context.floating_visible = true;
+        context.pane_id_at_position = Some(overlay);
+        context.clicked_pane = Some(ClickedPaneDetails {
+            overlay_is_movable: false,
+            overlay_is_resizable: false,
+            ..frame_click_on(overlay, true)
+        });
+
+        let event = MouseEvent::new_left_press_event(Position::new(1, 1));
+        let action = MouseHandler::determine_mouse_action(&event, &context).unwrap();
+        assert_eq!(
+            action,
+            MouseAction::FocusPane {
+                pane_id: overlay,
+                position: event.position,
+            },
+            "got {action:?}"
+        );
     }
 
     /// An overlay is not on a layer, so nothing has to be raised for its frame to be draggable.
@@ -2819,6 +2867,7 @@ mod tests {
             is_floating: false,
             is_overlay: false,
             overlay_is_resizable: false,
+            overlay_is_movable: true,
             on_seam: None,
             terminal_wants_mouse: false,
             terminal_emulator_wants_mouse: false,
