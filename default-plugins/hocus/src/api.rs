@@ -42,14 +42,18 @@ pub const DEFAULT_MAX_TOOL_ROUNDS: usize = 50;
 /// How many search results the model gets. A SearxNG page is ~25, and every one
 /// of them is paid for on every subsequent turn of the conversation.
 pub const SEARCH_RESULTS: usize = 8;
-const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_pane_here`/`warp_tab_here` bring a listed pane or tab from another session into this one; there is no tool for the other direction, so a request to send one out is answered by asking hocus in the destination session. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. Past agent work, every session on this machine: `agent_history_search` finds it, `agent_runs` lists runs, `agent_run` reads one - a hit's `run_id` and `revision` read around it. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` is authoritative, so read only the relevant sections. `plugin_write` creates one (its confirmation grants the permissions it asks for); to change one that exists, `plugin_read` then `plugin_edit` - never re-send a whole file you did not just write. `plugin_check` compiles without writing. `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list`/`plugin_read` read the user's plugin folder. Firecracker VMs: `vm_list` for every VM and its worktree and branch, then `vm_changes`/`vm_sync`/`vm_close` by name. Make independent calls together.";
+const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_pane_here`/`warp_tab_here` bring a listed pane or tab from another session into this one; there is no tool for the other direction, so a request to send one out is answered by asking hocus in the destination session. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. Past agent work, every session on this machine: `agent_history_search` finds it, `agent_runs` lists runs, `agent_run` reads one - a hit's `run_id` and `revision` read around it. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` is authoritative, so read only the relevant sections. `plugin_write` creates one (its confirmation grants the permissions it asks for); to change one that exists, `plugin_read` then `plugin_edit` - never re-send a whole file you did not just write. `plugin_check` compiles without writing. `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list`/`plugin_read` read the user's plugin folder. Firecracker VMs: `vm_list` for every VM and its worktree and branch, then `vm_changes`/`vm_sync`/`vm_close` by name. Not every tool named here is in \
+the tools array: the rest are loaded on demand, and calling one by name loads its family and \
+runs it, so call the tool you want rather than asking for it. `tools_load` is there for when \
+you do not know the name. Make independent calls together.";
 /// Sent in planning mode, where the tool set is narrowed to the ones that only
 /// read. Says so explicitly: a model that believes a missing tool is an
 /// oversight spends the turn asking for it back.
 const PLAN_PROMPT: &str = "Planning mode. You are working out an approach, not carrying it out. \
 Only read-only tools are available - every tool that changes anything has been withheld, \
 including ones you called earlier in this conversation - so do not plan around calling one, and \
-do not report a change as made or as failed. Investigate with the tools you have, then answer \
+do not report a change as made or as failed. This is not the on-demand loading: a family you \
+load here arrives with its writing half still withheld. Investigate with the tools you have, then answer \
 with a plan: what you found, what you would do, in order, and what each step touches. Do not \
 end by asking permission; the user is asked for you.";
 
@@ -484,6 +488,8 @@ pub fn request_body_with_project(
     request_body_with_project_and_tools(cfg, transcript, project, plan, &[])
 }
 
+/// The body alone, for the tests that do not care what the tools cost.
+#[cfg(test)]
 pub fn request_body_with_project_and_tools(
     cfg: &Config,
     transcript: &[Message],
@@ -491,15 +497,55 @@ pub fn request_body_with_project_and_tools(
     plan: bool,
     extension_tools: &[Value],
 ) -> Vec<u8> {
+    request_body_with_stats(cfg, transcript, project, plan, extension_tools).0
+}
+
+/// The outgoing body, and what the tool array in it cost.
+///
+/// The stats come back from here rather than from a second pass, because working
+/// them out means building and serializing the whole array — the one thing this
+/// function has already done. `specs()` re-materializes 82 JSON trees per call,
+/// so a log line is not worth a second one.
+pub fn request_body_with_stats(
+    cfg: &Config,
+    transcript: &[Message],
+    project: Option<(&str, &str)>,
+    plan: bool,
+    extension_tools: &[Value],
+) -> (Vec<u8>, ToolStats) {
     let system = system_text(cfg, project, plan);
-    let tools = tool_specs(cfg, plan, extension_tools);
+    // Which families this conversation has reached for. Derived from the transcript
+    // rather than tracked, so it costs no state and survives a reopened chat; see
+    // `tools::loaded_families`.
+    let loaded = tools::loaded_families(transcript.iter().flat_map(|m| m.tool_calls.iter()));
+    let tools = tool_specs(cfg, plan, extension_tools, &loaded);
+    let stats = ToolStats {
+        count: tools.as_ref().and_then(Value::as_array).map_or(0, Vec::len),
+        bytes: tools
+            .as_ref()
+            .and_then(|tools| serde_json::to_vec(tools).ok())
+            .map_or(0, |bytes| bytes.len()),
+    };
     // What the transcript no longer needs to send. Built once and handed to whichever transport
     // is speaking; see `Elision`.
     let elision = Elision::plan(transcript);
-    match cfg.api {
+    let body = match cfg.api {
         Api::Chat => chat_request_body(cfg, transcript, system, tools, &elision),
         Api::Responses => responses_request_body(cfg, transcript, system, tools, &elision),
-    }
+    };
+    (body, stats)
+}
+
+/// What the tool array cost this request, for the log.
+///
+/// `wire_breakdown` walks only the transcript, so without this the largest fixed
+/// item in the body is the one thing the size logging cannot see — and since most
+/// tools are now withheld until they are asked for, the number moves during a
+/// conversation rather than being a constant anyone could look up.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct ToolStats {
+    pub count: usize,
+    pub bytes: usize,
 }
 
 /// The system prompt as it goes out, whichever transport carries it: the
@@ -540,15 +586,24 @@ fn system_text(cfg: &Config, project: Option<(&str, &str)>, plan: bool) -> Optio
     system
 }
 
-/// The advertised tool set: the builtins for this mode plus whatever extensions
-/// contribute. `None` when `tools` is off, which keeps the key off the wire for
-/// the local models that reject the array outright.
-fn tool_specs(cfg: &Config, plan: bool, extension_tools: &[Value]) -> Option<Value> {
+/// The advertised tool set: the builtins this mode and this conversation have
+/// earned, plus whatever extensions contribute. `None` when `tools` is off, which
+/// keeps the key off the wire for the local models that reject the array outright.
+///
+/// Two filters, and they compose as an intersection: planning mode withholds
+/// everything that acts, and family disclosure withholds everything this
+/// conversation has not reached for. A tool has to survive both.
+fn tool_specs(
+    cfg: &Config,
+    plan: bool,
+    extension_tools: &[Value],
+    loaded: &BTreeSet<&str>,
+) -> Option<Value> {
     cfg.tools.then(|| {
         let mut specs = if plan {
-            tools::read_only_specs()
+            tools::read_only_specs_for(loaded)
         } else {
-            tools::specs()
+            tools::specs_for(loaded)
         };
         if let Value::Array(specs) = &mut specs {
             specs.extend_from_slice(extension_tools);

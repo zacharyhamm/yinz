@@ -10,7 +10,7 @@
 // crate for the host triple (as a workspace-wide `cargo clippy` does) reads those helpers as dead.
 #![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use hocus_proto::launch;
 use hocus_proto::location::Location;
@@ -1839,7 +1839,41 @@ pub fn specs() -> Value {
                 "required": ["vm"],
             }),
         ),
+        tool(
+            "tools_load",
+            // Built rather than written out, so a family added to `FAMILIES` cannot
+            // be advertised in the enum and missing from the index, or the reverse.
+            &load_tool_description(),
+            json!({
+                "type": "object",
+                "properties": {
+                    "family": { "type": "string", "enum": deferred_families() },
+                },
+                "required": ["family"],
+            }),
+        ),
     ])
+}
+
+/// The loader's description: what it is for, then one line per deferred family.
+///
+/// The index is terse on purpose. `TOOL_FIRST_PROMPT` already names most of these
+/// tools and says what each is for, so a model usually calls one straight out of
+/// the prompt and never reads this; what this has to answer is the narrower
+/// question of which family to ask for when it does not.
+fn load_tool_description() -> String {
+    let mut description = String::from(
+        "Load a family of tools that is not advertised yet. Tools you can already see need no \
+         load. Families: ",
+    );
+    let families: Vec<String> = FAMILIES
+        .iter()
+        .filter(|family| family.deferred)
+        .map(|family| format!("{} ({})", family.name, family.summary))
+        .collect();
+    description.push_str(&families.join("; "));
+    description.push('.');
+    description
 }
 
 /// The tools planning mode leaves advertised: everything that only observes.
@@ -1904,6 +1938,11 @@ pub const READ_ONLY: &[&str] = &[
     // are deliberately absent: both write the user's worktree.
     "vm_list",
     "vm_changes",
+    // Loading a family changes nothing but what the next request advertises, and
+    // planning mode has to be able to widen itself: a plan about plugins is
+    // researched with the read-only half of the `plugin` family, which the model
+    // cannot reach without this.
+    "tools_load",
 ];
 
 /// The `tools` array as planning mode sends it: [`specs`] minus everything that
@@ -1913,17 +1952,364 @@ pub const READ_ONLY: &[&str] = &[
 /// tool cannot become readable by being forgotten — it has to be named in
 /// [`READ_ONLY`] to survive this.
 pub fn read_only_specs() -> Value {
+    filter_specs(|name| READ_ONLY.contains(&name))
+}
+
+// ---------------------------------------------------------------------------
+// Tool families
+// ---------------------------------------------------------------------------
+
+/// One group of tools, disclosed together.
+///
+/// The tool array is paid for on every request and on every tool round, and the
+/// schemas are the bulk of it — descriptions are under a quarter of the bytes,
+/// which is why a decade of "trim the descriptions" never moved the ceiling. The
+/// only way to stop paying for a tool is not to send it, so most of them are
+/// withheld until the conversation reaches for them. Same bargain `plugin_docs`
+/// strikes with the Lua guide, one level up: ask for what you need.
+pub struct Family {
+    pub name: &'static str,
+    /// The one line the loader's index gives this family. Deliberately short:
+    /// `TOOL_FIRST_PROMPT` already names most of these tools and says what they
+    /// are for, so this only has to say which family holds them.
+    pub summary: &'static str,
+    pub tools: &'static [&'static str],
+    /// Whether it has to be loaded before it is advertised. An always-on family
+    /// is one every conversation is assumed to want; see [`FAMILIES`].
+    pub deferred: bool,
+}
+
+/// Every builtin tool, in the family that discloses it.
+///
+/// Written out rather than derived from the name prefix, for the reason
+/// [`READ_ONLY`] is written out: a rule would quietly file a tool added later,
+/// and the two ways that goes wrong are both bad. A tool in no family is
+/// unreachable, and a tool in the wrong one is advertised to conversations that
+/// have no use for it. `every_tool_is_in_exactly_one_family` is what makes the
+/// omission a test failure instead of a silent loss.
+///
+/// Which families are always on is a judgement about what a conversation is
+/// likely to want before it says anything. `session` is what hocus *is*;
+/// `code` is the active project, which most questions touch; `todo` and `note`
+/// are ambient lists that come up unprompted. `web` is one 230-byte tool, so
+/// deferring it would cost a round trip to save nothing.
+///
+/// The deferred eight are the ones a chat either uses a lot or not at all:
+/// nothing about driving panes needs Slack, Linear or the plugin authoring set.
+pub const FAMILIES: &[Family] = &[
+    Family {
+        name: "session",
+        summary: "panes, tabs and sessions",
+        deferred: false,
+        tools: &[
+            "list_session",
+            "list_other_sessions",
+            "warp_pane_here",
+            "warp_tab_here",
+            "list_orphaned_panes",
+            "adopt_orphaned_pane",
+            "read_pane",
+            "send_input",
+            "new_pane",
+            "new_remote_pane",
+            "new_tab",
+            "focus",
+            "rename",
+            "move_pane",
+            "swap_panes",
+            "resize_pane",
+            "toggle_pane",
+            "move_panes_to_tab",
+            "stack_panes",
+            "set_pane_pinned",
+            "set_floating_pane_geometry",
+            "rerun_pane",
+            "scroll_pane",
+            "clear_pane",
+            "close_pane",
+            "close_tab",
+        ],
+    },
+    Family {
+        name: "code",
+        summary: "the active project's files, git history and GitHub metadata",
+        deferred: false,
+        tools: &[
+            "find_files",
+            "search_files",
+            "read_file",
+            "git_log",
+            "git_show",
+            "github_read",
+        ],
+    },
+    Family {
+        name: "todo",
+        summary: "the todo list",
+        deferred: false,
+        tools: &[
+            "todo_add",
+            "todo_list",
+            "todo_search",
+            "todo_done",
+            "todo_edit",
+        ],
+    },
+    Family {
+        name: "note",
+        summary: "notes",
+        deferred: false,
+        tools: &[
+            "note_add",
+            "note_list",
+            "note_get",
+            "note_edit",
+            "note_archive",
+            "note_delete",
+            "note_link",
+            "note_search",
+        ],
+    },
+    Family {
+        name: "web",
+        summary: "web search",
+        deferred: false,
+        tools: &["web_search"],
+    },
+    Family {
+        name: "agent",
+        summary: "register, drive and spawn coding agents, and read what past ones did",
+        deferred: true,
+        tools: &[
+            "agent_register",
+            "agent_list",
+            "agent_send",
+            "agent_control",
+            "agent_runs",
+            "agent_run",
+            "agent_history_search",
+            "agent_spawn",
+        ],
+    },
+    Family {
+        name: "plugin",
+        summary: "write, check, reload and read Zellij Lua plugins",
+        deferred: true,
+        tools: &[
+            "plugin_docs",
+            "plugin_list",
+            "plugin_read",
+            "plugin_check",
+            "plugin_write",
+            "plugin_edit",
+            "plugin_reload",
+            "plugin_log",
+        ],
+    },
+    Family {
+        name: "slack",
+        summary: "search, read and post Slack",
+        deferred: true,
+        tools: &[
+            "slack_status",
+            "slack_search",
+            "slack_read",
+            "slack_backfill",
+            "slack_post",
+        ],
+    },
+    Family {
+        name: "skill",
+        summary: "read, author and toggle hocus skills",
+        deferred: true,
+        tools: &[
+            "skill_list",
+            "skill_read",
+            "skill_write",
+            "skill_enable",
+            "skill_disable",
+        ],
+    },
+    Family {
+        name: "project",
+        summary: "list, open and assign the project hocus works in",
+        deferred: true,
+        tools: &[
+            "project_list",
+            "project_assign",
+            "project_forget",
+            "project_open",
+        ],
+    },
+    Family {
+        name: "vm",
+        summary: "list, inspect, sync and close Firecracker VMs",
+        deferred: true,
+        tools: &["vm_list", "vm_changes", "vm_sync", "vm_close"],
+    },
+    Family {
+        name: "linear",
+        summary: "search and read Linear issues",
+        deferred: true,
+        tools: &["linear_search", "linear_issues", "linear_issue"],
+    },
+    Family {
+        name: "schedule",
+        summary: "arm and cancel recurring prompts",
+        deferred: true,
+        tools: &["schedule", "unschedule"],
+    },
+];
+
+/// The name of the tool that loads a deferred family.
+pub const LOAD_TOOL: &str = "tools_load";
+
+/// The family holding `name`, or `None` for a name no builtin family claims -
+/// an extension tool, or one the model invented.
+pub fn family_of(name: &str) -> Option<&'static Family> {
+    FAMILIES.iter().find(|family| family.tools.contains(&name))
+}
+
+/// The families that have to be asked for, in the order [`FAMILIES`] lists them.
+pub fn deferred_families() -> Vec<&'static str> {
+    FAMILIES
+        .iter()
+        .filter(|family| family.deferred)
+        .map(|family| family.name)
+        .collect()
+}
+
+/// The families a transcript has already reached for.
+///
+/// Derived from the calls rather than kept as state, which is the whole trick.
+/// A call to a withheld tool is in the transcript like any other - `run_head`
+/// dispatches by name and never consults the advertised set - so a model that
+/// names one straight out of `TOOL_FIRST_PROMPT` gets it run *and* gets its
+/// family advertised from the next request on. There is no round trip to pay
+/// unless the model chooses to ask first, and nothing to archive: reopening a
+/// chat re-derives what it had loaded from the transcript it reloads.
+pub fn loaded_families<'a>(calls: impl Iterator<Item = &'a ToolCall>) -> BTreeSet<&'static str> {
+    let mut loaded = BTreeSet::new();
+    for call in calls {
+        if call.name == LOAD_TOOL {
+            // The family it asked for, if it named one that exists. A load of a
+            // family that does not exist answered with an error and loaded
+            // nothing, so it must not load anything here either.
+            if let Some(name) = Args::parse(&call.arguments)
+                .ok()
+                .and_then(|args| args.family)
+                .and_then(|family| {
+                    FAMILIES
+                        .iter()
+                        .find(|candidate| candidate.deferred && candidate.name == family)
+                })
+                .map(|family| family.name)
+            {
+                loaded.insert(name);
+            }
+            continue;
+        }
+        if let Some(family) = family_of(&call.name).filter(|family| family.deferred) {
+            loaded.insert(family.name);
+        }
+    }
+    loaded
+}
+
+/// Answer a `tools_load` call: the tools the model may now call, or why it may
+/// not.
+///
+/// `read_only` is planning mode, where a family arrives with its writing half
+/// still withheld. Saying so here rather than listing the whole family keeps the
+/// answer honest about what is actually callable - the alternative is a model
+/// that reads back a list and picks the one tool the mode still refuses.
+pub fn load_family(family: Option<&str>, read_only: bool) -> String {
+    let Some(name) = family.map(str::trim).filter(|name| !name.is_empty()) else {
+        return format!(
+            "tools_load needs a family. One of: {}.",
+            deferred_families().join(", ")
+        );
+    };
+    let Some(family) = FAMILIES
+        .iter()
+        .find(|candidate| candidate.deferred && candidate.name == name)
+    else {
+        // An always-on family is not an error worth a retry: the tools are
+        // already there, and saying so is the whole answer.
+        if FAMILIES.iter().any(|candidate| candidate.name == name) {
+            return format!("{name} is always available; its tools are already advertised.");
+        }
+        return format!(
+            "no such tool family: {name}. One of: {}.",
+            deferred_families().join(", ")
+        );
+    };
+    let available: Vec<&str> = family
+        .tools
+        .iter()
+        .copied()
+        .filter(|tool| !read_only || READ_ONLY.contains(tool))
+        .collect();
+    if available.is_empty() {
+        return format!(
+            "{}: every tool in this family changes something, so planning mode withholds all of \
+             them. The user can approve the plan and you will get them back.",
+            family.name
+        );
+    }
+    let withheld = family.tools.len() - available.len();
+    let mut answer = format!(
+        "{} loaded — {} now available: {}.",
+        family.name,
+        available.len(),
+        available.join(", ")
+    );
+    if withheld > 0 {
+        answer.push_str(&format!(
+            " The other {withheld} change something, so planning mode still withholds them."
+        ));
+    }
+    answer
+}
+
+/// Whether a conversation that has loaded `loaded` is told about `name`.
+fn is_disclosed(name: &str, loaded: &BTreeSet<&str>) -> bool {
+    match family_of(name) {
+        Some(family) => !family.deferred || loaded.contains(family.name),
+        // The loader itself, and anything a family forgot. Advertised: a tool
+        // nobody can reach is worse than one sent needlessly, and
+        // `every_tool_is_in_exactly_one_family` is what stops this being
+        // load-bearing.
+        None => true,
+    }
+}
+
+/// The `tools` array for a conversation that has loaded `loaded`.
+///
+/// Filtered out of [`specs`] rather than assembled from the families, for the
+/// reason [`read_only_specs`] is: one list of tools, and a tool that is not in
+/// a family fails a test rather than quietly going missing here.
+pub fn specs_for(loaded: &BTreeSet<&str>) -> Value {
+    filter_specs(|name| is_disclosed(name, loaded))
+}
+
+/// [`specs_for`] narrowed again to what planning mode allows.
+///
+/// The two conditions are independent and a tool has to pass both: `plugin_docs`
+/// is read-only but withheld until the `plugin` family is loaded, and
+/// `plugin_write` stays withheld after it is.
+pub fn read_only_specs_for(loaded: &BTreeSet<&str>) -> Value {
+    filter_specs(|name| READ_ONLY.contains(&name) && is_disclosed(name, loaded))
+}
+
+fn filter_specs(keep: impl Fn(&str) -> bool) -> Value {
     let Value::Array(specs) = specs() else {
         return json!([]);
     };
     Value::Array(
         specs
             .into_iter()
-            .filter(|spec| {
-                spec["function"]["name"]
-                    .as_str()
-                    .is_some_and(|name| READ_ONLY.contains(&name))
-            })
+            .filter(|spec| spec["function"]["name"].as_str().is_some_and(&keep))
             .collect(),
     )
 }
@@ -2263,6 +2649,10 @@ pub struct Args {
     /// false — the plain flags in this struct all default to false.
     pub active: Option<bool>,
     pub offset: Option<usize>,
+    /// The family `tools_load` is asked for. Its own key rather than `name`,
+    /// which the plugin and skill tools own: a load names a family, and reusing
+    /// `name` would let a malformed plugin call read as a load of one.
+    pub family: Option<String>,
 }
 
 impl Args {

@@ -58,6 +58,7 @@ fn diverged_session() -> SessionTabs {
 
 mod args;
 mod confirmation;
+mod families;
 mod file_tools;
 mod listing;
 mod planners;
