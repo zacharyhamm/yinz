@@ -2682,3 +2682,81 @@ fn closing_the_last_floating_pane_under_an_overlay_takes_the_layer_down() {
         "the overlay does not keep the layer flagged visible"
     );
 }
+
+/// `unset_fullscreen` is not a dispatch, unlike the four toggles: it is the "there must be
+/// nothing fullscreen after this" statement `split_pane_horizontally` and `split_pane_vertically`
+/// make before they relayout. Collapsing the overlay used to satisfy it and return, leaving them
+/// to split a tiled layout that was still collapsed to one pane.
+#[test]
+fn unset_fullscreen_puts_back_the_overlay_and_the_pane_underneath_it() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let overlay_pane_id = PaneId::Terminal(2);
+
+    tab.toggle_active_pane_no_ui_fullscreen(client_id);
+    tab.new_pane(
+        overlay_pane_id,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+    tab.toggle_pane_fullscreen(overlay_pane_id);
+    assert!(tab.overlay_panes.fullscreen_is_active());
+    assert!(tab.tiled_panes.fullscreen_is_active());
+
+    tab.unset_fullscreen();
+
+    assert!(!tab.overlay_panes.fullscreen_is_active());
+    assert!(
+        !tab.tiled_panes.fullscreen_is_active(),
+        "the layer underneath is put back too, which is what the callers asked for"
+    );
+}
+
+/// The tab-wide `fullscreen_pane_id` answers with the overlay, being about what is painted. A
+/// nested guest's own fullscreen is a different question and gets a different answer.
+#[test]
+fn an_expanded_overlay_is_not_the_tiled_or_floating_fullscreen() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let tiled_pane_id = PaneId::Terminal(1);
+    let overlay_pane_id = PaneId::Terminal(2);
+
+    tab.toggle_active_pane_no_ui_fullscreen(client_id);
+    tab.new_pane(
+        overlay_pane_id,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+    tab.toggle_pane_fullscreen(overlay_pane_id);
+
+    assert_eq!(
+        tab.fullscreen_pane_id(),
+        Some(overlay_pane_id),
+        "the overlay is what is painted over everything"
+    );
+    assert_eq!(
+        tab.tiled_or_floating_fullscreen(),
+        Some((tiled_pane_id, true)),
+        "and the tiled pane is still the one whose own fullscreen covers the chrome"
+    );
+}

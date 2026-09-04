@@ -504,7 +504,13 @@ impl OverlayPanes {
         self.release_seam_drag_of(pane_id);
         // setting the pane the user is looking at in full aside is asking for it to go away, not
         // for the panel to carry on expanded without it - and an expansion anchored to a pane
-        // nobody can see is a screenful of overlay with no way back
+        // nobody can see is a screenful of overlay with no way back.
+        //
+        // The flag is already set above, so for a *linked* pair this asks about the panel as it
+        // is now: a pair with a hidden half is the shown half taking the whole panel, here as in
+        // every other placement, and hiding the non-anchor half leaves the survivor expanded
+        // rather than collapsing it. `remove_pane` is the one that must not read it that way,
+        // there being no half left to come back.
         self.release_fullscreen_of(pane_id);
         if self.is_modal(&pane_id) {
             // A modal's clients may not simply fall to whatever is underneath. While this modal
@@ -599,10 +605,12 @@ impl OverlayPanes {
         if matches!(self.pane_being_moved_with_mouse, Some((dragged, ..)) if dragged == pane_id) {
             self.pane_being_moved_with_mouse = None;
         }
-        self.unlink(pane_id);
         // and an expansion holding it puts the whole panel back, for the same reason: a panel
-        // half of which no longer exists is no state to leave the survivor in
+        // half of which no longer exists is no state to leave the survivor in. *Before* the
+        // unlink, because `fullscreen_pane_ids` is derived from the link: once the pair is
+        // forgotten it names the anchor alone, and the non-anchor half would slip past the guard.
         self.release_fullscreen_of(pane_id);
+        self.unlink(pane_id);
         self.panes.remove(&pane_id).map(|overlay| overlay.pane)
     }
 
@@ -672,7 +680,13 @@ impl OverlayPanes {
         }
         self.move_clients_between_panes(pane_id, with_pane_id);
         self.set_pane_frames().non_fatal();
-        Ok(removed.pane)
+        // The pane left `self.panes` at the top of this function, so `refresh_fullscreen`'s reset
+        // loop - which owns every override in the collection - cannot reach it. Without this the
+        // pane handed back to the caller wears a full-screen override belonging to a slot it is
+        // no longer in, and whatever the caller does with it next is done at the wrong size.
+        let mut replaced = removed.pane;
+        replaced.reset_size_and_position_override();
+        Ok(replaced)
     }
 
     pub fn pane_ids(&self) -> impl Iterator<Item = &PaneId> {
@@ -1868,6 +1882,12 @@ impl OverlayPanes {
             return vec![];
         };
         let area = self.fullscreen_area(covers_ui);
+        // An area with no width has no seam to place either: `seam_mapped_onto` clamps its
+        // answer to at least one column in, which is already past the right edge, and the right
+        // half's width below would underflow. Nothing can be expanded into a surface this size.
+        if area.cols == 0 || area.rows == 0 {
+            return vec![];
+        }
         let expanded = |geom: PaneGeom, x: usize, cols: usize| {
             let mut expanded = geom;
             expanded.x = x;
@@ -1898,7 +1918,7 @@ impl OverlayPanes {
                     (*left, expanded(left_geom, area.x, seam - area.x)),
                     (
                         *right,
-                        expanded(right_geom, seam, (area.x + area.cols) - seam),
+                        expanded(right_geom, seam, (area.x + area.cols).saturating_sub(seam)),
                     ),
                 ]
             },
@@ -1961,11 +1981,20 @@ impl OverlayPanes {
             return false;
         }
         self.fullscreen = Some((pane_id, covers_ui));
-        // so a sibling overlay opened earlier cannot be painted over the pane the user just asked
-        // to see in full. A live modal still outranks it - `raise_within_class` is what says so,
-        // and a fullscreen keystroke does not suspend the modal lock.
         for member_id in self.fullscreen_pane_ids() {
+            // so a sibling overlay opened earlier cannot be painted over the pane the user just
+            // asked to see in full. A live modal still outranks it - `raise_within_class` is what
+            // says so, and a fullscreen keystroke does not suspend the modal lock.
             self.raise_within_class(member_id);
+            // and a gesture in flight on a pane that now fills the screen has nothing left to
+            // carry: there is nowhere to move it to and the split it would re-cut is the one the
+            // expansion exists to come back to. Released here as `hide_pane` and `remove_pane`
+            // release them, rather than refused at every step of the drag.
+            if matches!(self.pane_being_moved_with_mouse, Some((dragged, ..)) if dragged == member_id)
+            {
+                self.pane_being_moved_with_mouse = None;
+            }
+            self.release_seam_drag_of(member_id);
         }
         self.set_pane_frames().non_fatal();
         self.set_force_render();
@@ -2012,11 +2041,18 @@ impl OverlayPanes {
 
     /// The two toggles, which differ only in how much they cover. Pressing the *other* one while
     /// expanded switches between the two rather than collapsing, as the floating layer's do.
+    ///
+    /// Only a press naming the panel that is *already* expanded collapses it. One naming another
+    /// overlay puts that panel back and expands the pane it asked for, which is what a keystroke
+    /// aimed at a pane means everywhere else - and the alternative was worse than doing nothing:
+    /// the expansion was dropped and the requested pane never expanded at all.
     fn toggle_fullscreen_of(&mut self, pane_id: PaneId, covers_ui: bool) -> bool {
         match self.fullscreen {
             Some((_, was_covering_ui)) => {
+                // before the collapse, which is what `pane_is_fullscreen` is derived from
+                let same_panel = self.pane_is_fullscreen(&pane_id);
                 self.unset_fullscreen();
-                if was_covering_ui == covers_ui {
+                if same_panel && was_covering_ui == covers_ui {
                     true
                 } else {
                     self.set_fullscreen(pane_id, covers_ui)
@@ -2106,6 +2142,12 @@ impl OverlayPanes {
             return false;
         };
         if click_position == &previous_position {
+            return false;
+        }
+        if self.pane_is_fullscreen(&pane_id) {
+            // the drag began before the expansion did - `move_pane_with_mouse` refuses to start
+            // one on a pane that fills the screen, and `set_fullscreen` releases one in flight,
+            // but neither covers a caller stepping a drag it holds the state for itself
             return false;
         }
         let move_x_by = click_position.column() as isize - previous_position.column() as isize;
@@ -2397,6 +2439,13 @@ impl OverlayPanes {
         let Some((left, right, grab_offset)) = self.seam_being_dragged else {
             return false;
         };
+        // An expanded panel's divider is drawn from an override while the arithmetic below reads
+        // the bases, so a step here would re-cut a panel the user cannot see and write it back as
+        // `Fixed`. `seam_at` refuses to *start* such a drag; this refuses to continue one that
+        // was already in flight when the expansion began.
+        if self.pane_is_fullscreen(&left) || self.pane_is_fullscreen(&right) {
+            return false;
+        }
         let (Some(left_geom), Some(right_geom)) = (
             self.get(&left).map(|pane| pane.position_and_size()),
             self.get(&right).map(|pane| pane.position_and_size()),
