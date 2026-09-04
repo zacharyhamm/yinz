@@ -775,6 +775,7 @@ mod todo_tools;
 mod token_usage;
 mod tool_rounds;
 mod viewport;
+mod vm_tools;
 mod web_search;
 
 /// Placement, or anything else outside hocus, can rename our pane after we last

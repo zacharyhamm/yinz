@@ -31,6 +31,10 @@ pub use hocus_proto::llm::{
 pub const DEFAULT_SEARCH_URL: &str = "http://localhost:8888";
 /// Bare name, so an installed dobbs is found on PATH without configuration.
 pub const DEFAULT_DOBBS: &str = "dobbs";
+/// The same, for the `zellij` the VM tools shell out to. A bare name is right for an
+/// installed Zellij; a development checkout whose `zellij` is not the one on PATH sets
+/// `zellij_path`, because a mismatched build can speak a different provider protocol.
+pub const DEFAULT_ZELLIJ: &str = "zellij";
 /// How many times in a row the model may call tools before the tools are taken
 /// away and it has to answer from what it has. Without this a model that keeps
 /// re-listing panes bills the user forever.
@@ -38,7 +42,7 @@ pub const DEFAULT_MAX_TOOL_ROUNDS: usize = 50;
 /// How many search results the model gets. A SearxNG page is ~25, and every one
 /// of them is paid for on every subsequent turn of the conversation.
 pub const SEARCH_RESULTS: usize = 8;
-const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_pane_here`/`warp_tab_here` bring a listed pane or tab from another session into this one; there is no tool for the other direction, so a request to send one out is answered by asking hocus in the destination session. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. Past agent work, every session on this machine: `agent_history_search` finds it, `agent_runs` lists runs, `agent_run` reads one - a hit's `run_id` and `revision` read around it. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` is authoritative, so read only the relevant sections. `plugin_write` creates one (its confirmation grants the permissions it asks for); to change one that exists, `plugin_read` then `plugin_edit` - never re-send a whole file you did not just write. `plugin_check` compiles without writing. `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list`/`plugin_read` read the user's plugin folder. Make independent calls together.";
+const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_pane_here`/`warp_tab_here` bring a listed pane or tab from another session into this one; there is no tool for the other direction, so a request to send one out is answered by asking hocus in the destination session. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. Past agent work, every session on this machine: `agent_history_search` finds it, `agent_runs` lists runs, `agent_run` reads one - a hit's `run_id` and `revision` read around it. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` is authoritative, so read only the relevant sections. `plugin_write` creates one (its confirmation grants the permissions it asks for); to change one that exists, `plugin_read` then `plugin_edit` - never re-send a whole file you did not just write. `plugin_check` compiles without writing. `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list`/`plugin_read` read the user's plugin folder. Firecracker VMs: `vm_list` for every VM and its worktree and branch, then `vm_changes`/`vm_sync`/`vm_close` by name. Make independent calls together.";
 /// Sent in planning mode, where the tool set is narrowed to the ones that only
 /// read. Says so explicitly: a model that believes a missing tool is an
 /// oversight spends the turn asking for it back.
@@ -94,6 +98,10 @@ pub struct Config {
     /// order: `~/.dobbs/remote.addr`, then the local daemon's addr file.
     pub dobbs_addr: Option<String>,
     pub dobbs_token: Option<String>,
+    /// The `zellij` binary the VM tools shell out to. Managing a Firecracker VM means
+    /// running the provider, which is a subprocess the CLI owns and a wasm plugin has
+    /// no way to start itself. Defaults to `zellij`, i.e. whatever is on PATH.
+    pub zellij: String,
     /// The *name* of the variable holding the Linear personal API key, and the
     /// key itself if that variable is set.
     ///
@@ -191,6 +199,10 @@ impl Config {
         );
         let dobbs_addr = non_empty(kdl, "dobbs_addr").or_else(|| non_empty(env, "DOBBS_ADDR"));
         let dobbs_token = non_empty(kdl, "dobbs_token").or_else(|| non_empty(env, "DOBBS_TOKEN"));
+        let zellij = expand_home(
+            &non_empty(kdl, "zellij_path").unwrap_or_else(|| DEFAULT_ZELLIJ.to_owned()),
+            env,
+        );
         let linear_api_key_env = non_empty(kdl, "linear_api_key_env")
             .unwrap_or_else(|| linear::DEFAULT_API_KEY_ENV.to_owned());
         // Absent is fine, and deliberately not folded into the `Err` arm below:
@@ -270,6 +282,7 @@ impl Config {
                 dobbs,
                 dobbs_addr,
                 dobbs_token,
+                zellij,
                 linear_api_key_env,
                 linear_api_key,
                 system_prompt,

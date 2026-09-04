@@ -500,6 +500,23 @@ and cannot pass a host `cwd`, because an arbitrary host path has no guest equiva
 Hocus's generic `new_pane` tool instead accepts an explicit `firecracker_vm` when panes should
 deliberately share a named VM.
 
+Hocus manages the VMs it has spawned through four more tools, which shell out to the
+`zellij firecracker` commands above:
+
+- `vm_list` - every VM on the machine, with its state, image, worktree and branch, and any
+  retained disks. Machine-wide rather than session-scoped: a VM another session holds, or one a
+  crashed server left behind, is still a VM the user has running.
+- `vm_changes` - the guest-path count, reading both sides and writing neither.
+- `vm_sync` - the merge, which stops for a confirmation because it writes the host worktree.
+- `vm_close` - the same merge, then it closes the session's panes on the VM before stopping it,
+  so nothing in the guest is being written while the merge reads it. Also confirmed.
+
+The last three take the VM as `vm` and default to this session; a VM `vm_list` showed under
+another session's name is reached by passing `vm_session`. The `zellij` they run is whatever is
+on the server's `PATH`; a development checkout whose `zellij` is not the one on `PATH` sets
+`zellij_path` in the hocus plugin block, since a mismatched build can speak a different provider
+protocol.
+
 Claude hook events use a pane-scoped control sequence on the authenticated SSH terminal. Zellij
 updates the pane agent record and broadcasts the event to plugins. The control sequence does not
 open a host listener. Zellij honours it only on Firecracker panes: a local pane reports through

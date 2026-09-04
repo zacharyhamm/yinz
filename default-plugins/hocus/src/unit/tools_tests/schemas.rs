@@ -458,3 +458,41 @@ fn the_tools_that_act_are_withheld_from_planning() {
         .collect();
     assert!(!listed.contains(&"close_pane".to_owned()));
 }
+
+/// The VM tools name a VM with `vm`, never with `name`.
+///
+/// `name` in this schema is a pane's, a project's and a skill's. A field that means
+/// two things is a field the model fills in wrongly, and the failure would be a tool
+/// call that silently acts on nothing.
+#[test]
+fn the_vm_tools_address_a_vm_by_vm_and_not_by_name() {
+    let specs = specs();
+    let specs = specs.as_array().unwrap();
+    let spec = |name: &str| {
+        specs
+            .iter()
+            .find(|spec| spec["function"]["name"] == name)
+            .unwrap_or_else(|| panic!("no {name} tool"))
+    };
+
+    // The listing takes nothing: it is machine-wide, and there is no VM to name yet.
+    let parameters = &spec("vm_list")["function"]["parameters"];
+    assert_eq!(parameters["properties"], json!({}));
+    assert!(parameters.get("required").is_none());
+
+    for name in ["vm_changes", "vm_sync", "vm_close"] {
+        let parameters = &spec(name)["function"]["parameters"];
+        assert_eq!(parameters["required"], json!(["vm"]), "{name}");
+        assert_eq!(parameters["properties"]["vm"]["type"], "string", "{name}");
+        // Present but optional: the ordinary call names only the VM.
+        assert_eq!(
+            parameters["properties"]["vm_session"]["type"], "string",
+            "{name}"
+        );
+        assert!(
+            parameters["properties"].get("name").is_none(),
+            "{name} advertises `name`, which means something else in every other schema"
+        );
+        assert!(parameters["properties"].get("session").is_none(), "{name}");
+    }
+}

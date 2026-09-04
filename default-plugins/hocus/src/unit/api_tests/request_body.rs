@@ -74,7 +74,7 @@ fn request_body_adds_the_tool_first_policy_when_tools_are_enabled() {
 fn hocus_prompt_contract_keeps_global_routing_rules() {
     assert_eq!(
         TOOL_FIRST_PROMPT,
-        "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_pane_here`/`warp_tab_here` bring a listed pane or tab from another session into this one; there is no tool for the other direction, so a request to send one out is answered by asking hocus in the destination session. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. Past agent work, every session on this machine: `agent_history_search` finds it, `agent_runs` lists runs, `agent_run` reads one - a hit's `run_id` and `revision` read around it. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` is authoritative, so read only the relevant sections. `plugin_write` creates one (its confirmation grants the permissions it asks for); to change one that exists, `plugin_read` then `plugin_edit` - never re-send a whole file you did not just write. `plugin_check` compiles without writing. `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list`/`plugin_read` read the user's plugin folder. Make independent calls together."
+        "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_pane_here`/`warp_tab_here` bring a listed pane or tab from another session into this one; there is no tool for the other direction, so a request to send one out is answered by asking hocus in the destination session. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. Past agent work, every session on this machine: `agent_history_search` finds it, `agent_runs` lists runs, `agent_run` reads one - a hit's `run_id` and `revision` read around it. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` is authoritative, so read only the relevant sections. `plugin_write` creates one (its confirmation grants the permissions it asks for); to change one that exists, `plugin_read` then `plugin_edit` - never re-send a whole file you did not just write. `plugin_check` compiles without writing. `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list`/`plugin_read` read the user's plugin folder. Firecracker VMs: `vm_list` for every VM and its worktree and branch, then `vm_changes`/`vm_sync`/`vm_close` by name. Make independent calls together."
     );
 }
 
@@ -136,7 +136,7 @@ fn request_body_advertises_the_tools_when_they_are_enabled() {
     let mut cfg = test_config();
     cfg.tools = true;
     let body = body_value(&cfg, &[Message::user("hi")]);
-    assert_eq!(body["tools"].as_array().unwrap().len(), 81);
+    assert_eq!(body["tools"].as_array().unwrap().len(), 85);
 }
 
 #[test]
@@ -213,13 +213,24 @@ fn request_body_advertises_registered_extension_tools() {
 /// `firecracker`/`firecracker_image` on `agent_spawn`, and the `project_use` default) consume
 /// ~660 bytes. Shortening duplicated `cwd` and `hooks` descriptions keeps the payload under
 /// the same 33kb ceiling.
+///
+/// Raised to 36kb for the four VM tools, and this raise pays off two debts rather than one.
+/// The payload had already crossed 33kb before them, at 33 384 bytes: this test was failing
+/// on the branch, so the ceiling had stopped measuring anything at all. The four tools cost
+/// 1 400 bytes on top of that, after the discipline - their four descriptions gave back ~110
+/// bytes of what the system prompt's own VM clause already says, and `vm_changes`, `vm_sync`
+/// and `vm_close` share one `vm_target_properties()` block rather than spelling `vm` and
+/// `vm_session` three times. What is left is the floor for four tools that did not exist: one
+/// with an empty schema, three with two shared keys, and four descriptions that have to say
+/// what a sync does to the user's worktree, since nothing else in the payload does. 36kb
+/// leaves ~1.2kb of headroom, the same margin the 26kb raise settled on.
 #[test]
-fn hocus_prompt_contract_keeps_the_tool_payload_under_33_kb() {
+fn hocus_prompt_contract_keeps_the_tool_payload_under_36_kb() {
     let mut cfg = test_config();
     cfg.tools = true;
     let body = request_body(&cfg, &[Message::user("hi")]);
     assert!(
-        body.len() < 33_000,
+        body.len() < 36_000,
         "tool payload grew to {} bytes",
         body.len()
     );
@@ -600,7 +611,7 @@ fn acting_sends_the_body_it_always_did() {
     cfg.tools = true;
     let transcript = [Message::user("hi")];
     let body: serde_json::Value = serde_json::from_slice(&request_body(&cfg, &transcript)).unwrap();
-    assert_eq!(body["tools"].as_array().unwrap().len(), 81);
+    assert_eq!(body["tools"].as_array().unwrap().len(), 85);
     assert!(!body["messages"][0]["content"]
         .as_str()
         .unwrap()

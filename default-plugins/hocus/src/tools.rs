@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 
+use hocus_proto::agents;
 use hocus_proto::launch;
 use hocus_proto::location::Location;
 use hocus_proto::paths;
@@ -20,8 +21,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use zellij_tile::plugin_authoring;
 use zellij_tile::prelude::{
-    FloatingPaneCoordinates, GitCheckout, PaneId, PaneTarget, PercentOrFixed, PermissionType,
-    SessionInfo, WarpPlacement,
+    validate_firecracker_vm_name, FloatingPaneCoordinates, GitCheckout, PaneId, PaneTarget,
+    PercentOrFixed, PermissionType, SessionInfo, WarpPlacement,
 };
 
 use crate::log::truncate_str;
@@ -124,6 +125,10 @@ pub fn needs_confirmation(name: &str) -> bool {
             | "skill_write"
             | "skill_enable"
             | "skill_disable"
+            // Both run the worktree merge, which writes files the user has open. Close
+            // also destroys the VM, and a VM is where an agent's uncommitted work is.
+            | "vm_sync"
+            | "vm_close"
     )
 }
 
@@ -234,6 +239,23 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
         "project_forget" => {
             let name = args.name.as_deref().unwrap_or("a project");
             format!("forgets the project {name}; its todos stay, the project does not")
+        },
+        // Both merges write the user's checkout, so both name it as a write rather
+        // than as a transfer. `.guest` is named because those files are the part the
+        // user has to go and look at afterwards.
+        "vm_sync" => {
+            let vm = args.vm.as_deref().unwrap_or("a VM");
+            format!(
+                "writes {vm}'s work into its host worktree, keeping your copy of anything \
+                 changed on both sides and the VM's beside it as <file>.guest"
+            )
+        },
+        "vm_close" => {
+            let vm = args.vm.as_deref().unwrap_or("a VM");
+            format!(
+                "writes {vm}'s work into its host worktree the same way, then closes its \
+                 panes and destroys the VM; nothing is left to go back to"
+            )
         },
         "slack_post" => {
             let channel = args.channel.as_deref().unwrap_or("a channel");
@@ -576,6 +598,19 @@ fn pane_properties() -> Value {
             "type": "boolean",
             "description": "Pane kind; IDs overlap by kind.",
         },
+    })
+}
+
+/// How the three per-VM tools name one: the VM, and the session that holds it.
+///
+/// `vm` rather than `name`, and `vm_session` rather than `session`, because in this
+/// schema a field name means one thing across every tool - `name` is already a pane's,
+/// a project's and a skill's. The session defaults to this one, so the ordinary case
+/// names only the VM; another session's VM, which `vm_list` shows, needs its own.
+fn vm_target_properties() -> Value {
+    json!({
+        "vm": { "type": "string", "description": "VM name from vm_list." },
+        "vm_session": { "type": "string", "description": "Defaults to this session." },
     })
 }
 
@@ -1770,6 +1805,40 @@ pub fn specs() -> Value {
                 "required": ["name"],
             }),
         ),
+        tool(
+            "vm_list",
+            "Every Firecracker VM here, with its state, image, worktree, branch, and \
+             any retained disks.",
+            json!({ "type": "object", "properties": {} }),
+        ),
+        tool(
+            "vm_changes",
+            "Count guest paths a VM changed since its last sync; writes neither side.",
+            json!({
+                "type": "object",
+                "properties": vm_target_properties(),
+                "required": ["vm"],
+            }),
+        ),
+        tool(
+            "vm_sync",
+            "Merge a running VM's work into its host worktree; a file changed on both \
+             sides keeps the host copy, the guest's beside it as <file>.guest.",
+            json!({
+                "type": "object",
+                "properties": vm_target_properties(),
+                "required": ["vm"],
+            }),
+        ),
+        tool(
+            "vm_close",
+            "Merge back as vm_sync does, then close the VM's panes and destroy it.",
+            json!({
+                "type": "object",
+                "properties": vm_target_properties(),
+                "required": ["vm"],
+            }),
+        ),
     ])
 }
 
@@ -1831,6 +1900,10 @@ pub const READ_ONLY: &[&str] = &[
     "plugin_log",
     "skill_list",
     "skill_read",
+    // What VMs there are, and what one of them is holding. `vm_sync` and `vm_close`
+    // are deliberately absent: both write the user's worktree.
+    "vm_list",
+    "vm_changes",
 ];
 
 /// The `tools` array as planning mode sends it: [`specs`] minus everything that
@@ -2067,6 +2140,10 @@ pub struct Args {
     pub firecracker: bool,
     pub firecracker_vm: Option<String>,
     pub firecracker_image: Option<String>,
+    // The VM tools. Not `name`/`session`: both already mean something else here, and a
+    // field that means two things is a field the model will fill in wrongly.
+    pub vm: Option<String>,
+    pub vm_session: Option<String>,
     pub command: Option<Value>,
     pub args: Vec<String>,
     pub floating: bool,
@@ -2581,6 +2658,85 @@ pub const PROJECT_READ_TOOLS: [&str; 6] = [
     "git_show",
     "github_read",
 ];
+
+/// The tools that manage Firecracker VMs, all four by shelling out to the `zellij` CLI.
+///
+/// Intercepted in `run_head` for the same reason the Slack tools are: managing a VM means
+/// running the provider, a subprocess with a JSON protocol on its stdin, and a wasm plugin
+/// can neither start one nor reach the state directory it keeps. The CLI already does the
+/// whole job - it resolves the same `firecracker_provider` from the same config, because
+/// the plugin host runs commands with the server's own environment.
+pub const VM_TOOLS: [&str; 4] = ["vm_list", "vm_changes", "vm_sync", "vm_close"];
+
+/// Context key carrying the panes `vm_close` closed, comma-separated, from the call to
+/// its result. Round-trips through the host because by the time the stop answers, those
+/// panes are gone from the snapshot and counting them again would answer zero.
+pub const VM_CLOSED_PANES_CONTEXT: &str = "vm_closed_panes";
+
+/// The argv for one VM tool, or the reason it will not run.
+///
+/// Pure, so the argv every tool sends is testable without a host. The VM name is checked
+/// here rather than left to the CLI: a name Zellij would refuse is a mistake the model can
+/// fix from the message, and it should not cost a process to find out.
+pub fn vm_argv(
+    name: &str,
+    args: &Args,
+    zellij: &str,
+    session: &str,
+) -> Result<Vec<String>, String> {
+    let mut argv = vec![zellij.to_owned(), "firecracker".to_owned()];
+    if name == "vm_list" {
+        // Machine-wide on purpose: the question "what VMs are there" is answered
+        // wrongly by this session's alone. A VM another session holds is still one the
+        // user has running, and one left by a crashed server belongs to no session at
+        // all. `--session` would hide both.
+        argv.push("list".to_owned());
+        argv.push("--json".to_owned());
+        return Ok(argv);
+    }
+    let vm = args
+        .vm
+        .as_deref()
+        .map(str::trim)
+        .filter(|vm| !vm.is_empty())
+        .ok_or_else(|| "vm is required; call vm_list for the names".to_owned())?;
+    validate_firecracker_vm_name(vm)?;
+    argv.push(
+        match name {
+            "vm_changes" => "changes",
+            "vm_sync" => "sync",
+            // The CLI spells it `stop`; the tool is `vm_close` because it closes the
+            // panes too, which `zellij firecracker stop` does not.
+            "vm_close" => "stop",
+            other => return Err(format!("no such tool: {other}")),
+        }
+        .to_owned(),
+    );
+    argv.push(vm.to_owned());
+    argv.push("--session".to_owned());
+    argv.push(session.to_owned());
+    Ok(argv)
+}
+
+/// The panes of this session running in `vm`, in id order.
+///
+/// A Firecracker pane's `host` is `firecracker:<vm>` - the display form `PaneTarget`
+/// round-trips through - so the manifest already says which VM every pane is in and
+/// nothing new has to be carried to find out. Pure, so the selection is testable; the
+/// closing itself is a host call.
+pub fn firecracker_panes(vm: &str, panes: &[agents::AgentPane]) -> Vec<u32> {
+    let mut ids: Vec<u32> = panes
+        .iter()
+        .filter(|pane| {
+            PaneTarget::parse_display(pane.host.as_deref())
+                .firecracker_vm()
+                .is_some_and(|running_in| running_in == vm)
+        })
+        .map(|pane| pane.pane_id)
+        .collect();
+    ids.sort_unstable();
+    ids
+}
 
 pub const SKILL_TOOLS: [&str; 5] = [
     "skill_list",
@@ -3590,6 +3746,23 @@ mod host {
     /// model has no use for — viewport geometry, tab and pane history, plugin
     /// configuration — and every field of it would be paid for in tokens on
     /// every subsequent turn of the conversation.
+    /// This session's own name, asked of the host.
+    ///
+    /// `State::zellij_session_name` is filled from `hocus-agentd`'s poll reply, which is
+    /// the right source while there is a daemon - it is already holding the name, and
+    /// every per-pane row hocus writes is keyed by it. But the daemon is optional, and a
+    /// session that loads hocus without it would leave every per-VM tool refusing
+    /// forever. Managing a VM has nothing to do with agents, so it asks the host
+    /// instead when the snapshot has not named the session yet.
+    pub fn current_session_name() -> Option<String> {
+        let snapshot = get_session_list().ok()?;
+        snapshot
+            .live_sessions
+            .iter()
+            .find(|session| session.is_current_session)
+            .map(|session| session.name.clone())
+    }
+
     fn list_session() -> String {
         let snapshot = match get_session_list() {
             Ok(snapshot) => snapshot,
@@ -4266,9 +4439,9 @@ mod host {
 
 #[cfg(target_arch = "wasm32")]
 pub use host::{
-    dispatch, grant_permissions, new_pane_with_context, observe_plugin, plugin_fs_exists,
-    plugin_fs_list, plugin_fs_read, plugin_fs_write, plugin_log_tail, reload_plugin,
-    report_pane_agent, spawn_in_checkout,
+    current_session_name, dispatch, grant_permissions, new_pane_with_context, observe_plugin,
+    plugin_fs_exists, plugin_fs_list, plugin_fs_read, plugin_fs_write, plugin_log_tail,
+    reload_plugin, report_pane_agent, spawn_in_checkout,
 };
 
 /// What a `plugin_reload` found when it went to look: the plugin's pane, and its text.
@@ -4351,6 +4524,13 @@ pub fn dispatch(_call: &ToolCall) -> String {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn spawn_in_checkout(_args: &Args, _source: Option<String>) -> String {
     "tools are unavailable outside zellij".to_owned()
+}
+
+/// Off wasm there is no host to ask, so the snapshot's name is the only one there is.
+/// The loop tests set it directly, which is what makes both branches reachable there.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn current_session_name() -> Option<String> {
+    None
 }
 
 #[cfg(not(target_arch = "wasm32"))]
