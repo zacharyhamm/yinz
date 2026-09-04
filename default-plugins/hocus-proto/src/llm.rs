@@ -298,7 +298,7 @@ impl Endpoint {
 /// caller has to tell them apart. "No API key" means *I have no model*, and a pane whose
 /// agent reports for itself can still be summarised from its own words. `summaries
 /// "false"` means *do not do this*, and that has to switch off the local fallback too —
-/// see `on_turn_end_with` in `hocus-agentd`.
+/// see `send_run_summary` in `hocus-agentd`.
 pub fn summaries_enabled(kdl: &BTreeMap<String, String>) -> bool {
     !non_empty(kdl, "summaries").is_some_and(|value| value.eq_ignore_ascii_case("false"))
 }

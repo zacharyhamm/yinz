@@ -2,13 +2,13 @@
 
 `hocus-agentd` normally works out what an agent pane is doing by *looking at it*: every
 five seconds it reads the pane's scrollback, hashes the word sequence, and calls the
-pane busy if the hash moved. Whether the agent is *blocked on the user* is not observed
-at all — after three unchanged polls (~15s) the daemon sends 120 lines of pane tail to a
-model and asks. The same tail, and the same wait, is what an idle summary is made of.
+pane busy if the hash moved. That is all it can tell — whether the agent is *blocked on
+the user* is not observed at all, and neither is what it has been doing.
 
-That is the only thing that works for an agent which says nothing about itself, and it
-is a guess bought with fifteen seconds and a round trip. Claude Code and Codex say. Install
-their hooks and a `claude` or a `codex` pane reports its own state instead:
+That is the only thing that works for an agent which says nothing about itself, and it is a
+guess made from a picture. Claude Code and Codex say. Install their hooks and a `claude` or a
+`codex` pane reports its own state instead — and, when its session ends, gets one summary of
+what the whole session was:
 
 ```sh
 zellij hocus hooks install                  # both, user-level
@@ -104,7 +104,7 @@ and adoption keeps every entry, the summary and the original start time.
 record is deliberately smaller than an event: the agent's own final message on a `Stop`, the
 prompt behind it on a `UserPromptSubmit`, the permission mode on every one of them — none of
 those belong on a manifest that every plugin is handed on every pane update, and all three are
-what an idle summary and a well-judged interruption are made of. So one process spawn does
+what a run's history and a well-judged interruption are made of. So one process spawn does
 both, and a plugin that wants more than a record holds subscribes to the pipe. It is a
 broadcast without a pipe id, so nothing waits to be unblocked and a hook cannot stall the turn
 it fired in. The `--args` name the pane it fired in and the agent it came from: the payload is
@@ -152,7 +152,7 @@ safe to run.
 | Event | Agent | State | Why |
 |---|---|---|---|
 | `SessionStart` | both | idle | Starts the feed, and proves the pane runs an agent |
-| `UserPromptSubmit` | both | busy | Carries `prompt`: names the pane at once, and is kept for the summary at the end of the turn |
+| `UserPromptSubmit` | both | busy | Carries `prompt`: names the pane at once, and is kept for the summary made when the session ends |
 | `PreToolUse` | both | busy | Names the tool: `busy · Bash cargo` |
 | `PostToolUse` | both | busy | Clears the tool name |
 | `PostToolUseFailure` | claude | busy | A tool that failed is still the agent working |
@@ -164,10 +164,10 @@ safe to run.
 | `Notification` | claude | **waiting** | Backstop; see below |
 | `SubagentStart` / `SubagentStop` | claude | busy | A worker under an agent that is working anyway |
 | `PreCompact` / `PostCompact` | claude | busy | Work the user did not ask for and is waiting on |
-| `Stop` | both | idle | Every turn end. **Carries `last_assistant_message`** |
+| `Stop` | both | idle | Every turn end. **Carries `last_assistant_message`**, kept on the run's timeline |
 | `StopFailure` | claude | idle | The turn died on an API error — the only thing that says so |
 | `Interrupt` | codex | idle | A turn the user cancelled, which ends it just as flatly |
-| `SessionEnd` | both | — | Clears the record, and ends the feed. `agent_exit` still fires |
+| `SessionEnd` | both | — | Clears the record, ends the feed, closes the run and buys its one summary. `agent_exit` still fires |
 
 The reading is by event and tool name, never by agent: one function answers for both, because
 the record `agent-report` writes and the feed hocus draws are two different readers of it, and
@@ -238,44 +238,52 @@ Either way a pane with a feed is read off it and nothing else:
   renamed to it there and then — one line, whitespace collapsed, cut to
   `agent::WAITING_DETAIL_CHARS`. Before this a pane was named only when the turn *ended*,
   from the model's summary title, so for the whole time an agent was working the tab bar
-  said `claude`. The summary title replaces the prompt at the end of the turn, when there
-  is something better to say about it. Both renames keep the same guard,
+  said `claude`. A summary somebody asks for replaces it with its title, when there is
+  something better to say about it. Both renames keep the same guard,
   `title_is_ours_to_take`: a pane whose kind is anchored only in its title is left alone,
   because writing over that title would un-detect the pane — a hook-connected pane is
   anchored in its record instead, which `classify` reads first.
 
-### The summary is made from what the agent said
+### The summary is made once, when the session ends
 
-A `Stop` carries `last_assistant_message` — Claude Code's own description of the field
-is "avoids the need to read and parse the transcript file" — so for a pane with a feed
-the idle summary no longer comes from the screen at all:
+Nothing is summarised on a schedule. The daemon buys exactly one summary of its own accord,
+for a pane whose agent reports for itself, when that agent's `SessionEnd` says the session is
+over:
 
-- **The trigger is the `Stop`.** No settle wait, no `worth_summarizing` on screen text,
-  no baseline comparison. A `Stop` fires once per turn, so it *is* the edge, and it
-  cannot ask twice about one turn. There is no cooldown either: three short questions in
-  a minute are owed three answers.
-- **The input is the run so far.** The request carries the latest `UserPromptSubmit`, the
-  prior accepted summary, and the meaningful hook events since it. That keeps each request
-  bounded while a long session's summary rolls forward at every turn end.
-- **`awaiting` is not asked for.** The feed already knows, so asking would only create a
-  disagreement to resolve.
-- **The screen stops asking about these panes.** Two answers per turn, one of them a
-  guess, and whichever landed last would win.
-- **Staleness is the opposite rule.** A screen summary is void the moment the screen
-  moves. A turn summary is void when the session is replaced, or when any later work
-  begins — a `cargo build` printing throughout the round trip does not make the sentence
-  about it wrong, but the next `busy` event does, and cancels the request where it
-  arrives rather than testing the phase when the answer lands. A short turn can start
-  *and finish* inside one round trip, and checking only the phase would find that pane
-  idle again and take the stale answer for a current one.
-- **With no API key it still works.** `local_summary` takes the message's opening
-  sentences, drops fenced blocks and markdown markers, and gives no title — so the pane
-  keeps the name its prompt gave it. Before the feed there was nothing to fall back *to*: a screen tail is
-  not a summary of anything.
-- **A `Stop` carrying no final message buys nothing, and costs nothing.** The turn still
-  lands as `idle` the moment it ends; there is simply no sentence to make one out of. An
-  `Interrupt` is the same, and deliberately makes no request at all: a turn the user
-  cancelled has nothing to describe.
+- **The trigger is the `SessionEnd`.** No settle wait, no `worth_summarizing` on screen text,
+  no cooldown, no baseline comparison — and no per-turn summary either. A turn ending is a
+  fragment of a session, and a sentence about one fragment is not what anybody reads. A
+  `SessionEnd` fires once, so it *is* the edge, and it cannot ask twice about one session.
+- **The input is the whole run.** The request carries every prompt, plan, question and result
+  the run's timeline kept, and none of the tool calls — `run_delta`, cut to
+  `SUMMARY_LINES`/`SUMMARY_CHARS`. The run's own prior summary is left out on purpose: the
+  entries beside it are what that summary was made from, and including it would ask the model
+  to weigh its own paraphrase against its source.
+- **It goes down the *run* lane, not the pane lane.** By the time this fires the pane is a
+  shell prompt where an agent was, so there is nothing to rename and nothing to toast. The
+  request is correlated by run id (`summarize_run_now_with` → `finish_run_summary`) and the
+  answer is written to the run row, which is where the agents panel draws it from. The run
+  the `SessionEnd` just closed is sitting in `dirty_runs`, which `load_run` reads first, so
+  no store round trip is needed to build the request.
+- **A session with an empty timeline buys nothing.** Every hook it saw was a tool call or a
+  lifecycle event; asking a model to describe nothing would cost a round trip to be told so.
+- **`summaries "false"` switches it off**, as it switches off the key.
+
+### Nothing else is summarised unless somebody asks
+
+The screen-diff heuristic keeps running, but only for the idle *clock*: `activity` is what
+`status_cell` counts minutes with, so a hook-fed pane's `idle 3m` reads the same as everyone
+else's. It never buys a request.
+
+That includes an agent with no hooks at all. Such a pane gets no summary and no
+"blocked on the user" marker on its own — the marker was only ever a model's guess made from
+120 lines of terminal, and it is not worth a request per settled pane per minute. Pressing the
+summarise key still buys one; see [A summary you asked for](#a-summary-you-asked-for).
+
+With no API key a hook-fed pane still has an honest answer: `local_summary` takes the agent's
+last message, drops fenced blocks and markdown markers, keeps the opening sentences and gives
+no title, so the pane keeps the name its prompt gave it. A screen-only pane has none — a screen
+tail is not a summary of anything — and gets nothing rather than an invention.
 
 ### The run history is retained
 
@@ -286,14 +294,13 @@ The same hook stream also builds one durable run per agent `session_id`. It stor
 - explicit questions from `AskUserQuestion` and `request_user_input`.
 
 Tool calls, permissions, errors, subagent boundaries and routine lifecycle events are omitted.
-Final results are retained as hidden summarization input while a run is active, so a failed or
-superseded request can carry them into the next summary. If the run is archived first, its
+Final results are retained as hidden summarization input while a run is active, so every turn's
+result reaches the summary made when the session ends. If the run is archived first, its
 unsummarized results are drawn as the durable fallback; accepted results remain hidden. Tool
 output is never stored. The retained entries stay in `shared:hocus` for the Zellij session.
 Summarization advances `summarized_revision` but does not replace or delete entries; a summary
-somebody asked for is also kept as a `summary` entry of its own, which is never shown back to
-the model. Legacy hook
-scripts without a session ID get a pane-and-start-time fallback ID.
+is also kept as a `summary` entry of its own, which is never shown back to the model. Legacy
+hook scripts without a session ID get a pane-and-start-time fallback ID.
 
 **An entry keeps the whole of what the event said.** The run's metadata is one `agent_run` row,
 but its timeline is one `agent_run_entry` row per event — so an entry costs a small insert
@@ -315,9 +322,8 @@ The agents panel is two permanent halves with a rule between them: the list on t
 events history of whatever the cursor is on below. The list shows active runs on their live
 agent rows and completed runs under an `archive` header, newest first. It loads 50 archive rows
 at a time; select `load older runs…` and press Enter for the next page. Selecting a row fetches
-that run's full history into the bottom half; the rolling summary is the newest row of that
-timeline rather than a block above it, and the rule names the run and says how far it is wound
-back.
+that run's full history into the bottom half; a summary is the newest row of that timeline
+rather than a block above it, and the rule names the run and says how far it is wound back.
 
 `Tab` moves the keyboard between the halves, and so does a click — the rule is where the focus
 shows. `j`/`k` do whatever the half they are in does with a line: walk the selection, or scroll
@@ -331,31 +337,26 @@ below.
 
 ### A summary you asked for
 
-`s` in the panel describes the selected row now. It works on a live agent and on an archived
-run, and the answer is filed on the timeline where it was asked for as well as replacing the
-rolling sentence.
+`s` in the panel describes the selected row now, and it is the only thing that summarises an
+agent while its session is still running. It works on a live agent and on an archived run, and
+the answer is filed on the timeline where it was asked for as well as becoming the row's
+summary.
 
-- **It skips the guards that exist to stop the daemon asking too often** — the cooldown, the
-  screen baseline, the settle count. Those are three ways of asking "is this worth a request",
-  and a person pressing a key has answered it. What survives is the guard that is not about
-  the budget: one request per row at a time, since a reply is correlated strictly and a second
-  request would orphan the first.
-- **It reads the whole run, not only what is new.** The automatic summary rolls one sentence
-  forward at each turn end, so it is made from what the last one has not already been shown. A
-  keypress is a different question — "what has this agent been doing" — and answering it with
-  the delta would leave a run whose entries were all absorbed answering with silence, which is
-  indistinguishable from the key not working.
-- **Nothing makes the answer stale.** A screen summary is void the moment the screen moves and
-  a turn summary the moment the agent starts something else, because nobody asked for either.
-  Somebody asked for this one and is still waiting for it, so it lands whatever the pane has
-  done in the meantime.
+- **There is nothing to get past.** Nothing is bought on a schedule any more, so there is no
+  cooldown, screen baseline or settle count standing between the key and a request. The one
+  guard that survives is not about the budget: one request per row at a time, since a reply is
+  correlated strictly and a second request would orphan the first.
+- **It reads the whole run, not only what is new.** A run whose entries an earlier summary
+  already absorbed would otherwise answer with silence, which is indistinguishable from the
+  key not working.
+- **Nothing makes the answer stale.** Somebody asked for it and is still waiting, so it lands
+  whatever the pane has done in the meantime.
 - **It takes the path the pane already has.** A hook-fed pane is described from its run; a
   screen-only one from a fresh reading of its pane, refused if the pane is scrolled back off
   its live tail or cannot be read. Asking a hook-fed pane's screen would reintroduce the
   second, worse answer the feed was brought in to retire.
-- **Only manual summaries are filed on the timeline.** An automatic one would grow a long run
-  a line per turn, and the newest of them is drawn as the timeline's newest row already. Two presses that produce
-  the same sentence file it once.
+- **The answer is filed on the timeline**, because *when* somebody asked is half of what it
+  says. Two presses that produce the same sentence file it once.
 - **A refusal is silent**, and there are several: `summaries "false"`, a pane that has closed
   or gone back to its shell, a run with nothing retained, a screen-only pane with no API key
   (there is no honest local fallback — `local_summary` shortens prose the agent wrote, and a
@@ -371,9 +372,10 @@ The `!` in a sidebar was only ever half the answer; the sidebar is very often no
 being looked at. On the edge into a wait the daemon toasts, over whatever pane the user
 is actually in, and the toast focuses the waiting pane when clicked:
 
-A screen-only agent can still have its quiet pane summarised as awaiting input, and that
+A summary somebody asked for can still come back marking a pane as awaiting input, and that
 guess still drives its `!` marker and `awaiting_confirmation`. It does not raise a toast:
-only an explicit hook event is reliable enough to interrupt the user over a wait.
+only an explicit hook event is reliable enough to interrupt the user over a wait. Since
+nothing summarises a screen unasked any more, an agent with no hooks raises no `!` of its own.
 
 ```
 agent waiting · 7 · claude◆
@@ -475,7 +477,7 @@ added. `zellij hocus hooks status` says when the installed script is old.
 | What a row draws | `default-plugins/hocus-proto/src/agents.rs` (`HookFeed::from_agent`, `status_cell`, `waiting_marker`, `kind_cell`, `HOOK_MARKER`) |
 | What a wait says, and the summary | same (`waiting_toast`, `turn_summary_request_body`, `local_summary`) |
 | Run types, reduction and rendering | same (`AgentRun`, `run_entry`, `run_history`, `rows::run_mutations`, `rows::hydrate_entries`) |
-| Receiving the broadcast, persisting, publishing, toasting | `default-plugins/hocus-agentd/src/main.rs` (`on_hook_with`, `record_run_event`, `on_turn_end_with`, `finish_local_summary_with`) |
+| Receiving the broadcast, persisting, publishing, toasting | `default-plugins/hocus-agentd/src/main.rs` (`on_hook_with`, `record_run_event`, `summarize_run_now_with`, `finish_local_summary_with`) |
 | Summaries somebody asked for | `default-plugins/hocus-agentd/src/main.rs` (`summarize_pane_now_with`, `summarize_run_now_with`, `finish_run_summary`, `Origin::Manual`, `Span`), `default-plugins/hocus-proto/src/agents.rs` (`push_summary_entry`, `RunEntryKind::Summary`), `default-plugins/hocus-agents/src/main.rs` (`request_summary`) |
 | Archive paging and selection | `default-plugins/hocus/src/transitions.rs`, `default-plugins/hocus-agents/src/main.rs` |
 

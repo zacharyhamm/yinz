@@ -9,9 +9,7 @@ mod poll;
 
 use hocus_proto::llm::Endpoint;
 use hocus_proto::location::Location;
-use hocus_proto::panes::{
-    focused_pane, focused_plugin_pane, manifest_pane_ids, pane_geometry, terminal_panes,
-};
+use hocus_proto::panes::{focused_pane, focused_plugin_pane, manifest_pane_ids, terminal_panes};
 use hocus_proto::store::{self, Backend};
 use hocus_proto::wire::{self, PollReply, PollRequest};
 use hocus_proto::{agents, projects};
@@ -64,49 +62,6 @@ const HOCUS_ALIAS: &str = "hocus";
 /// ask again. Twelve ticks is a minute — far longer than any answer worth waiting for, and
 /// short enough that a dropped result does not cost the pane its summaries for the session.
 const SUMMARY_TICKS: u32 = 12;
-
-/// How many consecutive unchanged polls a pane must hold before it is summarised — three
-/// ticks, about fifteen seconds.
-///
-/// The busy→idle edge is crossed by any pause, including the one-poll gaps inside a single
-/// agent turn while a tool runs, and each crossing would buy a request describing a screen
-/// the agent is about to leave. Waiting for the count to reach three spends the request on
-/// the screen the agent settles on instead: the counter resets to zero on any new output,
-/// so a burst of short pauses costs nothing and only the last one is paid for.
-const SUMMARY_SETTLE_POLLS: u32 = 3;
-
-/// How many heartbeats a pane waits after a summary request before it may make another —
-/// twelve ticks, a minute.
-///
-/// The settle window says a screen has stopped moving; it cannot say the agent has stopped
-/// working, because a compile or a long tool call holds a screen still just as well as a
-/// finished turn does, and each of those can materially change the screen, so the summary
-/// baseline does not catch them either. This is the ceiling that does not depend on telling
-/// those apart: one request per pane per minute, however the screen churns.
-///
-/// Equal to `SUMMARY_TICKS` on purpose: the two windows expire within a tick of each
-/// other, so a dropped reply costs the pane about a minute and then lets it ask again,
-/// rather than either guard outliving the other and holding the pane silent for longer.
-const SUMMARY_COOLDOWN_TICKS: u32 = 12;
-
-/// How much of the last summarised pane tail must turn over before another summary is
-/// useful. Terminal output is line-oriented, and comparing its lines avoids paying the
-/// quadratic cost of edit distance for every settled pane.
-const SUMMARY_CHANGE_FACTOR: usize = 5;
-
-/// How many heartbeats a pane is left alone after its pty was resized, so a repaint the
-/// resize itself provoked cannot be mistaken for a finished turn.
-///
-/// Resizing a pane, resizing the terminal, and attaching or detaching a client all resize
-/// the pty, and the SIGWINCH that follows makes an agent redraw itself: real output, arriving
-/// for a reason that has nothing to do with the agent's work. The word-wise fingerprint
-/// already hides a plain rewrap, but a TUI that redraws differently at a new width would
-/// still cross an edge, so the edge is consumed outright for this window.
-///
-/// Two ticks longer than the settle window rather than one: the poll that first sees the
-/// repaint spends a tick of the window before the stillness it starts is counted, so a
-/// shorter window would lapse on the very poll the edge lands on.
-const GEOMETRY_GRACE_TICKS: u32 = SUMMARY_SETTLE_POLLS + 2;
 
 /// Context keys correlating a summary's `WebRequestResult` back to the pane that asked.
 /// The same scheme the git probes use, for the same reason: results arrive on one event
@@ -232,6 +187,14 @@ struct State {
     /// Keyed like `dirty_runs` and drained with it. A run that is in both is guarded, because
     /// once its pane is gone nothing here can add to it.
     released_runs: BTreeSet<String>,
+    /// Runs that have ended since the last drain and are owed the one summary the daemon buys
+    /// of its own accord. Filled by `finish_run_as`, emptied by `drain_finished_runs`.
+    ///
+    /// A queue rather than a call at the close, because a run closes deep inside passes that
+    /// hold `self` — `record_run_event`, `rebuild_panes`, `repair_commands_with` — and the ask
+    /// reaches the host. Queuing puts every close on the same footing and leaves one place
+    /// that talks to the network.
+    finished_runs: Vec<String>,
     /// The newest revision of each run whose entry rows the store already holds.
     ///
     /// A run's timeline is stored one row per entry, and only the entries above this mark are
@@ -276,193 +239,81 @@ struct State {
     suppressed_waits: BTreeSet<u32>,
     /// What the user last asked each hook-fed pane for, from its `UserPromptSubmit`.
     ///
-    /// Kept so the summary made at the end of a turn can say what the turn was *for*.
+    /// Kept so a summary can say what the run was *for*.
     /// Only a pane that reports for itself has one: nothing else ever sees the prompt.
     prompts: BTreeMap<u32, String>,
-    /// The pane tail each successful summary described. Small changes accumulate against
-    /// this baseline until at least a fifth of its lines have turned over.
-    summary_baselines: BTreeMap<u32, String>,
-    /// Panes with a summary request in flight. One at a time per pane, so a flurry of
-    /// idle edges cannot fan out into a flurry of requests.
+    /// Panes with a summary request in flight. One at a time per pane, so a key held down
+    /// cannot fan out into a flurry of requests.
     summary_requests: BTreeMap<u32, InFlight>,
-    /// The same for archived runs, keyed by run id. Only a manual ask ever puts one here:
-    /// nothing about a run that has ended moves on its own, so there is no edge to notice.
+    /// The same for archived runs, keyed by run id — the lane a `SessionEnd` and a manual
+    /// ask about an archived row both take.
     ///
     /// Separate from `summary_requests` because the key is the whole difference: a run that
     /// has ended has no pane, and the pane it *had* may since have been given to another
     /// agent. Keying both by pane id would let a summary of last week's run land on whoever
     /// holds that number now.
     run_summary_requests: BTreeMap<String, InFlight>,
-    /// Heartbeats left before each pane may ask again, counted down by every poll.
-    /// An absent pane is free to ask — see `SUMMARY_COOLDOWN_TICKS`.
-    summary_cooldown: BTreeMap<u32, u32>,
     summary_seq: u64,
-    /// The pty size each pane was last seen at, so a change can be noticed. See
-    /// `GEOMETRY_GRACE_TICKS`.
-    geometry: BTreeMap<u32, (usize, usize)>,
-    /// Heartbeats left in which a pane's settling is consumed silently, counted down by
-    /// every poll. An absent pane is in no grace window.
-    geometry_grace: BTreeMap<u32, u32>,
-    /// Where each pane is in the work cycle. The ask hangs off the transition into
-    /// `Waiting`, not off the pane being settled — see `Phase`.
-    phase: BTreeMap<u32, Phase>,
     /// How long one poll interval is, in milliseconds, with slack: how recently a pane must
     /// have written to its pty for this poll's picture to be explained by output. Taken from
     /// the timer's own reported elapsed time because plugin timers drift.
     poll_window_ms: u64,
 }
 
-/// Where a pane is in one cycle of work.
-///
-/// The point of the phase is that a summary hangs off a *transition*, not off a pane
-/// being settled: a pane that has been sitting still for an hour is as settled as one that
-/// stopped a moment ago, and only the second has anything new to say.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Phase {
-    /// The pane is showing new words — the agent is doing something.
-    Working,
-    /// The pane has stopped. `owed` is whether this stop still has a summary coming: true
-    /// from the moment it settles until a request goes out, false once one has (or if the
-    /// stop landed inside a grace window, where the stillness is not the agent's).
-    ///
-    /// `owed` is what separates *deferring* an ask from *suppressing* one. The cooldown and
-    /// the in-flight guard defer: the pane keeps asking on later polls until one gets
-    /// through, so a settling that arrives a few seconds into a cooldown is not lost. A
-    /// grace window suppresses: the ask is dropped and never retried, because there was no
-    /// work behind it.
-    Waiting { owed: bool },
-}
-
 /// A summary request that has gone out and not yet come back.
+///
+/// Every one of these is a request somebody pressed a key for — the daemon's own summary is
+/// bought on `SessionEnd` and goes down the run lane. That is why there is no staleness rule
+/// here: the two that used to exist, a screen hash and a session id, were both about
+/// discarding an answer nobody had asked for, and discarding one somebody is waiting for
+/// because the pane scrolled in the meantime would be the bug rather than the safeguard.
 struct InFlight {
     id: u64,
-    /// The pane hash the request was made from, so the answer is stamped with the screen
-    /// it actually describes rather than with whatever the pane shows when it lands.
-    ///
-    /// Zero for a request made from a hook feed, which describes no screen — see
-    /// [`Origin`], which is what decides whether this is read at all.
+    /// The pane hash the request was made from, so the answer is stamped with the screen it
+    /// describes. Zero for a request made from a hook feed or a run's history, neither of
+    /// which describes a screen.
     hash: u64,
-    /// Which of the two things asked for this, and what would make its answer stale.
-    origin: Origin,
     /// Heartbeats this has been outstanding. A `WebRequestResult` that never arrives -
     /// a dropped event, a host that gave up - would otherwise leave the pane looking
     /// permanently mid-request and never summarised again for the life of the session.
     ticks: u32,
 }
 
-/// What a summary request was made from, and so what makes its answer stale.
+/// What to ask a model about a run: the whole of it, prompts included.
 ///
-/// An enum rather than a pair of nullable fields because the two staleness rules are
-/// opposites, and a nullable field would let a reader apply the wrong one. A screen
-/// summary describes a picture and is void the moment the picture changes. A turn
-/// summary describes something the agent *said*, which stays true however much the
-/// terminal has scrolled since — a `cargo build` printing for the whole of the round
-/// trip does not make the sentence about it wrong.
-enum Origin {
-    /// Made by reading the pane. The exact tail sent is kept, promoted to the pane's
-    /// baseline only if the response succeeds while this screen is still current.
-    Screen { tail: String },
-    /// Made from a `Stop`. Void if the session was replaced, or if the agent started
-    /// working again — a description of a finished turn is not worth drawing over an
-    /// agent that has a new one under way.
-    Turn { session_id: String },
-    /// Asked for by a person, and so never void.
-    ///
-    /// The two rules above exist because nobody asked for those answers: an unrequested
-    /// sentence describing a screen that has moved on is worse than no sentence, so the
-    /// daemon throws it away rather than draw it. Here somebody did ask, and discarding the
-    /// answer they are waiting for because the pane scrolled in the meantime would be the
-    /// bug rather than the safeguard — they would press the key again and get the same
-    /// silence.
-    ///
-    /// `tail` is the screen the request was made from, on a manual ask about a pane with no
-    /// hook feed, and `None` for one made from a run's history. It is promoted to the pane's
-    /// baseline on success exactly as a [`Origin::Screen`] one is, so an answer bought here
-    /// still spares the automatic path from asking about the same screen a moment later.
-    Manual { tail: Option<String> },
-}
-
-/// Whether enough of the last successful summary's tail has turned over to make another one
-/// useful. Words are a multiset: scrolling one line preserves every word still on screen, and
-/// repeated output is counted rather than collapsed.
-///
-/// Words rather than lines because a pane rewrapped to a new width holds exactly the words it
-/// held before: a line-wise comparison read every resize as a screen of new work.
-fn summary_materially_changed(previous: &str, current: &str) -> bool {
-    agents::changed_materially(previous, current, SUMMARY_CHANGE_FACTOR)
-}
-
-/// Which part of a run a request is made from.
-///
-/// The two summaries answer different questions, and the difference is not a knob: it falls
-/// out of who asked. Nobody asked for the automatic one, so it may only cost what the turn
-/// that triggered it is worth. Somebody did ask for the other, and what they asked is "what
-/// is this agent doing" — a question about the run, not about its last few minutes.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Span {
-    /// Everything the last accepted summary has not already been shown, prefixed with that
-    /// summary so the sentence rolls forward rather than restarting. What a `Stop` asks
-    /// about: one turn's worth of new material, however long the session has run.
-    SinceLastSummary,
-    /// The whole run, prompts included and the prior summary left out. What a summary
-    /// somebody asked for is made from.
-    ///
-    /// Two reasons, and the second is the load-bearing one. It is the better answer — they
-    /// are looking at a row and want to know what it has been doing, which the accumulated
-    /// paraphrase answers less well than the record does. And it is the only one that
-    /// *always* has something to say: a run whose every entry the last summary already
-    /// absorbed would otherwise answer a keypress with silence, which is indistinguishable
-    /// from the key not working.
-    Whole,
-}
-
-/// What to ask a model about a run.
-fn run_delta(run: &agents::AgentRun, fallback: Option<&str>, span: Span) -> Option<String> {
-    let whole = span == Span::Whole;
-    let fresh = |entry: &agents::RunEntry| whole || entry.revision > run.summarized_revision;
-    let has_result = run
-        .entries
-        .iter()
-        .any(|entry| fresh(entry) && entry.kind == agents::RunEntryKind::Result);
-    let mut delta = run
+/// The whole run rather than a delta since the last summary, because both remaining askers
+/// want the same thing. A `SessionEnd` is describing a session that is over, and a person
+/// pressing the key is looking at a row and asking what it has been doing — a question the
+/// record answers better than an accumulated paraphrase does. `None` for a run with no
+/// retained entry at all: every hook it saw was a tool call or a lifecycle event, and there
+/// is nothing to describe.
+fn run_delta(run: &agents::AgentRun) -> Option<String> {
+    let delta = run
         .entries
         .iter()
         .filter(|entry| {
-            fresh(entry)
-                && (matches!(
-                    entry.kind,
-                    agents::RunEntryKind::Plan
-                        | agents::RunEntryKind::Question
-                        | agents::RunEntryKind::Result // The prompts are what turn a list of steps back into a session, and
-                                                       // they are worth their room only when the whole run is being read: the
-                                                       // rolling summary has the newest of them as its own request field.
-                ) || (whole && entry.kind == agents::RunEntryKind::Prompt))
+            matches!(
+                entry.kind,
+                agents::RunEntryKind::Plan
+                    | agents::RunEntryKind::Question
+                    | agents::RunEntryKind::Result
+                    | agents::RunEntryKind::Prompt
+            )
         })
         .map(|entry| format!("{}: {}", entry.kind.label(), entry.text))
         .collect::<Vec<_>>()
         .join("\n");
-    match fallback {
-        Some(fallback) if !has_result => {
-            if !delta.is_empty() {
-                delta.push('\n');
-            }
-            delta.push_str("result: ");
-            delta.push_str(fallback);
-        },
-        // Nobody just stopped, and the run holds nothing to describe. Only reachable for a
-        // run with no retained entries at all: a `Span::Whole` request reads every one of
-        // them, so anything the agent has ever said gets here.
-        None if delta.is_empty() => return None,
-        _ => {},
+    if delta.is_empty() {
+        return None;
     }
-    let delta = agents::tail(&delta, agents::SUMMARY_LINES, agents::SUMMARY_CHARS);
-    // Left out of a whole-run request on purpose: the entries it carries are what the
-    // previous summary was made from, so including it would ask the model to weigh its own
-    // paraphrase against the source it came from.
-    Some(match (whole, run.summary.as_ref()) {
-        (false, Some(summary)) => format!("previous summary: {}\n\n{delta}", summary.text),
-        _ => delta,
-    })
+    // The run's own prior summary is left out on purpose: the entries carried here are what
+    // it was made from, so including it would ask the model to weigh its own paraphrase
+    // against the source it came from.
+    Some(agents::tail(
+        &delta,
+        agents::SUMMARY_LINES,
+        agents::SUMMARY_CHARS,
+    ))
 }
 
 fn now_ms() -> i64 {
@@ -591,6 +442,13 @@ impl ZellijPlugin for State {
             },
             _ => {},
         }
+        // The closes this pass found, if it found any: an agent the manifest says has exited, a
+        // re-run in the same pane, a pane back at its shell prompt. Every one of them ends a run
+        // that will never see a `SessionEnd`, and a run archived unsummarised is never asked
+        // about again.
+        self.drain_finished_runs(|state, run_id| {
+            state.summarize_run_now(run_id);
+        });
         self.persist_dirty_runs();
         // Never rendered, so never asks to be.
         false
@@ -851,18 +709,20 @@ impl State {
     /// Two things hang off this beyond the feed itself, and both used to be the screen
     /// heuristic's:
     ///
-    /// - **The idle summary.** A `Stop` carries `last_assistant_message` — the agent's
-    ///   own final words — so the summary is made from what the agent *said* rather than
-    ///   from a photograph of its terminal, and it is made the moment the turn ends
-    ///   rather than fifteen seconds after the screen stops moving. See `start_turn_summary`.
+    /// - **The summary.** A pane whose agent reports for itself is the only pane the daemon
+    ///   ever buys a summary for on its own, and it buys one per run: when the run closes, made
+    ///   from the whole of its timeline rather than from a photograph of a terminal. A
+    ///   `SessionEnd` is the ordinary way that happens, but not the only one — see
+    ///   `finish_run_as`, which queues every close that knows the run is over, and
+    ///   `drain_finished_runs`, which is where the asking happens.
     /// - **The waiting toast.** A `PermissionRequest` is the user being asked a question,
     ///   said as the question goes up. Drawing it in a sidebar nobody is looking at was
     ///   only ever half the answer.
     ///
-    /// The screen heuristic keeps running for these panes, but only for the idle *clock*:
-    /// `activity` is what `status_cell` counts minutes with, on both paths, so a
-    /// hook-fed pane's `idle 3m` reads the same as everyone else's. What it no longer does
-    /// for them is buy summaries — see `observe_activity_with`.
+    /// The screen heuristic keeps running, but only for the idle *clock*: `activity` is what
+    /// `status_cell` counts minutes with, on both paths, so a hook-fed pane's `idle 3m` reads
+    /// the same as everyone else's. What it no longer does for any pane is buy summaries —
+    /// see `observe_activity_with`.
     fn on_hook_of(&mut self, pane_id: u32, kind: &str, event: &wire::HookEvent) {
         self.on_hook_with(
             pane_id,
@@ -870,8 +730,10 @@ impl State {
             event,
             |pane_id, text| notify_with_pane_id(text, PaneId::Terminal(pane_id)),
             |pane_id, title| rename_pane_with_id(PaneId::Terminal(pane_id), title),
-            Self::on_turn_end,
         );
+        self.drain_finished_runs(|state, run_id| {
+            state.summarize_run_now(run_id);
+        });
         self.persist_dirty_runs();
     }
 
@@ -883,8 +745,11 @@ impl State {
 
     /// The body of [`on_hook_of`], with the two host-facing halves injected so the tests can
     /// watch them — the same shape `observe_activity_with` and `finish_summary_with`
-    /// already take. `turn` is what a `Stop` runs; it reaches the network, and the tests
-    /// need its endpoint handed to it rather than read off a host that is not there.
+    /// already take.
+    ///
+    /// The summary a `SessionEnd` is owed is not one of them: `record_run_event` closes the
+    /// run, and closing it queues the ask. See `drain_finished_runs`, which every caller of
+    /// this runs afterwards.
     fn on_hook_with(
         &mut self,
         pane_id: u32,
@@ -892,7 +757,6 @@ impl State {
         event: &wire::HookEvent,
         toast: impl FnOnce(u32, &str),
         rename: impl FnOnce(u32, &str),
-        turn: impl FnOnce(&mut Self, u32, &wire::HookEvent),
     ) {
         // The session carries the record, and `zellij action agent-report --hook-json` sets it
         // in the same breath as it broadcasts this event - so this write is a no-op beside it,
@@ -914,6 +778,13 @@ impl State {
             if self.hooks.remove(&pane_id).is_some() {
                 self.publish();
             }
+            // The summary the run is owed was queued by `record_run_event` above, which
+            // closed it — this is the ordinary way a run ends, and the best moment there is
+            // to describe one: it is closed and complete, so there is a whole session to
+            // describe rather than a fragment of one. The close also put it in `dirty_runs`,
+            // which is where `load_run` looks first, so the run lane can read it back without
+            // a store round trip - and that lane wants no pane, which is right, because by
+            // now this one is a shell prompt where an agent was.
             return;
         }
         let Some(phase) = agents::hook_phase(event) else {
@@ -958,7 +829,6 @@ impl State {
         if restarted {
             self.summaries.remove(&pane_id);
             self.summary_requests.remove(&pane_id);
-            self.summary_baselines.remove(&pane_id);
             self.prompts.remove(&pane_id);
         }
         // What the user asked for, kept for the summary made at the end of the turn.
@@ -1082,31 +952,6 @@ impl State {
         // anything that ends the wait takes it out above and leaves it out.
         if phase == agents::HookPhase::Waiting && !announce && (entered_wait || held_edge) {
             self.suppressed_waits.insert(pane_id);
-        }
-        // Any busy event after a turn summary went out is *later work*, and a sentence
-        // about the turn before it is not a description of this one. Checking the phase
-        // when the answer lands is not enough on its own: a whole short turn can start
-        // and end inside one round trip, leaving the feed back at `Idle` with the stale
-        // answer looking current — and if that turn carried no final message it issued
-        // no request of its own to shadow it. Cancelling on the way in is the check that
-        // cannot be outrun.
-        //
-        // Only a turn request: a screen request goes stale on its screen moving, which
-        // `finish_summary_with` compares hashes for, and a pane going busy is not that.
-        // The `Stop` that buys a turn request is `Idle`, so this can never cancel the
-        // request the call below is about to make.
-        if phase == agents::HookPhase::Busy
-            && matches!(
-                self.summary_requests
-                    .get(&pane_id)
-                    .map(|request| &request.origin),
-                Some(Origin::Turn { .. })
-            )
-        {
-            self.summary_requests.remove(&pane_id);
-        }
-        if matches!(event.hook_event_name.as_str(), "Stop" | "StopFailure") {
-            turn(self, pane_id, event);
         }
         if changed {
             self.publish();
@@ -1255,6 +1100,15 @@ impl State {
         run.ended_at_ms = Some(now_ms);
         if released {
             self.released_runs.insert(run.id.clone());
+        } else {
+            // Every close that *knows* the run is over is owed a summary: a `SessionEnd`, a
+            // re-run that replaced it, an agent the manifest says has exited, a pane back at
+            // its shell prompt. A released run is the one that does not know — a pane leaving
+            // the manifest is a warp and a dead pane alike from here, which is why the write
+            // above is guarded. Summarising it would write this session's stale copy of a run
+            // another session now owns, unguarded, over theirs; and where it really was
+            // warped, that session will summarise it at its own `SessionEnd`.
+            self.finished_runs.push(run.id.clone());
         }
         self.dirty_runs.insert(run.id.clone(), run.clone());
         // The pane is no longer keeping this run, so it should no longer say it is. Harmless
@@ -1262,6 +1116,21 @@ impl State {
         // starts a new run, and the old id left on the record would send the next session
         // looking for the wrong one.
         self.publish_run_id(pane_id, None);
+    }
+
+    /// Ask about every run that has ended since the last drain.
+    ///
+    /// `ask` is handed each id rather than called for its own sake so the tests can watch what
+    /// would have gone out; in the daemon it is `summarize_run_now`, which reaches the host.
+    ///
+    /// Nothing here needs a budget. `summarize_run_now_with` refuses a run it already has a
+    /// request in flight for, and `run_delta` gives back nothing for a run whose every hook was
+    /// a tool call — so a session closing twenty panes at once asks about the twenty that have
+    /// something to say and no more.
+    fn drain_finished_runs(&mut self, mut ask: impl FnMut(&mut Self, &str)) {
+        for run_id in std::mem::take(&mut self.finished_runs) {
+            ask(self, &run_id);
+        }
     }
 
     /// Tell the session which run this pane's agent is in, so a session that adopts the pane
@@ -1354,44 +1223,31 @@ impl State {
         }
     }
 
-    /// The last accepted run summary followed by the meaningful hook events since it.
-    /// The prompt remains a separate request field, so trimming a long turn keeps the newest
+    /// The meaningful hook events a live pane's run holds, as one request body.
+    /// The prompt remains a separate request field, so trimming a long run keeps the newest
     /// steps and final result without losing what the user asked.
     ///
-    /// `fallback` is the agent's own final message, where a `Stop` has just carried one. It
-    /// is `None` when a person asked for the summary instead: there is no new message then,
-    /// and the request is built out of what the run already holds. That case is also the only
-    /// one that can come back empty — a `Stop` always brings words, whereas somebody can
-    /// press the key against a run whose every entry the last summary already absorbed, and
-    /// asking a model to describe nothing would cost a round trip to be told so.
+    /// `None` where the pane holds no run, or where the run holds no retained entry: asking
+    /// a model to describe nothing would cost a round trip to be told so.
     ///
     /// [`agents::RunEntryKind::Summary`] is deliberately not among the kinds gathered here.
     /// A summary is the model's words about the agent; feeding one back as though the agent
     /// had said it would let a paraphrase compound into the next paraphrase.
-    fn run_summary_text(&self, pane_id: u32, fallback: Option<&str>, span: Span) -> Option<String> {
-        let Some(run) = self.runs.get(&pane_id) else {
-            return fallback.map(|fallback| {
-                agents::tail(fallback, agents::SUMMARY_LINES, agents::SUMMARY_CHARS)
-            });
-        };
-        run_delta(run, fallback, span)
+    fn run_summary_text(&self, pane_id: u32) -> Option<String> {
+        run_delta(self.runs.get(&pane_id)?)
     }
 
-    /// Hang a finished summary on the pane's run.
+    /// Hang a finished summary on the pane's run, and on its timeline.
     ///
-    /// `asked_for` is whether a person pressed a key for it, and decides whether it also
-    /// stays on the timeline. An automatic summary does not: one rolls forward at the end of
-    /// every turn, so a long run would grow a line per turn and the newest of them — the one
-    /// the panel draws as the timeline's newest row — is the only one anybody wanted. A
-    /// summary somebody asked for is the opposite: *when* it was asked for is half of what it
-    /// says, so it stays where it was made.
-    fn attach_run_summary(&mut self, pane_id: u32, summary: &agents::Summary, asked_for: bool) {
+    /// Every summary that reaches a live pane is one somebody pressed a key for, and *when*
+    /// they asked is half of what it says, so it stays where it was made. Nothing rolls
+    /// forward here any more: the daemon's own summary is bought on `SessionEnd`, against a
+    /// run this pane no longer holds.
+    fn attach_run_summary(&mut self, pane_id: u32, summary: &agents::Summary) {
         let Some(run) = self.runs.get_mut(&pane_id) else {
             return;
         };
-        if asked_for {
-            agents::push_summary_entry(run, &summary.text, now_ms());
-        }
+        agents::push_summary_entry(run, &summary.text, now_ms());
         run.summary = Some(summary.clone());
         // After the push, so the entry it just made is inside the accepted revision rather
         // than being read back as unsummarised work by the next request.
@@ -1399,109 +1255,18 @@ impl State {
         self.dirty_runs.insert(run.id.clone(), run.clone());
     }
 
-    /// A turn just ended in a pane that reports for itself: describe it.
-    ///
-    /// This is the whole of what the hook feed buys over the screen heuristic for
-    /// summaries. The heuristic waits for fifteen seconds of stillness, then sends a
-    /// hundred and twenty lines of terminal to a model and asks it to work out what
-    /// happened. A `Stop` says the turn is over and hands over the agent's own final
-    /// message, at the instant it happens. There is no settle wait, no `worth_summarizing`
-    /// on screen text, and no baseline comparison: a `Stop` fires once per turn, so it
-    /// *is* the edge, and it cannot ask twice about one turn.
-    ///
-    /// A turn with nothing to describe — a message Claude Code did not carry, or one too
-    /// short to be a summary — is left alone rather than guessed at from the screen. That
-    /// is the same stance the rest of this file takes: a pane with a feed is read off the
-    /// feed or not at all.
-    fn on_turn_end(&mut self, pane_id: u32, event: &wire::HookEvent) {
-        // Checked before the endpoint is resolved, so a turn that was never going to be
-        // summarised does not pay for a host round-trip either — the same ordering
-        // `start_summary` keeps its cheap guards in.
-        if !event
-            .last_assistant_message
-            .as_deref()
-            .is_some_and(|message| !message.trim().is_empty())
-        {
-            return;
-        }
-        // Two different `None`s, and only one of them permits the local fallback — see
-        // `llm::summaries_enabled`.
-        let configuration = get_plugin_alias_configuration(HOCUS_ALIAS);
-        let wanted = hocus_proto::llm::summaries_enabled(&configuration);
-        let endpoint = Endpoint::resolve(&configuration, &self.env);
-        self.on_turn_end_with(
-            pane_id,
-            event,
-            endpoint.as_ref(),
-            wanted,
-            |url, verb, headers, body, context| {
-                web_request(url, verb, headers, body, context, None)
-            },
-            |pane_id, text| notify_with_pane_id(text, PaneId::Terminal(pane_id)),
-        );
-    }
-
-    /// The body of [`on_turn_end`], with the host calls injected for the tests.
-    ///
-    /// The endpoint is passed rather than resolved here because resolving it is itself a
-    /// host call — `get_plugin_alias_configuration`, which is not answered off a host.
-    fn on_turn_end_with(
-        &mut self,
-        pane_id: u32,
-        event: &wire::HookEvent,
-        endpoint: Option<&Endpoint>,
-        // Whether summaries are wanted at all. `false` only for an explicit
-        // `summaries "false"`, which switches off the local fallback as well as the
-        // request — a user who said "do not do this" did not mean "do it for free".
-        wanted: bool,
-        send: impl FnOnce(&str, HttpVerb, BTreeMap<String, String>, Vec<u8>, BTreeMap<String, String>),
-        toast: impl FnOnce(u32, &str),
-    ) {
-        if !wanted {
-            return;
-        }
-        let Some(message) = event
-            .last_assistant_message
-            .as_deref()
-            .map(str::trim)
-            .filter(|message| !message.is_empty())
-        else {
-            return;
-        };
-        self.send_turn_summary(
-            pane_id,
-            Some(message),
-            Origin::Turn {
-                session_id: event.session_id.clone(),
-            },
-            endpoint,
-            send,
-            toast,
-        );
-    }
-
     /// Describe a hook-fed pane from what its run holds, and say whether a request went out.
     ///
-    /// The whole of what a `Stop` does once its final message is in hand, and the whole of
-    /// what pressing the key against such a pane does — the two differ only in what they
-    /// bring. A `Stop` brings the message the agent has just finished writing and an
-    /// [`Origin::Turn`] that goes stale when the agent starts something else. A person
-    /// brings neither: there is no new message, so the delta is built from the run's own
-    /// entries, and nothing makes the answer stale because somebody is waiting for it.
-    ///
-    /// `message` is that final message where there is one. `None` means "no new words", and
-    /// `run_summary_text` then builds the request out of the entries alone rather than
-    /// writing a `result:` label with nothing after it.
-    fn send_turn_summary(
+    /// The whole of what pressing the summarise key against such a pane does. There is no
+    /// new final message — nobody just stopped — so the delta is built from the run's own
+    /// entries, and nothing makes the answer stale, because somebody is waiting for it.
+    fn send_run_summary(
         &mut self,
         pane_id: u32,
-        message: Option<&str>,
-        origin: Origin,
         endpoint: Option<&Endpoint>,
         send: impl FnOnce(&str, HttpVerb, BTreeMap<String, String>, Vec<u8>, BTreeMap<String, String>),
         toast: impl FnOnce(u32, &str),
     ) -> bool {
-        let asked_for = matches!(origin, Origin::Manual { .. });
         let Some(pane) = self
             .panes
             .iter()
@@ -1526,10 +1291,9 @@ impl State {
             // final message is prose already, so the honest fallback is its opening.
             //
             // Only prose the agent wrote can be fed to it: `local_summary` shortens a
-            // message, and a list of retained events is not one. A manual ask brings no new
-            // message, so it reaches back for the newest one the run kept — the same words a
-            // `Stop` would have carried, read out of the record instead of off the wire.
-            // Nothing else here would be a summary rather than an invention.
+            // message, and a list of retained events is not one. So it reaches back for the
+            // newest message the run kept — the agent's own last words, read out of the
+            // record. Nothing else here would be a summary rather than an invention.
             let latest = self
                 .runs
                 .get(&pane_id)
@@ -1540,24 +1304,20 @@ impl State {
                         .find(|entry| entry.kind == agents::RunEntryKind::Result)
                 })
                 .map(|entry| entry.text.clone());
-            let Some(message) = message.map(str::to_owned).or(latest) else {
+            let Some(message) = latest else {
                 return false;
             };
-            self.finish_local_summary_with(pane_id, &message, asked_for, toast);
+            self.finish_local_summary_with(pane_id, &message, toast);
             return true;
         };
-        // A summary somebody asked for reads the whole run; one nobody asked for reads what
-        // has happened since the last. See `Span`.
-        let span = match asked_for {
-            true => Span::Whole,
-            false => Span::SinceLastSummary,
-        };
-        let Some(message) = self.run_summary_text(pane_id, message, span) else {
-            // Neither a final message nor an entry the last summary has not already
-            // absorbed: there is nothing here that a model has not already been shown.
+        // Somebody asked, and what they asked is "what is this agent doing" — a question
+        // about the run, not about its last few minutes. See `Span`.
+        let Some(message) = self.run_summary_text(pane_id) else {
+            // No retained entry at all: every hook this run saw was a tool call or a
+            // lifecycle event, and there is nothing to describe.
             return false;
         };
-        let body = agents::turn_summary_request_body(
+        let body = agents::run_summary_request_body(
             &endpoint.model,
             kind,
             cwd.as_deref(),
@@ -1567,23 +1327,14 @@ impl State {
         );
         self.summary_seq += 1;
         let id = self.summary_seq;
-        // Replaces whatever was in flight for this pane, which for a hook-fed pane can
-        // only be a screen request the poller started before the first hook arrived.
-        // The turn is the better answer and the older one is not worth waiting for.
         self.summary_requests.insert(
             pane_id,
             InFlight {
                 id,
                 hash: 0,
-                origin,
                 ticks: 0,
             },
         );
-        // Not stamped with a cooldown, unlike the screen path. The cooldown exists to
-        // stop a flurry of idle edges fanning out into a flurry of requests; a `Stop`
-        // fires once per turn, so there is no flurry to stop — and a user asking three
-        // short questions in a minute should get three summaries, not one. A person
-        // pressing the key is the same argument made louder.
         send(
             &endpoint.url,
             HttpVerb::Post,
@@ -1597,32 +1348,26 @@ impl State {
         true
     }
 
-    /// Store and announce a summary made without asking anybody.
+    /// Store and announce a summary made from the agent's own words, with no model asked.
     ///
     /// The same outputs `finish_summary_with` produces, minus the two it cannot: there is
     /// no title, so the pane keeps its name, and there is no reply to have been made stale
-    /// in flight because nothing was in flight.
-    ///
-    /// `asked_for` carries the same meaning it does there. A person can reach this path too
-    /// — pressing the key against a hook-fed pane in a session with no API key — and the
-    /// answer they get is no less theirs for having been made locally.
+    /// in flight because nothing was in flight. Reached by pressing the key against a
+    /// hook-fed pane in a session with no API key; the answer is no less theirs for having
+    /// been made locally.
     fn finish_local_summary_with(
         &mut self,
         pane_id: u32,
         message: &str,
-        asked_for: bool,
         toast: impl FnOnce(u32, &str),
     ) {
         let hash = agents::activity_hash(&self.activity, pane_id).unwrap_or_default();
         let Some(mut summary) = agents::local_summary(message, hash) else {
             return;
         };
-        // Whatever was in flight for this pane can only be a screen request the poller started
-        // before the first hook arrived, and this turn is the better answer — the same claim
-        // the endpoint path makes by *replacing* the entry. Left standing, that reply lands on
-        // a pane that is idle and has not moved, so its hash still matches, and it overwrites
-        // the agent's own words with a guess made from a photograph and toasts the same turn a
-        // second time.
+        // Nothing should be in flight - `summarize_pane_now_with` refuses while one is - but
+        // clearing it costs nothing and keeps a stray reply from overwriting the agent's own
+        // words with a guess and toasting the same thing twice.
         self.summary_requests.remove(&pane_id);
         // The one thing a summary must never disagree with the row about, on either
         // path. See `finish_summary_with`, which does the same to the model's answer.
@@ -1641,7 +1386,7 @@ impl State {
                 &agents::summary_toast(pane_id, kind.as_deref(), &summary),
             );
         }
-        self.attach_run_summary(pane_id, &summary, asked_for);
+        self.attach_run_summary(pane_id, &summary);
         self.summaries.insert(pane_id, summary);
         self.publish();
     }
@@ -1685,32 +1430,7 @@ impl State {
         }
     }
 
-    /// Notice panes whose pty has been resized, and leave them alone for a while.
-    ///
-    /// A resize is the one thing that makes an agent produce real output for a reason that
-    /// is not work: the pane rewraps, the process is sent SIGWINCH, and a full-screen agent
-    /// redraws itself. Attaching or detaching a client does it to every pane at once, which
-    /// is why re-attaching to a session used to arrive with a fistful of toasts.
-    ///
-    /// The pane's summary baseline goes with it: it described the same words at a different
-    /// width, and comparing across that would read a rewrap as a screenful of new work.
-    fn watch_geometry(&mut self) {
-        let geometry = pane_geometry(&self.manifest);
-        for (pane_id, size) in &geometry {
-            if self
-                .geometry
-                .get(pane_id)
-                .is_some_and(|previous| previous != size)
-            {
-                self.geometry_grace.insert(*pane_id, GEOMETRY_GRACE_TICKS);
-                self.summary_baselines.remove(pane_id);
-            }
-        }
-        self.geometry = geometry;
-    }
-
     fn rebuild_panes(&mut self) {
-        self.watch_geometry();
         self.focused = focused_pane(&self.manifest, &self.tabs);
         self.focused_plugin = focused_plugin_pane(&self.manifest, &self.tabs);
         // Read before `self.panes` is replaced below — it is what tells a re-run
@@ -2335,19 +2055,22 @@ impl State {
     }
 
     fn observe_activity(&mut self) {
-        self.observe_activity_with(poll::read_pane, Self::start_summary);
+        self.observe_activity_with(poll::read_pane);
     }
 
-    /// Sample every agent pane, and act on the ones that just stopped working.
+    /// Sample every agent pane and keep its activity in step.
     ///
-    /// `read` and `ask` are injected for the same reason: both reach the host, and this
-    /// has to stay testable on the host triple. `ask` answers whether a request actually
-    /// went out, which is what tells a pane its debt is paid.
-    fn observe_activity_with(
-        &mut self,
-        mut read: impl FnMut(u32) -> poll::PaneSample,
-        mut ask: impl FnMut(&mut Self, u32, &str) -> bool,
-    ) {
+    /// This buys nothing. It once carried the whole summary schedule - fifteen seconds of
+    /// stillness bought a hundred and twenty lines of terminal sent to a model - and that
+    /// was inference from a photograph, made several times a turn about a pane that had
+    /// never said anything about itself. The only summary the daemon buys of its own accord
+    /// now is the one an agent's `SessionEnd` asks for; see `on_hook_with`. What survives
+    /// here is the idle clock: `activity` is what `status_cell` counts minutes with, and
+    /// what `activity_hash` stamps an answer against.
+    ///
+    /// `read` is injected because it reaches the host, and this has to stay testable on the
+    /// host triple.
+    fn observe_activity_with(&mut self, mut read: impl FnMut(u32) -> poll::PaneSample) {
         let running: BTreeSet<u32> = self
             .panes
             .iter()
@@ -2370,26 +2093,14 @@ impl State {
             .map(|pane| pane.pane_id)
             .collect();
         self.activity.retain(|id, _| running.contains(id));
-        self.phase.retain(|id, _| running.contains(id));
         self.summaries.retain(|id, _| known.contains(id));
-        self.summary_baselines.retain(|id, _| known.contains(id));
         self.prompts.retain(|id, _| known.contains(id));
-        // A request that ages out never had an answer, so the settling that bought it is
-        // owed again: a reply the host dropped must not cost the pane its summary.
-        let mut dropped: Vec<u32> = Vec::new();
+        // A request that ages out never had an answer. Nothing is owed on its behalf: every
+        // request left is one somebody pressed a key for, and they can press it again.
         self.summary_requests.retain(|id, request| {
             request.ticks += 1;
-            let answered_in_time = request.ticks <= SUMMARY_TICKS;
-            if !answered_in_time && running.contains(id) {
-                dropped.push(*id);
-            }
-            answered_in_time && running.contains(id)
+            request.ticks <= SUMMARY_TICKS && running.contains(id)
         });
-        for pane_id in dropped {
-            if let Some(Phase::Waiting { owed }) = self.phase.get_mut(&pane_id) {
-                *owed = true;
-            }
-        }
         // The same ageing, on the lane with no pane to prune by. A run that has ended cannot
         // stop being a running agent, so `SUMMARY_TICKS` is the only thing that ever clears
         // one of these — and without it a reply the host dropped would leave that run
@@ -2398,85 +2109,10 @@ impl State {
             request.ticks += 1;
             request.ticks <= SUMMARY_TICKS
         });
-        // The same shape one line up, and pruned by the same rule: a pane that stops being
-        // a running agent starts clean if it comes back.
-        self.summary_cooldown.retain(|id, ticks| {
-            *ticks = ticks.saturating_sub(1);
-            running.contains(id) && *ticks > 0
-        });
-        // Aged on the same beat, and kept for panes that are merely held rather than
-        // running: a resize does not stop mattering because the agent paused.
-        self.geometry_grace.retain(|id, ticks| {
-            *ticks = ticks.saturating_sub(1);
-            known.contains(id) && *ticks > 0
-        });
         for pane_id in running {
             let reading = read(pane_id);
             let sample = self.qualify(pane_id, &reading);
-            // Nothing is ever asked about a reading that says nothing: a scrolled pane, or
-            // one we could not read at all, has no screen worth describing. The debt stays
-            // owed, so the next usable reading pays it.
-            let usable = matches!(sample, agents::Sample::Text(_));
-            let observed = agents::observe(&mut self.activity, pane_id, sample);
-            let phase = self.phase.get(&pane_id).copied();
-            match (phase, observed) {
-                // The very first reading of a pane is `Busy` whatever it shows, because one
-                // reading cannot be compared with anything - so it says nothing about work:
-                // a session left alone overnight looks exactly like an agent mid-turn. The
-                // pane starts out settled and owing nothing, and earns `Working` on the next
-                // poll if it really is doing something.
-                (None, agents::Observed::Busy) => {
-                    self.phase.insert(pane_id, Phase::Waiting { owed: false });
-                },
-                // New words, and the reading was worth believing: the agent is working, and
-                // whatever it settles on next is worth asking about.
-                //
-                // Note that a pane going busy keeps the summary it already has rather than
-                // dropping it: the marker is gated on the pane being idle
-                // (`agents::waiting_marker`), so a working agent already shows nothing - and
-                // keeping the answer, stamped with the screen it was made from, is what lets
-                // an agent that comes back to that same screen be free rather than another
-                // request.
-                (_, agents::Observed::Busy) => {
-                    self.phase.insert(pane_id, Phase::Working);
-                },
-                // The edge, and the only place a debt is taken on. Equality, not `>=`: a
-                // pane that has been settled for an hour crosses no edge, and the retry
-                // below is what carries a settling the cooldown swallowed. Only a pane that
-                // was working owes anything, and only outside a grace window - a screen that
-                // moved because the pty was resized stopped nothing.
-                (phase, agents::Observed::Idle { polls }) if polls == SUMMARY_SETTLE_POLLS => {
-                    let owed = phase == Some(Phase::Working)
-                        && !self.geometry_grace.contains_key(&pane_id)
-                        // A pane that reports for itself is summarised from its `Stop`,
-                        // which is both earlier and better — see `on_turn_end`. Letting
-                        // the screen ask as well would buy two answers per turn, one of
-                        // them a guess, and whichever landed last would win.
-                        && !self.hooks.contains_key(&pane_id);
-                    let paid = owed && usable && ask(self, pane_id, &reading.text);
-                    self.phase.insert(
-                        pane_id,
-                        Phase::Waiting {
-                            owed: owed && !paid,
-                        },
-                    );
-                },
-                // Still owed: the cooldown, an in-flight request or a baseline that has not
-                // moved refused this settling, and none of those mean it was not real. Keep
-                // offering it until one of them lets it through.
-                // Same exclusion as the edge above: a debt taken on before the first
-                // hook arrived is written off rather than carried, because the feed is
-                // now the thing that pays it.
-                (Some(Phase::Waiting { owed: true }), agents::Observed::Idle { .. })
-                    if !self.hooks.contains_key(&pane_id)
-                        && usable
-                        && ask(self, pane_id, &reading.text) =>
-                {
-                    self.phase.insert(pane_id, Phase::Waiting { owed: false });
-                },
-                // Settling, or settled and paid for.
-                _ => {},
-            }
+            agents::observe(&mut self.activity, pane_id, sample);
         }
     }
 
@@ -2517,67 +2153,24 @@ impl State {
         }
     }
 
-    /// Where to send a summary request, resolved fresh each time.
+    /// Describe this pane now.
     ///
-    /// Deliberately not cached. The endpoint is configured in *hocus's* KDL block, and the
-    /// host's `PluginConfigurationChanged` only notifies a plugin about its own block — so
-    /// a cached copy would go stale the moment the user edited the setting and never
-    /// recover. One host read, paid only on the edge that is about to make an HTTP
-    /// request, is not worth a staleness bug.
-    fn summary_endpoint(&self) -> Option<Endpoint> {
-        Endpoint::resolve(&get_plugin_alias_configuration(HOCUS_ALIAS), &self.env)
-    }
-
-    /// Ask the model what an agent that just went idle is doing.
+    /// The only thing that summarises a *live* pane. Nothing is bought on a schedule any
+    /// more, so there is no cooldown or settle counter to get past — a person pressing a key
+    /// has already answered "is this worth a request".
     ///
-    /// The cheap local guards run *before* the endpoint is resolved, so an edge that was
-    /// never going to produce a request does not pay for a host round-trip either.
-    ///
-    /// Answers whether a request went out, which is what tells the pane whether its
-    /// settling has been paid for or is still owed — see `Phase::Waiting`.
-    fn start_summary(&mut self, pane_id: u32, text: &str) -> bool {
-        if !self.summary_due(pane_id, text) {
-            return false;
-        }
-        let Some(endpoint) = self.summary_endpoint() else {
-            return false;
-        };
-        // Wrapped rather than passed by name: `web_request` is generic over its url type,
-        // and inference pins that to one lifetime, which will not satisfy the for-any-
-        // lifetime bound `send_summary` needs.
-        self.send_summary(
-            pane_id,
-            text,
-            &endpoint,
-            false,
-            |url, verb, headers, body, context| {
-                web_request(url, verb, headers, body, context, None)
-            },
-        );
-        true
-    }
-
-    /// Describe this pane now, whatever the clock says.
-    ///
-    /// The mirror of [`Self::start_summary`], minus `summary_due`. The cooldown, the
-    /// baseline and the settle counter are three ways of asking "is this worth a request",
-    /// and a person pressing a key has answered it; keeping them would mean the key silently
-    /// doing nothing for most of every minute, which is worse than the request it saves.
-    ///
-    /// What survives is the guard that is not about the budget: one request per pane at a
+    /// The one guard that survives is not about the budget: one request per pane at a
     /// time. `finish_summary_with` correlates strictly on `(pane, id)` and drops everything
     /// that does not match, so a second request would not arrive twice — it would orphan the
     /// first and answer only itself.
     ///
     /// Which of the two paths it takes is the pane's, not the caller's: a pane that reports
     /// for itself is described from what it said, and one that does not from what it shows.
-    /// That is the same division `observe_activity_with` and `on_turn_end` already keep, and
-    /// asking a hook-fed pane's screen here would reintroduce exactly the second, worse
+    /// Asking a hook-fed pane's screen here would reintroduce exactly the second, worse
     /// answer that the feed was brought in to retire.
     fn summarize_pane_now(&mut self, pane_id: u32) -> bool {
         // Two different `None`s, and only one of them permits the local fallback — see
-        // `llm::summaries_enabled`. Resolved once, as `on_turn_end` does, because reading it
-        // is a host call.
+        // `llm::summaries_enabled`. Resolved once, because reading it is a host call.
         let configuration = get_plugin_alias_configuration(HOCUS_ALIAS);
         let wanted = hocus_proto::llm::summaries_enabled(&configuration);
         let endpoint = Endpoint::resolve(&configuration, &self.env);
@@ -2594,7 +2187,7 @@ impl State {
     }
 
     /// The body of [`Self::summarize_pane_now`], with the host calls injected for the tests —
-    /// the same shape `on_turn_end_with` and `observe_activity_with` already take.
+    /// the same shape `on_hook_with` and `observe_activity_with` already take.
     fn summarize_pane_now_with(
         &mut self,
         pane_id: u32,
@@ -2605,7 +2198,7 @@ impl State {
         toast: impl FnOnce(u32, &str),
     ) -> bool {
         // `summaries "false"` is a user saying "do not do this", and they did not mean
-        // "unless I press a key". The same stance `on_turn_end_with` takes.
+        // "unless I press a key". The same stance the `SessionEnd` lane takes.
         if !wanted {
             return false;
         }
@@ -2622,14 +2215,7 @@ impl State {
         if self.hooks.contains_key(&pane_id) {
             // A pane that reports for itself. There is no new final message — nobody just
             // stopped — so the run's own entries are the whole of the input.
-            return self.send_turn_summary(
-                pane_id,
-                None,
-                Origin::Manual { tail: None },
-                endpoint,
-                send,
-                toast,
-            );
+            return self.send_run_summary(pane_id, endpoint, send, toast);
         }
         // A screen-only pane. There is no honest fallback for one of these without an
         // endpoint: `local_summary` shortens prose the agent wrote, and a screen tail is not
@@ -2655,7 +2241,7 @@ impl State {
             return false;
         }
         let text = text.to_owned();
-        self.send_summary(pane_id, &text, endpoint, true, send);
+        self.send_summary(pane_id, &text, endpoint, send);
         true
     }
 
@@ -2698,20 +2284,23 @@ impl State {
         if self.run_summary_requests.contains_key(run_id) {
             return false;
         }
-        // No local fallback here at all, for the same reason the screen path has none: what
-        // a run holds is a record, not prose somebody wrote to be read.
-        let Some(endpoint) = endpoint else {
-            return false;
-        };
         let Some(run) = self.load_run(run_id) else {
             return false;
         };
-        let Some(message) = run_delta(&run, None, Span::Whole) else {
+        // No endpoint: no API key, or summaries switched off for the model but not for the
+        // feature. The same fallback the key press has, and for the same reason — a run's
+        // `Result` entries are the agent's own prose, written for a person to read, which is
+        // the one thing `local_summary` can shorten honestly. It is the record's *events*
+        // that cannot be fed to it, and none of those go in here.
+        let Some(endpoint) = endpoint else {
+            return self.summarize_run_locally(run);
+        };
+        let Some(message) = run_delta(&run) else {
             // A run with no retained entries at all — every hook it saw was a tool call or a
             // lifecycle event, none of which is kept. There is nothing to describe.
             return false;
         };
-        let body = agents::turn_summary_request_body(
+        let body = agents::run_summary_request_body(
             &endpoint.model,
             &run.kind,
             run.cwd.as_deref(),
@@ -2719,8 +2308,14 @@ impl State {
             // archived run has none; the folder it names may not even be a checkout any
             // more. A guess made from today's repositories would date the sentence wrongly.
             None,
+            // The *newest* prompt, which is what the pane lane sends too. This field exists
+            // to carry one prompt past the tail `run_delta` takes, and the tail cuts from the
+            // old end — so naming the run's first prompt here would assert in the header the
+            // one question the body is most likely to have dropped, and describe ten turns of
+            // work as an answer to the question that opened the session.
             run.entries
                 .iter()
+                .rev()
                 .find(|entry| entry.kind == agents::RunEntryKind::Prompt)
                 .map(|entry| entry.text.as_str()),
             &message,
@@ -2733,7 +2328,6 @@ impl State {
                 id,
                 // Nothing to stamp: a run that has ended has no screen to have moved.
                 hash: 0,
-                origin: Origin::Manual { tail: None },
                 ticks: 0,
             },
         );
@@ -2793,12 +2387,49 @@ impl State {
         if !(200..300).contains(&status) {
             return;
         }
-        let Some(mut summary) = agents::parse_summary(body, 0) else {
+        let Some(summary) = agents::parse_summary(body, 0) else {
             return;
         };
-        let Some(mut run) = self.load_run(run_id) else {
+        let Some(run) = self.load_run(run_id) else {
             return;
         };
+        self.attach_stored_summary(run, summary);
+    }
+
+    /// Describe an ended run from its own last message, with no model asked.
+    ///
+    /// The run lane's half of the fallback [`Self::send_run_summary`] already has: a session
+    /// with no endpoint still ends, and before this it ended into a blank row. The newest
+    /// `Result` entry is the agent's own last words — the same selection the pane lane makes,
+    /// read out of the record rather than off a screen that has gone.
+    ///
+    /// No toast and no rename, for the reason [`Self::finish_run_summary`] has none: the pane
+    /// this run was in is a shell prompt or somebody else's by now.
+    fn summarize_run_locally(&mut self, run: agents::AgentRun) -> bool {
+        let Some(message) = run
+            .entries
+            .iter()
+            .rev()
+            .find(|entry| entry.kind == agents::RunEntryKind::Result)
+            .map(|entry| entry.text.clone())
+        else {
+            return false;
+        };
+        // Hash 0: a run that has ended has no screen to have moved, so there is nothing for a
+        // staleness check to compare and nothing that would make this answer old.
+        let Some(summary) = agents::local_summary(&message, 0) else {
+            return false;
+        };
+        self.attach_stored_summary(run, summary);
+        true
+    }
+
+    /// Hang a summary on a run the daemon is not watching, and store it.
+    ///
+    /// Straight to the store rather than through [`Self::attach_run_summary`], which writes to
+    /// `self.runs` — an ended run is not in it, and putting it there would make the daemon
+    /// hold a session it is not watching and cannot see end.
+    fn attach_stored_summary(&mut self, mut run: agents::AgentRun, mut summary: agents::Summary) {
         // Stamped here rather than in the parser: this is where a summary becomes one the
         // daemon keeps, and it is the side with a clock. The panel draws the age from it.
         // Against the run's own summary, which is the one this replaces: a re-summary that
@@ -2807,63 +2438,21 @@ impl State {
         agents::push_summary_entry(&mut run, &summary.text, now_ms());
         run.summary = Some(summary);
         run.summarized_revision = run.revision;
-        // Straight to the store rather than through `attach_run_summary`, which writes to
-        // `self.runs` — this run is not in it, and putting it there would make the daemon
-        // hold a session it is not watching and cannot see end.
         self.dirty_runs.insert(run.id.clone(), run);
         self.publish();
-    }
-
-    /// Whether this settling is worth an HTTP request.
-    ///
-    /// No when the pane asked less than a minute ago, when one is already in flight for it,
-    /// when it holds too little to say anything about, or when less than a fifth of the
-    /// last successfully summarised tail has changed.
-    fn summary_due(&self, pane_id: u32, text: &str) -> bool {
-        // First, because it is the cheapest and the one that fires most: a busy agent
-        // settles for fifteen seconds several times a turn, and only the first is paid for.
-        if self.summary_cooldown.contains_key(&pane_id) {
-            return false;
-        }
-        if self.summary_requests.contains_key(&pane_id) || !agents::worth_summarizing(text) {
-            return false;
-        }
-        // The pane's foreground command has dropped back to a shell, which proposes that the
-        // agent behind it has finished; `repair_commands` confirms or withdraws that within a
-        // tick or two. Asking in the meantime describes a shell prompt as an agent session —
-        // the latch still calls this pane an agent, but its screen is no longer one. Nothing
-        // is lost by waiting: the settling stays owed, and is either paid once the proposal
-        // is withdrawn or forgotten with the pane when it is confirmed.
-        if self.pending_release.contains(&pane_id) {
-            return false;
-        }
-        if agents::activity_hash(&self.activity, pane_id).is_none() {
-            // The poll that would have recorded one has not run, so there is nothing to
-            // stamp an answer with.
-            return false;
-        }
-        self.summary_baselines.get(&pane_id).is_none_or(|previous| {
-            summary_materially_changed(
-                previous,
-                &agents::tail(text, agents::SUMMARY_LINES, agents::SUMMARY_CHARS),
-            )
-        })
     }
 
     /// Build and send one summary request from a pane's screen. `send` is injected because
     /// it reaches the host.
     ///
-    /// `manual` says whether somebody pressed a key for this, which decides only what makes
-    /// the answer stale — see [`Origin`]. Everything else about the request is the same
-    /// either way: the same tail, the same body, and the same cooldown stamped on the way
-    /// out, because a summary bought here really is a summary the automatic path no longer
-    /// has to buy.
+    /// Only ever reached from the summarise key, against a pane whose agent does not report
+    /// for itself: there is no screen to read on a pane that does, and nothing reads a
+    /// screen unasked any more.
     fn send_summary(
         &mut self,
         pane_id: u32,
         text: &str,
         endpoint: &Endpoint,
-        manual: bool,
         send: impl FnOnce(&str, HttpVerb, BTreeMap<String, String>, Vec<u8>, BTreeMap<String, String>),
     ) {
         let Some(pane) = self
@@ -2892,27 +2481,13 @@ impl State {
             &tail,
         );
 
-        // Unwrap-free: `summary_due` is what gates every caller, and it has already
-        // established that this pane has a hash to stamp an answer with.
+        // Unwrap-free: `summarize_pane_now_with` is what gates every caller, and it has
+        // already established that this pane has a hash to stamp an answer with.
         let hash = agents::activity_hash(&self.activity, pane_id).unwrap_or_default();
         self.summary_seq += 1;
         let id = self.summary_seq;
-        self.summary_requests.insert(
-            pane_id,
-            InFlight {
-                id,
-                hash,
-                origin: match manual {
-                    true => Origin::Manual { tail: Some(tail) },
-                    false => Origin::Screen { tail },
-                },
-                ticks: 0,
-            },
-        );
-        // Stamped when the request goes out rather than when its answer lands, so a slow or
-        // dropped reply cannot buy the pane a longer window than a fast one.
-        self.summary_cooldown
-            .insert(pane_id, SUMMARY_COOLDOWN_TICKS);
+        self.summary_requests
+            .insert(pane_id, InFlight { id, hash, ticks: 0 });
         send(
             &endpoint.url,
             HttpVerb::Post,
@@ -2975,48 +2550,11 @@ impl State {
             return;
         };
         let hash = request.hash;
-        // Whether this summary stays on the timeline where it was made. Read before the
-        // origin is consumed below. See `attach_run_summary`.
-        let asked_for = matches!(request.origin, Origin::Manual { .. });
-        // Both automatic origins have a way of going stale in flight, and they are
-        // opposites — see `Origin`.
-        let tail = match request.origin {
-            // The pane has moved on since we asked, so this answer describes a screen
-            // that is gone. Compared against the hash the *request* was made from rather
-            // than whatever the pane shows now: stamping a stale answer with the current
-            // screen would make `summary_due` skip the request that screen is actually
-            // owed.
-            Origin::Screen { tail } => {
-                if agents::activity_hash(&self.activity, pane_id) != Some(hash) {
-                    return;
-                }
-                Some(tail)
-            },
-            // The screen is allowed to have moved — a turn summary describes what the
-            // agent said, and a `cargo build` printing throughout the round trip does not
-            // make the sentence about it wrong. What voids it is the session being
-            // replaced, or the agent already being back at work on something else.
-            //
-            // "Back at work" is enforced by `on_hook_with` dropping this request on the
-            // first busy event rather than here: a later turn can begin *and end* inside
-            // one round trip, and by the time such an answer landed the phase would be
-            // `Idle` again and say nothing about it. What is left below is the same claim
-            // stated where it is read, cheap enough to keep as an invariant.
-            Origin::Turn { session_id } => {
-                let feed = self.hooks.get(&pane_id);
-                let same_session = feed.is_some_and(|feed| feed.session_id == session_id);
-                let still_stopped = feed.is_some_and(|feed| feed.phase != agents::HookPhase::Busy);
-                if !same_session || !still_stopped {
-                    return;
-                }
-                None
-            },
-            // Nothing to check. Both rules above are about answers nobody asked for; this
-            // one was asked for, and the asker is still waiting whatever the pane has done
-            // since. The tail rides through so a screen-derived manual answer still promotes
-            // the baseline below.
-            Origin::Manual { tail } => tail,
-        };
+        // Nothing here goes stale. Every request that reaches this is one somebody pressed
+        // a key for, and the asker is still waiting whatever the pane has done since; the
+        // two staleness rules that used to live here were both about throwing away an
+        // answer nobody had asked for. For the same reason every summary that lands here
+        // stays on the timeline where it was made — see `attach_run_summary`.
         // The agent went away between the request leaving and its answer landing: the pane
         // closed, or it is back at its prompt. The answer describes a session that is over,
         // and storing it would put a summary on a pane that has nothing to summarise —
@@ -3026,7 +2564,7 @@ impl State {
         }
         // A failed summary is simply no summary — the same stance `ProbeOutcome::Failed`
         // takes, and for the same reason: a guess here would outlive the reason for it.
-        // The next idle edge asks again.
+        // The user can press the key again.
         if !(200..300).contains(&status) {
             return;
         }
@@ -3067,13 +2605,7 @@ impl State {
                 &agents::summary_toast(pane_id, kind.as_deref(), &summary),
             );
         }
-        // Only a screen request has a baseline to promote: it is what "a fifth of the
-        // tail has turned over" is measured against, and a turn summary is not gated on
-        // any such thing.
-        if let Some(tail) = tail {
-            self.summary_baselines.insert(pane_id, tail);
-        }
-        self.attach_run_summary(pane_id, &summary, asked_for);
+        self.attach_run_summary(pane_id, &summary);
         self.summaries.insert(pane_id, summary);
         self.publish();
     }
@@ -3093,13 +2625,9 @@ impl State {
         self.event_fed.remove(&pane_id);
         self.suppressed_waits.remove(&pane_id);
         self.activity.remove(&pane_id);
-        self.phase.remove(&pane_id);
         self.summaries.remove(&pane_id);
-        self.summary_baselines.remove(&pane_id);
         self.summary_requests.remove(&pane_id);
-        self.summary_cooldown.remove(&pane_id);
         self.prompts.remove(&pane_id);
-        self.geometry_grace.remove(&pane_id);
     }
 
     /// What kind of agent a pane is running, if it is one we can still classify.
@@ -3540,13 +3068,6 @@ mod tests {
         );
     }
 
-    /// The summariser, for tests about everything else. `start_summary` reaches the host
-    /// twice - the alias configuration and the request itself - so no test that is not
-    /// about summaries may run it.
-    fn no_ask(_: &mut State, _: u32, _: &str) -> bool {
-        false
-    }
-
     /// A pane whose events reach the daemon is read from them, not from the record they also
     /// write. The record is complete every time it is set and so has no way to say "keep the
     /// wording you had" — which is exactly what a `Notification` arriving six seconds after the
@@ -3872,13 +3393,13 @@ mod tests {
             ..State::default()
         };
 
-        state.observe_activity_with(|_| sample("working"), no_ask);
-        state.observe_activity_with(|_| sample("working"), no_ask);
+        state.observe_activity_with(|_| sample("working"));
+        state.observe_activity_with(|_| sample("working"));
         assert_eq!(state.activity.get(&7).map(|(_, polls)| *polls), Some(1));
         assert_eq!(state.activity.len(), 1);
 
         state.panes.as_mut().unwrap()[0].status = agents::AgentStatus::Held;
-        state.observe_activity_with(|_| sample("ignored"), no_ask);
+        state.observe_activity_with(|_| sample("ignored"));
         assert!(state.activity.is_empty());
     }
 
@@ -4417,12 +3938,12 @@ mod tests {
     #[test]
     fn a_shell_out_does_not_reset_the_idle_count() {
         let mut state = ran_codex(7);
-        state.observe_activity_with(|_| sample("same"), no_ask);
-        state.observe_activity_with(|_| sample("same"), no_ask);
+        state.observe_activity_with(|_| sample("same"));
+        state.observe_activity_with(|_| sample("same"));
         assert_eq!(state.activity.get(&7).map(|(_, polls)| *polls), Some(1));
 
         state.on_command(7, vec!["git".to_owned(), "status".to_owned()], true);
-        state.observe_activity_with(|_| sample("same"), no_ask);
+        state.observe_activity_with(|_| sample("same"));
 
         assert_eq!(state.activity.get(&7).map(|(_, polls)| *polls), Some(2));
     }
@@ -4608,9 +4129,6 @@ mod tests {
     fn a_rerun_pane_drops_its_old_activity_and_summary() {
         let mut state = ran_codex(7);
         state.activity.insert(7, (1, 3));
-        state
-            .summary_baselines
-            .insert(7, "the old process".to_owned());
         state.summaries.insert(
             7,
             agents::Summary {
@@ -4646,10 +4164,6 @@ mod tests {
 
         assert!(!state.activity.contains_key(&7), "stale hash dropped");
         assert!(!state.summaries.contains_key(&7), "stale summary dropped");
-        assert!(
-            !state.summary_baselines.contains_key(&7),
-            "stale baseline dropped"
-        );
     }
 
     /// The same sequence the integration test drives, with the manifest events
@@ -4860,31 +4374,7 @@ mod tests {
         assert_eq!(state.repository_cwds(false), vec![local("/work")]);
     }
 
-    // -- idle summaries -----------------------------------------------------
-
-    #[test]
-    fn summary_change_requires_a_fifth_of_the_words_to_turn_over() {
-        // Three words a line, none of them shared, so the arithmetic below is the ratio
-        // the constant names and nothing else.
-        let line = |n: usize| format!("output{n} of{n} ten{n}");
-        let baseline = (1..=10).map(line).collect::<Vec<_>>().join("\n");
-        let one_changed = baseline.replace(&line(10), "one new line");
-        let two_changed = one_changed.replace(&line(9), "another different line");
-        let scrolled = (2..=11).map(line).collect::<Vec<_>>().join("\n");
-
-        assert!(!summary_materially_changed(&baseline, &one_changed));
-        assert!(summary_materially_changed(&baseline, &two_changed));
-        assert!(!summary_materially_changed(&baseline, &scrolled));
-        assert!(!summary_materially_changed(
-            &baseline,
-            &baseline.replace(&line(1), &format!("  {}  ", line(1)))
-        ));
-        // The whole reason words replaced lines: the same output at a new width.
-        assert!(!summary_materially_changed(
-            &baseline,
-            &baseline.replace('\n', " ")
-        ));
-    }
+    // -- summaries ----------------------------------------------------------
 
     fn endpoint() -> Endpoint {
         Endpoint {
@@ -4894,62 +4384,38 @@ mod tests {
         }
     }
 
-    /// One poll of every pane, showing `text`, with the summariser wired to `sent`.
-    ///
-    /// `observe_activity_with` is driven rather than `start_summary` called directly, so
-    /// what is under test is the whole path from "the pane held still" to "a request left".
-    fn poll_showing(state: &mut State, text: &str, sent: &mut Vec<(u32, Vec<u8>)>) {
-        poll_reading(state, sample(text), sent)
+    /// One poll of every pane, showing `text`. Nothing is bought from a poll any more; what
+    /// it keeps in step is the activity map, which is what a request is stamped against.
+    fn poll_showing(state: &mut State, text: &str) {
+        poll_reading(state, sample(text))
     }
 
     /// One poll of every pane from an arbitrary reading, for the tests about readings that
     /// are worth nothing — a scrolled pane, or a picture that moved with the pty silent.
-    fn poll_reading(state: &mut State, reading: poll::PaneSample, sent: &mut Vec<(u32, Vec<u8>)>) {
+    fn poll_reading(state: &mut State, reading: poll::PaneSample) {
         let mut reading = Some(reading);
-        state.observe_activity_with(
-            |_| reading.take().expect("one pane per poll in these tests"),
-            |state, pane_id, text| {
-                if state.summary_due(pane_id, text) {
-                    state.send_summary(
-                        pane_id,
-                        text,
-                        &endpoint(),
-                        false,
-                        |_, _, _, body, context| {
-                            sent.push((context[SUMMARY_PANE].parse().unwrap(), body));
-                        },
-                    );
-                    return true;
-                }
-                false
-            },
-        );
+        state.observe_activity_with(|_| reading.take().expect("one pane per poll in these tests"));
     }
 
-    /// Poll `text` for a whole cooldown, so a pane that is holding still goes on holding
-    /// still while its window runs out. Enough polls to clear the window whichever tick of
-    /// it the caller is on, and showing one screen throughout, so the baseline sees no
-    /// change either — what expires is the cooldown and nothing else.
-    fn poll_out_the_cooldown(state: &mut State, text: &str, sent: &mut Vec<(u32, Vec<u8>)>) {
-        for _ in 0..=SUMMARY_COOLDOWN_TICKS {
-            poll_showing(state, text, sent);
-        }
-    }
-
-    /// One agent, polled until it has settled, and the requests that went out.
+    /// One screen-only agent showing `text`, with the summarise key already pressed against
+    /// it, and the requests that went out.
+    ///
+    /// Polled first so the pane has an activity hash: `summarize_pane_now_with` refuses a
+    /// pane the poller has not reached, because there would be nothing to stamp the answer
+    /// with. The request that goes out is the daemon's first, so its correlation id is 1.
     fn idle_agent(text: &str) -> (State, Vec<(u32, Vec<u8>)>) {
         let mut state = State {
             panes: Some(vec![pane(7, "claude", "/work")]),
             ..State::default()
         };
-        let mut sent: Vec<(u32, Vec<u8>)> = Vec::new();
-        // A pane the daemon has only ever seen still is not one that just stopped working,
-        // so the agent is shown working first: one screen, then the screen it settles on.
-        poll_showing(&mut state, EARLIER_PANE, &mut sent);
-        for _ in 0..=SUMMARY_SETTLE_POLLS {
-            poll_showing(&mut state, text, &mut sent);
-        }
-        (state, sent)
+        poll_showing(&mut state, text);
+        let (_, sent, _) = ask(&mut state, 7, Some(&endpoint()), sample(text));
+        (
+            state,
+            sent.into_iter()
+                .map(|asked| (asked.pane_id, asked.body))
+                .collect(),
+        )
     }
 
     /// A reading of a pane showing its live tail, with the process having just written to
@@ -5103,18 +4569,13 @@ mod tests {
             panes: Some(vec![pane(7, "claude", "/work")]),
             ..State::default()
         };
-        let mut sent: Vec<(u32, Vec<u8>)> = Vec::new();
-        poll_showing(&mut state, EARLIER_PANE, &mut sent);
-        poll_showing(&mut state, BUSY_PANE, &mut sent);
+        poll_showing(&mut state, EARLIER_PANE);
+        poll_showing(&mut state, BUSY_PANE);
         assert_eq!(cell(&state, 7), "busy", "the screen is moving");
 
         state.on_hook(7, &hook("Stop"));
 
         assert_eq!(cell(&state, 7), "idle");
-        assert!(
-            sent.is_empty(),
-            "and nothing has been asked of a model to get there"
-        );
     }
 
     #[test]
@@ -5407,12 +4868,141 @@ mod tests {
         state.on_hook(7, &hook("Stop"));
         assert!(state.hooks.contains_key(&7));
 
-        state.on_hook(7, &hook(agents::HOOK_SESSION_END));
+        // Through `feed`, because a session ending now buys a summary, and that reaches
+        // the host.
+        feed(&mut state, 7, &hook(agents::HOOK_SESSION_END), None);
         assert!(state.hooks.is_empty());
         assert_eq!(
             cell(&state, 7),
             "running",
             "no feed and nothing observed yet"
+        );
+    }
+
+    /// The one summary the daemon buys of its own accord. A `Stop` buys nothing - a turn
+    /// ending is a fragment of a session, and a sentence about one is not what anybody
+    /// reads - and the session ending buys exactly one, made from the whole run.
+    #[test]
+    fn a_session_that_ends_is_summarised_once_from_the_whole_run() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        let (_, sent) = feed(
+            &mut state,
+            7,
+            &prompt("fix the retry backoff"),
+            Some(&endpoint()),
+        );
+        assert!(sent.is_empty(), "a prompt buys nothing");
+        let (_, sent) = feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
+        assert!(sent.is_empty(), "and neither does a turn ending");
+        let (_, sent) = feed(
+            &mut state,
+            7,
+            &stop_saying("And the second turn finished too."),
+            Some(&endpoint()),
+        );
+        assert!(sent.is_empty(), "however many of them there are");
+
+        let run_id = state.runs[&7].id.clone();
+        let (_, sent) = feed(
+            &mut state,
+            7,
+            &hook(agents::HOOK_SESSION_END),
+            Some(&endpoint()),
+        );
+
+        assert_eq!(sent.len(), 1, "one session, one summary");
+        assert_eq!(sent[0].0, run_id, "correlated by run, not by pane");
+        // Every turn of the session is in it, and so is what the user asked for: the
+        // request is built from the run rather than from the turn that happened to end.
+        let body = asked_about(&sent[0].1);
+        assert!(body.contains("fix the retry backoff"), "{body}");
+        assert!(body.contains("I ran the test suite"), "{body}");
+        assert!(body.contains("And the second turn finished too."), "{body}");
+
+        state.finish_run_summary(
+            200,
+            &reply("Fixed the backoff and ran the tests.", false),
+            &run_context(&run_id, 1),
+        );
+        assert_eq!(
+            state.dirty_runs[&run_id]
+                .summary
+                .as_ref()
+                .expect("the run kept it")
+                .text,
+            "Fixed the backoff and ran the tests."
+        );
+        assert!(
+            !state.summaries.contains_key(&7),
+            "and nothing lands on the pane, which is a shell prompt by now"
+        );
+    }
+
+    /// A session whose every hook was a tool call has nothing anybody would want a sentence
+    /// about, and asking a model to describe nothing costs a round trip to be told so.
+    #[test]
+    fn a_session_that_ends_with_nothing_to_say_asks_nobody() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        feed(
+            &mut state,
+            7,
+            &tool_hook("PreToolUse", "Bash", serde_json::json!({"command": "ls"})),
+            Some(&endpoint()),
+        );
+
+        let (_, sent) = feed(
+            &mut state,
+            7,
+            &hook(agents::HOOK_SESSION_END),
+            Some(&endpoint()),
+        );
+        assert!(sent.is_empty());
+    }
+
+    /// A picture that moved while the pty stayed silent moved for some reason other than
+    /// the process - a reflow, a repaint - and is not the agent working. The idle clock is
+    /// what still reads this, so it must not be reset by one.
+    #[test]
+    fn a_screen_that_moved_with_the_pty_silent_is_not_work() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        for _ in 0..6 {
+            poll_showing(&mut state, BUSY_PANE);
+        }
+        let settled = cell(&state, 7);
+
+        poll_reading(&mut state, quiet(OTHER_PANE));
+
+        assert_eq!(cell(&state, 7), settled, "a silent repaint stopped nothing");
+    }
+
+    /// A pane with no hook feed at all is never summarised on its own. It is still polled -
+    /// that is what the idle clock is made of - but nothing about a screen holding still
+    /// buys a request any more.
+    #[test]
+    fn a_screen_only_pane_that_settles_is_never_asked_about() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        poll_showing(&mut state, EARLIER_PANE);
+        for _ in 0..20 {
+            poll_showing(&mut state, BUSY_PANE);
+        }
+
+        assert!(state.summary_requests.is_empty(), "nobody was asked");
+        assert!(state.summaries.is_empty());
+        assert!(
+            cell(&state, 7).starts_with("idle"),
+            "but the clock still runs"
         );
     }
 
@@ -5472,44 +5062,48 @@ mod tests {
         assert!(state.summaries.get(&7).expect("stored").awaiting);
     }
 
-    /// What the host would have been told about, by pane: the toasts and the requests.
-    type Reported = (Vec<(u32, String)>, Vec<(u32, Vec<u8>)>);
+    /// What the host would have been told about: the toasts by pane, and the requests by
+    /// the run they describe.
+    type Reported = (Vec<(u32, String)>, Vec<(String, Vec<u8>)>);
 
     /// `on_hook` with both host-facing halves handed back: what it would have toasted,
-    /// and what a `Stop` would have sent. Every hook test that cares about either goes
-    /// through this — the host is not there to be called.
+    /// and what a `SessionEnd` would have sent. Every hook test that cares about either
+    /// goes through this — the host is not there to be called.
     fn feed(
         state: &mut State,
         pane_id: u32,
         event: &wire::HookEvent,
         endpoint: Option<&Endpoint>,
     ) -> Reported {
-        // Shared, because both halves can toast: the wait announces itself on the way in,
-        // and a turn summarised without a model announces itself on the way out.
-        let toasts = std::cell::RefCell::new(Vec::new());
+        let mut toasts = Vec::new();
         let mut sent = Vec::new();
         state.on_hook_with(
             pane_id,
             CLAUDE,
             event,
-            |pane_id, text| toasts.borrow_mut().push((pane_id, text.to_owned())),
+            |pane_id, text| toasts.push((pane_id, text.to_owned())),
             // Dropped: the renames are what `feed_naming` is for, and every caller here is
             // asking about the toasts or the request instead.
             |_, _| {},
-            |state, pane_id, event| {
-                state.on_turn_end_with(
-                    pane_id,
-                    event,
-                    endpoint,
-                    true,
-                    |_, _, _, body, context| {
-                        sent.push((context[SUMMARY_PANE].parse().unwrap(), body));
-                    },
-                    |pane_id, text| toasts.borrow_mut().push((pane_id, text.to_owned())),
-                );
-            },
         );
-        (toasts.into_inner(), sent)
+        drain_asks(state, endpoint, &mut sent);
+        (toasts, sent)
+    }
+
+    /// Drain whatever the pass just closed, with the request handed back rather than sent.
+    ///
+    /// The daemon's `drain_finished_runs` reaches the network; this is the same drain with the
+    /// host taken out, so a test can see which runs were asked about and with what body.
+    fn drain_asks(
+        state: &mut State,
+        endpoint: Option<&Endpoint>,
+        sent: &mut Vec<(String, Vec<u8>)>,
+    ) {
+        state.drain_finished_runs(|state, run_id| {
+            state.summarize_run_now_with(run_id, endpoint, true, |_, _, _, body, context| {
+                sent.push((context[SUMMARY_RUN].clone(), body));
+            });
+        });
     }
 
     /// `on_hook` with the rename handed back instead: what the pane would have been named,
@@ -5522,10 +5116,9 @@ mod tests {
             event,
             |_, _| {},
             |pane_id, title| named.push((pane_id, title.to_owned())),
-            // No endpoint and no host here, so a `Stop` has nothing to ask: these tests are
-            // about the name the prompt writes on the way in.
-            |_, _, _| {},
         );
+        // Nothing drained: these tests are about the name the prompt writes on the way in, and
+        // a run left queued costs them nothing.
         named
     }
 
@@ -5839,62 +5432,18 @@ mod tests {
         assert!(toasts[0].1.contains("Which library?"));
     }
 
-    /// The whole of what the feed buys over the screen for summaries. A `Stop` says the
-    /// turn is over and hands over the agent's own final message, at the instant it
-    /// happens — where the heuristic waits fifteen seconds and then sends a photograph of
-    /// a terminal to a model and asks it to work out what happened.
+    /// The run is the record a summary is made of, so what it keeps is the point: the
+    /// prompts, the plans, the questions and the results of every turn, deduplicated, and
+    /// nothing else. Nothing is summarised along the way — the session ending is what asks.
     #[test]
-    fn a_turn_that_ends_is_summarised_from_what_the_agent_said() {
+    fn a_run_keeps_the_key_events_of_every_turn() {
         let mut state = State {
             panes: Some(vec![pane(7, "claude", "/work")]),
             ..State::default()
         };
-        feed(
-            &mut state,
-            7,
-            &wire::HookEvent {
-                prompt: Some("fix the flaky test".to_owned()),
-                ..hook("UserPromptSubmit")
-            },
-            None,
-        );
-        let (_, sent) = feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
-
-        assert_eq!(sent.len(), 1, "one request, the moment the turn ended");
-        let (pane_id, body) = &sent[0];
-        assert_eq!(*pane_id, 7);
-        let body: serde_json::Value = serde_json::from_slice(body).expect("valid JSON");
-        let user = body["messages"][1]["content"].as_str().expect("a string");
-        assert!(user.contains(REPLY), "the agent's own words");
-        assert!(user.contains("fix the flaky test"), "and the question");
-        assert!(user.contains("Folder: /work."));
-    }
-
-    #[test]
-    fn a_run_keeps_key_events_and_rolls_accepted_summaries_forward() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            ..State::default()
-        };
-        feed(
-            &mut state,
-            7,
-            &wire::HookEvent {
-                prompt: Some("implement history".to_owned()),
-                ..hook("UserPromptSubmit")
-            },
-            None,
-        );
+        feed(&mut state, 7, &prompt("implement history"), None);
         // A spawned Claude with the same user-level hook installed reports each event twice.
-        feed(
-            &mut state,
-            7,
-            &wire::HookEvent {
-                prompt: Some("implement history".to_owned()),
-                ..hook("UserPromptSubmit")
-            },
-            None,
-        );
+        feed(&mut state, 7, &prompt("implement history"), None);
         feed(
             &mut state,
             7,
@@ -5915,14 +5464,10 @@ mod tests {
             ),
             None,
         );
-        let (_, first) = feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
-        assert_eq!(first.len(), 1);
-        finish(
-            &mut state,
-            200,
-            &reply("History was implemented.", false),
-            &context(7, 1),
-        );
+        let (_, sent) = feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
+        assert!(sent.is_empty(), "a turn ending buys nothing");
+        feed(&mut state, 7, &prompt("add the archive"), None);
+        feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
 
         let run = &state.runs[&7];
         assert_eq!(
@@ -5935,37 +5480,34 @@ mod tests {
                 agents::RunEntryKind::Plan,
                 agents::RunEntryKind::Question,
                 agents::RunEntryKind::Result,
+                agents::RunEntryKind::Prompt,
+                agents::RunEntryKind::Result,
             ]
         );
-        assert_eq!(
-            run.summary.as_ref().map(|s| s.text.as_str()),
-            Some("History was implemented.")
-        );
-        assert_eq!(run.summarized_revision, run.revision);
+        assert!(run.summary.is_none(), "and nothing has described it yet");
 
-        feed(
+        let run_id = state.runs[&7].id.clone();
+        let (_, sent) = feed(
             &mut state,
             7,
-            &wire::HookEvent {
-                prompt: Some("add the archive".to_owned()),
-                ..hook("UserPromptSubmit")
-            },
-            None,
+            &hook(agents::HOOK_SESSION_END),
+            Some(&endpoint()),
         );
-        let (_, second) = feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
-        let body: serde_json::Value = serde_json::from_slice(&second[0].1).expect("valid JSON");
-        let user = body["messages"][1]["content"].as_str().expect("a string");
-        assert!(user.contains("previous summary: History was implemented."));
-        assert!(user.contains("--- the user asked ---\nadd the archive"));
-        assert!(user.contains("result: I ran the test suite"));
 
-        feed(&mut state, 7, &hook(agents::HOOK_SESSION_END), None);
-        let completed = state
-            .dirty_runs
-            .values()
-            .find(|run| run.ended_at_ms.is_some())
-            .expect("archived run");
+        // One request, carrying every turn: both prompts and both results.
+        assert_eq!(sent.len(), 1);
+        let user = asked_about(&sent[0].1);
+        assert!(user.contains("implement history"), "{user}");
+        assert!(user.contains("add the archive"), "{user}");
+        assert_eq!(
+            user.matches("I ran the test suite").count(),
+            2,
+            "both turns' results: {user}"
+        );
+
+        let completed = &state.dirty_runs[&run_id];
         assert_eq!(completed.outcome, agents::RunOutcome::Completed);
+        assert!(completed.ended_at_ms.is_some());
         assert!(state.runs.is_empty());
     }
 
@@ -6073,35 +5615,35 @@ mod tests {
         assert_eq!(written, vec![(run.id, 2)]);
     }
 
+    /// A session resumed with `--continue` has no `UserPromptSubmit` of its own: its whole
+    /// record is the results of the turns it ran. That is still something to describe.
     #[test]
-    fn a_result_only_run_rolls_its_accepted_summary_forward() {
+    fn a_result_only_run_is_summarised_when_the_session_ends() {
         let mut state = State {
             panes: Some(vec![pane(7, "claude", "/work")]),
             ..State::default()
         };
-        let (_, first) = feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
-        assert_eq!(first.len(), 1);
-        finish(
-            &mut state,
-            200,
-            &reply("The resumed turn completed.", false),
-            &context(7, 1),
-        );
+        feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
 
         let run = &state.runs[&7];
         assert_eq!(run.entries.len(), 1);
         assert_eq!(run.entries[0].kind, agents::RunEntryKind::Result);
-        assert_eq!(run.summarized_revision, run.revision);
 
-        let (_, second) = feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
-        let body: serde_json::Value = serde_json::from_slice(&second[0].1).expect("valid JSON");
-        let user = body["messages"][1]["content"].as_str().expect("a string");
-        assert!(user.contains("previous summary: The resumed turn completed."));
-        assert!(user.contains("result: I ran the test suite"));
+        let (_, sent) = feed(
+            &mut state,
+            7,
+            &hook(agents::HOOK_SESSION_END),
+            Some(&endpoint()),
+        );
+        let user = asked_about(&sent[0].1);
+        assert!(user.contains("result: I ran the test suite"), "{user}");
     }
 
+    /// Every turn's result is kept whole on the run, so the summary made when the session
+    /// ends sees all of them, once each — including turns whose own summary request failed
+    /// or was superseded while the session was still running.
     #[test]
-    fn unsummarized_results_survive_failure_and_supersession() {
+    fn every_turns_result_reaches_the_summary_made_at_the_end() {
         let mut state = State {
             panes: Some(vec![pane(7, "claude", "/work")]),
             ..State::default()
@@ -6110,22 +5652,131 @@ mod tests {
         let second = "The second turn completed before the first summary was accepted.";
         let third = "The third turn completed after the second request was superseded.";
 
-        let (_, sent) = feed(&mut state, 7, &stop_saying(first), Some(&endpoint()));
-        assert_eq!(sent.len(), 1);
+        feed(&mut state, 7, &stop_saying(first), Some(&endpoint()));
+        // A summary somebody asked for, and the reply that never usefully came back.
+        ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
         finish(&mut state, 500, b"failed", &context(7, 1));
 
         feed(&mut state, 7, &hook("UserPromptSubmit"), None);
-        let (_, sent) = feed(&mut state, 7, &stop_saying(second), Some(&endpoint()));
-        assert_eq!(sent.len(), 1);
-
+        feed(&mut state, 7, &stop_saying(second), Some(&endpoint()));
         feed(&mut state, 7, &hook("UserPromptSubmit"), None);
-        let (_, sent) = feed(&mut state, 7, &stop_saying(third), Some(&endpoint()));
-        let body: serde_json::Value = serde_json::from_slice(&sent[0].1).expect("valid JSON");
-        let user = body["messages"][1]["content"].as_str().expect("a string");
+        feed(&mut state, 7, &stop_saying(third), Some(&endpoint()));
+
+        let (_, sent) = feed(
+            &mut state,
+            7,
+            &hook(agents::HOOK_SESSION_END),
+            Some(&endpoint()),
+        );
+        let user = asked_about(&sent[0].1);
         for result in [first, second, third] {
             assert_eq!(user.matches(result).count(), 1, "{user}");
         }
-        assert_eq!(state.runs[&7].summarized_revision, 0);
+    }
+
+    /// The header carries the *newest* prompt, not the session's first.
+    ///
+    /// It is there to carry one prompt past the tail `run_delta` takes, and that tail cuts
+    /// from the old end - so naming the first prompt would assert in the header the one
+    /// question the body is most likely to have dropped, and describe a session's last hour
+    /// as an answer to what opened it.
+    #[test]
+    fn the_summary_of_a_session_is_headed_by_its_newest_question() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        feed(&mut state, 7, &prompt("fix the flaky test"), None);
+        feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
+        feed(&mut state, 7, &prompt("rewrite the retry backoff"), None);
+        feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
+
+        let (_, sent) = feed(
+            &mut state,
+            7,
+            &hook(agents::HOOK_SESSION_END),
+            Some(&endpoint()),
+        );
+
+        let user = asked_about(&sent[0].1);
+        assert!(
+            user.contains("--- the user asked ---\nrewrite the retry backoff"),
+            "{user}"
+        );
+        // Both are still in the history, which is where the first one belongs.
+        assert!(user.contains("fix the flaky test"), "{user}");
+    }
+
+    /// A `SessionEnd` is the ordinary way a run ends, not the only one. A re-run in the same
+    /// pane replaces the run that was there, and that run is as over as any - if nothing asks
+    /// about it now, nothing ever will: it is archived, and only a key press reaches it again.
+    #[test]
+    fn a_run_replaced_by_a_new_session_is_summarised_as_it_closes() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
+        let replaced = state.runs[&7].id.clone();
+
+        let (_, sent) = feed(
+            &mut state,
+            7,
+            &wire::HookEvent {
+                session_id: "cc-session-2".to_owned(),
+                ..prompt("and again, from the top")
+            },
+            Some(&endpoint()),
+        );
+
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, replaced);
+        assert_eq!(
+            state.dirty_runs[&replaced].outcome,
+            agents::RunOutcome::Replaced
+        );
+        assert_ne!(state.runs[&7].id, replaced, "and the new run has begun");
+    }
+
+    /// The other close that knows: the agent is gone but its pane is not - it exited, or the
+    /// foreground command dropped back to a shell. No `SessionEnd` will ever arrive for it.
+    #[test]
+    fn a_run_closed_without_a_session_end_is_summarised_as_it_closes() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
+        let closed = state.runs[&7].id.clone();
+
+        state.finish_run(7, agents::RunOutcome::Closed, now_ms());
+        let mut sent = Vec::new();
+        drain_asks(&mut state, Some(&endpoint()), &mut sent);
+
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, closed);
+    }
+
+    /// The one close that does not know. A pane leaving the manifest is a warp and a dead
+    /// pane alike from here, which is why its write is guarded - and a summary written from
+    /// this session's stale copy would land unguarded over the row the session that took the
+    /// pane now owns. Where it really was warped, that session ends it and describes it.
+    #[test]
+    fn a_released_run_is_left_to_whoever_took_its_pane() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
+        let released = state.runs[&7].id.clone();
+
+        state.release_run(7, now_ms());
+        let mut sent = Vec::new();
+        drain_asks(&mut state, Some(&endpoint()), &mut sent);
+
+        assert!(sent.is_empty());
+        assert!(state.released_runs.contains(&released));
+        assert!(state.dirty_runs[&released].summary.is_none());
     }
 
     #[test]
@@ -6167,72 +5818,47 @@ mod tests {
         );
     }
 
-    /// No settle wait and no cooldown: a `Stop` fires once per turn, so it *is* the edge,
-    /// and a user asking three short questions in a minute is owed three answers.
-    #[test]
-    fn every_turn_that_ends_is_summarised_however_fast_they_come() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            ..State::default()
-        };
-        let mut requests = 0;
-        for _ in 0..3 {
-            feed(&mut state, 7, &hook("UserPromptSubmit"), None);
-            let (_, sent) = feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
-            requests += sent.len();
-        }
-        assert_eq!(requests, 3);
-    }
-
-    /// A turn with nothing to describe is left alone rather than guessed at from the
-    /// screen. A pane with a feed is read off the feed or not at all.
-    #[test]
-    fn a_turn_with_nothing_to_say_asks_nothing() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            ..State::default()
-        };
-        for event in [hook("Stop"), stop_saying("   ")] {
-            let (_, sent) = feed(&mut state, 7, &event, Some(&endpoint()));
-            assert!(sent.is_empty(), "{}", event.hook_event_name);
-        }
-        assert!(state.summaries.is_empty());
-    }
-
-    /// `summaries "false"` means do not do this, and that has to switch off the local
-    /// fallback as well as the request. A user who said "do not do this" did not mean
-    /// "do it for free" — which is the whole difference between that setting and simply
-    /// having no API key.
+    /// `summaries "false"` means do not do this, and that has to switch off the summary a
+    /// session's end would otherwise buy as well as the one somebody presses a key for.
     #[test]
     fn summaries_switched_off_are_switched_off_on_both_paths() {
         let mut state = State {
             panes: Some(vec![pane(7, "claude", "/work")]),
             ..State::default()
         };
-        let mut sent = Vec::new();
-        state.on_turn_end_with(
+        state.on_hook(7, &stop_saying(REPLY));
+        let run_id = state.runs[&7].id.clone();
+        state.on_hook_with(
             7,
-            &stop_saying(REPLY),
-            None,
-            false,
-            |_, _, _, body, context| {
-                sent.push((context[SUMMARY_PANE].parse::<u32>().unwrap(), body));
-            },
+            CLAUDE,
+            &hook(agents::HOOK_SESSION_END),
             |_, _| panic!("nothing to say"),
+            |_, _| {},
         );
-        assert!(sent.is_empty());
+        state.drain_finished_runs(|state, run_id| {
+            state.summarize_run_now_with(run_id, Some(&endpoint()), false, |_, _, _, _, _| {
+                panic!("nobody should be asked")
+            });
+        });
         assert!(state.summaries.is_empty());
-
-        // And with an endpoint configured, which is the case where the setting is the
-        // only thing standing between the turn and a request.
-        state.on_turn_end_with(
-            7,
-            &stop_saying(REPLY),
-            Some(&endpoint()),
-            false,
-            |_, _, _, _, _| panic!("nobody should be asked"),
-            |_, _| panic!("nothing to say"),
+        assert!(
+            state.dirty_runs[&run_id].summary.is_none(),
+            "and the run that ended kept none either"
         );
+
+        // And the key, which is a user asking for the same thing by hand. "Do not do this"
+        // did not mean "unless I press a key", and it switches off the local fallback too —
+        // which is the whole difference between the setting and simply having no API key.
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        state.on_hook(7, &stop_saying(REPLY));
+        let (asked, sent, toasts) =
+            ask_wanting(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE), false);
+        assert!(!asked);
+        assert!(sent.is_empty());
+        assert!(toasts.is_empty());
         assert!(state.summaries.is_empty());
     }
 
@@ -6255,6 +5881,7 @@ mod tests {
         state.summaries.insert(7, held);
 
         feed(&mut state, 7, &stop_saying(REPLY), None);
+        ask(&mut state, 7, None, sample(BUSY_PANE));
         assert_ne!(state.summaries[&7].hash, u64::MAX, "a summary was stored");
         assert_eq!(
             state.summaries[&7].created_at_ms,
@@ -6269,22 +5896,25 @@ mod tests {
             &stop_saying("I rebased onto main and pushed the branch. Nothing else changed."),
             None,
         );
+        ask(&mut state, 7, None, sample(BUSY_PANE));
         let stamped = state.summaries[&7]
             .created_at_ms
             .expect("a new summary is stamped");
         assert!(stamped > 1, "{stamped}");
     }
 
-    /// Summaries begin working with no API key at all. Before the feed there was nothing
-    /// to fall back to — a screen tail is not a summary of anything — and a final message
-    /// is prose already.
+    /// A hook-fed pane works with no API key at all: what the agent last said is prose
+    /// already, so it is its own summary. There is no title in one, so the pane keeps the
+    /// name it has.
     #[test]
     fn a_session_with_no_endpoint_still_gets_a_summary_and_keeps_its_pane_name() {
         let mut state = State {
             panes: Some(vec![pane(7, "claude", "/work")]),
             ..State::default()
         };
-        let (toasts, sent) = feed(&mut state, 7, &stop_saying(REPLY), None);
+        feed(&mut state, 7, &stop_saying(REPLY), None);
+        let (asked, sent, toasts) = ask(&mut state, 7, None, sample(BUSY_PANE));
+        assert!(asked);
         assert!(sent.is_empty(), "nobody was asked");
 
         let summary = state.summaries.get(&7).expect("a summary was stored");
@@ -6300,130 +5930,6 @@ mod tests {
         );
     }
 
-    /// …and it owns the turn, the same way the endpoint path does by replacing whatever was
-    /// in flight. Before the first hook arrives a pane looks like any other to the poller, so
-    /// a screen request can already be out when the feed takes over. That answer describes a
-    /// pane which is now idle and has not moved, so its hash still matches and every other
-    /// guard waves it through — and it would overwrite the agent's own words with a guess made
-    /// from a photograph, rename the pane on it, and toast the same turn a second time.
-    #[test]
-    fn a_screen_reply_cannot_overwrite_the_summary_a_turn_made_of_its_own_words() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            activity: agents::Activity::from([(7, (11, 1))]),
-            ..State::default()
-        };
-        // The poller got there first, from the screen the pane is still showing.
-        let hash = agents::activity_hash(&state.activity, 7).expect("a hash");
-        state.summary_requests.insert(
-            7,
-            InFlight {
-                id: 1,
-                hash,
-                origin: Origin::Screen {
-                    tail: "$ cargo test".to_owned(),
-                },
-                ticks: 0,
-            },
-        );
-
-        let (toasts, sent) = feed(&mut state, 7, &stop_saying(REPLY), None);
-        assert!(sent.is_empty(), "nobody was asked");
-        assert_eq!(toasts.len(), 1, "one toast for one turn");
-
-        let finished = finish(
-            &mut state,
-            200,
-            &reply("Ran a build.", false),
-            &context(7, 1),
-        );
-        assert!(finished.toasts.is_empty(), "and it is not toasted twice");
-        assert!(finished.renames.is_empty());
-        assert!(
-            state.summaries[&7].text.starts_with("I ran the test suite"),
-            "the agent's own words stand, got {:?}",
-            state.summaries[&7].text
-        );
-    }
-
-    /// A turn summary describes what the agent *said*, which stays true however much the
-    /// terminal has scrolled since. A `cargo build` printing throughout the round trip
-    /// does not make the sentence about it wrong — where the same movement would rightly
-    /// void a summary made by reading the screen.
-    #[test]
-    fn a_turn_summary_survives_a_screen_that_moved_while_it_was_in_flight() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            activity: agents::Activity::from([(7, (11, 1))]),
-            ..State::default()
-        };
-        feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
-        let id = state.summary_requests.get(&7).expect("in flight").id;
-
-        // The screen has moved on entirely since the request left.
-        state.activity.insert(7, (999, 0));
-        let finished = finish(
-            &mut state,
-            200,
-            &reply("Tests pass.", false),
-            &context(7, id),
-        );
-
-        let summary = state.summaries.get(&7).expect("kept");
-        assert_eq!(summary.text, "Tests pass.");
-        assert_eq!(finished.renames, vec![(7, TITLE.to_owned())]);
-    }
-
-    /// What does void one: the agent is already back at work on something else, so a
-    /// description of the turn before it is not worth drawing over the top.
-    #[test]
-    fn a_turn_summary_is_dropped_if_the_agent_has_started_something_else() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            ..State::default()
-        };
-        feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
-        let id = state.summary_requests.get(&7).expect("in flight").id;
-
-        feed(&mut state, 7, &hook("UserPromptSubmit"), None);
-        finish(
-            &mut state,
-            200,
-            &reply("Tests pass.", false),
-            &context(7, id),
-        );
-        assert!(state.summaries.is_empty(), "the turn it described is over");
-    }
-
-    /// And it stays dropped when the turn that displaced it has itself finished. A short
-    /// turn can start and end inside one round trip, and one that says nothing at the end
-    /// buys no request of its own — so an answer landing after it would find the feed
-    /// `Idle`, look current, and be toasted over a turn it never saw.
-    #[test]
-    fn a_turn_summary_is_dropped_when_a_later_turn_has_already_finished() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            ..State::default()
-        };
-        feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
-        let id = state.summary_requests.get(&7).expect("in flight").id;
-
-        // A whole turn, beginning to end, while the first answer is still in flight.
-        feed(&mut state, 7, &hook("UserPromptSubmit"), None);
-        let (_, sent) = feed(&mut state, 7, &hook("Stop"), Some(&endpoint()));
-        assert!(sent.is_empty(), "nothing said, so nothing asked");
-
-        let finished = finish(
-            &mut state,
-            200,
-            &reply("Tests pass.", false),
-            &context(7, id),
-        );
-        assert!(state.summaries.is_empty(), "it describes the turn before");
-        assert!(finished.renames.is_empty(), "and must not rename the pane");
-        assert!(finished.toasts.is_empty());
-    }
-
     /// And a session replaced in the same pane: `/clear` starts a new one, and the old
     /// session's summary describes work the user cannot get back to.
     #[test]
@@ -6433,6 +5939,7 @@ mod tests {
             ..State::default()
         };
         feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
+        ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
         let id = state.summary_requests.get(&7).expect("in flight").id;
 
         let restarted = wire::HookEvent {
@@ -6491,40 +5998,6 @@ mod tests {
             Some("now write the docs"),
             "the new session asked it, so the summary of its first turn must have it"
         );
-    }
-
-    /// The screen must not buy a second summary for a turn the feed already described:
-    /// two answers per turn, one of them a guess, and whichever landed last would win.
-    #[test]
-    fn the_screen_stops_asking_about_a_pane_that_reports_for_itself() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            ..State::default()
-        };
-        let mut sent = Vec::new();
-        // Long enough to be worth summarising at all - see `worth_summarizing`.
-        let first = "$ cargo x test\nrunning the whole workspace, one crate at a time";
-        let second = "$ cargo x test\nall 1226 tests passed, and here is what changed";
-        let third = "$ cargo x lint\nclippy found nothing to say about any of it";
-
-        // Working, then settled: the edge the screen heuristic buys a summary on. The
-        // first reading of a pane is `busy` whatever it shows, and settling takes one
-        // poll to notice the change plus `SUMMARY_SETTLE_POLLS` of stillness after it.
-        poll_showing(&mut state, first, &mut sent);
-        poll_showing(&mut state, second, &mut sent);
-        for _ in 0..SUMMARY_SETTLE_POLLS {
-            poll_showing(&mut state, second, &mut sent);
-        }
-        assert_eq!(sent.len(), 1, "no feed yet, so the screen is all there is");
-
-        // Now the pane starts reporting for itself.
-        feed(&mut state, 7, &hook("UserPromptSubmit"), None);
-        sent.clear();
-        poll_showing(&mut state, third, &mut sent);
-        for _ in 0..SUMMARY_SETTLE_POLLS {
-            poll_showing(&mut state, third, &mut sent);
-        }
-        assert!(sent.is_empty(), "the Stop is what pays for this pane now");
     }
 
     /// Neither half of a malformed message may reach the state. This arrives from
@@ -6628,12 +6101,10 @@ mod tests {
             }]),
             ..State::default()
         };
-        let mut sent = Vec::new();
-        poll_showing(&mut state, EARLIER_PANE, &mut sent);
-        for _ in 0..=SUMMARY_SETTLE_POLLS {
-            poll_showing(&mut state, BUSY_PANE, &mut sent);
-        }
-        assert_eq!(sent.len(), 1, "still summarised");
+        poll_showing(&mut state, BUSY_PANE);
+        let (asked, sent, _) = ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
+        assert!(asked, "still summarised");
+        assert_eq!(sent.len(), 1);
 
         let finished = finish(&mut state, 200, &reply("Done.", false), &context(7, 1));
         assert!(finished.renames.is_empty());
@@ -6651,252 +6122,17 @@ mod tests {
             manual_kinds: BTreeMap::from([(7, "reviewer".to_owned())]),
             ..State::default()
         };
-        let mut sent = Vec::new();
-        poll_showing(&mut state, EARLIER_PANE, &mut sent);
-        for _ in 0..=SUMMARY_SETTLE_POLLS {
-            poll_showing(&mut state, BUSY_PANE, &mut sent);
-        }
+        poll_showing(&mut state, BUSY_PANE);
+        ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
 
         let finished = finish(&mut state, 200, &reply("Done.", false), &context(7, 1));
         assert_eq!(finished.renames, vec![(7, TITLE.to_owned())]);
-    }
-
-    /// Going on holding still is not a new settling. Without this every idle agent would
-    /// be re-summarised every five seconds for as long as it sat there.
-    ///
-    /// Polled well past the cooldown on purpose: the cooldown is what covers the first
-    /// minute, and after it lapses the baseline guard is what has to carry this, because the
-    /// settle arm goes on matching for as long as the pane sits there.
-    #[test]
-    fn sitting_idle_does_not_ask_again() {
-        let (mut state, mut sent) = idle_agent(BUSY_PANE);
-        finish(&mut state, 200, &reply("Done.", false), &context(7, 1));
-
-        for _ in 0..3 {
-            poll_out_the_cooldown(&mut state, BUSY_PANE, &mut sent);
-        }
-        assert_eq!(sent.len(), 1);
-    }
-
-    /// An agent working through a turn pauses - a tool runs, a file is read - and each
-    /// pause crosses the busy→idle edge. Acting on the edge would buy a request per pause,
-    /// each describing a screen the agent is about to leave.
-    #[test]
-    fn a_burst_of_short_pauses_asks_nothing() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            ..State::default()
-        };
-        let mut sent: Vec<(u32, Vec<u8>)> = Vec::new();
-        // Well past the polls a settled pane would need, but never two polls of stillness
-        // in a row, so the count never reaches the window.
-        for round in 0..6 {
-            let text = format!("{BUSY_PANE} step {round}");
-            poll_showing(&mut state, &text, &mut sent);
-            poll_showing(&mut state, &text, &mut sent);
-        }
-        assert!(
-            sent.is_empty(),
-            "no pause lasted long enough to mean the agent had stopped"
-        );
-    }
-
-    /// And when the burst ends, the one request that is paid for describes the screen the
-    /// agent settled on - not any of the ones it passed through.
-    #[test]
-    fn only_the_screen_a_burst_settles_on_is_asked_about() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            ..State::default()
-        };
-        let mut sent: Vec<(u32, Vec<u8>)> = Vec::new();
-        for round in 0..3 {
-            let text = format!("{BUSY_PANE} step {round}");
-            poll_showing(&mut state, &text, &mut sent);
-            poll_showing(&mut state, &text, &mut sent);
-        }
-        for _ in 0..=SUMMARY_SETTLE_POLLS {
-            poll_showing(&mut state, OTHER_PANE, &mut sent);
-        }
-
-        assert_eq!(sent.len(), 1, "one settling, one request");
-        let body: serde_json::Value = serde_json::from_slice(&sent[0].1).unwrap();
-        let prompt = body["messages"][1]["content"].as_str().unwrap();
-        assert!(prompt.contains(OTHER_PANE), "the screen it settled on");
-        assert!(!prompt.contains("step 2"), "not the one before it");
-    }
-
-    /// A pause long enough to settle is not the same as a turn ending. A compile or a slow
-    /// tool holds a screen still for fifteen seconds just as well as a finished agent does,
-    /// and each such pause materially changes the screen, so the baseline guard does
-    /// not catch it. The cooldown is what does.
-    #[test]
-    fn a_second_settling_inside_the_cooldown_asks_nothing() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            ..State::default()
-        };
-        let mut sent: Vec<(u32, Vec<u8>)> = Vec::new();
-        // Three long pauses, each on a screen of its own, well inside one minute.
-        for round in 0..3 {
-            let text = format!("{BUSY_PANE} step {round}");
-            for _ in 0..=SUMMARY_SETTLE_POLLS {
-                poll_showing(&mut state, &text, &mut sent);
-            }
-        }
-        assert_eq!(sent.len(), 1, "one minute, one request");
-    }
-
-    /// And the request the cooldown swallowed is not lost. The pane is still sitting on
-    /// that screen when the window lapses, so it is asked about then — which is what the
-    /// settle arm matching on `>=` rather than `==` buys.
-    #[test]
-    fn a_pane_still_settled_when_the_cooldown_ends_is_asked_about() {
-        let (mut state, mut sent) = idle_agent(BUSY_PANE);
-        finish(&mut state, 200, &reply("Done.", false), &context(7, 1));
-        assert_eq!(sent.len(), 1, "the first screen");
-
-        // A new screen, settled on while the window is still running.
-        for _ in 0..=SUMMARY_SETTLE_POLLS {
-            poll_showing(&mut state, OTHER_PANE, &mut sent);
-        }
-        assert_eq!(sent.len(), 1, "swallowed for now");
-
-        poll_out_the_cooldown(&mut state, OTHER_PANE, &mut sent);
-        assert_eq!(sent.len(), 2, "asked once the window lapsed");
-        let body: serde_json::Value = serde_json::from_slice(&sent[1].1).unwrap();
-        let prompt = body["messages"][1]["content"].as_str().unwrap();
-        assert!(prompt.contains(OTHER_PANE), "about the screen it is on");
-    }
-
-    /// A reply that never lands must not cost the pane its summaries. Both windows are a
-    /// minute, so the in-flight guard and the cooldown lapse together and the pane retries.
-    #[test]
-    fn a_dropped_reply_is_retried_after_a_minute() {
-        let (mut state, mut sent) = idle_agent(BUSY_PANE);
-        assert_eq!(sent.len(), 1);
-
-        // No `finish` - the answer is simply never delivered.
-        poll_out_the_cooldown(&mut state, BUSY_PANE, &mut sent);
-
-        assert_eq!(sent.len(), 2, "asked again rather than silently giving up");
-        assert!(
-            state.summaries.is_empty(),
-            "and still with nothing to show for the first ask"
-        );
-    }
-
-    /// The ceiling, stated plainly: whatever the screen does, one pane cannot buy more than
-    /// a request a minute.
-    #[test]
-    fn a_settled_pane_asks_at_most_once_a_minute() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            ..State::default()
-        };
-        let mut sent: Vec<(u32, Vec<u8>)> = Vec::new();
-        // Twenty screens, each held long enough to settle: eighty polls, near seven minutes.
-        for round in 0..20 {
-            let text = format!("{BUSY_PANE} step {round}");
-            for _ in 0..=SUMMARY_SETTLE_POLLS {
-                poll_showing(&mut state, &text, &mut sent);
-            }
-        }
-        let minutes = 20 * (SUMMARY_SETTLE_POLLS as usize + 1) / SUMMARY_COOLDOWN_TICKS as usize;
-        assert!(
-            sent.len() <= minutes + 1,
-            "{} requests over {minutes} minutes of polls",
-            sent.len()
-        );
-    }
-
-    /// An agent that starts working again is not waiting on anyone, whatever it was
-    /// waiting on before — but the answer itself is kept, stamped with the screen it was
-    /// made from, so a return to that same screen costs nothing. The marker is what goes,
-    /// and it goes because it is drawn only for an idle pane.
-    #[test]
-    fn going_busy_again_clears_the_flag_without_throwing_the_answer_away() {
-        let (mut state, _) = idle_agent(BUSY_PANE);
-        finish(
-            &mut state,
-            200,
-            &reply("Waiting on you.", true),
-            &context(7, 1),
-        );
-        let waiting = |state: &State| {
-            agents::strip_rows(
-                state.panes.as_deref().unwrap_or_default(),
-                &state.manual_kinds,
-                &state.activity,
-                &BTreeMap::new(),
-                &BTreeMap::new(),
-                &state.summaries,
-                &state.hooks,
-            )
-            .iter()
-            .any(|row| matches!(row, agents::StripRow::Agent { text, .. } if text.starts_with('!')))
-        };
-        assert!(waiting(&state), "idle and blocked: the marker is up");
-
-        state.observe_activity_with(|_| sample(OTHER_PANE), no_ask);
-
-        assert!(
-            !waiting(&state),
-            "working again, so nothing is waiting on the user"
-        );
-        assert!(
-            state.summaries.contains_key(&7),
-            "but the answer is still held"
-        );
-    }
-
-    /// Small pane changes do not make the last summary obsolete. They accumulate against
-    /// the successful summary's tail until a fifth of its lines have turned over.
-    #[test]
-    fn a_barely_changed_pane_is_not_summarized_again() {
-        let line = |n: usize| format!("agent{n} output{n} line{n}");
-        let baseline = (1..=10).map(line).collect::<Vec<_>>().join("\n");
-        let (mut state, _) = idle_agent(&baseline);
-        finish(&mut state, 200, &reply("Done.", false), &context(7, 1));
-        // Dropped rather than polled out, so what the assertions below answer for is the
-        // baseline guard alone and not the cooldown standing in front of it.
-        state.summary_cooldown.clear();
-
-        let one_changed = baseline.replace(&line(10), "one new status");
-        state.observe_activity_with(|_| sample(&one_changed), no_ask);
-        state.observe_activity_with(|_| sample(&one_changed), no_ask);
-        assert!(
-            !state.summary_due(7, &one_changed),
-            "one changed line is still covered by the stored summary",
-        );
-
-        let two_changed = one_changed.replace(&line(9), "another different note");
-        state.observe_activity_with(|_| sample(&two_changed), no_ask);
-        state.observe_activity_with(|_| sample(&two_changed), no_ask);
-        assert!(
-            state.summary_due(7, &two_changed),
-            "changes accumulate against the successful baseline"
-        );
     }
 
     #[test]
     fn a_pane_with_nothing_on_it_is_not_worth_asking_about() {
         let (_, sent) = idle_agent("$");
         assert!(sent.is_empty());
-    }
-
-    /// One request per pane at a time: a second edge while one is in flight would double
-    /// the bill for one answer.
-    #[test]
-    fn a_second_edge_does_not_race_the_request_already_in_flight() {
-        let (mut state, _) = idle_agent(BUSY_PANE);
-        assert_eq!(state.summary_requests.get(&7).map(|r| r.id), Some(1));
-        // Dropped so the in-flight guard is the only thing left to refuse.
-        state.summary_cooldown.clear();
-        assert!(
-            !state.summary_due(7, OTHER_PANE),
-            "even for a different screen"
-        );
     }
 
     /// The summary reaches the user the moment it is made, over whatever pane they are in,
@@ -6947,268 +6183,6 @@ mod tests {
     // Readings that are not work: scrolling, resizing, attaching
     // -----------------------------------------------------------------------
 
-    /// Scrolling a pane back shows old output. It is not the agent doing anything, and the
-    /// pane is not working again because the user looked at what it already wrote.
-    #[test]
-    fn a_scrolled_pane_is_not_mistaken_for_a_working_one() {
-        let (mut state, mut sent) = idle_agent(BUSY_PANE);
-        assert_eq!(sent.len(), 1, "the settling itself");
-        let hash = agents::activity_hash(&state.activity, 7);
-        state.summary_cooldown.clear();
-
-        for _ in 0..=SUMMARY_SETTLE_POLLS {
-            poll_reading(&mut state, scrolled(OTHER_PANE), &mut sent);
-        }
-
-        assert_eq!(sent.len(), 1, "scrolling bought no second request");
-        assert_eq!(
-            agents::activity_hash(&state.activity, 7),
-            hash,
-            "and the reply already in flight can still land"
-        );
-    }
-
-    /// Coming back down to the tail is not a fresh settling either — the screen the pane
-    /// ends on is the one it was already summarised for.
-    #[test]
-    fn scrolling_back_down_does_not_buy_a_second_summary() {
-        let (mut state, mut sent) = idle_agent(BUSY_PANE);
-        state.summary_cooldown.clear();
-
-        for _ in 0..=SUMMARY_SETTLE_POLLS {
-            poll_reading(&mut state, scrolled(OTHER_PANE), &mut sent);
-        }
-        for _ in 0..=SUMMARY_SETTLE_POLLS {
-            poll_showing(&mut state, BUSY_PANE, &mut sent);
-        }
-
-        assert_eq!(sent.len(), 1);
-    }
-
-    /// A resize rewraps every line without the agent doing a thing. The words are the same
-    /// words, so the pane never left the screen it settled on.
-    #[test]
-    fn a_repaint_at_a_new_width_is_not_work() {
-        let (mut state, mut sent) = idle_agent(BUSY_PANE);
-        state.summary_cooldown.clear();
-        let rewrapped = BUSY_PANE.replace(' ', "\n");
-
-        for _ in 0..=SUMMARY_SETTLE_POLLS {
-            poll_showing(&mut state, &rewrapped, &mut sent);
-        }
-
-        assert_eq!(sent.len(), 1, "the same words at a new width are not news");
-    }
-
-    /// A pane whose picture moved while nothing was written to its pty moved for some
-    /// reason other than the agent — a reflow, most often. It is not work, and it does not
-    /// restart the count.
-    #[test]
-    fn a_screen_that_moved_with_the_pty_silent_is_not_work() {
-        let (mut state, mut sent) = idle_agent(BUSY_PANE);
-        state.summary_cooldown.clear();
-
-        for _ in 0..=SUMMARY_SETTLE_POLLS {
-            poll_reading(&mut state, quiet(OTHER_PANE), &mut sent);
-        }
-
-        assert_eq!(sent.len(), 1);
-    }
-
-    /// A pane whose pty was resized is left alone for a while: the SIGWINCH that follows
-    /// makes a full-screen agent redraw itself, which is real output for a reason that has
-    /// nothing to do with the user's work.
-    #[test]
-    fn a_pane_that_changed_size_is_left_alone_until_it_settles() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            manifest: sized_manifest(7, 40, 80),
-            ..State::default()
-        };
-        state.watch_geometry();
-        let mut sent = Vec::new();
-        poll_showing(&mut state, EARLIER_PANE, &mut sent);
-
-        // The resize, and the redraw it provokes.
-        state.manifest = sized_manifest(7, 40, 100);
-        state.rebuild_panes();
-        for _ in 0..=SUMMARY_SETTLE_POLLS {
-            poll_showing(&mut state, BUSY_PANE, &mut sent);
-        }
-
-        assert!(sent.is_empty(), "the redraw was not a finished turn");
-
-        // And the suppression does not outlive the grace window: it is a window, not a
-        // ban on ever summarising this pane again.
-        for _ in 0..GEOMETRY_GRACE_TICKS {
-            poll_showing(&mut state, BUSY_PANE, &mut sent);
-        }
-        assert!(sent.is_empty(), "still nothing new to say afterwards");
-    }
-
-    /// Attaching to a session resizes every pane in it at once. Whatever the agents were
-    /// doing, none of them just finished doing it.
-    #[test]
-    fn attaching_to_a_settled_session_says_nothing() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            manifest: sized_manifest(7, 40, 80),
-            ..State::default()
-        };
-        state.watch_geometry();
-        let mut sent = Vec::new();
-        poll_showing(&mut state, EARLIER_PANE, &mut sent);
-        for _ in 0..=SUMMARY_SETTLE_POLLS {
-            poll_showing(&mut state, BUSY_PANE, &mut sent);
-        }
-        assert_eq!(sent.len(), 1, "the agent really did finish, once");
-        finish(&mut state, 200, &reply("Done.", false), &context(7, 1));
-        state.summary_cooldown.clear();
-
-        // The attach: a narrower client, so every pane is resized and repaints.
-        state.manifest = sized_manifest(7, 30, 60);
-        state.rebuild_panes();
-        let rewrapped = BUSY_PANE.replace(' ', "\n");
-        for _ in 0..=SUMMARY_SETTLE_POLLS {
-            poll_showing(&mut state, &rewrapped, &mut sent);
-        }
-
-        assert_eq!(sent.len(), 1, "attaching told the user nothing new");
-    }
-
-    /// The other half of the grace window: work that lands after it is still work.
-    #[test]
-    fn work_that_lands_after_a_resize_is_still_asked_about() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            manifest: sized_manifest(7, 40, 80),
-            ..State::default()
-        };
-        state.watch_geometry();
-        let mut sent = Vec::new();
-        poll_showing(&mut state, EARLIER_PANE, &mut sent);
-
-        state.manifest = sized_manifest(7, 40, 100);
-        state.rebuild_panes();
-        for _ in 0..GEOMETRY_GRACE_TICKS {
-            poll_showing(&mut state, EARLIER_PANE, &mut sent);
-        }
-        assert!(sent.is_empty());
-
-        // The window has lapsed, and now the agent actually does something and stops.
-        poll_showing(&mut state, BUSY_PANE, &mut sent);
-        for _ in 0..=SUMMARY_SETTLE_POLLS {
-            poll_showing(&mut state, OTHER_PANE, &mut sent);
-        }
-        assert_eq!(sent.len(), 1);
-    }
-
-    /// A session left alone overnight is full of settled agents. Noticing them is not the
-    /// same as watching one stop, and starting the daemon must not toast every one of them.
-    #[test]
-    fn a_pane_that_was_already_still_when_we_first_saw_it_is_not_asked_about() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            ..State::default()
-        };
-        let mut sent = Vec::new();
-        for _ in 0..SUMMARY_COOLDOWN_TICKS {
-            poll_showing(&mut state, BUSY_PANE, &mut sent);
-        }
-
-        assert!(sent.is_empty(), "nothing here ever stopped working");
-
-        // But it is not written off: the next thing it does is asked about.
-        poll_showing(&mut state, EARLIER_PANE, &mut sent);
-        for _ in 0..=SUMMARY_SETTLE_POLLS {
-            poll_showing(&mut state, OTHER_PANE, &mut sent);
-        }
-        assert_eq!(sent.len(), 1);
-    }
-
-    /// A settling that lands while the pane is unreadable — scrolled back, or a host call
-    /// that failed — is not lost: it is asked about as soon as there is a screen worth
-    /// describing again.
-    #[test]
-    fn a_settling_nobody_could_read_is_asked_about_once_it_can_be() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            ..State::default()
-        };
-        let mut sent = Vec::new();
-        poll_showing(&mut state, EARLIER_PANE, &mut sent);
-        poll_showing(&mut state, BUSY_PANE, &mut sent);
-        // The user scrolls back just as the agent stops.
-        for _ in 0..SUMMARY_SETTLE_POLLS {
-            poll_reading(&mut state, scrolled(OTHER_PANE), &mut sent);
-        }
-        assert!(sent.is_empty(), "nothing worth describing was on screen");
-
-        poll_showing(&mut state, BUSY_PANE, &mut sent);
-        assert_eq!(sent.len(), 1, "and the settling was not thrown away");
-    }
-
-    /// The pane closed under the poll, so the host answered an error instead of a screen.
-    /// That error is not what the agent wrote, and asking the model to summarise it would
-    /// describe the failure as if it were the session.
-    #[test]
-    fn a_pane_we_could_not_read_is_never_sent_to_the_model() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            ..State::default()
-        };
-        // The flag alone has to be enough. Nothing else about this reading looks wrong —
-        // it is not scrolled, and there is no earlier screen for it to have moved away
-        // from — so it is the failure itself that makes it worth nothing.
-        assert!(matches!(
-            state.qualify(7, &unreadable()),
-            agents::Sample::Unusable
-        ));
-
-        let mut sent = Vec::new();
-        poll_showing(&mut state, EARLIER_PANE, &mut sent);
-        poll_showing(&mut state, BUSY_PANE, &mut sent);
-        for _ in 0..SUMMARY_SETTLE_POLLS {
-            poll_reading(&mut state, unreadable(), &mut sent);
-        }
-
-        assert!(sent.is_empty(), "an error message is not a screen");
-
-        // And if the pane comes back — a read that failed for some passing reason — the
-        // settling it could not pay for is still owed.
-        poll_showing(&mut state, BUSY_PANE, &mut sent);
-        assert_eq!(sent.len(), 1);
-    }
-
-    /// The agent exits and leaves its pane sitting at a shell prompt. The latch and the
-    /// title still call the pane an agent, and the prompt drawing itself looks exactly like
-    /// a screenful of work settling — so this used to ask the model to describe a session
-    /// that had already ended.
-    #[test]
-    fn an_agent_that_has_finished_is_not_summarised() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            ..State::default()
-        };
-        state.on_command(7, vec!["claude".to_owned()], true);
-        let mut sent = Vec::new();
-        poll_showing(&mut state, EARLIER_PANE, &mut sent);
-        // The agent exits: nothing in the foreground, and no agent in the command.
-        state.on_command(7, vec!["zsh".to_owned()], false);
-        assert!(state.pending_release.contains(&7), "proposed, not settled");
-        for _ in 0..=SUMMARY_SETTLE_POLLS {
-            poll_showing(&mut state, BUSY_PANE, &mut sent);
-        }
-
-        assert!(sent.is_empty(), "there is no agent behind this screen");
-
-        // The proposal was wrong — the agent was only between tool runs — and the settling
-        // it swallowed was deferred rather than dropped.
-        state.repair_commands_with(|_| Some("claude".to_owned()));
-        poll_showing(&mut state, BUSY_PANE, &mut sent);
-        assert_eq!(sent.len(), 1);
-    }
-
     /// And when the proposal is confirmed, what we knew about the agent goes with it: a
     /// summary of a session that has ended is worse than no summary at all.
     #[test]
@@ -7228,9 +6202,7 @@ mod tests {
         state.repair_commands_with(|_| Some("zsh".to_owned()));
 
         assert!(state.summaries.is_empty(), "the session is over");
-        assert!(state.summary_baselines.is_empty());
         assert!(state.activity.is_empty());
-        assert!(state.phase.is_empty());
     }
 
     /// The agent went away while we were asking about it. The answer describes a session
@@ -7266,23 +6238,6 @@ mod tests {
 
         assert!(finished.toasts.is_empty());
         assert!(state.summaries.is_empty());
-    }
-
-    /// A settling the cooldown swallowed is deferred, not dropped — the opposite of one a
-    /// grace window suppresses.
-    #[test]
-    fn an_edge_the_cooldown_swallowed_is_asked_about_when_it_expires() {
-        let (mut state, mut sent) = idle_agent(BUSY_PANE);
-        assert_eq!(sent.len(), 1);
-
-        // A second stretch of work, finished well inside the cooldown.
-        for _ in 0..=SUMMARY_SETTLE_POLLS {
-            poll_showing(&mut state, OTHER_PANE, &mut sent);
-        }
-        assert_eq!(sent.len(), 1, "refused for now");
-
-        poll_out_the_cooldown(&mut state, OTHER_PANE, &mut sent);
-        assert_eq!(sent.len(), 2, "and asked once it lapsed");
     }
 
     /// A screen summary may still mark an agent as awaiting input, but only an explicit hook
@@ -7330,30 +6285,8 @@ mod tests {
         assert!(state.summaries.is_empty());
     }
 
-    /// The pane went back to work while we were asking. Storing the answer would raise a
-    /// marker on an agent that is busy.
-    #[test]
-    fn a_reply_for_a_pane_that_went_busy_again_is_dropped() {
-        let (mut state, _) = idle_agent(BUSY_PANE);
-        state.observe_activity_with(|_| sample(OTHER_PANE), no_ask);
-
-        let finished = finish(
-            &mut state,
-            200,
-            &reply("Waiting on you.", true),
-            &context(7, 1),
-        );
-
-        assert!(state.summaries.is_empty());
-        assert!(state.summary_baselines.is_empty());
-        assert!(
-            finished.toasts.is_empty(),
-            "and a toast describing a screen that is gone is worse than none",
-        );
-    }
-
     /// A failed summary is simply no summary - the same stance a failed Git probe takes.
-    /// The pane asks again once its cooldown is up, rather than being written off.
+    /// The pane is free to be asked about again rather than being written off.
     #[test]
     fn a_failed_request_stores_nothing_and_frees_the_pane_to_ask_again() {
         let (mut state, _) = idle_agent(BUSY_PANE);
@@ -7361,16 +6294,10 @@ mod tests {
         let finished = finish(&mut state, 500, b"upstream is down", &context(7, 1));
 
         assert!(state.summaries.is_empty());
-        assert!(state.summary_baselines.is_empty());
         assert!(state.summary_requests.is_empty());
         assert!(finished.toasts.is_empty(), "and says nothing to the user");
-        // Dropped rather than polled out: a failure is not meant to shorten the window, so
-        // what is asserted below is that nothing *else* is holding the pane back.
-        state.summary_cooldown.clear();
-        assert!(
-            state.summary_due(7, BUSY_PANE),
-            "so the next edge tries again"
-        );
+        let (asked, _, _) = ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
+        assert!(asked, "so pressing the key again tries again");
     }
 
     /// An answer the parser cannot use is the same as no answer, and must not leave the
@@ -7382,48 +6309,8 @@ mod tests {
         let finished = finish(&mut state, 200, b"{\"choices\":[]}", &context(7, 1));
 
         assert!(state.summaries.is_empty());
-        assert!(state.summary_baselines.is_empty());
         assert!(state.summary_requests.is_empty());
         assert!(finished.toasts.is_empty());
-    }
-
-    /// A reply is stamped with the screen the *request* was made from, not with whatever
-    /// the pane happens to show when it lands.
-    ///
-    /// The bug this guards: a pane that moves on while the request is out is still idle
-    /// when the answer arrives, so a naive "is it busy?" check lets the stale answer
-    /// through. The request hash is the exact identity check that rejects it; the summary
-    /// baseline must remain untouched so the new screen can still earn its own request.
-    #[test]
-    fn an_answer_about_a_screen_the_pane_has_left_is_dropped() {
-        let (mut state, _) = idle_agent(BUSY_PANE);
-        // The pane moves on and settles somewhere else, all while the request is out.
-        state.observe_activity_with(|_| sample(OTHER_PANE), no_ask);
-        state.observe_activity_with(|_| sample(OTHER_PANE), no_ask);
-        assert!(
-            state.activity[&7].1 > 0,
-            "idle again, so idleness alone cannot tell this answer is stale",
-        );
-
-        let finished = finish(
-            &mut state,
-            200,
-            &reply("About the old screen.", true),
-            &context(7, 1),
-        );
-
-        assert!(state.summaries.is_empty());
-        assert!(state.summary_baselines.is_empty());
-        assert!(
-            finished.renames.is_empty(),
-            "and the pane keeps the name it had"
-        );
-        // Dropped so the baseline guard is what answers below - the cooldown is its own test.
-        state.summary_cooldown.clear();
-        assert!(
-            state.summary_due(7, OTHER_PANE),
-            "and the screen it really is on is still owed a request",
-        );
     }
 
     /// A `WebRequestResult` that never arrives must not leave the pane looking permanently
@@ -7431,17 +6318,19 @@ mod tests {
     #[test]
     fn a_request_that_never_comes_back_stops_blocking_the_pane() {
         let (mut state, _) = idle_agent(BUSY_PANE);
-        assert!(!state.summary_due(7, OTHER_PANE), "blocked while in flight");
+        let (asked, _, _) = ask(&mut state, 7, Some(&endpoint()), sample(OTHER_PANE));
+        assert!(!asked, "blocked while in flight");
 
         // It survives exactly `SUMMARY_TICKS` heartbeats and goes on the next.
         for _ in 0..SUMMARY_TICKS {
-            state.observe_activity_with(|_| sample(BUSY_PANE), no_ask);
+            state.observe_activity_with(|_| sample(BUSY_PANE));
         }
         assert!(!state.summary_requests.is_empty(), "still within its grace");
-        state.observe_activity_with(|_| sample(BUSY_PANE), no_ask);
+        state.observe_activity_with(|_| sample(BUSY_PANE));
 
         assert!(state.summary_requests.is_empty(), "aged out");
-        assert!(state.summary_due(7, BUSY_PANE));
+        let (asked, _, _) = ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
+        assert!(asked, "and the pane can be asked about again");
     }
 
     /// A summary belongs to a pane, and dies with it - the same rule `activity` follows,
@@ -7451,13 +6340,11 @@ mod tests {
         let (mut state, _) = idle_agent(BUSY_PANE);
         finish(&mut state, 200, &reply("Done.", true), &context(7, 1));
         assert!(!state.summaries.is_empty());
-        assert!(!state.summary_baselines.is_empty());
 
         state.panes = Some(vec![]);
-        state.observe_activity_with(|_| sample(BUSY_PANE), no_ask);
+        state.observe_activity_with(|_| sample(BUSY_PANE));
 
         assert!(state.summaries.is_empty());
-        assert!(state.summary_baselines.is_empty());
         assert!(state.summary_requests.is_empty());
         assert!(
             state.activity.is_empty(),
@@ -7474,16 +6361,14 @@ mod tests {
             let (mut state, _) = idle_agent(BUSY_PANE);
             finish(&mut state, 200, &reply("Done.", true), &context(7, 1));
             assert!(!state.summaries.is_empty());
-            assert!(!state.summary_baselines.is_empty());
 
             state.panes.as_mut().unwrap()[0].status = status;
-            state.observe_activity_with(|_| sample(BUSY_PANE), no_ask);
+            state.observe_activity_with(|_| sample(BUSY_PANE));
 
             assert!(
                 state.summaries.contains_key(&7),
                 "{status:?} is a status change, not the pane closing"
             );
-            assert!(state.summary_baselines.contains_key(&7));
             assert!(
                 state.activity.is_empty(),
                 "activity still resets - only the summary is kept"
@@ -7531,9 +6416,7 @@ mod tests {
         };
 
         let mut body = Vec::new();
-        state.send_summary(7, BUSY_PANE, &endpoint(), false, |_, _, _, sent, _| {
-            body = sent
-        });
+        state.send_summary(7, BUSY_PANE, &endpoint(), |_, _, _, sent, _| body = sent);
 
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let user = value["messages"][1]["content"].as_str().unwrap();
@@ -7625,51 +6508,6 @@ mod tests {
             .to_owned()
     }
 
-    /// The cooldown is the guard that fires most: an agent settles several times a turn and
-    /// only the first is paid for. It is also the one a person is most likely to run into,
-    /// because pressing the key is the natural thing to do a few seconds after watching the
-    /// automatic summary land and finding it says the wrong thing.
-    #[test]
-    fn a_summary_somebody_asked_for_is_not_held_off_by_the_cooldown() {
-        let (mut state, sent) = idle_agent(BUSY_PANE);
-        assert_eq!(
-            sent.len(),
-            1,
-            "the automatic one went, and stamped a cooldown"
-        );
-        assert!(state.summary_cooldown.contains_key(&7));
-        // The reply has to land, or the in-flight guard - which is not a budget rule and
-        // does still apply - would be what refused the second.
-        finish(&mut state, 200, &reply("done", false), &context(7, 1));
-
-        let (asked, sent, _) = ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
-
-        assert!(
-            asked,
-            "a person asking is not subject to the daemon's budget"
-        );
-        assert_eq!(sent.len(), 1);
-    }
-
-    /// The other budget guard, and the subtler one: a screen that has barely moved buys the
-    /// automatic path nothing, but somebody looking at that screen and pressing the key is
-    /// saying the last sentence about it was wrong.
-    #[test]
-    fn a_summary_somebody_asked_for_ignores_the_baseline() {
-        let (mut state, _) = idle_agent(BUSY_PANE);
-        finish(&mut state, 200, &reply("done", false), &context(7, 1));
-        state.summary_cooldown.clear();
-        assert!(
-            !state.summary_due(7, BUSY_PANE),
-            "the automatic path is done with this screen"
-        );
-
-        let (asked, sent, _) = ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
-
-        assert!(asked);
-        assert_eq!(sent.len(), 1);
-    }
-
     /// The guard that is not about the budget. `finish_summary_with` correlates strictly on
     /// `(pane, id)`, so a second request would not arrive twice - it would orphan the first
     /// and answer only itself, and the answer already on its way would be thrown away.
@@ -7697,12 +6535,7 @@ mod tests {
         let (asked, _, _) = ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
         assert!(asked);
         // The agent got on with something else while the request was out.
-        let mut sent = Vec::new();
-        poll_showing(
-            &mut state,
-            "a completely different screen entirely",
-            &mut sent,
-        );
+        poll_showing(&mut state, "a completely different screen entirely");
 
         finish(
             &mut state,
@@ -7714,26 +6547,6 @@ mod tests {
         assert_eq!(
             state.summaries[&7].text, "what I was asked",
             "somebody was waiting for this"
-        );
-    }
-
-    /// The same request, made by nobody, is thrown away - the rule this feature is the
-    /// exception to, asserted beside it so the two cannot drift.
-    #[test]
-    fn an_unasked_for_screen_summary_still_does_not_survive_a_screen_that_moved() {
-        let (mut state, _) = idle_agent(BUSY_PANE);
-        let mut sent = Vec::new();
-        poll_showing(
-            &mut state,
-            "a completely different screen entirely",
-            &mut sent,
-        );
-
-        finish(&mut state, 200, &reply("stale", false), &context(7, 1));
-
-        assert!(
-            !state.summaries.contains_key(&7),
-            "nobody asked, so a sentence about a screen that has gone is worse than none"
         );
     }
 
@@ -7765,10 +6578,10 @@ mod tests {
         );
     }
 
-    /// A run whose every entry the last summary absorbed is still worth asking about, which
-    /// is the whole difference between the two spans. Somebody pressing a key wants to know
-    /// what the agent has been doing; answering "nothing has changed since I last said" is
-    /// indistinguishable from the key not working.
+    /// A run whose every entry an earlier summary already absorbed is still worth asking
+    /// about. Somebody pressing a key wants to know what the agent has been doing;
+    /// answering "nothing has changed since I last said" is indistinguishable from the key
+    /// not working.
     #[test]
     fn asking_about_a_hook_fed_pane_reads_the_whole_run_not_only_what_is_new() {
         let mut state = State {
@@ -7776,7 +6589,8 @@ mod tests {
             ..State::default()
         };
         feed(&mut state, 7, &prompt("rewrite the retry backoff"), None);
-        feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
+        feed(&mut state, 7, &stop_saying(REPLY), None);
+        ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
         finish(
             &mut state,
             200,
@@ -7785,7 +6599,7 @@ mod tests {
         );
         assert_eq!(
             state.runs[&7].summarized_revision, state.runs[&7].revision,
-            "the automatic path has absorbed every entry and would ask nothing"
+            "every entry is inside the accepted revision"
         );
 
         let (asked, sent, _) = ask(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE));
@@ -7826,7 +6640,6 @@ mod tests {
     fn asking_about_a_pane_that_cannot_be_read_asks_nobody() {
         let (mut state, _) = idle_agent(BUSY_PANE);
         finish(&mut state, 200, &reply("done", false), &context(7, 1));
-        state.summary_cooldown.clear();
 
         let (asked, sent, _) = ask(&mut state, 7, Some(&endpoint()), scrolled(BUSY_PANE));
         assert!(!asked, "a scrolled pane shows old output");
@@ -7844,7 +6657,6 @@ mod tests {
     fn asking_about_a_screen_only_pane_with_no_endpoint_makes_nothing_up() {
         let (mut state, _) = idle_agent(BUSY_PANE);
         finish(&mut state, 200, &reply("done", false), &context(7, 1));
-        state.summary_cooldown.clear();
 
         let (asked, sent, _) = ask(&mut state, 7, None, sample(BUSY_PANE));
 
@@ -7856,8 +6668,9 @@ mod tests {
         );
     }
 
-    /// A hook-fed pane with no endpoint does have one, and a person is as entitled to it as
-    /// a `Stop` is: the agent's own final message, shortened.
+    /// A hook-fed pane with no endpoint still has an honest answer: the agent's own last
+    /// message, shortened. A screen tail is not one, which is why the pane beside it gets
+    /// nothing.
     #[test]
     fn asking_about_a_hook_fed_pane_with_no_endpoint_falls_back_to_what_it_said() {
         let mut state = State {
@@ -7866,16 +6679,20 @@ mod tests {
         };
         feed(&mut state, 7, &prompt("run the tests"), None);
         feed(&mut state, 7, &stop_saying(REPLY), None);
-        let text = state.summaries[&7].text.clone();
-        // The `Stop` already made one locally; clear it so what is asserted below is this
-        // ask's own answer rather than that one still sitting there.
-        state.summaries.remove(&7);
+        assert!(
+            state.summaries.is_empty(),
+            "the turn ending bought nothing by itself"
+        );
 
         let (asked, sent, _) = ask(&mut state, 7, None, sample(BUSY_PANE));
 
         assert!(asked);
         assert!(sent.is_empty(), "nobody was asked");
-        assert_eq!(state.summaries[&7].text, text);
+        assert!(
+            state.summaries[&7].text.starts_with("I ran the test suite"),
+            "{}",
+            state.summaries[&7].text
+        );
     }
 
     /// `summaries "false"` is a user saying "do not do this", and they did not mean "unless
@@ -7884,7 +6701,6 @@ mod tests {
     fn asking_for_a_summary_that_is_switched_off_asks_nobody() {
         let (mut state, _) = idle_agent(BUSY_PANE);
         finish(&mut state, 200, &reply("done", false), &context(7, 1));
-        state.summary_cooldown.clear();
 
         let (asked, sent, _) =
             ask_wanting(&mut state, 7, Some(&endpoint()), sample(BUSY_PANE), false);
@@ -7930,39 +6746,6 @@ mod tests {
             run.summarized_revision >= run.revision,
             "and the entry it just made is inside the accepted revision, so the next request \
              does not read it back as work the agent did"
-        );
-    }
-
-    /// The regression guard for the flag that decides it. An automatic summary rolls forward
-    /// at the end of every turn, so keeping each one would grow a long run a line per turn -
-    /// and the newest of them, drawn as the timeline's newest row, is the only one anybody
-    /// wanted.
-    #[test]
-    fn a_summary_nobody_asked_for_leaves_the_timeline_alone() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            ..State::default()
-        };
-        feed(&mut state, 7, &prompt("rewrite the retry backoff"), None);
-        feed(&mut state, 7, &stop_saying(REPLY), Some(&endpoint()));
-
-        finish(
-            &mut state,
-            200,
-            &reply("rewrote the backoff", false),
-            &context(7, 1),
-        );
-
-        let run = state.runs.get(&7).expect("the pane's run");
-        assert!(
-            !run.entries
-                .iter()
-                .any(|entry| entry.kind == agents::RunEntryKind::Summary),
-            "the turn's own summary rolls forward, it is not filed"
-        );
-        assert_eq!(
-            run.summary.as_ref().expect("the rolling one").text,
-            "rewrote the backoff"
         );
     }
 
@@ -8034,7 +6817,7 @@ mod tests {
         });
         run.revision = 2;
 
-        let delta = run_delta(&run, None, Span::Whole).expect("there is a question to describe");
+        let delta = run_delta(&run).expect("there is a question to describe");
 
         assert!(delta.contains("Which library?"));
         assert!(!delta.contains("a paraphrase of a paraphrase"));
@@ -8245,9 +7028,8 @@ mod tests {
         assert!(ask_run(&mut state, &run.id, Some(&endpoint())).0);
         assert!(!ask_run(&mut state, &run.id, Some(&endpoint())).0);
 
-        let mut sent = Vec::new();
         for _ in 0..=SUMMARY_TICKS {
-            poll_showing(&mut state, BUSY_PANE, &mut sent);
+            poll_showing(&mut state, BUSY_PANE);
         }
 
         assert!(
@@ -8256,12 +7038,46 @@ mod tests {
         );
     }
 
-    /// A run has no local fallback: what it holds is a record, not prose somebody wrote to
-    /// be read.
+    /// A session with no API key still ends, and before this it ended into a blank row. The
+    /// run's own last message is prose the agent wrote for a person to read, which is the one
+    /// thing there is to fall back to — the same fallback the key press has had all along.
     #[test]
-    fn an_archived_run_with_no_endpoint_makes_nothing_up() {
+    fn an_archived_run_with_no_endpoint_falls_back_to_the_agents_own_words() {
         let mut state = State::default();
         let run = archived_run("claude:cc-session-1");
+        state.dirty_runs.insert(run.id.clone(), run.clone());
+
+        let (asked, sent) = ask_run(&mut state, &run.id, None);
+
+        assert!(asked);
+        assert!(sent.is_empty(), "nobody was asked, so nothing went out");
+        let stored = state.dirty_runs[&run.id]
+            .summary
+            .as_ref()
+            .expect("the run kept it");
+        assert!(
+            stored.text.starts_with("I ran the test suite"),
+            "{}",
+            stored.text
+        );
+        // No title: naming a pane in four words is a judgement, and this path has nobody to
+        // make it. See `agents::local_summary`.
+        assert!(stored.title.is_empty());
+        assert_eq!(
+            state.dirty_runs[&run.id].summarized_revision, state.dirty_runs[&run.id].revision,
+            "and the run is not owed another"
+        );
+    }
+
+    /// The record's *events* are what cannot be fed to `local_summary` - a list of hook names
+    /// is not prose anybody wrote. A run that never said anything gets nothing rather than a
+    /// paraphrase of its own bookkeeping.
+    #[test]
+    fn an_archived_run_that_never_spoke_has_no_local_fallback() {
+        let mut state = State::default();
+        let mut run = archived_run("claude:cc-session-1");
+        run.entries
+            .retain(|entry| entry.kind != agents::RunEntryKind::Result);
         state.dirty_runs.insert(run.id.clone(), run.clone());
 
         let (asked, sent) = ask_run(&mut state, &run.id, None);
