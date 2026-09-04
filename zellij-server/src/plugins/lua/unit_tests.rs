@@ -653,18 +653,57 @@ fn the_agent_commit_example_loads_and_stages_on_c() {
 fn the_shipped_agent_exit_hook_loads_and_renders() {
     // The builtin hook is compiled in rather than read from disk, so nothing else would notice
     // a syntax error in it until an agent exited.
+    use crate::background_jobs::BackgroundJob;
+    use zellij_utils::channels::SenderWithContext;
+    use zellij_utils::errors::ErrorContext;
+
+    let (to_background_jobs, background_jobs) =
+        zellij_utils::channels::unbounded::<(BackgroundJob, ErrorContext)>();
+    let mut env = test_env();
+    env.senders.to_background_jobs = Some(SenderWithContext::new(to_background_jobs));
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
     let mut plugin = load_lua_plugin(
         zellij_utils::consts::builtin_lua_plugin("agent-exit").expect("the hook is a builtin"),
         "agent-exit.lua",
-        test_env(),
+        env,
     )
     .unwrap();
     plugin
         .load(&BTreeMap::from([
             ("agent_pane_id".to_owned(), "7".to_owned()),
             ("agent_cwd".to_owned(), "/work/.worktrees/topic".to_owned()),
+            ("agent_firecracker_vm".to_owned(), "review".to_owned()),
+            (
+                "agent_firecracker_worktree".to_owned(),
+                "/work/.worktrees/topic".to_owned(),
+            ),
+            ("agent_session".to_owned(), "work".to_owned()),
+            (
+                "agent_zellij_executable".to_owned(),
+                "/bin/zellij".to_owned(),
+            ),
+            (
+                "agent_zellij_config_file".to_owned(),
+                "/config/config.kdl".to_owned(),
+            ),
+            ("agent_zellij_config_dir".to_owned(), "/config".to_owned()),
         ]))
         .unwrap();
+    let config_env = BTreeMap::from([
+        (
+            "ZELLIJ_CONFIG_FILE".to_owned(),
+            "/config/config.kdl".to_owned(),
+        ),
+        ("ZELLIJ_CONFIG_DIR".to_owned(), "/config".to_owned()),
+    ]);
+    let next_command = || match background_jobs.recv().unwrap().0 {
+        BackgroundJob::RunCommand(_, _, command, args, env, cwd, context, Some(8192)) => {
+            assert_eq!(env, config_env);
+            assert_eq!(cwd, PathBuf::from("/"));
+            (command, args, context)
+        },
+        other => panic!("expected a Firecracker helper command, got {other:?}"),
+    };
     let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
     assert!(
         rendered.contains("Agent exited. Create another agent in the same directory?"),
@@ -674,6 +713,151 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
         rendered.contains("Directory: /work/.worktrees/topic"),
         "got: {rendered}"
     );
+    assert!(rendered.contains("Checking VM worktree"), "got: {rendered}");
+
+    let (command, args, check_context) = next_command();
+    assert_eq!(command, "/bin/zellij");
+    assert_eq!(
+        args,
+        ["firecracker", "changes", "review", "--session", "work"]
+    );
+    plugin
+        .update(&Event::RunCommandResult(
+            Some(0),
+            b"2\n".to_vec(),
+            vec![],
+            check_context,
+        ))
+        .unwrap();
+    let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
+    assert!(
+        rendered.contains("2 changed paths in the VM"),
+        "got: {rendered}"
+    );
+    assert!(rendered.contains("<S> sync 2"), "got: {rendered}");
+
+    plugin
+        .update(&Event::Key(KeyWithModifier::new(BareKey::Char('s'))))
+        .unwrap();
+    let (command, args, sync_context) = next_command();
+    assert_eq!(command, "/bin/zellij");
+    assert_eq!(args, ["firecracker", "sync", "review", "--session", "work"]);
+    plugin
+        .update(&Event::RunCommandResult(
+            Some(1),
+            vec![],
+            b"provider unavailable\n".to_vec(),
+            sync_context,
+        ))
+        .unwrap();
+    let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
+    assert!(
+        rendered.contains("VM worktree sync failed: provider unavailable"),
+        "got: {rendered}"
+    );
+    assert!(rendered.contains("<S> sync 2"), "got: {rendered}");
+
+    plugin
+        .update(&Event::Key(KeyWithModifier::new(BareKey::Char('s'))))
+        .unwrap();
+    let (command, args, retry_context) = next_command();
+    assert_eq!(command, "/bin/zellij");
+    assert_eq!(args, ["firecracker", "sync", "review", "--session", "work"]);
+    plugin
+        .update(&Event::RunCommandResult(
+            Some(0),
+            vec![],
+            b"warning: kept guest copy\n".to_vec(),
+            retry_context,
+        ))
+        .unwrap();
+    let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
+    assert!(
+        rendered.contains("VM worktree synced. warning: kept guest copy"),
+        "got: {rendered}"
+    );
+    assert!(rendered.contains("<S> sync 2"), "got: {rendered}");
+
+    plugin
+        .update(&Event::Key(KeyWithModifier::new(BareKey::Char('s'))))
+        .unwrap();
+    let (command, args, recheck_context) = next_command();
+    assert_eq!(command, "/bin/zellij");
+    assert_eq!(
+        args,
+        ["firecracker", "changes", "review", "--session", "work"]
+    );
+    assert!(
+        background_jobs.try_recv().is_err(),
+        "sync must remain locked until the recheck finishes"
+    );
+    plugin
+        .update(&Event::RunCommandResult(
+            Some(0),
+            b"1\n".to_vec(),
+            vec![],
+            recheck_context,
+        ))
+        .unwrap();
+    let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
+    assert!(
+        rendered.contains("1 changed path remains"),
+        "got: {rendered}"
+    );
+    assert!(rendered.contains("<S> sync 1"), "got: {rendered}");
+
+    plugin
+        .update(&Event::Key(KeyWithModifier::new(BareKey::Char('s'))))
+        .unwrap();
+    let (_, _, sync_context) = next_command();
+    plugin
+        .update(&Event::RunCommandResult(
+            Some(0),
+            vec![],
+            vec![],
+            sync_context,
+        ))
+        .unwrap();
+    let (_, _, recheck_context) = next_command();
+    plugin
+        .update(&Event::RunCommandResult(
+            Some(1),
+            vec![],
+            b"provider unavailable\n".to_vec(),
+            recheck_context,
+        ))
+        .unwrap();
+    let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
+    assert!(
+        rendered.contains("Could not recheck VM changes: provider unavailable"),
+        "got: {rendered}"
+    );
+    assert!(rendered.contains("<S> sync 1"), "got: {rendered}");
+
+    plugin
+        .update(&Event::Key(KeyWithModifier::new(BareKey::Char('s'))))
+        .unwrap();
+    let (_, _, sync_context) = next_command();
+    plugin
+        .update(&Event::RunCommandResult(
+            Some(0),
+            vec![],
+            vec![],
+            sync_context,
+        ))
+        .unwrap();
+    let (_, _, recheck_context) = next_command();
+    plugin
+        .update(&Event::RunCommandResult(
+            Some(0),
+            b"0\n".to_vec(),
+            vec![],
+            recheck_context,
+        ))
+        .unwrap();
+    let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
+    assert!(rendered.contains("VM worktree synced."), "got: {rendered}");
+    assert!(!rendered.contains("<S> sync"), "got: {rendered}");
 }
 
 /// The agent-policy hook is headless: a syntax error in it would surface the first time an agent

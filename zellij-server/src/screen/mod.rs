@@ -805,6 +805,8 @@ pub(crate) struct Screen {
     copy_options: CopyOptions,
     debug: bool,
     session_name: String,
+    config_file_path: Option<PathBuf>,
+    config_dir: Option<PathBuf>,
     peer_sessions_cache: BTreeMap<String, SessionInfo>, // String is the session name, can
     // also be this session
     resurrectable_sessions_cache: BTreeMap<String, Duration>, // String is the session name,
@@ -1320,6 +1322,8 @@ impl Screen {
             copy_options,
             debug,
             session_name,
+            config_file_path: None,
+            config_dir: None,
             peer_sessions_cache,
             default_layout,
             default_layout_name,
@@ -2975,6 +2979,35 @@ impl Screen {
                 .unwrap_or_default(),
         );
         payload.insert("agent_command".to_owned(), run_command.to_string());
+        if let (Some(vm), Some(worktree)) = (
+            run_command.target.firecracker_vm(),
+            run_command.target.firecracker_worktree(),
+        ) {
+            payload.insert("agent_firecracker_vm".to_owned(), vm.to_owned());
+            payload.insert(
+                "agent_firecracker_worktree".to_owned(),
+                worktree.display().to_string(),
+            );
+            payload.insert("agent_session".to_owned(), self.session_name.clone());
+            if let Ok(executable) = std::env::current_exe() {
+                payload.insert(
+                    "agent_zellij_executable".to_owned(),
+                    executable.display().to_string(),
+                );
+            }
+            if let Some(config_file_path) = &self.config_file_path {
+                payload.insert(
+                    "agent_zellij_config_file".to_owned(),
+                    config_file_path.display().to_string(),
+                );
+            }
+            if let Some(config_dir) = &self.config_dir {
+                payload.insert(
+                    "agent_zellij_config_dir".to_owned(),
+                    config_dir.display().to_string(),
+                );
+            }
+        }
         self.fire_hook(HookPoint::AgentExit, Some(pane_id), payload, client_id);
     }
     /// Hand any command pane's exit to the `pane_exit` hook, held or not.

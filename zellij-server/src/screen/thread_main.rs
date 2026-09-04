@@ -20,7 +20,6 @@ use crate::tab::Tab;
 use crate::thread_bus::Bus;
 use crate::{ClientId, ServerInstruction};
 use std::collections::{HashMap, HashSet};
-#[cfg(test)]
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use zellij_utils::consts::{session_info_folder_for_session, ZELLIJ_SOCK_DIR};
@@ -104,6 +103,8 @@ pub(crate) fn screen_thread_main(
     client_attributes: ClientAttributes,
     config: Config,
     debug: bool,
+    config_file_path: Option<PathBuf>,
+    config_dir: Option<PathBuf>,
     default_layout: Box<Layout>,
 ) -> Result<()> {
     // Resolve `theme_dark` / `theme_light` to concrete `Styling` from the
@@ -265,6 +266,8 @@ pub(crate) fn screen_thread_main(
         notification_position,
         notification_timeout_secs,
     );
+    screen.config_file_path = config_file_path;
+    screen.config_dir = config_dir;
     screen.host_theme_dark_styling = host_theme_dark_styling;
     screen.host_theme_light_styling = host_theme_light_styling;
     screen.paste_buffer_read_enabled = dangerously_enable_paste_buffer_read;

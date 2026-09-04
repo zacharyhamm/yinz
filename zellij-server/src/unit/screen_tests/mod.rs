@@ -493,6 +493,8 @@ impl MockScreen {
         )
         .should_silently_fail();
         let debug = false;
+        let config_file_path = self.session_metadata.config_file_path.clone();
+        let config_dir = self.session_metadata.config_dir.clone();
         let screen_thread = std::thread::Builder::new()
             .name("screen_thread".to_string())
             .spawn(move || {
@@ -503,6 +505,8 @@ impl MockScreen {
                     client_attributes,
                     config,
                     debug,
+                    config_file_path,
+                    config_dir,
                     default_layout,
                 )
                 .expect("TEST")
@@ -580,6 +584,8 @@ impl MockScreen {
         )
         .should_silently_fail();
         let debug = false;
+        let config_file_path = self.session_metadata.config_file_path.clone();
+        let config_dir = self.session_metadata.config_dir.clone();
         let screen_thread = std::thread::Builder::new()
             .name("screen_thread".to_string())
             .spawn(move || {
@@ -590,6 +596,8 @@ impl MockScreen {
                     client_attributes,
                     config,
                     debug,
+                    config_file_path,
+                    config_dir,
                     Box::default(),
                 )
                 .expect("TEST")

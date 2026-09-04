@@ -315,6 +315,7 @@ Requests:
 
 ```json
 {"version":2,"action":"ensure","session":"work","name":"review","image":"rust-dev","worktree":"/home/me/src/project"}
+{"version":2,"action":"changes","session":"work","name":"review"}
 {"version":2,"action":"sync","session":"work","name":"review"}
 {"version":2,"action":"stop","session":"work","name":"review"}
 {"version":2,"action":"stop_session","session":"work"}
@@ -335,6 +336,15 @@ resolve the session by its current name. It is additive to version 2: a provider
 it keeps the VMs under the old name, Zellij keeps using that name for them, and the server log
 says so. The rename is applied whole or not at all: a state file that cannot be written or
 removed rolls the earlier moves back, so the old name still finds every VM.
+
+`changes` returns the number of guest paths that differ from the last worktree baseline:
+
+```json
+{"version":2,"changes":3}
+```
+
+It compares file contents rather than Git status, so committed and uncommitted guest changes both
+count. Git metadata and ignored files do not: the existing sync deliberately transfers neither.
 
 `sync`, `stop`, and `stop_session` return `{"version":2}` plus, when the worktree merge kept
 the host copy of a file, one `warnings` line per such file:
@@ -416,6 +426,15 @@ the next sync treats it as changed on both sides and keeps both copies:
 zellij firecracker sync review [--session work]
 ```
 
+The shipped `agent_exit` hook runs the read-only check when an agent exits in a worktree-backed
+VM. If any paths changed, its exit screen shows the count and offers `<S>` to run this sync; the
+screen stays open afterwards so the pane can still be restarted or closed. The same check is
+available directly:
+
+```sh
+zellij firecracker changes review [--session work]
+```
+
 Zellij sends `stop_session` whenever the server exits on its own — the last client or pane
 closing, a kill-session, or a fatal server error — after it has closed the session's panes.
 On the way out it terminates every Firecracker pane on its broker, since the VM is about to stop
@@ -427,6 +446,7 @@ is ever keyed under a stale name. Detaching does not stop VMs. Only a server tha
 
 ```sh
 zellij firecracker list [--session work] [--json]
+zellij firecracker changes review [--session work]
 zellij firecracker stop review [--session work]
 ```
 

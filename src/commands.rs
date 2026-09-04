@@ -143,6 +143,10 @@ pub(crate) fn run_firecracker(
                 writeln!(err, "warning: {warning}")?;
             }
         },
+        Firecracker::Changes { name, session } => {
+            let session = selected_session(session)?;
+            writeln!(out, "{}", provider.changes(&session, &name)?)?;
+        },
     }
     Ok(())
 }
@@ -1890,6 +1894,24 @@ mod firecracker_command_tests {
         assert_eq!(
             requests(&dir),
             vec![json!({"version": 2, "action": "sync", "session": "work", "name": "review"})]
+        );
+    }
+
+    #[test]
+    fn changes_prints_the_guest_change_count() {
+        let (dir, provider) = stub_provider(r#"{"version":2,"changes":3}"#);
+        let (out, err) = run(
+            Firecracker::Changes {
+                name: "review".to_owned(),
+                session: Some("work".to_owned()),
+            },
+            &provider,
+        );
+        assert_eq!(out, "3\n");
+        assert_eq!(err, "");
+        assert_eq!(
+            requests(&dir),
+            vec![json!({"version": 2, "action": "changes", "session": "work", "name": "review"})]
         );
     }
 
