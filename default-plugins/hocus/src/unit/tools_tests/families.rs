@@ -356,3 +356,28 @@ fn a_fully_loaded_plan_is_still_only_the_read_only_tools() {
         advertised(&read_only_specs()),
     );
 }
+
+/// The half of the plugin family that reads is exactly the half planning mode keeps: the
+/// orienting tools are readers, and nothing that writes slipped into the allowlist with them.
+#[test]
+fn the_plugin_family_reads_before_it_writes() {
+    let readers: BTreeSet<&str> = PLUGIN_TOOLS
+        .iter()
+        .copied()
+        .filter(|tool| READ_ONLY.contains(tool))
+        .collect();
+    assert_eq!(
+        readers,
+        [
+            "plugin_docs",
+            "plugin_check",
+            "plugin_list",
+            "plugin_read",
+            "plugin_outline",
+            "plugin_search",
+            "plugin_log",
+        ]
+        .into_iter()
+        .collect()
+    );
+}

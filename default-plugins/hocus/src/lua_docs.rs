@@ -14,6 +14,9 @@
 //! `Commands` at 16 KB and `Hooks` at 12 KB - are served as their `###` children, so a model
 //! that wants the permission table does not also buy the pane-workflow guide.
 
+use crate::plugin_source::{self, Search};
+use crate::tools;
+
 /// How much of a `plugin_docs` answer reaches the model.
 ///
 /// Well above every section as they stand - the largest is a prelude part at ~13 KB - and that
@@ -218,13 +221,15 @@ fn section_for_sub(parent: &str, sub: &str) -> Option<&'static str> {
 fn index() -> String {
     let mut out = String::from(
         "Zellij Lua plugin reference. You write these yourself: `plugin_write` puts the complete \
-         file in the user's plugin folder after compiling it (`plugin_check` runs that compile \
-         on its own, and both warn about what a compile cannot see), and approving that write \
-         grants the permissions the source asks for; `plugin_edit` changes part of a plugin \
-         that already works, which is what to reach for rather than re-sending a file from \
-         memory; `plugin_reload` loads it and answers with its first render or the load error; \
-         `plugin_log` has what it logged. Never ask another agent to write a plugin. Call \
-         plugin_docs with a `section` for the rest:\n\n",
+         file in the user's plugin folder once it compiles (`plugin_check` is that compile \
+         alone), and approving the write grants the permissions the source asks for. To change \
+         a plugin that works, `plugin_outline` or \
+         `plugin_search` finds the lines, `plugin_read` reads that range, `plugin_edit` \
+         replaces it - never re-send a file from memory. `plugin_reload` loads it and answers \
+         with its first render or the load error; `plugin_log` has what it logged. Never ask \
+         another agent to write a plugin. `plugin_docs query=<regex>` searches every section \
+         below (section:LINE:text); `section=` fetches one, or part of it with \
+         `start_line`/`line_count`:\n\n",
     );
     for section in SECTIONS {
         let description = match section {
@@ -309,6 +314,55 @@ pub fn docs(requested: Option<&str>) -> String {
             "no such section {name:?}; the sections are: {}",
             SECTIONS.join(", ")
         ),
+    }
+}
+
+/// Every section a query runs over: all but the index, in `SECTIONS` order, or `only` that one.
+/// Each is the text a `section=` fetch answers with, so a hit's line number is the line a page
+/// read reads.
+fn corpus(only: Option<&str>) -> Vec<(&'static str, String)> {
+    SECTIONS
+        .iter()
+        .copied()
+        .filter(|name| *name != "index")
+        .filter(|name| only.is_none_or(|only| only == *name))
+        .filter_map(|name| section(name).map(|text| (name, text)))
+        .collect()
+}
+
+/// Answer a `plugin_docs query=`: `section:LINE:text` hits over every section, or over
+/// `section` alone. The cheapest grain the docs come in - a spelling is found for a few lines
+/// rather than for the 13 KB of the prelude part it sits in.
+pub fn search(section: Option<&str>, search: &Search) -> String {
+    let section = section.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(name) = section {
+        if self::section(name).is_none() {
+            return docs(Some(name));
+        }
+    }
+    let corpus = corpus(section);
+    let files: Vec<(&str, &str)> = corpus
+        .iter()
+        .map(|(name, text)| (*name, text.as_str()))
+        .collect();
+    match plugin_source::search(&files, search) {
+        Ok(Some(hits)) => hits,
+        Ok(None) => "no matches in the docs for that query; plugin_docs with no arguments lists \
+                     the sections"
+            .to_owned(),
+        Err(error) => error,
+    }
+}
+
+/// Answer a `plugin_docs section=X start_line=N`: one page of one section in `read_answer`'s
+/// shape, its footer naming `plugin_docs section=X` as the call that reads on.
+pub fn page(section: Option<&str>, start: usize, end: usize) -> String {
+    let Some(name) = section.map(str::trim).filter(|s| !s.is_empty()) else {
+        return "start_line needs a section: plugin_docs section=<name> start_line=N".to_owned();
+    };
+    match self::section(name) {
+        Some(text) => tools::read_answer(&text, start, end, &format!("plugin_docs section={name}")),
+        None => docs(Some(name)),
     }
 }
 
@@ -427,13 +481,15 @@ mod tests {
 
     /// 3.8 KB of quickstart used to be appended to the index unasked, on the first `plugin_docs`
     /// call of every plugin conversation - and, being a tool result, on every round after it.
+    /// The bound sits just above the index as it stands - the orienting tools and the query
+    /// grain cost it ~150 bytes - and well under what the quickstart would add back.
     #[test]
     fn the_index_does_not_carry_the_quickstart() {
         let index = docs(None);
         assert!(!index.contains("## A plugin"), "{index}");
         assert!(index.contains("quickstart"), "but it still points at it");
         assert!(
-            index.len() < 3_000,
+            index.len() < 3_300,
             "the index is {} bytes and is paid for on every later turn",
             index.len()
         );
@@ -462,7 +518,15 @@ mod tests {
     #[test]
     fn the_index_states_the_authoring_loop() {
         let index = docs(None);
-        for tool in ["plugin_write", "plugin_edit", "plugin_reload", "plugin_log"] {
+        for tool in [
+            "plugin_write",
+            "plugin_outline",
+            "plugin_search",
+            "plugin_edit",
+            "plugin_reload",
+            "plugin_log",
+            "query=",
+        ] {
             assert!(index.contains(tool), "the index does not name '{tool}'");
         }
         assert!(
@@ -608,5 +672,84 @@ mod tests {
                 "the guide does not say `{reserved}` is reserved"
             );
         }
+    }
+
+    fn query(text: &str) -> Search<'_> {
+        Search {
+            query: text,
+            case_insensitive: false,
+            context: 0,
+            max_hits: plugin_source::SEARCH_HITS,
+        }
+    }
+
+    /// A query is the cheapest grain the docs come in: a few lines that say where a spelling is,
+    /// rather than the 13 KB section it is in. So it has to stay far under the cap - and every
+    /// hit has to name the line a page of its section would read, or the two grains disagree.
+    #[test]
+    fn a_docs_query_answers_section_line_hits_and_stays_far_under_the_cap() {
+        let hits = search(None, &query("run_command"));
+        assert!(hits.contains("prelude_commands:"), "{hits}");
+        assert!(
+            hits.len() < MAX_DOCS_OUTPUT / 4,
+            "{} bytes is not a cheap grain",
+            hits.len()
+        );
+        for hit in hits
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('…'))
+        {
+            let mut parts = hit.splitn(3, ':');
+            let name = parts.next().unwrap();
+            let line: usize = parts
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap_or_else(|_| panic!("{hit}"));
+            let text = parts.next().unwrap();
+            assert_eq!(
+                section(name).unwrap().lines().nth(line - 1),
+                Some(text),
+                "{hit}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_docs_query_confined_to_a_section_searches_only_it() {
+        let hits = search(Some("events"), &query("event"));
+        assert!(
+            hits.lines().all(|line| line.starts_with("events:")
+                || line.is_empty()
+                || line.starts_with('…')),
+            "{hits}"
+        );
+        assert!(search(Some("nonsense"), &query("x")).contains("no such section"));
+        let none = search(None, &query("qzxv_nothing_like_this"));
+        assert!(none.contains("no matches in the docs"), "{none}");
+    }
+
+    /// A page of a section names the section as the way to read on - `plugin_read`'s footer
+    /// shape, with the call that actually fetches it.
+    #[test]
+    fn a_docs_page_names_the_next_call_by_section() {
+        let first = page(Some("prelude_commands"), 1, 20);
+        assert!(first.starts_with("lines 1-20 of "), "{first}");
+        assert!(
+            first.contains("(plugin_docs section=prelude_commands start_line=21)"),
+            "{first}"
+        );
+        let refused = page(None, 1, 20);
+        assert!(
+            refused.contains("plugin_docs section=<name> start_line=N"),
+            "{refused}"
+        );
+        assert!(page(Some("nonsense"), 1, 20).contains("no such section"));
+    }
+
+    #[test]
+    fn an_invalid_docs_regex_is_answered_with_the_regex_error() {
+        let bad = search(None, &query("("));
+        assert!(bad.contains("regex parse error"), "{bad}");
     }
 }

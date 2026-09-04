@@ -83,14 +83,21 @@ whatever permissions the source asks for - then `plugin_reload name=keys` loads 
 with its first render or the load error, and `plugin_log name=keys` has anything it logged.
 `plugin_check` is the compile step on its own, for trying a fix before writing, and both it and
 the write warn about the traps a compile cannot see - a permission spelled wrong, a namespace
-that is not shared, a column that cannot be declared. `plugin_docs` is this guide, `plugin_list`
-and `plugin_read` are the folder as it stands.
+that is not shared, a column that cannot be declared. `plugin_docs` is this guide -
+`plugin_docs query=<regex>` finds where something is spelled without fetching a section, and
+`section=` with `start_line`/`line_count` reads part of one. `plugin_list` is the folder as it
+stands, with each plugin's length; `plugin_outline name=keys` is one plugin's functions, handlers,
+requires and permissions with their line numbers; `plugin_search query=<regex>` is a
+ripgrep-shaped search over the folder or one plugin; `plugin_read name=keys start_line=N
+line_count=M` reads a range.
 
 Once a plugin works, change it with `plugin_edit name=keys old_string=... new_string=...` rather
-than sending the whole file again: an exact replacement cannot drop the parts of the file it does
-not mention, and a rewrite from memory routinely does. Either way the version replaced is kept as
-`<name>.bak.lua` - `plugin_read name=keys.bak` - so a rewrite that lost something is recoverable
-for exactly one round.
+than sending the whole file again - or several replacements at once as `edits=[{old_string,
+new_string}, ...]`, applied in order and written only if every one applies. The answer names the
+lines that changed, and a miss says which lines nearly matched. An exact replacement cannot drop
+the parts of the file it does not mention, and a rewrite from memory routinely does. Either way
+the version replaced is kept as `<name>.bak.lua` - `plugin_read name=keys.bak` - so a rewrite
+that lost something is recoverable for exactly one round.
 
 The compile is a host command any plugin can call: `zellij.check_lua_plugin { name = "keys.lua",
 source = src }` answers `nil` when the source compiles and the error text otherwise. It only

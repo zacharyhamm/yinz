@@ -125,6 +125,17 @@ impl Lexed {
             .is_empty()
             .then_some((at, value))
     }
+
+    /// The same, for a call's argument: an opening parenthesis may sit between too, so
+    /// `require("zellij")` and `require "zellij"` both name `zellij`, and `require(name)` names
+    /// nothing.
+    fn literal_argument(&self, from: usize, end: usize) -> Option<(usize, &str)> {
+        let (at, value) = self.strings_in(from..end).next()?;
+        self.code[from..at]
+            .trim_matches(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '[' | '=' | '('))
+            .is_empty()
+            .then_some((at, value))
+    }
 }
 
 /// `text`'s bytes as spaces - one per byte, so every offset after it still lines up - with its
@@ -328,8 +339,9 @@ pub struct RequestedPermissions {
     pub unknown: Vec<String>,
 }
 
-/// Every string literal inside a `request_permission` call, with its byte offset.
-fn permission_strings(lexed: &Lexed) -> Vec<(usize, String)> {
+/// Every `request_permission` call: where it is, and every string literal inside its braces
+/// with its own byte offset.
+fn permission_calls(lexed: &Lexed) -> Vec<(usize, Vec<(usize, String)>)> {
     const CALL: &str = "request_permission";
     let mut found = Vec::new();
     let mut at = 0;
@@ -348,14 +360,24 @@ fn permission_strings(lexed: &Lexed) -> Vec<(usize, String)> {
         let Some(close) = matching_bracket(&lexed.code, open) else {
             break;
         };
-        found.extend(
+        found.push((
+            start,
             lexed
                 .strings_in(open..close)
-                .map(|(at, value)| (at, value.to_owned())),
-        );
+                .map(|(at, value)| (at, value.to_owned()))
+                .collect(),
+        ));
         at = close;
     }
     found
+}
+
+/// Every string literal inside a `request_permission` call, with its byte offset.
+fn permission_strings(lexed: &Lexed) -> Vec<(usize, String)> {
+    permission_calls(lexed)
+        .into_iter()
+        .flat_map(|(_, strings)| strings)
+        .collect()
 }
 
 /// The permissions a source asks for, split into what zellij knows and what it does not.
@@ -624,21 +646,75 @@ fn function_blocks(code: &str) -> Vec<FunctionBlock> {
 /// Whether the `function` keyword at `at` opens the plugin's `load`, in either spelling a
 /// plugin uses: `function M.load(config)` or `M.load = function(config)`.
 fn is_load_function(code: &str, at: usize) -> bool {
-    let after = &code[at + "function".len()..];
-    let named: String = after
-        .chars()
-        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | ' ' | '\t'))
-        .collect();
-    let named = named.trim();
-    if named == "load" || named.ends_with(".load") || named.ends_with(":load") {
-        return true;
-    }
+    definition(code, at).is_some_and(|definition| {
+        let name = definition.name.as_str();
+        name == "load" || name.ends_with(".load") || name.ends_with(":load")
+    })
+}
+
+/// A named function's opening: where its statement starts (`local` included), the name it is
+/// given, and its signature cut after the parameter list.
+struct Definition {
+    start: usize,
+    name: String,
+    text: String,
+}
+
+/// Whether a byte can be part of a dotted name: `M.render`, `Text:len`.
+fn is_name_byte(byte: u8) -> bool {
+    is_word_byte(byte) || matches!(byte, b'.' | b':')
+}
+
+/// Where a `local` qualifying the name at `at` begins, if one does.
+fn leading_local(code: &str, at: usize) -> Option<usize> {
     let before = code[..at].trim_end();
-    let Some(before) = before.strip_suffix('=') else {
-        return false;
+    let start = before.strip_suffix("local")?.len();
+    (start == 0 || !is_word_byte(before.as_bytes()[start - 1])).then_some(start)
+}
+
+/// The definition the `function` keyword at `at` opens, or `None` for an anonymous function -
+/// one passed as an argument, returned, or otherwise never named.
+fn definition(code: &str, at: usize) -> Option<Definition> {
+    let after = at + "function".len();
+    let name_start = after + (code[after..].len() - code[after..].trim_start().len());
+    let name_len = code[name_start..]
+        .bytes()
+        .take_while(|byte| is_name_byte(*byte))
+        .count();
+    let (start, name) = if name_len > 0 {
+        // `function M.load(config)`, `local function tick()`.
+        let name = code[name_start..name_start + name_len].to_owned();
+        (leading_local(code, at).unwrap_or(at), name)
+    } else {
+        // `M.render = function(rows, cols)`, `local tick = function()`.
+        let before = code[..at].trim_end().strip_suffix('=')?;
+        // `==` compares; only a lone `=` assigns.
+        if before.ends_with(['=', '~', '<', '>']) {
+            return None;
+        }
+        let before = before.trim_end();
+        let name_start = before
+            .bytes()
+            .rposition(|byte| !is_name_byte(byte))
+            .map_or(0, |i| i + 1);
+        if name_start == before.len() {
+            return None;
+        }
+        let name = before[name_start..].to_owned();
+        (leading_local(code, name_start).unwrap_or(name_start), name)
     };
-    let before = before.trim_end();
-    before == "load" || before.ends_with(".load") || before.ends_with(" load")
+    // The parameter list, which every function has, is where the signature ends.
+    let params = name_start + name_len;
+    let open = params + code[params..].find('(')?;
+    if !code[params..open].trim().is_empty() {
+        return None;
+    }
+    let close = matching_bracket(code, open)?;
+    let text = code[start..=close]
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(Definition { start, name, text })
 }
 
 /// Whether the call at `at` runs while the plugin is loading: in the chunk's own body, or in
@@ -656,9 +732,194 @@ fn runs_at_load(blocks: &[FunctionBlock], at: usize) -> bool {
         .is_none_or(|block| block.is_load)
 }
 
-/// The 1-based line a byte offset falls on.
+/// The 1-based line a byte offset falls on. Counted in line breaks rather than with `lines()`,
+/// which would put an offset at the very start of a line on the line before it.
 fn line_of(source: &str, offset: usize) -> usize {
-    source[..offset.min(source.len())].lines().count().max(1)
+    source.as_bytes()[..offset.min(source.len())]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count()
+        + 1
+}
+
+// The shape of a source ---------------------------------------------------------------------
+
+/// What one entry of an [`outline`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OutlineKind {
+    /// `require "name"`.
+    Require,
+    /// `request_permission { ... }`, with every name it asks for.
+    Permission,
+    /// A named function in either spelling: `function M.load(config)`, `local function tick()`
+    /// or `M.render = function(rows, cols)`.
+    Function,
+    /// `on "event"`: a handler registered with `zellij.on`.
+    Handler,
+    /// `data.define "entity"`.
+    Define,
+    /// A hocus extension's registration message.
+    Registration,
+    /// One tool that registration offers hocus.
+    Tool,
+}
+
+/// One line of an [`outline`]: what is defined or hooked there, and where.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutlineEntry {
+    /// 1-based, as an editor counts them.
+    pub line: usize,
+    pub kind: OutlineKind,
+    /// The entry as an outline prints it: a signature cut after its parameter list, or a call
+    /// with the one literal that says what it is about.
+    pub text: String,
+}
+
+/// What a source defines and hooks, with the line each is on: the map a reader needs before
+/// reading a range of it rather than a page.
+///
+/// Lexical like everything here, and read off [`Lexed::code`], so a definition in a comment or a
+/// string is not one. An anonymous `function(...)` in argument position is not a definition, so
+/// `zellij.on("key", function(event) ... end)` is one handler and no function. Sorted by
+/// position.
+pub fn outline(source: &str) -> Vec<OutlineEntry> {
+    let lexed = lex(source);
+    let code = lexed.code.as_str();
+    let mut found: Vec<(usize, OutlineKind, String)> = Vec::new();
+    for (at, word) in words(code) {
+        match word {
+            "function" => {
+                if let Some(definition) = definition(code, at) {
+                    found.push((definition.start, OutlineKind::Function, definition.text));
+                }
+            },
+            // `zellij.on(` or an alias's `.on(`; a variable that happens to be called `on` is
+            // not a handler.
+            "on" if at > 0 && code.as_bytes()[at - 1] == b'.' => {
+                if let Some((_, event)) = lexed.literal_argument(at + word.len(), code.len()) {
+                    found.push((at, OutlineKind::Handler, format!("on \"{event}\"")));
+                }
+            },
+            "require" => {
+                if let Some((_, module)) = lexed.literal_argument(at + word.len(), code.len()) {
+                    found.push((at, OutlineKind::Require, format!("require \"{module}\"")));
+                }
+            },
+            _ => {},
+        }
+    }
+    for (at, strings) in permission_calls(&lexed) {
+        let names: Vec<String> = strings
+            .iter()
+            .map(|(_, name)| format!("\"{name}\""))
+            .collect();
+        found.push((
+            at,
+            OutlineKind::Permission,
+            format!("request_permission {{ {} }}", names.join(", ")),
+        ));
+    }
+    for (at, arguments) in data_calls(&lexed) {
+        if !code[at..].starts_with("data.define") {
+            continue;
+        }
+        let text = match literal_value(&lexed, arguments, "name") {
+            Some((_, entity)) => format!("data.define \"{entity}\""),
+            None => "data.define".to_owned(),
+        };
+        found.push((at, OutlineKind::Define, text));
+    }
+    let registration = lexed
+        .strings
+        .iter()
+        .find(|(_, value)| value == "hocus_extension_register");
+    if let Some((at, _)) = registration {
+        found.push((
+            *at,
+            OutlineKind::Registration,
+            "hocus_extension_register".to_owned(),
+        ));
+        for (at, name) in registered_tools(&lexed) {
+            found.push((at, OutlineKind::Tool, format!("tool \"{name}\"")));
+        }
+    }
+    found.sort_by_key(|(at, _, _)| *at);
+    found
+        .into_iter()
+        .map(|(at, kind, text)| OutlineEntry {
+            line: line_of(source, at),
+            kind,
+            text,
+        })
+        .collect()
+}
+
+/// The first non-whitespace offset at or after `at`.
+fn skip_whitespace(code: &str, at: usize) -> usize {
+    at + (code[at..].len() - code[at..].trim_start().len())
+}
+
+/// Where the value assigned to the name at `name_at` begins - past a lone `=` - if one is.
+fn assigned_value(code: &str, name_at: usize) -> Option<usize> {
+    let name_len = code[name_at..]
+        .bytes()
+        .take_while(|byte| is_word_byte(*byte))
+        .count();
+    let equals = skip_whitespace(code, name_at + name_len);
+    let bytes = code.as_bytes();
+    if bytes.get(equals) != Some(&b'=') || bytes.get(equals + 1) == Some(&b'=') {
+        return None;
+    }
+    Some(skip_whitespace(code, equals + 1))
+}
+
+/// The `{ ... }` assigned to the name at `name_at`: directly, as `tools = { ... }`, or - when
+/// `follow_alias` - through one identifier, as `tools = TOOLS` with `TOOLS = { ... }` elsewhere.
+fn assigned_table(code: &str, name_at: usize, follow_alias: bool) -> Option<Range<usize>> {
+    let value = assigned_value(code, name_at)?;
+    if code.as_bytes().get(value) == Some(&b'{') {
+        return matching_bracket(code, value).map(|close| value..close + 1);
+    }
+    if !follow_alias {
+        return None;
+    }
+    let alias_len = code[value..]
+        .bytes()
+        .take_while(|byte| is_word_byte(*byte))
+        .count();
+    if alias_len == 0 {
+        return None;
+    }
+    let alias = &code[value..value + alias_len];
+    let mut from = 0;
+    while let Some(hit) = find_word(code, alias, from) {
+        from = hit + alias_len;
+        if let Some(table) = assigned_table(code, hit, false) {
+            return Some(table);
+        }
+    }
+    None
+}
+
+/// The tools a registration offers, as (offset of the entry, its `name`): the entries of the
+/// table `tools = ...` names. The worked example keeps them in a `local TOOLS = { ... }` and
+/// registers `tools = TOOLS`, which is the one indirection followed.
+fn registered_tools(lexed: &Lexed) -> Vec<(usize, String)> {
+    let code = lexed.code.as_str();
+    let mut from = 0;
+    while let Some(key) = find_word(code, "tools", from) {
+        from = key + "tools".len();
+        let Some(table) = assigned_table(code, key, true) else {
+            continue;
+        };
+        return table_entries(lexed, table)
+            .into_iter()
+            .filter_map(|entry| {
+                literal_value(lexed, entry, "name").map(|(at, name)| (at, name.to_owned()))
+            })
+            .collect();
+    }
+    Vec::new()
 }
 
 /// What a source is going to do wrong at load or at run time, said before a reload cycle is
@@ -1167,5 +1428,159 @@ local notes = zellij.data.fetch { entity = "note" }
             "{:?}",
             lint("note", source)
         );
+    }
+
+    /// The outline is the map a reader gets before a range read, so it has to name what the
+    /// worked example is made of - its require, its load, its permission request, its handler,
+    /// its define, its registration and every tool - each on the line it is on, in order.
+    #[test]
+    fn an_outline_of_the_todo_extension_names_its_lifecycle() {
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../example-plugins/todo-extension.lua"),
+        )
+        .expect("the example plugin should be in the repo");
+        let entries = outline(&source);
+        let texts: Vec<&str> = entries.iter().map(|entry| entry.text.as_str()).collect();
+        for expected in [
+            "require \"zellij\"",
+            "local function register()",
+            "function M.load(config)",
+            "on \"permission_request_result\"",
+            "data.define \"todo\"",
+            "hocus_extension_register",
+            "tool \"add\"",
+            "tool \"list\"",
+            "tool \"complete\"",
+        ] {
+            assert!(
+                texts.contains(&expected),
+                "{expected:?} is not in {texts:?}"
+            );
+        }
+        assert!(
+            texts
+                .iter()
+                .any(|text| text.starts_with("request_permission { \"")),
+            "{texts:?}"
+        );
+        assert!(
+            entries.windows(2).all(|pair| pair[0].line <= pair[1].line),
+            "sorted by line: {entries:?}"
+        );
+        // The line named is the line the thing is on, which is what a range read is built from.
+        for entry in &entries {
+            let line = source.lines().nth(entry.line - 1).unwrap_or_default();
+            let word = match entry.kind {
+                OutlineKind::Require => "require",
+                OutlineKind::Permission => "request_permission",
+                OutlineKind::Function => "function",
+                OutlineKind::Handler => "zellij.on(",
+                OutlineKind::Define => "data.define",
+                OutlineKind::Registration => "hocus_extension_register",
+                OutlineKind::Tool => "name = ",
+            };
+            assert!(
+                line.contains(word),
+                "line {} is {line:?}, not a {word}",
+                entry.line
+            );
+        }
+    }
+
+    /// Every spelling of a named function is one definition, and an anonymous one is not: a
+    /// handler's callback would otherwise be listed twice, once as the handler and once as a
+    /// nameless function.
+    #[test]
+    fn every_named_spelling_is_a_definition_and_an_anonymous_function_is_not() {
+        let source = r#"
+local M = {}
+local Text = {}
+function M.load(config) end
+local function tick() end
+M.render = function(rows, cols) return "" end
+function Text:len() return 0 end
+zellij.on("key", function(event) return true end)
+table.insert(M.jobs, function() end)
+return M
+"#;
+        let entries = outline(source);
+        let functions: Vec<&OutlineEntry> = entries
+            .iter()
+            .filter(|entry| entry.kind == OutlineKind::Function)
+            .collect();
+        let texts: Vec<&str> = functions.iter().map(|entry| entry.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "function M.load(config)",
+                "local function tick()",
+                "M.render = function(rows, cols)",
+                "function Text:len()",
+            ]
+        );
+        assert_eq!(
+            functions.iter().map(|entry| entry.line).collect::<Vec<_>>(),
+            vec![4, 5, 6, 7]
+        );
+        let handlers: Vec<&OutlineEntry> = entries
+            .iter()
+            .filter(|entry| entry.kind == OutlineKind::Handler)
+            .collect();
+        assert_eq!(handlers.len(), 1);
+        assert_eq!(handlers[0].text, "on \"key\"");
+        assert_eq!(handlers[0].line, 8);
+    }
+
+    /// The outline is read off the code, not the text: a definition quoted in a comment or a
+    /// string is not one - and neither is a variable that happens to be called `on`.
+    #[test]
+    fn an_outline_ignores_what_is_only_written_about() {
+        let source = r#"
+-- function M.commented() end
+local usage = [[ zellij.on("key", function() end) ]]
+local on = true
+if on then zellij.log("x") end
+function M.real() end
+"#;
+        let entries = outline(source);
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].text, "function M.real()");
+        assert_eq!(entries[0].line, 6);
+    }
+
+    /// The lint's `load` rule reads the same definition the outline does, so both spellings of
+    /// a load still count as one - the refactor must not have narrowed it.
+    #[test]
+    fn both_spellings_of_load_still_run_at_load_time() {
+        for load in [
+            "function M.load()",
+            "M.load = function()",
+            "local load = function()",
+        ] {
+            let source = format!(
+                "{load}
+  zellij.request_permission {{ \"plugin_data\" }}
+  \
+                 zellij.data.define {{ name = \"note\", version = 1 }}
+end
+"
+            );
+            assert!(
+                lint("note", &source)
+                    .iter()
+                    .any(|found| found.contains("permission_request_result")),
+                "{load}: {:?}",
+                lint("note", &source)
+            );
+        }
+    }
+
+    /// A finding at the very start of a line used to be reported one line early: `lines()` does
+    /// not count a trailing line break as a line.
+    #[test]
+    fn a_call_at_the_start_of_a_line_is_on_that_line() {
+        let source = "local M = {}\nzellij.request_permission { \"plugin_dat\" }\n";
+        let found = lint("keys", source).join("\n");
+        assert!(found.starts_with("keys.lua:2:"), "{found}");
     }
 }

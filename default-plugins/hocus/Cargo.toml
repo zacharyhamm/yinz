@@ -20,6 +20,10 @@ zellij-tile = { path = "../../zellij-tile" }
 hocus-proto = { path = "../hocus-proto" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Already built for wasm32-wasip1 by status-bar, so this is link size rather than a new crate.
+# `unicode-case` because the workspace pin turns Unicode off, and without it `(?i)` is a build
+# error for every pattern, ASCII included.
+regex = { workspace = true, features = ["unicode-case"] }
 unicode-width = { workspace = true }
 
 [dev-dependencies]

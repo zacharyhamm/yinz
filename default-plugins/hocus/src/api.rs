@@ -42,7 +42,7 @@ pub const DEFAULT_MAX_TOOL_ROUNDS: usize = 50;
 /// How many search results the model gets. A SearxNG page is ~25, and every one
 /// of them is paid for on every subsequent turn of the conversation.
 pub const SEARCH_RESULTS: usize = 8;
-const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_pane_here`/`warp_tab_here` bring a listed pane or tab from another session into this one; there is no tool for the other direction, so a request to send one out is answered by asking hocus in the destination session. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. Past agent work, every session on this machine: `agent_history_search` finds it, `agent_runs` lists runs, `agent_run` reads one - a hit's `run_id` and `revision` read around it. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` is authoritative, so read only the relevant sections. `plugin_write` creates one (its confirmation grants the permissions it asks for); to change one that exists, `plugin_read` then `plugin_edit` - never re-send a whole file you did not just write. `plugin_check` compiles without writing. `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list`/`plugin_read` read the user's plugin folder. Firecracker VMs: `vm_list` for every VM and its worktree and branch, then `vm_changes`/`vm_sync`/`vm_close` by name. Not every tool named here is in \
+const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_pane_here`/`warp_tab_here` bring a listed pane or tab from another session into this one; there is no tool for the other direction, so a request to send one out is answered by asking hocus in the destination session. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. Past agent work, every session on this machine: `agent_history_search` finds it, `agent_runs` lists runs, `agent_run` reads one - a hit's `run_id` and `revision` read around it. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` is authoritative - `query=` it for a spelling before fetching a section. `plugin_write` creates one (its confirmation grants the permissions it asks for); to change one that exists, `plugin_outline`/`plugin_search` find the lines, `plugin_read` reads that range, `plugin_edit` changes it (`edits` batches several) - never re-send a whole file you did not just write. `plugin_check` compiles without writing. `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list` is the user's plugin folder. Firecracker VMs: `vm_list` for every VM and its worktree and branch, then `vm_changes`/`vm_sync`/`vm_close` by name. Not every tool named here is in \
 the tools array: the rest are loaded on demand, and calling one by name loads its family and \
 runs it, so call the tool you want rather than asking for it. `tools_load` is there for when \
 you do not know the name. Make independent calls together.";
@@ -977,7 +977,7 @@ pub(crate) struct Elision {
 /// `plugin_docs` is keyed by section and everything else by plugin name, because those are the
 /// things a later call can supersede. A call whose arguments will not parse, or which names no
 /// target, gets no `Subject` and is left alone.
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Subject {
     /// A plugin file, by the name the tools take back - `.lua` stripped, so `keys` and
     /// `keys.lua` are the same file.
@@ -991,6 +991,20 @@ enum Subject {
     Page(String, usize, usize),
     /// One `plugin_docs` section, by the name the model asked for.
     Section(String),
+    /// The plugin folder as a whole: what `plugin_list` and a `plugin_search` with no name are
+    /// about, and what every write or edit is a later statement about.
+    Folder,
+    /// A `plugin_search`: the plugin it was confined to (`None` for the folder), the pattern,
+    /// and whether case was ignored. `context` and `max_results` are left out on purpose - the
+    /// same words looked for again are the same search, and the later answer is the one to keep.
+    Search(Option<String>, String, bool),
+    /// A `plugin_outline` of one plugin.
+    Outline(String),
+    /// A `plugin_docs query=`: the section it was confined to, and the pattern.
+    DocsSearch(Option<String>, String),
+    /// One page of one docs section. Its own variant rather than `Page`: a plugin can be called
+    /// `data.lua` and a section `data`.
+    SectionPage(String, usize, usize),
 }
 
 impl Elision {
@@ -1068,9 +1082,36 @@ fn call_subjects(transcript: &[Message]) -> BTreeMap<&str, (&str, Subject)> {
 fn subject_of(name: &str, arguments: &str) -> Option<Subject> {
     let args = tools::Args::parse(arguments).ok()?;
     match name {
-        "plugin_docs" => Some(Subject::Section(
-            args.section.unwrap_or_else(|| "index".to_owned()),
-        )),
+        "plugin_docs" => {
+            let section = args
+                .section
+                .as_deref()
+                .map(str::trim)
+                .filter(|section| !section.is_empty())
+                .map(str::to_owned);
+            if let Some(query) = trimmed(args.query.as_deref()) {
+                return Some(Subject::DocsSearch(section, query.to_owned()));
+            }
+            // A page of a section, as `plugin_docs` itself resolves the range. Without a section
+            // there is no page, and the refusal it gets is nothing to elide.
+            if args.start_line.is_some() || args.line_count.is_some() {
+                let (start, end) = tools::read_range(&args);
+                return section.map(|section| Subject::SectionPage(section, start, end));
+            }
+            Some(Subject::Section(
+                section.unwrap_or_else(|| "index".to_owned()),
+            ))
+        },
+        "plugin_search" => {
+            let query = trimmed(args.query.as_deref())?;
+            Some(Subject::Search(
+                plugin_file(args.name.as_deref()),
+                query.to_owned(),
+                args.case_insensitive,
+            ))
+        },
+        "plugin_outline" => plugin_file(args.name.as_deref()).map(Subject::Outline),
+        "plugin_list" => Some(Subject::Folder),
         // The range as `plugin_read` itself resolves it, defaults and all, so two calls are
         // the same page when they answered with the same lines rather than when they were
         // spelled the same way.
@@ -1092,9 +1133,14 @@ fn plugin_file(name: Option<&str>) -> Option<String> {
     (!name.is_empty()).then(|| name.to_owned())
 }
 
+/// A query as the search tools take it: trimmed, and `None` when there is nothing left.
+fn trimmed(query: Option<&str>) -> Option<&str> {
+    query.map(str::trim).filter(|query| !query.is_empty())
+}
+
 /// The argument keys that carry a file's text. A call with none of them says nothing about
 /// what the file contains and so supersedes nothing.
-const PAYLOAD_KEYS: [&str; 3] = ["source", "old_string", "new_string"];
+const PAYLOAD_KEYS: [&str; 4] = ["source", "old_string", "new_string", "edits"];
 
 /// The arguments to send for a call whose payload a later one has replaced, or `None` to send
 /// it as it stands.
@@ -1187,6 +1233,58 @@ fn stale_result(
             !seen.insert(("docs", Subject::Section(section.clone()))),
             format!("[elided: plugin_docs section={section} appears again below.]"),
         ),
+        ("plugin_docs", Subject::DocsSearch(..)) => (
+            !seen.insert(("docs", subject.clone())),
+            "[elided: the same plugin_docs query appears again below.]".to_owned(),
+        ),
+        ("plugin_docs", Subject::SectionPage(section, start, end)) => (
+            !seen.insert(("docs", subject.clone())),
+            format!(
+                "[elided: lines {start}-{end} of plugin_docs section={section} appear again \
+                 below.]"
+            ),
+        ),
+        // A search is a picture of the plugins it looked through, so a later write or edit of
+        // one of them - of any of them, for a search of the folder - makes it a picture of
+        // something that is no longer there. The same words looked for again are the same
+        // search, and the later answer is the one kept.
+        ("plugin_search", Subject::Search(file, ..)) => {
+            let changed = match file {
+                Some(file) => seen.contains(&("read", Subject::File(file.clone()))),
+                None => seen.contains(&("read", Subject::Folder)),
+            };
+            let repeat = !seen.insert(("search", subject.clone()));
+            let note = match changed {
+                true => {
+                    "[elided: this plugin_search is out of date - a plugin it searched was \
+                         written or edited later in this conversation. Call it again for what \
+                         is there now.]"
+                },
+                false => "[elided: the same plugin_search appears again below.]",
+            };
+            (changed || repeat, note.to_owned())
+        },
+        ("plugin_outline", Subject::Outline(file)) => {
+            let changed = seen.contains(&("read", Subject::File(file.clone())));
+            let repeat = !seen.insert(("outline", subject.clone()));
+            (
+                changed || repeat,
+                format!(
+                    "[elided: this outline of {file}.lua is out of date or repeated below. \
+                     plugin_outline name={file} for the current one.]"
+                ),
+            )
+        },
+        ("plugin_list", Subject::Folder) => {
+            let changed = seen.contains(&("read", Subject::Folder));
+            let repeat = !seen.insert(("list", Subject::Folder));
+            (
+                changed || repeat,
+                "[elided: this plugin_list is out of date or repeated below. plugin_list for \
+                 the folder as it is now.]"
+                    .to_owned(),
+            )
+        },
         _ => return None,
     };
     // See `stale_arguments`: a placeholder that is longer than what it replaces is a loss
@@ -1199,6 +1297,8 @@ fn stale_result(
 fn note_write(name: &str, subject: &Subject, seen: &mut BTreeSet<(&'static str, Subject)>) {
     if let (Subject::File(file), "plugin_write" | "plugin_edit") = (subject, name) {
         seen.insert(("read", Subject::File(file.clone())));
+        // And about the folder: a listing or a folder-wide search from before this is stale.
+        seen.insert(("read", Subject::Folder));
     }
 }
 

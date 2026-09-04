@@ -46,6 +46,12 @@ impl State {
                 self.finish_head(refusal);
                 continue;
             }
+            // Likewise an edit whose old_string is not there: the diagnosis is the whole
+            // answer, and a prompt to approve a change that cannot be made is noise.
+            if let Some(refusal) = self.inapplicable_edit(&call) {
+                self.finish_head(refusal);
+                continue;
+            }
             let needs_confirmation = self.call_needs_confirmation(&call);
             // A scheduled run with no authority of its own does not park: nobody
             // may be there to press `y`, and a parked run would hold every other
@@ -291,6 +297,19 @@ impl State {
             ));
         }
         Some(consequence)
+    }
+
+    /// Why a `plugin_edit` cannot be applied to the file as it is, or `None` when it can - or
+    /// when nothing can be said yet because the file could not be read, which the tool itself
+    /// reports in the ordinary way once it runs.
+    fn inapplicable_edit(&self, call: &ToolCall) -> Option<String> {
+        if call.name != "plugin_edit" {
+            return None;
+        }
+        let args = tools::Args::parse(&call.arguments).ok()?;
+        let fs_path = tools::plugin_fs_path(args.name.as_deref()).ok()?;
+        let previous = tools::plugin_fs_read(&fs_path).ok()?;
+        tools::edit_source_and_permissions(&previous, &args).err()
     }
 
     fn plugin_edit_permissions(&self, call: &ToolCall) -> Vec<PermissionType> {
@@ -1036,6 +1055,33 @@ impl State {
         false
     }
 
+    /// The plugin `only`, or every plugin in the folder with the backups left out (as a listing
+    /// leaves them out), as `(name.lua, contents)`. Reads answer inline on the plugin thread, so
+    /// a folder is read up to `FOLDER_FILES_CAP` files and each up to `FOLDER_READ_BYTES`; one
+    /// of many that cannot be read is skipped, since a search is about the ones that can.
+    fn plugin_corpus(&self, only: Option<&str>) -> Result<Vec<(String, String)>, String> {
+        let names = match only {
+            Some(name) => {
+                tools::resolve_plugin_file(&self.user_plugin_dir, Some(name))?;
+                vec![plugin_source::file_name(name)]
+            },
+            None => tools::listing_names(
+                tools::PLUGINS_ROOT,
+                &tools::plugin_fs_list(tools::PLUGINS_ROOT)?,
+            ),
+        };
+        let mut files = Vec::new();
+        for name in names.into_iter().take(tools::FOLDER_FILES_CAP) {
+            let path = tools::plugin_fs_path(Some(&name))?;
+            match tools::plugin_fs_read_capped(&path, tools::FOLDER_READ_BYTES) {
+                Ok(contents) => files.push((name, contents)),
+                Err(error) if only.is_some() => return Err(error),
+                Err(_) => {},
+            }
+        }
+        Ok(files)
+    }
+
     /// Run one of the plugin-authoring tools.
     ///
     /// Every one answers here and now: `plugin_docs` from compiled-in text, `plugin_check` from
@@ -1060,13 +1106,23 @@ impl State {
 
         // Needs no folder and touches no disk, so it answers even when nothing is configured.
         if call.name == "plugin_docs" {
+            // Three grains, cheapest first: a query answers with hits, a range with one page of
+            // a section, and a bare `section` with the whole of it.
+            let answer = if args.query.is_some() {
+                match tools::search_options(&args) {
+                    Ok(options) => lua_docs::search(args.section.as_deref(), &options),
+                    Err(error) => error,
+                }
+            } else if args.start_line.is_some() || args.line_count.is_some() {
+                let (start, end) = tools::read_range(&args);
+                lua_docs::page(args.section.as_deref(), start, end)
+            } else {
+                lua_docs::docs(args.section.as_deref())
+            };
             // The only tool result that used to go out uncapped. Sub-sectioning keeps every
             // answer far under this, so it is a floor under the floor: a guide section that
             // grows past what a tool call should cost cannot silently re-create the problem.
-            self.finish_head(log::truncate_str(
-                &lua_docs::docs(args.section.as_deref()),
-                lua_docs::MAX_DOCS_OUTPUT,
-            ));
+            self.finish_head(log::truncate_str(&answer, lua_docs::MAX_DOCS_OUTPUT));
             return true;
         }
         // Likewise: the host compiles the source it is handed and nothing else is involved.
@@ -1090,15 +1146,57 @@ impl State {
             self.finish_head(tools::NO_PLUGIN_FOLDER);
             return true;
         }
-        // `plugin_list` names no plugin - it is the folder itself that is the target.
+        // `plugin_search` may name a plugin or take the folder whole, so it goes before a name
+        // is resolved.
+        if call.name == "plugin_search" {
+            let result = match tools::search_options(&args) {
+                Err(error) => error,
+                Ok(options) => match self.plugin_corpus(args.name.as_deref()) {
+                    Err(error) => error,
+                    Ok(files) => {
+                        let refs: Vec<(&str, &str)> = files
+                            .iter()
+                            .map(|(name, contents)| (name.as_str(), contents.as_str()))
+                            .collect();
+                        match plugin_source::search(&refs, &options) {
+                            Ok(Some(hits)) => log::truncate_str(&hits, MAX_TOOL_OUTPUT),
+                            Ok(None) => tools::no_matches(args.name.as_deref(), files.len()),
+                            Err(error) => error,
+                        }
+                    },
+                },
+            };
+            self.finish_head(result);
+            return true;
+        }
+        // `plugin_list` names no plugin - it is the folder itself that is the target. Each
+        // plugin is opened for its length: what the model needs to decide how to read it.
         if call.name == "plugin_list" {
             let result = match tools::plugin_fs_list(tools::PLUGINS_ROOT) {
                 Ok(entries) => {
                     let names = tools::listing_names(tools::PLUGINS_ROOT, &entries);
-                    match names.is_empty() {
-                        true => "no plugins yet".to_owned(),
-                        false => log::truncate_str(&names.join("\n"), MAX_TOOL_OUTPUT),
+                    let backed_up = tools::backed_up_names(tools::PLUGINS_ROOT, &entries);
+                    let listed: Vec<plugin_source::Listed> = names
+                        .iter()
+                        .take(tools::FOLDER_FILES_CAP)
+                        .map(|name| plugin_source::Listed {
+                            name,
+                            lines: tools::plugin_fs_path(Some(name))
+                                .and_then(|path| {
+                                    tools::plugin_fs_read_capped(&path, tools::FOLDER_READ_BYTES)
+                                })
+                                .map(|source| source.lines().count()),
+                            backup: backed_up.contains(name),
+                        })
+                        .collect();
+                    let mut answer = plugin_source::listing(&listed);
+                    if names.len() > listed.len() {
+                        answer.push_str(&format!(
+                            "\n… {} more plugins not read",
+                            names.len() - listed.len()
+                        ));
                     }
+                    log::truncate_str(&answer, MAX_TOOL_OUTPUT)
                 },
                 Err(error) => error,
             };
@@ -1124,9 +1222,21 @@ impl State {
         match call.name.as_str() {
             "plugin_read" => {
                 let (start, end) = tools::read_range(&args);
+                let fetch = format!("plugin_read name={}", name.trim().trim_end_matches(".lua"));
                 let result = match tools::plugin_fs_read(&fs_path) {
                     Ok(contents) => log::truncate_str(
-                        &tools::read_answer(&contents, start, end),
+                        &tools::read_answer(&contents, start, end, &fetch),
+                        MAX_TOOL_OUTPUT,
+                    ),
+                    Err(error) => error,
+                };
+                self.finish_head(result);
+                true
+            },
+            "plugin_outline" => {
+                let result = match tools::plugin_fs_read(&fs_path) {
+                    Ok(contents) => log::truncate_str(
+                        &plugin_source::outline_answer(&name, &contents),
                         MAX_TOOL_OUTPUT,
                     ),
                     Err(error) => error,
@@ -1189,20 +1299,20 @@ impl State {
                 // The same gate a write goes through, and for the same reason: an edit that
                 // breaks the file must not be what the next reload finds. The refusal is the
                 // edit's own, though - see `edit_compile_report`.
-                if let Err(error) = tools::compile_check(&name, &edited) {
+                if let Err(error) = tools::compile_check(&name, &edited.source) {
                     self.finish_head(tools::edit_compile_report(&name, &error));
                     return true;
                 }
-                let result = match tools::plugin_fs_write(&fs_path, &edited, true) {
+                let result = match tools::plugin_fs_write(&fs_path, &edited.source, true) {
                     Ok(_) => {
                         if !granted.is_empty() {
                             tools::grant_permissions(&target, &granted);
                         }
-                        let backup = tools::keep_replaced(&name, Some(&previous), &edited);
+                        let backup = tools::keep_replaced(&name, Some(&previous), &edited.source);
                         tools::with_lint(
-                            tools::edit_report(&name, &granted, &backup),
+                            tools::edit_report(&name, &granted, &backup, &edited),
                             &name,
-                            &edited,
+                            &edited.source,
                         )
                     },
                     Err(error) => error,

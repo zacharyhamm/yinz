@@ -82,6 +82,16 @@ lines. The same code answers hocus's `plugin_write`/`plugin_check`/`plugin_reloa
 tools, which go through the new `/plugins` filesystem root and the `AuthorPlugins` permission -
 the shell script, the 64 KB argv cap and the hand-rolled symlink guard are gone.
 
+hocus's orienting half reads through the same root: `plugin_list` with each plugin's length,
+`plugin_outline` (functions, handlers, requires, permissions and tool registrations with line
+numbers), a ripgrep-shaped `plugin_search`, and a range `plugin_read`. `plugin_edit` takes one
+replacement or an `edits` batch under one confirmation and answers with the lines it changed; a
+miss says which lines nearly matched instead of asking for a re-read. `plugin_docs` takes a
+`query=` and a page range as well as a section. The outline extractor is
+`zellij_utils::plugin_authoring::outline`, beside `lint`, so a `zellij plugins outline` can reuse
+it. All of it exists because hocus re-sends the transcript every turn: a page read to find one
+function is paid for on every round after it, and a search hit is not.
+
 Server side: `PluginCommand::CheckLuaPlugin`, `ReloadPluginByUrl`, `ReadPluginLog`; the `/plugins`
 root in `zellij_exports::fs_roots`; `zellij-tile` gained `fs_read`/`fs_list`/`fs_metadata`/
 `fs_write`/`fs_remove`/`fs_create_dir`/`fs_rename`. File work lives in
