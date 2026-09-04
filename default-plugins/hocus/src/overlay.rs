@@ -144,6 +144,15 @@ const DEFAULT_PAD: usize = 3;
 /// the Esc is read as the stale hide instead, and the panel does not come back until the next
 /// manifest. Two wrong frames is a flicker; a flag that never lapsed was a wedge.
 const HIDE_PENDING_FRAMES: u8 = 4;
+/// How many `PaneUpdate`s a focus this half asked for itself may discount before the manifest
+/// is believed - see [`crate::State::ring_focus_pending`].
+///
+/// The same problem `HIDE_PENDING_FRAMES` solves, from the other side: the host builds one
+/// update per attached client, so a snapshot taken before `show_self` still reports this half
+/// unfocused and can arrive after it. Believing one of those would reset the ring stop the
+/// yield had just set. The budget is small and lapses for the same reason: a focus request
+/// that never lands must not suppress a genuine reset for ever.
+const RING_FOCUS_PENDING_FRAMES: u8 = 4;
 /// The panel's width, as a percentage of the display area. Wide enough for a chat message not
 /// to be wrapped every other word beside the agent list, and still well short of the whole
 /// screen, so the panel reads as something sitting on the work rather than a split of it.
@@ -1448,6 +1457,10 @@ impl State {
             Some(hocus_proto::wire::STOP_TABS) => Some(self.chat_tab),
             _ => None,
         };
+        // The stop above outlives the manifests still in flight: `on_panes` reads a half going
+        // unfocused as the user leaving and drops the stop, and the updates generated before
+        // the focus below still say exactly that. See `RING_FOCUS_PENDING_FRAMES`.
+        self.ring_focus_pending = RING_FOCUS_PENDING_FRAMES;
         show_self(true);
         true
     }

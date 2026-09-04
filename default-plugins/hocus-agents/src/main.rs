@@ -372,6 +372,9 @@ impl ZellijPlugin for State {
             // rather than splitting an empty list off an empty history.
             self.last_list_rows = 0;
             self.last_history_rows = 0;
+            // No history half drawn, so the focus cannot be in one - the same correction the
+            // too-short pane makes below, and what the Tab handler's ring relies on.
+            self.focus = Focus::List;
             self.last_history_max_scroll = 0;
             print_text_with_coordinates(
                 Text::new("no agents").dim_range(..),
@@ -2067,6 +2070,29 @@ mod tests {
             "no other half here, so the keys carry on to the conversation"
         );
         assert_eq!(state.focus, Focus::List);
+    }
+
+    /// The list emptying takes the history half with it, so the keys cannot stay in one: a
+    /// stop that is not drawn would swallow a Tab moving to an invisible half.
+    #[test]
+    fn an_empty_list_puts_the_keys_back_in_the_list_half() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.render(20, 40);
+        state.on_key(KeyWithModifier::new(BareKey::Tab));
+        assert_eq!(state.focus, Focus::History);
+
+        // The last agent exits, and the strip arrives with nothing in it.
+        state.set_rows(unfocused(vec![]));
+        state.render(20, 40);
+
+        assert_eq!(state.last_history_rows, 0);
+        assert_eq!(state.focus, Focus::List, "and the focus came back with it");
+        assert!(
+            !state.on_key(KeyWithModifier::new(BareKey::Tab).with_shift_modifier()),
+            "so backward leaves the pane"
+        );
+        assert_eq!(state.ring_yields, ["input"]);
     }
 
     /// The history is about the row under the cursor, and the divider names it: the pane id

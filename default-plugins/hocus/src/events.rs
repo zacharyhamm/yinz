@@ -638,8 +638,19 @@ impl State {
             // nothing about: a click on the other half, `Ctrl e a`, a tool focusing a pane. A
             // stop left standing through one of those would greet the user with the bar lit or
             // the box let go the next time they came back, so it is dropped on the way out.
-            if self.own_is_focused == Some(true) && !own.is_focused {
+            //
+            // Except while this half is waiting on a focus it asked for itself: the updates
+            // generated before it still report us unfocused, and one arriving late is not the
+            // user leaving. Those are spent against a budget rather than believed, so a
+            // request that never lands lapses instead of wedging the reset off. See
+            // `overlay::RING_FOCUS_PENDING_FRAMES`.
+            if self.ring_focus_pending > 0 && !own.is_focused {
+                self.ring_focus_pending -= 1;
+            } else if self.own_is_focused == Some(true) && !own.is_focused {
                 self.reset_ring_stop();
+            }
+            if own.is_focused {
+                self.ring_focus_pending = 0;
             }
             self.own_is_focused = Some(own.is_focused);
             // Placement, or anything else outside hocus, may have renamed the
@@ -826,6 +837,10 @@ impl State {
         // input box's Tab arm does not look at modifiers — so, like Ctrl-l
         // above, it has to be taken before the box would complete on it.
         if Self::is_bar_key(&key) {
+            // The bar is a different stop from the box, so the box's release goes with the
+            // step: leaving it set would put the ring on two stops at once, and the Esc that
+            // comes back off the bar would land on a box with no caret.
+            self.chat_input_released = false;
             self.chat_tab_focus = Some(self.chat_tab);
             return true;
         }

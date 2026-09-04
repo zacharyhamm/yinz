@@ -694,6 +694,13 @@ pub struct State {
     /// released box, the next time they came back. So `on_panes` resets both when this goes
     /// false. `None` until the first manifest, which is not "unfocused": nothing to reset yet.
     pub(crate) own_is_focused: Option<bool>,
+    /// `PaneUpdate`s a focus this half asked for itself may discount before the reset above
+    /// applies again - see [`overlay::RING_FOCUS_PENDING_FRAMES`], which is what sets it.
+    ///
+    /// A ring step across the seam sets the stop and *then* asks for the focus, and the
+    /// manifests already in flight still report this half unfocused. Without the budget one of
+    /// those lands in the reset and takes the new stop with it.
+    pub(crate) ring_focus_pending: u8,
     /// Which tab the agent list is on, as the last `PaneUpdate` found it.
     ///
     /// Tracked separately from `own_tab_index` because the two halves can be parted: the `a` and
@@ -987,6 +994,7 @@ impl Default for State {
             client_tabs: BTreeMap::new(),
             hidden: false,
             hide_pending: 0,
+            ring_focus_pending: 0,
             placed: false,
             agents_placed: true,
             #[cfg(test)]

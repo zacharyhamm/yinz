@@ -146,6 +146,29 @@ fn the_bar_swallows_keys_it_does_not_use_and_esc_gives_the_keyboard_back() {
     assert_eq!(state.input.get_text(), "q", "the box has the keys again");
 }
 
+/// The bar and the box are two stops, not one: stepping up to the bar spends the box's release,
+/// or the Esc coming back down would land on a box with no caret and take a second press to
+/// type in.
+#[test]
+fn shift_tab_off_a_released_box_leaves_it_holding_the_keys_again() {
+    let mut state = three_tabs();
+    state.input.set_text("hello".to_owned());
+    state.on_key(key(BareKey::Esc));
+    assert!(state.chat_input_released, "the box let go");
+
+    state.on_key(shift_tab());
+    assert!(
+        !state.chat_input_released,
+        "and the bar took the stop with it"
+    );
+
+    state.on_key(key(BareKey::Esc));
+    assert_eq!(state.chat_tab_focus, None, "back off the bar");
+    state.on_key(key(BareKey::Char('!')));
+    assert_eq!(state.input.get_text(), "hello!", "typing, first press");
+    assert!(!state.hidden);
+}
+
 // -- switching --------------------------------------------------------------
 
 #[test]

@@ -568,6 +568,70 @@ fn hiding_the_panel_puts_the_box_back_in_editing() {
     assert_eq!(state.chat_tab_focus, None);
 }
 
+/// Our own pane with the keyboard on it. Only the focused-to-unfocused *edge* arms the reset in
+/// `on_panes`, so a test about that reset has to start from a manifest that says so.
+fn focused_pane(id: u32) -> PaneInfo {
+    PaneInfo {
+        is_focused: true,
+        ..pane(id, false)
+    }
+}
+
+/// The manifest is a snapshot, and the one taken while the list still had the keyboard is on its
+/// way when the yield sets the stop. Believing it would reset the stop the user just asked for
+/// and land them in the box instead of on the bar.
+#[test]
+fn a_stale_manifest_does_not_drop_the_stop_a_yield_just_set() {
+    let mut state = placed_state();
+    // The keys were here before the ring crossed to the list, and the manifest said so.
+    state.on_panes(manifest(0, vec![focused_pane(7)]));
+
+    assert!(state.pipe(yielded(hocus_proto::wire::STOP_TABS)));
+    // Taken before our `show_self` landed, delivered after it: still reports us unfocused.
+    state.on_panes(manifest(0, vec![pane(7, false)]));
+
+    assert_eq!(
+        state.chat_tab_focus,
+        Some(state.chat_tab),
+        "the bar keeps the highlight the yield gave it"
+    );
+
+    // And the focus we asked for arrives, which ends the discount.
+    state.on_panes(manifest(0, vec![focused_pane(7)]));
+    assert_eq!(state.ring_focus_pending, 0);
+    assert_eq!(state.chat_tab_focus, Some(state.chat_tab));
+}
+
+/// The discount is for our own request only: once it has landed, leaving is leaving.
+#[test]
+fn a_leave_after_the_yields_focus_landed_still_resets_the_stop() {
+    let mut state = placed_state();
+    assert!(state.pipe(yielded(hocus_proto::wire::STOP_TABS)));
+    state.on_panes(manifest(0, vec![focused_pane(7)]));
+
+    state.on_panes(manifest(0, vec![pane(7, false)]));
+
+    assert_eq!(
+        state.chat_tab_focus, None,
+        "a click elsewhere spends the stop"
+    );
+}
+
+/// And a request that never lands lapses rather than wedging the reset off for good.
+#[test]
+fn the_discount_runs_out_if_the_focus_never_arrives() {
+    let mut state = placed_state();
+    assert!(state.pipe(yielded(hocus_proto::wire::STOP_TABS)));
+    let budget = state.ring_focus_pending;
+    assert!(budget > 0);
+
+    for _ in 0..budget {
+        state.on_panes(manifest(0, vec![pane(7, false)]));
+    }
+
+    assert_eq!(state.ring_focus_pending, 0);
+}
+
 fn selection(plugin_id: u32) -> PipeMessage {
     PipeMessage {
         source: PipeSource::Plugin(plugin_id),
