@@ -26,10 +26,12 @@ pub static ZELLIJ_DEFAULT_THEMES: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets
 
 pub const CLIENT_SERVER_CONTRACT_VERSION: usize = 1;
 
+/// Legacy flat metadata path. Read current metadata through `SessionCheckpoint`.
 pub fn session_info_cache_file_name(session_name: &str) -> PathBuf {
     session_info_folder_for_session(session_name).join("session-metadata.kdl")
 }
 
+/// Logical resurrection path passed over IPC; the server resolves its checkpoint when loading.
 pub fn session_layout_cache_file_name(session_name: &str) -> PathBuf {
     session_info_folder_for_session(session_name).join("session-layout.kdl")
 }

@@ -1096,7 +1096,25 @@ pub fn start_server_impl(
         match instruction {
             ServerInstruction::FirstClientConnected(cli_assets, client_id) => {
                 let host_terminal_env = cli_assets.host_terminal_env.clone();
-                let (config, layout) = cli_assets.load_config_and_layout();
+                let (config, layout) = match cli_assets.load_config_and_layout() {
+                    Ok(config_and_layout) => config_and_layout,
+                    Err(error) => {
+                        let _ = os_input.send_to_client(
+                            client_id,
+                            ServerToClientMsg::Exit {
+                                exit_reason: ExitReason::Error(format!(
+                                    "failed to load session checkpoint: {error:#}"
+                                )),
+                            },
+                        );
+                        Err::<(), _>(error)
+                            .context("failed to load session checkpoint")
+                            .non_fatal();
+                        remove_client!(client_id, os_input, session_state, session_data);
+                        exit_reason = "failed to load session checkpoint";
+                        break;
+                    },
+                };
                 let layout_is_welcome_screen = cli_assets.layout
                     == Some(LayoutInfo::BuiltIn("welcome".to_owned()))
                     || config.options.default_layout == Some(PathBuf::from("welcome"));

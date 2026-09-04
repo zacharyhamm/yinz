@@ -43,6 +43,8 @@ pub mod nested_session;
 #[cfg(not(target_family = "wasm"))]
 pub mod plugin_data_store; // Requires rusqlite
 #[cfg(not(target_family = "wasm"))]
+pub mod session_checkpoint;
+#[cfg(not(target_family = "wasm"))]
 pub mod session_recording;
 #[cfg(not(target_family = "wasm"))]
 pub mod sessions;
