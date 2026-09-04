@@ -590,6 +590,7 @@ impl TryFrom<ProtobufAction> for Action {
                             .and_then(|uc| uc.try_into().ok());
 
                         Ok(Action::NewTab {
+                            layout_source: payload.layout_source.map(PathBuf::from),
                             tiled_layout,
                             floating_layouts,
                             swap_tiled_layouts,
@@ -605,6 +606,7 @@ impl TryFrom<ProtobufAction> for Action {
                         // Backwards compatibility: accept None payload for existing plugins
                         // Return the same defaults as before
                         Ok(Action::NewTab {
+                            layout_source: None,
                             tiled_layout: None,
                             floating_layouts: vec![],
                             swap_tiled_layouts: None,
@@ -1637,6 +1639,7 @@ impl TryFrom<Action> for ProtobufAction {
                 optional_payload: None,
             }),
             Action::NewTab {
+                layout_source,
                 tiled_layout,
                 floating_layouts,
                 swap_tiled_layouts,
@@ -1702,6 +1705,7 @@ impl TryFrom<Action> for ProtobufAction {
                 Ok(ProtobufAction {
                     name: ProtobufActionName::NewTab as i32,
                     optional_payload: Some(OptionalPayload::NewTabPayload(NewTabPayload {
+                        layout_source: layout_source.map(|p| p.to_string_lossy().into_owned()),
                         tiled_layout: protobuf_tiled_layout,
                         floating_layouts: protobuf_floating_layouts,
                         swap_tiled_layouts: protobuf_swap_tiled_layouts,
@@ -3526,6 +3530,38 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn new_tab_layout_source_is_optional_on_the_plugin_wire() {
+        for layout_source in [None, Some("custom".to_owned())] {
+            let protobuf = ProtobufAction {
+                name: ProtobufActionName::NewTab as i32,
+                optional_payload: Some(OptionalPayload::NewTabPayload(NewTabPayload {
+                    layout_source: layout_source.clone(),
+                    ..Default::default()
+                })),
+            };
+            let action: Action = protobuf.try_into().unwrap();
+            assert!(
+                matches!(&action, Action::NewTab { layout_source: source, .. }
+                if *source == layout_source.as_ref().map(PathBuf::from))
+            );
+            let encoded: ProtobufAction = action.try_into().unwrap();
+            assert!(matches!(encoded.optional_payload,
+                Some(OptionalPayload::NewTabPayload(payload)) if payload.layout_source == layout_source));
+        }
+        let legacy = ProtobufAction {
+            name: ProtobufActionName::NewTab as i32,
+            optional_payload: None,
+        };
+        assert!(matches!(
+            Action::try_from(legacy).unwrap(),
+            Action::NewTab {
+                layout_source: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn set_pane_frame_style_action_protobuf_round_trip() {
         for style in [
             PaneFrameStyle::Full,
@@ -3867,6 +3903,7 @@ pub(crate) mod tests {
                     tab_id: None,
                 },
                 Action::NewTab {
+                    layout_source,
                     tiled_layout,
                     floating_layouts,
                     swap_tiled_layouts,
@@ -3877,6 +3914,7 @@ pub(crate) mod tests {
                     initial_panes,
                     first_pane_unblock_condition,
                 } => Action::NewTab {
+                    layout_source,
                     tiled_layout: tiled_layout.map(tiled_pane_layout),
                     floating_layouts: floating_pane_layouts(floating_layouts),
                     swap_tiled_layouts: swap_tiled_layouts

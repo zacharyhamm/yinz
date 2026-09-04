@@ -1,5 +1,226 @@
 use super::*;
 
+const NEW_TAB_LAYOUT: &str = r#"
+layout {
+    pane command="printf" { args "tiled"; }
+    pane command="cat"
+    floating_panes {
+        pane command="printf" { args "floating"; }
+    }
+    swap_tiled_layout name="columns" {
+        tab max_panes=3 { pane; pane; pane; }
+    }
+    swap_floating_layout name="floats" {
+        floating_panes max_panes=2 { pane; pane; }
+    }
+}
+"#;
+
+fn new_tab_config(metadata: &str, layout_dir: &std::path::Path) -> Config {
+    Config::from_kdl(
+        &format!(
+            r#"
+            layout_dir {:?}
+            default_layout "custom"
+            keybinds clear-defaults=true {{
+                normal {{
+                    bind "Ctrl t" {{ NewTab {metadata}; SwitchToMode "Normal"; }}
+                }}
+            }}
+            "#,
+            layout_dir.display().to_string(),
+        ),
+        None,
+    )
+    .unwrap()
+}
+
+#[test]
+fn new_tab_layout_references_survive_rebinding_and_saving() {
+    let dir = tempfile::tempdir().unwrap();
+    let layout_path = dir.path().join("custom.kdl");
+    std::fs::write(&layout_path, NEW_TAB_LAYOUT).unwrap();
+    let config_path = dir.path().join("config.kdl");
+
+    for reference in ["custom".to_owned(), layout_path.display().to_string()] {
+        let mut config = new_tab_config(
+            &format!(
+                r#"{{ layout {reference:?}; name "work"; cwd "/tmp"; should_change_focus_to_new_tab false; }}"#
+            ),
+            dir.path(),
+        );
+        let binding = &config.keybinds.0[&InputMode::Normal]
+            [&KeyWithModifier::new(BareKey::Char('t')).with_ctrl_modifier()];
+        match &binding[0] {
+            Action::NewTab {
+                layout_source,
+                tiled_layout,
+                floating_layouts,
+                swap_tiled_layouts,
+                swap_floating_layouts,
+                tab_name,
+                should_change_focus_to_new_tab,
+                cwd,
+                ..
+            } => {
+                assert_eq!(
+                    layout_source.as_ref().unwrap(),
+                    &std::path::PathBuf::from(&reference)
+                );
+                assert_eq!(tiled_layout.as_ref().unwrap().children.len(), 2);
+                assert_eq!(floating_layouts.len(), 1);
+                assert_eq!(swap_tiled_layouts.as_ref().unwrap().len(), 1);
+                assert_eq!(swap_floating_layouts.as_ref().unwrap().len(), 1);
+                assert_eq!(tab_name.as_deref(), Some("work"));
+                assert!(!should_change_focus_to_new_tab);
+                assert_eq!(cwd.as_deref(), Some(std::path::Path::new("/tmp")));
+            },
+            action => panic!("expected NewTab, got {action:?}"),
+        }
+        // Saving an unrelated key rebind must preserve the original tab action.
+        config
+            .keybinds
+            .0
+            .get_mut(&InputMode::Normal)
+            .unwrap()
+            .insert(
+                KeyWithModifier::new(BareKey::Char('x')).with_ctrl_modifier(),
+                vec![Action::Copy],
+            );
+        let serialized = config.to_string(false);
+        assert_eq!(
+            config.keybinds,
+            Config::from_kdl(&serialized, None).unwrap().keybinds
+        );
+        std::fs::write(&config_path, "// existing config\n").unwrap();
+        let written = config
+            .write_config_to_disk(serialized, &config_path)
+            .unwrap();
+        assert_eq!(config.keybinds, written.keybinds);
+        assert_eq!(
+            config.keybinds,
+            Config::from_kdl(&std::fs::read_to_string(&config_path).unwrap(), None)
+                .unwrap()
+                .keybinds
+        );
+    }
+}
+
+#[test]
+fn new_tab_bare_implicit_default_and_focus_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("custom.kdl"), NEW_TAB_LAYOUT).unwrap();
+    for metadata in [
+        "",
+        "{}",
+        r#"{ name "work"; }"#,
+        r#"{ should_change_focus_to_new_tab false; }"#,
+    ] {
+        let config = new_tab_config(metadata, dir.path());
+        let reparsed = Config::from_kdl(&config.to_string(false), None).unwrap();
+        assert_eq!(config.keybinds, reparsed.keybinds, "{metadata}");
+        let binding = &reparsed.keybinds.0[&InputMode::Normal]
+            [&KeyWithModifier::new(BareKey::Char('t')).with_ctrl_modifier()];
+        assert!(matches!(
+            &binding[0],
+            Action::NewTab {
+                layout_source: None,
+                ..
+            }
+        ));
+    }
+}
+
+#[test]
+fn new_tab_explicit_focus_overrides_layout_focus() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("custom.kdl"),
+        "layout { tab focus=false { pane; }; }\n",
+    )
+    .unwrap();
+    for focus in [false, true] {
+        let config = new_tab_config(
+            &format!("{{ should_change_focus_to_new_tab {focus}; }}"),
+            dir.path(),
+        );
+        let reparsed = Config::from_kdl(&config.to_string(false), None).unwrap();
+        assert_eq!(config.keybinds, reparsed.keybinds);
+        let binding = &reparsed.keybinds.0[&InputMode::Normal]
+            [&KeyWithModifier::new(BareKey::Char('t')).with_ctrl_modifier()];
+        assert!(
+            matches!(&binding[0], Action::NewTab { should_change_focus_to_new_tab, .. } if *should_change_focus_to_new_tab == focus)
+        );
+    }
+}
+
+#[test]
+fn new_tab_without_swap_layouts_can_be_saved_after_ipc() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("custom.kdl"), "layout { pane; }\n").unwrap();
+    let mut config = new_tab_config(r#"{ layout "custom"; }"#, dir.path());
+    let binding = config
+        .keybinds
+        .0
+        .get_mut(&InputMode::Normal)
+        .unwrap()
+        .get_mut(&KeyWithModifier::new(BareKey::Char('t')).with_ctrl_modifier())
+        .unwrap();
+    // The plugin action wire, like IPC, represents absent swap lists as empty lists.
+    let wire: crate::plugin_api::action::ProtobufAction = binding[0].clone().try_into().unwrap();
+    binding[0] = wire.try_into().unwrap();
+    config
+        .write_config_to_disk(config.to_string(false), &dir.path().join("config.kdl"))
+        .unwrap();
+}
+
+#[test]
+fn new_tab_relative_layout_source_is_resolved_when_parsed() {
+    let dir = tempfile::tempdir_in(".").unwrap();
+    let layout_path = dir.path().join("custom.kdl");
+    std::fs::write(&layout_path, NEW_TAB_LAYOUT).unwrap();
+    let config = new_tab_config(
+        &format!("{{ layout {:?}; }}", layout_path.display().to_string()),
+        dir.path(),
+    );
+    let binding = &config.keybinds.0[&InputMode::Normal]
+        [&KeyWithModifier::new(BareKey::Char('t')).with_ctrl_modifier()];
+    match &binding[0] {
+        Action::NewTab { layout_source, .. } => {
+            assert_eq!(
+                layout_source.as_ref().unwrap(),
+                &std::env::current_dir().unwrap().join(layout_path)
+            );
+        },
+        _ => panic!("expected NewTab"),
+    }
+    assert_eq!(
+        config.keybinds,
+        Config::from_kdl(&config.to_string(false), None)
+            .unwrap()
+            .keybinds
+    );
+}
+
+#[test]
+fn new_tab_lossy_save_leaves_existing_config_and_backups_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("custom.kdl"), NEW_TAB_LAYOUT).unwrap();
+    let config = new_tab_config(r#"{ layout "custom"; }"#, dir.path());
+    let config_path = dir.path().join("config.kdl");
+    let existing = "// do not overwrite\n";
+    std::fs::write(&config_path, existing).unwrap();
+    let lossy = new_tab_config("", dir.path()).to_string(false);
+    assert!(config.write_config_to_disk(lossy, &config_path).is_err());
+    // Even with a reference, changed layout contents require a reload before saving.
+    std::fs::write(dir.path().join("custom.kdl"), "layout { pane; }\n").unwrap();
+    assert!(config
+        .write_config_to_disk(config.to_string(false), &config_path)
+        .is_err());
+    assert_eq!(std::fs::read_to_string(&config_path).unwrap(), existing);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+}
+
 #[test]
 fn keybinds_to_string() {
     let fake_config = r#"

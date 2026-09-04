@@ -182,6 +182,7 @@ pub fn hints_for_mode(mi: &ModeInfo) -> Vec<Hint> {
         A::MoveFocus{direction: Dir::Up}, A::MoveFocus{direction: Dir::Right},
     ];
     let new_tab = A::NewTab{
+        layout_source: None,
         tiled_layout: None,
         floating_layouts: vec![],
         swap_tiled_layouts: None,

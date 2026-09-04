@@ -2,9 +2,13 @@
 
 Audited project: `/home/zacharyhamm/hocuspocus/zellij` — all 30 workspace members.
 
-Audited revision: `6e84ff04a169b59e6486ac4734986afae10194a9` (`main`). This document records the completed static audit; line references describe that revision. The branch advanced before this report was written, so these findings have not been revalidated against the newer HEAD.
+Audited revision: `6e84ff04a169b59e6486ac4734986afae10194a9` (`main`). This document records the completed static audit; line references describe that revision. The branch advanced before this report was written. Unless an entry has a revalidation note below, it has not been revalidated against the newer HEAD.
 
 Checkboxes track findings for review. They do not represent approved fixes or a remediation plan. All findings were unchecked when this report was created.
+
+The A-group findings were revalidated against `4f3245ef4` and remediated on 2026-09-04. Their original evidence below describes the audited code; the remediation notes describe the fixes and regression coverage.
+
+A-group validation: all 20 focused configuration/recorder tests passed. `cargo x ci check` passed format, lint, all 6,798 selected workspace tests (45 skipped), and doctests. `cargo x integration-test -j 16` passed all 344 whole-app tests with no skips.
 
 ## 1. Executive Summary (Minto Top)
 
@@ -19,21 +23,25 @@ Checkboxes track findings for review. They do not represent approved fixes or a 
 
 Governing thought: Configuration and recording paths can lose information while their success checks fail to reveal the loss.
 
-- [ ] **Finding A.1: Saving configuration discards custom NewTab layouts** (P1, High)
+- [x] **Finding A.1: Saving configuration discards custom NewTab layouts** (P1, High)
   - Where: `zellij-utils/src/kdl/mod.rs:879`, `zellij-utils/src/kdl/mod.rs:1836`, `zellij-utils/src/kdl/mod.rs:5376`, `zellij-server/src/lib.rs:2891`, `zellij-utils/src/input/config.rs:459`, `zellij-utils/src/input/config.rs:489`.
   - Problem: The parser reads and loads a binding's custom layout, but the serializer explicitly ignores `tiled_layout`, `floating_layouts`, and both swap-layout fields. Configuration persistence compares two parses of the already serialized text, so its equality check cannot detect information discarded before writing.
   - Impact: When configuration containing a custom `NewTab` binding is rewritten, that binding can revert to the default layout. Saving an unrelated setting can therefore change which panes and commands an existing shortcut launches.
-  - Trigger: A custom-layout `NewTab` binding exists when the server persists rewritten configuration.
+  - Trigger (revalidated): A custom-layout `NewTab` binding exists when a saved `RebindKeys` operation rewrites the whole configuration. Ordinary reconfiguration now persists a fragment and does not take this path.
   - Confidence basis: The parser, serializer, keybinding serialization, and persistence caller establish the complete information-loss path.
   - Dimensions flagged by: Duplication/Complexity.
+  - Remediation: Preserve explicit layout references in `Action::NewTab`, KDL, IPC, and plugin action messages. Whole-config saves compare intended `NewTab` bindings with reparsed serialization before making a backup or writing. Unrepresentable bindings and externally changed layouts fail the save rather than silently changing the shortcut. Reload configuration after editing a referenced layout before saving keybindings.
+  - Regression coverage: Named, absolute, and relative layout references; tiled commands, floating panes, both swap-layout kinds; implicit defaults; focus overrides; unrelated key rebinding and disk persistence; rejected writes leaving the original file and backups untouched; optional protocol fields and empty swap lists after IPC.
 
-- [ ] **Finding A.2: Failed recording batches disappear without recording an incomplete status** (P1, High)
+- [x] **Finding A.2: Failed recording batches disappear without recording an incomplete status** (P1, High)
   - Where: `zellij-server/src/session_recorder.rs:267`, `zellij-server/src/session_recorder.rs:470`, `zellij-server/src/session_recorder.rs:474`, `zellij-server/src/session_recorder.rs:550`, `zellij-server/src/session_recorder.rs:578`.
   - Problem: A failed `record_events` call is logged, then its batch is cleared. Finalization marks recordings incomplete for channel drops or disabled recording, but does not retain a preceding persistence failure; the injected test backend returns `Ok(())` for every write.
   - Impact: Playback can omit events without an incomplete marker. Existing channel-failure tests do not establish the behavior of this storage-failure path.
   - Trigger: An event write fails while recording remains enabled with zero channel drops, and later finalization succeeds.
   - Confidence basis: The error branch, batch disposal, finalization conditions, and success-only test backend are explicit.
   - Dimensions flagged by: Testing/Testability; principal source verification.
+  - Remediation: All flush paths share one helper and retain the first contextual storage error. Metadata and finalization failures use the same error state. Finalization combines storage and channel-loss reasons in the existing incomplete marker. Failed batches are not retried because the backend contract does not promise retry safety; cleared drain batches cannot be written twice. Persisting the marker remains best-effort if storage rejects that write too.
+  - Regression coverage: Injected failures followed by successful writes; size, timeout, and final flushes; metadata, pane-close, and session-finalization failures; combinations with dropped events or disabled recording; clean success and no duplicate writes during draining. Asynchronous observation uses `Watched`.
 
 ### Theme B: Security regression assertions stop observing too early — Impact: P1 — Confidence: High
 

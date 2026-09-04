@@ -451,9 +451,12 @@ impl Config {
         })
     }
     pub fn write_config_to_disk(
+        &self,
         config: String,
         config_file_path: &Path,
     ) -> Result<Config, Option<PathBuf>> {
+        use crate::errors::prelude::*;
+
         // if we fail, try to return the PathBuf of the file we were not able to write to
         let config_file_path = config_file_path.to_path_buf();
         Config::from_kdl(&config, None)
@@ -462,6 +465,12 @@ impl Config {
                 None
             })
             .and_then(|parsed_config| {
+                // Checking two parses of the serialized text cannot detect state
+                // the serializer discarded. Check NewTab against the source too.
+                if !self.preserves_new_tab_bindings(&parsed_config) {
+                    Err::<(), _>(anyhow!("Refusing to save configuration that changes NewTab bindings; reload referenced layouts before saving")).non_fatal();
+                    return Err(Some(config_file_path.clone()));
+                }
                 let backed_up_file_name = Config::backup_current_config(&config_file_path)?;
                 let config = match backed_up_file_name {
                     Some(backed_up_file_name) => {
@@ -493,6 +502,73 @@ impl Config {
                     Err(Some(config_file_path))
                 }
             })
+    }
+
+    fn preserves_new_tab_bindings(&self, parsed: &Config) -> bool {
+        use super::actions::Action;
+
+        fn normalize_tiled(layout: &mut super::layout::TiledPaneLayout) {
+            // The plugin wire represents an unspecified border as false.
+            if layout.borderless == Some(false) {
+                layout.borderless = None;
+            }
+            for child in &mut layout.children {
+                normalize_tiled(child);
+            }
+        }
+
+        fn normalized(action: &Action) -> Action {
+            let mut action = action.clone();
+            if let Action::NewTab {
+                tiled_layout,
+                swap_tiled_layouts,
+                swap_floating_layouts,
+                ..
+            } = &mut action
+            {
+                if let Some(layout) = tiled_layout {
+                    normalize_tiled(layout);
+                }
+                if let Some(layouts) = swap_tiled_layouts {
+                    for (constraints, _) in layouts {
+                        for layout in constraints.values_mut() {
+                            normalize_tiled(layout);
+                        }
+                    }
+                }
+                // Protobuf repeated fields cannot distinguish None from Some([]).
+                if swap_tiled_layouts.as_ref().is_some_and(Vec::is_empty) {
+                    *swap_tiled_layouts = None;
+                }
+                if swap_floating_layouts.as_ref().is_some_and(Vec::is_empty) {
+                    *swap_floating_layouts = None;
+                }
+            }
+            action
+        }
+
+        // Check both directions, including each action's position within its binding.
+        for (source, destination) in [(self, parsed), (parsed, self)] {
+            for (mode, bindings) in &source.keybinds.0 {
+                for (key, actions) in bindings {
+                    for (index, action) in actions.iter().enumerate() {
+                        if matches!(action, Action::NewTab { .. })
+                            && destination
+                                .keybinds
+                                .0
+                                .get(mode)
+                                .and_then(|bindings| bindings.get(key))
+                                .and_then(|actions| actions.get(index))
+                                .map(normalized)
+                                != Some(normalized(action))
+                        {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        true
     }
     // returns true if the config was not previouly written to disk and we successfully wrote it
     pub fn write_config_to_disk_if_it_does_not_exist(

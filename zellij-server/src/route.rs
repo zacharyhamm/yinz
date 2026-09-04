@@ -1150,6 +1150,7 @@ pub(crate) fn route_action(
                 .with_context(err_context)?;
         },
         Action::NewTab {
+            layout_source: _,
             tiled_layout: tab_layout,
             floating_layouts: floating_panes_layout,
             swap_tiled_layouts,

@@ -488,6 +488,7 @@ impl KeybindProcessor {
                         matches!(
                             action,
                             Action::NewTab {
+                                layout_source: None,
                                 tiled_layout: None,
                                 floating_layouts: _,
                                 swap_tiled_layouts: None,

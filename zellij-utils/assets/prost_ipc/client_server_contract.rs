@@ -1037,6 +1037,8 @@ pub struct NewTabAction {
     pub initial_panes: ::prost::alloc::vec::Vec<CommandOrPlugin>,
     #[prost(enumeration="UnblockCondition", optional, tag="9")]
     pub first_pane_unblock_condition: ::core::option::Option<i32>,
+    #[prost(string, optional, tag="10")]
+    pub layout_source: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
