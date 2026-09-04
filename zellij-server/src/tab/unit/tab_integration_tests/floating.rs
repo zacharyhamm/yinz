@@ -293,18 +293,20 @@ fn an_overlay_outranks_a_ui_covering_fullscreen_tiled_pane() {
     tab.toggle_active_pane_no_ui_fullscreen(client_id);
 
     assert!(
-        tab.fullscreen_covers_ui(),
-        "the fullscreen keystroke was about the overlay, which cannot go fullscreen, so the \
-         tiled pane behind it is left exactly as it was"
+        tab.tiled_panes.fullscreen_covers_ui(),
+        "the fullscreen keystroke was about the overlay - a modal, which cannot be expanded - so \
+         the tiled pane behind it is left exactly as it was"
     );
     assert!(tab.overlays_are_rendered());
     assert_eq!(tab.get_active_pane_id(client_id), Some(overlay_pane_id));
 }
 
 /// The by-id fullscreen paths used to fall through to the tiled collection and log "no tiled pane
-/// with id", which reads as a lookup failure rather than a refusal. An overlay is refused.
+/// with id", which reads as a lookup failure rather than a refusal; then they refused. Now they
+/// expand the overlay, and put it back on the second press - and the tiled layout, which the
+/// keystroke was never about, is untouched throughout.
 #[test]
-fn an_overlay_cannot_be_fullscreened_by_id() {
+fn an_overlay_is_expanded_over_the_screen_by_id() {
     let size = Size {
         cols: 121,
         rows: 20,
@@ -325,11 +327,54 @@ fn an_overlay_cannot_be_fullscreened_by_id() {
     )
     .unwrap();
 
+    let before = tab
+        .overlay_panes
+        .get(&overlay_pane_id)
+        .unwrap()
+        .position_and_size();
+
     tab.toggle_pane_fullscreen(overlay_pane_id);
-    assert!(!tab.is_fullscreen_active(), "nothing went fullscreen");
+    assert!(
+        tab.overlay_panes.pane_is_fullscreen(&overlay_pane_id),
+        "the overlay is the thing the keystroke was about"
+    );
+    assert!(
+        !tab.is_fullscreen_active(),
+        "and the tab's own layout is not collapsed to one pane by it"
+    );
+    let viewport = *tab.viewport.borrow();
+    let expanded = tab
+        .overlay_panes
+        .get(&overlay_pane_id)
+        .unwrap()
+        .current_geom();
+    assert_eq!(
+        (
+            expanded.x,
+            expanded.y,
+            expanded.cols.as_usize(),
+            expanded.rows.as_usize()
+        ),
+        (viewport.x, viewport.y, viewport.cols, viewport.rows),
+        "it fills the viewport - whatever the chrome leaves, and no more"
+    );
 
     tab.toggle_pane_no_ui_fullscreen(overlay_pane_id);
-    assert!(!tab.is_fullscreen_active(), "nothing went fullscreen");
+    assert!(
+        tab.overlay_panes.fullscreen_covers_ui(),
+        "the other keystroke switches to covering the chrome rather than collapsing"
+    );
+
+    tab.toggle_pane_no_ui_fullscreen(overlay_pane_id);
+    assert!(!tab.overlay_panes.fullscreen_is_active());
+    assert_eq!(
+        tab.overlay_panes
+            .get(&overlay_pane_id)
+            .unwrap()
+            .position_and_size(),
+        before,
+        "and it comes back to the rectangle its coordinates always said"
+    );
 
     assert_eq!(tab.get_active_pane_id(client_id), Some(overlay_pane_id));
 }

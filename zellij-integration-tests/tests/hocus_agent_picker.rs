@@ -552,3 +552,107 @@ fn tab_walks_the_keyboard_across_the_panel() {
     );
     zellij.quit();
 }
+
+/// `Ctrl+p f` on the panel, through the real client, the real keybinding and the real grid.
+///
+/// The panel is two overlays linked into one, and the keystroke is aimed at whichever half has
+/// the keyboard - so this is also the test that a linked pair is expanded *as a panel*: both
+/// halves grow and the divider keeps its share. The tab bar and the status bar keep their rows,
+/// exactly as they do when a tiled pane goes fullscreen; `Ctrl+p Shift+f` is the one that covers
+/// them.
+///
+/// The default layout rather than `NO_SIDEBAR_LAYOUT`, because the chrome is half of what this
+/// test is about - and no agent has to be found for a panel to be expanded.
+#[test]
+fn the_panel_fills_the_viewport_on_ctrl_p_f_and_comes_back() {
+    let zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(HOCUS_CONFIG)
+        .start();
+    zellij.wait_for_app_load();
+
+    open_sidebar(&zellij);
+
+    /// Where the agent list's first row sits. The list is the panel's left half, so this is the
+    /// panel's upper-left corner - give or take the frame it wears while it is in its corner and
+    /// loses when it is expanded, exactly as a borderless floating pane does.
+    fn list_corner(grid_snapshot: &GridSnapshot) -> Option<(usize, usize)> {
+        grid_snapshot
+            .text
+            .lines()
+            .enumerate()
+            .find_map(|(row, line)| {
+                line.find("no agents")
+                    .map(|byte_index| (row, line[..byte_index].chars().count()))
+            })
+    }
+
+    let home = list_corner(&zellij.snapshot()).expect("the agent list is on screen");
+    assert!(
+        home.0 > 1 && home.1 > 0,
+        "the panel starts in a corner rather than filling the screen, got {home:?}"
+    );
+
+    zellij.send_stdin(&keys::ctrl('p'));
+    zellij.wait_until("pane mode entered", |grid_snapshot| {
+        grid_snapshot.contains("Fullscreen")
+    });
+    zellij.send_stdin(&keys::key('f'));
+
+    let expanded = zellij.wait_until("the panel fills the viewport", |grid_snapshot| {
+        list_corner(grid_snapshot) == Some((1, 0))
+    });
+    assert!(
+        expanded.contains("Ask something."),
+        "both halves are still drawn, the divider having kept its share:\n{}",
+        expanded.text
+    );
+    assert!(
+        expanded.row_of_line("Tab #1") == Some(0),
+        "and the tab bar keeps its row, as it does for a fullscreen tiled pane:\n{}",
+        expanded.text
+    );
+    assert!(
+        expanded
+            .text
+            .lines()
+            .last()
+            .is_some_and(|last| last.contains("PANE")),
+        "as does the status bar:\n{}",
+        expanded.text
+    );
+
+    zellij.send_stdin(&keys::ctrl('p'));
+    zellij.wait_until("pane mode entered again", |grid_snapshot| {
+        grid_snapshot.contains("Fullscreen")
+    });
+    zellij.send_stdin(&keys::key('f'));
+
+    zellij.wait_until("the panel is back in its corner", |grid_snapshot| {
+        list_corner(grid_snapshot) == Some(home)
+    });
+}
+
+/// The other keystroke, which covers the chrome as well - the difference between the two being
+/// the whole reason the plain one stops at the viewport.
+#[test]
+fn ctrl_p_shift_f_covers_the_tab_bar_too() {
+    let zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(HOCUS_CONFIG)
+        .start();
+    zellij.wait_for_app_load();
+
+    open_sidebar(&zellij);
+    zellij.wait_until("the tab bar is on screen to begin with", |grid_snapshot| {
+        grid_snapshot.row_of_line("Tab #1") == Some(0)
+    });
+
+    zellij.send_stdin(&keys::ctrl('p'));
+    zellij.wait_until("pane mode entered", |grid_snapshot| {
+        grid_snapshot.contains("Fullscreen")
+    });
+    zellij.send_stdin(&keys::key('F'));
+
+    zellij.wait_until("the panel covers the tab bar", |grid_snapshot| {
+        grid_snapshot.row_of_line("Tab #1").is_none() && grid_snapshot.contains("no agents")
+    });
+}

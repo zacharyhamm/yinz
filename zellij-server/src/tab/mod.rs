@@ -5184,28 +5184,58 @@ impl Tab {
             },
         )
     }
-    /// An overlay cannot go fullscreen, and says so rather than falling through.
+    /// A fullscreen keystroke that landed on an overlay is the overlay's, and is answered here
+    /// rather than falling through to another collection.
     ///
-    /// `OverlayPanes` has no `fullscreen_pane_id` - what a fullscreen overlay would even mean is
-    /// undefined, since it is drawn over the whole session surface already. Before this refusal
-    /// existed the by-id paths logged "no tiled pane with id", and the active-pane paths, which
-    /// never consulted `get_active_pane_id`, silently fullscreened the tiled pane *behind* the
-    /// overlay the user was looking at.
-    fn refuses_fullscreen(&self, pane_id: &PaneId) -> bool {
-        if self.overlay_panes.panes_contain(pane_id) {
-            log::error!("{pane_id:?} is an overlay - overlays cannot be fullscreened");
-            return true;
+    /// This used to refuse outright - `OverlayPanes` had no expansion of its own, and before even
+    /// the refusal the by-id paths logged "no tiled pane with id" while the active-pane paths
+    /// silently fullscreened the tiled pane *behind* the overlay the user was looking at. An
+    /// overlay can now be expanded over the screen (`OverlayPanes::set_fullscreen`), so the
+    /// keystroke is dispatched instead of dropped. A **modal** is still refused, for the reason
+    /// it cannot be resized: it is sized to the question it is asking.
+    ///
+    /// `true` => the keystroke was the overlays', answered or refused, and no other collection
+    /// may see it.
+    fn overlay_takes_fullscreen(&mut self, pane_id: PaneId, covers_ui: bool) -> bool {
+        if !self.overlay_panes.panes_contain(&pane_id) {
+            return false;
         }
-        false
+        let toggled = if covers_ui {
+            self.overlay_panes.toggle_pane_no_ui_fullscreen(pane_id)
+        } else {
+            self.overlay_panes.toggle_pane_fullscreen(pane_id)
+        };
+        if toggled {
+            // the overlay is painted last, over a tab that has just had a screenful of it taken
+            // away, so everything it was covering has to be asked for again
+            self.set_force_render();
+            self.set_should_clear_display_before_rendering();
+        }
+        true
     }
-    /// Whether this client's keyboard is on an overlay, in which case a fullscreen keystroke is
-    /// about the overlay and there is nothing to do.
-    fn active_pane_refuses_fullscreen(&self, client_id: ClientId) -> bool {
-        self.get_active_pane_id(client_id)
-            .is_some_and(|pane_id| self.refuses_fullscreen(&pane_id))
+    /// The same, for the collection's own idea of which pane this client's keystroke is about -
+    /// the expanded overlay if there is one, so a second press always collapses it.
+    fn active_overlay_takes_fullscreen(&mut self, client_id: ClientId, covers_ui: bool) -> bool {
+        let on_an_overlay = self
+            .get_active_pane_id(client_id)
+            .is_some_and(|pane_id| self.overlay_panes.panes_contain(&pane_id));
+        if !on_an_overlay && !self.overlay_panes.fullscreen_is_active() {
+            return false;
+        }
+        let toggled = if covers_ui {
+            self.overlay_panes
+                .toggle_active_pane_no_ui_fullscreen(client_id)
+        } else {
+            self.overlay_panes.toggle_active_pane_fullscreen(client_id)
+        };
+        if toggled {
+            self.set_force_render();
+            self.set_should_clear_display_before_rendering();
+        }
+        on_an_overlay || toggled
     }
     pub fn toggle_active_pane_fullscreen(&mut self, client_id: ClientId) {
-        if self.active_pane_refuses_fullscreen(client_id) {
+        if self.active_overlay_takes_fullscreen(client_id, false) {
             return;
         }
         if self.floating_panes.fullscreen_is_active()
@@ -5223,7 +5253,7 @@ impl Tab {
         self.tiled_panes.toggle_active_pane_fullscreen(client_id);
     }
     pub fn toggle_pane_fullscreen(&mut self, pane_id: PaneId) {
-        if self.refuses_fullscreen(&pane_id) {
+        if self.overlay_takes_fullscreen(pane_id, false) {
             return;
         }
         if self.floating_panes.panes_contain(&pane_id) {
@@ -5243,7 +5273,7 @@ impl Tab {
         }
     }
     pub fn toggle_active_pane_no_ui_fullscreen(&mut self, client_id: ClientId) {
-        if self.active_pane_refuses_fullscreen(client_id) {
+        if self.active_overlay_takes_fullscreen(client_id, true) {
             return;
         }
         if self.floating_panes.fullscreen_is_active()
@@ -5263,7 +5293,7 @@ impl Tab {
             .toggle_active_pane_no_ui_fullscreen(client_id);
     }
     pub fn toggle_pane_no_ui_fullscreen(&mut self, pane_id: PaneId) {
-        if self.refuses_fullscreen(&pane_id) {
+        if self.overlay_takes_fullscreen(pane_id, true) {
             return;
         }
         if self.floating_panes.panes_contain(&pane_id) {
@@ -5283,6 +5313,13 @@ impl Tab {
         }
     }
     pub fn unset_fullscreen(&mut self) {
+        // an overlay outranks the layers underneath it here as it does everywhere else: if one is
+        // expanded over the screen, that is the fullscreen the user means
+        if self.overlay_panes.unset_fullscreen() {
+            self.set_force_render();
+            self.set_should_clear_display_before_rendering();
+            return;
+        }
         if self.floating_panes.fullscreen_is_active() {
             self.floating_panes.unset_fullscreen();
             self.set_force_render();
@@ -5298,12 +5335,20 @@ impl Tab {
     pub fn is_fullscreen_active(&self) -> bool {
         self.tiled_panes.fullscreen_is_active() || self.floating_panes.fullscreen_is_active()
     }
+    /// Whether *something* is drawn over the tab bar and the status bar.
+    ///
+    /// The overlays are in here, unlike in `is_fullscreen_active` above: this is a question about
+    /// what is painted, which an expanded overlay is as much a part of as a fullscreen tiled pane.
+    /// The readers that mean "the tiled layout is collapsed" ask `tiled_panes` directly.
     pub fn fullscreen_covers_ui(&self) -> bool {
-        self.tiled_panes.fullscreen_covers_ui() || self.floating_panes.fullscreen_covers_ui()
+        self.tiled_panes.fullscreen_covers_ui()
+            || self.floating_panes.fullscreen_covers_ui()
+            || self.overlay_panes.fullscreen_covers_ui()
     }
     pub fn fullscreen_pane_id(&self) -> Option<PaneId> {
-        self.tiled_panes
+        self.overlay_panes
             .fullscreen_pane_id()
+            .or_else(|| self.tiled_panes.fullscreen_pane_id())
             .or_else(|| self.floating_panes.fullscreen_pane_id())
     }
     pub fn are_floating_panes_visible(&self) -> bool {
@@ -6574,16 +6619,14 @@ impl Tab {
             return Some(info);
         }
 
-        // Check overlay panes - the same fields `OverlayPanes::pane_info` sets for the plural
-        // API, which has included overlays since they got their own collection
-        if let Some(pane) = self.overlay_panes.get_pane(pane_id) {
-            let mut info = pane_info_for_pane(&pane_id, pane.as_ref(), &current_pane_group);
+        // Check overlay panes - the collection's own singular API rather than the fields spelled
+        // again here, so that the two cannot drift apart. It is what knows that an expanded
+        // overlay reports the rectangle it will come back to.
+        if let Some(mut info) = self
+            .overlay_panes
+            .pane_info_of(&pane_id, &current_pane_group)
+        {
             info.is_focused = false;
-            // an overlay cannot go fullscreen, and `is_floating` is read everywhere as "not
-            // tiled", which a pane drawn over the session certainly is
-            info.is_fullscreen = false;
-            info.is_floating = true;
-            info.is_suppressed = false;
             return Some(info);
         }
 
@@ -9750,7 +9793,39 @@ impl Tab {
             );
         }
 
-        // 5. Every client's active pane exists and is selectable.
+        // 5. An expansion names a pane that is here, on screen and expandable, and no *other*
+        //    overlay is holding a geometry override. The second half is what makes "the way back
+        //    is exact" a property of the collection rather than of each test: an override is the
+        //    one geometry not derived from an overlay's coordinates, so a path that expands and
+        //    forgets to collapse is caught here rather than by the rectangle it leaves behind.
+        let fullscreen_overlays = self.overlay_panes.fullscreen_pane_ids();
+        if let Some(pane_id) = self.overlay_panes.fullscreen_pane_id() {
+            assert!(
+                self.overlay_panes.panes_contain(&pane_id),
+                "{pane_id:?} is the expanded overlay but is not in the overlay panes"
+            );
+            assert!(
+                !self.overlay_panes.is_hidden(&pane_id),
+                "{pane_id:?} is expanded over the screen but is also set aside"
+            );
+            assert!(
+                !self.overlay_panes.is_modal(&pane_id),
+                "{pane_id:?} is a modal, which may not be expanded over the screen"
+            );
+            assert!(
+                fullscreen_overlays.contains(&pane_id),
+                "{pane_id:?} anchors the expansion but is not one of the panes it draws"
+            );
+        }
+        for (pane_id, pane) in self.overlay_panes.get_panes() {
+            assert_eq!(
+                pane.geom_override().is_some(),
+                fullscreen_overlays.contains(pane_id),
+                "{pane_id:?} holds a geometry override iff it is expanded over the screen"
+            );
+        }
+
+        // 6. Every client's active pane exists and is selectable.
         let connected_clients: Vec<ClientId> =
             self.connected_clients.borrow().iter().copied().collect();
         for client_id in connected_clients {
