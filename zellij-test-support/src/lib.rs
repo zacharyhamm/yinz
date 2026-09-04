@@ -206,6 +206,8 @@ impl<T> Drop for NotifyGuard<'_, T> {
 /// in the meantime inherits every open descriptor until it execs - a script still open for
 /// writing here then fails that exec with `Text file busy`. A writer in its own process leaves
 /// nothing to inherit.
+///
+/// A test that runs the script against a deadline wants [`write_warm_script`] instead.
 pub fn write_script(path: &Path, contents: &str) {
     let mut writer = Command::new("sh")
         .args(["-c", r#"cat > "$1" && chmod 755 "$1""#, "sh"])
@@ -226,6 +228,32 @@ pub fn write_script(path: &Path, contents: &str) {
             .success(),
         "the script writer failed"
     );
+}
+
+/// Write a `/bin/sh` stub and pay its first-launch cost before the test needs it.
+///
+/// macOS evaluates a newly written executable the first time it runs, and under the suite's own
+/// spawn storm - nextest gives every test a process, and a stub-driving test spawns `sh` twice -
+/// that evaluation costs seconds: measured here, the first exec of a fresh stub took 2.4s while
+/// every later exec of the same path took 5ms. A test that holds a child to a deadline has to
+/// run it once first, or it is timing that check rather than the behaviour it means to.
+///
+/// `body` is the script without its `#!` line. The stub is written with a guard that makes a
+/// `warmup` argument a no-op, so the warm run cannot log a request, touch a file or start a
+/// background child the test would then see.
+pub fn write_warm_script(path: &Path, body: &str) {
+    write_script(
+        path,
+        &format!("#!/bin/sh\n[ \"$1\" = warmup ] && exit 0\n{body}\n"),
+    );
+    let status = Command::new(path)
+        .arg("warmup")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("failed to warm the script");
+    assert!(status.success(), "the script warmup run failed");
 }
 
 #[cfg(test)]

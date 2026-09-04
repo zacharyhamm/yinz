@@ -1793,7 +1793,7 @@ mod firecracker_command_tests {
     };
     use tempfile::TempDir;
     use zellij_server::firecracker::Provider;
-    use zellij_test_support::write_script;
+    use zellij_test_support::write_warm_script;
     use zellij_utils::cli::Firecracker;
     use zellij_utils::sessions::ActiveSession;
 
@@ -1856,11 +1856,9 @@ mod firecracker_command_tests {
     fn stub_provider(response: &str) -> (TempDir, Provider) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("provider");
-        write_script(
+        write_warm_script(
             &path,
-            &format!(
-                "#!/bin/sh\ncat >> \"$(dirname \"$0\")/requests\"\nprintf '%s' '{response}'\n"
-            ),
+            &format!("cat >> \"$(dirname \"$0\")/requests\"\nprintf '%s' '{response}'\n"),
         );
         let provider = Provider::new(path, Duration::from_secs(5)).unwrap();
         (dir, provider)

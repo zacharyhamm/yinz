@@ -7,20 +7,16 @@ fn make_server() -> ServerOsInputOutput {
 
 #[test]
 fn firecracker_resolution_keeps_an_unresolved_command_for_reruns() {
-    use std::{fs, os::unix::fs::PermissionsExt};
-
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("provider");
-    fs::write(
+    zellij_test_support::write_warm_script(
         &path,
-        "#!/bin/sh\nprintf '{\"version\":2,\"ssh_host\":\"build-box\",\"cwd\":\"/srv/project\"}'\n",
-    )
-    .unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        "printf '{\"version\":2,\"ssh_host\":\"build-box\",\"cwd\":\"/srv/project\"}'\n",
+    );
 
     let server = make_server();
     *server.firecracker.write().unwrap() = Some((
-        crate::firecracker::Provider::new(path, Duration::from_secs(1)).unwrap(),
+        crate::firecracker::Provider::new(path, crate::firecracker::AMPLE_TIMEOUT).unwrap(),
         "work".to_owned(),
     ));
     let requested = RunCommand {
@@ -60,19 +56,17 @@ fn firecracker_resolution_keeps_an_unresolved_command_for_reruns() {
 
 #[test]
 fn rename_firecracker_session_updates_the_session_key() {
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::fs;
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("provider");
-    fs::write(
+    zellij_test_support::write_warm_script(
         &path,
-        "#!/bin/sh\ncat >> \"$(dirname \"$0\")/requests\"\nprintf '{\"version\":2}'\n",
-    )
-    .unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        "cat >> \"$(dirname \"$0\")/requests\"\nprintf '{\"version\":2}'\n",
+    );
     let server = make_server();
     *server.firecracker.write().unwrap() = Some((
-        crate::firecracker::Provider::new(path, Duration::from_secs(1)).unwrap(),
+        crate::firecracker::Provider::new(path, crate::firecracker::AMPLE_TIMEOUT).unwrap(),
         "work".to_owned(),
     ));
 
@@ -112,13 +106,13 @@ fn two_quick_renames_leave_the_provider_keyed_on_the_last_name() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("provider");
-    zellij_test_support::write_script(
+    zellij_test_support::write_warm_script(
         &path,
-        "#!/bin/sh\nsleep 0.2\ncat >> \"$(dirname \"$0\")/requests\"\nprintf '{\"version\":2}'\n",
+        "sleep 0.2\ncat >> \"$(dirname \"$0\")/requests\"\nprintf '{\"version\":2}'\n",
     );
     let server = make_server();
     *server.firecracker.write().unwrap() = Some((
-        crate::firecracker::Provider::new(path, Duration::from_secs(5)).unwrap(),
+        crate::firecracker::Provider::new(path, crate::firecracker::AMPLE_TIMEOUT).unwrap(),
         "a".to_owned(),
     ));
 
@@ -152,9 +146,9 @@ fn two_quick_renames_leave_the_provider_keyed_on_the_last_name() {
 fn stopping_the_session_cancels_an_ensure_in_flight() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("provider");
-    zellij_test_support::write_script(
+    zellij_test_support::write_warm_script(
         &path,
-        "#!/bin/sh\nsleep 30\nprintf '{\"version\":2,\"ssh_host\":\"build-box\"}'\n",
+        "sleep 30\nprintf '{\"version\":2,\"ssh_host\":\"build-box\"}'\n",
     );
     let server = make_server();
     *server.firecracker.write().unwrap() = Some((
@@ -192,15 +186,12 @@ fn stopping_the_session_cancels_an_ensure_in_flight() {
 
 #[test]
 fn a_refused_rename_keeps_the_old_firecracker_session_key() {
-    use std::{fs, os::unix::fs::PermissionsExt};
-
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("provider");
-    fs::write(&path, "#!/bin/sh\necho 'unknown action' >&2\nexit 1\n").unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    zellij_test_support::write_warm_script(&path, "echo 'unknown action' >&2\nexit 1\n");
     let server = make_server();
     *server.firecracker.write().unwrap() = Some((
-        crate::firecracker::Provider::new(path, Duration::from_secs(1)).unwrap(),
+        crate::firecracker::Provider::new(path, crate::firecracker::AMPLE_TIMEOUT).unwrap(),
         "work".to_owned(),
     ));
 
@@ -227,13 +218,13 @@ fn failed_firecracker_pane_termination_does_not_skip_provider_shutdown() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("provider");
-    zellij_test_support::write_script(
+    zellij_test_support::write_warm_script(
         &path,
-        "#!/bin/sh\ntouch \"$(dirname \"$0\")/called\"\nprintf '{\"version\":2}'\n",
+        "touch \"$(dirname \"$0\")/called\"\nprintf '{\"version\":2}'\n",
     );
     let server = make_server();
     *server.firecracker.write().unwrap() = Some((
-        crate::firecracker::Provider::new(path, Duration::from_secs(1)).unwrap(),
+        crate::firecracker::Provider::new(path, crate::firecracker::AMPLE_TIMEOUT).unwrap(),
         "work".to_owned(),
     ));
     let (write_socket, broker_peer) = UnixStream::pair().unwrap();
