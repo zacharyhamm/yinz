@@ -72,8 +72,8 @@ use log::{debug, warn};
 use zellij_utils::data::{
     AgentInfo, AgentState, ContextMenuContext, ContextMenuItem, Direction, EventType,
     FloatingPaneCoordinates, HostTerminalThemeMode, KeyWithModifier, LayoutInfo, LayoutWithError,
-    NotificationInfo, PaneInfo, RemotePaneHandoff, ResizeStrategy, SessionInfo, Styling, TabInfo,
-    ThemeHue, WarpedPane, WarpedTab, HOCUS_AGENT_PANE_CONTEXT,
+    NotificationInfo, OverlayPlacement, PaneInfo, PluginTag, RemotePaneHandoff, ResizeStrategy,
+    SessionInfo, Styling, TabInfo, ThemeHue, WarpedPane, WarpedTab, HOCUS_AGENT_PANE_CONTEXT,
 };
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::command::{RunCommand, TerminalAction};
@@ -81,8 +81,8 @@ use zellij_utils::input::context_menu::ContextMenu;
 use zellij_utils::input::hooks::HookPoint;
 use zellij_utils::input::keybinds::Keybinds;
 use zellij_utils::input::layout::{
-    FloatingPaneLayout, Layout, Run, RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout,
-    TiledPaneLayout,
+    FloatingPaneLayout, Layout, PluginUserConfiguration, Run, RunPlugin, RunPluginLocation,
+    RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout, TiledPaneLayout,
 };
 use zellij_utils::input::options::{
     Clipboard, HostNotificationProtocol, NestedSessionHandling, NotificationPosition,
@@ -475,6 +475,26 @@ impl RenderBlocker {
     }
 }
 
+/// What one plugin wants said, and decided, when the session is about to end.
+///
+/// See `PluginCommand::SetQuitNotice`. The two halves are independent: a plugin may have
+/// something worth saying about a quit without wanting to stand in the way of one.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct QuitNotice {
+    /// One line for the quit confirmation to show, if this plugin has anything to say.
+    pub notice: Option<String>,
+    /// Whether closing the session's last pane should confirm rather than exit.
+    pub guard: bool,
+}
+
+impl QuitNotice {
+    /// Whether this is worth keeping at all. A plugin that says nothing and guards nothing has
+    /// withdrawn, and its entry goes rather than sitting there empty.
+    fn is_empty(&self) -> bool {
+        self.notice.is_none() && !self.guard
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct WatcherState {
     size: Size,
@@ -822,6 +842,18 @@ pub(crate) struct Screen {
     cached_layouts: Vec<LayoutInfo>,
     cached_layout_errors: Vec<LayoutWithError>,
     pane_render_subscribers: HashMap<ClientId, PaneRenderSubscription>,
+    /// What each plugin wants said, and decided, when the session is about to end.
+    ///
+    /// Keyed by plugin id and dropped when that plugin's pane closes, so a plugin that goes away
+    /// cannot leave a guard behind that nothing can lift. See `PluginCommand::SetQuitNotice`.
+    quit_notices: BTreeMap<PluginId, QuitNotice>,
+    /// Whether the session's last tab is being kept alive with nothing selectable in it because
+    /// a plugin asked for a quit to be confirmed.
+    ///
+    /// Set when the confirmation goes up, cleared the moment something selectable is opened in
+    /// that tab - which is also what makes a later close ask again. Cancelling the confirmation
+    /// needs no signal of its own: the tab simply stays held, which is the point.
+    last_tab_held_open: bool,
     /// Whether a `zellij events` client is listening, so pane and tab state is reported even
     /// when no plugin asked for it. Set by the plugin thread, which keeps the subscribers.
     pub(super) cli_event_subscribers_present: bool,
@@ -1323,6 +1355,8 @@ impl Screen {
             cached_layouts: vec![],
             cached_layout_errors: vec![],
             pane_render_subscribers: HashMap::new(),
+            quit_notices: BTreeMap::new(),
+            last_tab_held_open: false,
             cli_event_subscribers_present: false,
             background_plugin_subscriptions: HashMap::new(),
             next_forward_token: 1, // 0 is reserved as the startup sentinel
@@ -2760,6 +2794,100 @@ impl Screen {
         self.log_and_report_session_state()?;
         Ok(())
     }
+    /// Record what a plugin wants said, and decided, about a quit. `None`/`false` withdraws.
+    pub(crate) fn set_quit_notice(
+        &mut self,
+        plugin_id: PluginId,
+        notice: Option<String>,
+        guard: bool,
+    ) {
+        let entry = QuitNotice { notice, guard };
+        match entry.is_empty() {
+            true => {
+                self.quit_notices.remove(&plugin_id);
+            },
+            false => {
+                self.quit_notices.insert(plugin_id, entry);
+            },
+        }
+    }
+
+    /// Forget what a plugin said about a quit, because its pane has gone.
+    ///
+    /// Without this a plugin that crashed or was closed mid-reply would leave a guard behind
+    /// that nothing could lift, and the session could never close its last pane again.
+    pub(crate) fn drop_quit_notice(&mut self, plugin_id: PluginId) {
+        self.quit_notices.remove(&plugin_id);
+    }
+
+    /// Whether any plugin has asked for the session's last pane closing to be confirmed.
+    pub(crate) fn quit_is_guarded(&self) -> bool {
+        self.quit_notices.values().any(|notice| notice.guard)
+    }
+
+    /// Everything the plugins asked to have said about a quit, one per line, in plugin id order
+    /// so the same set of notices always reads the same way.
+    fn quit_notice_text(&self) -> Option<String> {
+        let lines: Vec<&str> = self
+            .quit_notices
+            .values()
+            .filter_map(|notice| notice.notice.as_deref())
+            .collect();
+        match lines.is_empty() {
+            true => None,
+            false => Some(lines.join("\n")),
+        }
+    }
+
+    /// Raise the quit confirmation as a modal, carrying whatever the plugins asked to have said.
+    ///
+    /// The one place the confirmation is built: `Ctrl-q` reaches it through
+    /// `ScreenInstruction::ConfirmQuit`, and the last pane closing reaches it from the render
+    /// sweep. The plugin answers by closing itself and sending `Quit`, which carries a pane id
+    /// and so falls through `route.rs` to the immediate exit rather than reopening this.
+    ///
+    /// The configuration is left empty when no plugin had anything to say, so a plain quit is
+    /// the same instruction it has always been.
+    pub(crate) fn confirm_quit(
+        &mut self,
+        client_id: ClientId,
+        on_last_pane: bool,
+        completion: Option<NotificationEnd>,
+    ) -> Result<()> {
+        let err_context = || format!("failed to confirm quit for client {client_id}");
+        let mut configuration = BTreeMap::new();
+        if let Some(notice) = self.quit_notice_text() {
+            configuration.insert("notice".to_owned(), notice);
+        }
+        if on_last_pane {
+            configuration.insert("reason".to_owned(), "last_pane".to_owned());
+        }
+        let plugin = RunPluginOrAlias::RunPlugin(RunPlugin {
+            location: RunPluginLocation::Zellij(PluginTag::new("quit-confirmation")),
+            configuration: PluginUserConfiguration::new(configuration),
+            ..Default::default()
+        });
+        self.bus
+            .senders
+            .send_to_screen(ScreenInstruction::LaunchPlugin(
+                plugin,
+                true,
+                false,
+                false,
+                None,
+                false,
+                None,
+                client_id,
+                completion,
+                None,
+                false,
+                // the one pane the user has to answer: stated here rather than spelled as a
+                // `modal` key in the plugin's configuration for the server to read back out
+                Some(OverlayPlacement::modal(None)),
+            ))
+            .with_context(err_context)
+    }
+
     /// Ask the plugin thread to run the plugin bound to `point`.
     ///
     /// Fired unconditionally by every hook site - whether a hook is bound is the plugin

@@ -797,6 +797,14 @@ pub enum ScreenInstruction {
     /// Set (or clear) the run id on a pane's existing agent record, leaving every field the
     /// agent itself reports alone. See `AgentInfo::run_id`.
     SetPaneAgentRun(PaneId, Option<String>, Option<NotificationEnd>),
+    /// What a plugin wants said, and decided, when the session is about to end. Keyed by the
+    /// plugin's id; see `PluginCommand::SetQuitNotice`.
+    SetQuitNotice(PluginId, Option<String>, bool),
+    /// Raise the quit confirmation as a modal, carrying whatever the plugins asked to have said.
+    ///
+    /// The one place the confirmation is built. `route.rs` sends this rather than the
+    /// `LaunchPlugin` it used to build itself, because the notices live on the screen thread.
+    ConfirmQuit(ClientId, Option<NotificationEnd>),
     DesktopNotificationResponse(Vec<u8>, ClientId),
     UpdateBackgroundPluginSubscriptions(PluginId, ClientId, HashSet<EventType>),
     ClearHintTextCache,

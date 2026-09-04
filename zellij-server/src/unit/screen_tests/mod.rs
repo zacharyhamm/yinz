@@ -12,9 +12,7 @@ use insta::assert_snapshot;
 use std::path::PathBuf;
 use zellij_utils::cli::CliAction;
 use zellij_utils::data::WarpedPane;
-use zellij_utils::data::{
-    Event, EventType, Mouse, OverlayKind, OverlayPlacement, Resize, Style, Styling,
-};
+use zellij_utils::data::{Event, EventType, Mouse, OverlayPlacement, Resize, Style, Styling};
 use zellij_utils::errors::{prelude::*, ErrorContext};
 use zellij_utils::input::actions::Action;
 use zellij_utils::input::command::{RunCommand, TerminalAction};
@@ -1983,51 +1981,6 @@ fn add_pane_to_tab(screen: &mut Screen, tab_id: usize, pane_id: PaneId, floating
 }
 
 #[test]
-fn quit_action_launches_a_new_confirmation_plugin() {
-    let mut mock_screen = MockScreen::new(Size { cols: 80, rows: 24 });
-    route_arbitrary_action_to_server(&mock_screen.clone_session_metadata(), Action::Quit, 2);
-
-    let screen_receiver = mock_screen.screen_receiver.take().unwrap();
-    let instruction = loop {
-        let (instruction, _) = screen_receiver
-            .recv_timeout(std::time::Duration::from_secs(1))
-            .expect("quit confirmation launch instruction");
-        if matches!(instruction, ScreenInstruction::LaunchPlugin(..)) {
-            break instruction;
-        }
-    };
-
-    // The placement is stated by the launcher rather than spelled as a `modal` key in the
-    // plugin's configuration for the server to read back out.
-    assert!(matches!(
-        instruction,
-        ScreenInstruction::LaunchPlugin(
-            RunPluginOrAlias::RunPlugin(RunPlugin {
-                location: RunPluginLocation::Zellij(plugin_tag),
-                configuration,
-                ..
-            }),
-            true,
-            false,
-            false,
-            None,
-            false,
-            None,
-            2,
-            _,
-            None,
-            false,
-            Some(OverlayPlacement {
-                kind: OverlayKind::Modal,
-                coordinates: None,
-            }),
-        ) if plugin_tag.to_string() == "quit-confirmation" && configuration.inner().is_empty()
-    ));
-
-    mock_screen.teardown(vec![]);
-}
-
-#[test]
 fn notification_history_keeps_dismissed_toasts() {
     let mut mock_screen = MockScreen::new(Size { cols: 80, rows: 24 });
     let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
@@ -2090,6 +2043,7 @@ mod notification_animation;
 mod overlays;
 mod pane_state;
 mod plugin_broadcasts;
+mod quit;
 mod reveal_pane;
 mod scroll_and_warp;
 mod sizing;

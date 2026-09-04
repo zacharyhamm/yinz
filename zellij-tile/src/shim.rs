@@ -3656,6 +3656,23 @@ pub fn set_pane_agent_run(pane_id: PaneId, run_id: Option<String>) {
     unsafe { host_run_plugin_command() };
 }
 
+/// Say what this plugin wants said, and decided, when the session is about to end.
+///
+/// `notice` is one line the quit confirmation shows, or `None` to withdraw whatever this plugin
+/// last said. `guard` is whether closing the session's *last* pane should raise that confirmation
+/// instead of ending the session there and then.
+///
+/// The two are independent: a plugin may have something worth saying about a quit without wanting
+/// to stand in the way of one. Withdraw the guard when there is nothing left outstanding - a
+/// plugin that keeps one up with nothing to show for it leaves the session unable to close its
+/// last pane.
+pub fn set_quit_notice(notice: Option<String>, guard: bool) {
+    let plugin_command = PluginCommand::SetQuitNotice { notice, guard };
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
 /// Set the default foreground and/or background color of a pane
 ///
 /// # Arguments

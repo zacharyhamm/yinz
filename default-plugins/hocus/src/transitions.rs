@@ -331,6 +331,19 @@ impl State {
         !matches!(self.status, Status::Idle)
     }
 
+    /// The foreground chat's answer to [`Chat::is_live`].
+    ///
+    /// Spelled again over `State`'s flat fields rather than shared, because the foreground chat
+    /// *is* those fields - it is only a `Chat` once it is parked. Wider than `is_in_flight`:
+    /// that is about a request the endpoint owes us, and this is about anything a person would
+    /// be sorry to lose, plan mode and armed jobs included.
+    pub(crate) fn foreground_is_live(&self) -> bool {
+        self.stream.is_some()
+            || !matches!(self.status, Status::Idle)
+            || !matches!(self.plan, Plan::Off)
+            || !self.jobs.is_empty()
+    }
+
     /// Anything at all outstanding. The archive and the `Ctrl-l` teardown care
     /// about this rather than about which half it is.
     pub(crate) fn is_in_flight(&self) -> bool {

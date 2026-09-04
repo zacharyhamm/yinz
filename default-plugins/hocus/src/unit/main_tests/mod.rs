@@ -756,6 +756,7 @@ mod project_assignment;
 mod project_discovery;
 mod questions;
 mod queueing;
+mod quit_notice;
 mod repository_tools;
 mod skill_tools;
 mod slash_commands;

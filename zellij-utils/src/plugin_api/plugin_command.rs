@@ -168,7 +168,7 @@ pub use super::generated_api::api::{
         SetFloatingPanePinnedPayload, SetPaneAgentPayload, SetPaneAgentRunPayload,
         SetPaneBorderlessPayload, SetPaneColorPayload,
         SetPaneFrameStylePayload as ProtobufSetPaneFrameStylePayload,
-        SetPaneRegexHighlightsPayload, SetPaneTitlePrefixPayload,
+        SetPaneRegexHighlightsPayload, SetPaneTitlePrefixPayload, SetQuitNoticePayload,
         SetSelfMouseSelectionSupportPayload, SetTabProjectsPayload, SetTimeoutPayload,
         ShowCursorPayload, ShowFloatingPanesPayload as ProtobufShowFloatingPanesPayload,
         ShowFloatingPanesResponse as ProtobufShowFloatingPanesResponse, ShowPaneWithIdPayload,
@@ -2795,6 +2795,13 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for SetPaneAgentRun"),
             },
+            Some(CommandName::SetQuitNotice) => match protobuf_plugin_command.payload {
+                Some(Payload::SetQuitNoticePayload(payload)) => Ok(PluginCommand::SetQuitNotice {
+                    notice: payload.notice,
+                    guard: payload.guard,
+                }),
+                _ => Err("Mismatched payload for SetQuitNotice"),
+            },
             Some(CommandName::CheckLuaPlugin) => match protobuf_plugin_command.payload {
                 Some(Payload::CheckLuaPluginPayload(payload)) => {
                     Ok(PluginCommand::CheckLuaPlugin {
@@ -4999,6 +5006,13 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     run_id,
                 })),
             }),
+            PluginCommand::SetQuitNotice { notice, guard } => Ok(ProtobufPluginCommand {
+                name: CommandName::SetQuitNotice as i32,
+                payload: Some(Payload::SetQuitNoticePayload(SetQuitNoticePayload {
+                    notice,
+                    guard,
+                })),
+            }),
             PluginCommand::CheckLuaPlugin { name, source } => Ok(ProtobufPluginCommand {
                 name: CommandName::CheckLuaPlugin as i32,
                 payload: Some(Payload::CheckLuaPluginPayload(CheckLuaPluginPayload {
@@ -7118,6 +7132,7 @@ mod tests {
                 | PluginCommand::CheckLuaPlugin { .. }
                 | PluginCommand::SetPaneAgent { .. }
                 | PluginCommand::SetPaneAgentRun { .. }
+                | PluginCommand::SetQuitNotice { .. }
                 | PluginCommand::ReloadPluginByUrl(_)
                 | PluginCommand::ReadPluginLog { .. }
                 | PluginCommand::Unsubscribe(_)

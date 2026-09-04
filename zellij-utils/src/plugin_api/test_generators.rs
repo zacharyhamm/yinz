@@ -1474,6 +1474,10 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             pane_id: pane_id(tc),
             run_id: optional_strings(tc),
         },
+        CommandType::SetQuitNotice => PluginCommand::SetQuitNotice {
+            notice: optional_strings(tc),
+            guard: booleans(tc),
+        },
         CommandType::ReloadPluginByUrl => PluginCommand::ReloadPluginByUrl(strings(tc)),
         CommandType::ReadPluginLog => PluginCommand::ReadPluginLog {
             name: strings(tc),
