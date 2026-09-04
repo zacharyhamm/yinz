@@ -137,6 +137,86 @@ The build uses `cargo-zigbuild` to cross-compile a native musl binary (arm64 on 
 
 1. `cargo install cargo-zigbuild`
 2. `brew install zig`
+
+### Podman-backed Docker and Compose
+
+The end-to-end and remote-pane suites use `docker compose`, but on macOS it is
+often most convenient to run that CLI against a rootless Podman machine. This
+does not need the privileged `/var/run/docker.sock` helper: point a Docker
+context at the socket that Podman forwards from its VM instead.
+
+Install the runtime and Docker-compatible CLI with Homebrew:
+
+```sh
+brew install podman docker docker-compose
+```
+
+Create the default rootless machine and start it. Podman's defaults are 7 CPUs,
+2 GiB of memory, and a 100 GiB disk; they are sufficient for these suites on
+the development machines this repository supports. Omit `--now` if you prefer
+to start it separately with `podman machine start`.
+
+```sh
+podman machine init --update-connection --now podman-machine-default
+```
+
+Create (or refresh after recreating the VM) the Docker context from the socket
+reported by Podman, then make it active:
+
+```sh
+podman_socket="$(podman machine inspect \
+  --format '{{.ConnectionInfo.PodmanSocket.Path}}' podman-machine-default)"
+
+if docker context inspect podman-machine-default >/dev/null 2>&1; then
+  docker context update podman-machine-default \
+    --docker "host=unix://${podman_socket}"
+else
+  docker context create podman-machine-default \
+    --docker "host=unix://${podman_socket}"
+fi
+docker context use podman-machine-default
+```
+
+Check the complete setup from the repository root before building tests:
+
+```sh
+podman machine list                    # podman-machine-default is Running
+podman info
+podman machine ssh podman-machine-default -- uname -a
+docker info                             # server is Podman/Fedora, not an unavailable Docker daemon
+docker run --rm \
+  --mount "type=bind,src=$PWD,dst=/workspace,readonly" \
+  alpine:3.22 test -f /workspace/Cargo.toml
+docker compose config
+docker compose -f docker-compose.remote-panes.yml config
+```
+
+The E2E service binds SSH on `127.0.0.1:2222`; `docker compose up -d` starts
+it. `cargo x remote-test --build` starts the independent remote-pane services,
+which use `127.0.0.1:2223` for SSH and `127.0.0.1:8474` for the proxy control
+API. The two Compose projects may run together.
+
+Docker Desktop is also supported: leave its normal Docker context active and
+run the same verification and test commands below.
+
+#### Podman machine recovery
+
+If a newly initialized machine never reaches `Running`, or `podman info` does
+not become available after boot, first save `podman machine inspect
+podman-machine-default` and the guest boot journal (`podman machine ssh
+podman-machine-default -- sudo journalctl -b`). Confirm that it has no
+workloads to retain, then remove only that machine with `podman machine rm -f
+podman-machine-default`.
+
+If a fresh initialization repeats a filesystem-check or Ignition failure,
+remove only the corresponding compressed image under
+`~/.local/share/containers/podman/machine/applehv/cache/` before initializing
+again; do not use `podman machine reset`, edit generated Ignition JSON, or
+delete a cache entry used by another machine. If a newly downloaded AppleHV
+image still fails, follow [Podman's current machine-provider
+guidance](https://docs.podman.io/en/latest/markdown/podman-machine-init.1.html)
+to create a new machine with an alternative provider rather than mixing host
+and guest versions.
 </details>
 
 <details>
