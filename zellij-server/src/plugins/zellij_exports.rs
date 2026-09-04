@@ -2507,7 +2507,7 @@ fn apply_git_checkout_to_command(
             .canonicalize()
             .map_err(|error| format!("failed to resolve checkout {}: {error}", cwd.display()))?;
         if automatic_firecracker_vm {
-            *vm = crate::firecracker::provider::worktree_vm_name(&cwd);
+            *vm = crate::firecracker::worktree_vm_name(&cwd);
         }
         *worktree = Some(cwd);
     } else {
@@ -7529,7 +7529,7 @@ mod permission_tests {
             },
         )
         .unwrap();
-        assert_eq!(cwd, target);
+        assert_eq!(resolved(&cwd), resolved(&target));
         assert!(std::fs::read_to_string(target.join(".git"))
             .unwrap()
             .starts_with("gitdir:"));
@@ -7573,7 +7573,7 @@ mod permission_tests {
         let subdirectory = repository.path().join("src/nested");
         std::fs::create_dir_all(&subdirectory).unwrap();
         let checkout = prepare_git_checkout_in(subdirectory, GitCheckout::Current).unwrap();
-        let expected = crate::firecracker::provider::worktree_vm_name(&resolved(repository.path()));
+        let expected = crate::firecracker::worktree_vm_name(&resolved(repository.path()));
 
         for placeholder in ["first", "second"] {
             let mut command = firecracker_command(placeholder);
@@ -7601,8 +7601,7 @@ mod permission_tests {
             .unwrap();
         let second =
             prepare_git_checkout_in(primary_repository.path().to_owned(), checkout).unwrap();
-        let expected =
-            crate::firecracker::provider::worktree_vm_name(&resolved(primary_repository.path()));
+        let expected = crate::firecracker::worktree_vm_name(&resolved(primary_repository.path()));
         for cwd in [first, second] {
             let mut command = firecracker_command("placeholder");
             apply_git_checkout_to_command(&mut command, cwd, true).unwrap();
@@ -7625,7 +7624,7 @@ mod permission_tests {
         apply_git_checkout_to_command(&mut command, first, true).unwrap();
         assert_eq!(
             command.target.firecracker_vm(),
-            Some(crate::firecracker::provider::worktree_vm_name(&resolved(&existing)).as_str())
+            Some(crate::firecracker::worktree_vm_name(&resolved(&existing)).as_str())
         );
     }
 
