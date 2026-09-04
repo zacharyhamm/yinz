@@ -68,3 +68,4 @@ mod send_input;
 mod slack;
 mod tab_moves;
 mod typed_calls;
+mod vm;

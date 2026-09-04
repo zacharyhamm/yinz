@@ -1772,6 +1772,90 @@ impl State {
         ))
     }
 
+    /// The message for a VM tool whose `zellij` could not be executed, or `None` when
+    /// this is any other kind of result. Same shape and reason as `slack_exec_hint`.
+    fn vm_exec_hint(&self, exit_code: Option<i32>, stderr: &[u8]) -> Option<String> {
+        let head = self.pending.front()?;
+        if !tools::VM_TOOLS.contains(&head.name.as_str()) || exit_code != Some(2) {
+            return None;
+        }
+        if !String::from_utf8_lossy(stderr).contains("os error 2") {
+            return None;
+        }
+        let zellij = self.cfg.as_ref().ok().map(|cfg| cfg.zellij.as_str())?;
+        Some(format!(
+            "zellij could not be run: \"{zellij}\" does not exist or is not executable.\n\n\
+             Set zellij_path in the hocus plugin block of ~/.config/zellij/config.kdl to the \
+             binary's absolute path — a leading ~/ is expanded, but nothing else is. Tell the \
+             user this; do not try other commands to find zellij yourself."
+        ))
+    }
+
+    /// What one of the four VM tools answers.
+    ///
+    /// Written by hand rather than left to the generic `exit code: N` envelope for two
+    /// reasons. A listing comes back as JSON, and one line per VM says the same thing
+    /// in a fraction of the tokens it is paid for on every later turn. And a merge that
+    /// kept a host copy exits 0 and writes `warning:` lines to stderr - so the envelope
+    /// would present a *successful* sync as a failure with an error attached, which is
+    /// the one reading the model must not take away from it.
+    fn vm_tool_result(
+        &self,
+        head: &ToolCall,
+        exit_code: Option<i32>,
+        stdout: &[u8],
+        stderr: &[u8],
+        context: &BTreeMap<String, String>,
+    ) -> String {
+        let stdout = String::from_utf8_lossy(stdout);
+        let stderr = String::from_utf8_lossy(stderr);
+        if exit_code != Some(0) {
+            // The CLI says why on stderr; the exit code alone names nothing.
+            let reason = stderr.trim();
+            let reason = if reason.is_empty() {
+                format!("exit code {}", exit_code.unwrap_or(-1))
+            } else {
+                log::truncate_str(reason, MAX_TOOL_OUTPUT)
+            };
+            return format!("{} failed: {reason}", head.name);
+        }
+        // Every warning is a file the user has to go and look at, so they are passed
+        // through whole rather than counted.
+        let warnings: Vec<&str> = stderr
+            .lines()
+            .filter_map(|line| line.strip_prefix("warning: "))
+            .collect();
+        let mut result = match head.name.as_str() {
+            "vm_list" => present::vm_listing(stdout.trim()),
+            "vm_changes" => match stdout.trim() {
+                "0" => "no guest paths have changed since the last sync".to_owned(),
+                count => format!("{count} guest paths changed since the last sync"),
+            },
+            "vm_sync" => "synced: the VM's work is merged into its host worktree".to_owned(),
+            _ => {
+                let closed = context
+                    .get(tools::VM_CLOSED_PANES_CONTEXT)
+                    .map(String::as_str)
+                    .unwrap_or_default();
+                let panes: Vec<&str> = closed.split(',').filter(|id| !id.is_empty()).collect();
+                let mut sentence =
+                    "closed: the VM's work is merged into its host worktree and the VM is gone"
+                        .to_owned();
+                if !panes.is_empty() {
+                    sentence.push_str(&format!("; closed panes {}", panes.join(", ")));
+                }
+                sentence
+            },
+        };
+        if !warnings.is_empty() {
+            result.push_str("\n\nThe merge could not decide these, and kept your copy:");
+            for warning in warnings {
+                result.push_str(&format!("\n{warning}"));
+            }
+        }
+        result
+    }
+
     /// The message for a file tool whose binary could not be executed, or `None`
     /// when this is any other kind of result.
     ///
@@ -2033,6 +2117,7 @@ impl State {
         let result = match self
             .slack_exec_hint(exit_code, stderr)
             .or_else(|| self.project_exec_hint(exit_code, stderr))
+            .or_else(|| self.vm_exec_hint(exit_code, stderr))
         {
             Some(hint) => hint,
             None if tools::PROJECT_READ_TOOLS.contains(&head.name.as_str()) => {
@@ -2040,6 +2125,9 @@ impl State {
             },
             None if tools::SKILL_FILE_TOOLS.contains(&head.name.as_str()) => {
                 self.skill_tool_result(&head, exit_code, stdout, stderr, context)
+            },
+            None if tools::VM_TOOLS.contains(&head.name.as_str()) => {
+                self.vm_tool_result(&head, exit_code, stdout, stderr, context)
             },
             None => {
                 let mut result = format!("exit code: {}", exit_code.unwrap_or(-1));

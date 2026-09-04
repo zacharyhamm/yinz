@@ -123,6 +123,12 @@ const PROSE: &[&str] = &[
     // Raw scrollback. Fencing it would be a lie about what it is, and the plain
     // path already renders it whole.
     "read_pane",
+    // `vm_tool_result` has already turned the CLI's answer into the sentence, or
+    // the table, that says what happened. Presenting it again would rewrite it.
+    "vm_list",
+    "vm_changes",
+    "vm_sync",
+    "vm_close",
 ];
 
 // ---------------------------------------------------------------------------
@@ -165,6 +171,7 @@ const FAMILIES: &[(&str, &[&str])] = &[
     ("git", &["git"]),
     ("github", &["github"]),
     ("slack", &["slack"]),
+    ("vms", &["vm"]),
     ("chat", &["schedule", "unschedule", "web_search"]),
 ];
 
@@ -1084,6 +1091,64 @@ fn todo_written(name: &str, value: &Value) -> Option<String> {
     out.push_str(&text(value, "text"));
     out.push('\n');
     Some(out)
+}
+
+// ---------------------------------------------------------------------------
+// VMs
+// ---------------------------------------------------------------------------
+
+/// `zellij firecracker list --json`, as one line per VM.
+///
+/// Unlike the rest of this file this is read by the *model*, not by the user - it is
+/// what `vm_tool_result` answers a `vm_list` with. The listing is paid for on every
+/// later turn of the conversation, so it is a table rather than the JSON: the same
+/// facts at a fraction of the tokens.
+///
+/// Anything the provider could not name prints `-`. The raw text is answered whole when
+/// it is not the JSON we asked for, because a CLI that printed something else is telling
+/// the model something, and swallowing it would leave `vm_list` silently empty.
+pub fn vm_listing(stdout: &str) -> String {
+    let Ok(value) = serde_json::from_str::<Value>(stdout) else {
+        return stdout.to_owned();
+    };
+    let vms = array(&value, "vms");
+    let recoveries = array(&value, "recoveries");
+    let mut out = String::new();
+    if vms.is_empty() {
+        out.push_str("No Firecracker VMs are running.");
+    } else {
+        out.push_str("session\tvm\tstate\timage\tworktree\tbranch");
+        for vm in vms {
+            let field = |key: &str| match vm.get(key).and_then(Value::as_str) {
+                Some(value) if !value.is_empty() => value.to_owned(),
+                _ => "-".to_owned(),
+            };
+            out.push_str(&format!(
+                "\n{}\t{}\t{}\t{}\t{}\t{}",
+                field("session"),
+                field("name"),
+                field("state"),
+                field("image"),
+                field("worktree"),
+                field("branch"),
+            ));
+        }
+    }
+    // Disks the provider kept from a VM it could not merge back. Named rather than
+    // counted: each one is work of the user's that is still recoverable, and the path
+    // is the whole of what they need to get at it.
+    if !recoveries.is_empty() {
+        out.push_str("\n\nRetained disks (a VM that crashed or could not be merged back):");
+        for recovery in recoveries {
+            out.push_str(&format!(
+                "\n{}\t{}\t{}",
+                or_else(text(recovery, "name"), "-"),
+                or_else(text(recovery, "reason"), "-"),
+                or_else(text(recovery, "path"), "-"),
+            ));
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,210 @@
+//! The four VM tools through the loop: what they refuse without running, what
+//! they defer on, and what the CLI's answer is turned into.
+
+use super::*;
+
+/// Feed a `RunCommandResult` back to a parked VM call, the way the host would.
+fn answer(
+    state: &mut State,
+    name: &str,
+    exit_code: Option<i32>,
+    stdout: &[u8],
+    stderr: &[u8],
+    extra: &[(&str, &str)],
+) {
+    state.status = Status::AwaitingCommand;
+    state.pending = vec![ToolCall {
+        id: "mine".into(),
+        name: name.into(),
+        arguments: r#"{"vm":"review"}"#.into(),
+    }]
+    .into();
+    let mut context = BTreeMap::from([("tool_call_id".to_owned(), "mine".to_owned())]);
+    for (key, value) in extra {
+        context.insert((*key).to_owned(), (*value).to_owned());
+    }
+    state.on_command_result(exit_code, stdout, stderr, &context);
+}
+
+#[test]
+fn every_vm_tool_defers_on_the_cli() {
+    for (name, arguments) in [
+        ("vm_list", "{}"),
+        ("vm_changes", r#"{"vm":"review"}"#),
+        ("vm_sync", r#"{"vm":"review"}"#),
+        ("vm_close", r#"{"vm":"review"}"#),
+    ] {
+        let mut state = ready_state();
+        assert!(!run_file_tool(&mut state, name, arguments), "{name}");
+        assert!(matches!(state.status, Status::AwaitingCommand), "{name}");
+    }
+}
+
+#[test]
+fn a_per_vm_tool_without_a_vm_is_answered_without_running_anything() {
+    let mut state = ready_state();
+    assert!(run_file_tool(&mut state, "vm_sync", "{}"));
+    assert_eq!(
+        tool_results(&state)[0].content,
+        "vm is required; call vm_list for the names"
+    );
+}
+
+/// The session name arrives with the daemon's first poll reply. Until it does,
+/// `--session ""` would ask the provider about a session that cannot exist - so a
+/// per-VM tool waits, and says how to get on without waiting.
+#[test]
+fn a_per_vm_tool_waits_for_the_session_name_but_the_listing_does_not() {
+    let mut state = ready_state();
+    state.zellij_session_name = String::new();
+    assert!(run_file_tool(&mut state, "vm_sync", r#"{"vm":"review"}"#));
+    assert_eq!(
+        tool_results(&state)[0].content,
+        "this session is not named yet; retry in a moment, or pass vm_session"
+    );
+
+    // The listing is machine-wide and names no session, so it has nothing to wait for.
+    let mut state = ready_state();
+    state.zellij_session_name = String::new();
+    assert!(!run_file_tool(&mut state, "vm_list", "{}"));
+
+    // An explicit session is the way past the wait.
+    let mut state = ready_state();
+    state.zellij_session_name = String::new();
+    assert!(!run_file_tool(
+        &mut state,
+        "vm_sync",
+        r#"{"vm":"review","vm_session":"work"}"#,
+    ));
+}
+
+#[test]
+fn a_listing_is_answered_as_a_table_rather_than_as_json() {
+    let mut state = ready_state();
+    answer(
+        &mut state,
+        "vm_list",
+        Some(0),
+        br#"{"vms":[{"session":"work","name":"review","state":"running","image":"rust-dev","worktree":"/src/api","branch":"api"},{"session":"work","name":"bare","state":"provisioning"}],"recoveries":[{"path":"/state/recovery/abc","reason":"sync-failed","retained_at":1,"session":"work","name":"lost","worktree":"/src/api"}]}"#,
+        b"",
+        &[],
+    );
+    let result = &tool_results(&state)[0].content;
+    assert_eq!(
+        result,
+        "session\tvm\tstate\timage\tworktree\tbranch\n\
+         work\treview\trunning\trust-dev\t/src/api\tapi\n\
+         work\tbare\tprovisioning\t-\t-\t-\n\
+         \n\
+         Retained disks (a VM that crashed or could not be merged back):\n\
+         lost\tsync-failed\t/state/recovery/abc"
+    );
+}
+
+#[test]
+fn an_empty_listing_says_so() {
+    let mut state = ready_state();
+    answer(
+        &mut state,
+        "vm_list",
+        Some(0),
+        br#"{"vms":[],"recoveries":[]}"#,
+        b"",
+        &[],
+    );
+    assert_eq!(
+        tool_results(&state)[0].content,
+        "No Firecracker VMs are running."
+    );
+}
+
+#[test]
+fn a_change_count_is_read_as_a_sentence() {
+    for (stdout, expected) in [
+        (
+            &b"0\n"[..],
+            "no guest paths have changed since the last sync",
+        ),
+        (&b"3\n"[..], "3 guest paths changed since the last sync"),
+    ] {
+        let mut state = ready_state();
+        answer(&mut state, "vm_changes", Some(0), stdout, b"", &[]);
+        assert_eq!(tool_results(&state)[0].content, expected);
+    }
+}
+
+/// The regression this file exists for. A merge that kept a host copy exits 0 and
+/// writes `warning:` lines to stderr; the generic `exit code: N` envelope would
+/// present that success as a failure with an error attached, which is the one
+/// reading the model must not take away from a sync.
+#[test]
+fn a_sync_that_kept_a_host_copy_is_a_success_with_its_warnings_attached() {
+    let mut state = ready_state();
+    answer(
+        &mut state,
+        "vm_sync",
+        Some(0),
+        b"",
+        b"warning: /src/api/a.rs: changed on both sides; kept the host copy, the guest copy is /src/api/a.rs.guest\n",
+        &[],
+    );
+    let result = &tool_results(&state)[0].content;
+    assert!(result.starts_with("synced: "), "{result}");
+    assert!(!result.contains("exit code"), "{result}");
+    // Passed through whole: each one names a file the user has to go and look at.
+    assert!(result.contains("/src/api/a.rs.guest"), "{result}");
+}
+
+#[test]
+fn a_close_names_the_panes_it_closed() {
+    let mut state = ready_state();
+    answer(
+        &mut state,
+        "vm_close",
+        Some(0),
+        b"",
+        b"",
+        &[(tools::VM_CLOSED_PANES_CONTEXT, "3,7")],
+    );
+    let result = &tool_results(&state)[0].content;
+    assert!(result.starts_with("closed: "), "{result}");
+    assert!(result.ends_with("closed panes 3, 7"), "{result}");
+
+    // A VM this session had no panes on closes cleanly and claims nothing.
+    let mut state = ready_state();
+    answer(&mut state, "vm_close", Some(0), b"", b"", &[]);
+    assert!(!tool_results(&state)[0].content.contains("closed panes"));
+}
+
+#[test]
+fn a_failing_cli_is_reported_with_what_it_said() {
+    let mut state = ready_state();
+    answer(
+        &mut state,
+        "vm_sync",
+        Some(1),
+        b"",
+        b"Error: no Firecracker VM named review\n",
+        &[],
+    );
+    assert_eq!(
+        tool_results(&state)[0].content,
+        "vm_sync failed: Error: no Firecracker VM named review"
+    );
+}
+
+#[test]
+fn a_missing_zellij_binary_is_named_in_the_tool_result() {
+    let mut state = ready_state();
+    answer(
+        &mut state,
+        "vm_list",
+        Some(2),
+        b"",
+        b"No such file or directory (os error 2)",
+        &[],
+    );
+    let result = &tool_results(&state)[0].content;
+    assert!(result.starts_with("zellij could not be run"), "{result}");
+    assert!(result.contains("zellij_path"), "{result}");
+}
