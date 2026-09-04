@@ -170,6 +170,19 @@ fn a_worktree_vm_syncs_merges_renames_and_stops() {
         "the guest's hook report was not accepted by its broker: {text:?}"
     );
 
+    fs::write(&host_credential, "{\"token\":\"refreshed\"}").unwrap();
+    let refreshed = provider
+        .ensure(
+            session,
+            name,
+            Some(IMAGE),
+            Some(&worktree_path),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    let text = run_in_guest(&refreshed, "cat /root/.zellij-test/auth.json", "refreshed");
+    assert!(text.contains("refreshed"), "{text}");
+
     // Meanwhile on the host: one file both sides changed, one the host alone changed, and
     // one the host changed that the guest deleted.
     fs::write(worktree_path.join("both.txt"), "host-both\n").unwrap();

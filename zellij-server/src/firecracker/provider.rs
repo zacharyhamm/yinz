@@ -413,6 +413,7 @@ fn ensure(
         if vm_is_running(&existing) {
             match existing_vm_disposition(&existing, name, image) {
                 Disposition::Join => {
+                    copy_credentials(&existing, config)?;
                     if !existing.leases.iter().any(|lease| lease == session) {
                         existing.leases.push(session.to_owned());
                         write_state(&state_path, &existing)?;
@@ -838,10 +839,14 @@ fn provision_guest(state: &VmState, config: &Config) -> Result<()> {
     if let Some(worktree) = state.worktree.as_deref() {
         sync_to_guest(state, config, worktree)?;
     }
-    for credential in &config.credential_files {
-        copy_credential(state, config, credential)?;
-    }
-    Ok(())
+    copy_credentials(state, config)
+}
+
+fn copy_credentials(state: &VmState, config: &Config) -> Result<()> {
+    config
+        .credential_files
+        .iter()
+        .try_for_each(|credential| copy_credential(state, config, credential))
 }
 
 /// The rsync spelling of the guest directory the worktree is mirrored into, with the trailing
