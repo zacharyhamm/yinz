@@ -3344,9 +3344,40 @@ fn a_pane_taken_out_of_an_expanded_slot_comes_back_without_the_expansion() {
     );
 }
 
+/// A surface a single column wide has no room for two halves, and the panel is still a panel: the
+/// seam is clamped to the one column there is, and the right half takes the floor `resize_panel`
+/// gives it rather than being drawn at no width at all.
+#[test]
+fn an_expanded_panel_on_a_surface_one_column_wide_keeps_both_halves() {
+    let (mut panes, display_area) = overlay_panes_with(
+        80,
+        20,
+        Viewport {
+            x: 0,
+            y: 0,
+            cols: 80,
+            rows: 20,
+        },
+    );
+    add(&mut panes, 1, OverlayKind::Dismissible, half(2));
+    add(&mut panes, 2, OverlayKind::Dismissible, half(32));
+    panes.link_touching(&[PaneId::Terminal(1), PaneId::Terminal(2)]);
+    panes.toggle_pane_no_ui_fullscreen(PaneId::Terminal(1));
+
+    *display_area.borrow_mut() = Size { cols: 1, rows: 20 };
+    panes.set_pane_frames().unwrap();
+
+    assert_eq!(
+        (drawn(&panes, 1).2, drawn(&panes, 2).2),
+        (1, 1),
+        "neither half is drawn at no width"
+    );
+    assert!(panes.pane_is_fullscreen(&PaneId::Terminal(1)));
+}
+
 /// A surface with no columns has no room for a divider either: `seam_mapped_onto` clamps its
-/// answer to a column that is already past the right edge, and the right half's width was an
-/// unguarded `usize` subtraction.
+/// answer to a column that is already past the right edge, and there is no rectangle to answer
+/// with at all - so the expansion is over, rather than remembered with nothing to show for it.
 #[test]
 fn an_expanded_panel_on_a_surface_with_no_columns_is_drawn_at_nothing() {
     let (mut panes, display_area) = overlay_panes_with(
@@ -3374,5 +3405,13 @@ fn an_expanded_panel_on_a_surface_with_no_columns_is_drawn_at_nothing() {
             .geom_override()
             .is_none(),
         "nothing is expanded into a surface this size"
+    );
+    assert!(
+        !panes.fullscreen_is_active(),
+        "and the expansion is dropped rather than left claiming panes it cannot draw"
+    );
+    assert!(
+        !panes.pane_is_fullscreen(&PaneId::Terminal(1)),
+        "which is what every resize, drag and move of the panel goes on to ask"
     );
 }
