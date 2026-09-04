@@ -746,6 +746,9 @@ pub(crate) fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
         ActionKind::ScrollToNextPrompt => Action::ScrollToNextPrompt,
         ActionKind::SelectCommandAtScrollPosition => Action::SelectCommandAtScrollPosition,
         ActionKind::CopyLastCommandOutput => Action::CopyLastCommandOutput,
+        ActionKind::MoveTextSelection => Action::MoveTextSelection {
+            direction: directions(tc),
+        },
         ActionKind::PageScrollUp => Action::PageScrollUp,
         ActionKind::PageScrollDown => Action::PageScrollDown,
         ActionKind::HalfPageScrollUp => Action::HalfPageScrollUp,

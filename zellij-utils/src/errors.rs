@@ -281,6 +281,7 @@ pub enum ScreenContext {
     ScrollToNextPrompt,
     SelectCommandAtScrollPosition,
     CopyLastCommandOutput,
+    MoveTextSelection,
     ClearCommandOutputFlash,
     PageScrollUp,
     PageScrollDown,

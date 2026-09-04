@@ -493,6 +493,10 @@ pub trait Pane {
     fn update_selection(&mut self, _position: &Position, _client_id: ClientId) {}
     fn end_selection(&mut self, _end: &Position, _client_id: ClientId) {}
     fn reset_selection(&mut self, _client_id: Option<ClientId>) {}
+    fn start_text_selection(&mut self, _client_id: ClientId) {}
+    fn move_text_selection(&mut self, _direction: Direction, _client_id: ClientId) {}
+    fn remember_copied_text_selection(&mut self, _client_id: ClientId) {}
+    fn finish_text_selection(&mut self, _client_id: ClientId) {}
     fn supports_mouse_selection(&self) -> bool {
         true
     }
@@ -7360,6 +7364,30 @@ impl Tab {
     pub fn select_command_at_scroll_position(&mut self, client_id: ClientId) {
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
             active_pane.select_command_at_scroll_position(client_id);
+        }
+    }
+
+    pub fn start_text_selection(&mut self, client_id: ClientId) {
+        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
+            active_pane.start_text_selection(client_id);
+        }
+    }
+
+    pub fn move_text_selection(&mut self, direction: Direction, client_id: ClientId) {
+        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
+            active_pane.move_text_selection(direction, client_id);
+        }
+    }
+
+    pub fn remember_copied_text_selection(&mut self, client_id: ClientId) {
+        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
+            active_pane.remember_copied_text_selection(client_id);
+        }
+    }
+
+    pub fn finish_text_selection(&mut self, client_id: ClientId) {
+        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
+            active_pane.finish_text_selection(client_id);
         }
     }
 

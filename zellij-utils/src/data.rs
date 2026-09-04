@@ -1414,6 +1414,9 @@ pub enum InputMode {
     /// `Agent` mode gathers the hocus agent actions behind a single leader.
     #[serde(alias = "agent")]
     Agent,
+    /// `Select` mode extends a text selection in the focused pane.
+    #[serde(alias = "select")]
+    Select,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default, ValueEnum)]
@@ -1683,6 +1686,7 @@ impl FromStr for InputMode {
             "prompt" | "Prompt" => Ok(InputMode::Prompt),
             "tmux" | "Tmux" => Ok(InputMode::Tmux),
             "agent" | "Agent" => Ok(InputMode::Agent),
+            "select" | "Select" => Ok(InputMode::Select),
             "entersearch" | "Entersearch" | "EnterSearch" => Ok(InputMode::EnterSearch),
             e => Err(ConversionError::UnknownInputMode(e.into())),
         }

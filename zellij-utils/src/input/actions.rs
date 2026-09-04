@@ -221,6 +221,10 @@ pub enum Action {
     SelectCommandAtScrollPosition,
     /// Copy the output of the last completed OSC 133 command in the focused pane.
     CopyLastCommandOutput,
+    /// Extend the active text selection in the focused pane.
+    MoveTextSelection {
+        direction: Direction,
+    },
     /// Scroll up one page in focus pane.
     PageScrollUp,
     /// Scroll down one page in focus pane.

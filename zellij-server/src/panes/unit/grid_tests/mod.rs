@@ -81,7 +81,74 @@ fn viewport_position_of(grid: &Grid, needle: &str) -> Position {
 use crate::panes::grid::MouseTracking;
 use crate::panes::terminal_character::AnsiCode;
 use std::collections::BTreeMap;
-use zellij_utils::data::{HighlightLayer, HighlightStyle, RegexHighlight};
+use zellij_utils::data::{Direction, HighlightLayer, HighlightStyle, RegexHighlight};
+
+#[test]
+fn keyboard_selection_remembers_copies_until_select_mode_finishes() {
+    let mut grid = create_grid_with_content("abcdef");
+
+    grid.start_text_selection(Position::new(0, 0));
+    for _ in 0..3 {
+        grid.move_text_selection(Direction::Right);
+    }
+    assert_eq!(grid.get_selected_text().as_deref(), Some("abc"));
+
+    grid.remember_copied_text_selection();
+    grid.move_text_selection(Direction::Right);
+    assert_eq!(grid.get_selected_text().as_deref(), Some("abcd"));
+    grid.remember_copied_text_selection();
+    grid.move_text_selection(Direction::Right);
+    assert_eq!(grid.get_selected_text().as_deref(), Some("abcde"));
+
+    grid.finish_text_selection();
+    assert_eq!(grid.get_selected_text().as_deref(), Some("abcd"));
+    assert!(!grid.selection.is_active());
+
+    grid.start_text_selection(Position::new(0, 0));
+    grid.move_text_selection(Direction::Right);
+    grid.finish_text_selection();
+    assert_eq!(grid.get_selected_text(), None);
+}
+
+#[test]
+fn keyboard_selection_scrolls_past_both_viewport_boundaries() {
+    let mut grid = create_grid_with_scrollback();
+    let lines_above = grid.lines_above.len();
+
+    grid.start_text_selection(Position::new(0, 1));
+    grid.move_text_selection(Direction::Up);
+    assert_eq!(grid.lines_above.len(), lines_above - 1);
+    assert_eq!(grid.selection.start, Position::new(1, 1));
+    assert_eq!(grid.selection.end, Position::new(0, 1));
+    assert!(grid.selection.contains(0, 1));
+
+    grid.finish_text_selection();
+    grid.start_text_selection(Position::new(grid.height.saturating_sub(1) as i32, 1));
+    grid.move_text_selection(Direction::Down);
+    assert_eq!(grid.lines_above.len(), lines_above);
+    assert_eq!(
+        grid.selection.start,
+        Position::new(grid.height.saturating_sub(2) as i32, 1)
+    );
+    assert_eq!(
+        grid.selection.end,
+        Position::new(grid.height.saturating_sub(1) as i32, 1)
+    );
+    assert!(grid.selection.contains(grid.height.saturating_sub(1), 0));
+}
+
+#[test]
+fn keyboard_selection_preserves_the_cursor_row_at_the_right_margin() {
+    let mut grid = create_grid_with_content(&format!("short\r\n{}", "x".repeat(80)));
+
+    assert_eq!(grid.cursor_coordinates(), None);
+    let (column, line) = grid.selection_cursor_coordinates().unwrap();
+    assert_eq!((column, line), (80, 1));
+
+    grid.start_text_selection(Position::new(line as i32, column as u16));
+    grid.move_text_selection(Direction::Left);
+    assert_eq!(grid.get_selected_text().as_deref(), Some("x"));
+}
 
 fn create_highlight(
     pattern: &str,

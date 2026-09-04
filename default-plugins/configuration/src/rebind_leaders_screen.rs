@@ -856,6 +856,7 @@ impl RebindLeadersScreen {
             InputMode::Scroll,
             InputMode::Session,
             InputMode::Agent,
+            InputMode::Select,
         ];
         for mode in &all_relevant_modes {
             for current_keybind in self.get_current_keybinds(*mode, &[actions::Action::Quit]) {
@@ -901,6 +902,7 @@ impl RebindLeadersScreen {
             InputMode::Scroll,
             InputMode::Session,
             InputMode::Agent,
+            InputMode::Select,
         ];
         for mode in &all_relevant_modes {
             if mode == &target_mode {
@@ -1165,6 +1167,7 @@ impl RebindLeadersScreen {
             keys_to_unbind.push((InputMode::Scroll, previous_unlock_key.clone()));
             keys_to_unbind.push((InputMode::Session, previous_unlock_key.clone()));
             keys_to_unbind.push((InputMode::Agent, previous_unlock_key.clone()));
+            keys_to_unbind.push((InputMode::Select, previous_unlock_key.clone()));
         }
         keys_to_bind.push((
             InputMode::Locked,
@@ -1231,6 +1234,13 @@ impl RebindLeadersScreen {
         ));
         keys_to_bind.push((
             InputMode::Agent,
+            unlock_key.clone(),
+            vec![actions::Action::SwitchToMode {
+                input_mode: InputMode::Locked,
+            }],
+        ));
+        keys_to_bind.push((
+            InputMode::Select,
             unlock_key.clone(),
             vec![actions::Action::SwitchToMode {
                 input_mode: InputMode::Locked,

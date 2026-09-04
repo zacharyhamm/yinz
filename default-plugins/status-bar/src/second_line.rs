@@ -350,6 +350,7 @@ mod tests {
                 InputMode::Prompt,
                 InputMode::Tmux,
                 InputMode::Agent,
+                InputMode::Select,
             ]
         }
 

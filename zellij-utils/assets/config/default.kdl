@@ -40,6 +40,15 @@ keybinds {
         bind "e" { TogglePaneEmbedOrFloating; SwitchToMode "Normal"; }
         bind "c" { SwitchToMode "RenamePane"; PaneNameInput 0;}
         bind "i" { TogglePanePinned; SwitchToMode "Normal"; }
+        bind "v" { SwitchToMode "Select"; }
+    }
+    select {
+        bind "h" "Left" { MoveTextSelection "Left"; }
+        bind "j" "Down" { MoveTextSelection "Down"; }
+        bind "k" "Up" { MoveTextSelection "Up"; }
+        bind "l" "Right" { MoveTextSelection "Right"; }
+        bind "Enter" { Copy; SwitchToMode "Normal"; }
+        bind "Ctrl c" { SwitchToMode "Normal"; }
     }
     move {
         bind "Ctrl h" { SwitchToMode "Normal"; }
@@ -240,7 +249,7 @@ keybinds {
         bind "Space" { NextSwapLayout; }
         bind "x" { CloseFocus; SwitchToMode "Normal"; }
     }
-    shared_except "locked" {
+    shared_except "locked" "select" {
         bind "Ctrl g" { SwitchToMode "Locked"; }
         bind "Ctrl q" { Quit; }
         bind "Alt f" { ToggleFloatingPanes; }

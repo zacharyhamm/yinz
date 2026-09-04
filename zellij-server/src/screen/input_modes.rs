@@ -26,6 +26,14 @@ impl Screen {
             mode_info.session_name = Some(self.session_name.clone());
         }
 
+        if previous_mode != InputMode::Select && new_mode == InputMode::Select {
+            active_tab!(self, client_id, |tab: &mut Tab| tab
+                .start_text_selection(client_id));
+        } else if previous_mode == InputMode::Select && new_mode != InputMode::Select {
+            active_tab!(self, client_id, |tab: &mut Tab| tab
+                .finish_text_selection(client_id));
+        }
+
         // If we leave the Search-related modes, we need to clear all previous searches
         let search_related_modes = [InputMode::EnterSearch, InputMode::Search, InputMode::Scroll];
         if search_related_modes.contains(&previous_mode)

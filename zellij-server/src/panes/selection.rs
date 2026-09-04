@@ -196,7 +196,12 @@ impl Selection {
         self.start == self.end
     }
 
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
     pub fn reset(&mut self) {
+        self.active = false;
         self.start = Position::new(0, 0);
         self.end = self.start;
     }

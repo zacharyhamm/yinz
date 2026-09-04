@@ -102,6 +102,7 @@ fn base_mode_locked_mode_indicators(help: &ModeInfo) -> HashMap<InputMode, Vec<K
     let scroll_binds = &help.get_keybinds_for_mode(InputMode::Scroll);
     let session_binds = &help.get_keybinds_for_mode(InputMode::Session);
     let agent_binds = &help.get_keybinds_for_mode(InputMode::Agent);
+    let select_binds = &help.get_keybinds_for_mode(InputMode::Select);
     HashMap::from([
         (
             InputMode::Locked,
@@ -257,6 +258,31 @@ fn base_mode_locked_mode_indicators(help: &ModeInfo) -> HashMap<InputMode, Vec<K
             ],
         ),
         (
+            InputMode::Select,
+            vec![
+                KeyShortcut::new(
+                    KeyMode::Selected,
+                    KeyAction::Unlock,
+                    to_char(action_key(
+                        select_binds,
+                        &[Action::SwitchToMode {
+                            input_mode: InputMode::Locked,
+                        }],
+                    )),
+                ),
+                KeyShortcut::new(
+                    KeyMode::Selected,
+                    KeyAction::Pane,
+                    to_char(action_key(
+                        select_binds,
+                        &[Action::SwitchToMode {
+                            input_mode: InputMode::Normal,
+                        }],
+                    )),
+                ),
+            ],
+        ),
+        (
             InputMode::Tab,
             vec![
                 KeyShortcut::new(
@@ -394,6 +420,7 @@ fn base_mode_normal_mode_indicators(help: &ModeInfo) -> HashMap<InputMode, Vec<K
     let scroll_binds = &help.get_keybinds_for_mode(InputMode::Scroll);
     let session_binds = &help.get_keybinds_for_mode(InputMode::Session);
     let agent_binds = &help.get_keybinds_for_mode(InputMode::Agent);
+    let select_binds = &help.get_keybinds_for_mode(InputMode::Select);
     HashMap::from([
         (
             InputMode::Locked,
@@ -518,6 +545,19 @@ fn base_mode_normal_mode_indicators(help: &ModeInfo) -> HashMap<InputMode, Vec<K
                 KeyAction::Pane,
                 to_char(action_key(
                     pane_binds,
+                    &[Action::SwitchToMode {
+                        input_mode: InputMode::Normal,
+                    }],
+                )),
+            )],
+        ),
+        (
+            InputMode::Select,
+            vec![KeyShortcut::new(
+                KeyMode::Selected,
+                KeyAction::Pane,
+                to_char(action_key(
+                    select_binds,
                     &[Action::SwitchToMode {
                         input_mode: InputMode::Normal,
                     }],

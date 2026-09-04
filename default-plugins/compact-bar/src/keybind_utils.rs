@@ -730,6 +730,43 @@ impl KeybindProcessor {
                 ];
                 Self::find_predetermined_actions(mode_info, mode, ordered_predicates)
             },
+            InputMode::Select => {
+                let ordered_predicates = vec![
+                    |action: &Action| {
+                        matches!(
+                            action,
+                            Action::MoveTextSelection {
+                                direction: Direction::Left
+                            }
+                        )
+                    },
+                    |action: &Action| {
+                        matches!(
+                            action,
+                            Action::MoveTextSelection {
+                                direction: Direction::Down
+                            }
+                        )
+                    },
+                    |action: &Action| {
+                        matches!(
+                            action,
+                            Action::MoveTextSelection {
+                                direction: Direction::Up
+                            }
+                        )
+                    },
+                    |action: &Action| {
+                        matches!(
+                            action,
+                            Action::MoveTextSelection {
+                                direction: Direction::Right
+                            }
+                        )
+                    },
+                ];
+                Self::find_predetermined_actions(mode_info, mode, ordered_predicates)
+            },
             InputMode::Session => {
                 let ordered_predicates = vec![
                     |action: &Action| matches!(action, Action::Detach),

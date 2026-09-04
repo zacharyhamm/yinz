@@ -297,6 +297,7 @@ message Action {
     CopyLastCommandOutputAction copy_last_command_output = 158;
     SetPaneAgentAction set_pane_agent = 159;
     ReconfigureAction reconfigure = 160;
+    MoveTextSelectionAction move_text_selection = 161;
   }
 }
 
@@ -326,6 +327,9 @@ message ScrollToPreviousPromptAction {}
 message ScrollToNextPromptAction {}
 message SelectCommandAtScrollPositionAction {}
 message CopyLastCommandOutputAction {}
+message MoveTextSelectionAction {
+  Direction direction = 1;
+}
 message PageScrollUpAction {}
 message PageScrollDownAction {}
 message HalfPageScrollUpAction {}
@@ -830,6 +834,7 @@ enum InputMode {
   INPUT_MODE_PROMPT = 13;
   INPUT_MODE_TMUX = 14;
   INPUT_MODE_AGENT = 15;
+  INPUT_MODE_SELECT = 16;
 }
 
 enum Direction {

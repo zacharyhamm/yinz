@@ -1,6 +1,5 @@
 ---
 source: zellij-utils/src/setup.rs
-assertion_line: 656
 expression: "format!(\"{:#?}\", config)"
 ---
 Config {
@@ -1529,6 +1528,16 @@ Config {
             }: [
                 SwitchToMode {
                     input_mode: Tab,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'v',
+                ),
+                key_modifiers: {},
+            }: [
+                SwitchToMode {
+                    input_mode: Select,
                 },
             ],
             KeyWithModifier {
@@ -7133,6 +7142,205 @@ Config {
                 bare_key: Enter,
                 key_modifiers: {},
             }: [
+                SwitchToMode {
+                    input_mode: Normal,
+                },
+            ],
+        },
+        Select: {
+            KeyWithModifier {
+                bare_key: Left,
+                key_modifiers: {},
+            }: [
+                MoveTextSelection {
+                    direction: Left,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Down,
+                key_modifiers: {},
+            }: [
+                MoveTextSelection {
+                    direction: Down,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Up,
+                key_modifiers: {},
+            }: [
+                MoveTextSelection {
+                    direction: Up,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Right,
+                key_modifiers: {},
+            }: [
+                MoveTextSelection {
+                    direction: Right,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'b',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                },
+            }: [
+                SwitchToMode {
+                    input_mode: Tmux,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'c',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                },
+            }: [
+                SwitchToMode {
+                    input_mode: Normal,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'e',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                },
+            }: [
+                SwitchToMode {
+                    input_mode: Agent,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'h',
+                ),
+                key_modifiers: {},
+            }: [
+                MoveTextSelection {
+                    direction: Left,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'h',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                },
+            }: [
+                SwitchToMode {
+                    input_mode: Move,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'j',
+                ),
+                key_modifiers: {},
+            }: [
+                MoveTextSelection {
+                    direction: Down,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'k',
+                ),
+                key_modifiers: {},
+            }: [
+                MoveTextSelection {
+                    direction: Up,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'l',
+                ),
+                key_modifiers: {},
+            }: [
+                MoveTextSelection {
+                    direction: Right,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'n',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                },
+            }: [
+                SwitchToMode {
+                    input_mode: Resize,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'o',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                },
+            }: [
+                SwitchToMode {
+                    input_mode: Session,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'p',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                },
+            }: [
+                SwitchToMode {
+                    input_mode: Pane,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    's',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                },
+            }: [
+                SwitchToMode {
+                    input_mode: Scroll,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    't',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                },
+            }: [
+                SwitchToMode {
+                    input_mode: Tab,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Esc,
+                key_modifiers: {},
+            }: [
+                SwitchToMode {
+                    input_mode: Normal,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Enter,
+                key_modifiers: {},
+            }: [
+                Copy,
                 SwitchToMode {
                     input_mode: Normal,
                 },

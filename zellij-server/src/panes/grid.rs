@@ -309,7 +309,7 @@ use crate::panes::terminal_character::{
 };
 use crate::panes::Selection;
 use crate::ui::components::UiComponentParser;
-use zellij_utils::data::PaneContents;
+use zellij_utils::data::{Direction, PaneContents};
 
 fn get_top_non_canonical_rows(rows: &mut VecDeque<Row>) -> Vec<Row> {
     let mut index_of_last_non_canonical_row = None;
@@ -872,6 +872,7 @@ pub struct Grid {
     pub height: usize,
     pub pending_messages_to_pty: Vec<Vec<u8>>,
     pub selection: Selection,
+    copied_text_selection: Option<Selection>,
     pub title: Option<String>,
     pub is_scrolled: bool,
     pub link_handler: Rc<RefCell<LinkHandler>>,
@@ -1293,6 +1294,7 @@ impl Grid {
             osc133_markers_seen: false,
             osc133_command_selection: true,
             command_output_flash: None,
+            copied_text_selection: None,
             word_separators: DEFAULT_WORD_SEPARATORS.to_owned(),
         }
     }
@@ -1781,6 +1783,9 @@ impl Grid {
                 .saturating_sub(transferred_rows_height);
 
             self.selection.move_down(1);
+            if let Some(copied_text_selection) = self.copied_text_selection.as_mut() {
+                copied_text_selection.move_down(1);
+            }
             if let Some(command_output_flash) = self.command_output_flash.as_mut() {
                 command_output_flash.move_down(1);
             }
@@ -1845,6 +1850,9 @@ impl Grid {
             self.kitty_reanchor_all_from_pixels();
 
             self.selection.move_up(1);
+            if let Some(copied_text_selection) = self.copied_text_selection.as_mut() {
+                copied_text_selection.move_up(1);
+            }
             if let Some(command_output_flash) = self.command_output_flash.as_mut() {
                 command_output_flash.move_up(1);
             }
@@ -2360,6 +2368,13 @@ impl Grid {
             None
         } else {
             Some((self.cursor.x, self.cursor.y, !self.cursor_is_hidden))
+        }
+    }
+    pub fn selection_cursor_coordinates(&self) -> Option<(usize, usize)> {
+        if self.cursor.x > self.width || self.cursor.y >= self.height {
+            None
+        } else {
+            Some((self.cursor.x, self.cursor.y))
         }
     }
     pub fn is_mid_frame(&self) -> bool {
@@ -3502,6 +3517,55 @@ impl Grid {
         }
 
         self.selection.start(*start);
+        self.update_selected_lines(&old_selection, &self.selection.clone());
+        self.mark_for_rerender();
+    }
+    pub fn start_text_selection(&mut self, start: Position) {
+        let old_selection = self.selection;
+        self.copied_text_selection = None;
+        self.selection.start(start);
+        self.update_selected_lines(&old_selection, &self.selection.clone());
+        self.mark_for_rerender();
+    }
+    pub fn move_text_selection(&mut self, direction: Direction) {
+        if !self.selection.is_active() || self.height == 0 || self.width == 0 {
+            return;
+        }
+        let mut end = self.selection.end;
+        match direction {
+            Direction::Left => end.column.0 = end.column.0.saturating_sub(1),
+            Direction::Right => end.column.0 = (end.column.0 + 1).min(self.width),
+            Direction::Up if end.line.0 > 0 => end.line.0 -= 1,
+            Direction::Down if end.line.0 < self.height.saturating_sub(1) as isize => {
+                end.line.0 += 1;
+            },
+            Direction::Up => {
+                self.scroll_up_one_line();
+                return;
+            },
+            Direction::Down => {
+                self.scroll_down_one_line();
+                return;
+            },
+        }
+        let old_selection = self.selection;
+        self.selection.to(end);
+        self.update_selected_lines(&old_selection, &self.selection.clone());
+        self.mark_for_rerender();
+    }
+    pub fn remember_copied_text_selection(&mut self) {
+        let mut copied_text_selection = self.selection;
+        copied_text_selection.finalize();
+        self.copied_text_selection = Some(copied_text_selection);
+    }
+    pub fn finish_text_selection(&mut self) {
+        let old_selection = self.selection;
+        if let Some(copied_text_selection) = self.copied_text_selection.take() {
+            self.selection = copied_text_selection;
+        } else if self.selection.is_active() {
+            self.reset_selection();
+            return;
+        }
         self.update_selected_lines(&old_selection, &self.selection.clone());
         self.mark_for_rerender();
     }

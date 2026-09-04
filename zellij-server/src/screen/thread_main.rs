@@ -1406,6 +1406,15 @@ pub(crate) fn screen_thread_main(
                 );
                 screen.render(None)?;
             },
+            ScreenInstruction::MoveTextSelection(direction, client_id, _completion_tx) => {
+                active_tab_and_connected_client_id!(
+                    screen,
+                    client_id,
+                    |tab: &mut Tab, client_id: ClientId| tab
+                        .move_text_selection(direction, client_id)
+                );
+                screen.render(None)?;
+            },
             ScreenInstruction::ClearCommandOutputFlash(pane_id) => {
                 if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
                     tab.clear_command_output_flash(pane_id);
@@ -2269,7 +2278,19 @@ pub(crate) fn screen_thread_main(
                 _completion_tx, // the action ends here, dropping this will release anything
                                 // waiting for it
             ) => {
+                let selecting = screen
+                    .mode_info
+                    .get(&client_id)
+                    .is_some_and(|mode_info| mode_info.mode == InputMode::Select);
                 screen.copy_selection(client_id)?;
+                if selecting {
+                    active_tab_and_connected_client_id!(
+                        screen,
+                        client_id,
+                        |tab: &mut Tab, client_id: ClientId| tab
+                            .remember_copied_text_selection(client_id)
+                    );
+                }
                 screen.render(None)?;
             },
             ScreenInstruction::Exit => {

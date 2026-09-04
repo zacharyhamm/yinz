@@ -307,6 +307,15 @@ impl TryFrom<ProtobufAction> for Action {
                     None => Ok(Action::CopyLastCommandOutput),
                 }
             },
+            Some(ProtobufActionName::MoveTextSelection) => match protobuf_action.optional_payload {
+                Some(OptionalPayload::MoveTextSelectionPayload(direction)) => {
+                    let direction = ProtobufResizeDirection::try_from(direction)
+                        .map_err(|_| "Malformed direction for Action::MoveTextSelection")?
+                        .try_into()?;
+                    Ok(Action::MoveTextSelection { direction })
+                },
+                _ => Err("Wrong payload for Action::MoveTextSelection"),
+            },
             Some(ProtobufActionName::PageScrollUp) => match protobuf_action.optional_payload {
                 Some(_) => Err("PageScrollUp should not have a payload"),
                 None => Ok(Action::PageScrollUp),
@@ -1424,6 +1433,15 @@ impl TryFrom<Action> for ProtobufAction {
                 name: ProtobufActionName::CopyLastCommandOutput as i32,
                 optional_payload: None,
             }),
+            Action::MoveTextSelection { direction } => {
+                let direction: ProtobufResizeDirection = direction.try_into()?;
+                Ok(ProtobufAction {
+                    name: ProtobufActionName::MoveTextSelection as i32,
+                    optional_payload: Some(OptionalPayload::MoveTextSelectionPayload(
+                        direction as i32,
+                    )),
+                })
+            },
             Action::PageScrollUp => Ok(ProtobufAction {
                 name: ProtobufActionName::PageScrollUp as i32,
                 optional_payload: None,
@@ -3646,6 +3664,7 @@ pub(crate) mod tests {
                 | Action::ScrollToNextPrompt
                 | Action::SelectCommandAtScrollPosition
                 | Action::CopyLastCommandOutput
+                | Action::MoveTextSelection { .. }
                 | Action::PageScrollUp
                 | Action::PageScrollDown
                 | Action::HalfPageScrollUp
