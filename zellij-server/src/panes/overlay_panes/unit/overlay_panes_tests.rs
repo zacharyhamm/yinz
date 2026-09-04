@@ -3170,6 +3170,32 @@ fn a_panel_with_a_hidden_half_is_expanded_as_the_shown_half() {
     assert!(!panes.pane_is_fullscreen(&PaneId::Terminal(1)));
 }
 
+/// The same shape reached from the other side: the panel is expanded first and a half is set
+/// aside underneath it. The survivor is the whole panel from that moment on, so it takes the
+/// whole screen - `hide_pane` has to re-derive the expansion, not only set the flag.
+#[test]
+fn hiding_a_half_of_an_expanded_panel_leaves_the_survivor_filling_the_screen() {
+    let mut panes = linked_panel();
+    panes.toggle_pane_fullscreen(PaneId::Terminal(1));
+
+    panes.hide_pane(PaneId::Terminal(2));
+
+    assert!(
+        panes.pane_is_fullscreen(&PaneId::Terminal(1)),
+        "hiding the other half does not collapse the expansion"
+    );
+    assert_eq!(
+        drawn(&panes, 1),
+        (0, 0, 80, 20),
+        "and the half left on screen grows into the whole of it"
+    );
+    assert_eq!(
+        drawn(&panes, 2),
+        geom(&panes, 2),
+        "while the hidden half keeps the rectangle it will come back to"
+    );
+}
+
 /// A modal is drawn because something needs an answer now, and a keystroke that fills the screen
 /// with something else does not suspend that.
 #[test]
