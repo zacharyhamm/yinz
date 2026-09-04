@@ -6,9 +6,11 @@ Audited revision: `6e84ff04a169b59e6486ac4734986afae10194a9` (`main`). This docu
 
 Checkboxes track findings for review. They do not represent approved fixes or a remediation plan. All findings were unchecked when this report was created.
 
-The A-group findings were revalidated against `4f3245ef4` and remediated on 2026-09-04. Their original evidence below describes the audited code; the remediation notes describe the fixes and regression coverage.
+The A-group findings were revalidated against `4f3245ef4` and remediated on 2026-09-04. The B and C findings were revalidated against `e8376b353` and remediated the same day. Their original evidence below describes the audited code; the remediation notes describe the fixes and regression coverage.
 
 A-group validation: all 20 focused configuration/recorder tests passed. `cargo x ci check` passed format, lint, all 6,798 selected workspace tests (45 skipped), and doctests. `cargo x integration-test -j 16` passed all 344 whole-app tests with no skips.
+
+B/C-group validation: the five permission-denial tests pass 10/10 in a loop and all fail with `check_command_permission` forced to grant; the seven new layout-manager tests pass. `cargo x ci check` passed format, lint, all 6,841 workspace tests (45 skipped), and doctests. `cargo x integration-test -j 16` passed all 344 whole-app tests with no skips.
 
 ## 1. Executive Summary (Minto Top)
 
@@ -47,25 +49,29 @@ Governing thought: Configuration and recording paths can lose information while 
 
 Governing thought: A shared test helper makes the absence of forbidden commands inevitable after the permission handshake.
 
-- [ ] **Finding B.1: Permission-denial tests cannot observe post-denial violations** (P1, High)
+- [x] **Finding B.1: Permission-denial tests cannot observe post-denial violations** (P1, High)
   - Where: `zellij-server/src/plugins/unit/plugin_tests/mod.rs:191`, `zellij-server/src/plugins/unit/plugin_tests/mod.rs:201`, `zellij-server/src/plugins/unit/plugin_tests/plugin_lifecycle_commands.rs:878`, `zellij-server/src/plugins/unit/plugin_tests/plugin_lifecycle_commands.rs:925`, `zellij-server/src/plugins/unit/plugin_tests/plugin_lifecycle_commands.rs:947`, `zellij-server/src/plugins/unit/plugin_tests/config_events.rs:16`.
   - Problem: The denial helper sends `PermissionStatus::Denied` and immediately breaks its logging loop, dropping the screen receiver. Tests subsequently send protected commands and assert their absence from the already finished log.
   - Impact: A regression that permits a command after denial can escape these assertions. Waiting longer afterward cannot repair the missing observation; this affects negative coverage for clipboard and other protected actions.
   - Trigger: A denied plugin emits a protected command after the permission handshake.
   - Confidence basis: Observer termination and subsequent command/assertion ordering are directly visible. This finding does **not** establish a production permission bypass.
   - Dimensions flagged by: Testing/Testability.
+  - Remediation: The denial helper is a function that answers `Denied` and then logs until its channel disconnects, which happens only after `teardown()` has joined the plugin thread and every executor worker and spawned thread has dropped its sender; a matching logger covers the server channel. Tests wait on content instead of sleeping: first for the logged permission request (the observer logs it after answering, and the answer and the key share the plugin thread's FIFO inbox), then for the frame in which the fixture prints the key, or for the command's outcome or a crash report where the fixture prints an outcome instead. Teardown precedes the observer join. Two oracles were wrong as well as blind: the mode-switch test asserted on the screen channel although a routed mode change is a `ServerInstruction`, and the random-name test searched for `Generated name:` although the fixture prints it without the colon. The fixture does not subscribe to `PermissionRequestResult`, so the denial itself cannot be read off a frame.
+  - Regression coverage: With `check_command_permission` temporarily forced to grant everything, all five tests fail on their assertions rather than on a timeout; restored, they pass 10/10 in a loop at about 0.2 s each instead of 1.5 s of sleeps. The frame helpers moved from the batching tests into the shared harness, and the batching tests still pass.
 
 ### Theme C: Layout deletion reports success before the host confirms it — Impact: P2 — Confidence: High
 
 Governing thought: The layout manager removes an entry from its visible list after discarding the host deletion result.
 
-- [ ] **Finding C.1: Failed layout deletion appears successful** (P2, High)
+- [x] **Finding C.1: Failed layout deletion appears successful** (P2, High)
   - Where: `default-plugins/layout-manager/src/screens/layout_list/mod.rs:65`, `default-plugins/layout-manager/src/main.rs:176`, `zellij-server/src/plugins/zellij_exports.rs:6358`.
   - Problem: `let _ = delete_layout(...)` discards the synchronous host result before returning `OptimisticUpdate::Delete`. The visible list then removes the entry with `retain`.
   - Impact: A read-only filesystem, directory-permission error, or disappeared file produces a false removal signal.
   - Trigger: A layout deletion fails after the user presses Delete.
   - Confidence basis: Host errors, the discarded result, and list mutation are directly connected.
   - Dimensions flagged by: Docs/Onboarding/UX; Testing/Testability.
+  - Remediation: The Delete key goes through `delete_selected_layout`, which takes the host call as a parameter, emits the optimistic removal only on `Ok`, and on `Err` returns an error screen carrying the host's message that leads back to the list with its selection, the same shape rename and import already use. Nothing is asked of the host when nothing deletable is selected.
+  - Regression coverage: Native unit tests in the plugin crate for a confirmed delete, a refused delete (list untouched, error shown, return screen keeps the selection), no selection, a builtin, and an unparsable layout deleted by file name, plus state-level tests that a refused delete leaves `display_layouts` unchanged. They cover the delete flow only; F.14 stays open.
 
 ### Theme D: Remote plugin loading accepts invalid download outcomes — Impact: P1 — Confidence: High
 

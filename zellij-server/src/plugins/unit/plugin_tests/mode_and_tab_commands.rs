@@ -92,8 +92,24 @@ pub fn switch_to_mode_plugin_command_permission_denied() {
                                           // destructor removes the directory
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let cache_path = plugin_host_folder.join("permissions_test.kdl");
-    let (plugin_thread_sender, screen_receiver, teardown) =
-        create_plugin_thread(Some(plugin_host_folder), None);
+    let (plugin_thread_sender, server_receiver, screen_receiver, teardown) =
+        create_plugin_thread_with_server_receiver(Some(plugin_host_folder), None);
+
+    let received_screen_instructions = Watched::new(vec![]);
+    let received_server_instructions = Watched::new(vec![]);
+    let client_id = 1;
+
+    // The permission is denied, so the fixture's SwitchToMode(Tab) may not be routed: a mode
+    // change is a ServerInstruction, so that is the channel the assertion reads.
+    let screen_thread = deny_permissions_and_log_until_disconnect(
+        &received_screen_instructions,
+        screen_receiver,
+        cache_path,
+        plugin_thread_sender.clone(),
+        client_id,
+    );
+    let server_thread = log_until_disconnect(&received_server_instructions, server_receiver);
+
     let plugin_should_float = Some(false);
     let plugin_title = Some("test_plugin".to_owned());
     let run_plugin = RunPluginOrAlias::RunPlugin(RunPlugin {
@@ -103,22 +119,10 @@ pub fn switch_to_mode_plugin_command_permission_denied() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
     let size = Size {
         cols: 121,
         rows: 20,
     };
-    let received_screen_instructions = Watched::new(vec![]);
-    let screen_thread = deny_permissions_and_log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::ChangeMode,
-        screen_receiver,
-        1,
-        &PermissionType::ChangeApplicationState,
-        cache_path,
-        plugin_thread_sender,
-        client_id
-    );
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
     let _ = plugin_thread_sender.send(PluginInstruction::Load(
@@ -139,20 +143,32 @@ pub fn switch_to_mode_plugin_command_permission_denied() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // The key has to reach the plugin after the denial, or the test is about something else.
+    wait_for_permissions_to_be_denied(&received_screen_instructions);
+
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
         Event::Key(KeyWithModifier::new(BareKey::Char('a'))), // this triggers a SwitchToMode(Tab) command in the fixture
                                                               // plugin
     )]));
-    screen_thread.join().unwrap(); // this might take a while if the cache is cold
+
+    // Proves the key was handled. A wrongly routed ChangeMode goes to the server channel, which
+    // this frame does not order, so it is caught by the server observer outliving every sender.
+    wait_for_render_containing(&received_screen_instructions, "bare_key: Char('a')");
+
+    // Everything the plugin thread will ever send has been sent once teardown has joined it, and
+    // each observer returns when the last sender into its channel is gone.
     teardown();
-    let switch_to_mode_event = received_screen_instructions
+    screen_thread.join().unwrap();
+    server_thread.join().unwrap();
+
+    let switch_to_mode_event = received_server_instructions
         .lock()
         .iter()
         .find_map(|i| {
-            if let ScreenInstruction::ChangeMode(..) = i {
+            if let ServerInstruction::ChangeMode(..) = i {
                 Some(i.clone())
             } else {
                 None

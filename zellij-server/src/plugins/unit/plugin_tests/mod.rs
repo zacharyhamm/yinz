@@ -30,6 +30,9 @@ use zellij_utils::input::permission::PermissionCache;
 use zellij_utils::input::plugins::PluginAliases;
 use zellij_utils::pane_size::Size;
 
+use crate::ClientId;
+use zellij_test_support::{default_timeout, Watched};
+
 /// How long a fake screen thread waits for the next event before declaring the test stuck.
 ///
 /// Generous, because these tests compile and instantiate a real wasm plugin — the point is only to
@@ -168,46 +171,206 @@ macro_rules! grant_permissions_and_log_actions_in_thread {
     };
 }
 
-macro_rules! deny_permissions_and_log_actions_in_thread {
-    ( $arc_mutex_log:expr, $exit_event:path, $receiver:expr, $exit_after_count:expr, $permission_type:expr, $cache_path:expr, $plugin_thread_sender:expr, $client_id:expr ) => {
-        std::thread::Builder::new()
-            .name("fake_screen_thread".to_string())
-            .spawn({
-                let log = $arc_mutex_log.clone();
-                let mut exit_event_count = 0;
-                let cache_path = $cache_path.clone();
-                let plugin_thread_sender = $plugin_thread_sender.clone();
-                move || loop {
-                    let (event, _err_ctx) =
-                        recv_from_fake_screen(&$receiver, exit_event_count, $exit_after_count);
-                    match event {
-                        $exit_event(..) => {
-                            exit_event_count += 1;
-                            log.lock().push(event);
-                            if exit_event_count == $exit_after_count {
-                                break;
-                            }
-                        },
-                        ScreenInstruction::RequestPluginPermissions(_, plugin_permission) => {
-                            let _ = plugin_thread_sender.send(
-                                PluginInstruction::PermissionRequestResult(
-                                    0,
-                                    Some($client_id),
-                                    plugin_permission.permissions,
-                                    PermissionStatus::Denied,
-                                    Some(cache_path.clone()),
-                                ),
-                            );
-                            break;
-                        },
-                        _ => {
-                            log.lock().push(event);
-                        },
+/// Answers the plugin's permission request with `Denied`, then keeps logging every screen
+/// instruction until the channel disconnects.
+///
+/// A denial test asserts that something did *not* happen, so its observer has no positive event
+/// to count and stop on. It has to keep reading until nothing can send any more: the plugin
+/// thread, its executor workers and any thread a host command spawned (`run_action` runs the
+/// action on one) each hold a sender, and all of them are gone once `teardown()` has joined the
+/// plugin thread. The macro this replaced broke out of its loop right after answering, which made
+/// every "no forbidden instruction" assertion inevitable rather than evidence.
+///
+/// Join the returned thread *after* `teardown()`, not before: it returns only on disconnect.
+fn deny_permissions_and_log_until_disconnect(
+    log: &Watched<Vec<ScreenInstruction>>,
+    screen_receiver: Receiver<(ScreenInstruction, ErrorContext)>,
+    cache_path: PathBuf,
+    plugin_thread_sender: SenderWithContext<PluginInstruction>,
+    client_id: ClientId,
+) -> std::thread::JoinHandle<()> {
+    let log = log.clone();
+    std::thread::Builder::new()
+        .name("fake_screen_thread".to_string())
+        .spawn(move || loop {
+            match screen_receiver.recv_timeout(FAKE_SCREEN_RECV_TIMEOUT) {
+                Ok((event, _err_ctx)) => {
+                    if let ScreenInstruction::RequestPluginPermissions(plugin_id, permission) =
+                        &event
+                    {
+                        let _ =
+                            plugin_thread_sender.send(PluginInstruction::PermissionRequestResult(
+                                *plugin_id,
+                                Some(client_id),
+                                permission.permissions.clone(),
+                                PermissionStatus::Denied,
+                                Some(cache_path.clone()),
+                            ));
                     }
-                }
-            })
-            .unwrap()
-    };
+                    log.lock().push(event);
+                },
+                Err(channels::RecvTimeoutError::Disconnected) => break,
+                Err(err @ channels::RecvTimeoutError::Timeout) => panic!(
+                    "fake screen thread waited {:?} for the next event and gave up ({err}). It \
+                     had logged {} instruction(s) and the channel never disconnected, so some \
+                     sender is still alive - was `teardown()` called before joining this thread? \
+                     Fixture in use: {}",
+                    FAKE_SCREEN_RECV_TIMEOUT,
+                    log.lock().len(),
+                    *PLUGIN_FIXTURE
+                ),
+            }
+        })
+        .unwrap()
+}
+
+/// Logs every instruction on `receiver` until its channel disconnects.
+///
+/// The counterpart of [`deny_permissions_and_log_until_disconnect`] for a channel that needs no
+/// answering - the server's, when a denial test has to show that nothing was routed there. Like
+/// it, join the thread after `teardown()`.
+fn log_until_disconnect<T: Send + 'static>(
+    log: &Watched<Vec<T>>,
+    receiver: Receiver<(T, ErrorContext)>,
+) -> std::thread::JoinHandle<()> {
+    let log = log.clone();
+    std::thread::Builder::new()
+        .name("logger thread".to_string())
+        .spawn(move || loop {
+            match receiver.recv_timeout(FAKE_SCREEN_RECV_TIMEOUT) {
+                Ok((event, _err_ctx)) => log.lock().push(event),
+                Err(channels::RecvTimeoutError::Disconnected) => break,
+                Err(err @ channels::RecvTimeoutError::Timeout) => panic!(
+                    "logger thread waited {:?} for the next event and gave up ({err}). It had \
+                     logged {} instruction(s) and the channel never disconnected, so some sender \
+                     is still alive - was `teardown()` called before joining this thread?",
+                    FAKE_SCREEN_RECV_TIMEOUT,
+                    log.lock().len(),
+                ),
+            }
+        })
+        .unwrap()
+}
+
+/// A rendered frame as text, with the plugin's `\n\r` line endings folded to `\n`.
+fn frame_of(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).replace("\n\r", "\n")
+}
+
+/// Every non-empty frame rendered so far, as (client, frame) pairs in arrival order.
+fn rendered_assets(instructions: &[ScreenInstruction]) -> Vec<(ClientId, String)> {
+    instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            ScreenInstruction::PluginBytes(assets) => Some(assets),
+            _ => None,
+        })
+        .flatten()
+        .map(|asset| (asset.client_id, frame_of(&asset.bytes)))
+        .filter(|(_, frame)| !frame.is_empty())
+        .collect()
+}
+
+fn describe_renders(instructions: &[ScreenInstruction]) -> String {
+    // Frames in full, everything else abbreviated: a `PluginBytes` debug-prints as its bytes.
+    let summary: Vec<String> = instructions
+        .iter()
+        .map(|instruction| match instruction {
+            ScreenInstruction::PluginBytes(assets) => {
+                format!(
+                    "PluginBytes for plugin(s) {:?}",
+                    assets.iter().map(|a| a.plugin_id).collect::<Vec<_>>()
+                )
+            },
+            other => {
+                let text = format!("{other:?}");
+                text.chars().take(200).collect()
+            },
+        })
+        .collect();
+    format!(
+        "{} instruction(s) so far: {:#?}; frames rendered: {:#?}. The fixture in use is {}",
+        instructions.len(),
+        summary,
+        rendered_assets(instructions),
+        *PLUGIN_FIXTURE
+    )
+}
+
+/// Blocks until the fixture's permission request has been answered with `Denied`.
+///
+/// The observer logs the request only after sending its answer, and the answer and any key the
+/// test sends next travel the plugin thread's one FIFO inbox - so a key sent after this returns
+/// is handled after the denial. (The fixture does not subscribe to `PermissionRequestResult`, so
+/// nothing it renders can say the denial arrived; the render the host forces after one shows an
+/// empty event list.)
+fn wait_for_permissions_to_be_denied(log: &Watched<Vec<ScreenInstruction>>) {
+    log.wait_until_described(
+        "the plugin's permission request, answered with Denied",
+        default_timeout(),
+        |instructions| {
+            instructions
+                .iter()
+                .any(|i| matches!(i, ScreenInstruction::RequestPluginPermissions(..)))
+                .then_some(())
+        },
+        |log| describe_renders(log),
+    )
+}
+
+/// Blocks until some rendered frame contains `needle`, and returns that frame.
+///
+/// Waiting on what a frame *says* is the only way to know the plugin got somewhere: renders are
+/// asynchronous and coalesce, so neither how many arrived nor which one is last means anything.
+/// The fixture prints every event it has received into its frame, so a key shows up there once
+/// the `update` that took it has returned - and anything a host command sent to the screen
+/// during that `update` is already in the log by then, because it went down the same channel
+/// first.
+fn wait_for_render_containing(log: &Watched<Vec<ScreenInstruction>>, needle: &str) -> String {
+    log.wait_until_described(
+        &format!("a render containing {needle:?}"),
+        default_timeout(),
+        |instructions| {
+            rendered_assets(instructions)
+                .into_iter()
+                .map(|(_, frame)| frame)
+                .find(|frame| frame.contains(needle))
+        },
+        |log| describe_renders(log),
+    )
+}
+
+/// Blocks until `plugin_id` has finished with an event one way or another: a frame containing
+/// one of `outcomes` was rendered, or the guest trapped and the host reported the crash.
+///
+/// For a key whose handling ends in a frame that names its outcome, list every outcome the
+/// fixture can print - the success too - so that a wrongly permitted command gets past this wait
+/// and fails on the assertion that names it, not on a timeout. A host command whose reply the
+/// guest `unwrap`s (`generate_random_name`) has no reply when denied, so the guest panics instead
+/// of rendering; the crash report is then the only sign the key was handled at all.
+fn wait_for_plugin_to_handle(
+    log: &Watched<Vec<ScreenInstruction>>,
+    plugin_id: u32,
+    outcomes: &[&str],
+) {
+    log.wait_until_described(
+        &format!("plugin {plugin_id} to render one of {outcomes:?} or to report a crash"),
+        default_timeout(),
+        |instructions| {
+            let rendered = rendered_assets(instructions)
+                .iter()
+                .any(|(_, frame)| outcomes.iter().any(|outcome| frame.contains(outcome)));
+            let crashed = instructions.iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    ScreenInstruction::UpdatePluginLoadingStage(id, indication)
+                        if *id == plugin_id && indication.is_error()
+                )
+            });
+            (rendered || crashed).then_some(())
+        },
+        |log| describe_renders(log),
+    )
 }
 
 macro_rules! grant_permissions_and_log_actions_in_thread_naked_variant {
