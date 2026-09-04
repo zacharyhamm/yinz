@@ -378,10 +378,16 @@ fn no_geometry_before_the_first_tab_update() {
 // or a tool's `show_self`. It is also a *snapshot*, which is what makes the transition test
 // delicate: one taken before our own hide landed still reports us visible.
 
+/// Our own pane as the manifest reports it: an overlay, which is what makes hocus a panel at all.
+///
+/// `is_floating` is the whole of that - an overlay reports it unconditionally and a layout pane
+/// never does - so a fixture that left it at `Default` would be describing a tiled hocus, which
+/// grows no list and places nothing. See `State::is_panel`.
 fn pane(id: u32, is_suppressed: bool) -> PaneInfo {
     PaneInfo {
         id,
         is_plugin: true,
+        is_floating: true,
         is_suppressed,
         ..Default::default()
     }
@@ -396,6 +402,7 @@ fn manifest(tab_index: usize, panes: Vec<PaneInfo>) -> PaneManifest {
 #[test]
 fn a_pane_update_reporting_us_suppressed_confirms_the_hide() {
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         hidden: true,
         hide_pending: 2,
@@ -415,6 +422,7 @@ fn a_pane_update_reporting_us_suppressed_confirms_the_hide() {
 fn a_stale_frame_does_not_undo_a_hide() {
     // the user pressed Esc; this snapshot was taken before the instruction reached the server
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         hidden: true,
         hide_pending: 2,
@@ -435,6 +443,7 @@ fn a_stale_frame_does_not_undo_a_hide() {
 #[test]
 fn a_pane_update_after_the_hide_landed_is_a_reveal() {
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         // the hide has been seen to land, so nothing is outstanding
         hidden: true,
@@ -452,6 +461,7 @@ fn a_pane_update_after_the_hide_landed_is_a_reveal() {
 #[test]
 fn a_pane_update_while_visible_only_tracks_which_tab_we_are_on() {
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         ..Default::default()
     };
@@ -468,6 +478,7 @@ fn a_pane_update_while_visible_only_tracks_which_tab_we_are_on() {
 #[test]
 fn an_agent_list_the_user_closed_is_forgotten() {
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         agents_plugin: Some(9),
         ..Default::default()
@@ -515,6 +526,7 @@ fn selection(plugin_id: u32) -> PipeMessage {
 /// spun on it would fire on every event for as long as nobody opened one.
 fn placed_state() -> State {
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         kdl: state_config(),
         ..Default::default()
@@ -882,6 +894,7 @@ fn nothing_is_followed_until_we_know_where_we_are() {
 #[test]
 fn two_clients_on_different_tabs_leave_the_panes_alone() {
     let mut state = State {
+        own_is_floating: Some(true),
         own_tab_index: Some(0),
         ..State::default()
     };
@@ -922,6 +935,7 @@ fn two_clients_on_different_tabs_leave_the_panes_alone() {
 #[test]
 fn the_agent_lists_tab_is_tracked_beside_our_own() {
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         agents_plugin: Some(9),
         ..Default::default()
@@ -947,6 +961,7 @@ fn the_agent_lists_tab_is_tracked_beside_our_own() {
 #[test]
 fn a_placement_that_could_not_land_is_made_again_when_the_pane_appears() {
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         ..Default::default()
     };
@@ -991,6 +1006,7 @@ fn a_placement_that_could_not_land_is_made_again_when_the_pane_appears() {
 #[test]
 fn a_reveal_stays_on_the_tab_the_server_put_us_on() {
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         own_tab_index: Some(3),
         hidden: true,
@@ -1027,6 +1043,7 @@ fn a_reveal_stays_on_the_tab_the_server_put_us_on() {
 #[test]
 fn a_visible_agent_list_brings_the_conversation_back_with_it() {
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         agents_plugin: Some(9),
         own_tab_index: Some(3),
@@ -1051,6 +1068,7 @@ fn a_visible_agent_list_brings_the_conversation_back_with_it() {
 #[test]
 fn a_hide_only_half_landed_is_not_read_as_a_reveal() {
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         agents_plugin: Some(9),
         own_tab_index: Some(3),
@@ -1074,6 +1092,7 @@ fn a_hide_only_half_landed_is_not_read_as_a_reveal() {
 #[test]
 fn our_own_hide_landing_is_not_a_reveal() {
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         agents_plugin: Some(9),
         hidden: true,
@@ -1101,6 +1120,7 @@ fn our_own_hide_landing_is_not_a_reveal() {
 #[test]
 fn a_greeting_that_arrives_before_our_first_pane_update_is_the_list_that_made_us() {
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         ..Default::default()
     };
@@ -1119,6 +1139,7 @@ fn a_greeting_that_arrives_before_our_first_pane_update_is_the_list_that_made_us
 #[test]
 fn a_greeting_to_a_conversation_that_was_already_open_claims_nothing() {
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         own_tab_index: Some(0),
         ..Default::default()
@@ -1129,6 +1150,7 @@ fn a_greeting_to_a_conversation_that_was_already_open_claims_nothing() {
 
     // nor does a greeting with no marker on it at all
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         ..Default::default()
     };
@@ -1142,6 +1164,7 @@ fn a_greeting_to_a_conversation_that_was_already_open_claims_nothing() {
 #[test]
 fn a_list_already_asked_for_is_not_asked_for_twice() {
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         ..Default::default()
     };
@@ -1170,6 +1193,7 @@ fn a_list_already_asked_for_is_not_asked_for_twice() {
 #[test]
 fn a_list_that_never_arrives_is_asked_for_again_on_the_next_reveal() {
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         ..Default::default()
     };
@@ -1188,6 +1212,7 @@ fn a_list_that_never_arrives_is_asked_for_again_on_the_next_reveal() {
 
     // And a reveal on its own does too - a dismissal is not what makes the claim recoverable.
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         ..Default::default()
     };
@@ -1233,6 +1258,7 @@ fn the_panes_are_placed_against_the_tab_s_display_area() {
 #[test]
 fn the_surface_is_what_a_tab_update_caches() {
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         ..Default::default()
     };
@@ -1921,6 +1947,7 @@ fn ctrl_o_moves_with_no_tiled_panes_at_all() {
 #[test]
 fn ctrl_o_does_nothing_when_every_corner_is_the_same_rectangle() {
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         ..Default::default()
     };
@@ -2841,6 +2868,101 @@ fn closing_the_list_does_not_launch_another_one() {
     assert_eq!(state.agents_launches, launched + 1);
 }
 
+// ---- a hocus that is not a panel ------------------------------------------------------------
+//
+// `pane { plugin location="hocus" }` in a user's layout is a plain tiled pane, and every one of
+// the behaviours above belongs to the overlay. Told apart by `is_floating` off the manifest - see
+// `State::is_panel`.
+
+/// The pane a layout gives hocus: a plugin pane on the tiled layer, which is the one thing that
+/// distinguishes it from the overlay every other fixture here builds.
+fn tiled_own(id: u32) -> PaneInfo {
+    PaneInfo {
+        id,
+        is_plugin: true,
+        is_selectable: true,
+        pane_columns: 80,
+        pane_rows: 40,
+        ..Default::default()
+    }
+}
+
+/// A tiled hocus grew the panel's other half. The first `PaneUpdate` took the repair arm - no
+/// list, none closed, nothing suppressed - and launched an agent list over a session that had
+/// asked for a conversation in its layout and nothing else. The list's own greeting then launched
+/// a *second*, overlay hocus, because the greeting names hocus's url with the overlay
+/// configuration and `(location, configuration)` is plugin identity, so the bare `location="hocus"`
+/// of the layout does not match and launch-or-reuse spawns rather than reuses.
+#[test]
+fn a_hocus_in_the_layout_grows_no_agent_list() {
+    let mut state = State {
+        own_plugin_id: 7,
+        kdl: state_config(),
+        ..Default::default()
+    };
+    state.on_tabs(vec![TabInfo {
+        position: 0,
+        active: true,
+        display_area_rows: 50,
+        display_area_columns: 200,
+        ..Default::default()
+    }]);
+
+    for _ in 0..4 {
+        state.on_panes(manifest(
+            0,
+            vec![tiled_own(7), tiled(1, 0, 0, 200, 50, true)],
+        ));
+    }
+
+    assert!(
+        !state.is_panel(),
+        "the manifest says we are on the tiled layer"
+    );
+    assert_eq!(
+        state.agents_launches, 0,
+        "the panel's missing half is not a half a layout pane owes anyone"
+    );
+    assert_eq!(
+        state.last_placement, None,
+        "and nothing was placed: `change_overlay_coordinates_batch` refuses a non-overlay id, and \
+         refuses the whole batch with it"
+    );
+    assert!(
+        state.visibility_calls.is_empty(),
+        "nothing was shown or hidden either"
+    );
+    assert_eq!(
+        state.own_tab_index,
+        Some(0),
+        "what it does still read off the manifest is where it is"
+    );
+}
+
+/// Esc in a hocus the user put in their layout hides nothing. The pane is their arrangement, and
+/// there would be no way back: the reveal bindings summon the overlay panel, not a tab pane.
+#[test]
+fn esc_in_a_layout_pane_hides_nothing() {
+    let mut state = State {
+        own_plugin_id: 7,
+        kdl: state_config(),
+        ..Default::default()
+    };
+    state.on_panes(manifest(0, vec![tiled_own(7)]));
+
+    state.hide_panel();
+
+    assert!(
+        !state.hidden,
+        "the pane the layout asked for stays where it is"
+    );
+    assert!(
+        state.visibility_calls.is_empty(),
+        "nothing was asked of the host"
+    );
+    assert_eq!(state.agents_launches, 0);
+}
+
 /// A panel that has been put away does not chase tab switches - either half of it. `agents_visible`
 /// is set optimistically the moment a list announces itself, so reading it here as well made a
 /// dismissed panel drag both suppressed panes to whatever tab the user switched to.
@@ -2849,6 +2971,7 @@ fn closing_the_list_does_not_launch_another_one() {
 #[test]
 fn a_dismissed_panel_does_not_follow_a_tab_switch() {
     let mut state = State {
+        own_is_floating: Some(true),
         own_plugin_id: 7,
         own_tab_index: Some(0),
         agents_plugin: Some(9),

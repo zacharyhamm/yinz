@@ -424,10 +424,11 @@ fn a_pane_launched_as_a_command_is_an_agent_without_a_title() {
     zellij.quit();
 }
 
-/// The agent list is a real pane beside the conversation, and either pane can
-/// hide without taking the other with it.
+/// The agent list and the conversation are two panes drawn as one panel: side by side, and with
+/// one visibility between them. Esc puts the whole thing away and the launch binding brings the
+/// whole thing back.
 #[test]
-fn the_agent_list_and_conversation_are_independent_overlay_panes() {
+fn the_agent_list_and_conversation_are_one_panel() {
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config(HOCUS_CONFIG)
         .with_layout(LayoutInfo::Stringified(NO_SIDEBAR_LAYOUT.to_owned()))
@@ -464,8 +465,8 @@ fn the_agent_list_and_conversation_are_independent_overlay_panes() {
 
     // Nothing here owns a project and a pane the harness fakes reports no
     // folder to read a branch out of, so both headers stand in for what they
-    // could not name — and the agent sits under them either way, in its own
-    // pane beside the conversation.
+    // could not name — and the agent sits under them either way, in the list
+    // that is the panel's other half.
     let no_project = row("no project");
     assert_eq!(row("  no branch"), no_project + 1);
     // The row and nothing after it: the status cell is `running` until the daemon
@@ -476,15 +477,16 @@ fn the_agent_list_and_conversation_are_independent_overlay_panes() {
     assert_eq!(title, row("agents ─"), "the panes are side by side");
     assert!(screen.text.contains("assigned tab 0 to project"));
 
-    // Esc in the conversation hides only that pane; the list is independent.
+    // Esc in either half puts the whole panel away: the two hide together, so neither the
+    // conversation's title nor the list's rows are left standing on their own.
     zellij.send_stdin(&keys::ESC);
-    zellij.wait_until("the conversation is hidden", |grid_snapshot| {
-        !grid_snapshot.contains("hocus — ") && grid_snapshot.contains("0  claude")
+    zellij.wait_until("the panel is put away", |grid_snapshot| {
+        !grid_snapshot.contains("hocus — ") && !grid_snapshot.contains("0  claude")
     });
 
-    // And the launch binding brings the conversation back beside the intact list.
+    // And the launch binding brings the whole panel back, both halves together.
     zellij.send_stdin(&keys::ctrl('b'));
-    zellij.wait_until("the sidebar is back", |grid_snapshot| {
+    zellij.wait_until("both halves are back", |grid_snapshot| {
         grid_snapshot.contains("hocus — ") && grid_snapshot.contains("0  claude")
     });
     zellij.wait_until(

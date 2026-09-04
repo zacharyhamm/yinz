@@ -641,6 +641,21 @@ pub struct State {
     /// halves are on screen to the tab that became active - `None` until the first `TabUpdate`
     /// says.
     pub(crate) own_tab_index: Option<usize>,
+    /// Whether our own pane is an overlay, as the manifest reports it - and so whether this
+    /// instance is a *panel* at all. `None` until a `PaneUpdate` has named our pane.
+    ///
+    /// hocus is normally drawn over the session as an overlay, and everything in `overlay` is
+    /// about that: a second half, a corner, a draggable divider, one visibility for the pair. But
+    /// nothing stops a user putting `plugin location="hocus"` in their layout, and that instance
+    /// is a plain tiled pane which owns none of it. Told apart by `is_floating`, which an overlay
+    /// reports unconditionally (`OverlayPanes::pane_info`) and a layout pane never does. There is
+    /// no configuration to read it from instead: `launch::overlay_configuration` is part of plugin
+    /// identity and has to match the keybindings character for character.
+    ///
+    /// Read through [`State::is_panel`], which answers `false` while this is `None` - a placement
+    /// before the first manifest could not land anyway, and `on_panes` retries every one that
+    /// could not.
+    pub(crate) own_is_floating: Option<bool>,
     /// Which tab the agent list is on, as the last `PaneUpdate` found it.
     ///
     /// Tracked separately from `own_tab_index` because the two halves can be parted: the `a` and
@@ -919,6 +934,7 @@ impl Default for State {
             surface_rows: 0,
             surface_cols: 0,
             own_tab_index: None,
+            own_is_floating: None,
             agents_tab_index: None,
             agents_visible: false,
             client_tabs: BTreeMap::new(),

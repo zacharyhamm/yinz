@@ -629,6 +629,10 @@ impl State {
                 continue;
             };
             self.own_tab_index = Some(*tab_index);
+            // Whether any of the rest of this applies at all. Only the manifest says whether this
+            // hocus is the overlay panel or a pane in someone's layout, and this is where it says
+            // it - see `State::own_is_floating`.
+            self.own_is_floating = Some(own.is_floating);
             // Placement, or anything else outside hocus, may have renamed the
             // pane since our last render. Forgetting what we asked for is what
             // makes the next render assert the title again; see
@@ -643,6 +647,18 @@ impl State {
             // Where the user dragged the divider, if they did: the seam drag happens in the
             // server and claims nothing, so the manifest is how it reaches the next placement.
             self.read_split(panes);
+            // Everything below this line belongs to the panel: where its two halves go, and the
+            // reconciliation of the one visibility they share. A hocus the user put in their
+            // layout has neither - it fills the pane it was given and owns nothing else - and what
+            // it does need from the manifest has already been read above: where it is, what is
+            // around it, and whether the title it asked for still stands.
+            //
+            // `break` rather than a wrapping `if`, for the same reason the arm below breaks: our
+            // own pane is on exactly one tab, so once it has been found there is nothing left in
+            // the manifest to look at.
+            if !self.is_panel() {
+                break;
+            }
             // The manifest is what makes a placement possible at all: it names the tab a pane is
             // on, which is the thing `change_overlay_coordinates` needs to find it. A pane still
             // sitting at the centered default the host gave it is placed here, whichever event
@@ -740,6 +756,12 @@ impl State {
     /// Converges by construction either way: the move is what makes the next manifest report the
     /// two together, at which point this does nothing.
     fn rejoin_agents_pane(&mut self, agents_is_focused: bool) {
+        // Reached from `on_panes` after the panel gate has already broken out of the loop, so it is
+        // stated again here: a tiled hocus has no pair to put back together, and dragging a list
+        // to its tab would be moving a pane it never opened.
+        if !self.is_panel() {
+            return;
+        }
         let (Some(agents_id), Some(own_tab), Some(agents_tab)) = (
             self.agents_plugin,
             self.own_tab_index,
