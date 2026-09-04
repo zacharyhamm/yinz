@@ -1277,13 +1277,21 @@ impl State {
     /// opens a hocus if there is none. hocus is what computes the rows drawn here, so a list with
     /// nothing feeding it is not worth having.
     ///
-    /// The hocus it opens that way starts **hidden**, which is what keeps this from being the
-    /// coupling the two panes no longer have: the user asked for a list. `wire::OPENED_BY` is
-    /// the marker that says so, and `should_focus: false` keeps the keyboard here in the meantime.
+    /// **The hocus it opens that way appears**, unfocused, beside this pane - the panel is both
+    /// halves or it is nothing. It does not take the keyboard, because the user asked for a *list*;
+    /// `wire::OPENED_BY` is the marker that says which of the two they asked for, and
+    /// `should_focus: false` is what acts on it. (This paragraph used to claim the launched hocus
+    /// started *hidden*. Nothing ever made it so - `State::note_greeting_from_agents` only records
+    /// that a list exists - and `a36cf7830` settled the question the other way.)
     ///
     /// `MessageToPlugin` with a `plugin_url` is launch-or-reuse - an instance with the same
     /// (location, configuration) is handed the message rather than a second one being spawned -
-    /// which is the same idempotence hocus relies on in the other direction.
+    /// which is the same idempotence hocus relies on in the other direction. **Reuse is by
+    /// configuration, so a hocus the user put in their layout as `plugin location="hocus"` is not
+    /// reused**: this launches an overlay one beside the list, which is right, because a tiled
+    /// hocus is not a panel and cannot be the list's other half (`State::is_panel`). What must
+    /// never happen is a list being opened beside a tiled hocus that nobody asked for one from -
+    /// and it cannot, because that hocus never launches a list in the first place.
     ///
     /// No coordinates: this pane does not know the panel's proportions. hocus places both panes
     /// itself, on load and on every resize.

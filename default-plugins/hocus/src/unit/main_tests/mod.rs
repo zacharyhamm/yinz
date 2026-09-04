@@ -24,6 +24,8 @@ fn state_streaming(messages: Vec<Message>, id: &str) -> State {
             finishing: false,
             usage: None,
         }),
+        // The overlay panel, as `ready_state` is - see there.
+        own_is_floating: Some(true),
         ..State::default()
     }
 }
@@ -51,6 +53,10 @@ fn finishing(id: &str) -> Option<StreamState> {
 fn ready_state() -> State {
     State {
         perms: true,
+        // The overlay panel, which is what hocus is everywhere but a user's own layout. Set here
+        // because it is what `is_panel` reads, and without it Esc, `show_self` and every other
+        // panel gesture below are correctly refused - see `State::own_is_floating`.
+        own_is_floating: Some(true),
         // Every per-pane row this plugin writes is keyed by session as well as pane id, so a
         // state that has never heard a snapshot writes none. Standing in for the first one.
         zellij_session_name: "test-session".to_owned(),

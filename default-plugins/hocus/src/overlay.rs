@@ -904,6 +904,28 @@ impl Panel {
 }
 
 impl State {
+    /// Whether this hocus is the panel this module is about.
+    ///
+    /// Everything below - the corner, the two halves, the divider, the one visibility - belongs to
+    /// a hocus drawn *over* the session. A hocus the user put in their layout
+    /// (`pane { plugin location="hocus" }`) is a plain tiled pane: it fills what the layout gave
+    /// it, grows no agent list, moves nowhere and is never hidden. The layout is the user's
+    /// arrangement, and a plugin has no business rearranging it.
+    ///
+    /// Said by the manifest and by nothing else - see [`State::own_is_floating`] - so this is
+    /// `false` until the first `PaneUpdate` names our pane. That costs a real panel nothing: the
+    /// only placement before that manifest is the one on load, which already does nothing (no
+    /// `TabUpdate` has said how big the screen is, so `panel_rect` is `None`), and `on_panes`
+    /// retries every placement that could not land.
+    ///
+    /// Without this a tiled hocus took the whole panel path: its first manifest launched an agent
+    /// list beside it, the list's greeting launched a *second*, overlay hocus over the user's
+    /// transcript, and every frame asked the server to move a pane that is not an overlay - which
+    /// fails the whole placement batch, so the list stayed at the centred default it was born at.
+    pub(crate) fn is_panel(&self) -> bool {
+        self.own_is_floating == Some(true)
+    }
+
     /// Which halves there are to cut the panel into.
     ///
     /// Not a visibility question any more - the two halves hide and come back together, so
@@ -926,9 +948,15 @@ impl State {
 
     /// Re-place both halves against the display area as it is now.
     ///
-    /// Safe to call whenever: `change_overlay_coordinates` names panes by id and does nothing for
-    /// an id that is not an overlay, and once the user has dragged the panel the server keeps
-    /// their position and takes only the size from here.
+    /// Safe to call whenever there is a panel to place: the ids are looked up rather than assumed,
+    /// and once the user has dragged the panel the server keeps their position and takes only the
+    /// size from here.
+    ///
+    /// **Only for a panel**, which is what the guard is for.
+    /// `Tab::change_overlay_coordinates_batch` refuses a batch naming a pane that is not an
+    /// overlay - and refuses the *whole* batch, on the first such id, so one wrong id leaves every
+    /// other half unplaced too. [`State::is_panel`] is what keeps hocus from ever sending one; the
+    /// server stays strict, because with that guard in place no correct caller can.
     ///
     /// **Doing nothing is exactly what happens when the pane is not on a tab yet**, and it is
     /// silent - `Screen::change_overlay_coordinates` looks the id up and moves on. That is why
@@ -944,6 +972,9 @@ impl State {
     /// Both halves are tracked, and separately: see [`State::agents_placed`] for why one flag was
     /// not enough.
     pub(crate) fn apply_overlay_geometry(&mut self) {
+        if !self.is_panel() {
+            return;
+        }
         let Some(panel) = self.panel_rect() else {
             return;
         };
@@ -994,6 +1025,12 @@ impl State {
     /// over anything a plugin asks for, and a key the user pressed to move it is theirs to
     /// override. A user-stated size remains independent - it is threaded in as `size`.
     fn place_panel(&mut self, size: Option<(usize, usize)>, corner: Corner) {
+        // The other `change_overlay_coordinates` caller, and gated for the same reason as
+        // `apply_overlay_geometry`: a tiled hocus has no panel to move, and asking the server to
+        // move one is an error rather than a no-op.
+        if !self.is_panel() {
+            return;
+        }
         let Some(panel) = self.rect_in(corner, size) else {
             return;
         };
@@ -1272,6 +1309,12 @@ impl State {
     /// It is caught where its id first exists: `on_selection` hides a list that announces itself
     /// to a panel that is down, so it joins at the panel's visibility rather than at its own.
     pub(crate) fn hide_panel(&mut self) {
+        // Nothing to put away: a hocus in the user's layout is a pane they arranged, and Esc is not
+        // a licence to suppress it. There would also be no way back - the reveal bindings summon
+        // the overlay panel, not a tab pane.
+        if !self.is_panel() {
+            return;
+        }
         hide_self();
         self.note_visibility(PaneId::Plugin(self.own_plugin_id), false);
         if let Some(agents_id) = self.agents_plugin {
@@ -1311,6 +1354,11 @@ impl State {
     /// processed first is an arbitrary client - not the one who pressed the key. Following *their*
     /// tab drags the freshly revealed pane off the summoner's screen.
     pub(crate) fn reveal_panel(&mut self) {
+        // A tiled hocus is never hidden - `hide_panel` refuses - so there is nothing to reveal, and
+        // growing it a second half would be the panel opening itself inside someone's layout.
+        if !self.is_panel() {
+            return;
+        }
         self.hidden = false;
         self.hide_pending = 0;
         // A launch that never announced itself would otherwise hold the claim for the rest of the
@@ -1340,6 +1388,12 @@ impl State {
     /// Deliberately not the whole of `reveal_panel`: the list is already on screen, so there is
     /// no other half to summon, and asking for one would be asking for a second list.
     pub(crate) fn reveal_self_beside_agents(&mut self) {
+        // Its one caller is already inside `on_panes`'s panel gate; stated here too because every
+        // other entry point into the panel says it, and a half-guarded set is the one that grows a
+        // hole later.
+        if !self.is_panel() {
+            return;
+        }
         self.hidden = false;
         self.hide_pending = 0;
         // The list on screen is the one that was asked for, whatever hocus last claimed - and a
@@ -1386,6 +1440,11 @@ impl State {
     /// Called when *either* half is on screen, not only when this one is: a hidden conversation
     /// with a visible list still has to bring the list along, or a tab switch strands it.
     pub(crate) fn follow_tab(&mut self, tab_index: usize) {
+        // A pane in the layout belongs to its tab. Following the user around would take it off the
+        // tab they built it into - the opposite of what an overlay following them achieves.
+        if !self.is_panel() {
+            return;
+        }
         // Nothing to do until `PaneUpdate` has said where we actually are. Before that the panes
         // are wherever they were opened - which is the active tab, since every path that opens one
         // is the user asking for it from the tab they are on - and a move to "the active tab" would
@@ -1448,6 +1507,12 @@ impl State {
     /// Asked for at most once per launch: `agents_open_requested` is what stops a manifest
     /// arriving while the list is still loading from asking for a second one.
     pub(crate) fn open_agents_pane(&mut self) {
+        // The half a panel owes itself is not a half a tab pane owes anyone: an overlay list
+        // launched beside a hocus the user put in their layout lands on top of their session,
+        // uninvited. This is the launch the tiled integration tests were tripping.
+        if !self.is_panel() {
+            return;
+        }
         if self.agents_open_requested {
             return;
         }
