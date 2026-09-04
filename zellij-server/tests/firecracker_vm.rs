@@ -137,11 +137,20 @@ fn a_worktree_vm_syncs_merges_renames_and_stops() {
     fs::write(&host_credential, "{\"token\":\"firecracker-test-secret\"}").unwrap();
     let host_claude_credential = credentials.path().join("claude.json");
     fs::write(&host_claude_credential, "{\"claudeAiOauth\":{}}").unwrap();
+    // A third, into a home that is not the account the provider logs in as. Root reading
+    // everything is not the same as the guest account being given anything, so this one is
+    // what says the copy ends up where `agent` can reach it.
+    let host_agent_credential = credentials.path().join("agent.json");
+    fs::write(&host_agent_credential, "{\"claudeAiOauth\":{}}").unwrap();
     let _config = ConfigWithCredential::new(&[
         (host_credential.as_path(), "/root/.zellij-test/auth.json"),
         (
             host_claude_credential.as_path(),
             "/root/.claude/.credentials.json",
+        ),
+        (
+            host_agent_credential.as_path(),
+            "/home/agent/.claude/.credentials.json",
         ),
     ]);
 
@@ -192,12 +201,16 @@ fn a_worktree_vm_syncs_merges_renames_and_stops() {
             "out=$(printf '{\"hook_event_name\":\"Stop\",\"session_id\":\"fc-test\"}' ",
             "| /root/.claude/hocus/hocus-hook.sh); ",
             "test -z \"$out\" && printf 'script-silent '; ",
+            // The account for the third mapping, made only now: the first copy landed in a
+            // /home/agent that nothing owned, and the next one has a home to answer to.
+            "rm -rf /home/agent; useradd -m -s /bin/sh agent; ",
             "printf 'guest-edits-done'"
         ),
         "guest-edits-done",
     );
     assert!(text.contains("cred-mode=600"), "{text}");
-    // `-a` alone would have preserved the host user's numeric uid here.
+    // Root because root owns the directory it went into, not because root is the login:
+    // `-a` alone would have carried the host's own answer across instead.
     assert!(text.contains("cred-owner=root:root"), "{text}");
     assert!(text.contains("cred-dir-mode=700"), "{text}");
     assert!(text.contains("cred-ok"), "{text}");
@@ -238,6 +251,64 @@ fn a_worktree_vm_syncs_merges_renames_and_stops() {
     assert!(text.contains("guest-wrote-this"), "{text}");
     assert!(text.contains("\"hasCompletedOnboarding\":true"), "{text}");
     assert!(text.contains("\"hasTrustDialogAccepted\":true"), "{text}");
+
+    // `agent` owns its home now, so this copy had somebody to belong to. Everything the
+    // provider put there follows the home rather than the login: without that the file is
+    // root's, 0600, inside a 0700 directory, and the account that has to read it cannot.
+    let text = run_in_guest(
+        &refreshed,
+        concat!(
+            "set -e; ",
+            "printf 'agent-cred=%s ' \"$(stat -c %U:%G /home/agent/.claude/.credentials.json)\"; ",
+            "printf 'agent-dir=%s ' \"$(stat -c %U:%G /home/agent/.claude)\"; ",
+            "printf 'agent-state=%s ' \"$(stat -c %U:%G /home/agent/.claude.json)\"; ",
+            "su -s /bin/sh agent -c 'cat /home/agent/.claude/.credentials.json' > /dev/null && printf 'agent-can-read '; ",
+            "printf 'agent-home-checked'"
+        ),
+        "agent-home-checked",
+    );
+    assert!(text.contains("agent-cred=agent:agent"), "{text}");
+    assert!(text.contains("agent-dir=agent:agent"), "{text}");
+    assert!(text.contains("agent-state=agent:agent"), "{text}");
+    assert!(text.contains("agent-can-read"), "{text}");
+
+    // Something in the guest where its Claude Code state belongs that cannot be read as
+    // JSON at all - here a directory, so even the read fails. Seeding says so and stops.
+    // Propagating that failure is what used to terminate a booted VM and retain it as
+    // `provision-failed`, over a file whose absence only costs a pane a wizard.
+    run_in_guest(
+        &refreshed,
+        "rm -rf /root/.claude.json && mkdir /root/.claude.json && printf 'state-replaced'",
+        "state-replaced",
+    );
+    let survived = provider
+        .ensure(
+            session,
+            name,
+            Some(IMAGE),
+            Some(&worktree_path),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    let listing = provider.list(Some(session)).unwrap();
+    assert_eq!(listing.vms.len(), 1, "{listing:?}");
+    assert_eq!(listing.vms[0].state, "running", "{listing:?}");
+    let text = run_in_guest(
+        &survived,
+        concat!(
+            "set -e; test -d /root/.claude.json; ",
+            "test -s /root/.claude/.credentials.json; ",
+            "printf 'state-left-alone'"
+        ),
+        "state-left-alone",
+    );
+    assert!(text.contains("state-left-alone"), "{text}");
+    // Put back something the rest of the test can read, so the guest is left as it was.
+    run_in_guest(
+        &survived,
+        "rm -rf /root/.claude.json && printf '{}' > /root/.claude.json && printf 'state-restored'",
+        "state-restored",
+    );
 
     // Meanwhile on the host: one file both sides changed, one the host alone changed, and
     // one the host changed that the guest deleted.

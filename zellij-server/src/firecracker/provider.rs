@@ -896,12 +896,18 @@ fn install_agent_hooks(state: &VmState, config: &Config) -> Result<()> {
 
 /// The credentials a guest is configured to get, and the first-run state that makes them
 /// usable. The two go together: a credential nothing can reach is the same as no credential.
+///
+/// Only the credential half is worth failing over. A guest that does not get one is a pane
+/// that cannot work at all, and the caller destroys the VM over that; a guest that does not
+/// get its first-run state is a pane that has to answer a wizard, which is not worth a
+/// booted VM to two ssh round-trips that went wrong.
 fn copy_credentials(state: &VmState, config: &Config) -> Result<()> {
     config
         .credential_files
         .iter()
         .try_for_each(|credential| copy_credential(state, config, credential))?;
-    seed_claude_state(state, config)
+    seed_claude_state(state, config);
+    Ok(())
 }
 
 /// The guest home directories that Claude Code credentials are copied into: the grandparent
@@ -940,26 +946,32 @@ fn claude_guest_homes(credentials: &[CredentialFile]) -> Vec<PathBuf> {
 /// The host's own `~/.claude.json` is never copied. It is the whole of somebody's project
 /// history and MCP configuration and none of that belongs in a VM; only the two flags that
 /// unblock a pane are written, merged into whatever the guest already has.
-fn seed_claude_state(state: &VmState, config: &Config) -> Result<()> {
+fn seed_claude_state(state: &VmState, config: &Config) {
     if !config.claude_guest_onboarding {
-        return Ok(());
+        return;
     }
     for home in claude_guest_homes(&config.credential_files) {
-        seed_claude_home(state, config, &home)?;
+        // Each home stands alone, and none of them is worth a VM. Say which guest did not
+        // get its state and what that costs whoever opens a pane in it, then carry on: the
+        // credential itself is already there.
+        if let Err(error) = seed_claude_home(state, config, &home) {
+            eprintln!(
+                "warning: failed to write Claude Code's first-run state into {} in the \
+                 guest: {error:#}; an agent there may ask to log in",
+                home.display()
+            );
+        }
     }
-    Ok(())
 }
 
 fn seed_claude_home(state: &VmState, config: &Config, home: &Path) -> Result<()> {
     let path = home.join(".claude.json");
     validate_guest_path(&path, "guest Claude Code state path")?;
     let existing = read_guest_file(state, config, &path)?;
-    // A file that is there but unreadable as JSON is the guest's own; overwriting it would
-    // lose an agent's history to make a wizard go away. Say so and leave it alone.
-    let current = match existing.as_deref().map(serde_json::from_str) {
-        None => serde_json::Value::Object(serde_json::Map::new()),
-        Some(Ok(value @ serde_json::Value::Object(_))) => value,
-        Some(_) => {
+    let seeded = match claude_seed(existing.as_deref(), &config.guest_cwd) {
+        ClaudeSeed::Write(seeded) => seeded,
+        ClaudeSeed::NothingToDo => return Ok(()),
+        ClaudeSeed::LeaveAlone => {
             eprintln!(
                 "warning: {} in the guest is not a JSON object; leaving Claude Code's \
                  first-run state alone",
@@ -968,19 +980,41 @@ fn seed_claude_home(state: &VmState, config: &Config, home: &Path) -> Result<()>
             return Ok(());
         },
     };
-    let Some(seeded) = claude_state_with_seed(&current, &config.guest_cwd) else {
-        return Ok(());
-    };
     let body =
         serde_json::to_vec(&seeded).context("failed to render the guest's Claude Code state")?;
+    let quoted = shell_quote(&path.to_string_lossy());
     run_with_input(
         ssh_command(state, config).arg(format!(
-            "umask 077 && cat > {}",
-            shell_quote(&path.to_string_lossy())
+            "umask 077 && cat > {quoted} && {}",
+            chown_to_parent(&quoted)
         )),
         &body,
         "failed to write Claude Code's first-run state into the guest",
     )
+}
+
+/// What to do about a guest's existing `<home>/.claude.json`.
+enum ClaudeSeed {
+    /// Write this: the guest's own file, with the two flags an agent needs added to it.
+    Write(serde_json::Value),
+    /// The file already says both things. Not writing it is the point - an agent holding
+    /// that file is never written out from under.
+    NothingToDo,
+    /// Something is there that is not a JSON object, so it is the guest's and not ours to
+    /// replace: overwriting it would lose an agent's history to make a wizard go away.
+    LeaveAlone,
+}
+
+fn claude_seed(existing: Option<&str>, guest_cwd: &Path) -> ClaudeSeed {
+    let current = match existing.map(serde_json::from_str) {
+        None => serde_json::Value::Object(serde_json::Map::new()),
+        Some(Ok(value @ serde_json::Value::Object(_))) => value,
+        Some(_) => return ClaudeSeed::LeaveAlone,
+    };
+    match claude_state_with_seed(&current, guest_cwd) {
+        Some(seeded) => ClaudeSeed::Write(seeded),
+        None => ClaudeSeed::NothingToDo,
+    }
 }
 
 /// `current` with the two flags an agent needs, or `None` when it already has both: a guest
@@ -2106,18 +2140,47 @@ fn remove_entry(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// rsync's arguments for a credential: the guest's own identity on the file, and nothing
-/// but the owner able to read it.
+/// rsync's arguments for a credential: none of the host's answers about who owns it, and
+/// nothing but the owner able to read it.
 ///
-/// `-a` implies `-o -g`, and rsync runs as root on the receiving side, so it would preserve
-/// the *host* user's numeric uid - a file in the guest owned by whichever guest account
-/// happens to share uid 1000. `--no-owner --no-group` hands it to whoever the provider ssh'd
-/// in as instead, which is the account that has to read it.
+/// `-a` implies `-o -g`, and rsync runs as root on the receiving side, so it would carry the
+/// host's ownership across - by name where the guest has that name, and by the raw numeric id
+/// where it does not, which is a file in the guest owned by whichever account happens to
+/// share uid 1000. Neither is an answer to who should hold it *there*. `--no-owner
+/// --no-group` leaves it to the login, and [`chown_to_parent`] then gives it to the account
+/// that has to read it.
 ///
 /// Nothing here, or anywhere else in this file, may read a credential's contents. The
 /// provider's subprocesses inherit its stderr, which the server writes to its log and shows
 /// in the pane, so a single `cat` of one of these files would put a token in both.
 const CREDENTIAL_RSYNC_ARGS: &[&str] = &["-a", "--no-owner", "--no-group", "--chmod=F600"];
+
+/// The shell that gives a guest path the ownership of the directory it went into.
+///
+/// The provider logs in as root, so everything it creates in a guest is root's, and a
+/// credential mapped into another account's home would be readable by nobody who has to read
+/// it - the guest's own home directory is the only thing that knows whose it is. `quoted` is
+/// an already-quoted absolute path whose parent exists by the time this runs.
+fn chown_to_parent(quoted: &str) -> String {
+    format!(r#"chown --reference="$(dirname -- {quoted})" -- {quoted}"#)
+}
+
+/// The shell that makes a credential's directory in the guest: private, and belonging to
+/// whoever owns the nearest directory that was already there.
+///
+/// The owner has to be read *before* `mkdir -p` runs, or the answer is root every time. A
+/// directory that already existed is its own nearest ancestor, so the chown is then a no-op
+/// and nothing already inside it is touched. The mode is not left to root's umask, which is
+/// 0755: a 0600 file inside a directory anyone can list is fine only for as long as the
+/// guest has one account.
+fn guest_credential_dir_command(parent: &Path) -> String {
+    let quoted = shell_quote(&parent.to_string_lossy());
+    format!(
+        "ancestor={quoted}; while [ ! -e \"$ancestor\" ]; do ancestor=$(dirname -- \"$ancestor\"); \
+         done; mkdir -p -- {quoted} && chmod 700 -- {quoted} && \
+         chown --reference=\"$ancestor\" -- {quoted}"
+    )
+}
 
 fn copy_credential(state: &VmState, config: &Config, credential: &CredentialFile) -> Result<()> {
     let host = expand_home(&credential.host)?;
@@ -2129,13 +2192,8 @@ fn copy_credential(state: &VmState, config: &Config, credential: &CredentialFile
         .guest
         .parent()
         .context("credential guest path has no parent")?;
-    // The directory is created with root's umask, which is 0755; a 0600 file inside a
-    // directory anyone can list is fine only for as long as the guest has one account.
     run(
-        ssh_command(state, config).arg(format!(
-            "mkdir -p -- {parent} && chmod 700 -- {parent}",
-            parent = shell_quote(&parent.to_string_lossy())
-        )),
+        ssh_command(state, config).arg(guest_credential_dir_command(parent)),
         "failed to create the guest credential directory",
     )?;
     let _progress = Progress::start("copying credentials into the guest");
@@ -2150,6 +2208,12 @@ fn copy_credential(state: &VmState, config: &Config, credential: &CredentialFile
                 credential.guest.display()
             )),
         "failed to copy a configured credential into the guest",
+    )?;
+    run(
+        ssh_command(state, config).arg(chown_to_parent(&shell_quote(
+            &credential.guest.to_string_lossy(),
+        ))),
+        "failed to give a copied credential to the guest account that reads it",
     )
 }
 
@@ -6057,8 +6121,8 @@ mod tests {
         assert!(managed.contains("firecracker_provider_timeout_secs 90"));
     }
 
-    /// A credential lands in the guest owned by whoever the provider logs in as, readable
-    /// by nobody else. `-a` alone would preserve the host's numeric uid instead.
+    /// A credential is readable by nobody but its owner, and the host has no say in who
+    /// that is. `-a` alone would carry the host's answer across.
     #[test]
     fn a_credential_is_copied_without_the_hosts_ownership() {
         assert!(CREDENTIAL_RSYNC_ARGS.contains(&"--no-owner"));
@@ -6068,6 +6132,70 @@ mod tests {
         // contradiction, not a redundancy.
         assert!(!CREDENTIAL_RSYNC_ARGS.contains(&"-o"));
         assert!(!CREDENTIAL_RSYNC_ARGS.contains(&"-g"));
+    }
+
+    /// The login is always root, so a credential dropped into another account's home would
+    /// be readable by nobody who has to read it. The directory it goes into is what says
+    /// whose it is - and it has to be asked before `mkdir` makes the answer root.
+    #[test]
+    fn a_credential_directory_is_made_private_and_given_to_its_own_owner() {
+        let command = guest_credential_dir_command(Path::new("/home/agent/.claude"));
+        let quoted = "'/home/agent/.claude'";
+        // The ancestor walk comes first, and the chown names what it found rather than the
+        // directory itself: a `--reference` to the new directory would only ever say root.
+        let walk = command.find("while [ ! -e").expect("an ancestor walk");
+        let mkdir = command.find("mkdir -p").expect("a mkdir");
+        assert!(walk < mkdir, "{command}");
+        assert!(
+            command.contains(&format!("chmod 700 -- {quoted}")),
+            "{command}"
+        );
+        assert!(
+            command.contains(&format!("chown --reference=\"$ancestor\" -- {quoted}")),
+            "{command}"
+        );
+        // Not `-R`: a directory that was already there is its own nearest ancestor, and
+        // whatever else is in it is not this copy's to re-own.
+        assert!(!command.contains("-R"), "{command}");
+    }
+
+    /// Everything the provider writes into a guest home follows the same rule, so the seed
+    /// is not left as root's beside a credential that is not.
+    #[test]
+    fn a_written_guest_file_is_given_to_the_owner_of_its_directory() {
+        assert_eq!(
+            chown_to_parent("'/home/agent/.claude.json'"),
+            "chown --reference=\"$(dirname -- '/home/agent/.claude.json')\" -- \
+             '/home/agent/.claude.json'"
+        );
+    }
+
+    /// A guest file that is not a JSON object is the guest's own: an agent's history is not
+    /// spent to make a wizard go away, and nothing is written.
+    #[test]
+    fn a_guest_file_that_is_not_an_object_is_left_alone() {
+        for existing in ["[]", "null", "\"text\"", "not json at all"] {
+            assert!(
+                matches!(
+                    claude_seed(Some(existing), Path::new("/workspace")),
+                    ClaudeSeed::LeaveAlone
+                ),
+                "{existing:?}"
+            );
+        }
+        assert!(matches!(
+            claude_seed(None, Path::new("/workspace")),
+            ClaudeSeed::Write(_)
+        ));
+        assert!(matches!(
+            claude_seed(
+                Some(
+                    r#"{"hasCompletedOnboarding":true,"projects":{"/workspace":{"hasTrustDialogAccepted":true}}}"#
+                ),
+                Path::new("/workspace")
+            ),
+            ClaudeSeed::NothingToDo
+        ));
     }
 
     /// Seeding follows the credential: a home is one that was given a Claude Code token,

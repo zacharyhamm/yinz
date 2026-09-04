@@ -274,12 +274,20 @@ pub fn claude_hook_settings_argument() -> String {
 /// which is the whole reason the pane was asked for - so the pane would otherwise die on a
 /// check that has already been satisfied. `IS_SANDBOX` is how Claude Code is told so.
 ///
+/// The flag itself is what is looked for, in the arguments as they will be run. A
+/// `permission_mode` of `skip` is only one of the two ways to ask for it - `shape_args` turns
+/// that mode into this flag - and the other, passing it in `args`, is just as supported and
+/// dies on the same check.
+///
 /// A caller that sets the variable itself keeps its value. Nothing is added for a local
 /// pane, which runs as the user and needs none of this.
-fn guest_environment(spec: &Spec, kind: Option<&str>) -> BTreeMap<String, String> {
+fn guest_environment(spec: &Spec, kind: Option<&str>, args: &[String]) -> BTreeMap<String, String> {
     let mut env = spec.env.clone();
     let firecracker = trimmed(&spec.firecracker).is_some();
-    if firecracker && kind == Some("claude") && trimmed(&spec.permission_mode) == Some("skip") {
+    let skipping = args
+        .iter()
+        .any(|arg| arg == "--dangerously-skip-permissions");
+    if firecracker && kind == Some("claude") && skipping {
         env.entry("IS_SANDBOX".to_owned())
             .or_insert_with(|| "1".to_owned());
     }
@@ -309,13 +317,15 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
     let mut args = leading;
     args.extend(spec.args.iter().cloned());
     args.extend(flags);
+    // Settled from the flags alone, before the prompt joins them: a prompt whose text reads
+    // like a flag is still a prompt, and what the agent was asked to do says nothing about
+    // how it was asked to run.
+    let env = guest_environment(spec, kind.as_deref(), &args);
     // Last, and after every flag: a positional argument that came before a flag would
     // be read by some of these programs as the flag's value.
     if let Some(prompt) = trimmed(&spec.prompt) {
         args.push(prompt.to_owned());
     }
-
-    let env = guest_environment(spec, kind.as_deref());
 
     // An environment is an `env(1)` wrapper: assignments first, then the program and its
     // arguments. `env` execs, so the pane's foreground process is still the agent, and the
@@ -687,14 +697,52 @@ mod tests {
         );
     }
 
+    /// The other way to ask for the flag. `permission_mode` is not the condition - the flag
+    /// is - and a caller that spells it out in `args` is on the same root check.
+    #[test]
+    fn a_flag_passed_in_args_declares_the_sandbox_too() {
+        let (command, _) = plan(&Spec {
+            firecracker: Some("review".to_owned()),
+            args: vec!["--dangerously-skip-permissions".to_owned()],
+            ..without_hooks("claude")
+        })
+        .unwrap();
+        assert_eq!(command.path, PathBuf::from("env"));
+        assert_eq!(
+            command.args,
+            vec!["IS_SANDBOX=1", "claude", "--dangerously-skip-permissions"]
+        );
+    }
+
+    /// The prompt is what the agent was asked to do, not how it was asked to run: a prompt
+    /// that reads like the flag is still a prompt.
+    #[test]
+    fn a_prompt_that_looks_like_the_flag_declares_nothing() {
+        let (command, _) = plan(&Spec {
+            firecracker: Some("review".to_owned()),
+            prompt: Some("--dangerously-skip-permissions".to_owned()),
+            ..without_hooks("claude")
+        })
+        .unwrap();
+        assert_ne!(command.path, PathBuf::from("env"));
+        assert!(
+            !command.args.iter().any(|arg| arg.starts_with("IS_SANDBOX")),
+            "{command:?}"
+        );
+    }
+
     /// Nothing is added anywhere else: a local pane runs as the user and needs none of it,
     /// a milder permission mode was never refused, and another agent's root check is not
-    /// this one's to answer.
+    /// this one's to answer - however it was asked for.
     #[test]
     fn nothing_else_declares_a_sandbox() {
         for spec in [
             Spec {
                 permission_mode: Some("skip".to_owned()),
+                ..without_hooks("claude")
+            },
+            Spec {
+                args: vec!["--dangerously-skip-permissions".to_owned()],
                 ..without_hooks("claude")
             },
             Spec {
@@ -705,6 +753,11 @@ mod tests {
             Spec {
                 firecracker: Some("review".to_owned()),
                 permission_mode: Some("skip".to_owned()),
+                ..without_hooks("codex")
+            },
+            Spec {
+                firecracker: Some("review".to_owned()),
+                args: vec!["--dangerously-skip-permissions".to_owned()],
                 ..without_hooks("codex")
             },
         ] {
