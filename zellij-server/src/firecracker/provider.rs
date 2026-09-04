@@ -4,7 +4,7 @@
 //! small state directory, and leaves the Firecracker process running on its
 //! own. The privileged part is a one-time pool of user-owned TAP devices.
 
-use super::{EnsureResponse, RecoveryEntry, VmEntry, PROGRESS_PREFIX, PROTOCOL_VERSION};
+use super::{vm_id, EnsureResponse, RecoveryEntry, VmEntry, PROGRESS_PREFIX, PROTOCOL_VERSION};
 use crate::pty_host::ensure_secure_dir;
 use crate::pty_host::remote::ssh::SshOptions;
 use highway::{HighwayHash, Key, PortableHash};
@@ -2811,18 +2811,6 @@ fn read_state_opt(path: &Path) -> Result<Option<VmState>> {
 
 fn write_state(path: &Path, state: &VmState) -> Result<()> {
     write_json_atomically(path, state).context("failed to commit VM state")
-}
-
-fn vm_id(session: &str, name: &str) -> String {
-    let mut hasher = PortableHash::new(Key::default());
-    hasher.append(session.as_bytes());
-    hasher.append(&[0]);
-    hasher.append(name.as_bytes());
-    format!("{:016x}", hasher.finalize64())
-}
-
-pub(crate) fn worktree_vm_name(worktree: &Path) -> String {
-    vm_id("worktree", &worktree.to_string_lossy())
 }
 
 /// Where the provider's own configuration lives. One answer for every reader and writer of
@@ -5946,13 +5934,6 @@ mod tests {
             serde_json::json!({"enabled": true})
         );
         assert_eq!(updated["credential_files"].as_array().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn vm_ids_are_stable_and_do_not_expose_session_paths() {
-        assert_eq!(vm_id("work/../../other", "review"), "9cc0eea7664ed86b");
-        assert_ne!(vm_id("work", "review"), vm_id("other", "review"));
-        assert!(!vm_id("work/../../other", "review").contains('/'));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use highway::{HighwayHash, Key, PortableHash};
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -26,6 +27,18 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// the inactivity timeout; lines with this prefix are also kept out of error
 /// messages, and the last one names the phase a silent provider was in.
 pub const PROGRESS_PREFIX: &str = "progress: ";
+
+fn vm_id(session: &str, name: &str) -> String {
+    let mut hasher = PortableHash::new(Key::default());
+    hasher.append(session.as_bytes());
+    hasher.append(&[0]);
+    hasher.append(name.as_bytes());
+    format!("{:016x}", hasher.finalize64())
+}
+
+pub(crate) fn worktree_vm_name(worktree: &Path) -> String {
+    vm_id("worktree", &worktree.to_string_lossy())
+}
 
 #[derive(Clone, Debug)]
 pub struct Provider {
@@ -71,6 +84,7 @@ pub(crate) enum Request<'a> {
     },
 }
 
+#[cfg(target_os = "linux")]
 impl Request<'_> {
     pub(crate) fn version(&self) -> u32 {
         match self {
@@ -541,6 +555,13 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
     use zellij_test_support::write_script;
+
+    #[test]
+    fn vm_ids_are_stable_and_do_not_expose_session_paths() {
+        assert_eq!(vm_id("work/../../other", "review"), "9cc0eea7664ed86b");
+        assert_ne!(vm_id("work", "review"), vm_id("other", "review"));
+        assert!(!vm_id("work/../../other", "review").contains('/'));
+    }
 
     fn provider_script(body: &str, timeout: Duration) -> (TempDir, Provider) {
         let dir = tempfile::tempdir().unwrap();
