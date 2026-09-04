@@ -69,6 +69,10 @@ const ROOTFS_URL: &str = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/
 const ROOTFS_SHA256: &str = "1e424bde9bfaaca5c74fcc2b1c78be6285ae515528ef4acc9e64ff78b4225b48";
 /// Where the customization script is staged inside the guest root.
 const GUEST_CUSTOMIZE_SCRIPT: &str = "/tmp/zellij-firecracker-customize.sh";
+/// Where `image build` puts Zellij in the guest, and so where provisioning finds it. Named
+/// once because the two ends must agree: a provisioning step that cannot find it fails the
+/// VM rather than silently doing nothing.
+const GUEST_ZELLIJ: &str = "/usr/local/bin/zellij";
 /// apt drops privileges to `_apt` to download, which cannot work when the
 /// builder's user namespace maps a single uid. Staged for the chroot only.
 const APT_SANDBOX_OVERRIDE: &str = "etc/apt/apt.conf.d/99-zellij-image-build";
@@ -843,7 +847,31 @@ fn provision_guest(state: &VmState, config: &Config) -> Result<()> {
     if let Some(worktree) = state.worktree.as_deref() {
         sync_to_guest(state, config, worktree)?;
     }
-    copy_credentials(state, config)
+    copy_credentials(state, config)?;
+    install_agent_hooks(state, config)
+}
+
+/// Wire Claude Code's and Codex's hooks in the guest, so an agent started by hand in a VM
+/// pane reports its own state instead of being guessed at from its screen.
+///
+/// Run in the guest rather than written from here, so the installer stays in one place: the
+/// guest's own binary bakes its own path into the script it writes, and the script picks the
+/// broker route by itself once it sees the pane token every remote pane carries.
+///
+/// A failure here fails the VM, the way a failed credential copy does. An image whose Zellij
+/// is too old to have this command is too old to serve a pane at all: the broker socket is
+/// named after the remote protocol version.
+fn install_agent_hooks(state: &VmState, config: &Config) -> Result<()> {
+    let _progress = Progress::start("installing coding-agent hooks in the guest");
+    // Captured rather than inherited: the installer reports what it wrote on stdout, and
+    // the provider's stdout carries one JSON response and nothing else.
+    run_capturing(
+        ssh_command(state, config)
+            .arg(GUEST_ZELLIJ)
+            .args(["hocus", "hooks", "install"]),
+        "failed to install the coding-agent hooks in the guest",
+    )
+    .map(drop)
 }
 
 fn copy_credentials(state: &VmState, config: &Config) -> Result<()> {
@@ -3788,12 +3816,9 @@ fn image_build_inner(args: &[String]) -> Result<()> {
         find_in_path(&zellij).with_context(|| format!("could not find {}", zellij.display()))?
     };
     warn_about_dynamic_zellij(&zellij, Some(&root));
-    fs::copy(&zellij, root.join("usr/local/bin/zellij"))
-        .context("failed to install Zellij in the guest")?;
-    fs::set_permissions(
-        root.join("usr/local/bin/zellij"),
-        fs::Permissions::from_mode(0o755),
-    )?;
+    let guest_zellij = root.join(GUEST_ZELLIJ.trim_start_matches('/'));
+    fs::copy(&zellij, &guest_zellij).context("failed to install Zellij in the guest")?;
+    fs::set_permissions(&guest_zellij, fs::Permissions::from_mode(0o755))?;
     let ssh_dir = root.join("root/.ssh");
     ensure_secure_dir(&ssh_dir)?;
     fs::copy(

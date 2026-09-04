@@ -1015,9 +1015,11 @@ pub fn broker_invocation() -> Option<String> {
     broker_invocation_from_args(std::env::args())
 }
 
-/// Write one hook event into this pane's authenticated pty stream. The host
-/// consumes the private OSC marker instead of displaying it.
 /// The environment variable a remote pane's process finds its broker token in.
+///
+/// Read by `report_agent_hook` below, and by the hook script `zellij hocus hooks install`
+/// writes: it is how a hook running on the far side of the transport knows there is no
+/// session on this machine to report to, and which pane the broker should relay it to.
 pub const PANE_TOKEN_ENV: &str = "ZELLIJ_REMOTE_PANE_TOKEN";
 
 /// Send a hook's event on the named pane's own channel, if a server is attached

@@ -47,6 +47,14 @@ zellij action agent-report --hook-json < "$payload"              # a claude
 zellij action agent-report --hook-json --kind codex < "$payload" # a codex
 ```
 
+One script covers both a local pane and a remote one. It looks for
+`ZELLIJ_REMOTE_PANE_TOKEN` **first**, and reports through the broker when it finds one
+("Remote panes", below); only failing that does it read `$ZELLIJ_PANE_ID`. That order is the
+behaviour, not a preference: a remote pane carries a `ZELLIJ_PANE_ID` as well, and the one it
+carries is the *asking* session's, on a machine that has no such session - reading it there
+sends every event to whatever session happens to be running on that box, under a pane id that
+means something else.
+
 `agent-report` reads the event, works out what it means (`zellij-utils/src/agent.rs`,
 `hook_outcome`) and sets the pane's **agent record** — `PaneInfo.agent`: the kind,
 the state, the tool it is running, what it is blocked on, its folder and its session id. The
@@ -250,6 +258,13 @@ send `zellij action agent-report` to. It reports to that machine's remote pane b
 printf '%s' "$payload" | zellij --pty-broker report claude   # a claude in a remote pane
 ```
 
+This is the branch the installed script takes by itself, so `zellij hocus hooks install` on the
+far machine is all a remote pane needs. **A Firecracker VM installs it without being asked**: the
+provider runs the install in the guest when the VM is provisioned (`provision_guest` in
+`zellij-server/src/firecracker/provider.rs`), wiring both agents, so a `claude` or a `codex`
+typed at a shell in a VM pane reports like any other. Codex still has to be told to trust what
+was written - `/hooks`, once per VM.
+
 The broker put `ZELLIJ_REMOTE_PANE_TOKEN` in every pane's environment; the report names the pane
 by it, on a connection of its own, and the broker relays the event to the pane's server on the
 pane's control channel (`BrokerToServerMsg::AgentReport`). The server applies it exactly as it
@@ -257,8 +272,11 @@ would a local report: the pane's agent record is set and the event goes to the p
 hook pipe. Because the event arrives over the transport rather than out of the pane's bytes,
 nothing a program prints into the pane can forge one, and ssh and Firecracker panes are treated
 alike. A report for a pane no server is attached to is refused, not queued, as a local hook's
-would be with no session. hocus wires this command as the hook when it launches an agent in a
-Firecracker VM.
+would be with no session. hocus hands a spawned `claude` in a VM **no** inline `--settings`, for
+the same reason a person should not install into both a user file and a project one: Claude Code
+merges hooks across settings sources rather than overriding, so a second copy would fire every
+event twice. The consequence to know about is that `hooks: false` on a spawn no longer suppresses
+hooks inside a VM - they belong to the guest, not to the launch.
 
 ## What the feed changes
 
