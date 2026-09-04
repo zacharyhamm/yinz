@@ -159,9 +159,10 @@ Claude Code sends have no size limit in its own schema — `tool_input`, so a `W
 two-megabyte file, and `tool_response`, so a `Read` of anything — and this payload is copied
 into every running plugin's memory, twice per tool call, inside a hook with five seconds to
 live. An event over the cap goes out through `HookEvent::pruned` instead: every field it
-models survives, with each string cut to 256 characters and a budget spent across
-`tool_input`, which leaves everything any reader actually takes from it — the `Bash` command,
-the `file_path`, the first `AskUserQuestion` question. Anything the struct does not model,
+models survives, with each string in `tool_input` cut to 256 characters and a budget spent
+across the rest of it, which leaves everything any reader actually takes from it — the `Bash`
+command, the `file_path`, the first `AskUserQuestion` question. A prompt, a plan, a question or
+a final message is prose somebody reads at length, so each of those is cut to 8 KiB instead. Anything the struct does not model,
 `tool_response` above all, is gone. Under the cap, which is nearly every event, the JSON
 arrives exactly as Claude Code wrote it.
 
@@ -320,6 +321,80 @@ Either way a pane with a feed is read off it and nothing else:
   `title_is_ours_to_take`: a pane whose kind is anchored only in its title is left alone,
   because writing over that title would un-detect the pane — a hook-connected pane is
   anchored in its record instead, which `classify` reads first.
+
+### A prompt is not always something a person typed
+
+`UserPromptSubmit` carries "what the user just asked for", and sometimes nobody asked. Claude
+Code wakes an agent whose background task has finished by submitting an envelope on its behalf:
+
+```
+<task-notification>
+<task-id>a10fe836c6a9fa4ca</task-id>
+<output-file>/private/tmp/claude-501/…/a10fe836c6a9fa4ca.output</output-file>
+<status>completed</status>
+<summary>Agent "/code-review" finished</summary>
+<note>…boilerplate addressed to the agent…</note>
+<result>…possibly tens of kilobytes…</result>
+</task-notification>
+```
+
+It also staples a `<system-reminder>` onto prompts people did type, and spells a slash command as
+`<command-name>` plus `<command-args>` plus `<local-command-stdout>`. Taken at face value, one of
+those names the pane `<task-notification> <task-id>a10fe836…` for the whole of a turn, fills the
+four rows the agents pane gives a timeline entry with opening tags, and is handed to the
+summariser as the question the turn was about.
+
+`hocus-proto`'s `envelope` module reads such a prompt apart — **without changing what is
+recorded**. `run_entry`'s "Nothing here is cut" still holds: the raw prompt is what the store
+keeps, what `HistoryEvent::text` carries, and what the reader's `r` shows. Four readings are
+computed where each is wanted:
+
+| Reading | Who asks | What it gives |
+|---|---|---|
+| `digest` | `agents::run_history` | markdown for the timeline row: status glyph, short task id, summary, and a row saying what is folded away |
+| `title` | `agents::prompt_title`, `run_title` | `task · Agent "…" finished`, for the tab bar and the archive row |
+| `question` | `hocus-agentd`'s `prompts` map and `run_delta` | a sentence for the summariser, with the note and the path dropped |
+| `sections` | the agents pane's reader | the folds `Enter` opens, `o` opens a file from, and `y` copies |
+
+A run's title prefers the first prompt carrying any **prose**, so a run woken by a task and later
+typed into by a person is named for what the person typed.
+
+Recognition is deliberately narrow: an envelope has to open a line of its own and its tag has to
+be lowercase *and hyphenated*, so `Vec<String>`, `if x < y` and `<b>` in somebody's prompt are
+prose and stay prose. A tag the module has never seen still gets a readable row and an openable
+fold rather than its own markup — `envelope::KINDS` is the table, and adding a kind is a function
+per reading and a line in it.
+
+The one bend in "opens a line of its own" is indentation, and only for a tag already in that
+table: the slash-command expansion indents `<command-message>` and `<command-args>` by twelve
+spaces, and `text::sanitize` turns a leading tab into four more, so a rule wanting the `<` in
+column zero loses two thirds of that shape to prose — where it is neither escaped nor cut. A tag
+nobody registered still has to start its line, which is what keeps an indented code block prose.
+Which of the three elements a harness writes first does not matter either: they are absorbed into
+one envelope in both directions, once per tag, so a second `<command-message>` is a second
+command rather than a repeat of the first.
+
+A `UserPromptSubmit` carries no `tool_use_id`, so a prompt used to be compared only against the
+entry immediately before it and a redelivered notification could land twice. A task notification
+now supplies its own identity — the task id plus a hash of the element *as the entry records it*
+— which the existing whole-run dedupe uses. The hash is the point: the envelope's own note says
+the same task id may notify more than once, and a resumed agent reports again with a *different*
+result, which is a second thing happening rather than a second delivery of the first. A prompt
+carrying two notifications is identified by both, because a prompt is one delivery.
+
+Two conditions bound it. The hash is taken over the **recorded** text — `run_entry`'s sanitised,
+trimmed prompt — and not over the raw payload, so an entry's id can always be worked out again
+from the entry. That is what makes the comparison mean anything across a restart, when a run's
+entries are read back from the store, and it is what lets a run recorded before the field existed
+be compared at all: such a run comes back out of its JSON `payload` blob with no ids on it, and
+`agents::entry_event_id` recomputes them rather than matching nothing forever.
+
+And an element that arrived **cut** has no identity whatever. The 64 KiB broadcast cap takes a
+long `<result>` at a fixed 8 KiB with no marker, so two different reports for one task can arrive
+byte for byte the same, and the bytes that would have told them apart are exactly the ones that
+did not arrive. Such a prompt falls back to the adjacent-only rule. The cost is a large
+notification redelivered across a turn showing twice; the alternative was a real report being
+dropped and never drawn, because the ingest path drops on a match rather than showing one.
 
 ### The summary is made once, when the session ends
 

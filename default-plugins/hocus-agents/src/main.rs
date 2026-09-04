@@ -51,6 +51,18 @@
 //! page keys still move by lines, which is what reading in place wants. The idle summary hocus
 //! pushes is not capped — there is one of it and nothing beside it competing for the room.
 //!
+//! **A prompt is not always something a person typed.** Claude Code wakes an agent whose
+//! background task has finished by submitting a `<task-notification>` on its behalf, staples a
+//! `<system-reminder>` onto real prompts, and spells a slash command as three elements. Drawn
+//! as they arrive those spend all four rows on opening tags and a temp path. `hocus_proto::
+//! envelope` reads such a prompt apart and the timeline draws that reading — status, short task
+//! id, summary, and a row saying what is folded away — while the entry itself keeps the prompt
+//! byte for byte. In the reader those parts become folds: `j`/`k` walk them the way they walk
+//! events in the half below, `Enter` opens the one under the cursor, `o` opens the file it
+//! names, `y` copies it, and `r` swaps the lot for the source. `o` works in the history half
+//! too, on the event under the cursor, because a collapsed row has a cursor on an event and
+//! none within one.
+//!
 //! **The history is drawn as markdown**, by the same renderer the conversation uses
 //! (`hocus_proto::markdown`) — everything in the half is markdown by the time it arrives, a
 //! prompt being what the user typed and a result a model's last message, so the asterisks were
@@ -108,6 +120,7 @@
 use std::collections::BTreeMap;
 
 use hocus_proto::agents::{self, now_ms, Strip, StripRow, Summaries};
+use hocus_proto::envelope;
 use hocus_proto::launch;
 use hocus_proto::markdown;
 use hocus_proto::wire;
@@ -152,12 +165,14 @@ struct State {
     /// would be reading a moving target - the entry under a given index is not the entry that
     /// was there when Enter was pressed.
     reading: Option<Reading>,
-    /// The last wrapped body of `reading`, and the `(id, width)` it was wrapped for.
+    /// The last wrapped body of `reading`, and the `(id, fold, width)` it was wrapped for.
     ///
     /// The same bargain `history_cache` strikes, for the same reason: the reader redraws on
     /// every keystroke and wrapping it is a markdown parse of the whole event, which is much
-    /// the most expensive thing this pane does.
-    reader_cache: Option<((u64, usize), Vec<markdown::MdLine>)>,
+    /// the most expensive thing this pane does. `fold` is in the key for the same reason the
+    /// width is — opening a section or showing the source is a different body, not a different
+    /// view of one.
+    reader_cache: Option<((u64, u64, usize), envelope::ReaderLines)>,
     /// The largest `Reading::scroll` the last reader render could honour - the counterpart of
     /// `last_history_max_scroll`, and kept for the same reason: only `render` knows the width
     /// the body was wrapped to, and so only `render` knows how many lines it came to.
@@ -291,6 +306,26 @@ struct Reading {
     scroll: usize,
     /// Which opening this is. See `State::reading_id`.
     id: u64,
+    /// The folds this event breaks into, when it is a prompt carrying a hook envelope rather
+    /// than prose. Empty for every other kind and for most prompts, which is what makes this
+    /// reader two readers in one: a folding one, and the line-scrolling one it has always been.
+    ///
+    /// Computed on open rather than carried on `agents::HistoryEvent`: an event is built for
+    /// every row of every run on every history render, and this is work only for the events
+    /// somebody actually presses Enter on.
+    sections: Vec<envelope::Section>,
+    /// Show the event exactly as it arrived, tags and all — what `r` toggles. The folds are the
+    /// reading; this is the record, and a reader that could not get back to it would be asking
+    /// to be trusted.
+    raw: bool,
+    /// Which fold the keys act on. Meaningless, and undrawn, without `sections`.
+    cursor: usize,
+    /// Bumped by every fold and by the raw toggle. Part of `State::reader_cache`'s key.
+    fold: u64,
+    /// The envelope's own tag, where the event turned out to be one. On the divider beside the
+    /// kind, because `prompt` alone does not say which of the shapes a harness writes this is —
+    /// and for an envelope nobody registered, the tag is the only name it has.
+    envelope: Option<String>,
 }
 
 /// Which half of the pane the keys work.
@@ -773,6 +808,11 @@ impl State {
                 BareKey::Char('s') => return self.request_summary(),
                 // Ask before starting a process. See `confirming_resume`.
                 BareKey::Char('r') => return self.arm_resume(),
+                // The file the event under the cursor names, without opening the event first.
+                // The collapsed row has a cursor on an *event* and none within one, so one key
+                // on the event is the whole of what can be offered here — and a notification
+                // whose output file is what you actually want is the case this exists for.
+                BareKey::Char('o') if self.focus == Focus::History => return self.open_the_file(),
                 BareKey::PageUp => return self.scroll_history(self.page() as isize),
                 BareKey::PageDown => return self.scroll_history(-(self.page() as isize)),
                 _ => {},
@@ -1216,13 +1256,29 @@ impl State {
         // The label is built here rather than held in `Reading` so the age goes on ticking with
         // the minute timer, the way every other age on this pane does.
         let mut label = reading.kind.clone();
+        if let Some(tag) = reading.envelope.as_deref() {
+            label.push_str(&format!(" · {tag}"));
+        }
         if let Some(then_ms) = reading.created_at_ms {
             label.push_str(&format!(" · {}", agents::short_age(now_ms(), then_ms)));
         }
+        // Said rather than left to be inferred: with the folds replaced by the source, every
+        // key in here does something different, and a reader that looked the same either way
+        // would be a reader nobody could tell they were in.
+        if reading.raw {
+            label.push_str(" · raw");
+        }
         let end = (scroll + room).min(lines.len());
+        // The cursor's fold marks its first row, in the margin every other row leaves blank —
+        // the same shape the list and the history half both use to say where their cursor is.
+        // Absent for a prose event, which has no folds to point at.
+        let cursor = self.reader_starts().get(reading.cursor).copied();
         render_divider(&label, scroll, lines.len() - end, true, 0, cols);
         for (index, line) in lines[scroll..end].iter().enumerate() {
-            let line = line.clone().indent(1);
+            let line = match cursor == Some(scroll + index) {
+                true => line.clone().prepend(">", markdown::MdStyle::default()),
+                false => line.clone().indent(1),
+            };
             let text = markdown::style_text(&line.text, &line.styles, false);
             print_text_with_coordinates(text, 0, 1 + index, Some(cols), None);
         }
@@ -1235,30 +1291,74 @@ impl State {
         }
     }
 
-    /// [`Self::reader_lines`], computed once per event and width. See `fill_history_cache` for
-    /// why anything on this pane is cached at all.
+    /// Wind the reader so the cursor's fold is on screen, the way `reveal_cursor` does for the
+    /// history half — and here for the same reason: only `render` knows the width, and so only
+    /// `render` knows which row a fold begins on.
+    ///
+    /// Head first, then foot: a fold taller than the room shows its beginning, which is the row
+    /// carrying its name.
+    fn reveal_fold(&mut self) {
+        let room = self.last_reader_rows;
+        let starts = self.reader_starts();
+        let Some(reading) = self.reading.as_ref() else {
+            return;
+        };
+        let Some(&start) = starts.get(reading.cursor) else {
+            return;
+        };
+        let end = starts
+            .get(reading.cursor + 1)
+            .copied()
+            .unwrap_or(self.reader_lines().len());
+        let mut scroll = reading.scroll;
+        if end > scroll + room {
+            scroll = end.saturating_sub(room);
+        }
+        if start < scroll {
+            scroll = start;
+        }
+        if let Some(reading) = self.reading.as_mut() {
+            reading.scroll = scroll;
+        }
+    }
+
+    /// [`Self::reader_lines`], computed once per event, fold and width. See
+    /// `fill_history_cache` for why anything on this pane is cached at all.
     fn fill_reader_cache(&mut self, width: usize) {
         let Some(reading) = self.reading.as_ref() else {
             return;
         };
-        let key = (reading.id, width);
+        let key = (reading.id, reading.fold, width);
         if self.reader_cache.as_ref().is_some_and(|(k, _)| *k == key) {
             return;
         }
         // The same margin the history half's body keeps, at both edges.
-        let lines = markdown::render(
-            &reading.text,
-            width.saturating_sub(2),
-            markdown::Options::compact(),
-        );
-        self.reader_cache = Some((key, lines));
+        let inner = width.saturating_sub(2);
+        let rendered = match reading.sections.is_empty() || reading.raw {
+            // Prose, or the source somebody asked for: one document, and no fold to put a
+            // cursor on.
+            true => envelope::ReaderLines {
+                lines: markdown::render(&reading.text, inner, markdown::Options::compact()),
+                starts: Vec::new(),
+            },
+            false => envelope::reader_lines(&reading.sections, inner),
+        };
+        self.reader_cache = Some((key, rendered));
     }
 
     /// Whatever [`Self::fill_reader_cache`] last put there.
     fn reader_lines(&self) -> &[markdown::MdLine] {
         self.reader_cache
             .as_ref()
-            .map(|(_, lines)| lines.as_slice())
+            .map(|(_, rendered)| rendered.lines.as_slice())
+            .unwrap_or_default()
+    }
+
+    /// Where each fold's rows begin, for the cursor. Empty where there are no folds.
+    fn reader_starts(&self) -> &[usize] {
+        self.reader_cache
+            .as_ref()
+            .map(|(_, rendered)| rendered.starts.as_slice())
             .unwrap_or_default()
     }
 
@@ -1485,6 +1585,13 @@ impl State {
         };
         let (kind, created_at_ms, text) =
             (event.kind.clone(), event.created_at_ms, event.text.clone());
+        // Empty for everything that is not an envelope, which is what leaves the reader exactly
+        // as it was for every kind and for every prompt a person typed.
+        let sections = envelope::sections(&text);
+        let tag = envelope::parse(&text)
+            .envelopes
+            .first()
+            .map(|found| found.tag.to_owned());
         self.reading_id += 1;
         self.reading = Some(Reading {
             kind,
@@ -1492,6 +1599,11 @@ impl State {
             text,
             scroll: 0,
             id: self.reading_id,
+            sections,
+            raw: false,
+            cursor: 0,
+            fold: 0,
+            envelope: tag,
         });
         true
     }
@@ -1512,6 +1624,26 @@ impl State {
     /// key is swallowed, because the list and the halves are not on screen and a key that
     /// steered them would move something the user cannot see.
     fn read_key(&mut self, key: KeyWithModifier) -> bool {
+        // `j`/`k` walk a *fold* rather than a line when there are folds, which is not a new
+        // idiom: it is the one the history half already uses, and for the reason `on_key`
+        // spells out there — a line step would leave the cursor pointing between two of them
+        // with nothing for `Enter` to open. The arrows stay line-wise in both halves, so
+        // nothing that scrolls today stops scrolling.
+        let folding = self
+            .reading
+            .as_ref()
+            .is_some_and(|reading| !reading.sections.is_empty() && !reading.raw);
+        if key.has_no_modifiers() {
+            match key.bare_key {
+                BareKey::Char('k') if folding => return self.step_fold(-1),
+                BareKey::Char('j') if folding => return self.step_fold(1),
+                BareKey::Enter if folding => return self.toggle_fold(),
+                BareKey::Char('o') => return self.open_the_file(),
+                BareKey::Char('r') => return self.toggle_raw(),
+                BareKey::Char('y') => return self.copy_the_event(),
+                _ => {},
+            }
+        }
         match key.bare_key {
             BareKey::Esc => self.close_reader(),
             BareKey::Up => self.scroll_reader(-1),
@@ -1522,6 +1654,129 @@ impl State {
             BareKey::PageDown => self.scroll_reader(self.reader_page() as isize),
             _ => false,
         }
+    }
+
+    /// Move the reader's cursor by `delta` folds, and say whether it moved.
+    fn step_fold(&mut self, delta: isize) -> bool {
+        let Some(reading) = self.reading.as_mut() else {
+            return false;
+        };
+        let last = reading.sections.len().saturating_sub(1);
+        let target = match delta >= 0 {
+            true => reading
+                .cursor
+                .saturating_add(delta.unsigned_abs())
+                .min(last),
+            false => reading.cursor.saturating_sub(delta.unsigned_abs()),
+        };
+        if target == reading.cursor {
+            return false;
+        }
+        reading.cursor = target;
+        // The winding needs the width, which only `render` is told; this is the same split
+        // `step_history_cursor` and `reveal_cursor` make, done here because the rows the
+        // cursor just moved to were measured on the last frame.
+        self.reveal_fold();
+        true
+    }
+
+    /// Open or shut the fold under the cursor. A fold with nothing to hide — a one-line field
+    /// — has nothing to toggle, and says so by doing nothing.
+    fn toggle_fold(&mut self) -> bool {
+        let Some(reading) = self.reading.as_mut() else {
+            return false;
+        };
+        let cursor = reading.cursor;
+        let Some(section) = reading.sections.get_mut(cursor) else {
+            return false;
+        };
+        if !section.foldable() {
+            return false;
+        }
+        section.open = !section.open;
+        reading.fold += 1;
+        true
+    }
+
+    /// Swap the folds for the event exactly as it arrived, and back.
+    fn toggle_raw(&mut self) -> bool {
+        let Some(reading) = self.reading.as_mut() else {
+            return false;
+        };
+        if reading.sections.is_empty() {
+            // Nothing to swap: a prose event is already its own source.
+            return false;
+        }
+        reading.raw = !reading.raw;
+        reading.fold += 1;
+        reading.scroll = 0;
+        true
+    }
+
+    /// The file the keys would open: the fold under the reader's cursor, or the event under the
+    /// history half's.
+    ///
+    /// Split out from the key handler because `open_file_floating_near_plugin` has no answer
+    /// worth asserting on, and the decision — *which* file, and whether there is one — is the
+    /// whole of what this pane contributes.
+    ///
+    /// `None` for a run recorded on another machine. The path in the envelope names a file in
+    /// that machine's temp folder, and opening the same path here would either fail or, worse,
+    /// open something else entirely.
+    fn open_target(&self) -> Option<String> {
+        if self.run.as_ref().is_some_and(|run| run.host.is_some()) {
+            return None;
+        }
+        let path = match self.reading.as_ref() {
+            Some(reading) => reading
+                .sections
+                .get(reading.cursor)
+                .and_then(|section| section.path.clone())?,
+            None => envelope::sections(&self.cursor_event()?.text)
+                .into_iter()
+                .find_map(|section| section.path)?,
+        };
+        // A relative path is relative to the folder the agent was working in, which is the one
+        // thing the run knows and the envelope does not.
+        if path.starts_with('/') {
+            return Some(path);
+        }
+        let cwd = self.run.as_ref()?.cwd.as_deref()?;
+        Some(format!("{}/{path}", cwd.trim_end_matches('/')))
+    }
+
+    /// What `y` would put on the clipboard: the fold under the cursor, or the whole event
+    /// exactly as it arrived.
+    ///
+    /// The event whole is the default because that is what a paste buffer is usually wanted
+    /// for — the thing itself, not our reading of it.
+    fn copy_target(&self) -> Option<String> {
+        let reading = self.reading.as_ref()?;
+        let fold = (!reading.raw)
+            .then(|| reading.sections.get(reading.cursor))
+            .flatten();
+        Some(match fold {
+            Some(section) => section.text.clone(),
+            None => reading.text.clone(),
+        })
+    }
+
+    fn open_the_file(&mut self) -> bool {
+        let Some(path) = self.open_target() else {
+            return false;
+        };
+        // Floating and near this plugin: the agents pane is an overlay, and a tiled open would
+        // rearrange the layout underneath it.
+        open_file_floating_near_plugin(FileToOpen::new(path), None, BTreeMap::new());
+        // The server paints the new pane; nothing here changed.
+        false
+    }
+
+    fn copy_the_event(&mut self) -> bool {
+        if let Some(text) = self.copy_target() {
+            copy_to_clipboard(text);
+        }
+        false
     }
 
     /// One page of the reader: what it can show, less a line of overlap, the same bargain
@@ -3205,11 +3460,11 @@ mod tests {
     }
 
     /// The reader's body is a markdown parse of the whole event, on a pane that redraws on
-    /// every keystroke - so it is wrapped once per event and width, the way the history half
-    /// below it is. Read by poisoning the cache, as `the_history_is_rendered_once_per_thing_it
-    /// _depends_on` does.
+    /// every keystroke - so it is wrapped once per event, fold and width, the way the history
+    /// half below it is. Read by poisoning the cache, as `the_history_is_rendered_once_per_thing
+    /// _it_depends_on` does.
     #[test]
-    fn the_reader_is_wrapped_once_per_event_and_width() {
+    fn the_reader_is_wrapped_once_per_event_fold_and_width() {
         let mut state = State::default();
         state.set_rows(one_run_selected());
         let mut run = a_run();
@@ -3227,19 +3482,22 @@ mod tests {
         state.on_key(KeyWithModifier::new(BareKey::Enter));
         state.render(20, 50);
 
-        let poison = vec![markdown::MdLine::plain("poison")];
+        let poison = envelope::ReaderLines {
+            lines: vec![markdown::MdLine::plain("poison")],
+            starts: Vec::new(),
+        };
         let key = state.reader_cache.as_ref().unwrap().0;
         state.reader_cache = Some((key, poison.clone()));
         state.fill_reader_cache(50);
-        assert_eq!(state.reader_lines(), poison, "same event, same width");
+        assert_eq!(state.reader_lines(), poison.lines, "same event, same width");
         state.fill_reader_cache(40);
-        assert_ne!(state.reader_lines(), poison, "a resize rewraps it");
+        assert_ne!(state.reader_lines(), poison.lines, "a resize rewraps it");
 
         // And a second opening is a second event, however alike the two look.
         state.on_key(KeyWithModifier::new(BareKey::Esc));
         state.on_key(KeyWithModifier::new(BareKey::Enter));
         state.fill_reader_cache(40);
-        assert_ne!(state.reader_lines(), poison);
+        assert_ne!(state.reader_lines(), poison.lines);
     }
 
     /// The page keys are the history's from either half: the list has no page of its own,
@@ -3491,5 +3749,271 @@ mod tests {
                 },
             ],
         }
+    }
+    // -- a prompt a harness wrote --------------------------------------------
+
+    /// A notification of the shape Claude Code submits when a background task wakes an agent.
+    fn task_notification() -> String {
+        [
+            "<task-notification>",
+            "<task-id>a10fe836c6a9fa4ca</task-id>",
+            "<output-file>/private/tmp/claude-501/x/a10fe836c6a9fa4ca.output</output-file>",
+            "<status>completed</status>",
+            "<summary>Agent \"/code-review\" finished</summary>",
+            "<note>A task-notification fires each time this agent stops.",
+            "The same task-id may notify more than once.</note>",
+            "<result>The review found four issues.",
+            "Two are in the scanner.</result>",
+            "</task-notification>",
+        ]
+        .join("\n")
+    }
+
+    /// A run holding one prompt, with the reader open on it.
+    fn reading(prompt: &str) -> State {
+        let mut state = State::default();
+        state.set_rows(one_run_selected());
+        let mut run = a_run();
+        run.summary = None;
+        run.entries = vec![agents::RunEntry {
+            revision: 1,
+            event_id: None,
+            kind: agents::RunEntryKind::Prompt,
+            text: prompt.to_owned(),
+            created_at_ms: None,
+        }];
+        state.run = Some(run);
+        state.render(20, 50);
+        state.focus = Focus::History;
+        state.on_key(KeyWithModifier::new(BareKey::Enter));
+        state.render(20, 50);
+        state
+    }
+
+    fn rows(state: &State) -> Vec<String> {
+        state
+            .reader_lines()
+            .iter()
+            .map(|line| line.text.clone())
+            .collect()
+    }
+
+    fn press(state: &mut State, key: BareKey) {
+        state.on_key(KeyWithModifier::new(key));
+        state.render(20, 50);
+    }
+
+    /// The four-row cap on the timeline is only honest because this exists. `Enter` opens the
+    /// event into its parts, with the short ones showing and the long ones shut — and `Enter`
+    /// again on one opens it.
+    #[test]
+    fn the_reader_folds_a_task_notification_and_enter_opens_a_section() {
+        let mut state = reading(&task_notification());
+        let folds = &state.reading.as_ref().expect("a reader").sections;
+        assert_eq!(
+            folds.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+            [
+                "status",
+                "task-id",
+                "summary",
+                "output-file",
+                "note",
+                "result"
+            ]
+        );
+
+        let shut = rows(&state).join("\n");
+        assert!(shut.contains("completed"), "{shut}");
+        assert!(shut.contains("a10fe836c6a9fa4ca"), "{shut}");
+        assert!(shut.contains("▸ result"), "{shut}");
+        assert!(!shut.contains("The review found four issues."), "{shut}");
+
+        // Walk to `result` and open it.
+        for _ in 0..5 {
+            press(&mut state, BareKey::Char('j'));
+        }
+        assert_eq!(state.reading.as_ref().expect("a reader").cursor, 5);
+        press(&mut state, BareKey::Enter);
+        let open = rows(&state).join("\n");
+        assert!(open.contains("▾ result"), "{open}");
+        assert!(open.contains("The review found four issues."), "{open}");
+        // And the fold beside it stayed shut.
+        assert!(!open.contains("notify more than once"), "{open}");
+    }
+
+    /// `j`/`k` walk a fold where there are folds and a line where there are not — the same
+    /// split the history half makes between an event and a line, and for the same reason.
+    #[test]
+    fn j_and_k_walk_the_folds_of_a_folding_reader_and_the_lines_of_every_other() {
+        let mut state = reading(&task_notification());
+        press(&mut state, BareKey::Char('j'));
+        let folding = state.reading.as_ref().expect("a reader");
+        assert_eq!(folding.cursor, 1);
+        assert_eq!(folding.scroll, 0, "walking a fold is not scrolling");
+
+        let mut prose = reading(&"word ".repeat(200));
+        assert!(prose
+            .reading
+            .as_ref()
+            .expect("a reader")
+            .sections
+            .is_empty());
+        press(&mut prose, BareKey::Char('j'));
+        assert_eq!(prose.reading.as_ref().expect("a reader").scroll, 1);
+    }
+
+    /// The folds are a reading of the event; `r` is how you get back to the event. A reader
+    /// that could not would be asking to be trusted.
+    #[test]
+    fn r_shows_the_event_exactly_as_it_arrived() {
+        let mut state = reading(&task_notification());
+        press(&mut state, BareKey::Char('r'));
+        let raw = rows(&state).join("\n");
+        assert!(raw.contains("<task-notification>"), "{raw}");
+        assert!(
+            raw.contains("<task-id>a10fe836c6a9fa4ca</task-id>"),
+            "{raw}"
+        );
+
+        press(&mut state, BareKey::Char('r'));
+        let folded = rows(&state).join("\n");
+        assert!(!folded.contains("<task-notification>"), "{folded}");
+        assert!(folded.contains("▸ result"), "{folded}");
+    }
+
+    /// Opening a fold is a different body, not a different view of one, so it has to miss the
+    /// cache the way a resize does.
+    #[test]
+    fn toggling_a_fold_rewraps_the_body() {
+        let mut state = reading(&task_notification());
+        let poison = envelope::ReaderLines {
+            lines: vec![markdown::MdLine::plain("poison")],
+            starts: vec![0],
+        };
+        let key = state.reader_cache.as_ref().expect("a cache").0;
+        state.reader_cache = Some((key, poison.clone()));
+        state.fill_reader_cache(50);
+        assert_eq!(state.reader_lines(), poison.lines, "same event, same fold");
+
+        // Onto `result`, which is the first fold with a body to hide. Walking there is not a
+        // new body: the cursor is drawn from the spans, which the same rows already carry.
+        for _ in 0..5 {
+            state.on_key(KeyWithModifier::new(BareKey::Char('j')));
+        }
+        state.fill_reader_cache(50);
+        assert_eq!(
+            state.reader_lines(),
+            poison.lines,
+            "moving the cursor is not a new body"
+        );
+
+        state.on_key(KeyWithModifier::new(BareKey::Enter));
+        state.fill_reader_cache(50);
+        assert_ne!(state.reader_lines(), poison.lines, "a fold rewraps it");
+
+        // And a one-line field has nothing to fold away, so Enter on one buys no rewrap.
+        let key = state.reader_cache.as_ref().expect("a cache").0;
+        state.reader_cache = Some((key, poison.clone()));
+        for _ in 0..5 {
+            state.on_key(KeyWithModifier::new(BareKey::Char('k')));
+        }
+        state.on_key(KeyWithModifier::new(BareKey::Enter));
+        state.fill_reader_cache(50);
+        assert_eq!(state.reader_lines(), poison.lines, "nothing to fold");
+    }
+
+    /// The whole reason the path is on the row at all. From the reader it is the fold under the
+    /// cursor; from the history half it is the event's, because a collapsed row has a cursor on
+    /// an event and none within one.
+    #[test]
+    fn o_on_a_task_notification_names_the_file_it_would_open() {
+        let mut state = reading(&task_notification());
+        for _ in 0..3 {
+            press(&mut state, BareKey::Char('j'));
+        }
+        assert_eq!(
+            state.open_target().as_deref(),
+            Some("/private/tmp/claude-501/x/a10fe836c6a9fa4ca.output")
+        );
+
+        // A fold that names no file offers none.
+        press(&mut state, BareKey::Char('j'));
+        assert_eq!(state.open_target(), None);
+
+        // And from the history half, with no reader open at all.
+        state.on_key(KeyWithModifier::new(BareKey::Esc));
+        assert!(state.reading.is_none());
+        assert_eq!(
+            state.open_target().as_deref(),
+            Some("/private/tmp/claude-501/x/a10fe836c6a9fa4ca.output")
+        );
+    }
+
+    /// The path names a file in another machine's temp folder. Opening it here would either
+    /// fail or, worse, open something else entirely.
+    #[test]
+    fn a_run_on_another_host_offers_no_file_to_open() {
+        let mut state = reading(&task_notification());
+        for _ in 0..3 {
+            press(&mut state, BareKey::Char('j'));
+        }
+        assert!(state.open_target().is_some(), "the local run offers one");
+
+        state.run.as_mut().expect("a run").host = Some("buildbox".to_owned());
+        assert_eq!(state.open_target(), None);
+    }
+
+    /// `y` copies the fold you are pointing at, and the whole event when you are not pointing
+    /// at anything — which is what a paste buffer is usually wanted for.
+    #[test]
+    fn y_copies_the_fold_under_the_cursor_and_the_whole_event_otherwise() {
+        let mut state = reading(&task_notification());
+        assert_eq!(state.copy_target().as_deref(), Some("completed"));
+
+        for _ in 0..5 {
+            press(&mut state, BareKey::Char('j'));
+        }
+        assert_eq!(
+            state.copy_target().as_deref(),
+            Some("The review found four issues.\nTwo are in the scanner.")
+        );
+
+        // Showing the source is asking for the source.
+        press(&mut state, BareKey::Char('r'));
+        assert_eq!(
+            state.copy_target().as_deref(),
+            Some(task_notification().as_str())
+        );
+
+        let prose = reading("fix the flaky reconnect test");
+        assert_eq!(
+            prose.copy_target().as_deref(),
+            Some("fix the flaky reconnect test")
+        );
+    }
+
+    /// The regression guard: everything a person typed reads, scrolls and copies exactly as it
+    /// did before any of this existed.
+    #[test]
+    fn a_prompt_with_no_envelope_reads_exactly_as_it_did_before() {
+        let prose = "fix the flaky reconnect test\n\n- check the timeout\n- check the retry";
+        let mut state = reading(prose);
+        let reader = state.reading.as_ref().expect("a reader");
+        assert!(reader.sections.is_empty());
+        assert!(!reader.raw);
+        assert_eq!(state.reader_starts(), &[] as &[usize]);
+        assert_eq!(
+            rows(&state),
+            markdown::render(prose, 48, markdown::Options::compact())
+                .iter()
+                .map(|line| line.text.clone())
+                .collect::<Vec<_>>()
+        );
+
+        // `r` and `Enter` have nothing to act on and say so by doing nothing.
+        let before = rows(&state);
+        press(&mut state, BareKey::Char('r'));
+        press(&mut state, BareKey::Enter);
+        assert_eq!(rows(&state), before);
     }
 }
