@@ -523,6 +523,11 @@ impl OverlayPanes {
         } else {
             self.move_clients_out_of_pane(pane_id);
         }
+        // the expansion's upkeep rather than the frames: setting the *non-anchor* half of an
+        // expanded panel aside leaves the panel expanded (above), and what it now covers is the
+        // whole area rather than its old share of it. Without this the survivor keeps the
+        // half-width override it was given and the half just hidden keeps a full-screen one.
+        self.set_pane_frames().non_fatal();
         self.set_force_render();
         true
     }
