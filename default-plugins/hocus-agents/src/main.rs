@@ -26,7 +26,7 @@
 //! the keyboard between them and so does a click; the divider is where the focus shows,
 //! because the list's own dim-against-colour already means something else.
 //!
-//! **A summary is one more event.** The rolling one is the timeline's newest row and the
+//! **A summary is one more event.** The run's own is the timeline's newest row and the
 //! ones somebody asked for sit where they were asked for; nothing is held above the timeline,
 //! so the whole half is one scrolling window and a talkative model costs the events beside it
 //! nothing they cannot be scrolled back to. A `summary:` label is bold where the other labels
@@ -55,13 +55,12 @@
 //! draws it dim, which is the difference between "you are here" and "here is
 //! where you were".
 //!
-//! **`s` asks for a summary of the row under the cursor.** Every other summary in the
-//! session is the daemon deciding that an edge - a turn ending, a screen going still - was
-//! worth asking a model about, and hedged with a cooldown and a baseline to stop it asking
-//! too often. A person pressing a key has already settled that question, so this one skips
-//! those and arrives as an entry on the timeline, at the point it was asked for, rather than
-//! only replacing the rolling sentence. It works on an archived run too, which has
-//! no pane to read and is summarised from what it recorded. This pane sends the row and
+//! **`s` asks for a summary of the row under the cursor.** It is the only summary anybody
+//! asks for: the daemon buys exactly one of its own accord, when a run closes, and reads no
+//! screens at all. So this key is what describes an agent that is still working, and the
+//! answer arrives as an entry on the timeline, at the point it was asked for. It works on an
+//! archived run too, which has no pane to read and is summarised from what it recorded.
+//! This pane sends the row and
 //! nothing else (`wire::AGENT_SUMMARIZE`): which of the two kinds of work that means is the
 //! daemon's to know, the same way the rows themselves are hocus's to compute.
 //!
@@ -1131,7 +1130,7 @@ impl State {
     /// The counterpart of `scroll_history`, and the one place `history_cursor` changes, so the
     /// clamp cannot be forgotten at a call site. Clamped against the events the *cache* holds
     /// rather than the run's own entries: what a cursor can point at is what the half drew, and
-    /// the two differ - a result is filtered out of a live run's timeline, and the rolling
+    /// the two differ - a result is filtered out of a live run's timeline, and the run's
     /// summary is a row the run does not have an entry for.
     fn step_history_cursor(&mut self, delta: isize) -> bool {
         let last = self.history().events.len().saturating_sub(1);
@@ -2060,7 +2059,7 @@ mod tests {
         });
         state.run = Some(run);
         // Three rows of history below the divider, against four lines of timeline - the three
-        // entries the filter lets through and the rolling summary under them - so exactly one
+        // entries the filter lets through and the run's summary under them - so exactly one
         // line to wind back over.
         state.render(7, 50);
         assert_eq!(state.last_history_rows, 3);

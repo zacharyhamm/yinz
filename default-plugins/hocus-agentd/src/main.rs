@@ -1316,7 +1316,8 @@ impl State {
             return true;
         };
         // Somebody asked, and what they asked is "what is this agent doing" — a question
-        // about the run, not about its last few minutes. See `Span`.
+        // about the run, not about its last few minutes, which is why `run_delta` reads
+        // every entry the run retained rather than only what is new since its last summary.
         let Some(message) = self.run_summary_text(pane_id) else {
             // No retained entry at all: every hook this run saw was a tool call or a
             // lifecycle event, and there is nothing to describe.
