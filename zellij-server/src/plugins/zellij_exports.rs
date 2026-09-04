@@ -229,6 +229,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::SetPaneAgentRun { pane_id, run_id } => {
                 set_pane_agent_run(env, pane_id, run_id)
             },
+            PluginCommand::SetQuitNotice { notice, guard } => set_quit_notice(env, notice, guard),
             PluginCommand::ReloadPluginByUrl(url) => reload_plugin_by_url(env, url)?,
             PluginCommand::ReadPluginLog { name, lines } => read_plugin_log(env, name, lines),
             PluginCommand::GetLayoutDir => get_layout_dir(env),
@@ -5479,6 +5480,19 @@ fn set_pane_agent_run(
         ));
 }
 
+/// What this plugin wants said, and decided, when the session is about to end.
+///
+/// Keyed by plugin id rather than by pane id: it is the plugin that has something outstanding,
+/// and a plugin that moves pane - hocus does, between tabs - has not changed its mind about the
+/// quit on the way.
+fn set_quit_notice(env: &PluginEnv, notice: Option<String>, guard: bool) {
+    let _ = env.senders.send_to_screen(ScreenInstruction::SetQuitNotice(
+        env.plugin_id,
+        notice,
+        guard,
+    ));
+}
+
 fn set_pane_color(env: &PluginEnv, pane_id: PaneId, fg: Option<String>, bg: Option<String>) {
     let _ = env
         .senders
@@ -7380,6 +7394,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::SetPaneColor
         | CommandType::SetPaneAgent
         | CommandType::SetPaneAgentRun
+        | CommandType::SetQuitNotice
         | CommandType::GroupAndUngroupPanes
         | CommandType::HighlightAndUnhighlightPanes
         | CommandType::RevealPaneWithId

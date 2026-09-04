@@ -4740,6 +4740,22 @@ pub enum PluginCommand {
         pane_id: PaneId,
         run_id: Option<String>,
     },
+    /// What this plugin wants said, and decided, when the session is about to end.
+    ///
+    /// The `notice` is one line the quit confirmation shows, or `None` to withdraw whatever this
+    /// plugin last said. `guard` is whether closing the session's *last* pane should raise that
+    /// confirmation instead of ending the session there and then.
+    ///
+    /// The two are independent: a plugin may have something worth saying about a quit without
+    /// wanting to stand in the way of one - hocus with three settled conversations open says so
+    /// and lets the quit through, and only guards while a reply or a tool is still outstanding.
+    ///
+    /// Held per plugin and dropped when its pane closes, so a plugin that goes away cannot leave
+    /// a guard behind that nothing can lift.
+    SetQuitNotice {
+        notice: Option<String>,
+        guard: bool,
+    },
     /// Reload every running instance of the plugin at `url` in place, opening nothing. For a
     /// plugin that is not running this does nothing; `StartOrReloadPlugin` is the one that opens
     /// a pane. Fires `BeforeClose` on the old instance first, for state worth keeping.

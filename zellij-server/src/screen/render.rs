@@ -164,6 +164,12 @@ impl Screen {
                 self.context_menu_cell_rects(&regular_client_ids, session_surface)
             });
 
+            // Whether an emptied last tab is to be held open rather than swept, and so whether
+            // the confirmation still has to be raised. Read before the loop because the loop
+            // borrows `self.tabs` and the answer is about the session, not about a tab.
+            let hold_the_last_tab = self.tabs.len() == 1 && self.quit_is_guarded();
+            let mut raise_quit_confirmation = false;
+
             // Only the panes here: the cursor is placed further down, once the toasts have painted
             // too.
             let mut tabs_that_rendered: Vec<usize> = vec![];
@@ -172,8 +178,33 @@ impl Screen {
                     // Pass None for normal client rendering
                     tab.render_panes(&mut output, None).context(err_context)?;
                     tabs_that_rendered.push(*tab_index);
+                    // Something selectable is back, so a later close asks again.
+                    self.last_tab_held_open = false;
                 } else if !tab.is_pending() {
-                    tabs_to_close.push(*tab_index);
+                    if hold_the_last_tab {
+                        // A plugin has something outstanding and asked to be consulted. Draw the
+                        // tab anyway - `render_panes` copes with no active tiled pane, and the
+                        // overlays are what there is to see - and raise the confirmation once,
+                        // on the frame the tab first empties. Cancelling it needs no signal:
+                        // the tab stays held until something is opened in it.
+                        tab.render_panes(&mut output, None).context(err_context)?;
+                        tabs_that_rendered.push(*tab_index);
+                        raise_quit_confirmation = !self.last_tab_held_open;
+                        self.last_tab_held_open = true;
+                    } else {
+                        tabs_to_close.push(*tab_index);
+                    }
+                }
+            }
+            if raise_quit_confirmation {
+                // The lowest client id rather than the first, for the reason `close_tab_by_id`
+                // gives when it picks the client its overlays follow: `connected_clients` is a
+                // `HashSet`, so "first" is not a stable answer. One client answers for the
+                // session, as it does for `Ctrl-q`.
+                if let Some(client_id) = self.active_tab_ids.keys().copied().min() {
+                    self.confirm_quit(client_id, true, None)
+                        .context(err_context)
+                        .non_fatal();
                 }
             }
             if trace_attach {

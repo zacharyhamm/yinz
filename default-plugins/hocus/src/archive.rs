@@ -152,6 +152,69 @@ impl State {
         self.parked.iter().filter(|chat| chat.is_live()).count()
     }
 
+    /// Tell the host what hocus has to say about a quit, and whether it should stand in the way
+    /// of one.
+    ///
+    /// A quit takes the whole session with it, and a reply in flight or a tool waiting on a `y`
+    /// is exactly the thing a person did not mean to throw away by typing `exit` in their last
+    /// shell. So a working hocus guards: closing the session's last pane raises the quit
+    /// confirmation instead of ending the session, and the confirmation says what is going on.
+    ///
+    /// A *settled* hocus does not guard. It still says how much is open, because the same
+    /// confirmation goes up for `Ctrl-q` and knowing three conversations are about to go is
+    /// worth a line - but nothing is outstanding, and a quit the user asked for is theirs to
+    /// make.
+    ///
+    /// Memoised: this runs on every update, and the call becomes a host instruction.
+    pub(crate) fn publish_quit_notice(&mut self) {
+        // Counted here rather than taken from `live_chat_ids`, which is about *rows in the
+        // archive*: it filters on `chat_id`, so a conversation that has never been saved - the
+        // first exchange of a fresh session, exactly when a stray `exit` costs most - is not in
+        // it. This is about conversations, saved or not.
+        let working = self.parked.iter().filter(|chat| chat.is_live()).count()
+            + usize::from(self.foreground_is_live());
+        // Every conversation with something in it, on screen or set aside. An empty hocus - the
+        // splash, nothing typed - has nothing to say and says nothing.
+        let open = self
+            .parked
+            .iter()
+            .filter(|chat| !chat.messages.is_empty())
+            .count()
+            + usize::from(!self.messages.is_empty());
+        let notice = match (working, open) {
+            (0, 0) => None,
+            (0, 1) => Some("hocus: one conversation open, settled".to_owned()),
+            (0, open) => Some(format!("hocus: {open} conversations open, all settled")),
+            (1, _) => Some("hocus is still working on a conversation".to_owned()),
+            (working, _) => Some(format!("hocus is still working - {working} conversations")),
+        };
+        let guard = working > 0;
+        if self.last_quit_notice.as_ref() == Some(&(notice.clone(), guard)) {
+            return;
+        }
+        self.last_quit_notice = Some((notice.clone(), guard));
+        #[cfg(test)]
+        {
+            self.quit_notice_publishes += 1;
+        }
+        set_quit_notice(notice, guard);
+    }
+
+    /// Withdraw whatever was last said about a quit.
+    ///
+    /// The server drops a plugin's notice when its pane closes, but a guard is the one piece of
+    /// state whose staleness a person would feel - a session that will not close its last pane
+    /// and cannot say why - so hocus lets go of it itself on the way out rather than relying on
+    /// that ordering.
+    pub(crate) fn withdraw_quit_notice(&mut self) {
+        self.last_quit_notice = Some((None, false));
+        #[cfg(test)]
+        {
+            self.quit_notice_publishes += 1;
+        }
+        set_quit_notice(None, false);
+    }
+
     /// Chats with something still outstanding: foreground and parked alike,
     /// and the archived ones whose jobs are held for their reopening.
     pub(crate) fn live_chat_ids(&self) -> Vec<u64> {

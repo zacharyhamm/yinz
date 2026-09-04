@@ -1563,6 +1563,12 @@ pub(crate) fn screen_thread_main(
                 // A menu opened over this pane is offering to act on something that is about to
                 // stop existing.
                 screen.close_context_menus_for_pane(id);
+                // And what the plugin in it had to say about a quit goes with it. A plugin that
+                // crashed or was closed mid-reply must not leave a guard behind that nothing can
+                // lift.
+                if let PaneId::Plugin(plugin_id) = id {
+                    screen.drop_quit_notice(plugin_id);
+                }
                 screen.repaint_tab_of_closing_overlay(id);
                 match client_id {
                     Some(client_id) => {
@@ -4236,6 +4242,12 @@ pub(crate) fn screen_thread_main(
                     }
                     screen.report_pane_state()?;
                 }
+            },
+            ScreenInstruction::SetQuitNotice(plugin_id, notice, guard) => {
+                screen.set_quit_notice(plugin_id, notice, guard);
+            },
+            ScreenInstruction::ConfirmQuit(client_id, completion) => {
+                screen.confirm_quit(client_id, false, completion)?;
             },
             ScreenInstruction::SetPaneColor(pane_id, fg, bg, _completion) => {
                 if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {

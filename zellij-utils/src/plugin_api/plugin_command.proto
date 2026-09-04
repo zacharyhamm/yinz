@@ -255,6 +255,7 @@ enum CommandName {
   RunCommandInPane = 276;
   SetPaneAgentRun = 277;
   DataCatalog = 278;
+  SetQuitNotice = 279;
 }
 
 message PluginCommand {
@@ -457,6 +458,7 @@ message PluginCommand {
     RunCommandInPanePayload run_command_in_pane_payload = 217;
     SetPaneAgentRunPayload set_pane_agent_run_payload = 218;
     DataCatalogPayload data_catalog_payload = 219;
+    SetQuitNoticePayload set_quit_notice_payload = 220;
   }
 }
 
@@ -1510,6 +1512,13 @@ message SetPaneAgentPayload {
   PaneId pane_id = 1;
   // Absent clears the record.
   optional api.event.AgentInfo agent = 2;
+}
+
+message SetQuitNoticePayload {
+  // Absent withdraws whatever this plugin last said about a quit.
+  optional string notice = 1;
+  // Whether closing the session's last pane should confirm rather than exit.
+  bool guard = 2;
 }
 
 message CheckLuaPluginResponse {

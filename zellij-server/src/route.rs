@@ -28,15 +28,14 @@ use zellij_utils::{
     channels::SenderWithContext,
     data::{
         BareKey, ConnectToSession, Direction, Event, InputMode, KeyModifier, ListPanesResponse,
-        ListTabsResponse, NewPanePlacement, OverlayPlacement, PaneListEntry, PluginTag,
-        ResizeStrategy, TabInfo, UnblockCondition,
+        ListTabsResponse, NewPanePlacement, PaneListEntry, ResizeStrategy, TabInfo,
+        UnblockCondition,
     },
     envs,
     errors::prelude::*,
     input::{
         actions::{Action, SearchDirection, SearchOption},
         command::TerminalAction,
-        layout::{RunPlugin, RunPluginLocation, RunPluginOrAlias},
     },
     ipc::{ClientToServerMsg, ExitReason, IpcReceiverWithContext, IpcRecv, ServerToClientMsg},
 };
@@ -1285,27 +1284,14 @@ pub(crate) fn route_action(
         },
         // A keybinding has neither an originating pane nor a CLI client. Direct CLI and plugin
         // quits stay immediate, and the confirmation plugin's own quit cannot reopen itself.
+        //
+        // The modal itself is built on the screen thread rather than here: it carries whatever
+        // the plugins asked to have said about a quit, and those notices live there.
         Action::Quit if pane_id.is_none() && cli_client_id.is_none() => {
-            let plugin = RunPluginOrAlias::RunPlugin(RunPlugin {
-                location: RunPluginLocation::Zellij(PluginTag::new("quit-confirmation")),
-                ..Default::default()
-            });
             senders
-                .send_to_screen(ScreenInstruction::LaunchPlugin(
-                    plugin,
-                    true,
-                    false,
-                    false,
-                    None,
-                    false,
-                    None,
+                .send_to_screen(ScreenInstruction::ConfirmQuit(
                     client_id,
                     Some(NotificationEnd::new(completion_tx)),
-                    None,
-                    false,
-                    // the one pane the user has to answer: stated here rather than spelled as a
-                    // `modal` key in the plugin's configuration for the server to read back out
-                    Some(OverlayPlacement::modal(None)),
                 ))
                 .with_context(err_context)?;
         },

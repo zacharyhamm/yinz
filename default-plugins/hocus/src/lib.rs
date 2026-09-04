@@ -790,6 +790,18 @@ pub struct State {
     /// The project of `last_focused_agent`, falling back to the active tab in
     /// `tabs`.
     active_project: Option<String>,
+    /// The quit notice last published, so a pass that would restate the same one does not.
+    ///
+    /// Memoised for the reason `last_pane_title` is: the call becomes a host instruction, and
+    /// this runs on every update - including every keystroke and every streamed chunk. What it
+    /// says only actually changes when a conversation starts or finishes working.
+    last_quit_notice: Option<(Option<String>, bool)>,
+    /// How many quit notices have actually gone out to the host.
+    ///
+    /// Test-only, for the same reason `last_placement` is: the host call has no reply off wasm,
+    /// so nothing else can tell a notice that was sent from one the memo skipped.
+    #[cfg(test)]
+    pub(crate) quit_notice_publishes: usize,
 }
 
 impl Default for State {
@@ -929,6 +941,9 @@ impl Default for State {
             #[cfg(test)]
             agents_launches: 0,
             active_project: None,
+            last_quit_notice: None,
+            #[cfg(test)]
+            quit_notice_publishes: 0,
         };
         // In a plugin this waits for `load`, which is where the host is ready to
         // be asked. On the host triple there is no host and no `load`, so the
@@ -1041,6 +1056,10 @@ impl ZellijPlugin for State {
         // a cancel, an error and an aborted tool run are all covered without any
         // of them having to remember to.
         self.autosave();
+        // And for the same reason: whether a quit should be confirmed changes on exactly the
+        // paths a reply, a tool run or a cancel finishes on, and none of them should have to
+        // remember to say so.
+        self.publish_quit_notice();
         // The empty-chat wand is the one animation nothing else arms a timer for, and `render`
         // cannot arm one itself - a host call there would be handed the half-printed frame as its
         // argument. So it is done here, where nothing has been printed yet.
@@ -1278,6 +1297,10 @@ impl State {
             Event::PaneUpdate(manifest) => self.on_panes(manifest),
             Event::SessionUpdate(sessions, _) => self.on_sessions(sessions),
             Event::BeforeClose => {
+                // Before anything else: whatever was outstanding is about to be cancelled, and
+                // a guard outliving the plugin that set it is a session that will not close its
+                // last pane and cannot say why.
+                self.withdraw_quit_notice();
                 self.cancel_in_flight();
                 // Nobody is left to press `y`, and the mark outlives the plugin:
                 // a pane would otherwise sit there titled for a question that

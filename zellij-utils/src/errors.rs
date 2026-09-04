@@ -421,6 +421,8 @@ pub enum ScreenContext {
     SetPaneColor,
     SetPaneAgent,
     SetPaneAgentRun,
+    SetQuitNotice,
+    ConfirmQuit,
     WriteKeyToPaneId,
     CopyTextToClipboard,
     MovePaneWithPaneId,
