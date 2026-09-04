@@ -2096,6 +2096,7 @@ impl Tab {
                 self.apply_buffered_instructions().non_fatal();
             },
         }
+        self.refresh_overlay_expansion();
         if let Some(supported) = self.kitty_host_support {
             self.tiled_panes.update_pane_kitty_host_support(supported);
             self.floating_panes
@@ -2195,6 +2196,7 @@ impl Tab {
                     &mut self.tiled_panes,
                     self.pane_frame_style,
                 );
+                self.refresh_overlay_expansion();
 
                 self.apply_buffered_instructions().non_fatal();
             },
@@ -2305,6 +2307,7 @@ impl Tab {
         let display_area = *self.display_area.borrow();
         // we do this so that the new swap layout has a chance to pass through the constraint system
         self.tiled_panes.resize(display_area);
+        self.refresh_overlay_expansion();
         self.set_should_clear_display_before_rendering();
         self.senders
             .send_to_pty_writer(PtyWriteInstruction::ApplyCachedResizes)
@@ -6053,15 +6056,25 @@ impl Tab {
             }
         }
         // `reapply_coordinates` above re-derived any expansion against `self.viewport` as it was
-        // *before* `LayoutApplier::offset_viewport` recomputed it, so an overlay expanded over the
-        // viewport - rather than over the whole surface - kept the rectangle the old chrome left.
-        // `set_pane_frames` is `refresh_fullscreen`'s one caller, and the viewport is final here:
-        // the fullscreen restores above are the last thing that can move it.
+        // *before* `LayoutApplier::offset_viewport` recomputed it. Called here rather than beside
+        // that recompute because the viewport is only final now: the fullscreen restores above
+        // are the last thing that can move it.
+        self.refresh_overlay_expansion();
+        self.resize_all_stack_list_hidden_members();
+        Ok(())
+    }
+    /// Re-derive an overlay expansion against `self.viewport` as it is now.
+    ///
+    /// `OverlayPanes::set_pane_frames` is `refresh_fullscreen`'s one caller, so every path that
+    /// recomputes the viewport - all of them through `LayoutApplier::offset_viewport`, which
+    /// knows nothing about overlays - has to end here. Without it an overlay expanded over the
+    /// *viewport*, rather than over the whole surface, keeps the rectangle the old chrome left:
+    /// the tab bar or the status bar is turned on or off underneath it, or a layout is applied,
+    /// and it is still drawn against a viewport that no longer exists.
+    fn refresh_overlay_expansion(&mut self) {
         if self.overlay_panes.fullscreen_is_active() {
             self.overlay_panes.set_pane_frames().non_fatal();
         }
-        self.resize_all_stack_list_hidden_members();
-        Ok(())
     }
     pub fn resize(&mut self, client_id: ClientId, strategy: ResizeStrategy) -> Result<()> {
         let err_context = || "unable to resize pane".to_string();
@@ -6730,6 +6743,7 @@ impl Tab {
             &mut self.tiled_panes,
             self.pane_frame_style,
         );
+        self.refresh_overlay_expansion();
     }
     pub fn close_pane(
         &mut self,
