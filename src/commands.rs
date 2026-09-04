@@ -72,19 +72,20 @@ pub(crate) fn firecracker(
 /// a VM provider should be asked for, so it is resolved here rather than added to the
 /// provider protocol.
 ///
-/// Stdout is read whatever the exit code, and the literal `HEAD` is not a branch. Both
-/// rules come from the same command's behaviour, written up at length in
-/// `hocus-agentd`'s `poll::repository`: `--abbrev-ref HEAD` answers `HEAD` on a
-/// detached checkout, and a checkout with no commits answers `HEAD` and *then* exits
-/// 128, because an unborn branch does not resolve. A missing `git` answers `None`,
-/// which is the same "we cannot say" the listing prints as `-`.
+/// An explicit Git directory prevents discovery of an unrelated enclosing repository.
+/// Detached and unborn checkouts, invalid repositories and a missing Git return `None`.
 fn git_branch(worktree: &Path) -> Option<String> {
     let output = process::Command::new("git")
-        .arg("-C")
+        .arg("--git-dir")
+        .arg(worktree.join(".git"))
+        .arg("--work-tree")
         .arg(worktree)
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .output()
         .ok()?;
+    if !output.status.success() {
+        return None;
+    }
     let branch = String::from_utf8(output.stdout).ok()?.trim().to_owned();
     (!branch.is_empty() && branch != "HEAD").then_some(branch)
 }
@@ -1795,6 +1796,60 @@ mod firecracker_command_tests {
     use zellij_test_support::write_script;
     use zellij_utils::cli::Firecracker;
     use zellij_utils::sessions::ActiveSession;
+
+    #[test]
+    fn branch_lookup_stays_at_the_supplied_worktree_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-b", "root-branch"]);
+        assert_eq!(super::git_branch(&root), None, "unborn branch");
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ]);
+        assert_eq!(super::git_branch(&root).as_deref(), Some("root-branch"));
+        let nested = root.join("not-a-repo");
+        fs::create_dir(&nested).unwrap();
+        assert_eq!(
+            super::git_branch(&nested),
+            None,
+            "must not discover the enclosing repo"
+        );
+        assert_eq!(super::git_branch(&dir.path().join("missing")), None);
+        let linked = dir.path().join("linked");
+        git(&[
+            "worktree",
+            "add",
+            "-b",
+            "linked-branch",
+            linked.to_str().unwrap(),
+        ]);
+        assert_eq!(super::git_branch(&linked).as_deref(), Some("linked-branch"));
+        git(&["checkout", "--detach"]);
+        assert_eq!(super::git_branch(&root), None, "detached HEAD");
+    }
 
     /// A provider that logs each request to `requests` beside itself and answers
     /// every one with `response`.

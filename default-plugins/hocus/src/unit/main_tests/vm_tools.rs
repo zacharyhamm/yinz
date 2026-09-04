@@ -3,6 +3,20 @@
 
 use super::*;
 
+fn vm_ready_state() -> State {
+    tools::test_seams::CURRENT_SESSION.with_borrow_mut(|session| {
+        *session = Some(zellij_tile::prelude::SessionInfo {
+            name: "test-session".to_owned(),
+            is_current_session: true,
+            ..Default::default()
+        });
+    });
+    let mut state = ready_state();
+    // VM tools must not rely on the daemon's state, including its session name.
+    state.zellij_session_name.clear();
+    state
+}
+
 /// Feed a `RunCommandResult` back to a parked VM call, the way the host would.
 fn answer(
     state: &mut State,
@@ -34,7 +48,7 @@ fn every_vm_tool_defers_on_the_cli() {
         ("vm_sync", r#"{"vm":"review"}"#),
         ("vm_close", r#"{"vm":"review"}"#),
     ] {
-        let mut state = ready_state();
+        let mut state = vm_ready_state();
         assert!(!run_file_tool(&mut state, name, arguments), "{name}");
         assert!(matches!(state.status, Status::AwaitingCommand), "{name}");
     }
@@ -42,7 +56,7 @@ fn every_vm_tool_defers_on_the_cli() {
 
 #[test]
 fn a_per_vm_tool_without_a_vm_is_answered_without_running_anything() {
-    let mut state = ready_state();
+    let mut state = vm_ready_state();
     assert!(run_file_tool(&mut state, "vm_sync", "{}"));
     assert_eq!(
         tool_results(&state)[0].content,
@@ -50,27 +64,25 @@ fn a_per_vm_tool_without_a_vm_is_answered_without_running_anything() {
     );
 }
 
-/// The session name arrives with the daemon's first poll reply. Until it does,
-/// `--session ""` would ask the provider about a session that cannot exist - so a
-/// per-VM tool waits, and says how to get on without waiting.
+/// A missing host snapshot must not turn into an empty session or pane list.
 #[test]
 fn a_per_vm_tool_waits_for_the_session_name_but_the_listing_does_not() {
-    let mut state = ready_state();
-    state.zellij_session_name = String::new();
+    let mut state = vm_ready_state();
+    tools::test_seams::CURRENT_SESSION.with_borrow_mut(|session| *session = None);
     assert!(run_file_tool(&mut state, "vm_sync", r#"{"vm":"review"}"#));
     assert_eq!(
         tool_results(&state)[0].content,
-        "this session is not named yet; retry in a moment, or pass vm_session"
+        "the current session is not in the session list"
     );
 
     // The listing is machine-wide and names no session, so it has nothing to wait for.
-    let mut state = ready_state();
-    state.zellij_session_name = String::new();
+    let mut state = vm_ready_state();
+    tools::test_seams::CURRENT_SESSION.with_borrow_mut(|session| *session = None);
     assert!(!run_file_tool(&mut state, "vm_list", "{}"));
 
     // An explicit session is the way past the wait.
-    let mut state = ready_state();
-    state.zellij_session_name = String::new();
+    let mut state = vm_ready_state();
+    tools::test_seams::CURRENT_SESSION.with_borrow_mut(|session| *session = None);
     assert!(!run_file_tool(
         &mut state,
         "vm_sync",
@@ -80,7 +92,7 @@ fn a_per_vm_tool_waits_for_the_session_name_but_the_listing_does_not() {
 
 #[test]
 fn a_listing_is_answered_as_a_table_rather_than_as_json() {
-    let mut state = ready_state();
+    let mut state = vm_ready_state();
     answer(
         &mut state,
         "vm_list",
@@ -103,7 +115,7 @@ fn a_listing_is_answered_as_a_table_rather_than_as_json() {
 
 #[test]
 fn an_empty_listing_says_so() {
-    let mut state = ready_state();
+    let mut state = vm_ready_state();
     answer(
         &mut state,
         "vm_list",
@@ -127,7 +139,7 @@ fn a_change_count_is_read_as_a_sentence() {
         ),
         (&b"3\n"[..], "3 guest paths changed since the last sync"),
     ] {
-        let mut state = ready_state();
+        let mut state = vm_ready_state();
         answer(&mut state, "vm_changes", Some(0), stdout, b"", &[]);
         assert_eq!(tool_results(&state)[0].content, expected);
     }
@@ -139,7 +151,7 @@ fn a_change_count_is_read_as_a_sentence() {
 /// reading the model must not take away from a sync.
 #[test]
 fn a_sync_that_kept_a_host_copy_is_a_success_with_its_warnings_attached() {
-    let mut state = ready_state();
+    let mut state = vm_ready_state();
     answer(
         &mut state,
         "vm_sync",
@@ -156,8 +168,8 @@ fn a_sync_that_kept_a_host_copy_is_a_success_with_its_warnings_attached() {
 }
 
 #[test]
-fn a_close_names_the_panes_it_closed() {
-    let mut state = ready_state();
+fn a_close_names_the_panes_it_requested_to_close() {
+    let mut state = vm_ready_state();
     answer(
         &mut state,
         "vm_close",
@@ -167,18 +179,23 @@ fn a_close_names_the_panes_it_closed() {
         &[(tools::VM_CLOSED_PANES_CONTEXT, "3,7")],
     );
     let result = &tool_results(&state)[0].content;
-    assert!(result.starts_with("closed: "), "{result}");
-    assert!(result.ends_with("closed panes 3, 7"), "{result}");
+    assert!(result.starts_with("VM stop request completed;"), "{result}");
+    assert!(
+        result.ends_with("requested closure of panes 3, 7"),
+        "{result}"
+    );
 
     // A VM this session had no panes on closes cleanly and claims nothing.
-    let mut state = ready_state();
+    let mut state = vm_ready_state();
     answer(&mut state, "vm_close", Some(0), b"", b"", &[]);
-    assert!(!tool_results(&state)[0].content.contains("closed panes"));
+    assert!(!tool_results(&state)[0]
+        .content
+        .contains("requested closure"));
 }
 
 #[test]
 fn a_failing_cli_is_reported_with_what_it_said() {
-    let mut state = ready_state();
+    let mut state = vm_ready_state();
     answer(
         &mut state,
         "vm_sync",
@@ -195,7 +212,7 @@ fn a_failing_cli_is_reported_with_what_it_said() {
 
 #[test]
 fn a_missing_zellij_binary_is_named_in_the_tool_result() {
-    let mut state = ready_state();
+    let mut state = vm_ready_state();
     answer(
         &mut state,
         "vm_list",
@@ -207,4 +224,82 @@ fn a_missing_zellij_binary_is_named_in_the_tool_result() {
     let result = &tool_results(&state)[0].content;
     assert!(result.starts_with("zellij could not be run"), "{result}");
     assert!(result.contains("zellij_path"), "{result}");
+}
+
+#[test]
+fn closing_refuses_a_missing_host_snapshot_even_with_an_explicit_session() {
+    let mut state = vm_ready_state();
+    state.zellij_session_name = "stale-daemon-session".to_owned();
+    tools::test_seams::CURRENT_SESSION.with_borrow_mut(|session| *session = None);
+    assert!(run_file_tool(
+        &mut state,
+        "vm_close",
+        r#"{"vm":"review","vm_session":"other"}"#,
+    ));
+    assert_eq!(
+        tool_results(&state)[0].content,
+        "the current session is not in the session list"
+    );
+}
+
+#[test]
+fn malformed_vm_responses_are_diagnostics() {
+    for stdout in [
+        "",
+        "  ",
+        "null",
+        "3",
+        "{}",
+        r#"{"error":"oops"}"#,
+        r#"{"vms":null,"recoveries":[]}"#,
+        r#"{"vms":[],"recoveries":{}}"#,
+        r#"{"vms":[null],"recoveries":[]}"#,
+        r#"{"vms":[{}],"recoveries":[]}"#,
+        r#"{"vms":[],"recoveries":[{}]}"#,
+        "unexpected output",
+    ] {
+        let mut state = vm_ready_state();
+        answer(&mut state, "vm_list", Some(0), stdout.as_bytes(), b"", &[]);
+        let result = &tool_results(&state)[0].content;
+        assert!(result.starts_with("vm_list returned"), "{result}");
+        assert!(!result.contains("No Firecracker VMs"), "{result}");
+    }
+    for stdout in ["", "oops", "-1", "1.5", "1\n2", "18446744073709551616"] {
+        let mut state = vm_ready_state();
+        answer(
+            &mut state,
+            "vm_changes",
+            Some(0),
+            stdout.as_bytes(),
+            b"",
+            &[],
+        );
+        assert!(tool_results(&state)[0]
+            .content
+            .starts_with("vm_changes returned an invalid path count:"));
+    }
+}
+
+#[test]
+fn failed_stops_still_report_pane_closure_requests() {
+    for (code, stderr) in [
+        (1, "merge failed"),
+        (2, "No such file or directory (os error 2)"),
+    ] {
+        let mut state = vm_ready_state();
+        answer(
+            &mut state,
+            "vm_close",
+            Some(code),
+            b"",
+            stderr.as_bytes(),
+            &[(tools::VM_CLOSED_PANES_CONTEXT, "3,7")],
+        );
+        let result = &tool_results(&state)[0].content;
+        assert!(
+            result.ends_with("requested closure of panes 3, 7"),
+            "{result}"
+        );
+        assert!(!result.contains("VM is gone"), "{result}");
+    }
 }

@@ -1805,7 +1805,6 @@ impl State {
         exit_code: Option<i32>,
         stdout: &[u8],
         stderr: &[u8],
-        context: &BTreeMap<String, String>,
     ) -> String {
         let stdout = String::from_utf8_lossy(stdout);
         let stderr = String::from_utf8_lossy(stderr);
@@ -1827,25 +1826,18 @@ impl State {
             .collect();
         let mut result = match head.name.as_str() {
             "vm_list" => present::vm_listing(stdout.trim()),
-            "vm_changes" => match stdout.trim() {
-                "0" => "no guest paths have changed since the last sync".to_owned(),
-                count => format!("{count} guest paths changed since the last sync"),
+            "vm_changes" => match stdout.trim().parse::<u64>() {
+                Ok(0) => "no guest paths have changed since the last sync".to_owned(),
+                Ok(count) => format!("{count} guest paths changed since the last sync"),
+                Err(_) => format!(
+                    "vm_changes returned an invalid path count: {:?}",
+                    stdout.trim()
+                ),
             },
             "vm_sync" => "synced: the VM's work is merged into its host worktree".to_owned(),
-            _ => {
-                let closed = context
-                    .get(tools::VM_CLOSED_PANES_CONTEXT)
-                    .map(String::as_str)
-                    .unwrap_or_default();
-                let panes: Vec<&str> = closed.split(',').filter(|id| !id.is_empty()).collect();
-                let mut sentence =
-                    "closed: the VM's work is merged into its host worktree and the VM is gone"
-                        .to_owned();
-                if !panes.is_empty() {
-                    sentence.push_str(&format!("; closed panes {}", panes.join(", ")));
-                }
-                sentence
-            },
+            _ => "VM stop request completed; this does not confirm a merge or destruction. \
+                  Use vm_list to see remaining VMs and retained disks."
+                .to_owned(),
         };
         if !warnings.is_empty() {
             result.push_str("\n\nThe merge could not decide these, and kept your copy:");
@@ -2114,7 +2106,7 @@ impl State {
         // (os error 2)", naming nothing. For a Slack tool the model never sees
         // the argv, so that message is undiagnosable from inside the
         // conversation: say which binary, and which setting names it.
-        let result = match self
+        let mut result = match self
             .slack_exec_hint(exit_code, stderr)
             .or_else(|| self.project_exec_hint(exit_code, stderr))
             .or_else(|| self.vm_exec_hint(exit_code, stderr))
@@ -2127,7 +2119,7 @@ impl State {
                 self.skill_tool_result(&head, exit_code, stdout, stderr, context)
             },
             None if tools::VM_TOOLS.contains(&head.name.as_str()) => {
-                self.vm_tool_result(&head, exit_code, stdout, stderr, context)
+                self.vm_tool_result(&head, exit_code, stdout, stderr)
             },
             None => {
                 let mut result = format!("exit code: {}", exit_code.unwrap_or(-1));
@@ -2141,6 +2133,18 @@ impl State {
                 result
             },
         };
+
+        if head.name == "vm_close" {
+            if let Some(requested) = context.get(tools::VM_CLOSED_PANES_CONTEXT) {
+                let panes: Vec<&str> = requested.split(',').filter(|id| !id.is_empty()).collect();
+                if !panes.is_empty() {
+                    result.push_str(&format!(
+                        "; requested closure of panes {}",
+                        panes.join(", ")
+                    ));
+                }
+            }
+        }
 
         self.finish_head(result);
         self.pump_tools();
