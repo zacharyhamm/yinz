@@ -2796,10 +2796,16 @@ impl Screen {
     /// fixed question over the pane and `adjust_input_to_terminal` implemented its two answers.
     /// Now the pane just holds, and the plugin bound to the hook point is opened in its place.
     ///
-    /// An agent pane is one whose record says so (`pane_is_agent`, read off the pane's
-    /// `AgentInfo`, however it got there: the spawn path, a plugin, or the agent's own hooks),
+    /// An agent pane is one the pane itself vouches for (`pane_is_agent`: a record, however it
+    /// got there - the spawn path, a plugin, or the agent's own hooks - or the memory of one),
     /// or - for a pane spawned by an older plugin - one whose originating context carries the
     /// marker.
+    ///
+    /// The memory rather than the live record, because a clean exit clears the record first:
+    /// Claude Code's `SessionEnd` hook runs before the process does, and `hook_outcome` reads
+    /// it as the end of the record. The context marker used to cover that for a pane hocus
+    /// spawned, and only for one - a pane warped in from another session has none, because the
+    /// supervisor drops an `originating_plugin` that names a plugin in the session it left.
     fn fire_agent_exit_hook(
         &self,
         pane_id: PaneId,

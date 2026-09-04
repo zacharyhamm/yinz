@@ -511,6 +511,11 @@ pub trait Pane {
     fn set_agent_info(&mut self, _agent: Option<AgentInfo>) -> bool {
         false
     }
+    /// Whether this pane has ever held an agent record. Sticky, unlike the record itself,
+    /// which a `SessionEnd` hook clears just before the agent's process exits.
+    fn was_an_agent(&self) -> bool {
+        false
+    }
     /// When this pane's agent entered a wait a person has to answer, while nobody has yet.
     /// `None` once it has been answered, and for every pane that is not an unanswered wait.
     fn agent_attention_since(&self) -> Option<Instant> {
@@ -4429,9 +4434,12 @@ impl Tab {
             .or_else(|| self.overlay_panes.get_pane(pane_id))
             .and_then(|pane| pane.agent_attention_since())
     }
-    /// Whether `pane_id` has an agent record, whoever wrote it.
+    /// Whether `pane_id` is an agent pane: it has a record, whoever wrote it, or it held one
+    /// at some point. The second half is what makes a clean exit fire `agent_exit` - the
+    /// agent's own `SessionEnd` hook clears the record a moment before the process goes.
     pub fn pane_is_agent(&self, pane_id: PaneId) -> bool {
-        self.pane_agent_info(pane_id).is_some()
+        self.get_pane_with_id(pane_id)
+            .is_some_and(|pane| pane.agent_info().is_some() || pane.was_an_agent())
     }
     /// `pane_id`'s agent record, wherever the pane is - the screen reads it before a change so
     /// that a hook can be told what the record moved from.
