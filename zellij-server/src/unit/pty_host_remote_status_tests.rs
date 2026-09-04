@@ -67,9 +67,12 @@ fn a_pane_reports_its_own_command_and_directory() {
         shell.iter().any(|a| a.contains("sh")),
         "expected the pane's own command, got {shell:?}"
     );
+    // Resolved on both sides: `/tmp` is a symlink to `/private/tmp` on macOS and
+    // the kernel answers with the physical path, so the literal never matches.
+    let expected = std::fs::canonicalize("/tmp").expect("could not resolve /tmp");
     assert_eq!(
-        probe.cwd.as_deref(),
-        Some("/tmp"),
+        probe.cwd.as_deref().map(std::path::Path::new),
+        Some(expected.as_path()),
         "the cwd should follow the process, not the directory it was started from"
     );
 }
@@ -124,7 +127,9 @@ fn a_pane_with_nothing_in_the_foreground_reports_no_foreground_command() {
 #[test]
 fn probing_a_process_that_is_gone_reports_nothing() {
     let pty = nix::pty::openpty(None, None).expect("openpty failed");
-    let mut child = std::process::Command::new("/bin/true")
+    // `/usr/bin/true`, not `/bin/true`: the latter is a Linux-ism. macOS has no
+    // `/bin/true` at all, and this spawn simply failed there.
+    let mut child = std::process::Command::new("/usr/bin/true")
         .spawn()
         .expect("spawn failed");
     let pid = child.id();

@@ -7579,6 +7579,11 @@ mod permission_tests {
             },
         )
         .unwrap();
+        // Resolved: the worktree path here is built from `git rev-parse
+        // --show-toplevel`, and on macOS git answers the physical path while
+        // `tempfile` handed out one under a symlinked `/var`. The absolute-path
+        // case below is deliberately *not* resolved - there the point is that the
+        // path is honoured exactly as given.
         assert_eq!(resolved(&cwd), resolved(&target));
         assert!(std::fs::read_to_string(target.join(".git"))
             .unwrap()

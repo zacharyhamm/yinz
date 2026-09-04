@@ -1306,8 +1306,11 @@ fn expect_spawn_failure(host_bin: &str, what: &str) -> anyhow::Error {
 
 #[test]
 fn a_host_binary_that_says_nothing_fails_the_spawn() {
+    // `/usr/bin/true` rather than `/bin/true`, which does not exist on macOS —
+    // where this test therefore stopped being about "a real binary that is not a
+    // supervisor" and quietly became a duplicate of the missing-binary one below.
     let err = expect_spawn_failure(
-        "/bin/true",
+        "/usr/bin/true",
         "a binary that is not a supervisor should fail the spawn",
     );
     assert!(

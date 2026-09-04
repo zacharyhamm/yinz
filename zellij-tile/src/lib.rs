@@ -117,7 +117,17 @@ macro_rules! register_plugin {
             }));
         }
 
-        #[no_mangle]
+        // The five entry points below are exported for the plugin host to call.
+        // They are exported *only* on wasm, deliberately: a plugin crate also
+        // builds natively for its own `cargo test`, there is no host there, and
+        // an unconditional `#[no_mangle]` puts these names in the test
+        // executable where the linker prefers them to libc's. `pipe` is the one
+        // that bites - it shadowed `pipe(2)` for the whole of `std`, so on macOS
+        // (which has no `pipe2(2)` to reach for instead) every `Command::spawn`
+        // in a plugin's tests landed in the plugin and aborted the process.
+
+        #[cfg_attr(target_family = "wasm", no_mangle)]
+        #[allow(dead_code)]
         fn load() {
             STATE.with(|state| {
                 use std::collections::BTreeMap;
@@ -134,7 +144,8 @@ macro_rules! register_plugin {
             });
         }
 
-        #[no_mangle]
+        #[cfg_attr(target_family = "wasm", no_mangle)]
+        #[allow(dead_code)]
         pub fn update() -> bool {
             let err_context = "Failed to deserialize event";
             use std::convert::TryInto;
@@ -149,7 +160,8 @@ macro_rules! register_plugin {
             })
         }
 
-        #[no_mangle]
+        #[cfg_attr(target_family = "wasm", no_mangle)]
+        #[allow(dead_code)]
         pub fn pipe() -> bool {
             let err_context = "Failed to deserialize pipe message";
             use std::convert::TryInto;
@@ -164,14 +176,16 @@ macro_rules! register_plugin {
             })
         }
 
-        #[no_mangle]
+        #[cfg_attr(target_family = "wasm", no_mangle)]
+        #[allow(dead_code)]
         pub fn render(rows: i32, cols: i32) {
             STATE.with(|state| {
                 state.borrow_mut().render(rows as usize, cols as usize);
             });
         }
 
-        #[no_mangle]
+        #[cfg_attr(target_family = "wasm", no_mangle)]
+        #[allow(dead_code)]
         pub fn plugin_version() {
             println!("{}", $crate::prelude::VERSION);
         }
@@ -207,7 +221,11 @@ macro_rules! register_worker {
         thread_local! {
             static $worker_static_name: std::cell::RefCell<$worker> = std::cell::RefCell::new(Default::default());
         }
-        #[no_mangle]
+        // Exported only on wasm, for the reason given in `register_plugin!`: a
+        // worker's name is the plugin author's to choose, and nothing stops it
+        // colliding with libc in a native test build.
+        #[cfg_attr(target_family = "wasm", no_mangle)]
+        #[allow(dead_code)]
         pub fn $worker_name() {
             use zellij_tile::shim::plugin_api::message::ProtobufMessage;
             use zellij_tile::shim::prost::Message;

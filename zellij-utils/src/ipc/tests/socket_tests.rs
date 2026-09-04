@@ -628,6 +628,16 @@ impl FullBacklog {
     }
 }
 
+/// One condition, two errnos: Linux queues the connect and answers `EAGAIN`,
+/// the BSDs refuse it outright. Everything else is a real failure to set the
+/// test up.
+#[cfg(unix)]
+fn backlog_is_full(err: &std::io::Error) -> bool {
+    use crate::consts::A_FULL_BACKLOG_IS_REFUSED;
+    err.kind() == std::io::ErrorKind::WouldBlock
+        || (A_FULL_BACKLOG_IS_REFUSED && err.kind() == std::io::ErrorKind::ConnectionRefused)
+}
+
 #[cfg(unix)]
 fn listener_with_a_full_backlog(path: &std::path::Path) -> FullBacklog {
     use crate::consts::{nonblocking_unix_stream_socket, unix_socket_address};
@@ -663,7 +673,7 @@ fn listener_with_a_full_backlog(path: &std::path::Path) -> FullBacklog {
                 continue;
             }
             let err = std::io::Error::last_os_error();
-            if err.kind() == std::io::ErrorKind::WouldBlock {
+            if backlog_is_full(&err) {
                 // The backlog will take no more, which is the state we wanted.
                 return FullBacklog {
                     listener_fd,
@@ -736,17 +746,26 @@ fn a_connected_stream_is_close_on_exec_and_blocking() {
 /// The regression test for a wedged server hanging every zellij command.
 ///
 /// A server whose listen backlog is full neither accepts a connection nor
-/// refuses one — a blocking `connect` to it simply never returns. That is not
-/// covered by `PROBE_TIMEOUT`, which is applied to the stream a *successful*
-/// connect hands back, so before `IPC_CONNECT_TIMEOUT` existed one such server
-/// hung `zellij`, `zellij ls`, `zellij attach` and `zellij kill-session` for
-/// every unrelated session on the machine, since all of them sweep the socket
-/// directory. Observed in the wild: a server that had leaked 65,538
-/// connections and 131,085 threads over three days.
+/// refuses one on Linux — a blocking `connect` to it simply never returns. That
+/// is not covered by `PROBE_TIMEOUT`, which is applied to the stream a
+/// *successful* connect hands back, so before `IPC_CONNECT_TIMEOUT` existed one
+/// such server hung `zellij`, `zellij ls`, `zellij attach` and `zellij
+/// kill-session` for every unrelated session on the machine, since all of them
+/// sweep the socket directory. Observed in the wild: a server that had leaked
+/// 65,538 connections and 131,085 threads over three days.
+///
+/// What can be promised at the end of the deadline differs by kernel, and the
+/// difference is the kernel's, not this code's. Linux says `EAGAIN`, which means
+/// "the backlog is full" and cannot mean anything else, so the probe can name
+/// the server unresponsive and its socket is safe. The BSDs say `ECONNREFUSED`,
+/// the same errno as a socket file whose server is gone, so after a whole
+/// deadline of refusals the honest answer is still "absent" — see
+/// `A_FULL_BACKLOG_IS_REFUSED`. Everything else here holds on both: the connect
+/// is bounded, and it leaves the socket alone.
 #[cfg(unix)]
 #[test]
-fn a_full_backlog_times_out_instead_of_hanging_forever() {
-    use crate::consts::{ipc_connect, IPC_CONNECT_TIMEOUT};
+fn a_full_backlog_gives_up_instead_of_hanging_forever() {
+    use crate::consts::{ipc_connect, A_FULL_BACKLOG_IS_REFUSED, IPC_CONNECT_TIMEOUT};
     use crate::sessions::{classify_probe_connect_error, SessionProbe};
 
     let (_guard, path) = new_ipc();
@@ -760,13 +779,28 @@ fn a_full_backlog_times_out_instead_of_hanging_forever() {
         "connecting to a listener whose backlog is full should not succeed — if the kernel \
          accepted it, this test is no longer exercising the condition it was written for",
     );
+    let expected = if A_FULL_BACKLOG_IS_REFUSED {
+        SessionProbe::Absent
+    } else {
+        SessionProbe::Unresponsive
+    };
     assert_eq!(
         classify_probe_connect_error(err.kind()),
-        Ok(SessionProbe::Unresponsive),
-        "a full backlog is a running server that cannot accept, so it must read as \
-         unresponsive — reading as absent would let a new server unlink its socket. \
-         Got {err:?}"
+        Ok(expected),
+        "a full backlog is a running server that cannot accept. Where the kernel says so \
+         it must read as unresponsive, because reading as absent would let a new server \
+         unlink its socket; where the kernel only refuses, absent is all that can be \
+         concluded. Got {err:?}"
     );
+    if A_FULL_BACKLOG_IS_REFUSED {
+        // Without this nothing here would notice the retry loop being deleted:
+        // an immediate refusal satisfies every other assertion in this test.
+        assert!(
+            waited >= IPC_CONNECT_TIMEOUT,
+            "a refusal must be retried for the whole {IPC_CONNECT_TIMEOUT:?} before it is \
+             believed, but the connect gave up after {waited:?}"
+        );
+    }
     // Generous: the assertion is "bounded at all", and the old behaviour was
     // unbounded. A tight bound here would only buy flakes on a loaded machine.
     assert!(
@@ -775,11 +809,11 @@ fn a_full_backlog_times_out_instead_of_hanging_forever() {
          but it waited {waited:?}"
     );
 
-    // The socket is still a live server's, and nothing about the timeout may
+    // The socket is still a live server's, and nothing about giving up may
     // suggest otherwise.
     assert!(
         path.exists(),
-        "the timed-out probe must leave the socket alone"
+        "the probe that gave up must leave the socket alone"
     );
     drop(backlog);
 }

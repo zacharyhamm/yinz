@@ -139,6 +139,32 @@ Neither suite is reliable enough for a single red run to be evidence. Before bel
   between failed with "the reconnect never produced a socket". It passes alone either way — only
   a loaded machine reveals it, which is exactly what `cargo x ci check` provides.
 
+### Three kernel differences the suite has already been bitten by
+
+macOS is a supported development platform, and the gate ran red on it for a while because these
+three read as flakes or as "environment" until someone checks the kernel. All are fixed; the note
+is here so the next surprise is recognised rather than re-diagnosed.
+
+- **`std` reaches `pipe(2)` on macOS, `pipe2(2)` on Linux.** `register_plugin!` used to export its
+  host entry points with an unconditional `#[no_mangle]`, and in a plugin crate's *native* test
+  binary the linker prefers a local `pipe` to libc's. Every `Command::spawn` in those tests
+  therefore called the plugin, which read EOF from stdin and aborted the process — presenting as
+  three `status-bar` tests dying with SIGABRT and a message about deserializing from stdin. The
+  exports are `#[cfg_attr(target_family = "wasm", no_mangle)]` now. Watch for `SIGABRT` in a
+  nextest summary: it counts in "N failed" but prints under its own heading.
+- **XNU never wakes a blocking `waitpid` for a continue,** and raises no `SIGCHLD` for one either;
+  only `WNOHANG` returns the status, and only until the process next `exec`s. Both child waiters
+  (`pty_host::host::spawn_child_waiter`, `os_input_output_unix::wait_reporting_stops`) poll while
+  the child is stopped for that reason. Left unfixed it made a `^Z`'d pane permanently input-dead.
+- **A full `AF_UNIX` backlog is `ECONNREFUSED` on the BSDs, `EAGAIN` on Linux** — and on the BSDs
+  that is the same errno as a socket whose server is gone, so `ipc_connect` retries it for the
+  whole `IPC_CONNECT_TIMEOUT` before believing it (`consts::A_FULL_BACKLOG_IS_REFUSED`). Without
+  that, a live server briefly behind on `accept` was read as absent and had its socket unlinked.
+
+Two smaller ones worth knowing when a test compares paths or spawns a helper: macOS resolves
+`/tmp` and `/var` through symlinks (`/private/...`), so paths only compare after `canonicalize`;
+and `/bin/true` does not exist there — `/usr/bin/true` is on both.
+
 ### Waiting in tests: use `Watched`, not `sleep`
 
 `zellij-test-support` provides `Watched<T>` — shared state plus a bounded

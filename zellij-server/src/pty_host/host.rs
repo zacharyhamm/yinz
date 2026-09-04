@@ -70,6 +70,15 @@ const TERMINATE_GRACE: Duration = Duration::from_secs(2);
 /// A `Query` from the CLI must not be able to wedge the supervisor.
 const CLI_CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// How often to look at a child we already know is stopped.
+///
+/// Needed because XNU will not wake a blocking `waitpid` for a continue and
+/// raises no `SIGCHLD` for one either, so asking is the only way to see it.
+/// Fixed rather than backed off: the resume arrives long after the stop, so an
+/// escalating interval would put its worst latency exactly where the person
+/// pressing the key is looking.
+pub(crate) const STOPPED_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     /// A server holds a dup of the master and is the sole reader.
@@ -1282,13 +1291,6 @@ fn start_session(
     })
 }
 
-/// Watch the child for good, not just for its exit.
-///
-/// `Child::wait` cannot be used here: it is `waitpid` without `WUNTRACED`, so a
-/// stopped child is indistinguishable from a busy one and `^Z` in a command pane
-/// looks exactly like a hang. `nix`'s `waitpid` reaps the child itself, so the
-/// `Child` is deliberately never waited on — it is only kept alive so nothing
-/// else reaps the pid out from under this loop.
 /// Make the pane's pty this supervisor's controlling terminal.
 ///
 /// This is what makes `^Z` work at all. `login_tty` — what this replaces — puts
@@ -1329,17 +1331,66 @@ fn acquire_controlling_tty(slave_raw: RawFd) -> bool {
     true
 }
 
+/// Watch the child for good, not just for its exit.
+///
+/// `Child::wait` cannot be used here: it is `waitpid` without `WUNTRACED`, so a
+/// stopped child is indistinguishable from a busy one and `^Z` in a command pane
+/// looks exactly like a hang. `nix`'s `waitpid` reaps the child itself, so the
+/// `Child` is deliberately never waited on — it is only kept alive so nothing
+/// else reaps the pid out from under this loop.
+///
+/// Once the child *is* stopped the wait has to become a poll, because
+/// `WCONTINUED` is not enough on every kernel. On XNU a blocking `waitpid` is
+/// never woken by a continue — not even one entered after the `SIGCONT` — and no
+/// `SIGCHLD` is raised for one either. Only `WNOHANG` returns the status.
+///
+/// Missing that report is not a cosmetic loss. The pane's `suspended` flag is
+/// cleared by nothing else, and while it is set
+/// `TerminalPane::adjust_input_to_terminal` swallows every key, so the pane is
+/// input-dead for the rest of its life: `Enter` sends another `SIGCONT` to a
+/// process that already resumed, and nothing else gets through.
+///
+/// The poll is confined to that window. A running child is still waited on
+/// blocking, which is the whole of the common case, and the cost while suspended
+/// is one timer per pane. Done on every unix rather than behind a `target_os`,
+/// because a platform-split loop would leave whichever arm this machine is not
+/// running untested — there is no CI here to run the other one.
+///
+/// One gap remains, and it is the kernel's: XNU holds a pending continue only
+/// until the process next `exec`s, which discards it. A child stopped in the
+/// instant between `fork` and `exec` — a shell that has not yet become the
+/// command it was told to run — and resumed there will therefore still be
+/// reported as stopped. Polling narrows that to the interval below; closing it
+/// entirely would mean reading the process's state rather than waiting on it.
 fn spawn_child_waiter(child: Child, event_tx: Sender<HostEvent>, wake_tx: UnixStream) {
     let mut wake_tx = wake_tx;
     std::thread::spawn(move || {
         let pid = Pid::from_raw(child.id() as i32);
         let flags = WaitPidFlag::WUNTRACED | WaitPidFlag::WCONTINUED;
+        let mut stopped = false;
         loop {
+            let flags = if stopped {
+                flags | WaitPidFlag::WNOHANG
+            } else {
+                flags
+            };
             let event = match waitpid(pid, Some(flags)) {
                 Ok(WaitStatus::Exited(_, code)) => HostEvent::ChildExited(Some(code)),
                 Ok(WaitStatus::Signaled(_, _, _)) => HostEvent::ChildExited(None),
                 Ok(WaitStatus::Stopped(_, signal)) => HostEvent::ChildStopped(signal as i32),
                 Ok(WaitStatus::Continued(_)) => HostEvent::ChildContinued,
+                // Only reachable while polling, and the only arm that sleeps —
+                // which is what keeps the poll from becoming a spin. The first
+                // poll after a stop is deliberately not delayed: the kernel
+                // holds a continue only until the process next `exec`s, so the
+                // sooner it is asked the smaller that window is.
+                Ok(WaitStatus::StillAlive) => {
+                    std::thread::sleep(STOPPED_POLL_INTERVAL);
+                    continue;
+                },
+                // The ptrace statuses, which exist only on Linux — so on every
+                // other platform the arms above are already exhaustive.
+                #[allow(unreachable_patterns)]
                 Ok(_) => continue,
                 Err(Errno::EINTR) => continue,
                 // ECHILD and friends: there is nothing left to wait for, and a
@@ -1347,6 +1398,9 @@ fn spawn_child_waiter(child: Child, event_tx: Sender<HostEvent>, wake_tx: UnixSt
                 // open forever. Report an unknown status instead.
                 Err(_) => HostEvent::ChildExited(None),
             };
+            // Recomputed every time, so a continue or an exit puts the loop back
+            // on the blocking wait.
+            stopped = matches!(event, HostEvent::ChildStopped(_));
             let is_exit = matches!(event, HostEvent::ChildExited(_));
             let _ = event_tx.send(event);
             let _ = wake_tx.write_all(b"w");

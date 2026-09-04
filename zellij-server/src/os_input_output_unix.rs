@@ -45,6 +45,7 @@ use crate::pty_host::{
         self as pty_host_client, AgentReportCb, ChildRunState, ChildStateCb, PtyHostHandle,
         ReleasedPane, ReleasedRemotePane, SpawnParams,
     },
+    host::STOPPED_POLL_INTERVAL,
     protocol::{WireTermios, WireWinsize},
 };
 
@@ -212,6 +213,10 @@ fn handle_command_exit(mut child: Child) -> Result<Option<i32>> {
 ///
 /// `nix`'s `waitpid` reaps, so the caller's `Child` must not be waited on again;
 /// `handle_command_exit`'s `try_wait` will simply see `ECHILD` and fall through.
+///
+/// The mirror of `pty_host::host::spawn_child_waiter`, polling while stopped for
+/// the same reason: on XNU nothing wakes a blocking wait for a continue, so the
+/// pane would never learn it had resumed. See that function for the detail.
 fn wait_reporting_stops(
     child_pid: u32,
     terminal_id: u32,
@@ -219,18 +224,33 @@ fn wait_reporting_stops(
 ) -> Option<i32> {
     let pid = unistd::Pid::from_raw(child_pid as i32);
     let flags = WaitPidFlag::WUNTRACED | WaitPidFlag::WCONTINUED;
+    let mut stopped = false;
     loop {
+        let flags = if stopped {
+            flags | WaitPidFlag::WNOHANG
+        } else {
+            flags
+        };
         let state = match waitpid(pid, Some(flags)) {
             Ok(WaitStatus::Exited(_, code)) => return Some(code),
             Ok(WaitStatus::Signaled(_, _, _)) => return None,
             Ok(WaitStatus::Stopped(_, _)) => ChildRunState::Stopped,
             Ok(WaitStatus::Continued(_)) => ChildRunState::Continued,
+            // Only reachable while polling, and the only arm that sleeps.
+            Ok(WaitStatus::StillAlive) => {
+                std::thread::sleep(STOPPED_POLL_INTERVAL);
+                continue;
+            },
+            // The ptrace statuses, which exist only on Linux — so on every
+            // other platform the arms above are already exhaustive.
+            #[allow(unreachable_patterns)]
             Ok(_) => continue,
             Err(nix::errno::Errno::EINTR) => continue,
             // Nothing left to wait for. Returning is the only safe answer: a
             // waiter that spun here would leave the pane open forever.
             Err(_) => return None,
         };
+        stopped = matches!(state, ChildRunState::Stopped);
         if let Some(cb) = child_state_cb {
             cb(terminal_id, state);
         }
