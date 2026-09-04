@@ -1887,9 +1887,10 @@ impl OverlayPanes {
             return vec![];
         };
         let area = self.fullscreen_area(covers_ui);
-        // An area with no width has no seam to place either: `seam_mapped_onto` clamps its
-        // answer to at least one column in, which is already past the right edge, and the right
-        // half's width below would underflow. Nothing can be expanded into a surface this size.
+        // Nothing can be expanded into a surface with no width or no height, and there is no
+        // honest geometry to answer with: the seam would be clamped past the right edge and both
+        // halves would come out at the floor, overlapping, in an area that holds neither.
+        // `refresh_fullscreen` reads the empty answer as "this expansion is over".
         if area.cols == 0 || area.rows == 0 {
             return vec![];
         }
@@ -1923,7 +1924,14 @@ impl OverlayPanes {
                     (*left, expanded(left_geom, area.x, seam - area.x)),
                     (
                         *right,
-                        expanded(right_geom, seam, (area.x + area.cols).saturating_sub(seam)),
+                        // the floor `resize_panel` gives the right half for the same reason: in
+                        // an area too narrow to hold two columns the seam is clamped past the
+                        // right edge, and a half of no width is not a pane
+                        expanded(
+                            right_geom,
+                            seam,
+                            (area.x + area.cols).saturating_sub(seam).max(1),
+                        ),
                     ),
                 ]
             },
@@ -1949,7 +1957,11 @@ impl OverlayPanes {
     /// every override in the collection.
     ///
     /// It is also where an expansion that has stopped making sense is dropped: an anchor that was
-    /// closed, set aside or is no longer expandable takes the expansion with it.
+    /// closed, set aside or is no longer expandable takes the expansion with it, and so does an
+    /// area nothing can be drawn into - a viewport of no height under a screen two rows tall. An
+    /// expansion with no geometry to show for it is worse than none at all: `pane_is_fullscreen`
+    /// would keep answering `true`, refusing every resize, drag and move, with no override
+    /// anywhere to say what the pane is supposed to look like.
     fn refresh_fullscreen(&mut self) {
         if self
             .fullscreen
@@ -1958,6 +1970,9 @@ impl OverlayPanes {
             self.fullscreen = None;
         }
         let geoms = self.fullscreen_geoms();
+        if geoms.is_empty() {
+            self.fullscreen = None;
+        }
         let members: HashSet<PaneId> = geoms.iter().map(|(pane_id, _)| *pane_id).collect();
         for (pane_id, overlay) in self.panes.iter_mut() {
             if !members.contains(pane_id) && overlay.pane.geom_override().is_some() {
@@ -2003,7 +2018,9 @@ impl OverlayPanes {
         }
         self.set_pane_frames().non_fatal();
         self.set_force_render();
-        true
+        // `refresh_fullscreen` above drops an expansion it cannot give a geometry to - an area
+        // with no width or no height - so this is "it is expanded now", not "it was asked for"
+        self.fullscreen.is_some()
     }
 
     /// The frame an expanded overlay wears, matching the floating layer's: none at all when it
