@@ -1087,23 +1087,18 @@ fn render_title(state: &mut State, cols: usize) {
     }
 }
 
-/// One slot at the right edge: what is happening now beats what is pending.
-/// A count rides along when other chats are working too, so a background
-/// reply is visible without looking for its `●` in the bar. The job count is
-/// every tab's: a job fires and bills whichever tab is on screen.
-fn title_note(state: &mut State) -> Option<String> {
-    let elsewhere = match state.parked_count() {
-        0 => String::new(),
-        n => format!(" +{n}"),
-    };
-    let activity = if state.is_streaming() {
-        Some(format!("streaming…{elsewhere}"))
-    } else if !elsewhere.is_empty() {
-        Some(format!("working{elsewhere}"))
-    } else if state.any_jobs() {
-        Some(format!("⏲ {}", state.job_count()))
-    } else {
-        None
+/// One slot at the right edge, for the work the help line cannot see.
+///
+/// The foreground chat's own state belongs to the help line at the bottom of
+/// the pane, where it sits next to the key that acts on it; repeating it here
+/// only costs the tab bar the columns the note takes, for the whole of a reply.
+/// What is left for this slot is work happening off screen: other live chats,
+/// counted so a background reply is visible without looking for its `●` in the
+/// bar, and jobs, which fire and bill whichever tab is on screen.
+fn title_note(state: &State) -> Option<String> {
+    let activity = match state.parked_count() {
+        0 => state.any_jobs().then(|| format!("⏲ {}", state.job_count())),
+        n => Some(format!("+{n}")),
     };
     let usage = usage_note(state);
     match (activity, usage) {
@@ -3400,27 +3395,45 @@ mod tests {
     #[test]
     fn the_title_note_sees_jobs_in_every_tab() {
         let mut state = tabs_state(2);
-        assert_eq!(title_note(&mut state), None, "nothing happening anywhere");
+        assert_eq!(title_note(&state), None, "nothing happening anywhere");
 
         state.usage = Some(crate::TokenUsage {
             input_tokens: 1_200,
             output_tokens: 34,
         });
-        assert_eq!(title_note(&mut state).as_deref(), Some("1.2k in · 34 out"));
+        assert_eq!(title_note(&state).as_deref(), Some("1.2k in · 34 out"));
 
         state.jobs.push(job(1));
         assert_eq!(
-            title_note(&mut state).as_deref(),
+            title_note(&state).as_deref(),
             Some("⏲ 1 · 1.2k in · 34 out")
         );
 
         state.parked[0].jobs.push(job(2));
         assert_eq!(
-            title_note(&mut state).as_deref(),
-            Some("working +1 · 1.2k in · 34 out"),
+            title_note(&state).as_deref(),
+            Some("+1 · 1.2k in · 34 out"),
             "the other tab is live, and counted"
         );
         assert!(chat_tabs(&state, 80)[1].text.starts_with(" ● "));
+    }
+
+    /// The stream the foreground is running is the help line's to report, beside
+    /// the key that cancels it. The top row says only what the bottom cannot see:
+    /// the other chat that is also working.
+    #[test]
+    fn the_title_note_leaves_streaming_to_the_help_line() {
+        let mut state = tabs_state(2);
+        state.stream = Some(crate::StreamState {
+            id: "hocus-1".into(),
+            finishing: false,
+            usage: None,
+        });
+        assert_eq!(title_note(&state), None, "nothing else is working");
+        assert!(help_line(&state).starts_with("streaming…"));
+
+        state.parked[0].jobs.push(job(2));
+        assert_eq!(title_note(&state).as_deref(), Some("+1"));
     }
 
     #[test]
