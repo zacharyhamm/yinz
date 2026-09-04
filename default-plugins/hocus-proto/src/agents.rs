@@ -2079,6 +2079,7 @@ const LABEL_STYLE: MdStyle = MdStyle {
     dim: true,
     color: None,
     error: false,
+    strike: false,
 };
 
 /// How wide the age column is: three columns for the age itself and a space after it, so
@@ -2094,6 +2095,7 @@ const AGE_STYLE: MdStyle = MdStyle {
     dim: false,
     color: Some(2),
     error: false,
+    strike: false,
 };
 
 /// The left-hand column of a history row: how long ago the entry was made, right-aligned in
@@ -2152,6 +2154,7 @@ const SUMMARY_LABEL_STYLE: MdStyle = MdStyle {
     dim: false,
     color: None,
     error: false,
+    strike: false,
 };
 
 /// Whether a pane holds enough to be worth asking about.

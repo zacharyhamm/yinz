@@ -141,6 +141,47 @@ impl Text {
         const UNBOLD_LEVEL: usize = 5;
         self.color_range(UNBOLD_LEVEL, ..)
     }
+    /// Strike through the characters at `indices`.
+    ///
+    /// Level 8, the first free one above `success` — the levels below it are the four
+    /// theme colours, then dim, unbold, error and success. Unlike those, this says nothing
+    /// about colour: a struck run keeps whatever the rest of the line asked for.
+    pub fn strike_indices(mut self, mut indices: Vec<usize>) -> Self {
+        const STRIKE_LEVEL: usize = 8;
+        self.pad_indices(STRIKE_LEVEL);
+        if let Some(i) = self.indices.get_mut(STRIKE_LEVEL) {
+            i.append(&mut indices)
+        }
+        self
+    }
+    pub fn strike_range<R: RangeBounds<usize>>(mut self, indices: R) -> Self {
+        const STRIKE_LEVEL: usize = 8;
+        self.pad_indices(STRIKE_LEVEL);
+        let start = match indices.start_bound() {
+            Bound::Unbounded => 0,
+            Bound::Included(s) => *s,
+            Bound::Excluded(s) => *s + 1,
+        };
+        let end = match indices.end_bound() {
+            Bound::Unbounded => self.text.chars().count(),
+            Bound::Included(s) => *s + 1,
+            Bound::Excluded(s) => *s,
+        };
+        let indices = start..end;
+        if let Some(i) = self.indices.get_mut(STRIKE_LEVEL) {
+            i.append(&mut indices.into_iter().collect())
+        }
+        self
+    }
+    pub fn strike_substring<S: AsRef<str>>(mut self, substr: S) -> Self {
+        for range in substring_char_ranges(&self.text.clone(), substr.as_ref()) {
+            self = self.strike_range(range);
+        }
+        self
+    }
+    pub fn strike_all(self) -> Self {
+        self.strike_range(..)
+    }
     pub fn error_color_indices(mut self, mut indices: Vec<usize>) -> Self {
         const ERROR_COLOR_LEVEL: usize = 6;
         self.pad_indices(ERROR_COLOR_LEVEL);
@@ -642,6 +683,14 @@ mod tests {
         assert!(serialized.starts_with('d'));
         assert!(serialized.contains("0,1,2$"));
         assert!(serialized.ends_with(&text_body("Foo bar baz")));
+    }
+
+    /// An excluded start bound excludes that index. `a..b` cannot spell one, but
+    /// `(Bound::Excluded(n), _)` can, and striking `n` itself would be off by one.
+    #[test]
+    fn an_excluded_start_bound_leaves_its_own_index_alone() {
+        let text = Text::new("abcde").strike_range((Bound::Excluded(2), Bound::Unbounded));
+        assert_eq!(text.indices.get(8), Some(&vec![3, 4]));
     }
 
     /// The empty substring used to spin forever: `find("")` returns `Some(0)` and the cursor
