@@ -112,9 +112,10 @@ use zellij_utils::{
             ProtobufFsEntryList, ProtobufFsListResponse, ProtobufFsMetadataResponse,
             ProtobufFsMutateResponse, ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse,
             ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse,
-            ProtobufGetPaneCwdResponse, ProtobufGetPaneGitProbeResponse,
-            ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
-            ProtobufGetPaneRunningCommandResponse, ProtobufGetPluginAliasConfigurationResponse,
+            ProtobufGetLocalUtcOffsetResponse, ProtobufGetPaneCwdResponse,
+            ProtobufGetPaneGitProbeResponse, ProtobufGetPaneInfoResponse,
+            ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
+            ProtobufGetPluginAliasConfigurationResponse,
             ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
             ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
             ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
@@ -609,6 +610,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::DataCount { request } => data_count(env, request),
             PluginCommand::DataWatch { request, mode } => data_watch(env, request, mode),
             PluginCommand::DataCatalog { namespace } => data_catalog(env, namespace),
+            PluginCommand::GetLocalUtcOffset { epoch_ms } => get_local_utc_offset(env, epoch_ms),
             PluginCommand::DataUnwatch { watch_id } => data_unwatch(env, watch_id),
             PluginCommand::ScanHostFolder(folder_to_scan) => scan_host_folder(env, folder_to_scan),
             PluginCommand::FsRead { path, max_bytes } => fs_read(env, path, max_bytes),
@@ -1562,6 +1564,35 @@ fn check_lua_plugin(env: &mut PluginEnv, name: String, source: String) {
         .with_context(|| {
             format!(
                 "failed to send check lua plugin response to plugin {}",
+                env.name()
+            )
+        })
+        .non_fatal();
+}
+
+/// Seconds east of UTC here, at the instant `epoch_ms`.
+///
+/// The server answers this because it is the only side that can: a plugin is wasm, WASI hands it
+/// none of the session's environment, and nothing that reads a zoneinfo database links into one.
+/// So every absolute date or time a plugin draws is derived from this.
+///
+/// The offset is taken *at that instant* rather than now, so a timestamp from before a
+/// daylight-saving change reads back with the offset that was in force when it was taken. An
+/// instant `chrono` cannot place - out of range, or an hour that a clock change made ambiguous
+/// or skipped - falls back to the offset in force now, which is off by an hour at worst and is
+/// still the right answer for every timestamp taken today.
+fn get_local_utc_offset(env: &mut PluginEnv, epoch_ms: i64) {
+    use chrono::{Local, Offset, TimeZone};
+    let offset_seconds = Local
+        .timestamp_millis_opt(epoch_ms)
+        .single()
+        .map(|at| at.offset().fix().local_minus_utc())
+        .unwrap_or_else(|| Local::now().offset().fix().local_minus_utc());
+    let response = ProtobufGetLocalUtcOffsetResponse { offset_seconds };
+    wasi_write_object(env, &response.encode_to_vec())
+        .with_context(|| {
+            format!(
+                "failed to send utc offset response to plugin {}",
                 env.name()
             )
         })
@@ -7341,6 +7372,10 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         CommandType::FinishQueueJob => return None,
         // Compiling a string of Lua touches nothing: no file is read or written and nothing runs.
         CommandType::CheckLuaPlugin => return None,
+        // A clock. It says the machine's offset from UTC and nothing about the session,
+        // which is less than `GetZellijVersion` already says, and a permission prompt in
+        // front of drawing a timestamp would be answered blind every time.
+        CommandType::GetLocalUtcOffset => return None,
         // Reloading a plugin someone wrote is the second half of writing it.
         CommandType::ReloadPluginByUrl => PermissionType::AuthorPlugins,
         // Reading a plugin's log lines is the authoring loop's "what did it say" step, the same
@@ -7398,6 +7433,7 @@ mod permission_tests {
             CommandType::WatchFilesystem,
             CommandType::FinishQueueJob,
             CommandType::CheckLuaPlugin,
+            CommandType::GetLocalUtcOffset,
         ];
         for kind in CommandType::iter() {
             assert_eq!(

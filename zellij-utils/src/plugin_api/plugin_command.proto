@@ -256,6 +256,7 @@ enum CommandName {
   SetPaneAgentRun = 277;
   DataCatalog = 278;
   SetQuitNotice = 279;
+  GetLocalUtcOffset = 280;
 }
 
 message PluginCommand {
@@ -459,6 +460,7 @@ message PluginCommand {
     SetPaneAgentRunPayload set_pane_agent_run_payload = 218;
     DataCatalogPayload data_catalog_payload = 219;
     SetQuitNoticePayload set_quit_notice_payload = 220;
+    GetLocalUtcOffsetPayload get_local_utc_offset_payload = 221;
   }
 }
 
@@ -678,6 +680,18 @@ message DataUnwatchPayload {
 // An absent namespace asks for every namespace the plugin may see, not for its own.
 message DataCatalogPayload {
   optional string namespace = 1;
+}
+
+// The instant the offset is wanted for, rather than "now": a run that began before
+// a daylight-saving change is read back with the offset that was in force then.
+message GetLocalUtcOffsetPayload {
+  int64 epoch_ms = 1;
+}
+
+// Seconds east of UTC. Signed, and half the planet's is negative, so zigzag rather
+// than a two's-complement varint ten bytes long.
+message GetLocalUtcOffsetResponse {
+  sint32 offset_seconds = 1;
 }
 
 message SetPaneTitlePrefixPayload {

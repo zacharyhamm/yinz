@@ -5052,6 +5052,20 @@ pub enum PluginCommand {
         name: String,
         lines: usize,
     },
+    /// Seconds east of UTC where this session is running, at the instant `epoch_ms`.
+    ///
+    /// A plugin is wasm and has no timezone of its own: WASI inherits none of the session's
+    /// environment, and nothing that reads a zoneinfo database can be linked into one. So the
+    /// only way a plugin can draw an absolute timestamp - rather than the relative ages every
+    /// plugin in the tree settles for - is to ask the server, which is the one side that has
+    /// `chrono`.
+    ///
+    /// The instant is asked for rather than assumed to be now, because a run that started
+    /// before a daylight-saving change is read back long after it: formatting it with today's
+    /// offset would put it an hour out for exactly as long as anyone still cares.
+    GetLocalUtcOffset {
+        epoch_ms: i64,
+    },
 }
 
 /// The job id handed back by `EnqueueQueueJob`.

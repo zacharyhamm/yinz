@@ -27,11 +27,11 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufDumpSessionLayoutResponse, ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse,
     ProtobufFocusOrCreateTabResponse, ProtobufFsListResponse, ProtobufFsMetadataResponse,
     ProtobufFsMutateResponse, ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse,
-    ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse,
-    ProtobufGetPaneGitProbeResponse, ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
-    ProtobufGetPaneRunningCommandResponse, ProtobufGetPluginAliasConfigurationResponse,
-    ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
-    ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
+    ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse,
+    ProtobufGetLocalUtcOffsetResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneGitProbeResponse,
+    ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
+    ProtobufGetPluginAliasConfigurationResponse, ProtobufGetSessionEnvironmentVariablesResponse,
+    ProtobufGetSessionListResponse, ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
     ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
     ProtobufListNotificationsResponse, ProtobufListOrphanedPanesResponse,
     ProtobufListRecordingsResponse, ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse,
@@ -2423,6 +2423,38 @@ fn dump_session_layout_impl(
         Some(dump_session_layout_response::Result::Error(error)) => Err(error),
         None => Err("Server returned empty response".to_string()),
     }
+}
+
+/// Seconds east of UTC where this session is running, at the instant `epoch_ms`.
+///
+/// The one way a plugin can draw an absolute date or time. Wasm has no timezone: WASI inherits
+/// none of the session's environment and nothing that reads a zoneinfo database can be linked
+/// into a plugin, so the offset has to come from the server, which is the side that has
+/// `chrono`.
+///
+/// Asked for an instant rather than for "now", because a timestamp is usually drawn long after
+/// it was taken: a run that began before a daylight-saving change wants the offset that was in
+/// force then, not today's.
+///
+/// The offset is the *server's*, which is where the session runs rather than necessarily where
+/// the person looking at it is - the same clock a plugin's own `SystemTime::now()` already
+/// reads, so a session attached from another timezone reads times as the host keeps them.
+///
+/// `Err` where the round trip failed, which includes a host that answered nothing. A caller
+/// drawing a timestamp should fall back to `0` - UTC, stated as such - rather than refuse to
+/// draw one.
+pub fn get_local_utc_offset(epoch_ms: i64) -> Result<i32, String> {
+    let plugin_command = PluginCommand::GetLocalUtcOffset { epoch_ms };
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command
+        .try_into()
+        .map_err(|e| format!("Failed to encode the GetLocalUtcOffset request: {}", e))?;
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+    let response_bytes = bytes_from_stdin()
+        .map_err(|e| format!("Failed to read the GetLocalUtcOffset response: {}", e))?;
+    let response = ProtobufGetLocalUtcOffsetResponse::decode(response_bytes.as_slice())
+        .map_err(|e| format!("Malformed GetLocalUtcOffset response: {}", e))?;
+    Ok(response.offset_seconds)
 }
 
 /// Compiles `source` as a Lua plugin without loading it. `Err` carries the compile error, which

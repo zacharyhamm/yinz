@@ -1482,6 +1482,9 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             name: strings(tc),
             source: strings(tc),
         },
+        CommandType::GetLocalUtcOffset => PluginCommand::GetLocalUtcOffset {
+            epoch_ms: tc.draw(generators::integers::<i64>()),
+        },
         CommandType::SetPaneAgent => PluginCommand::SetPaneAgent {
             pane_id: pane_id(tc),
             agent: optional_agent_infos(tc),

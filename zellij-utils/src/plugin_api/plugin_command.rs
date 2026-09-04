@@ -67,7 +67,8 @@ pub use super::generated_api::api::{
         GenerateRandomNameResponse as ProtobufGenerateRandomNameResponse,
         GetFocusedPaneInfoPayload,
         GetFocusedPaneInfoResponse as ProtobufGetFocusedPaneInfoResponse, GetLayoutDirPayload,
-        GetLayoutDirResponse as ProtobufGetLayoutDirResponse,
+        GetLayoutDirResponse as ProtobufGetLayoutDirResponse, GetLocalUtcOffsetPayload,
+        GetLocalUtcOffsetResponse as ProtobufGetLocalUtcOffsetResponse,
         GetPaneCwdPayload as ProtobufGetPaneCwdPayload,
         GetPaneCwdResponse as ProtobufGetPaneCwdResponse,
         GetPaneGitProbePayload as ProtobufGetPaneGitProbePayload,
@@ -3258,6 +3259,14 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 }),
                 _ => Err("Mismatched payload for DataCatalog"),
             },
+            Some(CommandName::GetLocalUtcOffset) => match protobuf_plugin_command.payload {
+                Some(Payload::GetLocalUtcOffsetPayload(payload)) => {
+                    Ok(PluginCommand::GetLocalUtcOffset {
+                        epoch_ms: payload.epoch_ms,
+                    })
+                },
+                _ => Err("Mismatched payload for GetLocalUtcOffset"),
+            },
             Some(CommandName::EnqueueQueueJob) => match protobuf_plugin_command.payload {
                 Some(Payload::EnqueueQueueJobPayload(payload)) => {
                     Ok(PluginCommand::EnqueueQueueJob {
@@ -5022,6 +5031,12 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     name,
                     source,
                 })),
+            }),
+            PluginCommand::GetLocalUtcOffset { epoch_ms } => Ok(ProtobufPluginCommand {
+                name: CommandName::GetLocalUtcOffset as i32,
+                payload: Some(Payload::GetLocalUtcOffsetPayload(
+                    GetLocalUtcOffsetPayload { epoch_ms },
+                )),
             }),
             PluginCommand::GetLayoutDir => Ok(ProtobufPluginCommand {
                 name: CommandName::GetLayoutDir as i32,
@@ -7141,6 +7156,7 @@ mod tests {
                 | PluginCommand::SetQuitNotice { .. }
                 | PluginCommand::ReloadPluginByUrl(_)
                 | PluginCommand::ReadPluginLog { .. }
+                | PluginCommand::GetLocalUtcOffset { .. }
                 | PluginCommand::Unsubscribe(_)
                 | PluginCommand::SetSelectable(_)
                 | PluginCommand::GetPluginIds

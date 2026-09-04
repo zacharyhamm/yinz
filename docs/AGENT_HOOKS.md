@@ -379,6 +379,28 @@ at a time; select `load older runs…` and press Enter for the next page. Select
 that run's full history into the bottom half; a summary is the newest row of that timeline
 rather than a block above it, and the rule names the run and says how far it is wound back.
 
+Two rows are pinned under that rule, above the timeline, and do not scroll with it: the exact
+date and time the session started, and its **whole** session id. Both are things the timeline
+cannot say. The rule's `short_run_id` keeps eight characters of a uuid, which tells one of a
+pane's runs from another but is not an id you can paste into a `--resume`, a log grep or an
+`agent_run` call; and every row below the header wears a *relative* age (`12m`, `3h`, `5d`),
+which stops being an answer the moment the question is which afternoon a run was. A half with
+no room for both the header and a line of timeline drops the header rather than squeezing the
+timeline, and a run whose agent supplied no session id is headed by its run id instead — that
+shape is keyed by pane and start time, and calling it a session would be a claim it cannot
+make.
+
+The start time is drawn as local wall clock, which a plugin cannot work out for itself: wasm
+has no timezone, WASI inherits none of the session's environment, and nothing that reads a
+zoneinfo database links into a plugin. So there is one host command for it,
+`get_local_utc_offset(epoch_ms)`, answered server-side with `chrono`. It is asked about the
+instant being drawn rather than about *now*, so a run that began before a daylight-saving
+change reads back with the offset that was in force then. It needs no permission — an offset
+from UTC says less about the machine than `GetPluginIds` already does — and the offset it
+returns is the *server's*, so a session attached from another timezone reads times as the host
+keeps them. The offset is always named in the output (`+01:00`), so a fallback to UTC is
+legible as UTC rather than silently an hour or eight wrong.
+
 `Tab` moves the keyboard between the halves, and so does a click — the rule is where the focus
 shows. `j`/`k` do whatever the half they are in does with a line: walk the selection, or scroll
 the history. The arrows always walk the list, and PageUp/PageDown and the mouse wheel always
@@ -531,6 +553,8 @@ added. `zellij hocus hooks status` says when the installed script is old.
 | What a row draws | `default-plugins/hocus-proto/src/agents.rs` (`HookFeed::from_agent`, `status_cell`, `waiting_marker`, `kind_cell`, `HOOK_MARKER`) |
 | What a wait says, and the summary | same (`waiting_toast`, `run_summary_request_body`, `local_summary`) |
 | Run types, reduction and rendering | same (`AgentRun`, `run_entry`, `run_history`, `rows::run_mutations`, `rows::hydrate_entries`) |
+| The header pinned above a run's timeline | same (`run_header`, `wrapped_field`, `wall_clock`, `civil_from_days`, `HistoryLines::header`), drawn by `default-plugins/hocus-agents/src/main.rs` (`header_rows`, `render_history`) |
+| The local UTC offset a wall clock needs | `zellij-tile/src/shim.rs` (`get_local_utc_offset`), `zellij-server/src/plugins/zellij_exports.rs` (`get_local_utc_offset`), `zellij-utils/src/data.rs` (`PluginCommand::GetLocalUtcOffset`) |
 | Receiving the broadcast, persisting, publishing, toasting | `default-plugins/hocus-agentd/src/main.rs` (`on_hook_with`, `record_run_event`, `summarize_run_now_with`, `finish_local_summary_with`) |
 | Summaries somebody asked for | `default-plugins/hocus-agentd/src/main.rs` (`summarize_pane_now_with`, `send_run_summary`, `summarize_run_now_with`, `finish_run_summary`, `run_delta`), `default-plugins/hocus-proto/src/agents.rs` (`push_summary_entry`, `RunEntryKind::Summary`), `default-plugins/hocus-agents/src/main.rs` (`request_summary`) |
 | Archive paging and selection | `default-plugins/hocus/src/transitions.rs`, `default-plugins/hocus-agents/src/main.rs` |
