@@ -28,6 +28,15 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// messages, and the last one names the phase a silent provider was in.
 pub const PROGRESS_PREFIX: &str = "progress: ";
 
+/// The inactivity budget a stub provider gets in a test whose subject is not the clock.
+///
+/// Deliberately far past anything a stub does, so a loaded machine cannot turn a test about
+/// the protocol into a test about timing. The few tests that do mean to time something out
+/// name their own budget instead, and every stub is one `write_warm_script` has already run
+/// once - a fresh executable's first run costs seconds on macOS, a later one milliseconds.
+#[cfg(test)]
+pub(crate) const AMPLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn vm_id(session: &str, name: &str) -> String {
     let mut hasher = PortableHash::new(Key::default());
     hasher.append(session.as_bytes());
@@ -588,7 +597,7 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use tempfile::TempDir;
-    use zellij_test_support::write_script;
+    use zellij_test_support::write_warm_script;
 
     #[test]
     fn vm_ids_are_stable_and_do_not_expose_session_paths() {
@@ -600,7 +609,7 @@ mod tests {
     fn provider_script(body: &str, timeout: Duration) -> (TempDir, Provider) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("provider");
-        write_script(&path, &format!("#!/bin/sh\n{body}\n"));
+        write_warm_script(&path, body);
         let provider = Provider::new(path, timeout).unwrap();
         (dir, provider)
     }
@@ -621,7 +630,7 @@ mod tests {
     fn a_listing_carries_the_image_and_worktree_a_provider_names() {
         let (_dir, provider) = provider_script(
             r#"printf '%s' '{"version":2,"vms":[{"session":"work","name":"review","state":"running","image":"rust-dev","worktree":"/repo"}]}'"#,
-            Duration::from_secs(1),
+            AMPLE_TIMEOUT,
         );
         assert_eq!(
             provider.list(None).unwrap(),
@@ -643,11 +652,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("provider");
         let log = dir.path().join("requests");
-        write_script(
+        write_warm_script(
             &path,
             &format!(
-                r#"#!/bin/sh
-request=$(cat)
+                r#"request=$(cat)
 printf '%s\n' "$request" >> '{}'
 case "$request" in
   *'"action":"ensure"'*) printf '%s' '{{"version":2,"ssh_host":"ssh://zellij@127.0.0.1:2201","cwd":"/workspace"}}' ;;
@@ -660,7 +668,7 @@ esac
                 log.display()
             ),
         );
-        let provider = Provider::new(path, Duration::from_secs(1)).unwrap();
+        let provider = Provider::new(path, AMPLE_TIMEOUT).unwrap();
 
         let first = provider
             .ensure(
@@ -740,7 +748,7 @@ esac
 
     #[test]
     fn malformed_provider_output_is_rejected() {
-        let (_dir, provider) = provider_script("printf 'not json'", Duration::from_secs(1));
+        let (_dir, provider) = provider_script("printf 'not json'", AMPLE_TIMEOUT);
         let error = provider
             .ensure("work", "review", None, None, &AtomicBool::new(false))
             .unwrap_err()
@@ -750,8 +758,7 @@ esac
 
     #[test]
     fn provider_exit_failures_include_stderr() {
-        let (_dir, provider) =
-            provider_script("printf 'broken' >&2; exit 7", Duration::from_secs(1));
+        let (_dir, provider) = provider_script("printf 'broken' >&2; exit 7", AMPLE_TIMEOUT);
         let error = provider
             .ensure("work", "review", None, None, &AtomicBool::new(false))
             .unwrap_err()
@@ -772,7 +779,10 @@ esac
             .unwrap_err()
             .to_string();
         assert!(error.contains("silent for"), "{error}");
-        assert!(started.elapsed() < Duration::from_secs(1));
+        // The stub never exits, so any finite elapsed already says the inactivity
+        // timeout is what ended the run. The bound is deliberately loose: it catches
+        // a timeout that never fires, and nothing else worth measuring here.
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 
     #[test]
@@ -780,10 +790,13 @@ esac
         let (dir, provider) = provider_script(
             r#"lock="$(dirname "$0")/lock"
 if ! mkdir "$lock"; then touch "$(dirname "$0")/overlap"; fi
-sleep 0.6
+sleep 1
 rmdir "$lock"
 printf '{"version":2}'"#,
-            Duration::from_secs(1),
+            // Wide enough on both sides: one 1s run has 600ms of slack, while a
+            // timeout that ran during the wait for the lock would find the second
+            // invocation silent for 2s and kill it.
+            Duration::from_millis(1600),
         );
         let other = provider.clone();
         let barrier = Arc::new(std::sync::Barrier::new(3));
@@ -803,7 +816,7 @@ printf '{"version":2}'"#,
         for thread in threads {
             thread.join().unwrap().unwrap();
         }
-        assert!(started.elapsed() > Duration::from_secs(1));
+        assert!(started.elapsed() > Duration::from_secs(2));
         assert!(!dir.path().join("overlap").exists());
     }
 
@@ -813,9 +826,11 @@ printf '{"version":2}'"#,
     #[test]
     fn progress_output_keeps_a_working_provider_alive() {
         let (_dir, provider) = provider_script(
-            "for i in 1 2 3 4; do echo 'progress: copying' >&2; sleep 0.3; done\n\
+            "for i in 1 2 3 4 5; do echo 'progress: copying' >&2; sleep 0.5; done\n\
              printf '{\"version\":2}'",
-            Duration::from_millis(500),
+            // 2.5s of work under a 1.5s budget, in 0.5s steps: the run only finishes
+            // if each report rearms the clock.
+            Duration::from_millis(1500),
         );
         provider.stop_session("work").unwrap();
     }
@@ -825,7 +840,7 @@ printf '{"version":2}'"#,
         let (_dir, provider) = provider_script(
             "printf 'progress: boot' >&2; sleep 0.05; printf 'ing the guest\\nprogress: syncing files\\n' >&2\n\
              printf '{\"version\":2,\"ssh_host\":\"vm.example\"}'",
-            Duration::from_secs(1),
+            AMPLE_TIMEOUT,
         );
         let mut phases = vec![];
         provider
@@ -847,10 +862,10 @@ printf '{"version":2}'"#,
             "echo 'progress: booting the guest' >&2\n\
              echo 'progress: copying the worktree into the guest' >&2\n\
              sleep 5",
-            Duration::from_millis(300),
+            Duration::from_millis(500),
         );
         let error = provider.stop_session("work").unwrap_err().to_string();
-        assert!(error.contains("silent for 300ms"), "{error}");
+        assert!(error.contains("silent for 500ms"), "{error}");
         assert!(
             error.ends_with("(last: copying the worktree into the guest)"),
             "{error}"
@@ -866,7 +881,7 @@ printf '{"version":2}'"#,
             "echo 'progress: booting the guest' >&2\n\
              echo 'warning: this VM runs without host-side limits' >&2\n\
              printf '{\"version\":2,\"ssh_host\":\"ssh://zellij@127.0.0.1:2201\"}'",
-            Duration::from_secs(1),
+            AMPLE_TIMEOUT,
         );
         let response = provider
             .ensure("work", "review", None, None, &AtomicBool::new(false))
@@ -883,7 +898,7 @@ printf '{"version":2}'"#,
                 "head -c {} /dev/zero | tr '\\0' 'x' >&2\necho >&2\necho 'the guest never answered' >&2\nexit 1",
                 MAX_OUTPUT + 10
             ),
-            Duration::from_secs(5),
+            AMPLE_TIMEOUT,
         );
         let error = provider.stop_session("work").unwrap_err().to_string();
         assert!(error.contains("the guest never answered"), "{error}");
@@ -895,7 +910,7 @@ printf '{"version":2}'"#,
     fn progress_lines_are_kept_out_of_provider_errors() {
         let (_dir, provider) = provider_script(
             "echo 'progress: booting the guest' >&2\necho 'no free TAP devices' >&2\nexit 1",
-            Duration::from_secs(1),
+            AMPLE_TIMEOUT,
         );
         let error = provider.stop_session("work").unwrap_err().to_string();
         assert!(error.ends_with(": no free TAP devices"), "{error}");
@@ -907,8 +922,12 @@ printf '{"version":2}'"#,
     #[test]
     fn a_timed_out_provider_takes_its_children_with_it() {
         let (dir, provider) = provider_script(
-            r#"sleep 60 & echo $! > "$(dirname "$0")/child"; wait"#,
-            Duration::from_millis(200),
+            // The heartbeat comes first so the clock is rearmed at a moment the stub
+            // controls, and the pid the assertions need is written on a fresh one.
+            r#"echo 'progress: started' >&2
+sleep 60 & echo $! > "$(dirname "$0")/child"
+wait"#,
+            Duration::from_millis(500),
         );
         let error = provider.stop_session("work").unwrap_err().to_string();
         assert!(error.contains("silent for"), "{error}");
@@ -931,8 +950,8 @@ printf '{"version":2}'"#,
     #[test]
     fn provider_does_not_wait_for_pipes_inherited_by_a_background_child() {
         let (_dir, provider) = provider_script(
-            "sleep 2 & printf '{\"version\":2,\"ssh_host\":\"build-box\"}'",
-            Duration::from_secs(1),
+            "sleep 5 & printf '{\"version\":2,\"ssh_host\":\"build-box\"}'",
+            AMPLE_TIMEOUT,
         );
         let started = Instant::now();
 
@@ -943,14 +962,16 @@ printf '{"version":2}'"#,
                 .ssh_host,
             "build-box"
         );
-        assert!(started.elapsed() < Duration::from_secs(1));
+        // Well short of the background child's 5s: waiting on the pipes it
+        // inherited would take the whole five.
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
     fn oversized_provider_output_is_rejected() {
         let (_dir, provider) = provider_script(
             "dd if=/dev/zero bs=1048577 count=1 2>/dev/null",
-            Duration::from_secs(1),
+            AMPLE_TIMEOUT,
         );
         let error = provider
             .ensure("work", "review", None, None, &AtomicBool::new(false))

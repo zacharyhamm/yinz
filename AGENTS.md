@@ -172,7 +172,7 @@ and `/bin/true` does not exist there — `/usr/bin/true` is on both.
 loggers in `unit/screen_tests/` and `plugins/unit/plugin_tests/` already hold their instruction
 logs in one, so a test can wait for the condition it actually cares about.
 
-Two rules learned the hard way, both from tests that were flaky for years:
+Three rules learned the hard way, all from tests that were flaky for years:
 
 - **Never assert on `snapshots.last()` or on a render count.** Renders are asynchronous and
   coalesce, so *which* frame is last and *how many* arrive are properties of the scheduler, not of
@@ -186,6 +186,15 @@ Two rules learned the hard way, both from tests that were flaky for years:
 - **A sleep is not a synchronisation primitive.** Instructions sent to the screen or plugin thread
   are drained in order, so ordering never needs a sleep; only *observing the result* does, and
   that is what `wait_until` is for.
+- **A stub script's first run is not free.** macOS evaluates a newly written executable the first
+  time it runs, and under the suite's own spawn storm — nextest gives every test a process — that
+  costs *seconds*: measured here, the first exec of a fresh `#!/bin/sh` stub took 2.4s while every
+  later exec of the same path took 5ms. `Command::spawn` returns in microseconds either way, so a
+  deadline armed at spawn is timing that check rather than the child. Write a stub with
+  `zellij_test_support::write_warm_script`, which runs it once as a no-op first, and give a test
+  whose subject is not the clock a budget it cannot reach (`firecracker::AMPLE_TIMEOUT`). The
+  `firecracker` provider suite failed this way: at 200ms–1s budgets it lost 8–11 tests per run on
+  macOS and passed serially.
 
 ~580 `sleep()` calls remain in other tests. They are a mechanical follow-up, deliberately not
 converted in bulk: changing scheduling everywhere at once is a bigger perturbation than the
