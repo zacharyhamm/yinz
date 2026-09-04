@@ -2192,6 +2192,57 @@ fn a_fullscreen_keystroke_expands_the_overlay_that_has_the_keyboard() {
     );
 }
 
+/// A press naming an overlay that may not be expanded - a modal, here - still puts back the
+/// expansion that was on screen, and what that screenful was covering has to be painted again.
+///
+/// The tab used to hang that repaint on the toggle answering `true`, which this press does not:
+/// it collapses the expansion and *then* refuses. Nothing else asks a tiled pane that did not
+/// change to draw itself, so what stayed on screen was a ghost of the overlay that had just been
+/// put back.
+#[test]
+fn a_refused_fullscreen_press_repaints_what_the_expansion_covered() {
+    let size = Size { cols: 80, rows: 12 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, 0);
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .handle_pty_bytes(1, b"TILED".to_vec())
+        .expect("TEST");
+    open_popup(&mut screen, 2, "OVERLAY");
+    let modal_id = add_modal_plugin_overlay(&mut screen, 3);
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .toggle_pane_fullscreen(PaneId::Terminal(2));
+
+    // one grid across both renders, because the ghost is the frame the second render *fails* to
+    // paint over - a fresh grid per render could not show it
+    let (server_sender, server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    let mut grid = grid_for_render_snapshot(size);
+    let expanded = render_frame_into(&mut screen, &server_receiver, 1, &mut grid);
+    assert!(
+        !expanded.contains("TILED"),
+        "the expansion covers the tiled pane, got:\n{expanded}"
+    );
+
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .toggle_pane_fullscreen(modal_id);
+
+    assert!(
+        screen.tabs[&0].fullscreen_pane_id().is_none(),
+        "a press naming a modal puts the expansion back, even though it may not expand the modal"
+    );
+    let collapsed = render_frame_into(&mut screen, &server_receiver, 1, &mut grid);
+    assert!(
+        collapsed.contains("TILED"),
+        "and the pane the expansion was covering is painted again, got:\n{collapsed}"
+    );
+}
+
 /// The same keystroke with a fullscreen floating pane underneath - the twin of
 /// `a_resize_keystroke_reaches_an_overlay_over_a_fullscreen_floating_pane`, and the state where
 /// the floating branch would happily have answered a keystroke that was never about it.

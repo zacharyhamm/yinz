@@ -5200,12 +5200,18 @@ impl Tab {
         if !self.overlay_panes.panes_contain(&pane_id) {
             return false;
         }
+        // what the repaint below is about is the expansion *changing*, which is not the same as
+        // the toggle answering `true`: a press naming an overlay that may not be expanded - a
+        // modal, a hidden one, one still awaiting its placement - puts the expansion that was
+        // there back and then refuses, and the screenful it gave up has to be repainted all the
+        // same. Without this that press left a ghost of it over the panes underneath.
+        let was_expanded = self.overlay_panes.fullscreen_is_active();
         let toggled = if covers_ui {
             self.overlay_panes.toggle_pane_no_ui_fullscreen(pane_id)
         } else {
             self.overlay_panes.toggle_pane_fullscreen(pane_id)
         };
-        if toggled {
+        if toggled || was_expanded {
             // the overlay is painted last, over a tab that has just had a screenful of it taken
             // away, so everything it was covering has to be asked for again
             self.set_force_render();
@@ -5226,6 +5232,9 @@ impl Tab {
         let on_an_overlay = self
             .get_active_pane_id(client_id)
             .is_some_and(|pane_id| self.overlay_panes.panes_contain(&pane_id));
+        // as in `overlay_takes_fullscreen`: the repaint is owed to the expansion changing, not to
+        // the keystroke being answered
+        let was_expanded = self.overlay_panes.fullscreen_is_active();
         let claimed = if on_an_overlay {
             if covers_ui {
                 self.overlay_panes
@@ -5236,7 +5245,7 @@ impl Tab {
         } else {
             self.overlay_panes.unset_fullscreen()
         };
-        if claimed {
+        if claimed || was_expanded {
             self.set_force_render();
             self.set_should_clear_display_before_rendering();
         }
