@@ -22,7 +22,7 @@ use std::rc::Rc;
 use vte;
 use zellij_utils::data::PaneContents;
 use zellij_utils::data::{
-    BareKey, KeyWithModifier, PermissionStatus, PermissionType, PluginPermission,
+    BareKey, Direction, KeyWithModifier, PermissionStatus, PermissionType, PluginPermission,
 };
 use zellij_utils::pane_size::{Offset, SizeInPixels};
 use zellij_utils::position::Position;
@@ -753,6 +753,40 @@ impl Pane for PluginPane {
     fn reset_selection(&mut self, client_id: Option<ClientId>) {
         if let Some(grid) = client_id.and_then(|c| self.grids.get_mut(&c)) {
             grid.reset_selection();
+            self.set_should_render(true);
+        }
+    }
+    fn start_text_selection(&mut self, client_id: ClientId) {
+        let position = self
+            .cursor_visibility
+            .get(&client_id)
+            .copied()
+            .flatten()
+            .map(|(column, line)| Position::new(line as i32, column as u16))
+            .unwrap_or_else(|| Position::new(self.get_content_rows().saturating_sub(1) as i32, 0));
+        if self.supports_mouse_selection {
+            if let Some(grid) = self.grids.get_mut(&client_id) {
+                grid.start_text_selection(position);
+                self.set_should_render(true);
+            }
+        }
+    }
+    fn move_text_selection(&mut self, direction: Direction, client_id: ClientId) {
+        if self.supports_mouse_selection {
+            if let Some(grid) = self.grids.get_mut(&client_id) {
+                grid.move_text_selection(direction);
+                self.set_should_render(true);
+            }
+        }
+    }
+    fn remember_copied_text_selection(&mut self, client_id: ClientId) {
+        if let Some(grid) = self.grids.get_mut(&client_id) {
+            grid.remember_copied_text_selection();
+        }
+    }
+    fn finish_text_selection(&mut self, client_id: ClientId) {
+        if let Some(grid) = self.grids.get_mut(&client_id) {
+            grid.finish_text_selection();
             self.set_should_render(true);
         }
     }

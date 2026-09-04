@@ -31,8 +31,8 @@ use zellij_utils::input::mouse::{MouseEvent, MouseEventType};
 use zellij_utils::pane_size::Offset;
 use zellij_utils::{
     data::{
-        BareKey, InputMode, KeyWithModifier, Palette, PaletteColor, PaneId as ZellijUtilsPaneId,
-        RegexHighlight, Style, Styling,
+        BareKey, Direction, InputMode, KeyWithModifier, Palette, PaletteColor,
+        PaneId as ZellijUtilsPaneId, RegexHighlight, Style, Styling,
     },
     errors::prelude::*,
     input::layout::Run,
@@ -1059,6 +1059,30 @@ impl Pane for TerminalPane {
 
     fn reset_selection(&mut self, _client_id: Option<ClientId>) {
         self.grid.reset_selection();
+    }
+
+    fn start_text_selection(&mut self, _client_id: ClientId) {
+        let position = self
+            .grid
+            .selection_cursor_coordinates()
+            .map(|(column, line)| Position::new(line as i32, column as u16))
+            .unwrap_or_else(|| Position::new(self.grid.height.saturating_sub(1) as i32, 0));
+        self.grid.start_text_selection(position);
+        self.set_should_render(true);
+    }
+
+    fn move_text_selection(&mut self, direction: Direction, _client_id: ClientId) {
+        self.grid.move_text_selection(direction);
+        self.set_should_render(true);
+    }
+
+    fn remember_copied_text_selection(&mut self, _client_id: ClientId) {
+        self.grid.remember_copied_text_selection();
+    }
+
+    fn finish_text_selection(&mut self, _client_id: ClientId) {
+        self.grid.finish_text_selection();
+        self.set_should_render(true);
     }
 
     fn get_selected_text(&self, _client_id: ClientId) -> Option<String> {

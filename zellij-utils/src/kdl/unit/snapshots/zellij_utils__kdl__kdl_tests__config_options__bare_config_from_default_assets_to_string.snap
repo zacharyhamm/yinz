@@ -1,6 +1,5 @@
 ---
 source: zellij-utils/src/kdl/./unit/config_options.rs
-assertion_line: 228
 expression: fake_config_stringified
 ---
 keybinds clear-defaults=true {
@@ -28,6 +27,7 @@ keybinds clear-defaults=true {
         bind "Ctrl p" { SwitchToMode "normal"; }
         bind "r" { NewPane "right"; SwitchToMode "normal"; }
         bind "s" { NewPane "stacked"; SwitchToMode "normal"; }
+        bind "v" { SwitchToMode "select"; }
         bind "w" { ToggleFloatingPanes; SwitchToMode "normal"; }
         bind "z" { TogglePaneFrames; SwitchToMode "normal"; }
     }
@@ -183,10 +183,7 @@ keybinds clear-defaults=true {
             SwitchToMode "normal"
         }
     }
-    shared_except "locked" "agent" {
-        bind "Ctrl e" { SwitchToMode "agent"; }
-    }
-    shared_except "locked" {
+    shared_except "locked" "select" {
         bind "Alt left" { MoveFocusOrTab "left"; }
         bind "Alt down" { MoveFocus "down"; }
         bind "Alt up" { MoveFocus "up"; }
@@ -216,6 +213,9 @@ keybinds clear-defaults=true {
         bind "Alt Shift p" { ToggleGroupMarking; }
         bind "Ctrl q" { Quit; }
     }
+    shared_except "locked" "agent" {
+        bind "Ctrl e" { SwitchToMode "agent"; }
+    }
     shared_except "locked" "move" {
         bind "Ctrl h" { SwitchToMode "move"; }
     }
@@ -237,7 +237,7 @@ keybinds clear-defaults=true {
     shared_except "locked" "resize" {
         bind "Ctrl n" { SwitchToMode "resize"; }
     }
-    shared_except "normal" "locked" "entersearch" {
+    shared_except "normal" "locked" "entersearch" "select" {
         bind "enter" { SwitchToMode "normal"; }
     }
     shared_except "normal" "locked" "entersearch" "renametab" "renamepane" {
@@ -275,7 +275,7 @@ keybinds clear-defaults=true {
     renametab {
         bind "esc" { UndoRenameTab; SwitchToMode "tab"; }
     }
-    shared_among "renametab" "renamepane" {
+    shared_among "renametab" "renamepane" "select" {
         bind "Ctrl c" { SwitchToMode "normal"; }
     }
     renamepane {
@@ -304,6 +304,17 @@ keybinds clear-defaults=true {
         bind "o" { FocusNextPane; }
         bind "p" { GoToPreviousTab; SwitchToMode "normal"; }
         bind "z" { ToggleFocusFullscreen; SwitchToMode "normal"; }
+    }
+    select {
+        bind "left" { MoveTextSelection "left"; }
+        bind "down" { MoveTextSelection "down"; }
+        bind "up" { MoveTextSelection "up"; }
+        bind "right" { MoveTextSelection "right"; }
+        bind "h" { MoveTextSelection "left"; }
+        bind "j" { MoveTextSelection "down"; }
+        bind "k" { MoveTextSelection "up"; }
+        bind "l" { MoveTextSelection "right"; }
+        bind "enter" { Copy; SwitchToMode "normal"; }
     }
 }
 plugins {

@@ -252,6 +252,7 @@ message Action {
     SetPaneFrameStylePayload set_pane_frame_style_payload = 61;
     NewStackedPanePayload new_stacked_pane_payload = 62;
     string notify_payload = 64;
+    resize.ResizeDirection move_text_selection_payload = 65;
   }
   reserved 63;
 }
@@ -527,6 +528,7 @@ enum ActionName {
     ScrollToNextPrompt = 113;
     SelectCommandAtScrollPosition = 114;
     CopyLastCommandOutput = 115;
+    MoveTextSelection = 116;
     reserved 110;
 }
 

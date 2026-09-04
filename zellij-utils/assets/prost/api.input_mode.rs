@@ -40,6 +40,8 @@ pub enum InputMode {
     Tmux = 13,
     /// / `Agent` mode gathers the hocus agent actions behind a single leader.
     Agent = 14,
+    /// / `Select` mode extends a text selection in the focused pane.
+    Select = 15,
 }
 impl InputMode {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -63,6 +65,7 @@ impl InputMode {
             InputMode::Prompt => "Prompt",
             InputMode::Tmux => "Tmux",
             InputMode::Agent => "Agent",
+            InputMode::Select => "Select",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -83,6 +86,7 @@ impl InputMode {
             "Prompt" => Some(Self::Prompt),
             "Tmux" => Some(Self::Tmux),
             "Agent" => Some(Self::Agent),
+            "Select" => Some(Self::Select),
             _ => None,
         }
     }

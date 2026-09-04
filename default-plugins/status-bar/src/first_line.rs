@@ -581,7 +581,7 @@ fn get_key_shortcut_for_mode<'a>(
     let key_action = match mode {
         InputMode::Normal | InputMode::Prompt | InputMode::Tmux => return None,
         InputMode::Locked => KeyAction::Lock,
-        InputMode::Pane | InputMode::RenamePane => KeyAction::Pane,
+        InputMode::Pane | InputMode::RenamePane | InputMode::Select => KeyAction::Pane,
         InputMode::Tab | InputMode::RenameTab => KeyAction::Tab,
         InputMode::Resize => KeyAction::Resize,
         InputMode::Move => KeyAction::Move,
@@ -773,6 +773,7 @@ mod tests {
             InputMode::Prompt,
             InputMode::Tmux,
             InputMode::Agent,
+            InputMode::Select,
         ]
     }
 

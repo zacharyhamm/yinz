@@ -1158,6 +1158,7 @@ impl TryFrom<crate::input::actions::Action>
             MovePaneByPaneIdAction,
             MoveTabAction,
             MoveTabByTabIdAction,
+            MoveTextSelectionAction,
             NewBlockingPaneAction,
             NewFloatingPaneAction,
             NewFloatingPluginPaneAction,
@@ -1402,6 +1403,11 @@ impl TryFrom<crate::input::actions::Action>
             },
             crate::input::actions::Action::CopyLastCommandOutput => {
                 ActionType::CopyLastCommandOutput(CopyLastCommandOutputAction {})
+            },
+            crate::input::actions::Action::MoveTextSelection { direction } => {
+                ActionType::MoveTextSelection(MoveTextSelectionAction {
+                    direction: direction_to_proto_i32(direction),
+                })
             },
             crate::input::actions::Action::PageScrollUp => {
                 ActionType::PageScrollUp(PageScrollUpAction {})
@@ -2388,6 +2394,11 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             },
             ActionType::CopyLastCommandOutput(_) => {
                 Ok(crate::input::actions::Action::CopyLastCommandOutput)
+            },
+            ActionType::MoveTextSelection(action) => {
+                Ok(crate::input::actions::Action::MoveTextSelection {
+                    direction: proto_i32_to_direction(action.direction)?,
+                })
             },
             ActionType::PageScrollUp(_) => Ok(crate::input::actions::Action::PageScrollUp),
             ActionType::PageScrollDown(_) => Ok(crate::input::actions::Action::PageScrollDown),
@@ -3587,6 +3598,7 @@ fn input_mode_to_proto_i32(mode: InputMode) -> i32 {
         InputMode::Prompt => ProtoInputMode::Prompt as i32,
         InputMode::Tmux => ProtoInputMode::Tmux as i32,
         InputMode::Agent => ProtoInputMode::Agent as i32,
+        InputMode::Select => ProtoInputMode::Select as i32,
     }
 }
 
@@ -3607,6 +3619,7 @@ fn proto_i32_to_input_mode(i: i32) -> Result<InputMode> {
         Ok(ProtoInputMode::Prompt) => Ok(InputMode::Prompt),
         Ok(ProtoInputMode::Tmux) => Ok(InputMode::Tmux),
         Ok(ProtoInputMode::Agent) => Ok(InputMode::Agent),
+        Ok(ProtoInputMode::Select) => Ok(InputMode::Select),
         _ => Err(anyhow!("Invalid InputMode value: {}", i)),
     }
 }

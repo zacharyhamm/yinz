@@ -162,6 +162,7 @@ pub enum ScreenInstruction {
     ScrollToNextPrompt(ClientId, Option<NotificationEnd>),
     SelectCommandAtScrollPosition(ClientId, Option<NotificationEnd>),
     CopyLastCommandOutput(ClientId, Option<NotificationEnd>),
+    MoveTextSelection(Direction, ClientId, Option<NotificationEnd>),
     /// The feedback flash `CopyLastCommandOutput` painted has run its course.
     ClearCommandOutputFlash(PaneId),
     PageScrollUp(ClientId, Option<NotificationEnd>),

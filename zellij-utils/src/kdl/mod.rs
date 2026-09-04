@@ -522,6 +522,16 @@ impl Action {
                 })?;
                 Ok(Action::MoveFocus { direction })
             },
+            "MoveTextSelection" => {
+                let direction = Direction::from_str(string.as_str()).map_err(|_| {
+                    ConfigError::new_kdl_error(
+                        format!("Invalid direction: '{}'", string),
+                        action_node.span().offset(),
+                        action_node.span().len(),
+                    )
+                })?;
+                Ok(Action::MoveTextSelection { direction })
+            },
             "MoveFocusOrTab" => {
                 let direction = Direction::from_str(string.as_str()).map_err(|_| {
                     ConfigError::new_kdl_error(
@@ -756,6 +766,16 @@ impl Action {
             },
             Action::ScrollUp => Some(KdlNode::new("ScrollUp")),
             Action::ScrollDown => Some(KdlNode::new("ScrollDown")),
+            Action::MoveTextSelection { direction } => {
+                let mut node = KdlNode::new("MoveTextSelection");
+                node.push(match direction {
+                    Direction::Left => "left",
+                    Direction::Right => "right",
+                    Direction::Up => "up",
+                    Direction::Down => "down",
+                });
+                Some(node)
+            },
             Action::ScrollToBottom => Some(KdlNode::new("ScrollToBottom")),
             Action::ScrollToTop => Some(KdlNode::new("ScrollToTop")),
             Action::ScrollToPreviousPrompt => Some(KdlNode::new("ScrollToPreviousPrompt")),
@@ -1713,6 +1733,11 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 kdl_action
             ),
             "MoveFocus" => parse_kdl_action_char_or_string_arguments!(
+                action_name,
+                action_arguments,
+                kdl_action
+            ),
+            "MoveTextSelection" => parse_kdl_action_char_or_string_arguments!(
                 action_name,
                 action_arguments,
                 kdl_action

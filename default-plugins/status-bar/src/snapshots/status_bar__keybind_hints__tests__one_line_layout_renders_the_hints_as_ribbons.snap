@@ -3,7 +3,7 @@ source: default-plugins/status-bar/src/keybind_hints.rs
 expression: listing
 ---
 == Pane
-wide:   n [New] ←↓↑→ [Change Focus] x [Close] c [Rename] f [Toggle Fullscreen] w [Toggle Floating] e [Toggle Embed] r [Split Right] d [Split Down] s [Stack] ENTER [Select pane]
+wide:   n [New] ←↓↑→ [Change Focus] x [Close] c [Rename] f [Toggle Fullscreen] w [Toggle Floating] e [Toggle Embed] r [Split Right] d [Split Down] s [Stack] v [Select text] ENTER [Select pane]
 tight:  n [New] ←↓↑→ [Move] x [Close] c [Rename] ... 
 
 == Tab

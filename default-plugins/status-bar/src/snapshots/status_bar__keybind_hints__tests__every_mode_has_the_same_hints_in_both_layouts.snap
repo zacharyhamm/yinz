@@ -13,6 +13,7 @@ Toggle Embed (Embed): e
 Split Right (Right): r
 Split Down (Down): d
 Stack (Stack): s
+Select text (Text): v
 Select pane (Select): ENTER
 
 == Tab
@@ -73,6 +74,10 @@ Duplicate agent (Duplicate): d
 Agents (Agents): a
 Chat (Chat): c
 Select pane (Select): ENTER
+
+== Select
+Move selection (Move): ← ↓ ↑ →
+Copy and exit (Copy): ENTER
 
 == Tmux
 Move focus (Move): ← ↓ ↑ →

@@ -155,6 +155,10 @@ pub fn hints_for_mode(mi: &ModeInfo) -> Vec<Hint> {
 
     // Find the key that leaves the mode. Do it here before we dedupe the keymap below!
     let to_base_mode = back_to_base_mode_key(mi, &old_keymap);
+    let copy_and_exit = match key_doing(&old_keymap, &A::Copy) {
+        keys if !keys.is_empty() => keys,
+        _ => to_base_mode.clone(),
+    };
 
     // Sort and deduplicate the keybindings first. We sort after the `Key`s, and deduplicate by
     // their `Action` vectors. An unstable sort is fine here because if the user maps anything to
@@ -200,6 +204,7 @@ pub fn hints_for_mode(mi: &ModeInfo) -> Vec<Hint> {
         hint("Split Right", "Right", key_doing(&km, &A::NewPane{direction: Some(Dir::Right), pane_name: None, start_suppressed: false})),
         hint("Split Down", "Down", key_doing(&km, &A::NewPane{direction: Some(Dir::Down), pane_name: None, start_suppressed: false})),
         hint("Stack", "Stack", key_doing(&km, &A::NewStackedPane{command: None, pane_name: None, near_current_pane: false, no_focus: false, tab_id: None})),
+        hint("Select text", "Text", key_doing(&km, &A::SwitchToMode{input_mode: IM::Select})),
         hint("Select pane", "Select", to_base_mode),
     ]} else if mi.mode == IM::Tab {
         // With the default bindings, "Move focus" for tabs is tricky: It binds all the arrow keys
@@ -264,6 +269,11 @@ pub fn hints_for_mode(mi: &ModeInfo) -> Vec<Hint> {
         hint("Select pane", "Select", to_base_mode),
         hint("Scroll commands", "Commands",
             action_key_group(&km, &[&[A::ScrollToPreviousPrompt], &[A::ScrollToNextPrompt]])),
+    ]} else if mi.mode == IM::Select { vec![
+        hint("Move selection", "Move", action_key_group(&km, &[
+            &[A::MoveTextSelection{direction: Dir::Left}], &[A::MoveTextSelection{direction: Dir::Down}],
+            &[A::MoveTextSelection{direction: Dir::Up}], &[A::MoveTextSelection{direction: Dir::Right}]])),
+        hint("Copy and exit", "Copy", copy_and_exit),
     ]} else if mi.mode == IM::EnterSearch { vec![
         hint("When done", "Done", action_key(&km, &[A::SwitchToMode{input_mode: IM::Search}])),
         hint("Cancel", "Cancel",
@@ -343,6 +353,7 @@ mod tests {
             InputMode::Search,
             InputMode::Session,
             InputMode::Agent,
+            InputMode::Select,
             InputMode::Tmux,
             InputMode::RenamePane,
             InputMode::RenameTab,

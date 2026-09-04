@@ -60,6 +60,31 @@ fn can_define_shared_keybinds_with_exclusion() {
 }
 
 #[test]
+fn select_mode_does_not_inherit_default_focus_bindings() {
+    let config = Config::from_default_assets().unwrap();
+    for bare_key in [
+        BareKey::Char('h'),
+        BareKey::Char('j'),
+        BareKey::Char('k'),
+        BareKey::Char('l'),
+        BareKey::Char('i'),
+        BareKey::Char('o'),
+        BareKey::Left,
+        BareKey::Down,
+        BareKey::Up,
+        BareKey::Right,
+    ] {
+        assert_eq!(
+            config.keybinds.get_actions_for_key_in_mode(
+                &InputMode::Select,
+                &KeyWithModifier::new(bare_key).with_alt_modifier(),
+            ),
+            None,
+        );
+    }
+}
+
+#[test]
 fn can_define_shared_keybinds_with_inclusion() {
     let config_contents = r#"
         keybinds {

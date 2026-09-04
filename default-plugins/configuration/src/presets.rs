@@ -41,6 +41,15 @@ keybinds clear-defaults=true {{
         bind "e" {{ TogglePaneEmbedOrFloating; SwitchToMode "Locked"; }}
         bind "c" {{ SwitchToMode "RenamePane"; PaneNameInput 0;}}
         bind "i" {{ TogglePanePinned; SwitchToMode "Locked"; }}
+        bind "v" {{ SwitchToMode "Select"; }}
+    }}
+    select {{
+        bind "h" "Left" {{ MoveTextSelection "Left"; }}
+        bind "j" "Down" {{ MoveTextSelection "Down"; }}
+        bind "k" "Up" {{ MoveTextSelection "Up"; }}
+        bind "l" "Right" {{ MoveTextSelection "Right"; }}
+        bind "Enter" {{ Copy; SwitchToMode "Locked"; }}
+        bind "Ctrl c" {{ SwitchToMode "Locked"; }}
     }}
     move {{
         bind "m" {{ SwitchToMode "Normal"; }}
@@ -267,6 +276,15 @@ keybinds clear-defaults=true {{
         bind "e" {{ TogglePaneEmbedOrFloating; SwitchToMode "Normal"; }}
         bind "c" {{ SwitchToMode "RenamePane"; PaneNameInput 0;}}
         bind "i" {{ TogglePanePinned; SwitchToMode "Normal"; }}
+        bind "v" {{ SwitchToMode "Select"; }}
+    }}
+    select {{
+        bind "h" "Left" {{ MoveTextSelection "Left"; }}
+        bind "j" "Down" {{ MoveTextSelection "Down"; }}
+        bind "k" "Up" {{ MoveTextSelection "Up"; }}
+        bind "l" "Right" {{ MoveTextSelection "Right"; }}
+        bind "Enter" {{ Copy; SwitchToMode "Normal"; }}
+        bind "Ctrl c" {{ SwitchToMode "Normal"; }}
     }}
     move {{
         bind "{primary_modifier} h" {{ SwitchToMode "Normal"; }}
@@ -419,7 +437,7 @@ keybinds clear-defaults=true {{
         bind "Space" {{ NextSwapLayout; }}
         bind "x" {{ CloseFocus; SwitchToMode "Normal"; }}
     }}
-    shared_except "locked" {{
+    shared_except "locked" "select" {{
         bind "{primary_modifier} g" {{ SwitchToMode "Locked"; }}
         bind "{primary_modifier} q" {{ Quit; }}
         bind "{secondary_modifier} f" {{ ToggleFloatingPanes; }}
@@ -504,6 +522,15 @@ keybinds clear-defaults=true {{
         bind "e" {{ TogglePaneEmbedOrFloating; SwitchToMode "Normal"; }}
         bind "c" {{ SwitchToMode "RenamePane"; PaneNameInput 0;}}
         bind "i" {{ TogglePanePinned; SwitchToMode "Normal"; }}
+        bind "v" {{ SwitchToMode "Select"; }}
+    }}
+    select {{
+        bind "h" "Left" {{ MoveTextSelection "Left"; }}
+        bind "j" "Down" {{ MoveTextSelection "Down"; }}
+        bind "k" "Up" {{ MoveTextSelection "Up"; }}
+        bind "l" "Right" {{ MoveTextSelection "Right"; }}
+        bind "Enter" {{ Copy; SwitchToMode "Normal"; }}
+        bind "Ctrl c" {{ SwitchToMode "Normal"; }}
     }}
     move {{
         bind "n" "Tab" {{ MovePane; }}
@@ -646,7 +673,7 @@ keybinds clear-defaults=true {{
         bind "Space" {{ NextSwapLayout; }}
         bind "x" {{ CloseFocus; SwitchToMode "Normal"; }}
     }}
-    shared_except "locked" {{
+    shared_except "locked" "select" {{
         bind "{secondary_modifier} n" {{ NewPane; }}
         bind "{secondary_modifier} f" {{ ToggleFloatingPanes; }}
         bind "{secondary_modifier} i" {{ MoveTab "Left"; }}
@@ -712,6 +739,15 @@ keybinds clear-defaults=true {{
         bind "e" {{ TogglePaneEmbedOrFloating; SwitchToMode "Normal"; }}
         bind "c" {{ SwitchToMode "RenamePane"; PaneNameInput 0;}}
         bind "i" {{ TogglePanePinned; SwitchToMode "Normal"; }}
+        bind "v" {{ SwitchToMode "Select"; }}
+    }}
+    select {{
+        bind "h" "Left" {{ MoveTextSelection "Left"; }}
+        bind "j" "Down" {{ MoveTextSelection "Down"; }}
+        bind "k" "Up" {{ MoveTextSelection "Up"; }}
+        bind "l" "Right" {{ MoveTextSelection "Right"; }}
+        bind "Enter" {{ Copy; SwitchToMode "Normal"; }}
+        bind "Ctrl c" {{ SwitchToMode "Normal"; }}
     }}
     move {{
         bind "{primary_modifier} h" {{ SwitchToMode "Normal"; }}
@@ -926,6 +962,15 @@ keybinds clear-defaults=true {
         bind "e" { TogglePaneEmbedOrFloating; SwitchToMode "Normal"; }
         bind "c" { SwitchToMode "RenamePane"; PaneNameInput 0;}
         bind "i" { TogglePanePinned; SwitchToMode "Normal"; }
+        bind "v" { SwitchToMode "Select"; }
+    }
+    select {
+        bind "h" "Left" { MoveTextSelection "Left"; }
+        bind "j" "Down" { MoveTextSelection "Down"; }
+        bind "k" "Up" { MoveTextSelection "Up"; }
+        bind "l" "Right" { MoveTextSelection "Right"; }
+        bind "Enter" { Copy; SwitchToMode "Normal"; }
+        bind "Ctrl c" { SwitchToMode "Normal"; }
     }
     move {
         bind "n" "Tab" { MovePane; }
@@ -1116,6 +1161,15 @@ keybinds clear-defaults=true {{
         bind "e" {{ TogglePaneEmbedOrFloating; SwitchToMode "Normal"; }}
         bind "c" {{ SwitchToMode "RenamePane"; PaneNameInput 0;}}
         bind "i" {{ TogglePanePinned; SwitchToMode "Normal"; }}
+        bind "v" {{ SwitchToMode "Select"; }}
+    }}
+    select {{
+        bind "h" "Left" {{ MoveTextSelection "Left"; }}
+        bind "j" "Down" {{ MoveTextSelection "Down"; }}
+        bind "k" "Up" {{ MoveTextSelection "Up"; }}
+        bind "l" "Right" {{ MoveTextSelection "Right"; }}
+        bind "Enter" {{ Copy; SwitchToMode "Normal"; }}
+        bind "Ctrl c" {{ SwitchToMode "Normal"; }}
     }}
     move {{
         bind "{primary_modifier} m" {{ SwitchToMode "Normal"; }}
@@ -1268,7 +1322,7 @@ keybinds clear-defaults=true {{
         bind "Space" {{ NextSwapLayout; }}
         bind "x" {{ CloseFocus; SwitchToMode "Normal"; }}
     }}
-    shared_except "locked" {{
+    shared_except "locked" "select" {{
         bind "{primary_modifier} g" {{ SwitchToMode "Locked"; }}
         bind "{primary_modifier} q" {{ Quit; }}
         bind "{secondary_modifier} f" {{ ToggleFloatingPanes; }}
@@ -1313,4 +1367,34 @@ keybinds clear-defaults=true {{
 }}
 "#
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_selection_bindings(config: String, exit_mode: &str) {
+        assert!(config.contains(r#"bind "v" { SwitchToMode "Select"; }"#));
+        assert_eq!(config.matches("MoveTextSelection").count(), 4);
+        assert!(config.contains(&format!(
+            r#"bind "Enter" {{ Copy; SwitchToMode "{exit_mode}"; }}"#
+        )));
+        assert!(config.contains(&format!(
+            r#"bind "Ctrl c" {{ SwitchToMode "{exit_mode}"; }}"#
+        )));
+    }
+
+    #[test]
+    fn generated_presets_include_selection_bindings() {
+        assert_selection_bindings(unlock_first_keybinds("Ctrl".into(), "Alt".into()), "Locked");
+        for config in [
+            default_keybinds("Ctrl".into(), "Alt".into()),
+            default_keybinds("".into(), "Alt".into()),
+            default_keybinds("Ctrl".into(), "".into()),
+            default_keybinds("".into(), "".into()),
+            default_keybinds("Ctrl".into(), "Ctrl".into()),
+        ] {
+            assert_selection_bindings(config, "Normal");
+        }
+    }
 }
